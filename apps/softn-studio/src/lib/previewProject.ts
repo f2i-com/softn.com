@@ -1,12 +1,16 @@
 import {
+  composeBundleSource,
   parseXDBFile,
+  rewriteBundleLogicImports,
   seedXDBBundleData,
+  type ComposedBundleSource,
   type XDBBundleData,
   type XDBRecord,
   type XDBService,
 } from '@softn/core';
 import type { VFSFile } from '../types/studio';
-import { normalizeProjectPath, resolveProjectRelativePath } from './projectImport';
+import { normalizeManifestForBundle } from './exportBundle';
+import { isPrivatePath, normalizeProjectPath } from './paths';
 
 export interface PreviewXDBState {
   bundles: XDBBundleData[];
@@ -19,9 +23,119 @@ type PreviewXDB = Pick<
   'clear' | 'getAllRaw' | 'resumeNotifications' | 'suppressNotifications' | 'writeRecord'
 >;
 
-export interface PreviewSourceResult {
-  source: string;
-  preIncludedLogicPaths: string[];
+/** What the preview renderer is given: the composed bundle, and how its logic imports resolve. */
+export interface PreviewComposition extends ComposedBundleSource {
+  importResolver: (path: string) => Promise<string | null>;
+}
+
+export type PreviewCompositionResult =
+  | { ok: true; composition: PreviewComposition }
+  | { ok: false; error: string };
+
+/**
+ * Compose the previewed `.ui` file the way the runtime composes the bundle's
+ * `main`: with core's composer, over the project's text files, with the
+ * manifest's logic group as the export will write it.
+ *
+ * Studio used to assemble the preview itself, and it was a second runtime
+ * that disagreed with the first. It collected only `.logic` files, so a
+ * Python app previewed as if it had no logic; it resolved a bare
+ * `src="logic/app.logic"` from the bundle root where the runtime resolves it
+ * from the importing file; it skipped a `<logic src>` whose file was missing,
+ * so a project that stopped at Run looked fine here; and it passed imported
+ * logic through unrewritten. The composer is the one the runtime runs, so
+ * what it refuses is refused here, in its own words, before Run.
+ *
+ * The logic group comes from the normalised manifest rather than from every
+ * logic file in the project: that is what Run and Export hand the runtime, so
+ * a server file or a stray helper is not executed here when it would not be
+ * there.
+ */
+export function composePreviewProject(files: Map<string, VFSFile>, mainPath: string): PreviewCompositionResult {
+  const text = new Map<string, string>();
+  for (const [rawPath, file] of files) {
+    if (typeof file.content !== 'string') continue;
+    const path = normalizeProjectPath(rawPath);
+    if (!path || isPrivatePath(path)) continue;
+    text.set(path, file.content);
+  }
+
+  try {
+    const composed = composeBundleSource(text, mainPath, manifestLogicPaths(files));
+    return {
+      ok: true,
+      composition: {
+        ...composed,
+        // An imported .logic file's own imports are relative to it, not to
+        // the entry; the runtime rewrites them to bundle-root paths before
+        // the fragment joins the one logic block, and so does the preview.
+        importResolver: async (path: string): Promise<string | null> => {
+          const canonical = normalizeProjectPath(path.replace(/^\.\//, ''));
+          if (!canonical || isPrivatePath(canonical)) return null;
+          const source = text.get(canonical);
+          return source === undefined ? null : rewriteBundleLogicImports(source, canonical);
+        },
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** The manifest's logic group as the export writes it: the helpers the runtime loads, in its order. */
+function manifestLogicPaths(files: Map<string, VFSFile>): string[] {
+  const manifest = normalizeManifestForBundle(files);
+  if (manifest === null) return [];
+  const groups = (JSON.parse(manifest) as { files?: { logic?: unknown } }).files;
+  return Array.isArray(groups?.logic)
+    ? groups.logic.filter((path): path is string => typeof path === 'string')
+    : [];
+}
+
+/**
+ * Strip the author's `//` line comments from a `.ui` file's TEMPLATE, and only
+ * its template.
+ *
+ * Comments in a .ui header would otherwise render as visible text in the
+ * preview, which is the whole reason this exists. What it must not do is reach
+ * inside `<logic>`, `<script>` or `<style>`: those are other languages, they
+ * handle their own comments, and this once ran over them with two regexes that
+ * know nothing about string literals.
+ *
+ * That was not theoretical. It used to run over the assembled document — the
+ * `.ui` with its external `.logic` already inlined — and the AIChat demo
+ * contains `softn.files.pickFile({ accept: "image/*" }, ...)`. The `/*` inside
+ * that ordinary MIME wildcard opened a comment, and the non-greedy scan ran
+ * forward to the first `*\/` it could find, deleting everything between,
+ * including the `</logic>` that closed the inlined block.
+ *
+ * Protecting those blocks was not enough, because the template has the same
+ * wildcard: `<FileChooser accept="image/*" />` followed anywhere later by a
+ * `*\/` deleted the markup between them. And `/* … *\/` is not a template
+ * comment at all — the runtime's lexer knows `//` and `<!-- -->`, nothing
+ * else — so a block comment in a template is text in the runtime and is left
+ * as text here. Only a line that begins with `//` is removed.
+ */
+export function stripTemplateComments(source: string): string {
+  // Spans that belong to another language, left exactly as their author wrote them.
+  const protectedSpans: Array<[number, number]> = [];
+  const blockTag = /<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+  for (const match of source.matchAll(blockTag)) {
+    protectedSpans.push([match.index, match.index + match[0].length]);
+  }
+
+  const stripTemplate = (text: string): string => text.replace(/^\/\/.*$/gm, '');
+
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of protectedSpans) {
+    out += stripTemplate(source.slice(cursor, start));
+    out += source.slice(start, end);
+    cursor = end;
+  }
+  out += stripTemplate(source.slice(cursor));
+
+  return out.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
 }
 
 /** Parse Studio's VFS data exactly as the bundle runtime parses `.xdb` files. */
@@ -124,199 +238,4 @@ export function clearPreviewXDBCollections(xdb: PreviewXDB, collections: Iterabl
   } finally {
     xdb.resumeNotifications();
   }
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function rewriteLogicImports(code: string, ownerPath: string): string {
-  return code.replace(
-    /^(\s*import\s+)(["'])([^"']+)\2(\s*;?\s*)$/gm,
-    (_match, prefix: string, quote: string, importPath: string, suffix: string) => {
-      const resolved = resolveProjectRelativePath(ownerPath, importPath);
-      return resolved
-        ? `${prefix}${quote}${resolved}${quote}${suffix}`
-        : `/* rejected unsafe logic import */`;
-    }
-  );
-}
-
-/**
- * Inline component templates for Studio while hoisting every component-owned
- * logic block into the single top-level block understood by the parser.
- */
-export function assemblePreviewSource(
-  rootPath: string,
-  rootSource: string,
-  uiFiles: Map<string, string>,
-  logicFiles: Map<string, string>,
-  manifestLogicPaths: readonly string[] = []
-): PreviewSourceResult {
-  const canonicalUI = new Map<string, string>();
-  const canonicalLogic = new Map<string, string>();
-  for (const [path, content] of uiFiles) {
-    const canonical = normalizeProjectPath(path);
-    if (canonical) canonicalUI.set(canonical, content);
-  }
-  for (const [path, content] of logicFiles) {
-    const canonical = normalizeProjectPath(path);
-    if (canonical) canonicalLogic.set(canonical, content);
-  }
-
-  const logicChunks = new Map<string, string>();
-  const preIncludedLogicPaths = new Set<string>();
-  const templateCache = new Map<string, string>();
-  const rootLogicKeys = new Set<string>();
-  let firstLogicKey: string | undefined;
-
-  const extractOwnedLogic = (
-    source: string,
-    ownerPath: string
-  ): { template: string; chunks: Array<{ key: string; code: string; externalPath?: string }> } => {
-    let inlineIndex = 0;
-    const chunks: Array<{ key: string; code: string; externalPath?: string }> = [];
-    const template = source.replace(
-      /<logic\b([^>]*)\/>|<logic\b([^>]*)>([\s\S]*?)<\/logic\s*>/gi,
-      (
-        _match,
-        selfClosingAttributes: string | undefined,
-        blockAttributes: string | undefined,
-        body: string | undefined
-      ) => {
-        const attributes = selfClosingAttributes ?? blockAttributes ?? '';
-        const srcMatch = attributes.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i);
-        if (srcMatch) {
-          const resolved = resolveProjectRelativePath(ownerPath, srcMatch[2]);
-          const content = resolved ? canonicalLogic.get(resolved) : undefined;
-          if (resolved && content !== undefined) {
-            chunks.push({
-              key: resolved,
-              code: rewriteLogicImports(content, resolved),
-              externalPath: resolved,
-            });
-          }
-        }
-        if (body?.trim()) {
-          const key = `${ownerPath}#inline-${inlineIndex++}`;
-          chunks.push({ key, code: rewriteLogicImports(body, ownerPath) });
-        }
-        return '';
-      }
-    );
-    return { template, chunks };
-  };
-
-  const resolveTemplate = (path: string, source: string, ancestors: Set<string>): string => {
-    const cached = templateCache.get(path);
-    if (cached !== undefined) return cached;
-    if (ancestors.has(path)) return '';
-
-    const nextAncestors = new Set(ancestors);
-    nextAncestors.add(path);
-    const imports: Array<{ names: string[]; sourcePath: string }> = [];
-    const ownedLogic = extractOwnedLogic(source, path);
-    firstLogicKey ??= ownedLogic.chunks[0]?.key;
-    if (path === canonicalRoot) {
-      for (const chunk of ownedLogic.chunks) rootLogicKeys.add(chunk.key);
-    }
-    let template = ownedLogic.template.replace(
-      /<import\s+(?:\{\s*([^}]+)\s*\}|([A-Za-z_$][\w$]*))\s+from\s*=\s*(["'])([^"']+)\3\s*\/>/g,
-      (
-        _match,
-        named: string | undefined,
-        defaultName: string | undefined,
-        _quote: string,
-        sourcePath: string
-      ) => {
-        const names = (named ?? defaultName ?? '')
-          .split(',')
-          .map(
-            (name) =>
-              name
-                .trim()
-                .split(/\s+as\s+/i)
-                .at(-1) ?? ''
-          )
-          .filter(Boolean);
-        imports.push({ names, sourcePath });
-        return '';
-      }
-    );
-
-    for (const imported of imports) {
-      const resolved = resolveProjectRelativePath(path, imported.sourcePath);
-      if (!resolved) continue;
-      const candidates = /\.ui$/i.test(resolved) ? [resolved] : [resolved, `${resolved}.ui`];
-      const componentPath = candidates.find((candidate) => canonicalUI.has(candidate));
-      if (!componentPath) continue;
-
-      const componentTemplate = resolveTemplate(
-        componentPath,
-        canonicalUI.get(componentPath)!,
-        nextAncestors
-      )
-        .replace(/<data>[\s\S]*?<\/data>/gi, '')
-        .trim();
-
-      for (const name of imported.names) {
-        const escapedName = escapeRegExp(name);
-        template = template.replace(
-          new RegExp(`<${escapedName}(?:\\s+[^>]*)?\\/\\s*>`, 'g'),
-          () => componentTemplate
-        );
-        template = template.replace(
-          new RegExp(`<${escapedName}(?:\\s+[^>]*)?>[\\s\\S]*?<\\/${escapedName}\\s*>`, 'g'),
-          () => componentTemplate
-        );
-      }
-    }
-
-    // Component/helper declarations must exist before the importing file's
-    // top-level statements execute. Recurse first, then append this file's
-    // owned logic, with the root/main file consequently ordered last.
-    for (const chunk of ownedLogic.chunks) {
-      if (logicChunks.has(chunk.key)) continue;
-      logicChunks.set(chunk.key, chunk.code);
-      if (chunk.externalPath) preIncludedLogicPaths.add(chunk.externalPath);
-    }
-
-    templateCache.set(path, template);
-    return template;
-  };
-
-  const canonicalRoot = normalizeProjectPath(rootPath);
-  if (!canonicalRoot) return { source: rootSource, preIncludedLogicPaths: [] };
-  const template = resolveTemplate(canonicalRoot, rootSource, new Set());
-  // When the main UI has no logic, the runtime uses its first component's
-  // logic as the entry. That code also needs to run after declared helpers.
-  if (rootLogicKeys.size === 0 && firstLogicKey) rootLogicKeys.add(firstLogicKey);
-
-  // The runtime preloads manifest helpers when a UI references external logic.
-  // Keep the same order here: helpers, component logic, then the entry's code.
-  // Otherwise a bundle can run normally but report missing helper variables in
-  // Studio, even though the helper file is present and declared in its manifest.
-  const orderedLogic = new Map<string, string>();
-  if (preIncludedLogicPaths.size > 0) {
-    for (const rawPath of manifestLogicPaths) {
-      const path = normalizeProjectPath(rawPath);
-      if (!path || rootLogicKeys.has(path) || orderedLogic.has(path)) continue;
-      const content = canonicalLogic.get(path);
-      if (content === undefined) continue;
-      orderedLogic.set(path, logicChunks.get(path) ?? rewriteLogicImports(content, path));
-      preIncludedLogicPaths.add(path);
-    }
-  }
-  for (const [path, content] of logicChunks) {
-    if (!rootLogicKeys.has(path)) orderedLogic.set(path, content);
-  }
-  for (const path of rootLogicKeys) {
-    const content = logicChunks.get(path);
-    if (content !== undefined) orderedLogic.set(path, content);
-  }
-  const combinedLogic = Array.from(orderedLogic.values()).join('\n');
-  return {
-    source: combinedLogic ? `<logic>\n${combinedLogic}\n</logic>\n${template}` : template,
-    preIncludedLogicPaths: Array.from(preIncludedLogicPaths),
-  };
 }

@@ -1,6 +1,7 @@
 import type {
   AgentTask,
   Blueprint,
+  BuilderMode,
   ChatMessage,
   ModelProfile,
   ProjectBrief,
@@ -67,13 +68,17 @@ export type PersistedWorkspace = {
   mode: string;
   leftPanel: string | null;
   leftPanelExpanded: boolean;
-  rightSidebarOpen: boolean;
+  /**
+   * Written for older Studios, whose reader requires them; this one has no
+   * right sidebar, advanced mode or component selection, and ignores them.
+   */
+  rightSidebarOpen?: boolean;
   bottomDrawerOpen: boolean;
   bottomTab: string;
-  advancedMode: boolean;
+  advancedMode?: boolean;
   activePageId: string | null;
   activeFilePath: string | null;
-  selectedComponentId: string | null;
+  selectedComponentId?: string | null;
   devicePreset: string;
   zoom: number;
   themePreview: 'light' | 'dark';
@@ -165,13 +170,32 @@ export interface GlobalSettings {
   requestTimeoutMs?: number;
   /** Output allowance per request: the provider's max_tokens and the budget reservation. */
   maxOutputTokens?: number;
+  /** The person chose to explore without connecting a provider. Absent in settings saved before the choice existed. */
+  setupSkipped?: boolean;
+  /** Agent run limits and permissions. Absent in settings saved before the agent loop existed. */
+  agentSettings?: { maxSteps: number; runTokenBudget: number; autoCheck: boolean; confirmDeletes: boolean };
+  /** Which provider/model pairs were found not to carry native tool calls. */
+  toolProtocols?: Record<string, 'native' | 'text'>;
+  /** Which provider/model pairs were found not to stream, or not to take stream_options. */
+  streamModes?: Record<string, 'plain' | 'off'>;
 }
 
+/** Every mode a saved project may name, including ones older Studios wrote but never used. */
 const WORKSPACE_MODES = new Set(['describe', 'structure', 'design', 'data', 'logic', 'test']);
+
+/**
+ * The mode a saved project opens in. `data`, `logic` and `test` were in the
+ * type but never set; a project that somehow says one of them is a project
+ * past its brief, so it opens where every such project does: `design`.
+ */
+export function normalizeMode(mode: string): BuilderMode {
+  return mode === 'describe' || mode === 'structure' || mode === 'design' ? mode : 'design';
+}
 const LEFT_PANELS = new Set(['pages', 'history', 'ai', 'settings', 'files']);
 const DEVICE_PRESETS = new Set(['desktop', 'tablet', 'mobile']);
 const TARGETS = new Set(['web', 'desktop', 'dual']);
 const STYLES = new Set(['clean', 'bold', 'minimal', 'playful', 'dark']);
+const LOGIC_LANGUAGES = new Set(['javascript', 'python']);
 const BLUEPRINT_FIELD_TYPES = new Set(['string', 'number', 'boolean', 'date', 'array', 'object']);
 const RELATIONSHIP_TYPES = new Set(['one-to-one', 'one-to-many', 'many-to-many']);
 const RECENT_LIMIT = 12;
@@ -202,7 +226,12 @@ function isPersistedBrief(value: unknown): boolean {
     isStringArray(value.pages) &&
     isStringArray(value.collections) &&
     typeof value.authNeeded === 'boolean' &&
-    STYLES.has(String(value.style))
+    STYLES.has(String(value.style)) &&
+    // Optional: a brief saved before the language choice has none, and
+    // loads as JavaScript rather than failing the whole project record.
+    (value.logicLanguage === undefined || LOGIC_LANGUAGES.has(String(value.logicLanguage))) &&
+    // Optional too, and for the same reason: a brief from before torch.
+    (value.pythonPackages === undefined || isStringArray(value.pythonPackages))
   );
 }
 
@@ -276,12 +305,13 @@ function isProvider(value: unknown): boolean {
   return (
     isRecord(value) &&
     typeof value.id === 'string' &&
-    ['anthropic', 'openai', 'custom'].includes(String(value.type)) &&
+    ['anthropic', 'openai', 'local', 'custom'].includes(String(value.type)) &&
     typeof value.name === 'string' &&
     typeof value.apiKey === 'string' &&
     hasOptionalString(value, 'baseUrl') &&
     hasOptionalString(value, 'modelId') &&
-    hasOptionalString(value, 'orgId')
+    hasOptionalString(value, 'orgId') &&
+    (!('serverKind' in value) || ['ollama', 'lmstudio', 'other'].includes(String(value.serverKind)))
   );
 }
 
@@ -290,6 +320,24 @@ function isModelProfile(value: unknown): boolean {
     isRecord(value) &&
     ['architect', 'builder', 'repair', 'vision'].every((role) => typeof value[role] === 'string')
   );
+}
+
+function isAgentSettings(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.maxSteps === 'number' && Number.isFinite(value.maxSteps) &&
+    typeof value.runTokenBudget === 'number' && Number.isFinite(value.runTokenBudget) &&
+    typeof value.autoCheck === 'boolean' &&
+    typeof value.confirmDeletes === 'boolean'
+  );
+}
+
+function isToolProtocols(value: unknown): boolean {
+  return isRecord(value) && Object.values(value).every((v) => v === 'native' || v === 'text');
+}
+
+function isStreamModes(value: unknown): boolean {
+  return isRecord(value) && Object.values(value).every((v) => v === 'plain' || v === 'off');
 }
 
 function isChatMessage(value: unknown): boolean {
@@ -349,13 +397,13 @@ export function isPersistedWorkspace(parsed: unknown): parsed is PersistedWorksp
     WORKSPACE_MODES.has(String(parsed.mode)) &&
     (parsed.leftPanel === null || LEFT_PANELS.has(String(parsed.leftPanel))) &&
     typeof parsed.leftPanelExpanded === 'boolean' &&
-    typeof parsed.rightSidebarOpen === 'boolean' &&
+    (parsed.rightSidebarOpen === undefined || typeof parsed.rightSidebarOpen === 'boolean') &&
     typeof parsed.bottomDrawerOpen === 'boolean' &&
     parsed.bottomTab === 'log' &&
-    typeof parsed.advancedMode === 'boolean' &&
+    (parsed.advancedMode === undefined || typeof parsed.advancedMode === 'boolean') &&
     isNullableString(parsed.activePageId) &&
     isNullableString(parsed.activeFilePath) &&
-    isNullableString(parsed.selectedComponentId) &&
+    (parsed.selectedComponentId === undefined || isNullableString(parsed.selectedComponentId)) &&
     DEVICE_PRESETS.has(String(parsed.devicePreset)) &&
     typeof parsed.zoom === 'number' &&
     Number.isFinite(parsed.zoom) &&
@@ -604,7 +652,11 @@ export function loadGlobalSettings(): GlobalSettings | null {
       typeof parsed.maxIterations !== 'number' || !Number.isFinite(parsed.maxIterations) || parsed.maxIterations < 0 ||
       typeof parsed.tokenBudget !== 'number' || !Number.isFinite(parsed.tokenBudget) || parsed.tokenBudget < 0 ||
       !isOptionalPositiveInteger(parsed.requestTimeoutMs) ||
-      !isOptionalPositiveInteger(parsed.maxOutputTokens)
+      !isOptionalPositiveInteger(parsed.maxOutputTokens) ||
+      !(parsed.setupSkipped === undefined || typeof parsed.setupSkipped === 'boolean') ||
+      !(parsed.agentSettings === undefined || isAgentSettings(parsed.agentSettings)) ||
+      !(parsed.toolProtocols === undefined || isToolProtocols(parsed.toolProtocols)) ||
+      !(parsed.streamModes === undefined || isStreamModes(parsed.streamModes))
     ) {
       return null;
     }

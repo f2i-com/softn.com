@@ -1,0 +1,862 @@
+/*
+ * Connecting an AI provider: the setup steps, the model picker, the dialog
+ * that holds them, the pill that opens it, and the dashboard's first-visit
+ * step. Tokens and buttons are in studio.css. Ink for choices and the
+ * primary action; coral stays with code (model ids are mono, not coral);
+ * mint only where the provider actually answered.
+ */
+
+/* ── Form basics shared by the setup and Settings ──────────────── */
+
+.st-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.st-field-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--studio-text);
+}
+
+.st-field-optional {
+  font-weight: 400;
+  color: var(--studio-text-dim);
+}
+
+.st-field-hint {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--studio-text-dim);
+}
+
+.st-field-hint-top {
+  margin-bottom: 0.125rem;
+}
+
+.st-input {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius);
+  background: var(--studio-bg);
+  color: var(--studio-text);
+  font: inherit;
+  font-size: 0.875rem;
+  transition: border-color 160ms var(--ease);
+}
+
+.st-input::placeholder {
+  color: var(--studio-text-dim);
+}
+
+.st-input:hover {
+  border-color: var(--studio-border-strong);
+}
+
+.st-input-mono {
+  font-family: var(--studio-mono);
+  font-size: 0.8125rem;
+}
+
+@media (max-width: 767px) {
+  /* 16px keeps iOS from zooming the page on focus. */
+  .st-input {
+    font-size: 16px;
+  }
+}
+
+.st-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--studio-text-muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-decoration: underline;
+  text-decoration-color: var(--studio-border-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.st-link-btn:hover {
+  color: var(--studio-text);
+  text-decoration-color: currentColor;
+}
+
+.st-ext-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: fit-content;
+  color: var(--studio-text-muted);
+  text-decoration: underline;
+  text-decoration-color: var(--studio-border-strong);
+  text-underline-offset: 3px;
+}
+
+.st-ext-link:hover {
+  color: var(--studio-text);
+}
+
+.st-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--studio-text-muted);
+  cursor: pointer;
+}
+
+.st-check input {
+  margin-top: 0.125rem;
+  accent-color: var(--studio-text);
+}
+
+/* Radios and checkboxes drawn as cards keep their input for the keyboard
+   and assistive tech; the card shows the state and the focus ring. */
+.st-choice input,
+.st-segment input,
+.st-model-option input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+#root .st-choice:has(input:focus-visible),
+#root .st-segment:has(input:focus-visible),
+#root .st-model-option:has(input:focus-visible) {
+  outline: 2px solid var(--studio-focus);
+  outline-offset: 2px;
+}
+
+/* ── The steps ─────────────────────────────────────────────────── */
+
+.st-setup {
+  min-width: 0;
+}
+
+.st-setup-steps {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  counter-reset: setup;
+}
+
+.st-setup-step {
+  counter-increment: setup;
+  position: relative;
+  padding: 0 0 1.5rem 2.5rem;
+  min-width: 0;
+}
+
+.st-setup-step[hidden] {
+  display: none;
+}
+
+@media (max-width: 520px) {
+  .st-setup-step {
+    padding-left: 2.25rem;
+  }
+}
+
+.st-setup-step:last-child {
+  padding-bottom: 0;
+}
+
+/* The number, and a rule down to the next one: a sequence you can see. */
+.st-setup-step::before {
+  content: counter(setup);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.625rem;
+  height: 1.625rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--studio-border-strong);
+  background: var(--studio-bg-elevated);
+  font-family: var(--studio-mono);
+  font-size: 0.75rem;
+  color: var(--studio-text-muted);
+}
+
+.st-setup-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 0.8125rem;
+  top: 2rem;
+  bottom: 0.375rem;
+  width: 1px;
+  background: var(--studio-border);
+}
+
+.st-setup-step[data-state='current']::before {
+  background: var(--studio-accent);
+  border-color: var(--studio-accent);
+  color: var(--studio-on-accent);
+  font-weight: 600;
+}
+
+.st-setup-step[data-state='done']::before {
+  border-color: var(--studio-text-muted);
+  color: var(--studio-text);
+}
+
+.st-setup-step[data-state='waiting'] .st-setup-step-title {
+  color: var(--studio-text-dim);
+}
+
+.st-setup-step-title {
+  margin: 0.125rem 0 0.875rem;
+  font-family: var(--studio-display);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  color: var(--studio-text);
+}
+
+.st-setup-wait {
+  margin: -0.375rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--studio-text-dim);
+}
+
+.st-setup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 40rem;
+}
+
+.st-setup-advanced {
+  margin-top: 0.75rem;
+}
+
+.st-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.st-setup-step > .st-setup-actions {
+  margin-top: 1rem;
+}
+
+.st-setup-privacy {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--studio-radius);
+  background: var(--studio-surface);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--studio-text-muted);
+}
+
+.st-setup-privacy svg {
+  flex-shrink: 0;
+  margin-top: 0.125rem;
+}
+
+.st-setup-error {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--studio-border);
+  border-left: 3px solid var(--studio-error);
+  border-radius: var(--studio-radius);
+  background: var(--studio-error-soft);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--studio-text);
+  overflow-wrap: anywhere;
+}
+
+.st-setup-error strong {
+  font-weight: 600;
+}
+
+.st-setup-ok {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--studio-text);
+  overflow-wrap: anywhere;
+}
+
+/* Mint: the provider actually answered. */
+.st-setup-ok svg {
+  flex-shrink: 0;
+  color: var(--studio-live);
+}
+
+.st-setup-more summary {
+  width: fit-content;
+  font-size: 0.8125rem;
+  color: var(--studio-text-muted);
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.st-setup-more[open] summary {
+  margin-bottom: 0.75rem;
+}
+
+/* Editing: how the provider connects, as one line. */
+.st-setup-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding: 0.625rem 0.625rem 0.625rem 0.875rem;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius);
+  background: var(--studio-bg);
+}
+
+.st-setup-summary + .st-setup-error {
+  margin-bottom: 1.25rem;
+}
+
+.st-setup-summary-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.st-setup-summary-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--studio-text);
+}
+
+.st-setup-summary-meta {
+  font-size: 0.75rem;
+  color: var(--studio-text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* With the first two steps folded away, the model step needs no number. */
+.st-setup-steps[data-collapsed] .st-setup-step {
+  padding-left: 0;
+}
+
+.st-setup-steps[data-collapsed] .st-setup-step::before,
+.st-setup-steps[data-collapsed] .st-setup-step::after {
+  display: none;
+}
+
+/* Where the AI runs: three cards */
+
+.st-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.625rem;
+}
+
+.st-setup[data-layout='narrow'] .st-choices {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 720px) {
+  .st-choices {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.st-choice {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.875rem 0.9375rem 0.9375rem;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-lg);
+  background: var(--studio-bg-elevated);
+  cursor: pointer;
+  transition:
+    border-color 160ms var(--ease),
+    background 160ms var(--ease);
+}
+
+.st-setup[data-layout='narrow'] .st-choice,
+.st-choice-compact {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.st-choice-compact {
+  margin-top: 0.625rem;
+}
+
+@media (max-width: 720px) {
+  .st-choice {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+}
+
+.st-choice:hover {
+  border-color: var(--studio-text-dim);
+}
+
+.st-choice[data-checked] {
+  border-color: var(--studio-text);
+  background: var(--studio-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--studio-text);
+}
+
+.st-choice-icon {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--studio-radius);
+  border: 1px solid var(--studio-border);
+  background: var(--studio-bg-muted);
+  color: var(--studio-text-muted);
+}
+
+.st-choice[data-checked] .st-choice-icon {
+  background: var(--studio-accent);
+  border-color: var(--studio-accent);
+  color: var(--studio-on-accent);
+}
+
+.st-choice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.st-choice-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--studio-text);
+}
+
+.st-choice-line {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--studio-text-muted);
+}
+
+/* Which local server */
+
+.st-segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.1875rem;
+  gap: 0.125rem;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius);
+  background: var(--studio-bg);
+}
+
+.st-segment {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  padding: 0 0.75rem;
+  border-radius: var(--studio-radius-sm);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--studio-text-muted);
+  cursor: pointer;
+}
+
+.st-segment:hover {
+  color: var(--studio-text);
+}
+
+.st-segment[data-checked] {
+  background: var(--studio-accent);
+  color: var(--studio-on-accent);
+}
+
+/* ── The model picker ──────────────────────────────────────────── */
+
+.st-models {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 40rem;
+  min-width: 0;
+}
+
+.st-models-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.st-model-list {
+  max-height: 15rem;
+  overflow-y: auto;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius);
+  background: var(--studio-bg);
+  padding: 0.25rem;
+}
+
+.st-model-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.25rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: var(--studio-radius-sm);
+  cursor: pointer;
+}
+
+.st-model-option:hover {
+  background: var(--studio-surface-hover);
+}
+
+.st-model-option[data-checked] {
+  background: var(--studio-accent);
+  color: var(--studio-on-accent);
+}
+
+.st-model-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.st-model-name {
+  font-family: var(--studio-mono);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.st-model-name-plain {
+  flex: 1;
+  font-family: var(--studio-body);
+}
+
+.st-model-label {
+  font-size: 0.75rem;
+  color: var(--studio-text-dim);
+}
+
+.st-model-date {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--studio-text-dim);
+}
+
+.st-model-option[data-checked] :is(.st-model-label, .st-model-date) {
+  color: inherit;
+  opacity: 0.7;
+}
+
+.st-model-empty {
+  margin: 0;
+  padding: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--studio-text-muted);
+}
+
+/* ── The dialog ────────────────────────────────────────────────── */
+
+.st-dialog-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: var(--studio-overlay);
+}
+
+.st-dialog {
+  width: min(48rem, 100%);
+  max-height: calc(100dvh - 2rem);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--studio-radius-lg);
+  background: var(--studio-bg-elevated);
+  box-shadow: var(--studio-shadow-pop);
+  overflow: hidden;
+}
+
+.st-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1rem 1rem 1.5rem;
+  border-bottom: 1px solid var(--studio-border-subtle);
+}
+
+.st-dialog-title {
+  margin: 0;
+  font-family: var(--studio-display);
+  font-size: 1.375rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--studio-text);
+}
+
+.st-dialog-sub {
+  margin: 0.375rem 0 0;
+  max-width: 36rem;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--studio-text-muted);
+}
+
+.st-dialog-body {
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+@media (max-width: 767px) {
+  .st-dialog-scrim {
+    padding: 0;
+    place-items: stretch;
+  }
+  .st-dialog {
+    width: 100%;
+    max-height: none;
+    height: 100dvh;
+    border-radius: 0;
+  }
+  .st-dialog-head {
+    padding: 1rem 0.5rem 0.875rem 1rem;
+  }
+  .st-dialog-body {
+    padding: 1.25rem 1rem 2rem;
+  }
+}
+
+/* ── The AI pill ───────────────────────────────────────────────── */
+
+.st-ai-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  max-width: 20rem;
+  min-height: 2rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--studio-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--studio-text-muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 160ms var(--ease),
+    border-color 160ms var(--ease),
+    color 160ms var(--ease);
+}
+
+.st-ai-pill:hover {
+  background: var(--studio-surface-hover);
+  border-color: var(--studio-text-dim);
+  color: var(--studio-text);
+}
+
+.st-ai-pill svg {
+  flex-shrink: 0;
+}
+
+.st-ai-pill-name {
+  font-weight: 600;
+  color: var(--studio-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.st-ai-pill-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--studio-mono);
+  font-size: 0.75rem;
+  color: var(--studio-text-dim);
+}
+
+/* Missing something: a dashed edge, like an empty slot to fill. It stays
+   secondary — the screen's one primary action keeps the inverted ink. */
+.st-ai-pill:is([data-state='none'], [data-state='unselected'], [data-state='no-model']) {
+  border-style: dashed;
+  border-color: var(--studio-text-dim);
+  color: var(--studio-text);
+}
+
+.st-ai-pill:is([data-state='none'], [data-state='unselected'], [data-state='no-model']):hover {
+  border-style: solid;
+}
+
+/* ── A call to set up, where the AI would otherwise be used ────── */
+
+.st-ai-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 1rem;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-lg);
+  background: var(--studio-bg);
+}
+
+.st-ai-cta-title {
+  margin: 0;
+  font-family: var(--studio-display);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--studio-text);
+}
+
+.st-ai-cta p {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--studio-text-muted);
+}
+
+.st-ai-cta .st-btn {
+  align-self: flex-start;
+}
+
+/* ── The dashboard's first visit ───────────────────────────────── */
+
+.st-onboard {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr);
+  grid-template-areas:
+    'intro card'
+    'skip card';
+  grid-template-rows: auto 1fr;
+  column-gap: clamp(1.5rem, 4vw, 4rem);
+  align-items: start;
+}
+
+.st-onboard-intro {
+  grid-area: intro;
+}
+
+.st-onboard-card {
+  grid-area: card;
+}
+
+.st-onboard-skip {
+  grid-area: skip;
+}
+
+/* One column: the step straight after the words that explain it, and the
+   way to skip it after that. */
+@media (max-width: 960px) {
+  .st-onboard {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'intro'
+      'card'
+      'skip';
+    grid-template-rows: none;
+    row-gap: 1.5rem;
+  }
+  .st-onboard-skip {
+    margin-top: 0;
+  }
+}
+
+.st-onboard-eyebrow {
+  display: block;
+  margin-bottom: 0.875rem;
+  font-family: var(--studio-mono);
+  font-size: 0.75rem;
+  color: var(--studio-text-dim);
+}
+
+.st-onboard-title {
+  font-family: var(--studio-display);
+  font-weight: 800;
+  font-size: clamp(2rem, 4.2vw, 3rem);
+  line-height: 1;
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+.st-onboard-lede {
+  margin-top: 1rem;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--studio-text-muted);
+}
+
+.st-onboard-skip {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--studio-border-subtle);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--studio-text-dim);
+}
+
+.st-onboard-card {
+  padding: clamp(1rem, 2.5vw, 1.75rem);
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-lg);
+  background: var(--studio-bg-elevated);
+  box-shadow: var(--studio-shadow);
+  min-width: 0;
+}
+
+/* What is behind the step: visible, so the page is not a wall, but inert. */
+.st-home-locked {
+  margin-top: clamp(2.5rem, 5vw, 3.5rem);
+  opacity: 0.4;
+  filter: saturate(0.6);
+  user-select: none;
+}
+
+/* The line under the hero when the AI is connected, or was skipped. */
+.st-home-ai {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--studio-text-dim);
+}

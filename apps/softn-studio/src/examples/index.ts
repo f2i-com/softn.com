@@ -1,7 +1,8 @@
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
-import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint } from '../lib/studioProject';
+import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage } from '../lib/studioProject';
 import { resetProjectSessionForImport } from '../lib/projectSession';
 import { READING_LIST } from './readingList';
+import { READING_LIST_PYTHON } from './readingListPython';
 
 /**
  * A bundled example: a complete project a first visit can open without a
@@ -20,7 +21,7 @@ export interface ExampleProject {
   files: Array<{ path: string; content: string }>;
 }
 
-export const EXAMPLES: readonly ExampleProject[] = [READING_LIST];
+export const EXAMPLES: readonly ExampleProject[] = [READING_LIST, READING_LIST_PYTHON];
 
 export const DEFAULT_EXAMPLE: ExampleProject = READING_LIST;
 
@@ -37,8 +38,9 @@ export function openExampleInStores(example: ExampleProject = DEFAULT_EXAMPLE): 
 
   const ws = useWorkspaceStore.getState();
   ws.setProjectName(example.name);
-  const blueprint = inferBlueprintFromFiles(example.name, useVFSStore.getState().getSnapshot());
-  ws.setBrief(inferBriefFromBlueprint(blueprint));
+  const snapshot = useVFSStore.getState().getSnapshot();
+  const blueprint = inferBlueprintFromFiles(example.name, snapshot);
+  ws.setBrief(inferBriefFromBlueprint(blueprint, projectLogicLanguage(snapshot)));
   ws.setBlueprint(blueprint);
   ws.setBlueprintApproved(true);
   ws.setTaskGraph(generateTaskGraph(blueprint));
@@ -49,7 +51,7 @@ export function openExampleInStores(example: ExampleProject = DEFAULT_EXAMPLE): 
   useAIStore.getState().addMessage({
     id: crypto.randomUUID(),
     role: 'assistant',
-    content: `This is the bundled example "${example.name}": ${example.description} Preview is the canvas; Run opens it in the runtime; Export bundle downloads it as a .softn file. Add a provider key in Settings to edit it with AI.`,
+    content: `This is the bundled example "${example.name}": ${example.description} Preview is the canvas; Run opens it in the runtime; Export bundle downloads it as a .softn file. To change it with the AI, connect a provider: a local model, or your own OpenAI or Anthropic key.`,
     timestamp: Date.now(),
   });
   return projectId;

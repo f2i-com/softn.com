@@ -2,8 +2,10 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useWorkspaceStore, useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
-import type { ProjectBrief, RuntimeTarget, VisualStyle } from '../../types/studio';
+import type { LogicLanguage, ProjectBrief, RuntimeTarget, VisualStyle } from '../../types/studio';
 import { generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles } from '../../lib/studioProject';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { AIStatusPill, openSetupFor, useAIReadiness } from '../ai/AIStatusPill';
 
 interface BriefWizardProps {
   onBack: () => void;
@@ -17,32 +19,13 @@ const STEPS: { id: Step; label: string; num: string }[] = [
   { id: 'style', label: 'Style', num: '3' },
 ];
 
-/**
- * Focus has to be drawn imperatively: the whole app styles itself with inline
- * style objects, and inline styles cannot express :focus. Setting the two
- * properties on the node directly and putting them back on blur keeps the ring
- * out of React's render path entirely, so no keystroke costs a re-render.
- *
- * The ring is coral because focus is the one moment the tool is asking for your
- * attention, and stacking two --studio-accent-soft layers compounds their alpha
- * into a halo that survives the light theme, where the soft tone is only 10%.
+/*
+ * Focus is drawn by one rule in styles/studio.css — the same ring as the
+ * product bar and every other SoftN surface — so nothing here sets it. The
+ * handlers that used to paint it on focus and take it off on blur also
+ * painted it on a mouse click, and could not agree with a hover that
+ * changed the same border.
  */
-const FOCUS_SHADOW = '0 0 0 1px var(--studio-accent), 0 0 0 4px var(--studio-accent-soft), 0 0 0 7px var(--studio-accent-soft)';
-
-// A coral halo disappears on a coral button, so anything already filled with
-// the accent gets the ring gapped off the page ground instead.
-const FOCUS_SHADOW_ON_ACCENT = '0 0 0 2px var(--studio-bg), 0 0 0 4px var(--studio-accent)';
-
-const ring = (restBorder: string, restShadow = 'none', focusShadow = FOCUS_SHADOW) => ({
-  onFocus: (e: React.FocusEvent<HTMLElement>) => {
-    e.currentTarget.style.borderColor = 'var(--studio-accent)';
-    e.currentTarget.style.boxShadow = focusShadow;
-  },
-  onBlur: (e: React.FocusEvent<HTMLElement>) => {
-    e.currentTarget.style.borderColor = restBorder;
-    e.currentTarget.style.boxShadow = restShadow;
-  },
-});
 
 // Hover only ever touches `background`, so it can never wipe out a focus ring
 // that is living on `borderColor` / `boxShadow` at the same time.
@@ -54,10 +37,19 @@ const hover = (rest: string, over: string) => ({
 export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) => {
   const { setBrief, setProjectName, setMode, setBlueprint, setTaskGraph, setActivePage, addConsoleOutput, brief: existingBrief } = useWorkspaceStore();
   const { providers, activeProviderId, setActiveProvider } = useAIStore();
+  const setupOpen = useAIStore((st) => st.setupDialog !== null);
+  const readiness = useAIReadiness();
+  const hosted = isHostedEditor();
   const { reset: resetVFS, batchCreateFiles } = useVFSStore();
 
   const [brief, updateBrief] = useState<ProjectBrief>(() => existingBrief
-    ? { ...existingBrief, referenceImages: existingBrief.referenceImages ?? [] }
+    ? {
+      ...existingBrief,
+      // A brief saved before the choice existed was JavaScript; say so, so
+      // the toggle shows a selection and the rebuilt project keeps it.
+      logicLanguage: existingBrief.logicLanguage ?? 'javascript',
+      referenceImages: existingBrief.referenceImages ?? [],
+    }
     : {
       appName: '',
       description: '',
@@ -66,6 +58,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
       collections: [],
       authNeeded: false,
       style: 'clean',
+      logicLanguage: 'javascript',
       referenceImages: [],
     }
   );
@@ -103,6 +96,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   };
 
   const canSubmit = brief.appName.trim() && brief.description.trim();
+  const usesTorch = brief.pythonPackages?.includes('torch') ?? false;
   const stepIdx = STEPS.findIndex((s) => s.id === step);
   const isLast = stepIdx === STEPS.length - 1;
 
@@ -139,12 +133,19 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   };
 
   const activeProvider = providers.find((p) => p.id === activeProviderId);
-  const aiLabel = activeProvider?.name || (providers.length > 0 ? 'Select provider' : 'No provider');
+  const aiLabel = readiness.state === 'no-model' ? `${readiness.name}: choose a model` : activeProvider?.name || 'Choose a provider';
 
   const targets: { id: RuntimeTarget; label: string; desc: string; icon: Parameters<typeof Icon>[0]['name'] }[] = [
     { id: 'web', label: 'Web', desc: 'PWA, runs in browser', icon: 'desktop' },
     { id: 'desktop', label: 'Desktop', desc: 'Native app via Tauri', icon: 'desktop' },
     { id: 'dual', label: 'Both', desc: 'Web + Desktop', icon: 'layout' },
+  ];
+
+  // One language for all of an app's logic: the runtime refuses a bundle
+  // that mixes them, so this is a choice for the whole project.
+  const languages: { id: LogicLanguage; label: string; ext: string; desc: string }[] = [
+    { id: 'javascript', label: 'JavaScript', ext: '.logic', desc: 'The SoftN default: logic in .logic files, written in JavaScript syntax.' },
+    { id: 'python', label: 'Python', ext: '.py', desc: 'Logic in .py modules, each named after its file. Pick it if Python is what you know.' },
   ];
 
   /**
@@ -172,7 +173,9 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
 
   // The wizard covers the editor: it is a dialog, owns the keyboard while it
   // is up (Tab stays inside, Escape is Home), and says so to assistive tech.
-  const dialogRef = useModalFocus(true, onBack, 'textarea, input[type="text"]');
+  // While the AI setup is open over the wizard, the setup owns the keyboard:
+  // Escape closes it, not the wizard (which would throw the brief away).
+  const dialogRef = useModalFocus(!setupOpen, onBack, 'textarea, input[type="text"]');
 
   const renderCheck = (size = 18) => (
     <span style={{ ...s.selectedBadge, width: size, height: size }}>
@@ -187,7 +190,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
         <button
           onClick={handlePrev}
           style={s.backBtn}
-          {...ring('transparent')}
           {...hover('transparent', 'var(--studio-surface)')}
         >
           <Icon name="chevron-left" size={18} />
@@ -196,17 +198,20 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
 
         <div style={s.headerCenter}>
           <Icon name="sparkles" size={14} color="var(--studio-accent)" />
-          <span id="brief-wizard-title" style={s.headerTitle}>New App</span>
+          <span id="brief-wizard-title" style={s.headerTitle}>New app</span>
         </div>
 
-        {/* Provider badge */}
+        {/* The AI: with no provider, the pill that opens the setup; with
+            providers, a menu to pick one, which can also open the setup. */}
+        {!hosted && providers.length === 0 ? (
+          <AIStatusPill compact />
+        ) : (
         <div style={s.aiWrap}>
           <button
             onClick={() => setShowProviderDropdown(!showProviderDropdown)}
             style={s.aiBadge}
             aria-haspopup="menu"
             aria-expanded={showProviderDropdown}
-            {...ring('var(--studio-border)')}
           >
             <Icon
               name="key"
@@ -232,7 +237,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                           ...s.dropItem,
                           ...(activeProviderId === p.id ? s.dropItemActive : {}),
                         }}
-                        {...ring('transparent')}
                       >
                         <div style={{
                           width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
@@ -243,16 +247,22 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                       </button>
                     ))}
                   </div>
-                ) : (
-                  <div style={s.dropHint}>
-                    <Icon name="info" size={12} color="var(--studio-text-dim)" />
-                    <span>Add API keys in Settings after creating your app</span>
-                  </div>
+                ) : null}
+                {!hosted && (
+                  <button
+                    type="button"
+                    onClick={() => { setShowProviderDropdown(false); openSetupFor(readiness); }}
+                    style={s.dropItem}
+                  >
+                    <Icon name="key" size={13} color="var(--studio-text-dim)" />
+                    <span style={{ flex: 1 }}>{readiness.state === 'no-model' ? 'Choose a model…' : 'Set up the AI…'}</span>
+                  </button>
                 )}
               </div>
             </>
           )}
         </div>
+        )}
       </div>
 
       {/* Step indicator — the wizard's only progress display */}
@@ -276,7 +286,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     ...s.stepBtn,
                     padding: m ? '0 6px' : '0 8px',
                   }}
-                  {...ring('transparent')}
                 >
                   <span style={{
                     ...s.stepChip,
@@ -300,28 +309,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
           })}
         </div>
 
-        {/* Shown on every width. This was desktop-only, so on a phone the
-            Generate button was simply disabled and the only thing that said why
-            had been rendered out — the button did nothing and offered no
-            account of itself. It is the narrow screen that needs the
-            explanation most, because there is no room for anything else. */}
-        <div
-            role="status"
-            aria-live="polite"
-            style={{
-              ...s.reqChip,
-              background: canSubmit ? 'transparent' : 'var(--studio-accent-soft)',
-              borderColor: canSubmit ? 'var(--studio-border)' : 'var(--studio-accent)',
-              color: canSubmit ? 'var(--studio-text-dim)' : 'var(--studio-accent)',
-            }}
-          >
-            <Icon
-              name={canSubmit ? 'check' : 'alert-circle'}
-              size={12}
-              color={canSubmit ? 'var(--studio-text-dim)' : 'var(--studio-accent)'}
-            />
-            <span>{canSubmit ? 'ready to generate' : 'name & description required'}</span>
-          </div>
       </div>
 
       {/* Form content — the sheet is centred in whatever height is left over */}
@@ -345,7 +332,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                   onChange={(e) => set('appName', e.target.value)}
                   placeholder="My Amazing App"
                   autoFocus
-                  {...ring('var(--studio-border)')}
                 />
               </div>
 
@@ -358,7 +344,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                   onChange={(e) => set('description', e.target.value)}
                   placeholder="A task management app with categories, due dates, and priority levels. Users can drag tasks between columns like a kanban board."
                   rows={5}
-                  {...ring('var(--studio-border)')}
                 />
               </div>
 
@@ -381,7 +366,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                           flex: m ? 'none' : '1 1 0',
                           ...(on ? s.radioCardActive : {}),
                         }}
-                        {...ring(on ? 'var(--studio-accent)' : 'var(--studio-border)')}
                         {...hover(
                           on ? 'var(--studio-accent-soft)' : 'var(--studio-bg-muted)',
                           on ? 'var(--studio-accent-soft)' : 'var(--studio-surface-hover)',
@@ -426,12 +410,10 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     onKeyDown={(e) => { if (e.key === 'Enter') { addTag('pages', pageInput); setPageInput(''); } }}
                     placeholder="e.g., Dashboard, Settings, Profile..."
                     autoFocus
-                    {...ring('var(--studio-border)')}
                   />
                   <button
                     style={s.tagAddBtn}
                     onClick={() => { addTag('pages', pageInput); setPageInput(''); }}
-                    {...ring('var(--studio-border)')}
                     {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
                   >
                     Add
@@ -446,7 +428,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                           onClick={() => removeTag('pages', i)}
                           style={s.tagX}
                           aria-label={`Remove page ${p}`}
-                          {...ring('transparent')}
                         >
                           <Icon name="x" size={12} />
                         </button>
@@ -466,12 +447,10 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     onChange={(e) => setCollInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') { addTag('collections', collInput); setCollInput(''); } }}
                     placeholder="e.g., Tasks, Users, Categories..."
-                    {...ring('var(--studio-border)')}
                   />
                   <button
                     style={s.tagAddBtn}
                     onClick={() => { addTag('collections', collInput); setCollInput(''); }}
-                    {...ring('var(--studio-border)')}
                     {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
                   >
                     Add
@@ -486,7 +465,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                           onClick={() => removeTag('collections', i)}
                           style={s.tagX}
                           aria-label={`Remove collection ${c}`}
-                          {...ring('transparent')}
                         >
                           <Icon name="x" size={12} />
                         </button>
@@ -496,7 +474,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                 )}
               </div>
 
-              <div style={{ ...s.field, marginBottom: 0 }}>
+              <div style={s.field}>
                 <div id="brief-auth-label" style={s.label}>Authentication</div>
                 <button
                   onClick={() => set('authNeeded', !brief.authNeeded)}
@@ -509,7 +487,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     padding: brief.authNeeded ? '13px 15px' : '14px 16px',
                     background: brief.authNeeded ? 'var(--studio-accent-soft)' : 'var(--studio-bg-muted)',
                   }}
-                  {...ring(brief.authNeeded ? 'var(--studio-accent)' : 'var(--studio-border)')}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <Icon name="key" size={16} color={brief.authNeeded ? 'var(--studio-accent)' : 'var(--studio-text-dim)'} />
@@ -525,6 +502,87 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     }} />
                   </div>
                 </button>
+              </div>
+
+              <div style={{ ...s.field, marginBottom: 0 }}>
+                <div id="brief-language-label" style={s.label}>Logic language</div>
+                <div
+                  role="group"
+                  aria-labelledby="brief-language-label"
+                  style={{ ...s.radioGroup, flexDirection: m ? 'column' : 'row' }}
+                >
+                  {languages.map((language) => {
+                    const on = (brief.logicLanguage ?? 'javascript') === language.id;
+                    return (
+                      <button
+                        key={language.id}
+                        onClick={() => set('logicLanguage', language.id)}
+                        aria-pressed={on}
+                        style={{
+                          ...s.radioCard,
+                          flex: m ? 'none' : '1 1 0',
+                          ...(on ? s.radioCardActive : {}),
+                        }}
+                        {...hover(
+                          on ? 'var(--studio-accent-soft)' : 'var(--studio-bg-muted)',
+                          on ? 'var(--studio-accent-soft)' : 'var(--studio-surface-hover)',
+                        )}
+                      >
+                        <div style={{ minWidth: 0, paddingRight: 18 }}>
+                          <div style={s.radioLabel}>
+                            {language.label}
+                            <span style={s.langExt}>{language.ext}</span>
+                          </div>
+                          <div style={s.radioDesc}>{language.desc}</div>
+                        </div>
+                        {on && <span style={s.cardCheck}>{renderCheck(18)}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p style={{ ...s.hint, margin: '10px 0 0' }}>
+                  One language for the whole app: the runtime refuses a bundle that mixes them.
+                </p>
+                {/* Python only: torch is a Python package, and the app has to
+                    ask for it in manifest.json before it can import it. */}
+                {brief.logicLanguage === 'python' && (
+                  <button
+                    onClick={() => set('pythonPackages', usesTorch ? (brief.pythonPackages ?? []).filter((name) => name !== 'torch') : [...(brief.pythonPackages ?? []), 'torch'])}
+                    aria-pressed={usesTorch}
+                    aria-labelledby="brief-torch-label"
+                    aria-describedby="brief-torch-desc"
+                    style={{
+                      ...s.choiceRow,
+                      marginTop: 14,
+                      borderColor: usesTorch ? 'var(--studio-accent)' : 'var(--studio-border)',
+                      borderWidth: usesTorch ? 2 : 1,
+                      padding: usesTorch ? '13px 15px' : '14px 16px',
+                      background: usesTorch ? 'var(--studio-accent-soft)' : 'var(--studio-bg-muted)',
+                      alignItems: 'flex-start',
+                      gap: 14,
+                      textAlign: 'left',
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div id="brief-torch-label" style={{ ...s.toggleLabel, fontWeight: 600 }}>
+                        Uses machine learning <span style={s.langExt}>torch</span>
+                      </div>
+                      <div id="brief-torch-desc" style={s.radioDesc}>
+                        Tensors, models and training in the app&apos;s Python. Adds torch to manifest.json; the first import takes about a second.
+                      </div>
+                    </div>
+                    <div style={{
+                      ...s.toggle,
+                      marginTop: 2,
+                      background: usesTorch ? 'var(--studio-accent)' : 'var(--studio-border-strong)',
+                    }}>
+                      <div style={{
+                        ...s.toggleKnob,
+                        transform: usesTorch ? 'translateX(16px)' : 'translateX(2px)',
+                      }} />
+                    </div>
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -558,7 +616,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                           padding: on ? 9 : 10,
                           background: on ? 'var(--studio-accent-soft)' : 'var(--studio-bg-muted)',
                         }}
-                        {...ring(on ? 'var(--studio-accent)' : 'var(--studio-border)')}
                       >
                         {on && <span style={s.cardCheck}>{renderCheck(18)}</span>}
                         <div style={{ ...s.stylePreview, background: opt.ground }}>
@@ -606,16 +663,47 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
       </div>
 
       {/* Bottom bar */}
-      <div style={{ ...s.bottomBar, padding: m ? '12px 16px' : '14px 24px' }}>
+      <div style={{ ...s.bottomBar, padding: m ? '10px 16px 12px' : '14px 24px', flexWrap: m ? 'wrap' : 'nowrap', rowGap: 8 }}>
         <button
           onClick={handlePrev}
           style={s.bottomBack}
-          {...ring('var(--studio-border)')}
           {...hover('transparent', 'var(--studio-surface)')}
         >
           <Icon name="chevron-left" size={16} />
           {stepIdx === 0 ? 'Cancel' : 'Back'}
         </button>
+
+        {/* Beside the button it explains, on every width. This was once
+            desktop-only, so on a phone Generate was disabled with nothing to
+            say why; later it sat in the step bar, where on a phone it ran
+            into the steps. Next to Generate is where the question is asked. */}
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            ...s.reqChip,
+            ...(m ? s.reqChipNarrow : {}),
+            color: canSubmit ? 'var(--studio-text-dim)' : 'var(--studio-text-muted)',
+          }}
+        >
+          <Icon
+            name={canSubmit ? 'check' : 'info'}
+            size={14}
+            color={canSubmit ? 'var(--studio-live)' : 'var(--studio-text-dim)'}
+          />
+          <span>
+            {!canSubmit
+              ? 'An app name and a description are needed to generate'
+              : hosted || readiness.state === 'ready'
+                ? 'Ready to generate'
+                : 'Ready. Without an AI provider, Generate lays out the pages and the AI waits.'}
+          </span>
+          {canSubmit && !hosted && readiness.state !== 'ready' && (
+            <button type="button" className="st-link-btn" onClick={() => openSetupFor(readiness)}>
+              {readiness.state === 'no-model' ? 'Choose a model' : 'Connect a provider'}
+            </button>
+          )}
+        </div>
 
         <button
           onClick={handleNext}
@@ -627,11 +715,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
             borderColor: isLast && !canSubmit ? 'var(--studio-border)' : 'var(--studio-accent)',
             cursor: isLast && !canSubmit ? 'default' : 'pointer',
           }}
-          {...ring(
-            isLast && !canSubmit ? 'var(--studio-border)' : 'var(--studio-accent)',
-            'none',
-            isLast && !canSubmit ? FOCUS_SHADOW : FOCUS_SHADOW_ON_ACCENT,
-          )}
         >
           {isLast ? (
             <>
@@ -654,15 +737,14 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   );
 };
 
-// Every label, count and badge is set in --studio-mono at small sizes with wide
-// tracking — the eyebrow treatment softn.com uses — so that the sans is left to
-// carry only real prose and the display face only headings.
+// Labels are set in the sans, sentence case, like the rest of the form. The
+// tracked-out capitals they used to wear shouted every field name at the same
+// volume as the step title; mono is left for what is code — file extensions.
 const eyebrow: React.CSSProperties = {
-  fontFamily: 'var(--studio-mono)',
-  fontSize: 10.5,
+  fontFamily: 'var(--studio-body)',
+  fontSize: 13,
   fontWeight: 500,
-  letterSpacing: '0.12em',
-  textTransform: 'uppercase',
+  letterSpacing: 0,
 };
 
 const s: Record<string, React.CSSProperties> = {
@@ -793,15 +875,6 @@ const s: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text)',
     background: 'var(--studio-surface-hover)',
   },
-  dropHint: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '10px 14px',
-    fontSize: 11,
-    color: 'var(--studio-text-dim)',
-    lineHeight: 1.4,
-  },
 
   // Stepper — completed / current / upcoming are three different objects, not
   // three tints of one pill, so the sequence reads without reading the labels.
@@ -856,7 +929,7 @@ const s: Record<string, React.CSSProperties> = {
     borderStyle: 'solid',
     borderColor: 'var(--studio-border-strong)',
     color: 'var(--studio-text-dim)',
-    transition: 'all 0.15s',
+    transition: 'background 0.15s, border-color 0.15s, color 0.15s',
   },
   stepChipDone: {
     background: 'var(--studio-border-strong)',
@@ -866,7 +939,7 @@ const s: Record<string, React.CSSProperties> = {
   stepChipActive: {
     background: 'var(--studio-accent)',
     borderColor: 'var(--studio-accent)',
-    color: 'var(--studio-bg)',
+    color: 'var(--studio-on-accent)',
     boxShadow: '0 0 0 4px var(--studio-accent-soft)',
   },
   stepLabel: {
@@ -874,18 +947,19 @@ const s: Record<string, React.CSSProperties> = {
     letterSpacing: '-0.005em',
   },
   reqChip: {
-    marginLeft: 'auto',
     display: 'flex',
     alignItems: 'center',
     gap: 6,
-    padding: '5px 10px',
-    borderRadius: 999,
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: 'var(--studio-border)',
-    ...eyebrow,
-    whiteSpace: 'nowrap',
-    transition: 'all 0.2s',
+    fontSize: 13,
+    lineHeight: 1.35,
+    marginLeft: 'auto',
+    marginRight: 14,
+  },
+  reqChipNarrow: {
+    order: -1,
+    flexBasis: '100%',
+    margin: 0,
+    fontSize: 12.5,
   },
 
   // Scroll + sheet
@@ -908,7 +982,7 @@ const s: Record<string, React.CSSProperties> = {
     borderWidth: 1,
     borderStyle: 'solid',
     borderColor: 'var(--studio-border)',
-    borderRadius: 18,
+    borderRadius: 14,
     boxShadow: 'var(--studio-shadow)',
   },
 
@@ -938,12 +1012,12 @@ const s: Record<string, React.CSSProperties> = {
   label: {
     ...eyebrow,
     display: 'block',
-    color: 'var(--studio-text-dim)',
-    marginBottom: 9,
+    color: 'var(--studio-text)',
+    marginBottom: 8,
   },
   req: {
-    color: 'var(--studio-accent)',
-    fontWeight: 600,
+    color: 'var(--studio-text-dim)',
+    fontWeight: 400,
   },
   hint: {
     fontSize: 12,
@@ -1001,6 +1075,7 @@ const s: Record<string, React.CSSProperties> = {
   radioCard: {
     position: 'relative',
     padding: '14px 16px',
+    alignItems: 'flex-start',
     background: 'var(--studio-bg-muted)',
     borderWidth: 1,
     borderStyle: 'solid',
@@ -1008,7 +1083,6 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: 12,
     cursor: 'pointer',
     display: 'flex',
-    alignItems: 'center',
     gap: 12,
     color: 'var(--studio-text-dim)',
     transition: 'border-color 0.12s, background 0.12s',
@@ -1023,15 +1097,24 @@ const s: Record<string, React.CSSProperties> = {
     background: 'var(--studio-accent-soft)',
   },
   radioLabel: {
-    fontSize: 13,
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 8,
+    fontSize: 14,
     fontWeight: 600,
     color: 'var(--studio-text)',
   },
+  langExt: {
+    fontFamily: 'var(--studio-mono)',
+    fontSize: 12,
+    fontWeight: 400,
+    color: 'var(--studio-code)',
+  },
   radioDesc: {
-    fontSize: 11,
-    color: 'var(--studio-text-dim)',
-    marginTop: 3,
-    lineHeight: 1.35,
+    fontSize: 12.5,
+    color: 'var(--studio-text-muted)',
+    marginTop: 4,
+    lineHeight: 1.45,
   },
   cardCheck: {
     position: 'absolute',
@@ -1072,13 +1155,13 @@ const s: Record<string, React.CSSProperties> = {
   },
   tagAddBtn: {
     ...eyebrow,
+    color: 'var(--studio-text)',
     padding: '10px 16px',
     borderRadius: 10,
     background: 'var(--studio-bg-muted)',
     borderWidth: 1,
     borderStyle: 'solid',
     borderColor: 'var(--studio-border)',
-    color: 'var(--studio-text-muted)',
     cursor: 'pointer',
     flexShrink: 0,
     outline: 'none',
@@ -1188,6 +1271,7 @@ const s: Record<string, React.CSSProperties> = {
     ...eyebrow,
     display: 'block',
     marginTop: 9,
+    fontSize: 12.5,
     transition: 'color 0.12s',
   },
 

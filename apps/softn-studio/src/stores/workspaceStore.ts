@@ -26,13 +26,10 @@ interface WorkspaceState {
   mode: BuilderMode;
   leftPanel: LeftPanel | null;
   leftPanelExpanded: boolean;
-  rightSidebarOpen: boolean;
   bottomDrawerOpen: boolean;
   bottomTab: BottomTab;
-  advancedMode: boolean;
 
   // Canvas state
-  selectedComponentId: string | null;
   activePageId: string | null;
   activeFilePath: string | null;
   devicePreset: DevicePreset;
@@ -54,11 +51,8 @@ interface WorkspaceState {
   setMode(mode: BuilderMode): void;
   setLeftPanel(panel: LeftPanel | null): void;
   toggleLeftPanel(): void;
-  toggleRightSidebar(): void;
   toggleBottomDrawer(): void;
   setBottomTab(tab: BottomTab): void;
-  toggleAdvancedMode(): void;
-  selectComponent(id: string | null): void;
   setActivePage(id: string | null): void;
   setActiveFilePath(path: string | null): void;
   setDevicePreset(preset: DevicePreset): void;
@@ -84,12 +78,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   mode: 'describe',
   leftPanel: 'ai',
   leftPanelExpanded: true,
-  rightSidebarOpen: true,
   bottomDrawerOpen: false,
   bottomTab: 'log',
-  advancedMode: false,
 
-  selectedComponentId: null,
   activePageId: null,
   activeFilePath: null,
   devicePreset: 'desktop',
@@ -116,11 +107,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       leftPanelExpanded: panel !== null && (panel !== s.leftPanel || !s.leftPanelExpanded),
     })),
   toggleLeftPanel: () => set((s) => ({ leftPanelExpanded: !s.leftPanelExpanded })),
-  toggleRightSidebar: () => set((s) => ({ rightSidebarOpen: !s.rightSidebarOpen })),
   toggleBottomDrawer: () => set((s) => ({ bottomDrawerOpen: !s.bottomDrawerOpen })),
   setBottomTab: (tab) => set({ bottomTab: tab, bottomDrawerOpen: true }),
-  toggleAdvancedMode: () => set((s) => ({ advancedMode: !s.advancedMode })),
-  selectComponent: (id) => set({ selectedComponentId: id }),
   setActivePage: (id) => set({ activePageId: id }),
   setActiveFilePath: (path) => set({ activeFilePath: path }),
   setDevicePreset: (preset) => set({ devicePreset: preset }),
@@ -145,12 +133,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       mode: 'describe',
       leftPanel: 'ai',
       leftPanelExpanded: true,
-      rightSidebarOpen: true,
-      bottomDrawerOpen: false,
+          bottomDrawerOpen: false,
       bottomTab: 'log',
-      advancedMode: false,
-      selectedComponentId: null,
-      activePageId: null,
+              activePageId: null,
       activeFilePath: null,
       devicePreset: 'desktop',
       zoom: 100,

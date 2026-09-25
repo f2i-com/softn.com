@@ -1,18 +1,32 @@
-import { AIProviderError, sendAIRequest, type AIResponse } from './aiProvider';
-import { useAIStore } from '../stores/aiStore';
-import { useWorkspaceStore } from '../stores/workspaceStore';
+/**
+ * The chat's entry points into the agent, and what the single-shot turn left
+ * that is still used.
+ *
+ * A turn used to be one request: a system prompt carrying every file's
+ * contents up to a budget, a reply of <softn-file> blocks, up to three rounds
+ * of <softn-read>, and one changeset. It is now an agent run (lib/agent/): the
+ * model calls tools — read, search, edit, write, check, test — in a loop until
+ * the request is done, and each write is its own undoable step. The prompt's
+ * language guide moved to lib/agent/guide.ts, corrected against the parser and
+ * the renderer, and is re-exported here where the tests have always found it.
+ */
+
 import { useVFSStore } from '../stores/vfsStore';
-import type { AIFailure, ChatMessage, ToolCallCard, VFSFile } from '../types/studio';
-import { buildChangeset, describeDiff, diffSummary, toStoreRecords, type SuppliedFiles, type TurnBase } from './changeset';
+import type { VFSFile } from '../types/studio';
+import type { SuppliedFiles, TurnBase } from './changeset';
 import { isPrivatePath, resolveProjectPath } from './paths';
+import { buildAgentSystemPrompt } from './agent/prompt';
+import { discardAgentRuns, startAgentRun } from './agent/runAgent';
 
 // The write checks live with the changeset that uses them; they are still
 // reachable from here, where they were first written.
 export { checkWrite, describeRefusal } from './changeset';
 export type { SuppliedFile, SuppliedFiles, TurnBase, WriteRefusal } from './changeset';
+export { JAVASCRIPT_APP_EXAMPLE, PYTHON_APP_EXAMPLE, PYTHON_TORCH_SECTION, PYTHON_TORCH_UNDECLARED } from './agent/guide';
 
 // ---------------------------------------------------------------------------
-// File‑block parsing
+// The single-shot reply format, still parsed: a model that falls back to it is
+// understood (the agent's text protocol reads <softn-file> as write_file).
 // ---------------------------------------------------------------------------
 
 interface FileOp {
@@ -97,15 +111,8 @@ export function parseAIResponse(raw: string): ParsedResponse {
 }
 
 // ---------------------------------------------------------------------------
-// System prompt builder
+// A budgeted view of file contents (kept for callers that show files inline)
 // ---------------------------------------------------------------------------
-
-function buildFileTree(files: Map<string, VFSFile>): string {
-  // Private editor state is not the model's to see or to write.
-  const paths = Array.from(files.keys()).filter((p) => !isPrivatePath(p)).sort();
-  if (paths.length === 0) return '(no files yet)';
-  return paths.map((p) => `  ${p}`).join('\n');
-}
 
 const MAX_CHARS_PER_FILE = 6000;
 const CONTEXT_CHAR_BUDGET = 80000;
@@ -127,12 +134,19 @@ export function buildFileContents(
   const parts: string[] = [];
   const supplied: SuppliedFiles = new Map();
   const notShown: string[] = [];
+  const binary: string[] = [];
   let totalLen = 0;
 
   for (const [path, file] of files) {
-    if (typeof file.content !== 'string') continue;
     // Skip builder/ internals — the AI can see the blueprint directly
     if (isPrivatePath(path)) continue;
+    // Bytes are not shown, but they are named: a model that cannot see an
+    // image, a font or a sound at all writes markup that pretends it is not
+    // there, or asks for it with a read that can only fail.
+    if (typeof file.content !== 'string') {
+      binary.push(`${path} (${file.content.byteLength} bytes)`);
+      continue;
+    }
 
     const total = file.content.length;
     // A file asked for whole is whole, whatever the caps; that is the point of asking.
@@ -155,854 +169,32 @@ export function buildFileContents(
   if (notShown.length > 0) {
     parts.push(`--- Files not shown (over the context budget; request one with <softn-read path="…" />) ---\n${notShown.join('\n')}`);
   }
+  if (binary.length > 0) {
+    parts.push(`--- Binary files (present in the project, not shown: their bytes are not text and cannot be read or written as a file block; reference them by path) ---\n${binary.join('\n')}`);
+  }
 
   return { text: parts.length > 0 ? parts.join('\n\n') : '(no text files)', supplied };
 }
 
+
 /**
- * The system prompt, the exact record of which files it supplies and how
- * much of each, and the version of every project file at this moment — the
- * base any operation in the reply is judged against.
+ * The system prompt an agent run starts with, and the version of every
+ * project file at this moment. Nothing is "supplied" up front any more: the
+ * agent reads files with read_file, and the run's own record of what it read
+ * is what its writes are judged against.
  */
-export function buildSystemPromptWithRecord(complete: ReadonlySet<string> = new Set()): { system: string } & TurnBase {
-  const ws = useWorkspaceStore.getState();
-  const vfs = useVFSStore.getState();
-  const files = vfs.files;
-  const contents = buildFileContents(files, MAX_CHARS_PER_FILE, CONTEXT_CHAR_BUDGET, complete);
+export function buildSystemPromptWithRecord(): { system: string } & TurnBase {
   const versions = new Map<string, number>();
-  for (const [path, file] of files) versions.set(path, file.version);
-
-  const briefSection = ws.brief
-    ? `## Current Brief
-- App name: ${ws.brief.appName}
-- Description: ${ws.brief.description}
-- Target: ${ws.brief.target}
-- Style: ${ws.brief.style}
-- Pages: ${ws.brief.pages.join(', ') || 'none specified'}
-- Collections: ${ws.brief.collections.join(', ') || 'none specified'}
-- Auth: ${ws.brief.authNeeded ? 'required' : 'not required'}`
-    : '## No brief loaded yet.';
-
-  const blueprintSection = ws.blueprint
-    ? `## Blueprint
-- App: ${ws.blueprint.appName}
-- Pages: ${ws.blueprint.pages.map((p) => `${p.name} (${p.route || '/'})`).join(', ')}
-- Collections: ${ws.blueprint.collections.map((c) => `${c.name} [${c.fields.map((f) => f.name).join(', ')}]`).join('; ') || 'none'}
-- Navigation: ${ws.blueprint.navigation.type}
-- Style: ${ws.blueprint.style}`
-    : '';
-
-  const system = `You are the SoftN Studio AI — a code-generation assistant embedded in a visual app builder.
-
-Your job is to create, edit, and improve files in the user's virtual file system (VFS). The user describes what they want in natural language, and you respond with explanations and file blocks.
-
-## File Formats
-SoftN Studio supports two page formats. Use **.ui** for component-driven apps (recommended) and **.html** for standalone pages.
-
-- **.ui** — SoftN UI markup. XML-like component tree rendered by @softn/core. The preferred format.
-- **.html** — Standard HTML with inline CSS and JS. Good for simple or self-contained pages.
-- **.logic** — JavaScript, run in a sandboxed VM. Imported by .ui files for shared logic.
-- **.xdb** — Data collections. JSON with \`{ "collection": "name", "records": [...] }\`.
-- **manifest.json** — The bundle's manifest: \`name\`, \`version\`, \`description\`, \`main\` (the entry .ui file), and \`files\` listing every file by group (\`ui\`, \`logic\`, \`xdb\`, \`assets\`). The runtime resolves files by these groups.
-- **permission.json** — What the app may use: \`{ "permissions": { "net": { "enabled": true }, "storage": { "enabled": true } } }\`. Capabilities: net, camera, mic, files, qr, ai, gpu, sync, storage, accel. An app declares only what it calls; nothing declared is nothing granted.
-- **.json** — Other config and data files.
-- **.css / .js / .ts / .tsx** — Standard web files, used alongside .html pages.
-
-## How to Create or Update Files
-Wrap file content in \`<softn-file>\` blocks. Every block creates or overwrites the file at the given path.
-
-<softn-file path="ui/main.ui">
-...file content...
-</softn-file>
-
-Include multiple file blocks in one response when needed. To delete a file:
-
-<softn-delete path="old/page.html" />
-
-A file block replaces the whole file, so only write one for a file you have seen **complete**. A file shown TRUNCATED, or listed as not shown, cannot be replaced from what you have: ask for it first and it is supplied whole in the next message —
-
-<softn-read path="logic/app.logic" />
-
-A file block for a truncated or unseen file is refused and nothing is written.
-
----
-
-## SoftN UI (.ui) Syntax Reference
-
-A .ui file has these sections in order: imports, component declaration, data, logic, template, style.
-
-### Document Structure
-
-\`\`\`xml
-<!-- 1. Imports (optional) -->
-<import TodoItem from="./components/TodoItem.ui" />
-<import { formatDate } from="./utils.logic" />
-
-<!-- 2. Component declaration (optional — only for reusable components) -->
-<component name="MyComponent">
-  <prop name="title" propType="string" required={true} />
-  <prop name="onSave" propType="function" />
-  <slot name="default" />
-</component>
-
-<!-- 3. Data block — bind to XDB collections (optional) -->
-<data>
-  <collection name="tasks" as="tasks" sort="createdAt:desc" />
-</data>
-
-<!-- 4. Logic block — JavaScript (optional) -->
-<logic>
-  let count = 0
-  function increment() {
-    count = count + 1
-  }
-</logic>
-
-<!-- 5. Template — the component tree (required) -->
-<App theme="dark">
-  <Stack direction="vertical" gap="md">
-    <Heading level={1}>My App</Heading>
-    <Text>Count: {count}</Text>
-    <Button @click={increment}>Add one</Button>
-  </Stack>
-</App>
-
-<!-- 6. Scoped styles (optional) -->
-<style>
-  .custom { color: blue; }
-</style>
-\`\`\`
-
-### Props and Values
-
-\`\`\`xml
-<Button label="Click me" />             <!-- string -->
-<Slider min={0} max={100} />            <!-- number -->
-<Input disabled />                       <!-- boolean true -->
-<Button label={myVar} />                 <!-- variable -->
-<Box color={dark ? "#fff" : "#000"} />   <!-- expression -->
-<Stack style={{ padding: "1rem" }} />    <!-- object -->
-\`\`\`
-
-### Data Binding (two-way with colon prefix)
-
-\`\`\`xml
-<Input :value={username} />
-<Checkbox :checked={isActive} />
-<Select :value={selectedOption} />
-\`\`\`
-
-### Event Handlers (@ prefix)
-
-\`\`\`xml
-<Button @click={handleClick} />
-<Button @click={() => count = count + 1} />
-<Form @submit={handleSubmit} />
-<Input @change={(e) => name = e.target.value} />
-\`\`\`
-
-### Control Flow
-
-\`\`\`xml
-<!-- Conditionals -->
-#if (items.length > 0)
-  <List>
-    ...
-  </List>
-#else
-  <EmptyState title="No items yet" />
-#end
-
-<!-- Loops -->
-#each (item in items)
-  <Card>
-    <Heading level={3}>{item.title}</Heading>
-    <Text>{item.description}</Text>
-  </Card>
-#empty
-  <Text>Nothing here</Text>
-#end
-
-<!-- Loop with index -->
-#each (task in tasks; let i)
-  <Text>{i + 1}. {task.name}</Text>
-#end
-\`\`\`
-
-### Inline Conditionals and Loops
-
-\`\`\`xml
-<Box if={showPanel}>Only visible when showPanel is true</Box>
-<Card each={items} as="item">{item.name}</Card>
-\`\`\`
-
-### Expression Interpolation
-
-\`\`\`xml
-<Text>Hello {name}</Text>
-<Text>{user.firstName} {user.lastName}</Text>
-<Badge>{isActive ? "Active" : "Inactive"}</Badge>
-<Text>{formatDate(createdAt)}</Text>
-\`\`\`
-
-### Class Binding
-
-\`\`\`xml
-<div class="container" />
-<div class:active={isActive} />
-<div class="box" class:highlighted={selected} class:disabled={!enabled} />
-\`\`\`
-
-### Slots (for reusable components)
-
-\`\`\`xml
-<!-- In component definition: -->
-<slot />                              <!-- default slot -->
-<slot name="header" />                <!-- named slot -->
-<slot name="footer">Fallback</slot>   <!-- with fallback -->
-
-<!-- When using the component: -->
-<MyComponent>
-  <template slot="header">Header content</template>
-  Default slot content here
-  <template slot="footer">Footer content</template>
-</MyComponent>
-\`\`\`
-
-### External Logic
-
-\`\`\`xml
-<!-- Reference a .logic file instead of inline -->
-<logic src="./app.logic" />
-\`\`\`
-
-### Built-in Components
-
-**Layout:** App, Stack, Box, Card, Grid, Container, Divider, Spacer, Center, Sidebar, Split, Layout, Header, Content, Section
-**Form:** Button, Input, Form, TextArea, Select, Checkbox, Switch, Radio, Slider, DatePicker, ColorPicker, FileChooser
-**Display:** Text, Heading, Badge, Tag, Avatar, Progress, Spinner, Image, Icon
-**Feedback:** Alert, Modal, Toast, Drawer, Popover, EmptyState
-**Data:** List, ListItem, Table, TreeView, Pagination, DataGrid
-**Navigation:** Tabs, Breadcrumb, Menu, NavItem
-**Utility:** Accordion, Collapse, Tooltip, Loop, PixelGrid, PixelCanvas, DPad
-**Charts:** LineChart, BarChart, PieChart, AreaChart, RadarChart, GaugeChart
-**Animation:** AnimatedBox, AnimatedNumber, Marquee, Typewriter, Draggable, SortableList, PanView, Sprite, TileMap
-**Editors:** CodeEditor, MarkdownEditor, RichTextEditor
-**3D & Games:** Scene3D (Three.js with box, sphere, cylinder, capsule, prism, torus, cone, plane, group, particles, instanced, model)
-**Smart:** SmartGrid, SmartView, SmartForm, SmartStats, SmartCards, SmartList, SmartTimeline
-
-### 3D Graphics and Game Development (<Scene3D>)
-
-Use \`<Scene3D>\` to build 3D scenes, dioramas, and games:
-- **Shapes:** \`box\`, \`sphere\`, \`cylinder\`, \`capsule\`, \`prism\` (triangular roof/wedge), \`cone\`, \`torus\`, \`plane\`.
-- **Hierarchical Groups (\`type: 'group'\`):** Define composite models with \`children: [...]\`. Child transforms are local to parent group. Moving the parent moves all parts together seamlessly with zero trigonometry or clipping!
-- **Particles (\`type: 'particles'\`):** \`particlePositions: [x, y, z, ...]\`, \`particleSize: 0.3\`, \`color: "#fff"\`, \`opacity: 0.8\`. High-speed steam, smoke, rain, sparks.
-- **Materials:** \`color\`, \`emissive\`, \`emissiveIntensity\`, \`roughness\`, \`metalness\`, \`opacity\`, \`wireframe\`, \`flatShading\` (for crisp low-poly diorama aesthetic).
-- **Interactive Cursor:** Set \`cursor: "pointer"\` or \`interactive: true\` on interactive objects (levers, switches, buttons).
-- **Local Animations:** \`animate: { rotateY: 0.05, floatAmplitude: 0.2 }\` runs smoothly in the Three.js loop.
-- **Game Loops:** \`<Loop interval={33} running={true} @tick={gameStep} />\` drives 30/60fps simulation updates.
-
-### Common Component Props
-
-\`\`\`xml
-<App theme="dark" title="My App">           <!-- App wrapper with theme -->
-<Stack direction="vertical" gap="md">        <!-- vertical | horizontal; gap: xs sm md lg xl -->
-<Box padding="lg" borderRadius="md" shadow="md"> <!-- layout box; borderRadius/shadow: none sm md lg xl -->
-<Grid columns={3} gap="md">                  <!-- CSS grid -->
-<Card title="Section" subtitle="Info">       <!-- card with header -->
-<Heading level={1}>Title</Heading>           <!-- h1-h6 -->
-<Text size="sm" variant="muted">Note</Text>    <!-- text with sizing -->
-<Button variant="primary" size="lg">Go</Button>  <!-- primary | secondary | ghost | danger -->
-<Input label="Email" placeholder="you@example.com" type="email" />
-<Select label="Role" options={["Admin","User"]} />
-<Badge variant="success">Active</Badge>      <!-- success | warning | danger | info -->
-<Alert variant="info" title="Note">Message</Alert>   <!-- info | success | warning | error -->
-<Modal open={showModal} title="Confirm" @close={() => showModal = false}>Content</Modal>
-<Tabs tabs={[{ key: "one", label: "Tab 1" }, { key: "two", label: "Tab 2" }]} :activeKey={activeTab} />  <!-- tabs: [{ key, label }]; @change gets the key -->
-<Table columns={[{ key: "name", header: "Name" }, { key: "email", header: "Email" }]} data={users} />  <!-- columns: [{ key, header }] -->
-<EmptyState title="No data" description="Get started by adding items" />
-<Progress value={75} max={100} />
-<Image src="photo.jpg" alt="Photo" width={200} />
-\`\`\`
-
----
-
-## .logic Syntax
-
-.logic is JavaScript, executed by a sandboxed engine — no \`eval\`, no \`new Function\`, and no host
-access beyond the modules listed below. Used inside \`<logic>\` blocks or standalone \`.logic\` files.
-
-\`\`\`javascript
-// Variables
-let count = 0
-const name = "John"
-
-// Functions
-function greet(who) {
-  return "Hello " + who
+  for (const [path, file] of useVFSStore.getState().files) versions.set(path, file.version);
+  return { system: buildAgentSystemPrompt('anthropic'), supplied: new Map(), versions };
 }
 
-// Arrow functions
-const double = (x) => x * 2
-
-// Objects and arrays
-let user = { name: "Alice", age: 30 }
-let items = [1, 2, 3]
-
-// Array methods: map, filter, forEach, find, reduce, includes, push, pop, splice, sort
-let names = users.map((u) => u.name)
-let active = users.filter((u) => u.active)
-
-// String methods: split, trim, includes, startsWith, endsWith, replace, toLowerCase, toUpperCase
-let parts = "hello world".split(" ")
-
-// Conditionals
-if (count > 10) {
-  status = "high"
-} else if (count > 0) {
-  status = "low"
-} else {
-  status = "zero"
+/** Start an agent run for the chat's latest message. */
+export async function runAgentTurn(options: { kind?: 'build' | 'edit' } = {}): Promise<void> {
+  await startAgentRun(options);
 }
 
-// Loops
-for (let i = 0; i < items.length; i = i + 1) {
-  total = total + items[i]
-}
-for (let item of items) {
-  process(item)
-}
-
-// Template literals
-let msg = \\\`Hello \\\${name}, you have \\\${count} items\\\`
-
-// JSON
-let data = JSON.parse(text)
-let text = JSON.stringify(obj)
-
-// Math: Math.floor, Math.ceil, Math.round, Math.random, Math.max, Math.min, Math.abs
-let id = Math.floor(Math.random() * 10000)
-
-// Date
-let now = Date.now()
-let d = new Date()
-
-// console.log for debugging
-console.log("debug:", value)
-\`\`\`
-
----
-
-## XDB Data Files (.xdb)
-
-\`\`\`json
-{
-  "collection": "tasks",
-  "records": [
-    { "id": "1", "title": "Buy groceries", "status": "pending", "updatedAt": "2025-01-15" },
-    { "id": "2", "title": "Clean house", "status": "done", "updatedAt": "2025-01-14" }
-  ]
-}
-\`\`\`
-
-Bind to collections in .ui files with \`<data><collection name="tasks" as="tasks" /></data>\`.
-A record bound from a collection carries its fields under \`data\` — \`{item.data.title}\`, not \`{item.title}\` — with \`id\`, \`created_at\` and \`updated_at\` beside it. Records the logic pushes itself are whatever shape it pushed.
-
----
-
-## Complete .ui App Example
-
-Here is a minimal but complete todo app in .ui format:
-
-\`\`\`xml
-<data>
-  <collection name="tasks" as="tasks" />
-</data>
-
-<logic>
-  let newTask = ""
-  let filter = "all"
-
-  function addTask() {
-    if (newTask.trim() === "") return
-    tasks.push({
-      id: String(Date.now()),
-      title: newTask,
-      done: false
-    })
-    newTask = ""
-  }
-
-  function toggleTask(id) {
-    let task = tasks.find((t) => t.id === id)
-    if (task) task.done = !task.done
-  }
-
-  function deleteTask(id) {
-    tasks = tasks.filter((t) => t.id !== id)
-  }
-
-  function filtered() {
-    if (filter === "active") return tasks.filter((t) => !t.done)
-    if (filter === "done") return tasks.filter((t) => t.done)
-    return tasks
-  }
-</logic>
-
-<App theme="dark" title="Tasks">
-  <Container size="sm">
-    <Stack direction="vertical" gap="lg" padding="xl">
-      <Heading level={1}>Tasks</Heading>
-
-      <Stack direction="horizontal" gap="sm">
-        <Input :value={newTask} placeholder="What needs to be done?" @keydown={(e) => { if (e.key === "Enter") addTask() }} />
-        <Button @click={addTask} variant="primary">Add</Button>
-      </Stack>
-
-      <Tabs tabs={[{ key: "all", label: "All" }, { key: "active", label: "Active" }, { key: "done", label: "Done" }]} defaultActiveKey="all" @change={(key) => { filter = key }} />
-
-      #each (task in filtered())
-        <Card>
-          <Stack direction="horizontal" gap="md" align="center">
-            <Checkbox :checked={task.done} @change={() => toggleTask(task.id)} />
-            <Text style={{ flex: 1, textDecoration: task.done ? "line-through" : "none" }}>{task.title}</Text>
-            <Button variant="ghost" size="sm" @click={() => deleteTask(task.id)}>Delete</Button>
-          </Stack>
-        </Card>
-      #empty
-        <EmptyState title="No tasks" description="Add a task to get started" />
-      #end
-
-      <Text size="sm" variant="muted">{tasks.filter((t) => !t.done).length} remaining</Text>
-    </Stack>
-  </Container>
-</App>
-
-<style>
-  .container { min-height: 100vh; }
-</style>
-\`\`\`
-
----
-
-## Guidelines
-- **Prefer .ui format** for new apps. Use .html only when the user specifically asks for it or for simple standalone pages.
-- Always produce complete, self-contained file content (not diffs or fragments).
-- Match the visual style from the brief: ${ws.brief?.style || 'clean'}.
-- Pages should be responsive and polished — production quality, not placeholder wireframes.
-- When editing an existing file, reproduce the full file with your changes applied.
-- Keep explanations concise. Focus on what you changed and why.
-- If the user asks about the project without requesting changes, respond conversationally — no file blocks needed.
-- Keep manifest.json true: \`"main"\` names the entry .ui file (e.g. \`"main": "ui/main.ui"\`), and \`"files"\` lists every .ui, .logic, .xdb and asset you create, by group. Never write an \`entry\` field; the runtime does not read it.
-- When logic calls \`softn.net\`, \`softn.storage\`, the camera, the microphone or another capability, declare it in permission.json in the same response; an undeclared call fails.
-- Create reusable components in separate .ui files and import them.
-- Use \`<data>\` blocks to bind XDB collections so the app has live data.
-
-${briefSection}
-
-${blueprintSection}
-
-## Current File Tree
-${buildFileTree(files)}
-
-## Current File Contents
-${contents.text}
-`;
-  return { system, supplied: contents.supplied, versions };
-}
-
-// ---------------------------------------------------------------------------
-// Agent orchestrator — runs a single user turn
-// ---------------------------------------------------------------------------
-
-interface ActiveAgentTurn {
-  controller: AbortController;
-  /** The transaction id every commit of this turn is recorded under. */
-  id: string;
-}
-
-let activeAgentTurn: ActiveAgentTurn | null = null;
-
-/** How many times one turn may answer a `<softn-read>` before it has to stop asking. */
-const MAX_READ_ROUNDS = 3;
-
+/** Abandon any run: the project is changing under the chat. */
 export function abortAgentTurn(): void {
-  const turn = activeAgentTurn;
-  activeAgentTurn = null;
-  turn?.controller.abort();
-  useAIStore.getState().setAgentState('idle');
-  useAIStore.getState().setCurrentStep('');
-}
-
-/** A rough token count for the budget check: four characters per token, rounded up. */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
-type AIStoreState = ReturnType<typeof useAIStore.getState>;
-type WorkspaceState = ReturnType<typeof useWorkspaceStore.getState>;
-
-/**
- * Stage a reply's operations, judge them, and commit them as one VFS
- * transaction under the turn's id — or, if any record is refused, commit
- * nothing and report every record's verdict, so the person can see what
- * was held back and why. Nothing is written by halves.
- */
-function applyChangeset(
-  parsed: ParsedResponse,
-  base: TurnBase,
-  turnId: string,
-  ai: AIStoreState,
-  ws: WorkspaceState,
-): { toolCalls: ToolCallCard[]; committed: string[]; deleted: string[] } {
-  const toolCalls: ToolCallCard[] = [];
-  if (parsed.files.length === 0 && parsed.deletes.length === 0) return { toolCalls, committed: [], deleted: [] };
-
-  const vfs = useVFSStore.getState();
-  const changeset = buildChangeset(turnId, parsed, base, vfs.files);
-  const toolFor = (op: 'create' | 'update' | 'delete') => (op === 'delete' ? 'deleteFile' : op === 'update' ? 'updateFile' : 'createFile');
-  const argsFor = (record: (typeof changeset.records)[number]) => ({
-    path: record.path,
-    requestedPath: record.requestedPath,
-    op: record.op,
-    baseVersion: record.baseVersion,
-  });
-
-  if (!changeset.ok) {
-    const refused = changeset.records.filter((r) => !r.verdict.ok).length;
-    for (const record of changeset.records) {
-      const result = record.verdict.ok
-        ? `Held back: this operation was valid, but ${refused === 1 ? 'another operation' : `${refused} other operations`} in the same reply ${refused === 1 ? 'was' : 'were'} refused, and a reply is applied whole or not at all. Nothing was written.`
-        : record.verdict.reason;
-      toolCalls.push({ tool: toolFor(record.op), args: argsFor(record), result, status: 'error' });
-      ws.addConsoleOutput(`[AI] ${result}`);
-    }
-    return { toolCalls, committed: [], deleted: [] };
-  }
-
-  // Before-images for the cards, read before the commit.
-  const before = new Map(changeset.records.map((r) => [r.path, vfs.files.get(r.path)?.content ?? null]));
-  try {
-    vfs.applyTransaction(toStoreRecords(changeset), 'ai', changeset.id);
-  } catch (err) {
-    // The store's own check disagreed with the changeset's; it wrote nothing.
-    const result = `Failed: ${err instanceof Error ? err.message : String(err)}. Nothing was written.`;
-    for (const record of changeset.records) toolCalls.push({ tool: toolFor(record.op), args: argsFor(record), result, status: 'error' });
-    ws.addConsoleOutput(`[AI] ${result}`);
-    return { toolCalls, committed: [], deleted: [] };
-  }
-
-  const committed: string[] = [];
-  const deleted: string[] = [];
-  for (const record of changeset.records) {
-    ai.incrementFilesChanged();
-    if (record.op === 'delete') {
-      deleted.push(record.path);
-      const summary = describeDiff(diffSummary(before.get(record.path), null));
-      toolCalls.push({ tool: 'deleteFile', args: argsFor(record), result: `Deleted ${record.path} (${summary})`, status: 'success' });
-      ws.addConsoleOutput(`[AI] Deleted ${record.path}`);
-      continue;
-    }
-    committed.push(record.path);
-    const summary = describeDiff(diffSummary(before.get(record.path), record.content ?? ''));
-    const verb = record.op === 'update' ? 'Updated' : 'Created';
-    toolCalls.push({
-      tool: toolFor(record.op),
-      args: argsFor(record),
-      result: `${verb} ${record.path} (${summary}, ${record.content?.length ?? 0} chars)`,
-      status: 'success',
-    });
-    ws.addConsoleOutput(`[AI] ${verb} ${record.path}`);
-  }
-  return { toolCalls, committed, deleted };
-}
-
-/**
- * A reply that is not complete is not applied, whatever it contains: a
- * reply cut at the output limit ends wherever the limit fell, and the last
- * file block in it may be any fraction of a file that looks whole.
- */
-function describeIncomplete(response: AIResponse, parsed: ParsedResponse, maxOutputTokens: number): { failure: AIFailure; card: ToolCallCard | null } {
-  const paths = [...parsed.files.map((f) => f.path), ...parsed.deletes.map((d) => d.path)];
-  const at = Date.now();
-  switch (response.status) {
-    case 'truncated': {
-      const message = `The reply was cut off at the output limit (${maxOutputTokens.toLocaleString()} tokens) before it finished${paths.length > 0 ? `, so its ${paths.length} file operation(s) may be incomplete` : ''}. Nothing was written. Ask for a smaller change, or split the work across turns.`;
-      return {
-        failure: { kind: 'truncated', message, at },
-        card: paths.length > 0 ? { tool: 'changeset', args: { paths, stopReason: response.stopReason }, result: `Not applied: ${message}`, status: 'error' } : null,
-      };
-    }
-    case 'refused':
-      return { failure: { kind: 'refused', message: 'The model declined this request. Nothing was written.', at }, card: null };
-    case 'empty':
-    default:
-      return { failure: { kind: 'empty', message: 'The provider returned no text. Nothing was written.', at }, card: null };
-  }
-}
-
-/** A thrown request failure as something the person can act on. */
-function describeFailure(err: unknown): AIFailure {
-  const at = Date.now();
-  if (err instanceof AIProviderError) {
-    switch (err.kind) {
-      case 'timeout':
-        return { kind: 'timeout', message: `${err.message} Nothing was changed. Try again; a slower provider may need a longer request timeout.`, at };
-      case 'rate-limited':
-        return {
-          kind: 'rate-limited',
-          message: `${err.message} Nothing was changed.${err.retryAfterMs !== undefined ? ` Try again in ${Math.ceil(err.retryAfterMs / 1000)} s.` : ' Try again in a moment.'}`,
-          retryAfterMs: err.retryAfterMs,
-          at,
-        };
-      case 'network':
-        return { kind: 'network', message: `${err.message} Nothing was changed. Check the connection and the provider URL in Settings.`, at };
-      case 'invalid-response':
-        return { kind: 'invalid-response', message: `${err.message}. Nothing was changed.`, at };
-      case 'cancelled':
-        return { kind: 'cancelled', message: err.message, at };
-      case 'http':
-      default:
-        return { kind: 'provider', message: `${err.message}\n\nCheck your API key and provider settings.`, at };
-    }
-  }
-  const text = err instanceof Error ? err.message : String(err);
-  return { kind: 'provider', message: `Error: ${text}\n\nCheck your API key and provider settings.`, at };
-}
-
-export async function runAgentTurn(): Promise<void> {
-  const ai = useAIStore.getState();
-
-  // Guard against concurrent calls (React state may not have propagated yet)
-  if (ai.agentState !== 'idle') return;
-
-  const ws = useWorkspaceStore.getState();
-
-  // Resolve provider
-  const provider = ai.providers.find((p) => p.id === ai.activeProviderId);
-  if (!provider) {
-    ai.addMessage({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: ai.providers.length > 0
-        ? 'Select an AI provider in Settings before generating.'
-        : 'No AI provider configured. Open Settings to connect a provider or local model.',
-      timestamp: Date.now(),
-    });
-    return;
-  }
-
-  // Budget checks
-  if (ai.iterationsUsed >= ai.maxIterations) {
-    ai.addMessage({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: `Iteration limit reached (${ai.maxIterations}). Reset the budget in Settings to continue.`,
-      timestamp: Date.now(),
-    });
-    return;
-  }
-  if (ai.tokensUsed >= ai.tokenBudget) {
-    ai.addMessage({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: `Token budget exhausted (${ai.tokenBudget.toLocaleString()} tokens). Reset the budget in Settings to continue.`,
-      timestamp: Date.now(),
-    });
-    return;
-  }
-
-  // Set agent state
-  ai.setLastFailure(null);
-  ai.setAgentState('building');
-  ai.setCurrentStep('Generating response...');
-  ai.incrementIteration();
-
-  // Build conversation history for the API (last N messages for context window)
-  // Note: the caller (AIChat) already added the user message to the store before
-  // invoking runAgentTurn, so ai.messages already includes it — no need to push again.
-  const recentMessages = ai.messages.slice(-20).map((m) => ({
-    id: m.id,
-    role: m.role as 'user' | 'assistant',
-    content: m.content,
-    timestamp: m.timestamp,
-  }));
-
-  const turn: ActiveAgentTurn = { controller: new AbortController(), id: crypto.randomUUID() };
-  activeAgentTurn = turn;
-
-  const toolCalls: ToolCallCard[] = [];
-  const texts: string[] = [];
-  let usage = { input: 0, output: 0 };
-  let committedCount = 0;
-  let rawFallback = '';
-  const assistantId = crypto.randomUUID();
-  // Save each completed round before another request can fail or be stopped.
-  // The chat's undo card and project checkpoint must travel with the edits.
-  const recordProgress = () => {
-    const message: ChatMessage = {
-      id: assistantId,
-      role: 'assistant',
-      content: texts.join('\n\n') || (committedCount > 0 ? `Changed ${committedCount} file(s).` : rawFallback),
-      timestamp: Date.now(),
-      toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
-      tokens: { ...usage },
-      transactionId: committedCount > 0 ? turn.id : undefined,
-    };
-    if (useAIStore.getState().messages.some((entry) => entry.id === assistantId)) {
-      useAIStore.setState((state) => ({ messages: state.messages.map((entry) => entry.id === assistantId ? message : entry) }));
-    } else {
-      ai.addMessage(message);
-    }
-  };
-
-  try {
-    const builderModel = ai.modelProfile.builder.trim() || undefined;
-
-    // Files the model has asked to see whole. Each round rebuilds the prompt
-    // with those supplied complete, so the record of what it saw is exact.
-    const complete = new Set<string>();
-    const conversation = [...recentMessages];
-
-    for (let round = 0; ; round++) {
-      const base = buildSystemPromptWithRecord(complete);
-
-      // Reserve the reply before sending. The budget is a local guardrail:
-      // it counts what providers report, and refuses a request that the
-      // remainder cannot cover at the size a reply may reach. It is not a
-      // billing cap — the provider bills what it bills.
-      const settings = useAIStore.getState();
-      const estimatedInput = estimateTokens(base.system) + conversation.reduce((n, m) => n + estimateTokens(m.content), 0);
-      const reserved = settings.maxOutputTokens;
-      const remaining = settings.tokenBudget - settings.tokensUsed;
-      if (estimatedInput + reserved > remaining) {
-        const message =
-          `Not sent: this request needs roughly ${(estimatedInput + reserved).toLocaleString()} tokens (about ${estimatedInput.toLocaleString()} in, up to ${reserved.toLocaleString()} reserved for the reply), and ${Math.max(0, remaining).toLocaleString()} of the ${settings.tokenBudget.toLocaleString()}-token session budget remain. ` +
-          'The budget is a local guardrail, not a billing cap: raise or reset it in Settings.' +
-          (round > 0 ? ' The files the model asked for could not be supplied.' : '');
-        ai.setLastFailure({ kind: 'budget', message, at: Date.now() });
-        texts.push(message);
-        ws.addConsoleOutput(`[AI] ${message}`);
-        break;
-      }
-
-      const response = await sendAIRequest(provider, {
-        messages: conversation,
-        system: base.system,
-        signal: turn.controller.signal,
-        modelOverride: builderModel,
-        timeoutMs: settings.requestTimeoutMs,
-        maxOutputTokens: settings.maxOutputTokens,
-      });
-
-      // A provider or test double is not required to honour AbortSignal. The
-      // response still belongs to the project/turn that initiated it, so never
-      // apply it after that turn has been cancelled or replaced.
-      if (activeAgentTurn !== turn || turn.controller.signal.aborted) return;
-
-      // Track tokens
-      ai.addTokens(response.usage.inputTokens + response.usage.outputTokens);
-      usage = { input: usage.input + response.usage.inputTokens, output: usage.output + response.usage.outputTokens };
-      rawFallback = response.content;
-
-      // Parse the response for file operations
-      const parsed = parseAIResponse(response.content);
-      if (parsed.text) texts.push(parsed.text);
-
-      // Only a complete reply is applied. A truncated one is reported and the
-      // turn stops here: its file blocks are not trusted, and a read round on
-      // top of a cut reply would be built on the same cut.
-      if (response.status !== 'complete') {
-        const { failure, card } = describeIncomplete(response, parsed, settings.maxOutputTokens);
-        if (card) toolCalls.push(card);
-        ai.setLastFailure(failure);
-        if (!parsed.text) texts.push(failure.message);
-        ws.addConsoleOutput(`[AI] ${failure.message}`);
-        break;
-      }
-
-      const applied = applyChangeset(parsed, base, turn.id, ai, ws);
-      toolCalls.push(...applied.toolCalls);
-      if (committedCount === 0 && applied.committed.length > 0) ws.setActiveFilePath(applied.committed[0]);
-      committedCount += applied.committed.length + applied.deleted.length;
-      if (committedCount > 0) {
-        ws.setDirty(true);
-        if (useWorkspaceStore.getState().mode === 'describe') ws.setMode('design');
-      }
-
-      // The model asked to see files whole. Answer with them and go again,
-      // a bounded number of times; a reply that only asks is not the end of
-      // the turn, and a reply that asks after writing gets its answer too.
-      const wanted = parsed.reads.map((r) => r.path).filter((p) => !complete.has(p));
-      if (wanted.length === 0 || round >= MAX_READ_ROUNDS - 1) {
-        if (wanted.length > 0) {
-          toolCalls.push({ tool: 'readFile', args: { paths: wanted }, result: `Not supplied: this turn has already answered ${MAX_READ_ROUNDS} read requests. Ask again in a new message.`, status: 'error' });
-        }
-        break;
-      }
-      const vfsNow = useVFSStore.getState().files;
-      const answers: string[] = [];
-      for (const path of wanted) {
-        const file = vfsNow.get(path);
-        if (!file || typeof file.content !== 'string') {
-          answers.push(`--- ${path} ---\n(no such text file)`);
-          toolCalls.push({ tool: 'readFile', args: { path }, result: `No such text file: ${path}`, status: 'error' });
-          continue;
-        }
-        complete.add(path);
-        answers.push(`--- ${path} (complete, ${file.content.length} characters) ---\n${file.content}`);
-        toolCalls.push({ tool: 'readFile', args: { path }, result: `Supplied ${path} whole (${file.content.length} chars)`, status: 'success' });
-      }
-      ai.setCurrentStep(`Reading ${wanted.join(', ')}…`);
-      conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: response.content, timestamp: Date.now() });
-      conversation.push({
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: `Here are the files you asked for, complete. They are also in the system prompt now, marked complete. Continue with the original request.\n\n${answers.join('\n\n')}`,
-        timestamp: Date.now(),
-      });
-      recordProgress();
-    }
-
-    recordProgress();
-    ai.setAgentState('idle');
-    ai.setCurrentStep('');
-
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    const superseded = activeAgentTurn !== turn;
-    const cancelled = err instanceof AIProviderError && err.kind === 'cancelled';
-
-    // Don't let a cancelled turn overwrite the state of the turn that
-    // replaced it. Fetch implementations differ in the exact AbortError text,
-    // so the signal/ownership checks are authoritative.
-    if (turn.controller.signal.aborted || superseded || cancelled) {
-      if (!superseded) {
-        ai.setAgentState('idle');
-        ai.setCurrentStep('');
-      }
-      return;
-    }
-
-    const failure = describeFailure(err);
-    if (committedCount > 0) {
-      failure.message = failure.message.replace('Nothing was changed. ', '') +
-        ` Earlier changes (${committedCount} file operation(s)) remain applied. Use Revert this turn to undo them.`;
-    }
-    ai.setAgentState('error');
-    ai.setCurrentStep('');
-    ai.setLastFailure(failure);
-    texts.push(failure.message);
-    recordProgress();
-    ws.addConsoleOutput(`[AI] ${failure.kind}: ${errorMessage}`);
-
-    // Auto-recover to idle after error (only if still in error state)
-    setTimeout(() => {
-      if (useAIStore.getState().agentState === 'error' && useAIStore.getState().lastFailure === failure) {
-        useAIStore.getState().setAgentState('idle');
-      }
-    }, 2000);
-  } finally {
-    if (activeAgentTurn === turn) activeAgentTurn = null;
-  }
+  discardAgentRuns();
 }

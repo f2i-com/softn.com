@@ -83,6 +83,8 @@ export const Icon: React.FC<IconProps> = ({ name, size = 20, color = 'currentCol
     viewBox="0 0 24 24"
     fill={color}
     style={{ flexShrink: 0 }}
+    aria-hidden="true"
+    focusable="false"
   >
     <path d={paths[name]} />
   </svg>

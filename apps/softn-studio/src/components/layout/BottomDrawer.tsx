@@ -34,7 +34,7 @@ export const BottomDrawer: React.FC = () => {
     <div style={s.container}>
       <div style={s.header}>
         <div style={s.headerLeft}>
-          <Icon name="terminal" size={13} color="var(--studio-accent)" />
+          <Icon name="terminal" size={13} color="var(--studio-text-muted)" />
           <span style={s.title}>Log</span>
           <span style={s.count}>{logCount} entries</span>
         </div>
@@ -63,10 +63,10 @@ export const BottomDrawer: React.FC = () => {
 
             let iconName: Parameters<typeof Icon>[0]['name'] = 'terminal';
             let iconColor = 'var(--studio-text-dim)';
-            if (isAI) { iconName = 'ai'; iconColor = 'var(--studio-accent)'; }
+            if (isAI) { iconName = 'ai'; iconColor = 'var(--studio-text)'; }
             else if (isError) { iconName = 'alert-circle'; iconColor = 'var(--studio-error)'; }
-            else if (isImport) { iconName = 'upload'; iconColor = 'var(--studio-success)'; }
-            else if (isExport) { iconName = 'export'; iconColor = 'var(--studio-success)'; }
+            else if (isImport) { iconName = 'upload'; iconColor = 'var(--studio-text-muted)'; }
+            else if (isExport) { iconName = 'export'; iconColor = 'var(--studio-text-muted)'; }
 
             return (
               <div key={i} style={s.logLine}>
@@ -88,7 +88,7 @@ const s: Record<string, React.CSSProperties> = {
   collapsed: {
     height: 32,
     borderTop: '1px solid var(--studio-border)',
-    background: 'var(--studio-bg-elevated)',
+    background: 'var(--studio-bg)',
     display: 'flex',
     alignItems: 'center',
     flexShrink: 0,
@@ -99,9 +99,10 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 5,
     padding: '5px 10px',
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 11,
-    fontWeight: 600,
+    fontFamily: 'var(--studio-body)',
+    fontSize: 12,
+    fontWeight: 500,
+    borderRadius: 6,
     color: 'var(--studio-text-muted)',
     background: 'transparent',
     border: 'none',
@@ -111,8 +112,8 @@ const s: Record<string, React.CSSProperties> = {
     minWidth: 16,
     height: 16,
     borderRadius: 8,
-    background: 'var(--studio-accent-soft)',
-    color: 'var(--studio-accent)',
+    background: 'var(--studio-bg-muted)',
+    color: 'var(--studio-text-muted)',
     fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,

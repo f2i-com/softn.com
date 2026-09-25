@@ -80,13 +80,12 @@ async function settle(): Promise<void> {
 }
 
 describe('project import session reset', () => {
-  it('replaces the previous project identity and clears selection, errors, console, files, and chat', () => {
+  it('replaces the previous project identity and clears the active page, errors, console, files, and chat', () => {
     useWorkspaceStore.setState({
       projectName: 'Old project',
       projectId: 'old-id',
       activePageId: 'old-page',
       activeFilePath: 'ui/old.ui',
-      selectedComponentId: 'old-component',
       errors: [{ file: 'ui/old.ui', level: 'error', type: 'parse', message: 'Old error' }],
       consoleOutput: ['Old log'],
       themePreview: 'light',
@@ -104,7 +103,6 @@ describe('project import session reset', () => {
       projectId: id,
       activePageId: null,
       activeFilePath: null,
-      selectedComponentId: null,
       errors: [],
       consoleOutput: [],
       themePreview: 'light',
@@ -296,6 +294,87 @@ describe('autosave', () => {
   });
 });
 
+describe('records from older Studios', () => {
+  function record(workspace: Record<string, unknown>): ProjectRecord {
+    return {
+      projectId: 'old', schemaVersion: 1, revision: 3, savedAt: 1,
+      workspace: {
+        projectName: 'Old', projectId: 'old', brief: null, blueprint: null, taskGraph: [], blueprintApproved: true,
+        mode: 'design', leftPanel: 'ai', leftPanelExpanded: true, bottomDrawerOpen: false, bottomTab: 'log',
+        activePageId: null, activeFilePath: null, devicePreset: 'desktop', zoom: 100, themePreview: 'dark', consoleOutput: [],
+        ...workspace,
+      } as unknown as ProjectRecord['workspace'],
+      files: [{ path: 'ui/main.ui', mimeType: 'text/x-softn-ui', lastModified: 1, lastModifiedBy: 'user', version: 1, content: '<Text>Old</Text>' }],
+      session: { messages: [], iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 },
+    };
+  }
+
+  it.each(['data', 'logic', 'test'])('opens a project saved in the never-used %s mode in design mode', (mode) => {
+    applyProjectRecord(record({ mode, rightSidebarOpen: false, advancedMode: true, selectedComponentId: 'x' }));
+    expect(useWorkspaceStore.getState().mode).toBe('design');
+    expect(useVFSStore.getState().files.get('ui/main.ui')?.content).toBe('<Text>Old</Text>');
+  });
+
+  it('keeps describe and structure as they were', () => {
+    applyProjectRecord(record({ mode: 'structure' }));
+    expect(useWorkspaceStore.getState().mode).toBe('structure');
+  });
+
+  it('loads a record without the retired inspector fields, and still writes them for an older reader', async () => {
+    const { isPersistedWorkspace } = await import('../src/lib/persistence');
+    expect(isPersistedWorkspace(record({}).workspace)).toBe(true);
+    expect(isPersistedWorkspace(record({ advancedMode: 'yes' }).workspace)).toBe(false);
+    beginNewProjectSession();
+    useWorkspaceStore.getState().setProjectName('New');
+    const written = collectProjectRecord(1)!.workspace;
+    expect(written).toMatchObject({ advancedMode: false, rightSidebarOpen: true, selectedComponentId: null });
+  });
+});
+
+describe('provider settings across a reload', () => {
+  it('keeps a local provider’s kind and model, and the choice to go without a provider', async () => {
+    const autosave = startProjectAutosave({ save: async () => ({ ok: true }), debounceMs: 10 });
+    const local = { id: 'local', type: 'local' as const, serverKind: 'lmstudio' as const, name: 'LM Studio', apiKey: '', baseUrl: 'http://localhost:1234', modelId: 'picked-model' };
+    useAIStore.getState().saveProvider(local);
+    useAIStore.getState().setActiveProvider('local');
+    useAIStore.getState().setSetupSkipped(true);
+    expect(loadGlobalSettings()).toMatchObject({ providers: [local], activeProviderId: 'local', setupSkipped: true });
+    autosave.stop();
+
+    useAIStore.setState({ providers: [], activeProviderId: null, setupSkipped: false });
+    await restoreSession();
+    expect(useAIStore.getState()).toMatchObject({ providers: [local], activeProviderId: 'local', setupSkipped: true });
+  });
+
+  it('loads settings saved before the new fields existed, including a provider with no model', async () => {
+    // Written by an older Studio: no setupSkipped, and a provider that relied
+    // on the default model name Studio used to fill in.
+    storage.data.set('softn.studio.settings.v1', JSON.stringify({
+      providers: [{ id: 'old', type: 'openai', name: 'OpenAI', apiKey: 'secret' }],
+      activeProviderId: 'old',
+      modelProfile: { architect: '', builder: '', repair: '', vision: '' },
+      maxIterations: 15,
+      tokenBudget: 50_000,
+    }));
+    await restoreSession();
+    const ai = useAIStore.getState();
+    expect(ai.providers).toEqual([{ id: 'old', type: 'openai', name: 'OpenAI', apiKey: 'secret' }]);
+    expect(ai.providers[0].modelId).toBeUndefined();
+    expect(ai.setupSkipped).toBe(false);
+  });
+
+  it('rejects a provider kind it does not know rather than half-loading it', () => {
+    storage.data.set('softn.studio.settings.v1', JSON.stringify({
+      providers: [{ id: 'x', type: 'local', serverKind: 'mystery', name: 'X', apiKey: '' }],
+      activeProviderId: 'x',
+      modelProfile: { architect: '', builder: '', repair: '', vision: '' },
+      maxIterations: 15,
+      tokenBudget: 50_000,
+    }));
+    expect(loadGlobalSettings()).toBeNull();
+  });
+});
+
 describe('reopening projects by id', () => {
   it('does not let a recent-project click overtake a new project while its checkpoint is pending', async () => {
     const a = await makeProject('Alpha', '<Text>A</Text>');
@@ -374,6 +453,19 @@ describe('reopening projects by id', () => {
     const opened = await openProjectById('nothing-here');
     expect(opened.ok).toBe(false);
     expect(useWorkspaceStore.getState().projectName).toBe('Alpha');
+  });
+
+  it('raises the single-shot token budget once for settings saved before agent runs, and keeps a budget chosen since', async () => {
+    const profile = { architect: '', builder: '', repair: '', vision: '' };
+    saveGlobalSettings({ providers: [provider], activeProviderId: 'provider', modelProfile: profile, maxIterations: 15, tokenBudget: 50_000 });
+    await restoreSession();
+    expect(useAIStore.getState().tokenBudget).toBe(2_000_000);
+
+    const agentSettings = { maxSteps: 40, runTokenBudget: 600_000, autoCheck: true, confirmDeletes: true };
+    saveGlobalSettings({ providers: [provider], activeProviderId: 'provider', modelProfile: profile, maxIterations: 15, tokenBudget: 50_000, agentSettings });
+    await restoreSession();
+    expect(useAIStore.getState().tokenBudget).toBe(50_000);
+    expect(useAIStore.getState().agentSettings).toEqual(agentSettings);
   });
 
   it('deleting one project leaves the other and the provider settings', async () => {

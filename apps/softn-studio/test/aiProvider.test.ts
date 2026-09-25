@@ -12,11 +12,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AIProviderError, sendAIRequest } from '../src/lib/aiProvider';
+import { AIProviderError, sendAIRequest, testProvider } from '../src/lib/aiProvider';
 import type { ProviderConfig } from '../src/types/studio';
 
-const anthropic: ProviderConfig = { id: 'a', type: 'anthropic', name: 'A', apiKey: 'sk-test-not-real' };
-const openai: ProviderConfig = { id: 'o', type: 'openai', name: 'O', apiKey: 'sk-test-not-real' };
+const anthropic: ProviderConfig = { id: 'a', type: 'anthropic', name: 'A', apiKey: 'sk-test-not-real', modelId: 'test-model-a' };
+const openai: ProviderConfig = { id: 'o', type: 'openai', name: 'O', apiKey: 'sk-test-not-real', modelId: 'test-model-o' };
 
 const request = { messages: [{ id: '1', role: 'user' as const, content: 'hi', timestamp: 1 }], system: 'sys' };
 
@@ -213,5 +213,102 @@ describe('failures are distinct and recoverable', () => {
       start(stream) { stream.error(new TypeError('Connection reset')); },
     })));
     expect((await failure(sendAIRequest(openai, request))).kind).toBe('network');
+  });
+});
+
+describe('no model, no request', () => {
+  it.each([
+    ['Anthropic', { ...anthropic, modelId: undefined }],
+    ['OpenAI', { ...openai, modelId: undefined }],
+    ['a local server', { id: 'l', type: 'local' as const, name: 'Ollama', apiKey: '' }],
+    ['a blank model id', { ...openai, modelId: '   ' }],
+  ])('refuses %s with no chosen model instead of sending a guessed name', async (_name, provider) => {
+    const err = await failure(sendAIRequest(provider, request));
+    expect(err.kind).toBe('no-model');
+    expect(err.message).toMatch(/no model chosen.*AI setup/s);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('uses a per-request override when the provider has none', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }], usage: {} }));
+    await sendAIRequest({ ...openai, modelId: undefined }, { ...request, modelOverride: 'override-model' });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).model).toBe('override-model');
+  });
+});
+
+describe('request shape per provider', () => {
+  const ok = () => jsonResponse({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }], usage: {} });
+
+  it('sends OpenAI its output cap as max_completion_tokens, with the organization header', async () => {
+    fetchMock.mockResolvedValueOnce(ok());
+    await sendAIRequest({ ...openai, orgId: 'org-test' }, { ...request, maxOutputTokens: 2048 });
+    const [url, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(url).toBe('https://api.openai.com/v1/chat/completions');
+    expect(body).toMatchObject({ model: 'test-model-o', max_completion_tokens: 2048 });
+    expect(body.max_tokens).toBeUndefined();
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer sk-test-not-real', 'OpenAI-Organization': 'org-test' });
+  });
+
+  it('sends max_tokens to an OpenAI-compatible gateway saved as openai by an older Studio', async () => {
+    fetchMock.mockResolvedValueOnce(ok());
+    await sendAIRequest({ ...openai, baseUrl: 'https://gateway.example/api/v1/chat/completions' }, { ...request, maxOutputTokens: 1024 });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://gateway.example/api/v1/chat/completions');
+    expect(body.max_tokens).toBe(1024);
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
+
+  it('sends a local server max_tokens at its chat endpoint, from a bare address or an old full one', async () => {
+    fetchMock.mockImplementation(async () => ok());
+    await sendAIRequest({ id: 'l', type: 'local', name: 'Ollama', apiKey: '', baseUrl: 'http://localhost:11434', modelId: 'm' }, { ...request, maxOutputTokens: 512 });
+    await sendAIRequest({ id: 'c', type: 'custom', name: 'Old', apiKey: '', baseUrl: 'http://127.0.0.1:9999/v1/chat/completions', modelId: 'm' }, request);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:11434/v1/chat/completions');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).max_tokens).toBe(512);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
+    expect(fetchMock.mock.calls[1][0]).toBe('http://127.0.0.1:9999/v1/chat/completions');
+  });
+
+  it('keeps an Anthropic provider saved with the full messages URL working', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: {} }));
+    await sendAIRequest({ ...anthropic, baseUrl: 'https://api.anthropic.com/v1/messages' }, request);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.anthropic.com/v1/messages');
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ 'anthropic-dangerous-direct-browser-access': 'true', 'x-api-key': 'sk-test-not-real' });
+  });
+
+  it('explains an HTTP failure in words, keeping the status', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: 'Incorrect API key provided' } }, { status: 401 }));
+    const err = await failure(sendAIRequest(openai, request));
+    expect(err).toMatchObject({ kind: 'http', status: 401 });
+    expect(err.message).toMatch(/did not accept this API key \(401\).*Incorrect API key provided/s);
+  });
+});
+
+describe('test connection', () => {
+  it('lists the models, then asks the chosen model for a short reply', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'test-model-o', created: 1 }] }))
+      .mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }], usage: {} }));
+    const result = await testProvider(openai);
+    expect(result).toMatchObject({ ok: true, replied: true, modelListed: true });
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    expect(body.model).toBe('test-model-o');
+    expect(body.max_completion_tokens).toBeLessThanOrEqual(16);
+  });
+
+  it('says so when the key is refused, without sending a message', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: 'bad key' } }, { status: 401 }));
+    const result = await testProvider(openai);
+    expect(result).toMatchObject({ ok: false, kind: 'auth' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a model the provider will not serve', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'other' }] }))
+      .mockResolvedValueOnce(jsonResponse({ error: { message: 'The model does not exist' } }, { status: 404 }));
+    const result = await testProvider(openai);
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.message).toMatch(/404.*The model does not exist/s);
   });
 });

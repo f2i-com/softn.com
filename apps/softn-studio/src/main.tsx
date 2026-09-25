@@ -8,6 +8,9 @@ import ReactDOM from 'react-dom/client';
 import '@softn/brand/fonts';
 import '@softn/brand/tokens.css';
 import '@softn/brand/bar.css';
+import './styles/studio.css';
+import './styles/editor.css';
+import './styles/ai-setup.css';
 
 import App from './App';
 import { PWAPrompt } from './components/common/PWAPrompt';

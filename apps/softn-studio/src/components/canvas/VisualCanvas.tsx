@@ -1,62 +1,20 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { useWorkspaceStore, useVFSStore } from '../../stores';
+import { useAIStore, useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
-import { resolveActivePreviewPath, resolveManifest } from '../../lib/studioProject';
+import { declarePythonPackage, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
 import { getXDB, type SoftNRendererProps } from '@softn/core';
 import type { ThemeProviderProps } from '@softn/components';
-import { normalizeProjectPath } from '../../lib/projectImport';
 import { createPreviewAssetResolver } from '../../lib/previewAssets';
+import { CodeView } from './CodeView';
+import { MediaView, mediaKindFor } from './MediaView';
 import {
-  assemblePreviewSource,
   buildPreviewXDBState,
   clearPreviewXDBCollections,
+  composePreviewProject,
   previewDataKey,
   replacePreviewXDBCollections,
+  stripTemplateComments,
 } from '../../lib/previewProject';
-
-/**
- * Strip the author's comments from a `.ui` file's TEMPLATE, and only its template.
- *
- * Comments in a .ui header would otherwise render as visible text in the
- * preview, which is the whole reason this exists. What it must not do is reach
- * inside `<logic>`, `<script>` or `<style>`: those are other languages, they
- * handle their own comments, and this ran over them with two regexes that know
- * nothing about string literals.
- *
- * That was not theoretical. `stripComments` used to run over the assembled
- * document — the `.ui` with its external `.logic` already inlined — and the
- * AIChat demo contains `softn.files.pickFile({ accept: "image/*" }, ...)`. The
- * `/*` inside that ordinary MIME wildcard opened a comment, and the non-greedy
- * scan ran forward to the first `*\/` it could find, which was the first CSS
- * comment in the stylesheet below. Everything between was deleted, including the
- * `</logic>` that closed the inlined block. The lexer's logic-content mode then
- * ran to end of file, so the entire stylesheet and every line of markup were
- * handed to the JavaScript engine, which said, accurately, "unterminated string
- * literal". The bundle ran perfectly in the web runtime, which inlines its own
- * logic and never took this path.
- */
-function stripComments(source: string): string {
-  // Spans that belong to another language, left exactly as their author wrote them.
-  const protectedSpans: Array<[number, number]> = [];
-  const blockTag = /<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
-  for (const match of source.matchAll(blockTag)) {
-    protectedSpans.push([match.index, match.index + match[0].length]);
-  }
-
-  const stripTemplate = (text: string): string =>
-    text.replace(/^\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-
-  let out = '';
-  let cursor = 0;
-  for (const [start, end] of protectedSpans) {
-    out += stripTemplate(source.slice(cursor, start));
-    out += source.slice(start, end);
-    cursor = end;
-  }
-  out += stripTemplate(source.slice(cursor));
-
-  return out.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
-}
 
 function rewriteAssetReferences(source: string, resolveAsset: (path: string) => string): string {
   return source.replace(
@@ -64,6 +22,69 @@ function rewriteAssetReferences(source: string, resolveAsset: (path: string) => 
     (_match, quote: string, assetPath: string) => {
       return `${quote}${resolveAsset(assetPath)}${quote}`;
     }
+  );
+}
+
+/**
+ * The files the preview renders. While an agent run is writing, a burst of
+ * steps would remount the app once per write — each remount reloading its
+ * engine — so the preview follows the files at most every `delay` ms, and
+ * at least every `maxWait` ms so a long run still shows its progress. With
+ * no run, it follows every change at once, as it always has.
+ */
+export function useSettledFiles<T>(value: T, delay: number, maxWait = 2_000): T {
+  const [settled, setSettled] = useState(value);
+  const lastFlush = useRef(Date.now());
+  useEffect(() => {
+    if (delay <= 0) {
+      lastFlush.current = Date.now();
+      setSettled(value);
+      return;
+    }
+    const wait = Math.max(0, Math.min(delay, maxWait - (Date.now() - lastFlush.current)));
+    const timer = setTimeout(() => {
+      lastFlush.current = Date.now();
+      setSettled(value);
+    }, wait);
+    return () => clearTimeout(timer);
+  }, [value, delay, maxWait]);
+  return delay <= 0 ? value : settled;
+}
+
+export type CanvasViewMode = 'preview' | 'code';
+
+/** Where the Preview | Code choice is kept: this tab's session, like the rest of the canvas's view state. */
+const VIEW_MODE_KEY = 'softn.studio.canvasView.v1';
+
+export function readCanvasViewMode(): CanvasViewMode {
+  try {
+    return window.sessionStorage.getItem(VIEW_MODE_KEY) === 'code' ? 'code' : 'preview';
+  } catch {
+    return 'preview';
+  }
+}
+
+function writeCanvasViewMode(mode: CanvasViewMode): void {
+  try {
+    window.sessionStorage.setItem(VIEW_MODE_KEY, mode);
+  } catch {
+    // Storage can be blocked; the choice then lasts as long as the canvas.
+  }
+}
+
+/** Preview | Code, for a file that is both a page and source. */
+export function ViewSwitch({ mode, onChange }: { mode: CanvasViewMode; onChange: (mode: CanvasViewMode) => void }): React.ReactElement {
+  return (
+    <div className="st-view-switch" role="group" aria-label="Show the file as">
+      <button type="button" aria-pressed={mode === 'preview'} onClick={() => onChange('preview')}>
+        <Icon name="eye" size={13} />
+        Preview
+      </button>
+      <button type="button" aria-pressed={mode === 'code'} onClick={() => onChange('code')}>
+        <Icon name="code" size={13} />
+        Code
+      </button>
+    </div>
   );
 }
 
@@ -191,14 +212,18 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     projectId,
     projectName,
   } = useWorkspaceStore();
-  const { files } = useVFSStore();
-  const [hoveredTool, setHoveredTool] = useState<string | null>(null);
+  const liveFiles = useVFSStore((s) => s.files);
+  const agentWriting = useAIStore((s) => s.agentState === 'building');
+  const files = useSettledFiles(liveFiles, agentWriting ? 600 : 0);
   const [activeVFSFile, setActiveVFSFile] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [isExpandedPreview, setIsExpandedPreview] = useState(false);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [binaryImageUrl, setBinaryImageUrl] = useState<string | null>(null);
-  const [binaryMediaUrl, setBinaryMediaUrl] = useState<string | null>(null);
+  const [viewMode, setViewModeState] = useState<CanvasViewMode>(readCanvasViewMode);
+  const setViewMode = useCallback((mode: CanvasViewMode) => {
+    setViewModeState(mode);
+    writeCanvasViewMode(mode);
+  }, []);
   const [PreviewComponent, setPreviewComponent] =
     useState<React.ComponentType<SoftNRendererProps> | null>(null);
   const [ThemeProviderComponent, setThemeProviderComponent] =
@@ -258,18 +283,20 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       })()
     : null;
 
-  const fileMimeType = activeVFSFile ? (files.get(activeVFSFile)?.mimeType ?? '') : '';
-  const activeBinaryContent = activeVFSFile ? files.get(activeVFSFile)?.content : null;
+  const activeContent = activeVFSFile ? files.get(activeVFSFile)?.content ?? null : null;
 
   // Determine if the active file is HTML-renderable
   const isHtmlFile = activeVFSFile ? /\.(html|htm)$/i.test(activeVFSFile) : false;
-  const isImageFile = activeVFSFile ? /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(activeVFSFile) : false;
-  const isAudioFile = activeVFSFile
-    ? /\.(mp3|wav|ogg|aac|flac|m4a|wma|webm)$/i.test(activeVFSFile)
-    : false;
-  const isVideoFile = activeVFSFile ? /\.(mp4|webm|ogv|mov|avi)$/i.test(activeVFSFile) : false;
+  // Images, audio, video, fonts and PDFs are shown as themselves; so is any
+  // other file kept as bytes, with its name, type and size.
+  const showsAsMedia = Boolean(
+    activeVFSFile && activeContent !== null && (mediaKindFor(activeVFSFile) || typeof activeContent !== 'string'),
+  );
   const isManifestFile = activeVFSFile === 'manifest.json';
   const isSoftNUIFile = activeVFSFile ? /\.ui$/i.test(activeVFSFile) : false;
+  // A page is both something to look at and source: it gets Preview | Code.
+  const canSwitchView = (isSoftNUIFile || isHtmlFile) && previewFileContent !== null;
+  const showCode = canSwitchView && viewMode === 'code';
 
   useEffect(() => {
     let mounted = true;
@@ -295,22 +322,6 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       mounted = false;
     };
   }, [rendererRetry]);
-
-  const previewUIFiles = useMemo(() => {
-    const next = new Map<string, string>();
-    for (const [path, file] of files.entries()) {
-      if (/\.ui$/i.test(path) && typeof file.content === 'string') next.set(path, file.content);
-    }
-    return next;
-  }, [files]);
-
-  const previewLogicFiles = useMemo(() => {
-    const next = new Map<string, string>();
-    for (const [path, file] of files.entries()) {
-      if (/\.logic$/i.test(path) && typeof file.content === 'string') next.set(path, file.content);
-    }
-    return next;
-  }, [files]);
 
   // The preview-data reset policy (see previewDataKey in lib/previewProject.ts):
   // the disposable XDB collections are reseeded from source only when an .xdb
@@ -390,48 +401,34 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     [resolveAssetUrl]
   );
 
-  const importResolver = useCallback(
-    async (path: string) => {
-      const normalized = normalizeProjectPath(path);
-      if (!normalized) return null;
-      for (const [filePath, content] of previewLogicFiles.entries()) {
-        if (normalizeProjectPath(filePath) === normalized) {
-          return content;
-        }
-      }
-      return null;
-    },
-    [previewLogicFiles]
-  );
-
-  const { source: softNSource, preIncludedLogicPaths } = useMemo(() => {
-    if (!isSoftNUIFile || !activeVFSFile || !previewFileContent) {
-      return { source: null as string | null, preIncludedLogicPaths: [] as string[] };
-    }
-    const groups = resolveManifest(files)?.files as Record<string, unknown> | undefined;
-    const declaredLogicPaths = Array.isArray(groups?.logic)
-      ? groups.logic.filter((path): path is string => typeof path === 'string')
-      : [];
-    const assembled = assemblePreviewSource(
-      activeVFSFile,
-      previewFileContent,
-      previewUIFiles,
-      previewLogicFiles,
-      declaredLogicPaths
-    );
-    let source = assembled.source;
-    source = rewriteAssetReferences(source, resolveAssetUrl);
-    source = stripComments(source);
-    return { source, preIncludedLogicPaths: assembled.preIncludedLogicPaths };
-  }, [
-    isSoftNUIFile,
-    activeVFSFile,
-    previewFileContent,
-    previewLogicFiles,
-    previewUIFiles,
-    resolveAssetUrl,
-    files,
-  ]);
+  // The previewed file is composed as the runtime composes a bundle's main,
+  // Python logic and all (see composePreviewProject). A composition the
+  // runtime would refuse is an error shown in the preview, not a page that
+  // renders without the logic Run will then fail on.
+  const preview = useMemo(() => {
+    if (!isSoftNUIFile || !activeVFSFile || !previewFileContent) return null;
+    const result = composePreviewProject(files, activeVFSFile);
+    if (!result.ok) return result;
+    const { composition } = result;
+    const source = stripTemplateComments(rewriteAssetReferences(composition.source, resolveAssetUrl));
+    return { ok: true as const, composition, source };
+  }, [isSoftNUIFile, activeVFSFile, previewFileContent, resolveAssetUrl, files]);
+  const softNSource = preview?.ok ? preview.source : null;
+  const composition = preview?.ok ? preview.composition : null;
+  const compositionError = preview && !preview.ok ? preview.error : null;
+  // One refusal has a one-edit fix: a .py file importing a package
+  // manifest.json does not declare. The fix is offered where the refusal is
+  // shown, and made through the VFS so it is one undoable change.
+  const missingPackage = compositionError ? undeclaredPythonPackage(compositionError) : null;
+  const enablePackage = useCallback((name: string) => {
+    const vfs = useVFSStore.getState();
+    const current = vfs.readFile('manifest.json');
+    if (typeof current !== 'string') return;
+    const next = declarePythonPackage(current, name);
+    if (next !== null && next !== current) vfs.updateFile('manifest.json', next, 'user');
+  }, []);
+  /** The app is actually rendering in the frame: the one thing the chrome marks as live. */
+  const isLive = Boolean(isSoftNUIFile && softNSource && PreviewComponent && !showCode);
 
   // Blob URLs are resources, not render calculations. Creating them in
   // useMemo leaks the URL whenever React abandons a render (and on Strict
@@ -444,41 +441,6 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     setBlobUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [previewFileContent, isHtmlFile, refreshKey]);
-
-  useEffect(() => {
-    setBinaryImageUrl(null);
-    if (!isImageFile || !activeBinaryContent || typeof activeBinaryContent === 'string') return;
-    const bytes = new Uint8Array(activeBinaryContent);
-    const blob = new Blob(
-      [bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)],
-      {
-        type: fileMimeType || 'image/png',
-      }
-    );
-    const url = URL.createObjectURL(blob);
-    setBinaryImageUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [isImageFile, activeBinaryContent, fileMimeType]);
-
-  useEffect(() => {
-    setBinaryMediaUrl(null);
-    if (
-      (!isAudioFile && !isVideoFile) ||
-      !activeBinaryContent ||
-      typeof activeBinaryContent === 'string'
-    )
-      return;
-    const bytes = new Uint8Array(activeBinaryContent);
-    const blob = new Blob(
-      [bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)],
-      {
-        type: fileMimeType || (isAudioFile ? 'audio/mpeg' : 'video/mp4'),
-      }
-    );
-    const url = URL.createObjectURL(blob);
-    setBinaryMediaUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [isAudioFile, isVideoFile, activeBinaryContent, fileMimeType]);
 
   useEffect(() => {
     if (!isExpandedPreview) return;
@@ -512,75 +474,11 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
   }, []);
 
   const renderPreviewContent = () => {
-    // Binary file types — check before the text-content gate
-    if (
-      isImageFile &&
-      (binaryImageUrl || (typeof previewFileContent === 'string' && previewFileContent))
-    ) {
-      return (
-        <div style={styles.assetPreviewWrap}>
-          <img
-            src={
-              binaryImageUrl ??
-              `data:image/svg+xml;charset=utf-8,${encodeURIComponent(previewFileContent ?? '')}`
-            }
-            alt={selectedSurfaceLabel}
-            style={styles.assetPreview}
-          />
-          <span style={styles.assetLabel}>{activeVFSFile?.split('/').pop()}</span>
-        </div>
-      );
+    if (showsAsMedia && activeVFSFile && activeContent !== null) {
+      return <MediaView key={activeVFSFile} path={activeVFSFile} content={activeContent} />;
     }
 
-    if (isAudioFile && binaryMediaUrl) {
-      return (
-        <div style={styles.assetPreviewWrap}>
-          <Icon name="file" size={48} color="var(--studio-text-dim)" />
-          <span style={styles.assetLabel}>{activeVFSFile?.split('/').pop()}</span>
-          <audio controls src={binaryMediaUrl} style={{ marginTop: 16, maxWidth: '100%' }} />
-        </div>
-      );
-    }
-
-    if (isVideoFile && binaryMediaUrl) {
-      return (
-        <div style={styles.assetPreviewWrap}>
-          <video
-            controls
-            src={binaryMediaUrl}
-            style={{ maxWidth: '100%', maxHeight: '70%', borderRadius: 8 }}
-          />
-          <span style={styles.assetLabel}>{activeVFSFile?.split('/').pop()}</span>
-        </div>
-      );
-    }
-
-    if (!previewFileContent) {
-      // Binary file with no viewer
-      if (activeVFSFile && activeBinaryContent && typeof activeBinaryContent !== 'string') {
-        const sizeKB = (activeBinaryContent.byteLength / 1024).toFixed(1);
-        return (
-          <div style={{ ...styles.previewContent, background: 'var(--studio-bg)' }}>
-            <div style={styles.previewPlaceholder}>
-              <Icon name="file" size={32} color="var(--studio-border-strong)" />
-              <span
-                style={{
-                  fontSize: 14,
-                  fontWeight: 600,
-                  color: 'var(--studio-text-muted)',
-                  marginTop: 8,
-                }}
-              >
-                {activeVFSFile.split('/').pop()}
-              </span>
-              <span style={{ fontSize: 12, color: 'var(--studio-text-dim)', marginTop: 4 }}>
-                Binary file · {sizeKB} KB
-              </span>
-            </div>
-          </div>
-        );
-      }
-
+    if (previewFileContent === null) {
       return (
         <div style={{ ...styles.previewContent, background: 'var(--studio-bg)' }}>
           <div style={styles.previewPlaceholder}>
@@ -593,29 +491,75 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       );
     }
 
-    if (isSoftNUIFile && !PreviewComponent) {
+    const codeView = activeVFSFile ? <CodeView path={activeVFSFile} source={previewFileContent} /> : null;
+
+    // Code, for a page whose preview is not running: nothing to keep alive.
+    if (showCode && !(isSoftNUIFile && softNSource && PreviewComponent) && !(isHtmlFile && blobUrl)) {
+      return codeView;
+    }
+
+    if (isSoftNUIFile && compositionError) {
       return (
-        <div style={{ ...styles.previewContent, background: 'var(--studio-bg)' }}>
-          <div style={{ ...styles.previewPlaceholder, padding: 24, minWidth: 0, maxWidth: '100%' }} role={rendererError ? 'alert' : 'status'} aria-busy={!rendererError}>
-            <Icon name="eye" size={24} color="var(--studio-text-dim)" />
-            <p style={{ fontSize: 14, color: 'var(--studio-text-muted)' }}>
-              {rendererError ? 'Preview could not start.' : 'Preparing preview…'}
-            </p>
-            {rendererError && (
+        <div style={styles.previewContent}>
+          <div className="st-state-panel" role="alert">
+            <h3 className="st-state-title">
+              <span className="st-state-mark"><Icon name="alert-circle" size={16} /></span>
+              This app cannot be previewed as it stands.
+            </h3>
+            <p className="st-state-message">{compositionError}</p>
+            {missingPackage ? (
               <>
-                <p style={{ fontSize: 12, color: 'var(--studio-text-dim)', overflowWrap: 'anywhere' }}>{rendererError}</p>
-                <button
-                  style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid var(--studio-border-strong)', background: 'var(--studio-bg-elevated)', color: 'var(--studio-text)', fontSize: 13, cursor: 'pointer' }}
-                  onClick={() => { setRendererError(null); setRendererRetry((value) => value + 1); }}
-                >
-                  Retry preview
-                </button>
-                <details style={{ width: '100%', minWidth: 0, marginTop: 16, color: 'var(--studio-text-muted)', fontSize: 12 }}>
-                  <summary style={{ cursor: 'pointer' }}>View source</summary>
-                  <pre style={styles.filePreview}>{previewFileContent}</pre>
-                </details>
+                <p className="st-state-note">
+                  The app imports {missingPackage} but manifest.json does not ask for it. Enabling it adds
+                  {' '}<code>{missingPackage}</code> to <code>config.python.packages</code>; Undo takes it back out.
+                </p>
+                <div className="st-state-actions">
+                  <button type="button" className="st-btn st-btn-sm st-btn-primary" onClick={() => enablePackage(missingPackage)}>
+                    Enable {missingPackage}
+                  </button>
+                </div>
               </>
+            ) : (
+              <p className="st-state-note">Run would stop at the same point: the preview composes the app the way the runtime does. Fix the file named above, or ask the AI to.</p>
             )}
+            <details>
+              <summary>View source</summary>
+              <pre style={styles.filePreview}>{previewFileContent}</pre>
+            </details>
+          </div>
+        </div>
+      );
+    }
+
+    if (isSoftNUIFile && !PreviewComponent) {
+      if (!rendererError) {
+        return (
+          <div style={styles.previewContent}>
+            <div className="st-loading" role="status" aria-busy="true">Preparing preview…</div>
+          </div>
+        );
+      }
+      return (
+        <div style={styles.previewContent}>
+          <div className="st-state-panel" role="alert">
+            <h3 className="st-state-title">
+              <span className="st-state-mark"><Icon name="alert-circle" size={16} /></span>
+              Preview could not start.
+            </h3>
+            <p className="st-state-message">{rendererError}</p>
+            <div className="st-state-actions">
+              <button
+                type="button"
+                className="st-btn st-btn-sm"
+                onClick={() => { setRendererError(null); setRendererRetry((value) => value + 1); }}
+              >
+                Retry preview
+              </button>
+            </div>
+            <details>
+              <summary>View source</summary>
+              <pre style={styles.filePreview}>{previewFileContent}</pre>
+            </details>
           </div>
         </div>
       );
@@ -636,8 +580,13 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
             {declared.length === 1 ? 'it' : 'them'} fail here. Use Run to open the bundle in the runtime, where they can be allowed.
           </div>
         ) : null;
+      // In Code the running app stays mounted, hidden, so switching back
+      // finds it as it was rather than restarted.
+      const rendererStyle = showCode ? { ...styles.rendererWrap, display: 'none' } : styles.rendererWrap;
       return ThemeProviderComponent ? (
-        <div style={styles.rendererWrap}>
+        <>
+          {showCode && codeView}
+          <div style={rendererStyle}>
           {capabilityNote}
           <ThemeProviderComponent darkMode={themePreview === 'dark'} followSystem={false}>
             <PreviewComponent
@@ -645,36 +594,46 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
               source={softNSource}
               functions={rendererFunctions}
               initialData={initialData}
-              importResolver={importResolver}
-              preIncludedLogicPaths={preIncludedLogicPaths}
+              importResolver={composition?.importResolver}
+              logicBasePath={composition?.logicBasePath}
+              preIncludedLogicPaths={composition?.preIncludedLogicPaths}
+              python={composition?.python}
               appId={previewAppId}
               resumeSavedSyncRoom={false}
             />
           </ThemeProviderComponent>
-        </div>
+          </div>
+        </>
       ) : (
-        <div style={styles.rendererWrap}>
+        <>
+          {showCode && codeView}
+          <div style={rendererStyle}>
           {capabilityNote}
           <PreviewComponent
             key={refreshKey}
             source={softNSource}
             functions={rendererFunctions}
             initialData={initialData}
-            importResolver={importResolver}
-            preIncludedLogicPaths={preIncludedLogicPaths}
+            importResolver={composition?.importResolver}
+            logicBasePath={composition?.logicBasePath}
+            preIncludedLogicPaths={composition?.preIncludedLogicPaths}
+            python={composition?.python}
             appId={previewAppId}
             resumeSavedSyncRoom={false}
           />
-        </div>
+          </div>
+        </>
       );
     }
 
     if (isHtmlFile && blobUrl) {
       return (
-        <iframe
+        <>
+          {showCode && codeView}
+          <iframe
           key={refreshKey}
           src={blobUrl}
-          style={styles.iframe}
+          style={showCode ? { ...styles.iframe, display: 'none' } : styles.iframe}
           // allow-scripts WITHOUT allow-same-origin. Together the two cancel the
           // sandbox out: the blob inherits this origin, so previewed HTML could
           // read localStorage — where the model API key is kept — and reach back
@@ -684,7 +643,8 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
           // run, they just get an opaque origin and a SecurityError on storage.
           sandbox="allow-scripts"
           title="App Preview"
-        />
+          />
+        </>
       );
     }
 
@@ -705,27 +665,16 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
               <strong>{manifestPages.length}</strong>
             </div>
           </div>
-          <pre style={styles.filePreview}>{previewFileContent}</pre>
+          {codeView}
         </div>
       );
     }
 
-    return (
-      <div
-        style={{
-          ...styles.codePreview,
-          background: 'var(--studio-bg)',
-          color: 'var(--studio-text-muted)',
-        }}
-      >
-        <pre style={styles.filePreview}>{previewFileContent}</pre>
-      </div>
-    );
+    return codeView;
   };
 
   return (
-    <div style={styles.container}>
-      {!isMobile && <div style={styles.atmosphere} />}
+    <div className="st-canvas">
       {/* Canvas area */}
       <div
         style={{
@@ -746,28 +695,50 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
             }
             onClose={() => setIsExpandedPreview(false)}
             chrome={
-              <div style={styles.previewChromeLeft}>
-                <div style={styles.previewTrafficLights}>
-                  <span
-                    style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }}
-                  />
-                  <span
-                    style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }}
-                  />
-                  <span
-                    style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }}
-                  />
-                </div>
-                <div style={styles.previewMeta}>
-                  <span style={styles.previewLabel}>{selectedSurfaceLabel}</span>
-                  <span style={styles.previewSubLabel}>
-                    {devicePreset} / {themePreview}
+              <div className="st-preview-chrome">
+                <div className="st-preview-where">
+                  <span className="st-preview-file" title={activeVFSFile ?? undefined}>
+                    {activeVFSFile && activeVFSFile.includes('/') && (
+                      <span className="dir">{activeVFSFile.slice(0, activeVFSFile.lastIndexOf('/') + 1)}</span>
+                    )}
+                    {selectedSurfaceLabel}
                   </span>
+                  <span className="st-preview-tag">{devicePreset}</span>
+                  {isLive && <span className="st-live">Running</span>}
+                </div>
+                <div style={styles.chromeRight}>
+                {canSwitchView && <ViewSwitch mode={viewMode} onChange={setViewMode} />}
+                <div className="st-preview-tools" role="toolbar" aria-label="Preview controls">
+                  {[
+                    { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },
+                    { id: 'resetdata', icon: 'database' as const, label: 'Reset preview data (reseed from the .xdb files)' },
+                    { id: 'newtab', icon: 'maximize' as const, label: 'Expand preview' },
+                  ].map((tool) => (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      onClick={() => handleToolAction(tool.id)}
+                      className="st-icon-btn"
+                      title={tool.label}
+                      aria-label={tool.label}
+                    >
+                      <Icon name={tool.icon} size={15} />
+                    </button>
+                  ))}
+                </div>
                 </div>
               </div>
             }
           >
-            {renderPreviewContent()}
+            <div style={styles.surfaceColumn}>
+              {/* The frame's header is hidden on a phone, so the switch comes with the content there. */}
+              {isMobile && canSwitchView && (
+                <div className="st-view-switch-bar">
+                  <ViewSwitch mode={viewMode} onChange={setViewMode} />
+                </div>
+              )}
+              {renderPreviewContent()}
+            </div>
           </StablePreviewSurface>
         ) : (
           <div style={styles.emptyCanvas}>
@@ -805,31 +776,6 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
         )}
       </div>
 
-      {/* Canvas toolbar (hidden on mobile) */}
-      {!isMobile && !isExpandedPreview && (
-        <div style={styles.toolbar} role="toolbar" aria-label="Preview controls">
-          {[
-            { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },
-            { id: 'resetdata', icon: 'database' as const, label: 'Reset preview data (reseed from the .xdb files)' },
-            { id: 'newtab', icon: 'maximize' as const, label: 'Expand preview' },
-          ].map((tool) => (
-            <button
-              key={tool.id}
-              onClick={() => handleToolAction(tool.id)}
-              onMouseEnter={() => setHoveredTool(tool.id)}
-              onMouseLeave={() => setHoveredTool(null)}
-              style={{
-                ...styles.toolBtn,
-                ...(hoveredTool === tool.id ? styles.toolBtnHover : {}),
-              }}
-              title={tool.label}
-              aria-label={tool.label}
-            >
-              <Icon name={tool.icon} size={15} />
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 };
@@ -850,22 +796,6 @@ export function declaredCapabilities(content: string | Uint8Array | undefined): 
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    background:
-      'radial-gradient(circle at top, var(--studio-accent-soft), transparent 30%), linear-gradient(180deg, var(--studio-bg) 0%, var(--studio-bg-muted) 100%)',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  atmosphere: {
-    position: 'absolute',
-    inset: 0,
-    background:
-      'radial-gradient(circle at 20% 20%, var(--studio-surface), transparent 24%), radial-gradient(circle at 80% 0%, var(--studio-accent-soft), transparent 20%)',
-    pointerEvents: 'none',
-  },
   canvasArea: {
     flex: 1,
     display: 'flex',
@@ -875,11 +805,10 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 16,
     position: 'relative',
     zIndex: 1,
-    background: 'var(--studio-bg)',
     minHeight: 0,
   },
   previewFrame: {
-    borderRadius: 18,
+    borderRadius: 12,
     overflow: 'hidden',
     border: '1px solid var(--studio-border-strong)',
     boxShadow: 'var(--studio-shadow)',
@@ -976,47 +905,13 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--studio-bg-elevated)',
   },
   previewChrome: {
-    height: 46,
+    height: 42,
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 14px',
-    background: 'linear-gradient(180deg, var(--studio-bg-elevated), var(--studio-panel))',
+    padding: '0 6px 0 14px',
+    background: 'var(--studio-bg-elevated)',
     borderBottom: '1px solid var(--studio-border)',
     flexShrink: 0,
-  },
-  previewChromeLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-  },
-  previewTrafficLights: {
-    display: 'flex',
-    gap: 6,
-  },
-  trafficLight: {
-    width: 10,
-    height: 10,
-    borderRadius: '50%',
-    boxShadow: '0 0 0 1px var(--studio-border) inset',
-  },
-  previewMeta: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 1,
-  },
-  previewLabel: {
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 12,
-    fontWeight: 700,
-    color: 'var(--studio-text)',
-  },
-  previewSubLabel: {
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 10,
-    color: 'var(--studio-text-muted)',
-    textTransform: 'capitalize' as const,
-    letterSpacing: '0.08em',
   },
   iframe: {
     width: '100%',
@@ -1025,18 +920,27 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--studio-bg-elevated)',
     minHeight: 0,
   },
-  codePreview: {
-    width: '100%',
-    flex: 1,
-    overflow: 'auto',
-    minHeight: 0,
-  },
   codePreviewCard: {
     width: '100%',
     flex: 1,
-    overflow: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
     minHeight: 0,
     background: 'var(--studio-bg-elevated)',
+  },
+  chromeRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  surfaceColumn: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
   },
   manifestSummary: {
     display: 'grid',
@@ -1044,6 +948,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     padding: 16,
     borderBottom: '1px solid var(--studio-border)',
+    flexShrink: 0,
   },
   manifestStat: {
     padding: 12,
@@ -1059,35 +964,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'block',
     fontSize: 10,
     color: 'var(--studio-text-muted)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.08em',
     marginBottom: 8,
-  },
-  assetPreviewWrap: {
-    width: '100%',
-    flex: 1,
-    minHeight: 0,
-    background: `radial-gradient(circle at top, var(--studio-accent-soft), transparent 24%), var(--studio-bg)`,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-    gap: 10,
-  },
-  assetPreview: {
-    maxWidth: '100%',
-    maxHeight: '70%',
-    objectFit: 'contain' as const,
-    borderRadius: 18,
-    boxShadow: 'var(--studio-shadow)',
-    background: 'var(--studio-panel-strong)',
-  },
-  assetLabel: {
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 12,
-    color: 'var(--studio-text-dim)',
-    fontWeight: 500,
   },
   previewContent: {
     width: '100%',
@@ -1190,16 +1067,13 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: 'var(--studio-shadow)',
     cursor: 'pointer',
     fontFamily: 'inherit',
-    transition: 'all 0.15s',
+    transition: 'border-color 0.15s, background 0.15s',
   },
   emptyActionKicker: {
     display: 'block',
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 10,
-    fontWeight: 700,
-    letterSpacing: '0.12em',
-    textTransform: 'uppercase' as const,
-    color: 'var(--studio-accent)',
+    fontSize: 12,
+    fontWeight: 500,
+    color: 'var(--studio-text-dim)',
     marginBottom: 8,
   },
   emptyActionTitle: {
@@ -1209,37 +1083,5 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     letterSpacing: '-0.02em',
     color: 'var(--studio-text)',
-  },
-  toolbar: {
-    alignSelf: 'center',
-    flexShrink: 0,
-    margin: '0 0 12px',
-    display: 'flex',
-    gap: 4,
-    padding: 6,
-    background: 'var(--studio-panel)',
-    backdropFilter: 'blur(12px)',
-    borderRadius: 14,
-    border: '1px solid var(--studio-border)',
-    boxShadow: 'var(--studio-shadow)',
-    zIndex: 2,
-  },
-  toolBtn: {
-    width: 34,
-    height: 34,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    border: 'none',
-    background: 'transparent',
-    color: 'var(--studio-text-muted)',
-    borderRadius: 10,
-    cursor: 'pointer',
-    transition: 'all 0.15s',
-    fontFamily: 'inherit',
-  },
-  toolBtnHover: {
-    color: 'var(--studio-text)',
-    background: 'var(--studio-surface-hover)',
   },
 };

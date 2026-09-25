@@ -1,16 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../../stores';
 import { Icon } from '../common/Icon';
-import { runAgentTurn, abortAgentTurn } from '../../lib/agentOrchestrator';
+import { runAgentTurn } from '../../lib/agentOrchestrator';
+import { activeAgentRunId, answerAgentQuestion, isRunLive, stopAgentRun } from '../../lib/agent/runAgent';
+import { isReadableRun, RunTimeline } from './RunTimeline';
 import type { ChatMessage } from '../../types/studio';
+import { AIStatusPill, openSetupFor, useAIReadiness } from './AIStatusPill';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 
-export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettings }) => {
+export const AIChat: React.FC = () => {
   const {
     messages, agentState, addMessage,
     tokensUsed, iterationsUsed, maxIterations,
-    activeProviderId, providers, currentStep,
+    currentStep,
     draftMessage: input, setDraftMessage: setInput,
   } = useAIStore();
+  const readiness = useAIReadiness();
   const { blueprint } = useWorkspaceStore();
   // A turn that committed files did so as one VFS transaction under the
   // message's transactionId. While that transaction is still in the
@@ -40,9 +45,22 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
     }
   }, [messages]);
 
+  // A run waiting on a question takes the next message as its answer.
+  const waitingRun = (() => {
+    const id = activeAgentRunId();
+    if (!id || !isRunLive(id)) return null;
+    const run = messages.find((m) => m.run?.id === id)?.run;
+    return run && run.status === 'waiting' && run.question && !run.question.confirm ? run : null;
+  })();
+
   const handleSend = () => {
     const text = input.trim();
     if (!text || agentState !== 'idle') return;
+    if (waitingRun) {
+      setInput('');
+      void answerAgentQuestion(waitingRun.id, text);
+      return;
+    }
     if (!hasProvider) { openSettings(); return; }
     const msg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -65,10 +83,11 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
     }
   };
 
-  const provider = providers.find((p) => p.id === activeProviderId);
-  const { brief, setLeftPanel } = useWorkspaceStore();
-  const hasProvider = !!provider;
-  const openSettings = () => onOpenSettings ? onOpenSettings() : setLeftPanel('settings');
+  const { brief } = useWorkspaceStore();
+  // Ready means a provider and a model: sending with less opens the setup
+  // for what is missing, and keeps the message as it was typed.
+  const hasProvider = readiness.state === 'ready';
+  const openSettings = () => openSetupFor(readiness);
 
   const sendSuggestedPrompt = (text: string) => {
     if (agentState !== 'idle') return;
@@ -88,22 +107,15 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
     <div style={styles.container}>
       {/* Provider info bar */}
       <div style={styles.providerBar}>
-        <div style={styles.providerBadge}>
-          <Icon name="ai" size={12} color={hasProvider ? 'var(--studio-accent)' : 'var(--studio-error)'} />
-          <span style={styles.providerName}>
-            {provider?.name || 'No provider'}
-          </span>
-          {!hasProvider && (
-            <button
-              onClick={openSettings}
-              style={styles.setupLink}
-            >
-              Set up
-            </button>
-          )}
-        </div>
+        {/* Missing a provider or a model, the card below says so and has
+            the button; the pill would be a second copy of it. */}
+        {hasProvider && (
+          <div style={styles.providerBadge}>
+            <AIStatusPill />
+          </div>
+        )}
         <div style={styles.statsRow}>
-          <span style={styles.stat}>{iterationsUsed}/{maxIterations} steps</span>
+          <span style={styles.stat}>{iterationsUsed}/{maxIterations} runs</span>
           <span style={styles.statDivider} />
           <span style={styles.stat}>{tokensUsed.toLocaleString()} tokens</span>
         </div>
@@ -115,21 +127,27 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
         )}
       </div>
 
-      {/* No provider banner */}
-      {!hasProvider && messages.length === 0 && (
-        <button
-          onClick={openSettings}
-          style={styles.setupBanner}
-        >
-          <Icon name="key" size={18} color="var(--studio-warning)" />
-          <div style={styles.setupBannerText}>
-            <span style={styles.setupBannerTitle}>Configure AI to get started</span>
-            <span style={styles.setupBannerDesc}>
-              Connect a provider or local model in Settings
-            </span>
+      {/* What the AI is missing, and the one button that fixes it. */}
+      {/* A hosted editor's AI is its host's; there is no setup to open. */}
+      {!hasProvider && !isHostedEditor() && (
+        <div style={styles.setupWrap}>
+          <div className="st-ai-cta" role="region" aria-label="AI setup">
+            <h3 className="st-ai-cta-title">
+              {readiness.state === 'no-model' ? `Choose a model for ${readiness.name}` : readiness.state === 'unselected' ? 'Choose a provider' : 'Connect an AI provider'}
+            </h3>
+            <p>
+              {readiness.state === 'no-model'
+                ? 'This provider has no model chosen. Pick one of the models it offers, and the AI is ready.'
+                : readiness.state === 'unselected'
+                  ? 'Pick which of your providers the AI should use.'
+                  : 'The AI needs a model to write your app: one on this computer, or your own OpenAI or Anthropic key.'}
+            </p>
+            <button type="button" className="st-btn st-btn-primary st-btn-sm" onClick={openSettings}>
+              <Icon name="key" size={14} />
+              {readiness.state === 'no-model' ? 'Choose a model' : readiness.state === 'unselected' ? 'Choose a provider' : 'Connect a provider'}
+            </button>
           </div>
-          <Icon name="chevron-right" size={16} color="var(--studio-text-dim)" />
-        </button>
+        </div>
       )}
 
       {/* Brief context */}
@@ -225,7 +243,11 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
           </div>
         )}
 
-        {messages.map((msg) => (
+        {messages.map((msg) => msg.run ? (
+          <div key={msg.id} style={styles.runWrap}>
+            {isReadableRun(msg.run) ? <RunTimeline message={msg} /> : <p className="st-run-reason">{msg.content || 'This run’s record could not be read.'}</p>}
+          </div>
+        ) : (
           <div
             key={msg.id}
             style={{
@@ -253,7 +275,7 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
                         <Icon
                           name={tc.status === 'success' ? 'check' : tc.status === 'error' ? 'x' : 'clock'}
                           size={12}
-                          color={tc.status === 'success' ? 'var(--studio-success)' : tc.status === 'error' ? 'var(--studio-error)' : 'var(--studio-warning)'}
+                          color={tc.status === 'success' ? 'var(--studio-text-muted)' : tc.status === 'error' ? 'var(--studio-error)' : 'var(--studio-warning)'}
                         />
                         <span style={styles.toolName}>{tc.tool}</span>
                       </div>
@@ -295,7 +317,7 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
           </div>
         ))}
 
-        {agentState === 'building' && (
+        {agentState === 'building' && !messages.at(-1)?.run && (
           <div style={styles.typingIndicator}>
             <div style={styles.aiAvatar}>
               <Icon name="ai" size={14} color="var(--studio-accent)" />
@@ -324,16 +346,16 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={blueprint ? 'Ask the AI to modify your app...' : 'Describe the app you want to build...'}
+          placeholder={waitingRun ? 'Answer the question above…' : blueprint ? 'Ask the AI to change your app…' : 'Describe the app you want to build…'}
           style={styles.textarea}
           rows={1}
           disabled={agentState !== 'idle'}
         />
         {agentState === 'building' ? (
           <button
-            onClick={abortAgentTurn}
-            aria-label="Stop generating"
-            title="Stop generating"
+            onClick={() => stopAgentRun()}
+            aria-label="Stop the agent"
+            title="Stop the agent; what it already wrote stays"
             style={{ ...styles.sendBtn, background: 'var(--studio-error)' }}
           >
             <Icon name="x" size={16} color="var(--studio-bg)" />
@@ -383,11 +405,6 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
     marginBottom: 6,
   },
-  providerName: {
-    fontSize: 12,
-    fontWeight: 600,
-    color: 'var(--studio-text)',
-  },
   statsRow: {
     display: 'flex',
     alignItems: 'center',
@@ -400,13 +417,12 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 8,
   },
   estimatePill: {
-    padding: '4px 8px',
-    borderRadius: 999,
-    background: 'var(--studio-accent-soft)',
-    color: 'var(--studio-accent)',
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 10,
-    fontWeight: 700,
+    padding: '3px 8px',
+    borderRadius: 6,
+    border: '1px solid var(--studio-border)',
+    color: 'var(--studio-text-muted)',
+    fontSize: 11.5,
+    fontWeight: 500,
   },
   stat: {
     fontFamily: 'var(--studio-mono)',
@@ -418,48 +434,9 @@ const styles: Record<string, React.CSSProperties> = {
     height: 10,
     background: 'var(--studio-border)',
   },
-  setupLink: {
-    fontSize: 11,
-    fontWeight: 600,
-    color: 'var(--studio-accent)',
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    padding: 0,
-    textDecoration: 'underline',
-    fontFamily: 'inherit',
-  },
-  setupBanner: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    margin: '10px 10px 0',
-    padding: '12px 14px',
-    background: 'var(--studio-surface)',
-    border: '1px solid var(--studio-warning)',
-    borderRadius: 10,
-    cursor: 'pointer',
-    textAlign: 'left' as const,
-    fontFamily: 'inherit',
+  setupWrap: {
+    padding: '12px 14px 0',
     flexShrink: 0,
-  },
-  setupBannerText: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 2,
-    minWidth: 0,
-  },
-  setupBannerTitle: {
-    fontFamily: 'var(--studio-display)',
-    fontSize: 13,
-    fontWeight: 700,
-    letterSpacing: '-0.01em',
-    color: 'var(--studio-warning)',
-  },
-  setupBannerDesc: {
-    fontSize: 10,
-    color: 'var(--studio-text-muted)',
   },
   briefContext: {
     margin: '10px 10px 0',
@@ -556,15 +533,19 @@ const styles: Record<string, React.CSSProperties> = {
   },
   suggestionBtn: {
     padding: '8px 12px',
-    fontSize: 11,
+    fontSize: 12.5,
     color: 'var(--studio-text-muted)',
-    background: 'var(--studio-panel)',
+    background: 'var(--studio-bg)',
     border: '1px solid var(--studio-border)',
     borderRadius: 8,
     cursor: 'pointer',
     textAlign: 'left',
-    transition: 'all 0.15s',
+    transition: 'border-color 0.15s, color 0.15s',
     fontFamily: 'inherit',
+  },
+  runWrap: {
+    display: 'flex',
+    minWidth: 0,
   },
   messageBubble: {
     display: 'flex',
@@ -594,8 +575,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   userContent: {
     background: 'var(--studio-accent)',
-    // The coral fill is light in dark theme and dark in light theme, so the
-    // page ground is the only token that stays legible on it in both.
+    // The accent is the ink inverted — light in the dark theme, dark in the
+    // light one — so the page ground is the token that stays legible on it.
     color: 'var(--studio-bg)',
     borderBottomRightRadius: 4,
   },
@@ -709,7 +690,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   textarea: {
     flex: 1,
-    background: 'var(--studio-surface)',
+    background: 'var(--studio-bg)',
     border: '1px solid var(--studio-border)',
     borderRadius: 10,
     padding: '10px 12px',
@@ -731,7 +712,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    transition: 'all 0.15s',
+    transition: 'opacity 0.15s',
     flexShrink: 0,
   },
 };

@@ -8,7 +8,7 @@
  * way to a project. Pinned here: the example opens into the stores as a
  * complete project whose manifest passes the validator with no error, so
  * Run and Export are enabled the way the bar computes them; the dashboard
- * offers it only when there is nothing recent, labelled as an example; and
+ * offers every example, recent projects or not, each labelled with its language; and
  * the bundle it exports is a real archive the validator accepts again.
  */
 
@@ -102,26 +102,28 @@ describe('the bundled example', () => {
   });
 });
 
-describe('the dashboard offers the example', () => {
-  it('only when there is nothing recent, as a labelled button that opens it', () => {
+describe('the dashboard offers the examples', () => {
+  it('always, both languages, each a labelled button that opens that example', () => {
     const onOpenExample = vi.fn();
     root = createRoot(container);
-    act(() => root!.render(<Dashboard onNewProject={() => {}} onOpenExample={onOpenExample} recentProjects={[]} />));
-    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Open an example project"]')!;
-    expect(button).not.toBeNull();
-    expect(button.textContent).toMatch(/Example/);
-    act(() => button.click());
-    expect(onOpenExample).toHaveBeenCalledTimes(1);
+    const render = (recent: React.ComponentProps<typeof Dashboard>['recentProjects']) =>
+      act(() => root!.render(<Dashboard onNewProject={() => {}} onOpenExample={onOpenExample} recentProjects={recent} />));
 
-    act(() =>
-      root!.render(
-        <Dashboard
-          onNewProject={() => {}}
-          onOpenExample={onOpenExample}
-          recentProjects={[{ id: 'a', name: 'Alpha', target: 'web', lastModified: 'today', saved: true, active: false }]}
-        />,
-      ),
-    );
-    expect(container.querySelector('button[aria-label="Open an example project"]')).toBeNull();
+    render([]);
+    const javascript = container.querySelector<HTMLButtonElement>('button[aria-label="Open the JavaScript example: Reading list"]')!;
+    const python = container.querySelector<HTMLButtonElement>('button[aria-label="Open the Python example: Reading list in Python"]')!;
+    expect(javascript).not.toBeNull();
+    expect(python).not.toBeNull();
+    // Each shows a few lines of its own logic file, so the difference is visible.
+    expect(javascript.textContent).toContain('logic/main.logic');
+    expect(python.textContent).toContain('logic/main.py');
+    act(() => python.click());
+    expect(onOpenExample).toHaveBeenCalledWith(EXAMPLES[1]);
+    act(() => javascript.click());
+    expect(onOpenExample).toHaveBeenLastCalledWith(DEFAULT_EXAMPLE);
+
+    // They used to disappear once there was anything recent; now they stay.
+    render([{ id: 'a', name: 'Alpha', target: 'web', lastModified: 'today', saved: true, active: false }]);
+    expect(container.querySelectorAll('button[aria-label^="Open the "][aria-label*=" example: "]')).toHaveLength(EXAMPLES.length);
   });
 });

@@ -1,4 +1,4 @@
-import { MAX_ZIP_INPUT_BYTES, readBundleEntries } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, classifyAsset, readBundleEntries } from '@softn/core';
 import { canonicalKey, normalizeProjectPath } from './paths';
 
 export interface ProjectImportEntry {
@@ -6,7 +6,25 @@ export interface ProjectImportEntry {
   content: string | Uint8Array;
 }
 
-const TEXT_FILE = /\.(ui|logic|json|xdb|md|txt|html|css|js|ts|tsx|jsx|svg|xml|yaml|yml|toml)$/i;
+/**
+ * Whether an archive entry is text, decided by core's one registry.
+ *
+ * Studio kept its own list of text extensions, and it did not have `.py`: a
+ * Python app imported with its logic as bytes, which the model was not shown,
+ * the preview could not compose and the validator could not read. Every other
+ * reader in SoftN asks `classifyAsset`, so a file is text here exactly when it
+ * is text to the runtime that will open the bundle.
+ *
+ * Formats the model edits as source are the exception. Studio decoded them
+ * before and the model can read and change them only as text: SVG, which core
+ * carries as an image, and source formats core's registry has no entry for,
+ * which it would carry as opaque bytes. Text is lossless for both on export.
+ */
+const SOURCE_TEXT = /\.(svg|ts|tsx|jsx|yaml|yml|toml)$/i;
+
+function isTextEntry(path: string): boolean {
+  return SOURCE_TEXT.test(path) || !classifyAsset(path).binary;
+}
 
 /** Reject an oversized local file before allocating its bytes. */
 export async function readProjectFile(file: Pick<File, 'name' | 'size' | 'arrayBuffer'>): Promise<Uint8Array> {
@@ -46,7 +64,7 @@ export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
     canonicalPaths.add(canonicalPath);
     entries.push({
       path,
-      content: TEXT_FILE.test(path) ? decoder.decode(content) : content,
+      content: isTextEntry(path) ? decoder.decode(content) : content,
     });
   }
   return entries;

@@ -1,7 +1,7 @@
 import React from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
-import { getBundleEntryPath } from '../../lib/studioProject';
+import { findPageFile, getBundleEntryPath } from '../../lib/studioProject';
 
 export const PagesPanel: React.FC = () => {
   const { blueprint, activePageId, activeFilePath, setActivePage, setActiveFilePath } = useWorkspaceStore();
@@ -34,8 +34,7 @@ export const PagesPanel: React.FC = () => {
             {bundleEntry && (
               <div style={styles.viewerCard}>
                 <div>
-                  <span style={styles.viewerEyebrow}>Live viewer</span>
-                  <div style={styles.viewerTitle}>Bundle entry</div>
+                  <div style={styles.viewerTitle}>Entry page</div>
                   <div style={styles.viewerPath}>{bundleEntry}</div>
                 </div>
                 <button
@@ -49,18 +48,12 @@ export const PagesPanel: React.FC = () => {
               </div>
             )}
             {/* Blueprint pages */}
-            {blueprintPages.map((page) => (
+            {blueprintPages.map((page, index) => (
               <button
                 key={page.id}
                 onClick={() => {
                   setActivePage(page.id);
-                  const slug = page.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-                  const resolved =
-                    files.has(`pages/${slug}.html`) ? `pages/${slug}.html` :
-                    files.has(`pages/${slug}.htm`) ? `pages/${slug}.htm` :
-                    files.has(`pages/${slug}.ui`) ? `pages/${slug}.ui` :
-                    files.has(`ui/${slug}.ui`) ? `ui/${slug}.ui` :
-                    null;
+                  const resolved = findPageFile(files, blueprintPages, index);
                   if (resolved) setActiveFilePath(resolved);
                 }}
                 style={{
@@ -102,7 +95,7 @@ export const PagesPanel: React.FC = () => {
             {hasVFSPages && hasBlueprint && (
               <>
                 <div style={styles.sectionDivider}>
-                  <span style={styles.sectionLabel}>VFS Files</span>
+                  <span style={styles.sectionLabel}>All .ui files</span>
                 </div>
                 {uiFiles.map((path) => {
                   const name = path.split('/').pop() ?? path;
@@ -173,19 +166,9 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
     padding: '12px',
     marginBottom: 10,
-    borderRadius: 14,
-    background: 'var(--studio-accent-soft)',
-    border: '1px solid var(--studio-accent-soft)',
-  },
-  viewerEyebrow: {
-    display: 'block',
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 10,
-    fontWeight: 700,
-    color: 'var(--studio-accent)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.1em',
-    marginBottom: 6,
+    borderRadius: 10,
+    background: 'var(--studio-bg-muted)',
+    border: '1px solid var(--studio-border)',
   },
   viewerTitle: {
     fontFamily: 'var(--studio-display)',
@@ -195,19 +178,19 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text)',
   },
   viewerPath: {
-    fontSize: 10,
-    color: 'var(--studio-accent)',
+    fontSize: 11,
+    color: 'var(--studio-text-muted)',
     fontFamily: 'var(--studio-mono)',
     marginTop: 3,
   },
   viewerButton: {
     padding: '8px 12px',
-    borderRadius: 10,
-    border: 'none',
-    background: 'var(--studio-bg-muted)',
+    borderRadius: 8,
+    border: '1px solid var(--studio-border-strong)',
+    background: 'var(--studio-bg-elevated)',
     color: 'var(--studio-text)',
-    fontSize: 12,
-    fontWeight: 700,
+    fontSize: 12.5,
+    fontWeight: 500,
     cursor: 'pointer',
     fontFamily: 'inherit',
   },
@@ -220,15 +203,15 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent',
     border: 'none',
     borderRadius: 6,
-    color: 'var(--studio-text-dim)',
-    fontSize: 12,
+    color: 'var(--studio-text-muted)',
+    fontSize: 13,
     cursor: 'pointer',
     textAlign: 'left',
-    transition: 'all 0.15s',
+    transition: 'background 0.15s, color 0.15s',
     fontFamily: 'inherit',
   },
   pageItemActive: {
-    background: 'var(--studio-accent-soft)',
+    background: 'var(--studio-bg-muted)',
     color: 'var(--studio-text)',
   },
   pageName: {
@@ -248,11 +231,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '10px 10px 4px',
   },
   sectionLabel: {
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 10,
-    fontWeight: 600,
+    fontSize: 12,
+    fontWeight: 500,
     color: 'var(--studio-text-dim)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.5px',
   },
 };

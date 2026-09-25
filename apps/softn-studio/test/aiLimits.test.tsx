@@ -90,7 +90,7 @@ describe('editing AI limits', () => {
       expect(maxIterations).toBeLessThanOrEqual(100);
       expect(Number.isInteger(tokenBudget)).toBe(true);
       expect(tokenBudget).toBeGreaterThanOrEqual(1000);
-      expect(tokenBudget).toBeLessThanOrEqual(1_000_000);
+      expect(tokenBudget).toBeLessThanOrEqual(20_000_000);
       persistGlobalSettings();
       expect(loadGlobalSettings()?.providers[0].apiKey).toBe('test-only');
     }

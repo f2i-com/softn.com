@@ -1,0 +1,333 @@
+/*
+ * The canvas's file viewers: highlighted source and media.
+ *
+ * Token colours are the site's (tok-tag, tok-str, tok-mark …): the language's
+ * own marks — keywords, directives, `@event`, the braces around an
+ * expression, decorators — in coral; strings and numbers in sand; names in
+ * the ink; attributes, punctuation and comments in its dims. Mint is not used:
+ * nothing here is running.
+ */
+
+.st-codeview {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--studio-bg);
+}
+
+.st-codeview-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.5rem;
+  padding: 0 0.5rem 0 1rem;
+  border-bottom: 1px solid var(--studio-border-subtle);
+  font-size: 0.75rem;
+  color: var(--studio-text-dim);
+  flex-shrink: 0;
+}
+
+.st-codeview-lang {
+  font-family: var(--studio-mono);
+  color: var(--studio-code);
+}
+
+.st-codeview-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-codeview-copy {
+  flex-shrink: 0;
+}
+
+.st-codeview-body {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0.75rem 0 1.5rem;
+  overflow: auto;
+  font-family: var(--studio-mono);
+  font-size: 0.78125rem;
+  line-height: 1.7;
+  color: var(--studio-text);
+  tab-size: 2;
+  white-space: pre;
+  counter-reset: st-line;
+}
+
+.st-codeview-body code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  font: inherit;
+}
+
+.st-code-line {
+  display: block;
+  padding-right: 1.5rem;
+  counter-increment: st-line;
+}
+
+/* The number is generated content: not selectable, never copied. */
+.st-code-line::before {
+  content: counter(st-line);
+  display: inline-block;
+  width: var(--st-gutter, 3ch);
+  margin-right: 1.25rem;
+  padding-left: 0.75rem;
+  box-sizing: content-box;
+  text-align: right;
+  color: var(--studio-text-dim);
+  opacity: 0.7;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.st-code-line:hover {
+  background: var(--studio-surface);
+}
+
+.tk-keyword,
+.tk-mark,
+.tk-decorator {
+  color: var(--studio-code);
+}
+
+.tk-string,
+.tk-number,
+.tk-literal,
+.tk-regex {
+  color: var(--sand);
+}
+
+.tk-comment {
+  color: var(--studio-text-dim);
+  font-style: italic;
+}
+
+.tk-tag {
+  color: var(--tok-tag);
+  font-weight: 500;
+}
+
+.tk-attr,
+.tk-type,
+.tk-property {
+  color: var(--studio-text-muted);
+}
+
+.tk-punct {
+  color: var(--studio-text-dim);
+}
+
+.tk-function {
+  color: var(--studio-text);
+  font-weight: 500;
+}
+
+/* ── Preview | Code switch ─────────────────────────────────────── */
+
+.st-view-switch {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--studio-radius);
+  background: var(--studio-bg-muted);
+  border: 1px solid var(--studio-border);
+  flex-shrink: 0;
+}
+
+.st-view-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 1.75rem;
+  padding: 0 0.625rem;
+  border: none;
+  border-radius: var(--studio-radius-sm);
+  background: transparent;
+  color: var(--studio-text-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.st-view-switch button:hover {
+  color: var(--studio-text);
+}
+
+.st-view-switch button[aria-pressed='true'] {
+  background: var(--studio-accent);
+  color: var(--studio-on-accent);
+}
+
+.st-view-switch-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--studio-border-subtle);
+  background: var(--studio-bg-elevated);
+  flex-shrink: 0;
+}
+
+/* ── Media ─────────────────────────────────────────────────────── */
+
+.st-media {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--studio-bg);
+}
+
+.st-media-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  overflow: auto;
+}
+
+/* A checkerboard behind images, so transparency reads as transparency. */
+.st-media-stage[data-kind='image'] {
+  background-color: var(--studio-bg);
+  background-image:
+    linear-gradient(45deg, var(--studio-surface-hover) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--studio-surface-hover) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--studio-surface-hover) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--studio-surface-hover) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.st-media-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.st-media-stage video {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--studio-radius);
+  background: #000;
+}
+
+.st-media-audio {
+  width: min(32rem, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.5rem;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-lg);
+  background: var(--studio-bg-elevated);
+}
+
+.st-media-audio-title {
+  max-width: 100%;
+  font-family: var(--studio-mono);
+  font-size: 0.875rem;
+  color: var(--studio-text);
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.st-media-audio audio {
+  width: 100%;
+}
+
+.st-media-font {
+  width: 100%;
+  max-width: 44rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  color: var(--studio-text);
+  overflow-wrap: anywhere;
+}
+
+.st-media-font-lg {
+  font-size: clamp(1.75rem, 4vw, 3rem);
+  line-height: 1.1;
+}
+
+.st-media-font-md {
+  font-size: 1.125rem;
+  line-height: 1.5;
+}
+
+.st-media-font-sm {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--studio-text-muted);
+}
+
+.st-media-pdf {
+  width: 100%;
+  height: 100%;
+  min-height: 20rem;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius);
+  background: var(--studio-bg-elevated);
+}
+
+.st-media-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--studio-border-subtle);
+  background: var(--studio-bg-elevated);
+  font-size: 0.75rem;
+  color: var(--studio-text-dim);
+  flex-shrink: 0;
+}
+
+.st-media-name {
+  font-family: var(--studio-mono);
+  color: var(--studio-text);
+  overflow-wrap: anywhere;
+}
+
+.st-media-info .num {
+  font-family: var(--studio-mono);
+  color: var(--studio-text-muted);
+}
+
+.st-media-info a {
+  margin-left: auto;
+  color: var(--studio-text);
+  text-underline-offset: 3px;
+}
+
+.st-media-empty {
+  max-width: 26rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: center;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--studio-text-muted);
+}
+
+.st-media-empty strong {
+  font-family: var(--studio-display);
+  font-size: 1.0625rem;
+  letter-spacing: -0.02em;
+  color: var(--studio-text);
+}

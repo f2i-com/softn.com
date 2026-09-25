@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "generate-icons": "node ../../scripts/generate-icons.mjs",
+    "generate:knowledge": "node scripts/generate-agent-knowledge.mjs",
     "test": "vitest run",
     "bench": "vitest run --config bench/vitest.config.ts"
   },
