@@ -18,6 +18,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { watchConsole } from '../helpers/console';
 import { DEMO } from '../helpers/demo';
+import { BUILDER_EXPORT_DIALOG, BUILDER_EXPORT_TITLE } from '../helpers/editors';
 
 const HANDOFF_ID = /[A-Za-z0-9-]{16,64}/;
 
@@ -32,9 +33,9 @@ async function openBuilderWithDemo(page: Page): Promise<string> {
 }
 
 async function openExportDialog(page: Page) {
-  await page.getByTitle('Export .softn bundle (Ctrl+Shift+E)').click();
-  const dialog = page.locator('div', { has: page.getByText('Export Bundle', { exact: true }) }).last();
-  await expect(page.getByText('Export Bundle', { exact: true })).toBeVisible();
+  await page.getByTitle(BUILDER_EXPORT_TITLE).click();
+  const dialog = page.getByRole('dialog', { name: BUILDER_EXPORT_DIALOG, exact: true });
+  await expect(dialog).toBeVisible();
   // The preflight inspection has to finish before the hand-off buttons are enabled.
   const publish = page.getByRole('button', { name: 'Publish…' });
   await expect(publish).toBeEnabled({ timeout: 30_000 });

@@ -20,7 +20,9 @@ export async function openBuilderWithDemo(page: Page): Promise<string> {
 }
 
 /** The toolbar control that opens Builder's Export dialog. */
-export const BUILDER_EXPORT_TITLE = 'Export .softn bundle (Ctrl+Shift+E)';
+export const BUILDER_EXPORT_TITLE = 'Export, run or publish (Ctrl+Shift+E)';
+/** The Export dialog's accessible name (its heading). */
+export const BUILDER_EXPORT_DIALOG = 'Export, run or publish';
 
 /**
  * Open the demo in Studio's desktop layout and wait until Run is enabled,

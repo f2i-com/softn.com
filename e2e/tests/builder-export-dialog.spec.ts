@@ -26,7 +26,7 @@
  */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { watchConsole } from '../helpers/console';
-import { BUILDER_EXPORT_TITLE, openBuilderWithDemo } from '../helpers/editors';
+import { BUILDER_EXPORT_DIALOG, BUILDER_EXPORT_TITLE, openBuilderWithDemo } from '../helpers/editors';
 
 /** The same selector the dialog uses, so "first" and "last" mean what it means. */
 const FOCUSABLE =
@@ -56,7 +56,7 @@ async function openFromKeyboard(page: Page): Promise<{ trigger: Locator; dialog:
   await trigger.focus();
   await expect(trigger).toBeFocused();
   await page.keyboard.press('Enter');
-  const dialog = page.getByRole('dialog', { name: 'Export Bundle' });
+  const dialog = page.getByRole('dialog', { name: BUILDER_EXPORT_DIALOG });
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveAttribute('aria-modal', 'true');
   return { trigger, dialog };
@@ -162,7 +162,7 @@ test('draws a record relationship and preserves its model and data through expor
   await page.goto('/builder/?open=%2Fexamples%2FFieldnotes.softn');
   await expect(page.getByTitle('Fieldnotes', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Data', exact: true }).click();
-  await page.getByRole('button', { name: '+ Add Entity', exact: true }).click();
+  await page.getByRole('button', { name: '+ Add collection', exact: true }).click();
   const collectionName = page.getByRole('textbox', { name: 'Collection name', exact: true });
   await collectionName.fill('customers');
   await collectionName.press('Enter');
@@ -171,7 +171,7 @@ test('draws a record relationship and preserves its model and data through expor
     const [a, b] = nodes.map(node => node.getBoundingClientRect());
     return a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
   }), { message: 'A new collection is placed beside existing collections' }).toBe(true);
-  await page.getByRole('button', { name: '+ Add Field', exact: true }).click();
+  await page.getByRole('button', { name: '+ Add field', exact: true }).click();
   const newField = page.getByRole('textbox', { name: 'Field name: newField', exact: true });
   await newField.fill('name');
   await newField.press('Enter');
@@ -190,9 +190,9 @@ test('draws a record relationship and preserves its model and data through expor
   await expect(page.locator('.react-flow__edge')).toHaveCount(1);
 
   await page.getByRole('button', { name: 'customers', exact: true }).click();
-  await page.getByRole('button', { name: '+ Add Record', exact: true }).click();
+  await page.getByRole('button', { name: '+ Add record', exact: true }).click();
   await page.getByRole('table').getByRole('textbox').last().fill('Northwind');
-  await page.getByRole('button', { name: 'tasks (5)', exact: true }).click();
+  await page.getByRole('button', { name: 'tasks · 5', exact: true }).click();
   const recordLink = page.getByRole('table').getByRole('combobox').first();
   await recordLink.selectOption({ index: 1 });
   const linkedId = await recordLink.inputValue();
@@ -212,7 +212,7 @@ test('draws a record relationship and preserves its model and data through expor
 
   await page.getByTitle(BUILDER_EXPORT_TITLE).click();
   const exported = page.waitForEvent('download');
-  await page.getByRole('dialog', { name: 'Export Bundle', exact: true }).getByRole('button', { name: 'Export .softn', exact: true }).click();
+  await page.getByRole('dialog', { name: BUILDER_EXPORT_DIALOG, exact: true }).getByRole('button', { name: 'Export .softn', exact: true }).click();
   const bundle = await exported;
   const savedPath = testInfo.outputPath('relationships.softn');
   await bundle.saveAs(savedPath);
@@ -227,7 +227,7 @@ test('draws a record relationship and preserves its model and data through expor
   await (await chooser).setFiles(savedPath);
   await expect(page.getByTitle('Fieldnotes', { exact: true })).toHaveText('Fieldnotes');
   await page.getByRole('button', { name: 'Data', exact: true }).click();
-  await page.getByRole('tab', { name: 'Relationships (1)', exact: true }).click();
+  await page.getByRole('tab', { name: 'Relationships · 1', exact: true }).click();
   await expect(page.getByRole('list', { name: 'Relationships', exact: true })).toContainText(relationship);
   await expect(page.getByRole('list', { name: 'Relationships', exact: true })).toContainText('1:1');
   await expect(page.getByRole('table').getByRole('combobox').first()).toHaveValue(linkedId);
@@ -241,7 +241,7 @@ test('draws a record relationship and preserves its model and data through expor
 
   // Removing only the diagram link retains both collections and real values.
   await page.getByRole('button', { name: `Remove relationship ${relationship}`, exact: true }).click();
-  await expect(page.getByRole('tab', { name: 'Relationships (0)', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Relationships · 0', exact: true })).toBeVisible();
   await expect(page.locator('.react-flow__edge')).toHaveCount(0);
   await expect(page.locator('.react-flow__node')).toHaveCount(2);
   await expect(page.getByRole('table').getByRole('combobox').first()).toHaveValue(linkedId);

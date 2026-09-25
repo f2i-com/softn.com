@@ -27,6 +27,7 @@ import { readFile } from 'node:fs/promises';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { watchConsole } from '../helpers/console';
 import { DEMO } from '../helpers/demo';
+import { BUILDER_EXPORT_DIALOG, BUILDER_EXPORT_TITLE } from '../helpers/editors';
 
 /** A hand-off id as the protocol mints them (a UUID or 32 hex chars). */
 const HANDOFF_ID = /[A-Za-z0-9-]{16,64}/;
@@ -129,9 +130,24 @@ test.describe('Studio hands a bundle to the runtime and to the publish page', ()
       await expect(host.getByRole('button', { name: 'Clicked 1', exact: true })).toBeVisible();
     };
     await verifyApp(preview);
-    const previewBounds = await preview.boundingBox();
-    const toolbarBounds = await page.getByRole('toolbar', { name: 'Preview controls' }).boundingBox();
-    expect(previewBounds!.y + previewBounds!.height, 'Preview controls must not cover app buttons').toBeLessThanOrEqual(toolbarBounds!.y);
+    // The preview controls must not cover the app, wherever the layout puts
+    // them (the frame header now, below the preview before): their boxes do
+    // not overlap, and the app's own button is what a click at its centre hits.
+    const previewBounds = (await preview.boundingBox())!;
+    const toolbarBounds = (await page.getByRole('toolbar', { name: 'Preview controls' }).boundingBox())!;
+    const overlap =
+      toolbarBounds.x < previewBounds.x + previewBounds.width && previewBounds.x < toolbarBounds.x + toolbarBounds.width &&
+      toolbarBounds.y < previewBounds.y + previewBounds.height && previewBounds.y < toolbarBounds.y + toolbarBounds.height;
+    expect(overlap, 'Preview controls must not cover app buttons').toBe(false);
+    const appButton = preview.getByRole('button', { name: 'Clicked 1', exact: true });
+    expect(
+      await appButton.evaluate((button) => {
+        const r = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return Boolean(hit && (hit === button || button.contains(hit)));
+      }),
+      'The app button is not covered at its centre'
+    ).toBe(true);
     const [studioDownload] = await Promise.all([
       page.waitForEvent('download'), page.getByRole('button', { name: 'Export bundle', exact: true }).click(),
     ]);
@@ -157,11 +173,11 @@ test.describe('Studio hands a bundle to the runtime and to the publish page', ()
     });
     await builder.getByRole('button', { name: 'Data', exact: true }).click();
     await expect(builder.getByRole('table').getByRole('textbox').first()).toHaveValue('A portable seed record');
-    await builder.getByRole('tab', { name: 'Relationships (1)', exact: true }).click();
+    await builder.getByRole('tab', { name: 'Relationships · 1', exact: true }).click();
     await expect(builder.getByRole('list', { name: 'Relationships', exact: true })).toContainText('tasks');
-    await builder.getByTitle('Export .softn bundle (Ctrl+Shift+E)').click();
+    await builder.getByTitle(BUILDER_EXPORT_TITLE).click();
     const [builderDownload] = await Promise.all([
-      builder.waitForEvent('download'), builder.getByRole('dialog', { name: 'Export Bundle', exact: true }).getByRole('button', { name: 'Export .softn', exact: true }).click(),
+      builder.waitForEvent('download'), builder.getByRole('dialog', { name: BUILDER_EXPORT_DIALOG, exact: true }).getByRole('button', { name: 'Export .softn', exact: true }).click(),
     ]);
     const builderFile = testInfo.outputPath('builder', 'PortableNotes.softn');
     await builderDownload.saveAs(builderFile);
