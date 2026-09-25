@@ -8,6 +8,10 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+## v0.0.17
+
+- The FormLogic runtime archive carries the native runtime's `sql.mjs`. v0.0.16's native runtime imported it from `migrations.mjs` and `wasm-host.mjs` but the archive's fixed module list never gained it, so FormLogic's native runtime could not start and every native app request failed. The packager now refuses to build when a native module imports a file the archive does not carry, and a test holds the list to the modules' imports.
+
 ## v0.0.16
 
 - ZIPP v0.0.21 (commit `9df6e2fd`): the browser engine (`npm run fetch:zipp`) and the Rust host's `zipp-vm` tag move together to the release; the Rust host builds and passes unchanged. ZIPP's Python now parses with its own front end (`zipp-pyparse`) instead of a RustPython fork, runs faster, and prints CPython's tracebacks; Softn's Python and FormLogic dialect suites pass on it unchanged. Since 0.0.21 ZIPP's complete `web-python` bundle builds torch in (9.4 MB raw); Softn takes the new `web-python-base` bundle instead, the same JavaScript-and-Python engine without torch and with a byte-identical glue: 7.46 MB raw (8.2 MB for 0.0.19's engine), so every page downloads less than before and the Workbox precache caps of the web runtime, Builder and Studio stay at 8 MiB. Torch comes from the release's `web-torch` bundle, installed beside the engine as a verified package (`packages/@softn/core/wasm-zipp-torch/`: `zipp_torch.wasm`, 2.05 MB, and ZIPP's `zipp_torch.js` loader), held to the same `SHA256SUMS`, its own, a `BUILD-INFO.txt` pairing it with exactly the installed engine bundle and commit, and proven at install by adding it to the engine and running `import torch`; `wasm-zipp/SOURCE.json` records it under `packages.torch`. The runtime loads it on demand, once per page, only for an app that declares torch; it is not in any PWA's startup precache.
