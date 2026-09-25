@@ -8,12 +8,15 @@ import { useCanvasStore } from '../../stores/canvasStore';
 const style: React.CSSProperties = {
   position: 'fixed',
   padding: '6px 12px',
+  // The ink, inverted: it was white text on --paper, which is near-white in
+  // the dark theme, so the name of what was being dragged could not be read.
   background: 'var(--paper)',
-  color: '#fff',
-  borderRadius: 4,
+  color: 'var(--ink)',
+  borderRadius: 6,
+  fontFamily: 'var(--mono)',
   fontSize: 12,
   fontWeight: 500,
-  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+  boxShadow: 'var(--bl-shadow-pop)',
   pointerEvents: 'none',
   zIndex: 10000,
   opacity: 0.9,

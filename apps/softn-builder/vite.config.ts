@@ -71,9 +71,11 @@ export default defineConfig({
         // megabytes it will most likely never use, so they stay on-demand.
         globIgnores: ['**/ort-*.wasm', '**/core-runtime/**'],
         // Everything left after that ignore fits inside 8 MiB — the largest
-        // are Monaco's TypeScript worker at ~5.8 MiB and the main chunk at
-        // ~5.1 MiB. Raise this rather than let Workbox skip a file, because a
-        // skipped precache entry fails only offline.
+        // is the ZIPP engine at ~7.1 MiB (web-python-base: torch is a package
+        // under core-runtime/, fetched only for apps that declare it), then
+        // Monaco's TypeScript worker at ~5.8 MiB. Raise this rather than let
+        // Workbox skip a file, because a skipped precache entry fails only
+        // offline.
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
       },
     }),

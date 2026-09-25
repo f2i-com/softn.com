@@ -25,6 +25,7 @@ import type {
   LogicFileState,
 } from '../types/builder';
 import { generateSource } from './sourceGenerator';
+import { logicSrcOf } from './logicFiles';
 import { debug } from './debug';
 import { buildPermissionJson, type PermissionDeclaration } from './permissions';
 import { envelopeFor, serializeXdb, type XdbRecordEnvelope } from './xdbFormat';
@@ -88,6 +89,11 @@ interface SharedOptions {
   iconPath?: string;
   /** What the app declares it needs; nothing declared writes no permission.json. */
   permissions?: PermissionDeclaration;
+  /**
+   * The Python packages the app asks for, written as `config.python.packages`
+   * (removed when empty). Absent: whatever the retained manifest said stays.
+   */
+  pythonPackages?: string[];
   /** What the opened bundle carried; absent for a project made here. */
   source?: RetainedExportSource;
 }
@@ -134,6 +140,60 @@ function xdbPathFor(name: string, source?: RetainedExportSource): string {
 }
 
 /**
+ * The manifest's logic list as export writes it: the helpers the retained
+ * manifest declared, in their order, while they are still in the project,
+ * then every other logic file. Helper initialization order is meaningful, so
+ * a rename or rebuild must not reorder still-declared helpers. The preview
+ * composes with this same list, so a helper runs there when and only when it
+ * runs in the exported app.
+ */
+export function exportedLogicPaths(retainedManifest: Record<string, unknown> | null, logicPaths: readonly string[]): string[] {
+  const files = retainedManifest && isObject(retainedManifest.files) ? retainedManifest.files : {};
+  const declared = Array.isArray(files.logic)
+    ? files.logic.filter((path): path is string => typeof path === 'string' && logicPaths.includes(path))
+    : [];
+  return [...new Set([...declared, ...logicPaths])];
+}
+
+/**
+ * `config` with `python.packages` set to `packages`, or without it when there
+ * are none — and without `python` at all when nothing else is left in it.
+ * Anything else the retained `config.python` carried is kept.
+ */
+export function withPythonPackages(config: Record<string, unknown>, packages: readonly string[]): Record<string, unknown> {
+  const next = { ...config };
+  const python = isObject(next.python) ? { ...next.python } : {};
+  if (packages.length > 0) python.packages = [...packages];
+  else delete python.packages;
+  if (Object.keys(python).length > 0) next.python = python;
+  else delete next.python;
+  return next;
+}
+
+/**
+ * The manifest the preview gives the composer: the retained one (or none)
+ * with what export would change in it that the composer reads — the logic
+ * list, and the Python packages. The composer reads `manifest.json` from the
+ * files it is given, and refuses an `import torch` it does not declare.
+ */
+export function previewManifest(
+  retainedManifest: Record<string, unknown> | null,
+  logicPaths: readonly string[],
+  pythonPackages: readonly string[] | undefined
+): Record<string, unknown> {
+  const manifest: Record<string, unknown> = retainedManifest
+    ? (JSON.parse(JSON.stringify(retainedManifest)) as Record<string, unknown>)
+    : { formatVersion: BUNDLE_FORMAT_VERSION };
+  const files = isObject(manifest.files) ? { ...manifest.files } : {};
+  files.logic = exportedLogicPaths(retainedManifest, logicPaths);
+  manifest.files = files;
+  if (pythonPackages !== undefined) {
+    manifest.config = withPythonPackages(isObject(manifest.config) ? manifest.config : {}, pythonPackages);
+  }
+  return manifest;
+}
+
+/**
  * The manifest to write: the retained one with the Builder's edits over it,
  * or a fresh one for a project that never had a manifest. Whatever the
  * retained manifest carried that the Builder does not edit — window and
@@ -160,10 +220,7 @@ function composeManifest(
 
   const files = isObject(manifest.files) ? { ...manifest.files } : {};
   files.ui = groups.ui;
-  // Helper initialization order is meaningful; a store rebuild/rename must
-  // not reorder still-declared helpers. Newly created files follow them.
-  const declaredLogic = Array.isArray(files.logic) ? files.logic.filter((path): path is string => typeof path === 'string' && groups.logic.includes(path)) : [];
-  files.logic = [...new Set([...declaredLogic, ...groups.logic])];
+  files.logic = exportedLogicPaths(retained ?? null, groups.logic);
   files.xdb = groups.xdb;
   files.assets = groups.assets;
   manifest.files = files;
@@ -176,7 +233,7 @@ function composeManifest(
   if (previousName !== null && window.title === previousName) window.title = options.name;
   config.window = window;
   config.theme = { ...(isObject(config.theme) ? config.theme : {}), mode: options.themeMode };
-  manifest.config = config;
+  manifest.config = options.pythonPackages !== undefined ? withPythonPackages(config, options.pythonPackages) : config;
 
   return manifest;
 }
@@ -234,14 +291,6 @@ function addSharedEntries(
   }
 
   return { assets, xdb, iconPath };
-}
-
-/** Whether the project carries a `logic/main.logic` for the entry file to link. */
-function hasMainLogic(logicFiles: Map<string, { path: string }>): boolean {
-  for (const [, file] of logicFiles) {
-    if (stripSlash(file.path) === 'logic/main.logic') return true;
-  }
-  return false;
 }
 
 function zip(files: Record<string, Uint8Array>, options: SharedOptions): Uint8Array {
@@ -309,14 +358,16 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
     if (uiFile.originalSource !== undefined) {
       source = uiFile.originalSource;
     } else {
-      source = generateSource(uiFile.elements, uiFile.rootId, '', options.collections);
-      // A generated entry file has no <logic src>, and that tag is the only
+      // The file's <logic src> is written with it: that tag is the only
       // thing that links logic to markup — the loader inlines by rewriting it,
       // with no manifest fallback. Without it the bundle ships its logic and
-      // never runs it: bindings read undefined and handlers do nothing.
-      if (path === 'ui/main.ui' && hasMainLogic(options.logicFiles)) {
-        source = `<logic src="../logic/main.logic" />\n${source}`;
-      }
+      // never runs it: bindings read undefined and handlers do nothing. The
+      // tag names the file this UI file links, whatever its name and
+      // language; it used to be `../logic/main.logic` or nothing, so a
+      // Python entry file was exported with no logic at all.
+      source = generateSource(uiFile.elements, uiFile.rootId, '', options.collections, {
+        logicSrc: logicSrcOf(uiFile, options.logicFiles),
+      });
     }
 
     files[path] = strToU8(source);

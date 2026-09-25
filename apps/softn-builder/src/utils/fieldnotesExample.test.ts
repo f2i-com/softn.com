@@ -26,7 +26,6 @@ function render(sourceText: string, state: Record<string, unknown>): string {
 
 beforeEach(() => {
   useFilesStore.getState().reset();
-  useFilesStore.getState().initializeProject();
 });
 
 describe('the shipped Fieldnotes example', () => {

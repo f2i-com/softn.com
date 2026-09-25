@@ -15,6 +15,13 @@ interface GeneratorOptions {
    * root element.
    */
   skipRootAppWrapper?: boolean;
+  /**
+   * The file's `<logic src>`, written first. A file's logic is linked, never
+   * inlined: the runtime reads a logic file only through this tag, and an
+   * inline copy is one that later edits to the file never reach. Python
+   * cannot be inlined at all.
+   */
+  logicSrc?: string;
 }
 
 const defaultOptions: GeneratorOptions = {
@@ -34,6 +41,10 @@ export function generateSource(
 ): string {
   const opts = { ...defaultOptions, ...options };
   const lines: string[] = [];
+
+  if (opts.logicSrc) {
+    lines.push(`<logic src="${opts.logicSrc}" />`);
+  }
 
   // Generate <data> block if there are collections
   if (collections.length > 0) {

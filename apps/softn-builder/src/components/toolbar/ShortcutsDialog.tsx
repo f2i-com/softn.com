@@ -4,73 +4,45 @@
 
 import React, { useId } from 'react';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
+import { modKeyLabel } from '../../utils/platformKeys';
 
+// The overlay, frame, title and close button are classes in styles/builder.css.
 const styles: Record<string, React.CSSProperties> = {
-  overlay: {
-    position: 'fixed' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  },
   dialog: {
-    background: 'var(--ink-2)',
-    borderRadius: 12,
-    width: 560,
-    maxWidth: '90vw',
-    maxHeight: '80vh',
-    boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
-    overflow: 'hidden',
-    display: 'flex',
-    flexDirection: 'column' as const,
+    width: 600,
   },
   header: {
-    padding: '16px 24px',
+    padding: '14px 12px 14px 24px',
     borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  title: {
-    fontSize: 18,
-    fontWeight: 600,
-    color: 'var(--paper)',
-  },
-  closeButton: {
-    background: 'transparent',
-    border: 'none',
-    fontSize: 24,
-    color: 'var(--dimmer)',
-    cursor: 'pointer',
-    padding: 4,
-    lineHeight: 1,
-  },
   content: {
-    padding: 24,
+    padding: '8px 24px 24px',
     overflow: 'auto',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+    columnGap: 32,
   },
   section: {
-    marginBottom: 20,
+    marginTop: 16,
   },
   sectionTitle: {
-    fontSize: 11,
-    fontWeight: 600,
-    color: 'var(--dim)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.05em',
-    marginBottom: 8,
+    fontFamily: 'var(--display)',
+    fontSize: 14,
+    fontWeight: 700,
+    letterSpacing: '-0.01em',
+    color: 'var(--paper)',
+    margin: '0 0 6px',
   },
   row: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 12,
     padding: '6px 0',
-    borderBottom: '1px solid var(--ink-3)',
+    borderBottom: '1px solid var(--line-soft)',
   },
   action: {
     fontSize: 13,
@@ -78,24 +50,26 @@ const styles: Record<string, React.CSSProperties> = {
   },
   shortcut: {
     display: 'flex',
-    gap: 4,
+    alignItems: 'center',
+    gap: 3,
+    flexShrink: 0,
   },
   key: {
     display: 'inline-block',
-    padding: '2px 8px',
+    padding: '1px 6px',
     background: 'var(--ink-3)',
-    border: '1px solid var(--line-soft)',
-    borderRadius: 4,
-    fontSize: 12,
-    fontFamily: 'monospace',
-    color: 'var(--dim)',
-    minWidth: 24,
+    border: '1px solid var(--line)',
+    borderBottomWidth: 2,
+    borderRadius: 5,
+    fontSize: 11.5,
+    fontFamily: 'var(--mono)',
+    color: 'var(--paper)',
+    minWidth: 22,
     textAlign: 'center' as const,
   },
   plus: {
-    fontSize: 12,
+    fontSize: 11,
     color: 'var(--dimmer)',
-    lineHeight: '24px',
   },
 };
 
@@ -109,38 +83,50 @@ interface ShortcutEntry {
   keys: string[][];  // Array of key combos, each combo is an array of keys
 }
 
+const MOD = modKeyLabel();
+
 const shortcuts: { title: string; entries: ShortcutEntry[] }[] = [
   {
     title: 'General',
     entries: [
-      { action: 'New project', keys: [['Ctrl', 'N']] },
-      { action: 'Open bundle', keys: [['Ctrl', 'O']] },
-      { action: 'Save', keys: [['Ctrl', 'S']] },
-      { action: 'Export bundle', keys: [['Ctrl', 'Shift', 'E']] },
-      { action: 'Show shortcuts', keys: [['?']] },
+      { action: 'New app', keys: [[MOD, 'N']] },
+      { action: 'Open a .softn file', keys: [[MOD, 'O']] },
+      { action: 'Save', keys: [[MOD, 'S']] },
+      { action: 'Export, run or publish', keys: [[MOD, 'Shift', 'E']] },
+      { action: 'These shortcuts', keys: [['?']] },
     ],
   },
   {
     title: 'Edit',
     entries: [
-      { action: 'Undo', keys: [['Ctrl', 'Z']] },
-      { action: 'Redo', keys: [['Ctrl', 'Shift', 'Z']] },
-      { action: 'Copy', keys: [['Ctrl', 'C']] },
-      { action: 'Cut', keys: [['Ctrl', 'X']] },
-      { action: 'Paste', keys: [['Ctrl', 'V']] },
-      { action: 'Duplicate', keys: [['Ctrl', 'D']] },
+      { action: 'Undo', keys: [[MOD, 'Z']] },
+      { action: 'Redo', keys: [[MOD, 'Shift', 'Z'], [MOD, 'Y']] },
+      { action: 'Copy', keys: [[MOD, 'C']] },
+      { action: 'Cut', keys: [[MOD, 'X']] },
+      { action: 'Paste', keys: [[MOD, 'V']] },
+      { action: 'Duplicate', keys: [[MOD, 'D']] },
       { action: 'Delete selected', keys: [['Delete'], ['Backspace']] },
-      { action: 'Select all', keys: [['Ctrl', 'A']] },
+      { action: 'Select all', keys: [[MOD, 'A']] },
     ],
   },
   {
     title: 'View',
     entries: [
-      { action: 'Design view', keys: [['Ctrl', '1']] },
-      { action: 'Data view', keys: [['Ctrl', '2']] },
-      { action: 'Preview', keys: [['Ctrl', '3']] },
-      { action: 'Code view', keys: [['Ctrl', '4']] },
-      { action: 'Logic files open in Design', keys: [['Click', 'logic tab']] },
+      { action: 'Design view', keys: [[MOD, '1']] },
+      { action: 'Data view', keys: [[MOD, '2']] },
+      { action: 'Preview', keys: [[MOD, '3']] },
+      { action: 'Code view', keys: [[MOD, '4']] },
+    ],
+  },
+  {
+    // The canvas and the hierarchy beneath it are one tree, walked like any
+    // other: these were there, and listed nowhere.
+    title: 'Hierarchy',
+    entries: [
+      { action: 'Next / previous element', keys: [['↓'], ['↑']] },
+      { action: 'First child / parent', keys: [['→'], ['←']] },
+      { action: 'First / last element', keys: [['Home'], ['End']] },
+      { action: 'Select (add to selection)', keys: [['Enter'], ['Shift', 'Enter']] },
     ],
   },
 ];
@@ -150,11 +136,11 @@ function ShortcutKeys({ keys }: { keys: string[][] }) {
     <div style={styles.shortcut}>
       {keys.map((combo, ci) => (
         <React.Fragment key={ci}>
-          {ci > 0 && <span style={styles.plus}>/</span>}
+          {ci > 0 && <span style={styles.plus}>or</span>}
           {combo.map((key, ki) => (
             <React.Fragment key={ki}>
               {ki > 0 && <span style={styles.plus}>+</span>}
-              <span style={styles.key}>{key}</span>
+              <kbd style={styles.key}>{key}</kbd>
             </React.Fragment>
           ))}
         </React.Fragment>
@@ -169,26 +155,26 @@ export function ShortcutsDialog({ isOpen, onClose }: ShortcutsDialogProps) {
   if (!isOpen) return null;
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div ref={dialogRef} style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+    <div className="bl-overlay" style={{ zIndex: 1000 }} onClick={onClose}>
+      <div ref={dialogRef} className="bl-dialog" style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
-          <span id={titleId} style={styles.title}>Keyboard Shortcuts</span>
-          <button type="button" aria-label="Close keyboard shortcuts" style={styles.closeButton} onClick={onClose}>
+          <h2 id={titleId} className="bl-dialog-title">Keyboard shortcuts</h2>
+          <button type="button" aria-label="Close keyboard shortcuts" className="bl-close" onClick={onClose}>
             {'\u00D7'}
           </button>
         </div>
 
         <div style={styles.content}>
           {shortcuts.map((section) => (
-            <div key={section.title} style={styles.section}>
-              <div style={styles.sectionTitle}>{section.title}</div>
+            <section key={section.title} style={styles.section} aria-label={section.title}>
+              <h3 style={styles.sectionTitle}>{section.title}</h3>
               {section.entries.map((entry) => (
                 <div key={entry.action} style={styles.row}>
                   <span style={styles.action}>{entry.action}</span>
                   <ShortcutKeys keys={entry.keys} />
                 </div>
               ))}
-            </div>
+            </section>
           ))}
         </div>
       </div>

@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useState } from 'react';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
+import type { LogicLanguage } from '../../utils/logicFiles';
 
 export type StarterTemplate = 'blank' | 'landing' | 'dashboard';
 
@@ -8,6 +9,16 @@ export interface NewProjectConfig {
   description: string;
   theme: 'light' | 'dark' | 'system';
   template: StarterTemplate;
+  /**
+   * The language of the app's logic. An app has one: the runtime refuses a
+   * bundle whose logic mixes the two, so it is chosen when the app is made.
+   */
+  language: LogicLanguage;
+  /**
+   * The Python packages the app asks for (`config.python.packages`): torch
+   * or nothing. Only a Python app has any.
+   */
+  pythonPackages: string[];
 }
 
 interface NewProjectDialogProps {
@@ -16,157 +27,135 @@ interface NewProjectDialogProps {
   onCreate: (config: NewProjectConfig) => void;
 }
 
+
+// Buttons, the overlay, the dialog frame and the choice cards are classes in
+// styles/builder.css; what is left here is this form's own layout.
 const styles: Record<string, React.CSSProperties> = {
-  overlay: {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(15, 23, 42, 0.6)',
-    backdropFilter: 'blur(4px)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1200,
-  },
   dialog: {
     width: 620,
-    maxWidth: '92vw',
-    borderRadius: 14,
-    background: 'var(--ink-2)',
-    boxShadow: '0 24px 52px rgba(15, 23, 42, 0.28)',
-    border: '1px solid var(--line-soft)',
-    overflow: 'hidden',
-    maxHeight: '90dvh',
-    display: 'flex',
-    flexDirection: 'column',
   },
   header: {
-    padding: '16px 20px',
+    padding: '14px 12px 14px 20px',
     borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: 700,
-    color: 'var(--paper)',
-  },
-  closeButton: {
-    border: 'none',
-    background: 'transparent',
-    fontSize: 24,
-    lineHeight: 1,
-    color: 'var(--dim)',
-    cursor: 'pointer',
-    minWidth: 40, minHeight: 40,
   },
   body: {
     padding: 20,
     overflowY: 'auto',
     minHeight: 0,
     display: 'grid',
-    gap: 14,
+    gap: 18,
   },
   label: {
     display: 'block',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: 600,
     color: 'var(--paper)',
     marginBottom: 6,
-    letterSpacing: '0.03em',
-    textTransform: 'uppercase',
+  },
+  fieldset: {
+    border: 'none',
+    padding: 0,
+    margin: 0,
+    minWidth: 0,
   },
   input: {
     width: '100%',
-    padding: '10px 12px',
+    padding: '9px 12px',
     borderRadius: 8,
-    border: '1px solid var(--line)',
     fontSize: 14,
   },
   textarea: {
     width: '100%',
-    minHeight: 72,
-    padding: '10px 12px',
+    minHeight: 64,
+    padding: '9px 12px',
     borderRadius: 8,
-    border: '1px solid var(--line)',
     fontSize: 14,
+    lineHeight: 1.5,
     resize: 'vertical',
     maxHeight: 180,
   },
-  row: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: 12,
-  },
   select: {
     width: '100%',
-    padding: '10px 12px',
+    padding: '9px 10px',
     borderRadius: 8,
-    border: '1px solid var(--line)',
     fontSize: 14,
-    background: 'var(--ink-2)',
   },
-  templates: {
+  cards: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
     gap: 10,
   },
-  templateCard: {
-    border: '1px solid var(--line)',
-    borderRadius: 10,
-    padding: 12,
-    cursor: 'pointer',
-    background: 'var(--ink)',
-  },
-  templateCardActive: {
-    border: '1px solid var(--coral)',
-    background: 'var(--mint-glow-soft)',
-    boxShadow: 'inset 0 0 0 1px var(--coral)',
-  },
-  templateTitle: {
-    fontSize: 13,
-    fontWeight: 700,
+  cardTitle: {
+    display: 'block',
+    fontSize: 13.5,
+    fontWeight: 600,
     color: 'var(--paper)',
     marginBottom: 4,
   },
-  templateDesc: {
+  cardDesc: {
+    display: 'block',
     fontSize: 12,
     color: 'var(--dim)',
-    lineHeight: 1.4,
+    lineHeight: 1.45,
+  },
+  cardPath: {
+    display: 'block',
+    fontFamily: 'var(--mono)',
+    fontSize: 11.5,
+    color: 'var(--coral)',
+    marginTop: 6,
+  },
+  // A native radio, kept for the keyboard and the screen reader, drawn by the card.
+  radio: {
+    position: 'absolute',
+    opacity: 0,
+    width: 1,
+    height: 1,
+    margin: 0,
+  },
+  option: {
+    display: 'flex',
+    gap: 10,
+    alignItems: 'flex-start',
+    marginTop: 10,
+    padding: '10px 12px',
+    borderRadius: 8,
+    border: '1px solid var(--line-soft)',
+    background: 'var(--ink)',
+    fontSize: 13,
+    color: 'var(--paper)',
+    cursor: 'pointer',
+  },
+  hint: {
+    display: 'block',
+    marginTop: 2,
+    fontSize: 12,
+    lineHeight: 1.45,
+    color: 'var(--dim)',
   },
   footer: {
     display: 'flex',
     justifyContent: 'flex-end',
-    gap: 10,
-    padding: '14px 20px',
+    gap: 8,
+    padding: '12px 20px',
     borderTop: '1px solid var(--line-soft)',
     background: 'var(--ink)',
   },
-  button: {
-    borderRadius: 8,
-    padding: '9px 14px',
-    fontSize: 14,
-    fontWeight: 600,
-    cursor: 'pointer',
-    border: '1px solid transparent',
-  },
-  cancel: {
-    background: 'var(--ink-2)',
-    color: 'var(--paper)',
-    borderColor: 'var(--line)',
-  },
-  create: {
-    background: 'var(--coral)',
-    color: '#fff',
-    borderColor: 'var(--coral)',
-  },
 };
 
-const templateDescriptions: Record<StarterTemplate, string> = {
-  blank: 'App root only. Start from zero.',
-  landing: 'Hero heading + intro copy + CTA button.',
-  dashboard: 'Heading + KPI cards + starter list table.',
-};
+const TEMPLATES: { key: StarterTemplate; title: string; description: string }[] = [
+  { key: 'blank', title: 'Blank', description: 'An empty page. Start from zero.' },
+  { key: 'landing', title: 'Landing page', description: 'A centred heading, an intro and a call-to-action button.' },
+  { key: 'dashboard', title: 'Dashboard', description: 'A heading, stat tiles, cards and a list, ready for data.' },
+];
+
+const LANGUAGES: { key: LogicLanguage; title: string; description: string; path: string }[] = [
+  { key: 'javascript', title: 'JavaScript', description: 'Runs in a sandboxed VM. The default.', path: 'logic/main.logic' },
+  { key: 'python', title: 'Python', description: 'Runs on the ZIPP engine, with optional machine learning.', path: 'logic/main.py' },
+];
 
 export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialogProps) {
   const dialogRef = useModalFocus(isOpen, onClose, 'input');
@@ -175,6 +164,8 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
   const [description, setDescription] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [template, setTemplate] = useState<StarterTemplate>('blank');
+  const [language, setLanguage] = useState<LogicLanguage>('javascript');
+  const [torch, setTorch] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -182,6 +173,8 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
     setDescription('');
     setTheme('system');
     setTemplate('blank');
+    setLanguage('javascript');
+    setTorch(false);
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -192,15 +185,17 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
       description: description.trim(),
       theme,
       template,
+      language,
+      pythonPackages: language === 'python' && torch ? ['torch'] : [],
     });
   };
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div ref={dialogRef} style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`${fieldId}-title`} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+    <div className="bl-overlay" style={{ zIndex: 1200 }} onClick={onClose}>
+      <div ref={dialogRef} className="bl-dialog" style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`${fieldId}-title`} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
-          <span id={`${fieldId}-title`} style={styles.title}>Create New App</span>
-          <button style={styles.closeButton} onClick={onClose} aria-label="Close new app dialog">
+          <h2 id={`${fieldId}-title`} className="bl-dialog-title">Create a new app</h2>
+          <button type="button" className="bl-close" onClick={onClose} aria-label="Close">
             ×
           </button>
         </div>
@@ -208,7 +203,7 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
         <form style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }} onSubmit={(event) => { event.preventDefault(); handleCreate(); }}>
         <div style={styles.body}>
           <div>
-            <label style={styles.label} htmlFor={`${fieldId}-name`}>App Name</label>
+            <label style={styles.label} htmlFor={`${fieldId}-name`}>Name</label>
             <input
               id={`${fieldId}-name`}
               style={styles.input}
@@ -219,66 +214,100 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
           </div>
 
           <div>
-            <label style={styles.label} htmlFor={`${fieldId}-description`}>Description</label>
+            <label style={styles.label} htmlFor={`${fieldId}-description`}>Description <span style={{ fontWeight: 400, color: 'var(--dim)' }}>(optional)</span></label>
             <textarea
               id={`${fieldId}-description`}
               style={styles.textarea}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Short description of what you're building"
+              placeholder="What the app is for, in a sentence"
             />
           </div>
 
-          <div style={styles.row}>
-            <div>
-              <label style={styles.label} htmlFor={`${fieldId}-theme`}>Theme</label>
-              <select
-                id={`${fieldId}-theme`}
-                style={styles.select}
-                value={theme}
-                onChange={(e) => setTheme(e.target.value as 'light' | 'dark' | 'system')}
-              >
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-                <option value="system">System</option>
-              </select>
+          {/* One language per app: the runtime refuses a bundle whose logic
+              mixes the two, so this is the moment to choose. */}
+          <fieldset style={styles.fieldset}>
+            <legend style={styles.label}>Logic language</legend>
+            <div style={styles.cards}>
+              {LANGUAGES.map((option) => (
+                <label
+                  key={option.key}
+                  className="bl-choice"
+                  data-checked={language === option.key}
+                  style={{ position: 'relative', display: 'block' }}
+                >
+                  <input
+                    type="radio"
+                    name={`${fieldId}-language`}
+                    value={option.key}
+                    checked={language === option.key}
+                    onChange={() => setLanguage(option.key)}
+                    style={styles.radio}
+                  />
+                  <span style={styles.cardTitle}>{option.title}</span>
+                  <span style={styles.cardDesc}>{option.description}</span>
+                  <span style={styles.cardPath}>{option.path}</span>
+                </label>
+              ))}
+            </div>
+            {language === 'python' && (
+              <label style={styles.option}>
+                <input
+                  type="checkbox"
+                  checked={torch}
+                  onChange={(e) => setTorch(e.target.checked)}
+                  style={{ marginTop: 3 }}
+                  data-setting="python-torch"
+                />
+                <span>
+                  Machine learning (torch)
+                  <span style={styles.hint}>
+                    Lets the app import torch: tensors, autograd, torch.nn and optimizers. You can change this later in Export.
+                  </span>
+                </span>
+              </label>
+            )}
+          </fieldset>
+
+          <div>
+            <span id={`${fieldId}-templates`} style={styles.label}>Start from</span>
+            <div style={styles.cards} role="group" aria-labelledby={`${fieldId}-templates`}>
+              {TEMPLATES.map(({ key, title, description: text }) => (
+                <button
+                  key={key}
+                  type="button"
+                  className="bl-choice"
+                  aria-pressed={template === key}
+                  onClick={() => setTemplate(key)}
+                >
+                  <span style={styles.cardTitle}>{title}</span>
+                  <span style={styles.cardDesc}>{text}</span>
+                </button>
+              ))}
             </div>
           </div>
 
           <div>
-            <span id={`${fieldId}-templates`} style={styles.label}>Starter Template</span>
-            <div style={styles.templates} role="group" aria-labelledby={`${fieldId}-templates`}>
-              {(['blank', 'landing', 'dashboard'] as StarterTemplate[]).map((key) => {
-                const active = template === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    style={{
-                      ...styles.templateCard,
-                      ...(active ? styles.templateCardActive : {}),
-                      textAlign: 'left',
-                    }}
-                    aria-pressed={active}
-                    onClick={() => setTemplate(key)}
-                  >
-                    <div style={styles.templateTitle}>
-                      {key.charAt(0).toUpperCase() + key.slice(1)}
-                    </div>
-                    <div style={styles.templateDesc}>{templateDescriptions[key]}</div>
-                  </button>
-                );
-              })}
-            </div>
+            <label style={styles.label} htmlFor={`${fieldId}-theme`}>App theme</label>
+            <select
+              id={`${fieldId}-theme`}
+              style={{ ...styles.select, maxWidth: 280 }}
+              value={theme}
+              onChange={(e) => setTheme(e.target.value as 'light' | 'dark' | 'system')}
+            >
+              <option value="system">Match the device</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
           </div>
         </div>
 
         <div style={styles.footer}>
-          <button type="button" style={{ ...styles.button, ...styles.cancel }} onClick={onClose}>
+          <button type="button" className="bl-btn" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" style={{ ...styles.button, ...styles.create }}>
-            Create App
+          <button type="submit" className="bl-btn bl-btn-primary">
+            Create app
           </button>
         </div>
         </form>

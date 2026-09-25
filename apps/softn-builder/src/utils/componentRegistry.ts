@@ -3,7 +3,7 @@
  * Metadata for all 65+ built-in components
  */
 
-import type { ComponentMeta, ComponentCategory } from '../types/builder';
+import type { ComponentMeta, ComponentCategory, PropSchema } from '../types/builder';
 import { getNativeHtmlMeta } from './nativeHtmlMetadata';
 
 // Helper to create component metadata
@@ -20,7 +20,7 @@ function comp(
   return { name, category, icon, description, defaultProps, propSchema, allowChildren, childTypes };
 }
 
-export const componentRegistry: ComponentMeta[] = [
+const baseRegistry: ComponentMeta[] = [
   // ==================== LAYOUT COMPONENTS ====================
   comp(
     'App',
@@ -1132,8 +1132,10 @@ export const componentRegistry: ComponentMeta[] = [
     'Code syntax highlighting editor',
     { language: 'javascript' },
     [
-      { name: 'value', type: 'expression' },
-      { name: 'defaultValue', type: 'string' },
+      // Strictly controlled since the components pass: a value with no
+      // @change (or :bind) to write it back cannot be typed into.
+      { name: 'value', type: 'expression', description: 'Controlled text: pair with @change or :bind, or use defaultValue' },
+      { name: 'defaultValue', type: 'string', description: 'Starting text the editor then owns' },
       { name: 'language', type: 'select', options: ['javascript', 'typescript', 'json', 'html', 'css', 'python', 'sql', 'markdown', 'plain'], default: 'javascript' },
       { name: 'placeholder', type: 'string' },
       { name: 'minHeight', type: 'string', default: '200px' },
@@ -1760,6 +1762,73 @@ export const componentRegistry: ComponentMeta[] = [
     false
   ),
 ];
+
+/**
+ * The accessibility props the components take (component-manifest.json), and
+ * the few others added with them. Kept as one table rather than spread over
+ * thirty entries, so what a screen reader is told is edited in one place. The
+ * property panel files these under Accessibility (ACCESSIBILITY_PROP_NAMES).
+ */
+const ariaLabel = (description: string): PropSchema => ({ name: 'ariaLabel', type: 'string', description });
+const NAME_WHEN_UNLABELLED = 'Accessible name, read by screen readers when nothing visible names it';
+const CHART_ALTERNATIVE = 'Text alternative for the chart; a summary of its values by default';
+
+const MANIFEST_PROPS: Record<string, PropSchema[]> = {
+  Accordion: [{ name: 'headingLevel', type: 'number', description: 'Heading level of the item headers (2–6, default 3)' }],
+  Alert: [
+    {
+      name: 'role',
+      type: 'select',
+      options: ['alert', 'status', 'none'],
+      description: 'How it is announced: alert at once, status when the reader is free, none for an alert that is part of the page',
+    },
+  ],
+  AreaChart: [ariaLabel(CHART_ALTERNATIVE)],
+  Avatar: [ariaLabel('Accessible label, for an interactive avatar')],
+  BarChart: [ariaLabel(CHART_ALTERNATIVE)],
+  CodeEditor: [ariaLabel('Accessible name for the text field, when no visible label names it')],
+  DPad: [ariaLabel('Accessible name for the pad as a whole')],
+  DataGrid: [ariaLabel('Accessible name for the grid')],
+  Drawer: [ariaLabel('Accessible name for the drawer when it has no title')],
+  GaugeChart: [ariaLabel('Accessible name for the meter; the label, or "Gauge", by default')],
+  Icon: [ariaLabel('What the icon means, when nothing beside it says so; without one the icon is decoration')],
+  LineChart: [ariaLabel(CHART_ALTERNATIVE)],
+  MarkdownEditor: [
+    ariaLabel('Accessible name for the text area (default "Markdown")'),
+    { name: 'onViewModeChange', type: 'event', description: 'Called when the user switches view mode' },
+  ],
+  Menu: [ariaLabel('Accessible name for the trigger, when its content (an icon) does not give one')],
+  Modal: [ariaLabel('Accessible name for the dialog when it has no title')],
+  Pagination: [ariaLabel(NAME_WHEN_UNLABELLED)],
+  PieChart: [ariaLabel(CHART_ALTERNATIVE)],
+  PixelCanvas: [ariaLabel(NAME_WHEN_UNLABELLED)],
+  Popover: [ariaLabel('Accessible name for the popup')],
+  Progress: [ariaLabel('Accessible name for the bar (default "Progress")')],
+  QRCode: [ariaLabel(NAME_WHEN_UNLABELLED)],
+  RadarChart: [ariaLabel(CHART_ALTERNATIVE)],
+  RichTextEditor: [ariaLabel(NAME_WHEN_UNLABELLED)],
+  Section: [{ name: 'headingLevel', type: 'number', description: 'Heading level of the title (1–6, default 2)' }],
+  Slider: [ariaLabel('Accessible name for the slider')],
+  SortableList: [ariaLabel(NAME_WHEN_UNLABELLED)],
+  Spacer: [{ name: 'className', type: 'string' }],
+  Split: [ariaLabel('Accessible name for the divider (default "Resize panes")')],
+  Sprite: [ariaLabel(NAME_WHEN_UNLABELLED)],
+  Table: [
+    { name: 'caption', type: 'string', description: 'Visible caption naming the table' },
+    ariaLabel('Accessible name for the table, when it has no caption'),
+  ],
+  Tabs: [ariaLabel(NAME_WHEN_UNLABELLED)],
+  Tag: [{ name: 'removeLabel', type: 'string', description: 'Accessible name for the remove button (default "Remove" and the tag’s text)' }],
+  TreeView: [ariaLabel(NAME_WHEN_UNLABELLED)],
+};
+
+/** Props the property panel shows under Accessibility rather than Advanced. */
+export const ACCESSIBILITY_PROP_NAMES: ReadonlySet<string> = new Set(['ariaLabel', 'removeLabel', 'caption', 'headingLevel', 'role']);
+
+export const componentRegistry: ComponentMeta[] = baseRegistry.map((meta) => {
+  const extra = (MANIFEST_PROPS[meta.name] ?? []).filter((prop) => !meta.propSchema.some((own) => own.name === prop.name));
+  return extra.length ? { ...meta, propSchema: [...meta.propSchema, ...extra] } : meta;
+});
 
 // Group components by category
 export function getComponentsByCategory(): Map<string, ComponentMeta[]> {

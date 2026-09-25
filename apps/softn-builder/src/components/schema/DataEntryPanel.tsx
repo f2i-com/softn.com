@@ -18,10 +18,12 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
   },
   header: {
-    padding: '10px 16px',
+    padding: '8px 16px',
     borderBottom: '1px solid var(--line-soft)',
-    fontWeight: 600,
-    fontSize: 13,
+    fontFamily: 'var(--display)',
+    fontWeight: 700,
+    fontSize: 14,
+    letterSpacing: '-0.01em',
     color: 'var(--paper)',
     display: 'flex',
     justifyContent: 'space-between',
@@ -36,18 +38,21 @@ const styles: Record<string, React.CSSProperties> = {
     overflowX: 'auto',
   },
   tab: {
-    padding: '6px 12px',
-    background: 'var(--ink-3)',
-    border: 'none',
-    borderRadius: 4,
+    padding: '5px 10px',
+    background: 'transparent',
+    border: '1px solid var(--line)',
+    borderRadius: 6,
+    fontFamily: 'var(--mono)',
     fontSize: 12,
     color: 'var(--dim)',
     cursor: 'pointer',
     whiteSpace: 'nowrap' as const,
   },
+  // The chosen collection: the ink, inverted, like every pressed toggle.
   tabActive: {
-    background: 'var(--coral)',
-    color: '#fff',
+    background: 'var(--paper)',
+    borderColor: 'var(--paper)',
+    color: 'var(--ink)',
   },
   content: {
     flex: 1,
@@ -79,21 +84,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%',
-    padding: '6px 8px',
-    border: '1px solid var(--line-soft)',
+    padding: '5px 8px',
     borderRadius: 4,
     fontSize: 12,
-    outline: 'none',
     boxSizing: 'border-box' as const,
   },
   select: {
     width: '100%',
-    padding: '6px 8px',
-    border: '1px solid var(--line-soft)',
+    padding: '5px 6px',
     borderRadius: 4,
     fontSize: 12,
-    outline: 'none',
-    background: 'var(--ink-2)',
   },
   checkbox: {
     width: 16,
@@ -103,19 +103,11 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'none',
     border: 'none',
     cursor: 'pointer',
-    color: '#ef4444',
+    color: 'var(--danger)',
     fontSize: 16,
-    padding: 4,
-  },
-  addBtn: {
-    padding: '6px 12px',
-    background: 'var(--coral)',
-    color: '#fff',
-    border: 'none',
+    lineHeight: 1,
     borderRadius: 4,
-    fontSize: 12,
-    fontWeight: 500,
-    cursor: 'pointer',
+    padding: '2px 6px',
   },
   recordCount: {
     fontSize: 11,
@@ -129,18 +121,10 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     flexWrap: 'wrap' as const,
   },
-  secondaryBtn: {
-    padding: '6px 12px',
-    background: 'var(--ink)',
-    color: 'var(--dim)',
-    border: '1px solid var(--line)',
-    borderRadius: 4,
-    fontSize: 12,
-    cursor: 'pointer',
-  },
   footerHint: {
-    fontSize: 11,
-    color: 'var(--dimmer)',
+    fontSize: 11.5,
+    lineHeight: 1.45,
+    color: 'var(--dim)',
   },
 };
 
@@ -159,6 +143,7 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
     case 'boolean':
       return (
         <input
+          aria-label={field.name}
           type="checkbox"
           checked={Boolean(value)}
           onChange={(e) => onChange(e.target.checked)}
@@ -177,6 +162,7 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
       const partial = (text: string) => text === '' || text === '-' || /[.eE+-]$/.test(text);
       return (
         <input
+          aria-label={field.name}
           type="text"
           inputMode="decimal"
           value={raw}
@@ -199,6 +185,7 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
     case 'date':
       return (
         <input
+          aria-label={field.name}
           type="date"
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
@@ -209,6 +196,7 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
     case 'select':
       return (
         <select
+          aria-label={field.name}
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
           style={styles.select}
@@ -240,6 +228,7 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
       const current = (value as string) || '';
       return (
         <select
+          aria-label={field.name}
           value={current}
           onChange={(e) => onChange(e.target.value)}
           style={styles.select}
@@ -268,6 +257,7 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
     case 'email':
       return (
         <input
+          aria-label={field.name}
           type="email"
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
@@ -279,6 +269,7 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
     case 'url':
       return (
         <input
+          aria-label={field.name}
           type="url"
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
@@ -290,6 +281,7 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
     default:
       return (
         <input
+          aria-label={field.name}
           type="text"
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
@@ -350,9 +342,9 @@ export function DataEntryPanel() {
   if (entities.length === 0) {
     return (
       <div style={styles.container}>
-        <div style={styles.header}>Seed Data</div>
+        <div style={styles.header}>Sample records</div>
         <div style={styles.emptyState}>
-          Create entities in the schema designer to add seed data.
+          Add a collection above, and the records it ships with are entered here.
         </div>
       </div>
     );
@@ -364,7 +356,7 @@ export function DataEntryPanel() {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span>Seed Data</span>
+        <span>Sample records</span>
         {activeEntity && (
           <span style={styles.recordCount}>
             {records.length} record{records.length !== 1 ? 's' : ''}
@@ -372,10 +364,12 @@ export function DataEntryPanel() {
         )}
       </div>
 
-      <div style={styles.tabs}>
+      <div style={styles.tabs} role="group" aria-label="Collection">
         {entities.map((entity) => (
           <button
             key={entity.id}
+            type="button"
+            aria-pressed={entity.id === activeEntityId}
             style={{
               ...styles.tab,
               ...(entity.id === activeEntityId ? styles.tabActive : {}),
@@ -384,7 +378,7 @@ export function DataEntryPanel() {
           >
             {entity.name}
             {(seedData.get(entity.id)?.length || 0) > 0 && (
-              <span> ({seedData.get(entity.id)?.length})</span>
+              <span style={{ opacity: 0.7 }}> · {seedData.get(entity.id)?.length}</span>
             )}
           </button>
         ))}
@@ -400,7 +394,7 @@ export function DataEntryPanel() {
                     {activeEntity.fields.map((field) => (
                       <th key={field.id} style={styles.th}>
                         {field.name}
-                        {field.required && <span style={{ color: '#ef4444' }}> *</span>}
+                        {field.required && <span style={{ color: 'var(--danger)' }} title="Required" aria-label="required"> *</span>}
                       </th>
                     ))}
                     <th style={{ ...styles.th, width: 40 }}></th>
@@ -431,6 +425,7 @@ export function DataEntryPanel() {
                           style={styles.deleteBtn}
                           onClick={() => deleteSeedRecord(activeEntity.id, idx)}
                           title="Delete record"
+                          aria-label={`Delete record ${idx + 1}`}
                         >
                           ×
                         </button>
@@ -441,17 +436,18 @@ export function DataEntryPanel() {
               </table>
             ) : (
               <div style={styles.emptyState}>
-                No seed data yet. Click the button below to add records.
+                No records yet. Add the rows this collection should start with.
               </div>
             )}
 
             <div style={styles.footer}>
-              <button style={styles.addBtn} onClick={() => addSeedRecord(activeEntity.id)}>
-                + Add Record
+              <button type="button" className="bl-btn bl-btn-sm" onClick={() => addSeedRecord(activeEntity.id)}>
+                + Add record
               </button>
               {records.length > 0 && (
                 <button
-                  style={styles.secondaryBtn}
+                  type="button"
+                  className="bl-btn bl-btn-sm bl-btn-ghost"
                   onClick={() => handleReidentify(activeEntity)}
                   title="Give every record of this collection a new id and new timestamps, as if imported into a new app, and update the references that point at them"
                   data-action="reidentify"
@@ -461,7 +457,8 @@ export function DataEntryPanel() {
               )}
               {lastReidentify?.entityId === activeEntity.id && (
                 <button
-                  style={styles.secondaryBtn}
+                  type="button"
+                  className="bl-btn bl-btn-sm bl-btn-ghost"
                   onClick={() => {
                     if (useSchemaStore.getState().undoReidentify()) toast.info(`Restored the previous ids of ${activeEntity.name}`);
                   }}

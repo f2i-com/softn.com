@@ -64,7 +64,7 @@ describe('the export dialog', () => {
     expect(dialog).not.toBeNull();
     expect(dialog.getAttribute('aria-modal')).toBe('true');
     const labelledBy = dialog.getAttribute('aria-labelledby')!;
-    expect(document.getElementById(labelledBy)?.textContent).toBe('Export Bundle');
+    expect(document.getElementById(labelledBy)?.textContent).toBe('Export, run or publish');
     for (const id of ['export-app-name', 'export-app-version', 'export-app-description']) {
       expect(container.querySelector(`label[for="${id}"]`), id).not.toBeNull();
       expect(document.getElementById(id), id).not.toBeNull();

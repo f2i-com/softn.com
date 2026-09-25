@@ -87,3 +87,33 @@ describe('portable Builder preview', () => {
     expect(assets('images/logo.svg')).toBe('');
   });
 });
+
+describe('the helpers the preview runs', () => {
+  it('are the exported manifest\'s logic list, in its order, as Run composes them', async () => {
+    const { previewSourceFor } = await import('./previewSource');
+    const { composeBundleSource, readBundleEntries } = await import('@softn/core');
+    commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(fixture())));
+    const files = useFilesStore.getState();
+    const extra = files.createFile('logic', 'extra.logic', 'logic');
+    files.updateLogicFile(extra, 'let extra = 1;');
+    const derived = [...files.logicFiles.values()].find((file) => file.path === 'logic/a-derived.logic')!;
+    useFilesStore.getState().renameFile(derived.id, 'b-derived.logic');
+    useFilesStore.getState().setActiveFile(useProjectStore.getState().source.mainFileId);
+
+    const text = new Map([...readBundleEntries(await buildProjectBundle())].map(([path, bytes]) => [path, new TextDecoder().decode(bytes)]));
+    const exported = JSON.parse(text.get('manifest.json')!);
+    const run = composeBundleSource(text, exported.main, exported.files.logic);
+
+    const project = useProjectStore.getState();
+    const state = useFilesStore.getState();
+    const canvas = useCanvasStore.getState();
+    const preview = previewSourceFor({
+      elements: canvas.elements, rootId: canvas.rootId, logicSource: project.logicSource, collections: project.collections,
+      activeFileId: state.activeFileId, uiFiles: state.uiFiles, logicFiles: state.logicFiles, nodes: state.nodes,
+      retainedSource: project.source, pythonPackages: project.pythonPackages,
+    });
+    expect(preview.error).toBeNull();
+    expect(preview.composition?.preIncludedLogicPaths).toEqual(run.preIncludedLogicPaths);
+    expect(preview.source).toBe(run.source);
+  });
+});

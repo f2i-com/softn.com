@@ -79,7 +79,7 @@ export function RelationshipDialog({ entities, initial, editing, onSave, onClose
       <div ref={dialogRef} style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-intro`} tabIndex={-1} onClick={(event) => event.stopPropagation()}>
         <div style={styles.header}>
           <div style={{ minWidth: 0 }}>
-            <div style={styles.eyebrow}>DATA MODEL</div>
+            <div style={styles.eyebrow}>Data model</div>
             <h2 id={`${id}-title`} style={styles.title}>{editing ? 'Edit relationship' : 'Add relationship'}</h2>
           </div>
           <button type="button" style={styles.close} aria-label="Close relationship dialog" onClick={onClose}>×</button>
@@ -122,7 +122,7 @@ export function RelationshipDialog({ entities, initial, editing, onSave, onClose
                 {cardinalities.map((choice) => (
                   <label key={choice.value} style={{ ...styles.card, ...(type === choice.value ? styles.activeCard : {}) }}>
                     <span style={styles.cardHeading}>
-                      <input type="radio" name={`${id}-type`} value={choice.value} checked={type === choice.value} style={{ accentColor: 'var(--coral)', margin: 0 }} onChange={() => {
+                      <input type="radio" name={`${id}-type`} value={choice.value} checked={type === choice.value} style={{ accentColor: 'var(--paper)', margin: 0 }} onChange={() => {
                         setType(choice.value); if (!canStoreReference(choice.value)) setFieldChoice(''); setError(null);
                       }} />
                       <span style={styles.cardTitle}>{choice.label}</span>
@@ -175,12 +175,12 @@ export function RelationshipDialog({ entities, initial, editing, onSave, onClose
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  overlay: { position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0, 0, 0, 0.58)', backdropFilter: 'blur(5px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box' },
-  dialog: { width: 'min(680px, 100%)', minWidth: 0, maxHeight: 'calc(100dvh - 32px)', display: 'flex', flexDirection: 'column', overflow: 'hidden', color: 'var(--paper)', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 18, boxShadow: '0 24px 80px rgba(0,0,0,0.32)' },
+  overlay: { position: 'fixed', inset: 0, zIndex: 1200, background: 'var(--bl-overlay)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box' },
+  dialog: { width: 'min(680px, 100%)', minWidth: 0, maxHeight: 'calc(100dvh - 32px)', display: 'flex', flexDirection: 'column', overflow: 'hidden', color: 'var(--paper)', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--bl-shadow-pop)' },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '22px 24px 18px', borderBottom: '1px solid var(--line-soft)' },
-  eyebrow: { fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--coral)', marginBottom: 6 },
-  title: { margin: 0, fontFamily: 'var(--b-display)', fontSize: 23, letterSpacing: '-0.025em', overflowWrap: 'anywhere' },
-  close: { width: 36, height: 36, flexShrink: 0, border: '1px solid var(--line)', borderRadius: 9, background: 'transparent', color: 'var(--dim)', fontSize: 23, cursor: 'pointer' },
+  eyebrow: { fontSize: 12, fontWeight: 500, color: 'var(--dim)', marginBottom: 4 },
+  title: { margin: 0, fontFamily: 'var(--display)', fontSize: 20, letterSpacing: '-0.025em', overflowWrap: 'anywhere' },
+  close: { width: 36, height: 36, flexShrink: 0, border: '1px solid var(--line)', borderRadius: 8, background: 'transparent', color: 'var(--dim)', fontSize: 23, cursor: 'pointer' },
   form: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 },
   body: { display: 'flex', flexDirection: 'column', gap: 22, minHeight: 0, overflowY: 'auto', padding: '20px 24px' },
   intro: { margin: 0, fontSize: 14, lineHeight: 1.6, color: 'var(--dim)' },
@@ -191,15 +191,16 @@ const styles: Record<string, React.CSSProperties> = {
   fieldset: { margin: 0, padding: 0, border: 0, minWidth: 0 },
   cardGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 230px), 1fr))', gap: 10 },
   card: { display: 'flex', flexDirection: 'column', gap: 9, padding: 13, minWidth: 0, border: '1px solid var(--line)', borderRadius: 10, background: 'var(--ink)', cursor: 'pointer' },
-  activeCard: { borderColor: 'var(--coral)', background: 'color-mix(in srgb, var(--coral) 8%, var(--ink))' },
+  activeCard: { borderColor: 'var(--paper)', boxShadow: 'inset 0 0 0 1px var(--paper)', background: 'var(--bl-select)' },
   cardHeading: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   cardTitle: { fontSize: 13, fontWeight: 600 },
-  symbol: { marginLeft: 'auto', fontFamily: 'var(--b-mono)', fontSize: 11, whiteSpace: 'nowrap', color: 'var(--coral)' },
+  symbol: { marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 11, whiteSpace: 'nowrap', color: 'var(--dim)' },
   hint: { display: 'block', margin: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--dim)', overflowWrap: 'anywhere' },
   referenceBox: { padding: 16, background: 'var(--ink)', border: '1px solid var(--line-soft)', borderRadius: 12, display: 'flex', flexDirection: 'column', gap: 8 },
   optional: { fontSize: 11, fontWeight: 400, marginLeft: 6, color: 'var(--dim)' },
   footer: { display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 10, padding: '16px 24px', borderTop: '1px solid var(--line-soft)' },
   button: { minHeight: 40, padding: '9px 16px', borderRadius: 8, border: '1px solid var(--line)', background: 'transparent', color: 'var(--paper)', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' },
-  primary: { background: 'var(--coral)', borderColor: 'var(--coral)', color: '#fff' },
-  error: { padding: '10px 12px', borderRadius: 8, border: '1px solid var(--coral)', color: 'var(--paper)', background: 'color-mix(in srgb, var(--coral) 10%, var(--ink))', fontSize: 13, lineHeight: 1.5, overflowWrap: 'anywhere' },
+  // The one primary action: the ink, inverted.
+  primary: { background: 'var(--paper)', borderColor: 'var(--paper)', color: 'var(--ink)' },
+  error: { padding: '10px 12px', borderRadius: 8, border: '1px solid var(--danger)', color: 'var(--paper)', background: 'var(--bl-danger-soft)', fontSize: 13, lineHeight: 1.5, overflowWrap: 'anywhere' },
 };

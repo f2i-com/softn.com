@@ -7,6 +7,9 @@ import { useCanvasStore } from '../../stores/canvasStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { generateSource } from '../../utils/sourceGenerator';
+import { logicSrcOf } from '../../utils/logicFiles';
+import { gatherCollections } from '../../utils/buildProjectBundle';
+import { useSchemaStore } from '../../stores/schemaStore';
 import { useSourceFidelity, summariseReasons } from '../../utils/useSourceFidelity';
 import { CodeEditor } from './CodeEditor';
 
@@ -18,57 +21,29 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--ink-2)',
   },
   header: {
-    padding: '8px 16px',
+    minHeight: 40,
+    padding: '6px 16px',
+    gap: 12,
     borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
   title: {
-    fontWeight: 600,
-    fontSize: 13,
+    fontFamily: 'var(--mono)',
+    fontWeight: 500,
+    fontSize: 12.5,
     color: 'var(--paper)',
   },
   titleContainer: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-  },
-  dirtyIndicator: {
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    background: '#f59e0b',
+    minWidth: 0,
   },
   hint: {
-    fontSize: 11,
-    color: 'var(--dimmer)',
-  },
-  badgeVisual: {
-    fontSize: 10,
-    fontWeight: 600,
-    padding: '2px 6px',
-    borderRadius: 4,
-    background: 'var(--mint-glow-soft)',
-    color: 'var(--paper)',
-    border: '1px solid var(--mint-edge)',
-  },
-  badgeSourceOnly: {
-    fontSize: 10,
-    fontWeight: 600,
-    padding: '2px 6px',
-    borderRadius: 4,
-    background: '#fffbeb',
-    color: '#92400e',
-    border: '1px solid #fde68a',
-  },
-  notice: {
-    padding: '6px 16px',
-    fontSize: 12,
-    lineHeight: 1.4,
-    background: '#fffbeb',
-    color: '#92400e',
-    borderBottom: '1px solid #fde68a',
+    fontSize: 11.5,
+    color: 'var(--dim)',
   },
   editorWrapper: {
     flex: 1,
@@ -78,20 +53,38 @@ const styles: Record<string, React.CSSProperties> = {
 
 export function SourceView() {
   const { elements, rootId } = useCanvasStore();
-  const { logicSource, collections } = useProjectStore();
-  const { activeFileId, uiFiles, nodes, updateUIFileSource } = useFilesStore();
+  const projectCollections = useProjectStore((state) => state.collections);
+  const entities = useSchemaStore((state) => state.entities);
+  const { activeFileId, uiFiles, logicFiles, nodes, updateUIFileSource } = useFilesStore();
   const isDirty = activeFileId ? nodes.get(activeFileId)?.isDirty : false;
 
-  // Get the initial source - prefer original source from loaded bundle
+  // Get the initial source - prefer original source from loaded bundle.
+  //
+  // A file with no source of its own yet is shown in the shape export writes
+  // it: its logic linked with `<logic src>`, never inlined. This text becomes
+  // the file's source on the first keystroke, and an inline copy there was a
+  // copy nothing else edits — the dock went on writing the logic file, while
+  // the preview and the export ran the copy, and every later logic edit was
+  // silently lost.
   const initialSource = useMemo(() => {
-    if (activeFileId) {
-      const activeFile = uiFiles.get(activeFileId);
-      if (activeFile?.originalSource !== undefined) {
-        return activeFile.originalSource;
-      }
+    const activeFile = activeFileId ? uiFiles.get(activeFileId) : undefined;
+    if (activeFile?.originalSource !== undefined) {
+      return activeFile.originalSource;
     }
-    return generateSource(elements, rootId, logicSource, collections);
-  }, [elements, rootId, logicSource, collections, activeFileId, uiFiles]);
+    const logicSrc = activeFile ? logicSrcOf(activeFile, logicFiles) : undefined;
+    // The collections export declares, schema first. It refuses a schema it
+    // cannot write (two collections of one name); the Code view still shows
+    // the file, with the collections defined by hand.
+    let collections = projectCollections;
+    try {
+      collections = gatherCollections();
+    } catch {
+      // Export says why when it is asked to write the bundle.
+    }
+    return generateSource(elements, rootId, '', collections, { logicSrc });
+    // `entities` is read through gatherCollections, and is what makes the view follow the schema.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elements, rootId, projectCollections, entities, activeFileId, uiFiles, logicFiles]);
 
   // Handle source changes from the editor
   const handleSourceChange = useCallback(
@@ -121,10 +114,11 @@ export function SourceView() {
           <span style={styles.title}>
             {isFromBundle ? activeFile?.path || 'Source (.ui)' : 'Source (.ui)'}
           </span>
-          {isDirty && <div style={styles.dirtyIndicator} title="Unsaved changes" />}
+          {isDirty && <span className="bl-dirty-dot" title="Unsaved changes" role="img" aria-label="Unsaved changes" />}
           {fidelity && (
             <span
-              style={sourceOnly ? styles.badgeSourceOnly : styles.badgeVisual}
+              className="bl-badge"
+              data-tone={sourceOnly ? 'warn' : undefined}
               title={
                 sourceOnly
                   ? `The visual editor cannot write this file back:\n${fidelity.reasons.join('\n')}`
@@ -136,10 +130,10 @@ export function SourceView() {
             </span>
           )}
         </div>
-        <span style={styles.hint}>Edit source code - changes sync to preview</span>
+        <span style={styles.hint}>Edits here update the canvas and the preview</span>
       </div>
       {(sourceOnly || blocked) && (
-        <div style={styles.notice} role="status">
+        <div className="bl-notice" role="status">
           {blocked
             ? `A canvas edit was not written to this file — it has constructs the visual editor cannot write back: ${summariseReasons(blocked)}. Edit its source here.`
             : `This file has constructs the visual editor cannot write back: ${summariseReasons(fidelity!.reasons)}. Edit its source here; the canvas will not change it.`}

@@ -10,6 +10,7 @@ import {
 } from '../../utils/componentRegistry';
 import { TokenIcon } from '../icons/TokenIcon';
 import { useCanvasStore } from '../../stores/canvasStore';
+import { useHistoryStore } from '../../stores/historyStore';
 import { blockPalette } from '../../utils/blocks';
 import type { ComponentMeta } from '../../types/builder';
 
@@ -28,8 +29,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    fontFamily: 'var(--display)',
     fontWeight: 700,
     fontSize: 14,
+    letterSpacing: '-0.01em',
     color: 'var(--paper)',
     background: 'var(--ink-2)',
     gap: 8,
@@ -44,36 +47,21 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 6,
   },
-  badge: {
-    fontSize: 11,
-    color: 'var(--coral)',
-    background: 'var(--mint-glow)',
-    borderRadius: 999,
-    padding: '2px 8px',
-    fontWeight: 700,
-  },
-  dockBtn: {
-    border: '1px solid var(--line)',
-    background: 'var(--ink-2)',
-    color: 'var(--dim)',
-    borderRadius: 6,
-    fontSize: 11,
-    padding: '3px 7px',
-    lineHeight: 1,
-    cursor: 'pointer',
-  },
   search: {
     padding: '8px 12px',
     borderBottom: '1px solid var(--line-soft)',
   },
   searchInput: {
     width: '100%',
-    padding: '9px 12px',
-    border: '1px solid var(--line)',
+    padding: '8px 10px',
     borderRadius: 8,
     fontSize: 13,
-    outline: 'none',
-    background: 'var(--ink)',
+  },
+  searchHint: {
+    marginTop: 6,
+    fontSize: 11.5,
+    lineHeight: 1.4,
+    color: 'var(--dim)',
   },
   list: {
     flex: 1,
@@ -83,20 +71,24 @@ const styles: Record<string, React.CSSProperties> = {
   category: {
     marginBottom: 4,
   },
+  // A section inside the panel: small and dim, in sentence case.
   categoryHeader: {
+    width: '100%',
     padding: '8px 16px',
-    fontSize: 11,
-    fontWeight: 700,
+    border: 'none',
+    background: 'transparent',
+    fontSize: 12,
+    fontWeight: 600,
     color: 'var(--dim)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.06em',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    textAlign: 'left',
   },
   categoryChevron: {
-    fontSize: 11,
+    fontSize: 13,
+    lineHeight: 1,
     transition: 'transform 0.2s',
   },
   categoryChevronOpen: {
@@ -108,27 +100,29 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 const componentStyle: React.CSSProperties = {
-  padding: '8px 10px',
-  margin: '2px 0',
-  borderRadius: 8,
+  padding: '6px 10px',
+  margin: '1px 0',
+  borderRadius: 6,
   cursor: 'grab',
   display: 'flex',
   alignItems: 'center',
   gap: 8,
   fontSize: 13,
   color: 'var(--paper)',
-  transition: 'all 0.15s',
+  transition: 'background 0.15s',
   userSelect: 'none',
   border: '1px solid transparent',
 };
 
 const componentHoverStyle: React.CSSProperties = {
-  background: 'var(--ink-3)',
+  background: 'var(--bl-hover)',
 };
 
 const componentDraggingStyle: React.CSSProperties = {
   opacity: 0.55,
-  background: 'var(--mint-glow)',
+  background: 'var(--bl-select)',
+  borderStyle: 'dashed',
+  borderColor: 'var(--line-strong)',
 };
 
 const iconChipStyle: React.CSSProperties = {
@@ -146,11 +140,23 @@ interface ComponentItemProps {
   component: ComponentMeta;
 }
 
+/**
+ * Add a component at the end of the page, as one undoable step, and select
+ * it so its properties are in front of the creator. What a double-click and
+ * Enter on a palette item do; a double-click used to add without recording
+ * a step, so Undo could not take it back.
+ */
+export function insertFromPalette(type: string): string {
+  const canvas = useCanvasStore.getState();
+  useHistoryStore.getState().push(canvas.elements, canvas.rootId);
+  const id = canvas.addElement(type, canvas.rootId);
+  useCanvasStore.getState().selectElement(id);
+  return id;
+}
+
 function ComponentItem({ component }: ComponentItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const setDraggedType = useCanvasStore((state) => state.setDraggedType);
-  const addElement = useCanvasStore((state) => state.addElement);
-  const rootId = useCanvasStore((state) => state.rootId);
   const draggedType = useCanvasStore((state) => state.draggedType);
 
   const isDragging = draggedType === component.name;
@@ -186,8 +192,18 @@ function ComponentItem({ component }: ComponentItemProps) {
   );
 
   const handleDoubleClick = useCallback(() => {
-    addElement(component.name, rootId);
-  }, [component.name, addElement, rootId]);
+    insertFromPalette(component.name);
+  }, [component.name]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        insertFromPalette(component.name);
+      }
+    },
+    [component.name]
+  );
 
   const style: React.CSSProperties = {
     ...componentStyle,
@@ -197,15 +213,22 @@ function ComponentItem({ component }: ComponentItemProps) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      data-palette-item={component.name}
+      aria-label={`Add ${component.name}`}
+      aria-description={component.description}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
+      onKeyDown={handleKeyDown}
       style={style}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      title={`${component.description} (drag or double-click to add)`}
+      title={`${component.description} — drag onto the canvas, or double-click to add`}
     >
-      <span style={{ fontSize: 12, opacity: 0.7 }}>+</span>
-      <span style={{ flex: 1 }}>{component.name}</span>
+      <span style={{ flex: 1, fontFamily: component.name.startsWith('#') ? 'var(--mono)' : undefined, color: component.name.startsWith('#') ? 'var(--coral)' : undefined }}>
+        {component.name}
+      </span>
       <span style={iconChipStyle}>
         <TokenIcon token={component.icon} size={12} />
       </span>
@@ -223,19 +246,20 @@ interface CategorySectionProps {
 function CategorySection({ category, components, isExpanded, onToggle }: CategorySectionProps) {
   return (
     <div style={styles.category}>
-      <div style={styles.categoryHeader} onClick={onToggle}>
+      <button type="button" style={styles.categoryHeader} onClick={onToggle} aria-expanded={isExpanded}>
         <span>
-          {category} <span style={{ opacity: 0.7 }}>({components.length})</span>
+          {category} <span style={{ color: 'var(--dimmer)', fontWeight: 400 }}>{components.length}</span>
         </span>
         <span
+          aria-hidden="true"
           style={{
             ...styles.categoryChevron,
             ...(isExpanded ? styles.categoryChevronOpen : {}),
           }}
         >
-          {'>'}
+          ›
         </span>
-      </div>
+      </button>
 
       {isExpanded && (
         <div style={styles.componentList}>
@@ -304,11 +328,11 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
       <div style={styles.header}>
         <div style={styles.headerLeft}>
           <span>Components</span>
-          <span style={styles.badge}>{componentRegistry.length}</span>
+          <span className="bl-badge">{componentRegistry.length}</span>
         </div>
         <div style={styles.headerRight}>
           {onToggleDock && (
-            <button style={styles.dockBtn} onClick={onToggleDock} title="Hide Components panel">
+            <button className="bl-mini" onClick={onToggleDock} title="Hide the components panel" aria-label="Hide components panel">
               Hide
             </button>
           )}
@@ -317,12 +341,14 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
 
       <div style={styles.search}>
         <input
-          type="text"
-          placeholder="Search components..."
+          type="search"
+          placeholder="Search components…"
+          aria-label="Search components"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           style={styles.searchInput}
         />
+        <div style={styles.searchHint}>Drag onto the canvas, or double-click (or press Enter) to add at the end.</div>
       </div>
 
       <div style={styles.list}>
@@ -332,7 +358,9 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
               <ComponentItem key={comp.name} component={comp} />
             ))}
             {filteredComponents.length === 0 && (
-              <div style={{ padding: 16, color: 'var(--dimmer)', fontSize: 13 }}>No components found</div>
+              <div style={{ padding: '12px 8px', color: 'var(--dim)', fontSize: 13 }} role="status">
+                Nothing matches “{searchQuery}”. Try a shorter word, like “form” or “list”.
+              </div>
             )}
           </div>
         ) : (

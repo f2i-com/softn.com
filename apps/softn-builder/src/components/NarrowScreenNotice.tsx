@@ -9,7 +9,7 @@ export function NarrowScreenNotice({ studioUrl, runtimeUrl, projectName, isDirty
   return (
     <div style={s.wrap}>
       <div style={s.card}>
-        <svg width="30" height="30" viewBox="0 0 26 26" style={{ color: '#8b94a2' }} aria-hidden="true">
+        <svg width="30" height="30" viewBox="0 0 26 26" style={{ color: 'var(--dim)' }} aria-hidden="true">
           <rect x="3.5" y="4.5" width="19" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
           <path d="M3.5 9.5h19M9 9.5v9" fill="none" stroke="currentColor" strokeWidth="1.4" />
         </svg>
@@ -38,21 +38,25 @@ export function NarrowScreenNotice({ studioUrl, runtimeUrl, projectName, isDirty
 
 const s: Record<string, React.CSSProperties> = {
   wrap: {
-    minHeight: '100dvh',
+    // Drawn from the tokens, not the dark values they happen to have: this
+    // page used to stay dark when the theme was light. It scrolls itself,
+    // because the document around it never does.
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
     boxSizing: 'border-box',
     display: 'flex',
-    alignItems: 'center',
+    alignItems: 'safe center',
     justifyContent: 'center',
     padding: '1.5rem',
-    background: '#101317',
-    color: '#f2f0ec',
-    fontFamily: "'IBM Plex Sans', system-ui, -apple-system, sans-serif",
+    background: 'var(--ink)',
+    color: 'var(--paper)',
+    fontFamily: 'var(--body)',
   },
-  card: { maxWidth: 380, display: 'flex', flexDirection: 'column', gap: '0.75rem' },
-  project: { border: '1px solid #262c36', borderRadius: 12, padding: 16, margin: '8px 0' },
-  title: { margin: '0.5rem 0 0', fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1.15 },
-  copy: { margin: 0, fontSize: 14.5, lineHeight: 1.6, color: '#8b94a2' },
-  code: { fontFamily: "'IBM Plex Mono', ui-monospace, monospace", fontSize: '0.9em', color: '#ff8a4c' },
+  card: { maxWidth: 380, display: 'flex', flexDirection: 'column', gap: '0.75rem', margin: 'auto 0' },
+  project: { border: '1px solid var(--line)', background: 'var(--ink-2)', borderRadius: 12, padding: 16, margin: '8px 0' },
+  title: { margin: '0.5rem 0 0', fontFamily: 'var(--display)', fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1.15 },
+  copy: { margin: 0, fontSize: 14.5, lineHeight: 1.6, color: 'var(--dim)' },
   actions: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' },
   action: {
     display: 'inline-flex',
@@ -60,8 +64,8 @@ const s: Record<string, React.CSSProperties> = {
     minHeight: 44,
     padding: '0 1rem',
     borderRadius: 8,
-    border: '1px solid #262c36',
-    color: '#f2f0ec',
+    border: '1px solid var(--line)',
+    color: 'var(--paper)',
     textDecoration: 'none',
     fontSize: 14.5,
     fontWeight: 500,
@@ -69,5 +73,5 @@ const s: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     cursor: 'pointer',
   },
-  primary: { background: '#f2f0ec', color: '#101317', borderColor: '#f2f0ec' },
+  primary: { background: 'var(--paper)', color: 'var(--ink)', borderColor: 'var(--paper)', fontWeight: 600 },
 };

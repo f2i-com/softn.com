@@ -12,6 +12,7 @@ import { getComponentMeta } from '../../utils/componentRegistry';
 import { blockHeaderText } from '../../utils/sourceGenerator';
 import { acceptsChildren, blockDescription, canDropInto } from '../../utils/blocks';
 import { parseStringLiteralVariables } from '../../utils/logicStringLiterals';
+import { dockLogicFile, entryFileId, logicLanguageOf } from '../../utils/logicFiles';
 import { TokenIcon } from '../icons/TokenIcon';
 import type { CanvasElement as CanvasElementType } from '../../types/builder';
 
@@ -34,22 +35,6 @@ interface Props {
   depth?: number;
   focusedElementId?: string | null;
   onTreeFocusChange?: (elementId: string) => void;
-}
-
-function resolveRelativePath(fromPath: string, relativePath: string): string {
-  const parts = fromPath.split('/');
-  parts.pop();
-  const dir = parts;
-
-  for (const part of relativePath.split('/')) {
-    if (part === '..') {
-      dir.pop();
-    } else if (part !== '.') {
-      dir.push(part);
-    }
-  }
-
-  return dir.join('/');
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -90,8 +75,9 @@ const styles: Record<string, React.CSSProperties> = {
     left: 8,
     fontSize: 10,
     fontWeight: 500,
+    fontFamily: 'var(--mono)',
     color: 'var(--coral)',
-    background: '#fff',
+    background: 'var(--ink-2)',
     padding: '0 4px',
     borderRadius: 2,
     zIndex: 10,
@@ -132,18 +118,20 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     padding: '6px 10px',
     borderRadius: 6,
-    background: 'var(--mint-glow-soft)',
-    border: '1px solid var(--mint-edge)',
+    // A block is the language's own construct, so it takes the language's
+    // colour; it was mint, which the brand keeps for something running.
+    background: 'var(--coral-glow)',
+    border: '1px solid var(--line)',
     fontSize: 12,
   },
   blockKeyword: {
-    fontFamily: 'var(--b-mono, monospace)',
+    fontFamily: 'var(--mono)',
     fontWeight: 600,
     color: 'var(--coral)',
     whiteSpace: 'nowrap' as const,
   },
   blockExpression: {
-    fontFamily: 'var(--b-mono, monospace)',
+    fontFamily: 'var(--mono)',
     color: 'var(--paper)',
     overflowWrap: 'anywhere' as const,
   },
@@ -179,48 +167,28 @@ export const CanvasElement = React.memo(function CanvasElement({
   const allowsChildren = element ? acceptsChildren(element) : false;
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const assets = useProjectStore((state) => state.assets);
-  const projectLogicSource = useProjectStore((state) => state.logicSource);
-  const { activeFileId, nodes, uiFiles, logicFiles } = useFilesStore((state) => ({
+  const retainedSource = useProjectStore((state) => state.source);
+  const { activeFileId, uiFiles, logicFiles } = useFilesStore((state) => ({
     activeFileId: state.activeFileId,
-    nodes: state.nodes,
     uiFiles: state.uiFiles,
     logicFiles: state.logicFiles,
   }));
 
-  const activeNode = activeFileId ? nodes.get(activeFileId) : null;
-  const activeUIFile =
-    activeFileId && activeNode?.fileType === 'ui' ? uiFiles.get(activeFileId) : undefined;
-
-  const linkedLogicSource = React.useMemo(() => {
-    if (!activeUIFile?.logicSrc) {
-      return projectLogicSource;
-    }
-
-    const sourcePath = activeUIFile.logicSrc;
-    const resolvedPath = resolveRelativePath(activeUIFile.path, sourcePath);
-    const pathsToTry = [
-      resolvedPath,
-      resolvedPath.replace(/^\//, ''),
-      sourcePath.replace(/^\.\//, ''),
-      sourcePath,
-    ];
-
-    if (activeUIFile.path.startsWith('ui/') && sourcePath.startsWith('./')) {
-      pathsToTry.push(`logic/${sourcePath.slice(2)}`);
-    }
-
-    for (const [, logicFile] of logicFiles) {
-      if (pathsToTry.includes(logicFile.path)) {
-        return logicFile.content;
-      }
-    }
-
-    return projectLogicSource;
-  }, [activeUIFile, logicFiles, projectLogicSource]);
+  // The logic the file on the canvas runs — the one it links, else the
+  // entry's — read in its own language, so an image bound to a Python
+  // module's name shows too. It used to fall back to the project's copy of
+  // the logic, which is JavaScript whatever the project is.
+  const linkedLogic = React.useMemo(
+    () => dockLogicFile(activeFileId, uiFiles, logicFiles, entryFileId(uiFiles, retainedSource)),
+    [activeFileId, uiFiles, logicFiles, retainedSource]
+  );
 
   const resolvedLogicStrings = React.useMemo(
-    () => parseStringLiteralVariables(linkedLogicSource || ''),
-    [linkedLogicSource]
+    () =>
+      linkedLogic
+        ? parseStringLiteralVariables(linkedLogic.content, logicLanguageOf(linkedLogic.path))
+        : {},
+    [linkedLogic]
   );
   const elementComponentType = element?.componentType;
   const elementParentId = element?.parentId;
@@ -739,7 +707,7 @@ export const CanvasElement = React.memo(function CanvasElement({
               ? '#bbf7d0'
               : props.variant === 'warning'
                 ? '#fde68a'
-                : 'var(--mint-edge)';
+                : 'var(--line)';
         return (
           <div
             style={{
@@ -752,7 +720,7 @@ export const CanvasElement = React.memo(function CanvasElement({
                     ? '#f0fdf4'
                     : props.variant === 'warning'
                       ? '#fffbeb'
-                      : 'var(--mint-glow-soft)',
+                      : 'var(--ink-3)',
               border: `1px solid ${alertBorderColor}`,
               fontSize: 14,
             }}

@@ -24,7 +24,7 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'absolute' as const,
     width: 8,
     height: 8,
-    background: '#fff',
+    background: 'var(--ink-2)',
     border: '2px solid var(--coral)',
     borderRadius: 2,
     pointerEvents: 'auto' as const,

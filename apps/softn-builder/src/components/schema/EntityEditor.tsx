@@ -16,22 +16,21 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
   },
   header: {
-    padding: '12px 16px',
+    padding: '10px 12px 10px 16px',
     borderBottom: '1px solid var(--line-soft)',
-    fontWeight: 600,
+    fontFamily: 'var(--display)',
+    fontWeight: 700,
     fontSize: 14,
+    letterSpacing: '-0.01em',
     color: 'var(--paper)',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
   closeBtn: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
+    width: 28,
+    height: 28,
     fontSize: 18,
-    color: 'var(--dim)',
-    padding: 4,
   },
   content: {
     flex: 1,
@@ -44,9 +43,7 @@ const styles: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: 12,
     fontWeight: 600,
-    color: 'var(--dim)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.05em',
+    color: 'var(--paper)',
     marginBottom: 8,
   },
   formGroup: {
@@ -61,11 +58,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%',
-    padding: '8px 10px',
-    border: '1px solid var(--line-soft)',
+    padding: '7px 10px',
     borderRadius: 6,
     fontSize: 13,
-    outline: 'none',
+    fontFamily: 'var(--mono)',
     boxSizing: 'border-box' as const,
   },
   fieldCard: {
@@ -88,10 +84,12 @@ const styles: Record<string, React.CSSProperties> = {
   deleteBtn: {
     background: 'none',
     border: 'none',
+    borderRadius: 4,
     cursor: 'pointer',
-    color: '#ef4444',
-    fontSize: 14,
-    padding: 4,
+    color: 'var(--danger)',
+    fontSize: 16,
+    lineHeight: 1,
+    padding: '2px 6px',
   },
   fieldRow: {
     display: 'flex',
@@ -100,11 +98,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   select: {
     padding: '6px 8px',
-    border: '1px solid var(--line-soft)',
-    borderRadius: 4,
+    borderRadius: 6,
     fontSize: 12,
-    outline: 'none',
-    background: 'var(--ink-2)',
   },
   checkbox: {
     display: 'flex',
@@ -115,26 +110,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   addBtn: {
     width: '100%',
-    padding: '8px 12px',
-    background: 'var(--coral)',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 6,
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
   },
   dangerBtn: {
     width: '100%',
-    padding: '8px 12px',
-    background: '#fee2e2',
-    color: '#dc2626',
-    border: '1px solid #fecaca',
-    borderRadius: 6,
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
-    marginTop: 16,
+    marginTop: 8,
+    color: 'var(--danger)',
   },
   emptyState: {
     textAlign: 'center' as const,
@@ -194,11 +174,11 @@ function SchemaNameInput({ value, label, placeholder, disabled, onCommit }: {
             event.preventDefault(); event.stopPropagation(); setDraft(value); setError(null);
           }
         }}
-        style={{ ...styles.input, borderColor: error ? '#ef4444' : undefined }}
+        style={{ ...styles.input, borderColor: error ? 'var(--danger)' : undefined }}
         placeholder={placeholder}
         disabled={disabled}
       />
-      {error && <div id={errorId} role="alert" style={{ fontSize: 12, color: '#ef4444', marginTop: 6 }}>{error}</div>}
+      {error && <div id={errorId} role="alert" style={{ fontSize: 12, lineHeight: 1.45, color: 'var(--danger)', marginTop: 6 }}>{error}</div>}
     </div>
   );
 }
@@ -230,7 +210,7 @@ function FieldEditor({
           {field.name}
         </span>
         {!isIdField && (
-          <button style={styles.deleteBtn} onClick={onDelete} title="Delete field">
+          <button style={styles.deleteBtn} onClick={onDelete} title="Delete field" aria-label={`Delete field ${field.name}`}>
             ×
           </button>
         )}
@@ -330,9 +310,9 @@ export function EntityEditor() {
   if (!entity) {
     return (
       <div style={styles.container}>
-        <div style={styles.header}>Entity Editor</div>
+        <div style={styles.header}>Collection</div>
         <div style={styles.emptyState}>
-          Select an entity to edit, or double-click the canvas to create one.
+          Pick a collection on the canvas to edit its fields, or double-click the canvas to add one.
         </div>
       </div>
     );
@@ -341,15 +321,15 @@ export function EntityEditor() {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span>Edit Entity</span>
-        <button style={styles.closeBtn} onClick={() => selectEntity(null)} aria-label="Close entity editor">
+        <span style={{ fontFamily: 'var(--mono)', fontWeight: 500, overflowWrap: 'anywhere' }}>{entity.name}</span>
+        <button className="bl-close" style={styles.closeBtn} onClick={() => selectEntity(null)} aria-label="Close collection editor">
           ×
         </button>
       </div>
 
       <div style={styles.content}>
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>Basic Info</div>
+          <div style={styles.sectionTitle}>Names</div>
 
           <div style={styles.formGroup}>
             <div style={styles.label}>Name</div>
@@ -358,7 +338,7 @@ export function EntityEditor() {
               value={entity.name}
               label="Collection name"
               onCommit={name => updateEntity(entity.id, { name })}
-              placeholder="Entity name"
+              placeholder="tasks"
             />
           </div>
 
@@ -369,7 +349,7 @@ export function EntityEditor() {
               value={entity.alias}
               label="Alias (for code)"
               onCommit={alias => updateEntity(entity.id, { alias })}
-              placeholder="entity_alias"
+              placeholder="tasks"
             />
           </div>
           <p style={{ fontSize: 12, color: 'var(--dim)', margin: 0, lineHeight: 1.5 }}>
@@ -403,20 +383,22 @@ export function EntityEditor() {
             />
           ))}
 
-          <button style={styles.addBtn} onClick={() => addField(entity.id)}>
-            + Add Field
+          <button type="button" className="bl-btn bl-btn-sm" style={styles.addBtn} onClick={() => addField(entity.id)}>
+            + Add field
           </button>
         </div>
 
         <button
+          type="button"
+          className="bl-btn bl-btn-sm bl-btn-ghost"
           style={styles.dangerBtn}
           onClick={() => {
-            if (window.confirm(`Delete entity "${entity.name}"?`)) {
+            if (window.confirm(`Delete the collection "${entity.name}" and its records?`)) {
               deleteEntity(entity.id);
             }
           }}
         >
-          Delete Entity
+          Delete collection
         </button>
       </div>
     </div>

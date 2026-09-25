@@ -35,12 +35,15 @@ import { useSchemaStore } from '../stores/schemaStore';
 import { ensureFieldIds } from './schemaFields';
 import { useFilesStore } from '../stores/filesStore';
 import { fetchSameOriginBundle, isAbort } from '@softn/editor-shared/remoteOpen';
+import { readPythonPackages } from '@softn/core';
 import { loadBundle, type LoadedBundle } from './bundleLoader';
 import { inferRelationships, validRelationships } from './schemaRelationships';
 import { encodeAsset, decodeAsset, type SerializedAssetFile } from './sessionAssets';
 import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from './xdbFormat';
 import { readLocalStorage, removeLocalStorage } from './safeStorage';
 import { describeMigrations, migrateElements } from './propMigrations';
+import { applyInlineLogicMove, planInlineLogicMove, takenPaths } from './inlineLogic';
+import { entryFileId } from './logicFiles';
 import type {
   AssetFile,
   CanvasElement,
@@ -126,6 +129,7 @@ export interface ProjectSnapshot {
     icon: string | null;
     themeMode: 'light' | 'dark' | 'system';
     permissions: SerializedProject['permissions'];
+    pythonPackages: string[];
     logicSource: string;
     collections: SerializedProject['collections'];
     assets: AssetFile[];
@@ -242,6 +246,10 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
       icon: bundle.iconDataUrl,
       themeMode,
       permissions: bundle.permissions,
+      // What the manifest asks the Python engine for. Only names the runtime
+      // offers become the setting, and export writes the setting: a
+      // misspelt declaration is dropped on the next save rather than kept.
+      pythonPackages: readPythonPackages(bundle.rawManifest).packages,
       // The default logic is not this project's; a bundle without a main
       // logic file has none.
       logicSource: mainLogicFile?.content ?? '',
@@ -383,6 +391,29 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
       }
     : emptyRetainedSource();
 
+  // A session saved before the Code view linked logic may hold the entry's
+  // logic as an inline `<logic>` block — a copy the dock cannot see and the
+  // preview and export run. It moves into its logic file here when that
+  // loses nothing; otherwise it is left, and the dock offers the move.
+  let fileTables = {
+    nodes,
+    rootFolders: Array.isArray(s.files.rootFolders) ? (s.files.rootFolders as string[]) : [],
+    uiFiles,
+    logicFiles,
+  };
+  const entryId = entryFileId(uiFiles, source);
+  const entry = entryId ? uiFiles.get(entryId) : undefined;
+  const move = entry
+    ? planInlineLogicMove(entry, logicFiles, { isEntry: true, lossless: true, takenPaths: takenPaths(nodes, logicFiles) })
+    : null;
+  if (entry && move) {
+    let n = 0;
+    fileTables = applyInlineLogicMove(fileTables, move, () => `file_${Date.now()}_inline_${n++}`, false);
+    migrationWarnings.push(
+      `${entry.path} kept its logic inline; it now lives in ${move.logicPath}, linked with <logic src="${move.logicSrc}" />.`
+    );
+  }
+
   const project = s.project as SerializedProject;
   const view: ViewMode = s.view === 'logic' || s.view === undefined ? 'design' : (s.view as ViewMode);
 
@@ -395,6 +426,9 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
       icon: project.icon || null,
       themeMode: project.themeMode || 'light',
       permissions: project.permissions,
+      // A session written before the setting existed has it only in the
+      // manifest it retained, if it came from a bundle.
+      pythonPackages: Array.isArray(project.pythonPackages) ? project.pythonPackages : readPythonPackages(source.manifest).packages,
       logicSource: project.logicSource || '',
       collections: project.collections || [],
       assets: [...assetFiles.values()],
@@ -411,10 +445,7 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
     },
     files: {
       kind: 'state',
-      nodes,
-      rootFolders: Array.isArray(s.files.rootFolders) ? (s.files.rootFolders as string[]) : [],
-      uiFiles,
-      logicFiles,
+      ...fileTables,
       assetFiles,
       activeFileId: typeof s.files.activeFileId === 'string' ? s.files.activeFileId : null,
       openTabs: Array.isArray(s.files.openTabs) ? (s.files.openTabs as string[]) : [],
@@ -455,6 +486,7 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
       icon: snapshot.project.icon,
       themeMode: snapshot.project.themeMode,
       permissions: snapshot.project.permissions,
+      pythonPackages: snapshot.project.pythonPackages,
       logicSource: snapshot.project.logicSource,
       collections: snapshot.project.collections,
     });

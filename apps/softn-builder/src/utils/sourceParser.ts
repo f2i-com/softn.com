@@ -1033,38 +1033,3 @@ function unescapeAttr(value: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'");
 }
-
-/**
- * Parse a .logic file and extract imports/exports
- */
-export function parseLogicFile(content: string): {
-  imports: { names: string[]; source: string }[];
-  exports: string[];
-} {
-  const imports: { names: string[]; source: string }[] = [];
-  const exports: string[] = [];
-
-  // Parse imports
-  const importRegex = /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g;
-  let match;
-  while ((match = importRegex.exec(content)) !== null) {
-    const names = match[1]
-      .split(',')
-      .map((n) => n.trim())
-      .filter(Boolean);
-    imports.push({ names, source: match[2] });
-  }
-
-  // Parse exports
-  const exportFuncRegex = /export\s+function\s+(\w+)/g;
-  while ((match = exportFuncRegex.exec(content)) !== null) {
-    exports.push(match[1]);
-  }
-
-  const exportVarRegex = /export\s+(?:const|let|var)\s+(\w+)/g;
-  while ((match = exportVarRegex.exec(content)) !== null) {
-    exports.push(match[1]);
-  }
-
-  return { imports, exports };
-}

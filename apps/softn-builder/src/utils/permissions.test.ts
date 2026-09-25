@@ -31,7 +31,7 @@ function uiFile(path: string, source: string): UIFileState {
   return { id: path, path, elements: new Map(), rootId: 'root', imports: [], originalSource: source };
 }
 function logicFile(path: string, content: string): LogicFileState {
-  return { id: path, path, content, imports: [], exports: [] };
+  return { id: path, path, content };
 }
 
 describe('buildPermissionJson', () => {
