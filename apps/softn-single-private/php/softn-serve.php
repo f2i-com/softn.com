@@ -43,6 +43,15 @@ header('Referrer-Policy: strict-origin-when-cross-origin');
 header('Cross-Origin-Opener-Policy: same-origin');
 header('Cross-Origin-Embedder-Policy: credentialless');
 
+// The page and the manifest cut text with mbstring; without it every request
+// would be a blank 500 with display_errors off. Say which extension instead.
+if (!function_exists('mb_substr')) {
+    header('Content-Type: text/plain; charset=utf-8');
+    http_response_code(503);
+    echo 'Enable the PHP mbstring extension.';
+    exit;
+}
+
 const SOFTN_COOKIE = 'softn_viewer';
 /** Mirrors the per-entry bound of the core archive reader. */
 const SOFTN_MAX_ENTRY = 50 * 1024 * 1024;
@@ -98,6 +107,7 @@ const SOFTN_ENTRY_TYPES = [
     'md' => ['text/markdown', 'text'],
     'ui' => ['text/plain', 'text'],
     'logic' => ['text/plain', 'text'],
+    'py' => ['text/x-python', 'text'],
     'softn' => ['text/plain', 'text'],
     'wgsl' => ['text/plain', 'text'],
     'xdb' => ['application/json', 'text'],
@@ -136,9 +146,16 @@ function softn_entry_ok(string $name): bool
     return true;
 }
 
-/** `withhold` matches an exact path, a directory (`notes/`) or a glob (`*.md`). */
+/**
+ * `withhold` matches an exact path, a directory (`notes/`) or a glob (`*.md`).
+ * `server/` is withheld whatever the configuration says: it is where a
+ * private server bundle keeps its routes, migrations and settings, and no
+ * client ever runs them. An operator who deploys that bundle here in place
+ * of its public client serves the app without them, not its server source.
+ */
 function softn_withheld(string $name, array $withhold): bool
 {
+    if (str_starts_with($name, 'server/')) return true;
     foreach ($withhold as $pattern) {
         if (str_ends_with($pattern, '/')) {
             if (str_starts_with($name, $pattern)) return true;
@@ -156,7 +173,7 @@ function softn_config(string $private): array
     $raw = require $file;
     if (!is_array($raw)) softn_fail(503, 'serve.config.php must return an array.');
     $known = ['id', 'title', 'description', 'lang', 'bundle', 'theme', 'loadingText', 'permissionMode', 'permissions', 'sha256',
-        'viewerToken', 'tokenLifetime', 'secret', 'withhold', 'cacheSeconds', 'allowPrivateInWebroot', 'pwa'];
+        'viewerToken', 'tokenLifetime', 'secret', 'withhold', 'cacheSeconds', 'allowPrivateInWebroot', 'pwa', 'frameAncestors'];
     foreach (array_keys($raw) as $key) {
         if (!in_array($key, $known, true)) softn_fail(503, 'Unknown setting in serve.config.php: ' . $key);
     }
@@ -197,11 +214,22 @@ function softn_config(string $private): array
     $allowPrivateInWebroot = $raw['allowPrivateInWebroot'] ?? false;
     if (!is_bool($allowPrivateInWebroot)) softn_fail(503, 'allowPrivateInWebroot must be true or false.');
     $pwa = softn_pwa_config($raw['pwa'] ?? true, $title, $theme);
+    // Which other sites may show the page in a frame. None but its own by default: a page
+    // that another site can frame can have its permission bar covered with a
+    // look-alike and its Allow clicked for the visitor (clickjacking).
+    $frameAncestors = $raw['frameAncestors'] ?? [];
+    if (!is_array($frameAncestors)) softn_fail(503, 'frameAncestors must be a list of origins, such as https://example.com.');
+    foreach ($frameAncestors as $origin) {
+        if (!is_string($origin) || !preg_match('#^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$#', $origin)) {
+            softn_fail(503, 'frameAncestors must list origins such as https://example.com (scheme, host and optional port, nothing else).');
+        }
+    }
     return [
         'id' => $id, 'title' => $title, 'description' => $description, 'lang' => $lang, 'bundle' => $bundle, 'theme' => $theme,
         'loadingText' => $loadingText, 'permissionMode' => $permissionMode, 'permissions' => $permissions, 'sha256' => $sha256,
         'viewerToken' => $viewerToken, 'tokenLifetime' => $tokenLifetime, 'secret' => $secret, 'withhold' => array_values($withhold),
         'cacheSeconds' => $cacheSeconds, 'allowPrivateInWebroot' => $allowPrivateInWebroot, 'pwa' => $pwa,
+        'frameAncestors' => array_values($frameAncestors),
     ];
 }
 
@@ -584,6 +612,8 @@ function softn_shell(array $config, string $private): never
     }
     header('Content-Type: text/html; charset=utf-8');
     header('Cache-Control: no-store');
+    header("Content-Security-Policy: frame-ancestors 'self'" . ($config['frameAncestors'] ? ' ' . implode(' ', $config['frameAncestors']) : ''));
+    if (!$config['frameAncestors']) header('X-Frame-Options: SAMEORIGIN');
     header('Content-Length: ' . strlen($page));
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') echo $page;
     exit;
@@ -695,12 +725,26 @@ function softn_entry(array $config, string $name, bool $icon): never
             header('Content-Range: bytes */' . $size);
             softn_fail(416, 'Range not satisfiable.');
         }
-        $data = $zip->getFromName($name);
-        if (!is_string($data) || strlen($data) !== $size) softn_fail(503, 'Corrupt bundle entry.');
+        if ($size <= SOFTN_WHOLE_READ) {
+            $data = $zip->getFromName($name);
+            if (!is_string($data) || strlen($data) !== $size) softn_fail(503, 'Corrupt bundle entry.');
+            http_response_code(206);
+            header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+            header('Content-Length: ' . ($end - $start + 1));
+            if (!$head) echo substr($data, $start, $end - $start + 1);
+            exit;
+        }
+        // A large entry is streamed for a range as it is for the whole: the
+        // bytes before the range are inflated and dropped a piece at a time,
+        // never held. Reading it whole put up to 50 MB in memory for every
+        // 206, and a seeking <video> asks for dozens.
+        $stream = $zip->getStream($name);
+        if ($stream === false) softn_fail(503, 'Corrupt bundle entry.');
         http_response_code(206);
         header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
         header('Content-Length: ' . ($end - $start + 1));
-        if (!$head) echo substr($data, $start, $end - $start + 1);
+        if ($head) exit;
+        softn_stream($stream, $start, $end - $start + 1);
         exit;
     }
     header('Content-Length: ' . $size);
@@ -714,16 +758,35 @@ function softn_entry(array $config, string $name, bool $icon): never
     }
     $stream = $zip->getStream($name);
     if ($stream === false) softn_fail(503, 'Corrupt bundle entry.');
+    softn_stream($stream, 0, $size);
+    exit;
+}
+
+/**
+ * Send `$length` bytes of an entry's stream from `$offset`, 64 KB at a time.
+ * A zip stream cannot seek, so what comes before `$offset` is read and
+ * dropped the same way. Stops when the client goes away.
+ *
+ * @param resource $stream
+ */
+function softn_stream($stream, int $offset, int $length): void
+{
+    $skip = $offset;
+    while ($skip > 0 && !feof($stream)) {
+        $chunk = fread($stream, min(65536, $skip));
+        if ($chunk === false || $chunk === '') break;
+        $skip -= strlen($chunk);
+        if (connection_aborted()) break;
+    }
     $sent = 0;
-    while ($sent < $size && !feof($stream)) {
-        $chunk = fread($stream, min(65536, $size - $sent));
+    while ($skip === 0 && $sent < $length && !feof($stream)) {
+        $chunk = fread($stream, min(65536, $length - $sent));
         if ($chunk === false || $chunk === '') break;
         echo $chunk;
         $sent += strlen($chunk);
         if (connection_aborted()) break;
     }
     fclose($stream);
-    exit;
 }
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';

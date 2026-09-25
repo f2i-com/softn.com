@@ -1,6 +1,6 @@
 import React, { useCallback, useRef } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
-import { groupByApp, hasStoredData, isOfflineReady, type CachedApp } from '../lib/appCache';
+import { currentBuildId, groupByApp, hasStoredData, isOfflineReady, type CachedApp } from '../lib/appCache';
 import { DirectoryShelf } from './DirectoryShelf';
 
 /*
@@ -34,6 +34,7 @@ const launcherStyles = `
     margin-bottom: 2rem;
     animation: softn-launcher-fade-up 400ms var(--ease) both;
   }
+  .softn-launcher-title:focus { outline: none; }
   .softn-launcher-title {
     font-family: var(--display);
     font-weight: 700;
@@ -363,8 +364,11 @@ const launcherStyles = `
   .softn-explore-card-body > p { color: var(--dim); font-size: 0.8125rem; line-height: 1.5; margin: 0.5rem 0 1rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .softn-explore-card-actions { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
   .softn-explore-primary, .softn-explore-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; min-height: 40px; padding: 0.5rem 0.875rem; border-radius: 8px; font: inherit; font-size: 0.8125rem; font-weight: 500; text-decoration: none; cursor: pointer; }
-  .softn-explore-primary { background: var(--paper); color: var(--ink); border: 1px solid var(--paper); }
+  /* Outlined, not inverted: a grid of six inverted buttons out-shouted the one
+     primary action on Home, "Open a .softn file". Weight carries it instead. */
+  .softn-explore-primary { background: transparent; color: var(--paper); border: 1px solid var(--line-strong); font-weight: 600; }
   .softn-explore-secondary { background: transparent; color: var(--paper); border: 1px solid var(--line-strong); }
+  .softn-explore-primary:hover, .softn-explore-secondary:hover { border-color: var(--paper); background: var(--ink-3); }
   .softn-explore-create { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 1rem; padding: 1rem 0; }
   .softn-explore-create > div { flex: 1; min-width: min(100%, 240px); display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.875rem; }
   .softn-explore-create span { color: var(--dim); font-size: 0.8125rem; }
@@ -453,13 +457,20 @@ function offlineStatus(
         : 'Opens without a connection: everything it can reach is kept in this browser.',
     };
   }
-  return {
-    state: 'needs-connection',
-    label: 'Needs connection',
-    title: app.offline
-      ? 'Installed against an earlier build of the runtime. Opening it online installs it again.'
-      : 'Open it online once and the runtime fetches what it needs to open offline.',
-  };
+  // Three different reasons, and they used to share one sentence: an install
+  // that ran against this build and did not finish (the dev server has no
+  // service worker, say) was described as "installed against an earlier
+  // build", which sent people looking for an update that did not exist.
+  let title: string;
+  if (!app.offline) {
+    title = 'Open it online once and the runtime fetches what it needs to open offline.';
+  } else if (app.offline.build !== currentBuildId()) {
+    title = 'Installed against an earlier build of the runtime. Opening it online installs it again.';
+  } else {
+    const why = app.offline.reason ? ` ${app.offline.reason.replace(/\.?$/, '.')}` : '';
+    title = `The last offline install did not finish.${why} Opening it online tries again.`;
+  }
+  return { state: 'needs-connection', label: 'Needs connection', title };
 }
 
 /**
@@ -544,7 +555,9 @@ export function Launcher({
         <div className="softn-launcher-inner">
           <div className="softn-launcher-head">
             <div>
-              <h1 className="softn-launcher-title">Your app workspace</h1>
+              {/* Focusable, so returning Home from an app puts keyboard focus here
+                  rather than on <body> (see App's focus effect). */}
+              <h1 className="softn-launcher-title" tabIndex={-1}>Your app workspace</h1>
               <p className="softn-launcher-sub">
                 Pick up a saved app, discover something from the directory, or open a <code>.softn</code> file.
                 Your apps keep their data in this browser.

@@ -5,15 +5,16 @@ import { flushSync } from 'react-dom';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
-import { Spinner, Box, Text } from '@softn/components/minimal';
+import { Spinner, Text } from '@softn/components/minimal';
 import { ThemeProvider } from '@softn/components/theme';
 import { DropZone } from './components/DropZone';
+import { ErrorCard } from './components/ErrorCard';
 import { Launcher } from './components/Launcher';
 import { AppRunner } from './components/AppRunner';
 import { FrameBar } from './components/FrameBar';
 import { ProductBar } from '@softn/brand';
-import type { ConsentRequest } from './components/PermissionBar';
-import type { PermissionConfig } from '@softn/core';
+import type { ConsentRequest } from '@softn/runtime-shell/PermissionBar';
+import type { PermissionConfig, PythonProject } from '@softn/core';
 import { ManifestError, describeHandoffFailure, handoffIdFrom, readManifest, takeBundleHandoff } from '@softn/core';
 import { debug } from '@softn/core';
 
@@ -21,10 +22,6 @@ const appShellStyles = `
   @keyframes softn-shell-fade-in {
     from { opacity: 0; }
     to { opacity: 1; }
-  }
-  @keyframes softn-shell-slide-up {
-    from { opacity: 0; transform: translateY(12px); }
-    to { opacity: 1; transform: translateY(0); }
   }
   .softn-shell {
     /* Two names for one number, because a tab showing a permission bar has to
@@ -51,26 +48,6 @@ const appShellStyles = `
   }
   .softn-shell-loading {
     animation: softn-shell-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-  .softn-shell-error {
-    animation: softn-shell-slide-up 350ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-  .softn-shell-error-card {
-    transition: box-shadow 250ms cubic-bezier(0.16, 1, 0.3, 1);
-  }
-  .softn-shell-error-card:hover {
-    box-shadow: 0 8px 32px rgba(239, 68, 68, 0.08), 0 0 0 1px rgba(239, 68, 68, 0.2);
-  }
-  .softn-shell-error-btn {
-    transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  }
-  .softn-shell-error-btn:hover {
-    background: var(--ink-3) !important;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  }
-  .softn-shell-error-btn:active {
-    transform: translateY(0) scale(0.98);
   }
   /* Embedded, there is no tab bar, so there is no chrome to subtract: without
      this an app in a host page's frame stopped 38px short of the bottom. The
@@ -104,6 +81,14 @@ const appShellStyles = `
     transition: opacity 160ms ease;
   }
   .softn-chrome-peek:hover, .softn-chrome-peek:focus-visible { opacity: 1; color: var(--paper); }
+  .softn-chrome-peek:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+  /* With the bar folded, the corner tab sits over the top of the tab — which
+     is where a pending permission bar is, and it covered the end of the
+     sentence saying what the app wants. The bar steps down below it. */
+  .softn-shell--bare .softn-consent-bar,
+  .softn-shell--bare .softn-consent-chip-strip {
+    padding-top: 2rem;
+  }
 `;
 import {
   readZip,
@@ -149,6 +134,10 @@ import {
 } from './lib/appCache';
 import { displayNameFor, findCachedAppTab, findPlaceholder, findRunningTab, findTabForUrlName } from './lib/tabIdentity';
 import { previousBuildFor, type PreviousBuild } from './lib/consentDiff';
+// The consent rule the desktop loader and the single-app shell share. The
+// grant itself is kept on the app's cache record (appCache), by origin, where
+// adoption and the secure-context rule already govern it.
+import { grantCovers, grantRecord } from '@softn/runtime-shell/consent';
 import { parseAppPath, buildAppPath, publicPath } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
 
@@ -325,6 +314,8 @@ interface OpenTab {
   assetResolver?: AssetResolver;
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
+  /** The app's Python project, when its logic is Python. */
+  python?: PythonProject;
   /** The manifest's `config.execution`: where the bundle asked its script to run. */
   execution?: 'worker' | 'main';
   serverUrl?: string;
@@ -557,7 +548,8 @@ function App(): React.ReactElement {
       record: CachedApp,
       source: string,
       execution: 'worker' | 'main' | undefined,
-      capabilities: string[]
+      capabilities: string[],
+      pythonPackages?: readonly string[]
     ): void => {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
       if (isOfflineReady(record)) return;
@@ -566,22 +558,25 @@ function App(): React.ReactElement {
       installAbortsRef.current.set(tabId, controller);
       setInstalling((prev) => new Set(prev).add(record.id));
       void installAppOffline(
-        { id: record.id, source, execution, capabilities },
+        { id: record.id, source, execution, capabilities, pythonPackages },
         { signal: controller.signal }
       )
         .then(async (result) => {
           if (controller.signal.aborted) return;
+          const why = result.ready
+            ? undefined
+            : result.error ??
+              `missing ${[...result.missing, ...(result.workerAssets === 'unavailable' ? ['worker assets'] : [])].join(', ')}`;
           await setOfflineState(record.id, {
             ready: result.ready,
             features: result.features,
             optionalOnline: result.optionalOnline,
             build: currentBuildId(),
             at: Date.now(),
+            // Kept so Home can say why, not only that, it needs a connection.
+            ...(why ? { reason: why } : {}),
           });
-          if (!result.ready) {
-            const why =
-              result.error ??
-              `missing ${[...result.missing, ...(result.workerAssets === 'unavailable' ? ['worker assets'] : [])].join(', ')}`;
+          if (why) {
             console.warn(`[SoftN Web] "${record.name}" is not installed offline: ${why}`);
           }
           if (controller.signal.aborted) return;
@@ -773,8 +768,7 @@ function App(): React.ReactElement {
         const hasGrant =
           !permissionConfig ||
           requested.length === 0 ||
-          (Boolean(cachedApp?.permissionsPromptedAt) &&
-            requested.every((capability) => granted[capability] === true));
+          (Boolean(cachedApp?.permissionsPromptedAt) && grantCovers(granted, requested));
 
         // Load XDB data (per-app isolation)
         mark('softn:xdb-seed:start');
@@ -793,7 +787,7 @@ function App(): React.ReactElement {
         } finally {
           mark('softn:compose:end');
         }
-        const { source, logicBasePath, preIncludedLogicPaths } = composed;
+        const { source, logicBasePath, preIncludedLogicPaths, python } = composed;
 
         // The assets the composed source names by literal, then the manifest's
         // asset list, start inflating now, in a worker where there is one,
@@ -888,8 +882,7 @@ function App(): React.ReactElement {
           // cannot drift. An earlier version enumerated four capabilities by
           // hand and omitted ai, gpu and sync, so a grant for those was never
           // written down.
-          const grantedPerms: Record<string, boolean> = {};
-          for (const capability of requested) grantedPerms[capability] = true;
+          const grantedPerms = grantRecord(requested);
           // Not awaited, and its failure does not block the grant. getDB
           // rejects outright in private browsing, and an Allow that does
           // nothing until a write succeeds is a button that looks broken to
@@ -970,6 +963,7 @@ function App(): React.ReactElement {
           assetResolver: createAssetResolver(binaryFiles, textFiles),
           logicBasePath,
           preIncludedLogicPaths,
+          python,
           execution: manifest.config?.execution,
           serverUrl,
           serverToken: serverConfig?.token,
@@ -994,7 +988,7 @@ function App(): React.ReactElement {
         // on its card at Home. Not started for a record the cache could not
         // write: there is nothing to record the outcome on.
         if (cachedRecord) {
-          beginOfflineInstall(tabId, cachedRecord, source, manifest.config?.execution, requested);
+          beginOfflineInstall(tabId, cachedRecord, source, manifest.config?.execution, requested, python?.packages);
         }
         return appName;
       } catch (err) {
@@ -1605,6 +1599,47 @@ function App(): React.ReactElement {
     }
   }, [activeTabId]);
 
+  // Keep keyboard focus somewhere real across Home and the running apps.
+  //
+  // Home and every tab stay mounted and are switched with display:none, and
+  // the frame bar and its corner tab replace each other. So whatever was
+  // pressed to get here — a card on Home, Home in the frame bar, Hide bar —
+  // is hidden or gone by the next frame, and focus fell to <body>: a keyboard
+  // user was at the top of the document, behind the app they had just opened.
+  // Focus is moved only when it has been lost that way, never taken from
+  // somewhere the person put it, and never on the first render.
+  const failed = Boolean(error);
+  const lastViewRef = useRef<{ tab: string | null; hidden: boolean; failed: boolean } | null>(null);
+  useEffect(() => {
+    const previous = lastViewRef.current;
+    lastViewRef.current = { tab: activeTabId, hidden: chromeHidden, failed };
+    if (!previous || (previous.tab === activeTabId && previous.hidden === chromeHidden && previous.failed === failed)) return;
+    // The error card takes focus itself; its going away (Back to home, with
+    // Home already selected) is a change of view like any other.
+    if (failed) return;
+    const focused = document.activeElement;
+    const lost =
+      !focused ||
+      focused === document.body ||
+      !focused.isConnected ||
+      (focused instanceof HTMLElement && focused.getClientRects().length === 0);
+    if (!lost) return;
+    const shell = shellRef.current;
+    if (!shell) return;
+    let target: HTMLElement | null = null;
+    if (activeTabId === null) {
+      target = shell.querySelector<HTMLElement>('.softn-launcher-title');
+    } else if (previous.tab === activeTabId && previous.hidden !== chromeHidden && previous.failed === failed) {
+      // The bar was folded or brought back: to whichever replaced it.
+      target = chromeHidden
+        ? shell.querySelector<HTMLElement>('.softn-chrome-peek')
+        : shell.querySelector<HTMLElement>('.softn-frame-bar .softn-frame-btn');
+    } else {
+      target = Array.from(shell.querySelectorAll<HTMLElement>('[data-softn-tab]')).find((el) => el.dataset.softnTab === activeTabId) ?? null;
+    }
+    target?.focus({ preventScroll: true });
+  }, [activeTabId, chromeHidden, failed]);
+
   const isHome = activeTabId === null;
   const activeTab = isHome ? null : openTabs.find((t) => t.id === activeTabId) ?? null;
 
@@ -1632,7 +1667,13 @@ function App(): React.ReactElement {
             else's page, the app is the whole frame and the host has the bar. */}
         {!embedded && isHome && <ProductBar current="runtime" />}
         {!embedded && !isHome && activeTab && chromeHidden && (
-          <button type="button" className="softn-chrome-peek" onClick={() => setChromeHidden(false)} title="Show the bar">
+          <button
+            type="button"
+            className="softn-chrome-peek"
+            onClick={() => setChromeHidden(false)}
+            title="Show the bar"
+            aria-label={`${activeTab.name}: show the bar`}
+          >
             {activeTab.name}
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="m6 9 6 6 6-6" />
@@ -1661,8 +1702,9 @@ function App(): React.ReactElement {
           {/* Loading indicator (for non-URL opens that don't have skeleton tabs) */}
           {loadingTabId && (
             <ThemeProvider followHost followSystem>
-              <Box
+              <div
                 className="softn-shell-loading"
+                role="status"
                 style={{
                   position: 'absolute',
                   inset: 0,
@@ -1676,106 +1718,22 @@ function App(): React.ReactElement {
                 }}
               >
                 <Spinner size="lg" />
-                <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {loadingFileName}...</Text>
-              </Box>
+                <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Opening {loadingFileName}…</Text>
+              </div>
             </ThemeProvider>
           )}
 
-          {/* Error state */}
+          {/* Error state: what went wrong, and what to do about it. */}
           {error && !loadingTabId && (
-            <ThemeProvider followHost followSystem>
-              <div
-                className="softn-shell-error"
-                role="alert"
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  padding: '2rem',
-                  background: 'var(--ink)',
-                  zIndex: 10,
-                  overflow: 'auto',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <div
-                  className="softn-shell-error-card"
-                  style={{
-                    padding: '2rem',
-                    background: 'var(--ink-2)',
-                    border: '1px solid rgba(239, 68, 68, 0.3)',
-                    borderRadius: '14px',
-                    maxWidth: '480px',
-                    width: '100%',
-                    boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-                    <div style={{
-                      width: '36px',
-                      height: '36px',
-                      borderRadius: '10px',
-                      background: 'rgba(239, 68, 68, 0.1)',
-                      border: '1px solid rgba(239, 68, 68, 0.15)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                    }}>
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="12" cy="12" r="10" />
-                        <line x1="15" y1="9" x2="9" y2="15" />
-                        <line x1="9" y1="9" x2="15" y2="15" />
-                      </svg>
-                    </div>
-                    <div style={{
-                      color: 'var(--paper)',
-                      fontWeight: 600,
-                      fontSize: '1.0625rem',
-                      letterSpacing: '-0.02em',
-                    }}>
-                      Unable to complete this action
-                    </div>
-                  </div>
-                  <div style={{
-                    color: 'var(--dim)',
-                    fontSize: '0.8125rem',
-                    lineHeight: 1.6,
-                    padding: '0.75rem 1rem',
-                    background: 'var(--inset)',
-                    borderRadius: '8px',
-                    border: '1px solid var(--inset)',
-                    fontFamily: 'monospace',
-                    wordBreak: 'break-word',
-                  }}>
-                    {error.message}
-                  </div>
-                  <button
-                    className="softn-shell-error-btn"
-                    onClick={() => {
-                      claimNavigation();
-                      setError(null);
-                      setActiveTabId(null);
-                    }}
-                    style={{
-                      marginTop: '1.25rem',
-                      padding: '0.5rem 1.25rem',
-                      background: 'var(--ink-3)',
-                      color: 'var(--paper)',
-                      border: '1px solid var(--line)',
-                      borderRadius: '8px',
-                      cursor: 'pointer',
-                      fontSize: '0.8125rem',
-                      fontWeight: 500,
-                      letterSpacing: '-0.01em',
-                    }}
-                  >
-                    Back to Home
-                  </button>
-                </div>
-              </div>
-            </ThemeProvider>
+            <ErrorCard
+              error={error}
+              onHome={() => {
+                claimNavigation();
+                setError(null);
+                setActiveTabId(null);
+              }}
+              onOpenFile={() => fileInputRef.current?.click()}
+            />
           )}
 
           {/* Home / Launcher */}
@@ -1815,6 +1773,7 @@ function App(): React.ReactElement {
           {openTabs.map((tab) => (
             <AppRunner
               key={tab.id}
+              tabId={tab.id}
               source={tab.source}
               appName={tab.name}
               appId={tab.appId}
@@ -1825,6 +1784,7 @@ function App(): React.ReactElement {
               assetResolver={tab.assetResolver}
               logicBasePath={tab.logicBasePath}
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
+              python={tab.python}
               executionPreference={tab.execution}
               permissionConfig={tab.permissionConfig}
               consent={tab.consent}

@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { PLACEHOLDERS, assetTags, sampleBundle, shellTemplate } from '../scripts/shell.mjs';
+import { readFileSync } from 'node:fs';
+import { PLACEHOLDERS, assetTags, releasePrivateFiles, sampleBundle, sampleConfig, shellTemplate } from '../scripts/shell.mjs';
 import { unzipSync } from 'fflate';
 
 const built = `<!doctype html>
@@ -44,4 +45,21 @@ it('ships a sample whose event handler and state are in the bundle', () => {
   expect(logic).toContain('let sampleClicks = 0');
   expect(logic).toContain('function increment()');
   expect(JSON.parse(new TextDecoder().decode(files['manifest.json'])).main).toBe('ui/main.ui');
+});
+
+it('gives a release private/ the samples and the built template, never what dist/private holds', () => {
+  const shell = new TextEncoder().encode('<!doctype html>{{BOOT_JSON}}');
+  const files = releasePrivateFiles(shell);
+  expect(Object.keys(files).sort()).toEqual(['.htaccess', 'app.softn', 'serve.config.php', 'shell.html']);
+  expect(files['shell.html']).toBe(shell);
+  expect(new TextDecoder().decode(files['serve.config.php'])).toBe(sampleConfig);
+  expect(new TextDecoder().decode(files['serve.config.php'])).toContain("'secret' => '',");
+  expect(Object.keys(unzipSync(files['app.softn'])).sort()).toEqual(Object.keys(unzipSync(sampleBundle())).sort());
+  expect(files['app.softn']).toEqual(sampleBundle());
+  // Both release scripts build private/ from it and copy nothing else of dist/private.
+  for (const script of ['package-single-private.mjs', 'package-private-single-php.mjs']) {
+    const source = readFileSync(new URL(`../../../scripts/${script}`, import.meta.url), 'utf8');
+    expect(source, script).toContain('releasePrivateFiles(');
+    expect(source, script).not.toMatch(/privateDir:\s*join\(dist,\s*'private'\)/);
+  }
 });

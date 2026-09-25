@@ -47,6 +47,10 @@ const bundle = zipSync(
     'images/icon.png': icon,
     'images/pixel.png': pixel,
     'media/big.bin': [big, { level: 0 }],
+    // What a private server bundle carries, deployed here by mistake as the
+    // public client: its source must never reach a browser.
+    'server/routes.logic': strToU8('route("/secret", () => DB_PASSWORD)'),
+    'server/migrations/001.sql': strToU8('CREATE TABLE secrets (value TEXT);'),
   },
   { level: 6 }
 );
@@ -234,6 +238,21 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     writeFileSync(join(root, 'private/serve.config.php'), config());
   });
 
+  it('cannot be framed by another site unless the operator lists it', async () => {
+    // A page another site can frame can have its permission bar covered with a
+    // look-alike and its Allow clicked for the visitor.
+    let response = await fetch(`${origin}/`);
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'self'");
+    expect(response.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    writeFileSync(join(root, 'private/serve.config.php'), config(`'frameAncestors' => ['https://portal.example.com'],`));
+    response = await fetch(`${origin}/`);
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'self' https://portal.example.com");
+    expect(response.headers.get('x-frame-options')).toBeNull();
+    writeFileSync(join(root, 'private/serve.config.php'), config(`'frameAncestors' => ["https://x.example.com; script-src *"],`));
+    expect((await fetch(`${origin}/`)).status).toBe(503);
+    writeFileSync(join(root, 'private/serve.config.php'), config());
+  });
+
   it('answers HEAD for the page without a body', async () => {
     const response = await fetch(`${origin}/index.php`, { method: 'HEAD' });
     expect(response.status).toBe(200);
@@ -292,6 +311,7 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     });
     expect(JSON.stringify(pack)).not.toContain('SECRET-TOKEN');
     expect(JSON.stringify(pack)).not.toContain('private notes');
+    expect(JSON.stringify(pack)).not.toContain('server/');
   });
 
   it('serves a binary entry with its MIME type, an ETag and a private cache policy', async () => {
@@ -330,6 +350,31 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
       headers: withCookie({ Range: 'bytes=400-500' }),
     });
     expect(bad.status).toBe(416);
+  });
+
+  it('answers byte ranges inside a large entry, which is streamed rather than inflated into memory whole', async () => {
+    const size = big.length;
+    for (const [range, from, to] of [
+      ['bytes=0-99', 0, 99],
+      [`bytes=${5 * 1024 * 1024 + 7}-${5 * 1024 * 1024 + 70006}`, 5 * 1024 * 1024 + 7, 5 * 1024 * 1024 + 70006],
+      [`bytes=${size - 1000}-`, size - 1000, size - 1],
+      ['bytes=-4096', size - 4096, size - 1],
+      [`bytes=${size - 10}-${size + 500}`, size - 10, size - 1],
+    ] as const) {
+      const response = await fetch(`${origin}/index.php?entry=media/big.bin`, {
+        headers: withCookie({ Range: range }),
+      });
+      expect(response.status, range).toBe(206);
+      expect(response.headers.get('content-range'), range).toBe(`bytes ${from}-${to}/${size}`);
+      expect(response.headers.get('content-length'), range).toBe(String(to - from + 1));
+      expect(new Uint8Array(await response.arrayBuffer()), range).toEqual(big.slice(from, to + 1));
+    }
+    const head = await fetch(`${origin}/index.php?entry=media/big.bin`, {
+      method: 'HEAD',
+      headers: withCookie({ Range: 'bytes=100-199' }),
+    });
+    expect(head.status).toBe(206);
+    expect(head.headers.get('content-length')).toBe('100');
   });
 
   it('honours a range only when If-Range names the entry being served', async () => {
@@ -377,6 +422,8 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     ['ui/main.ui', 'a text entry, which travels in the pack'],
     ['manifest.json', 'the raw manifest'],
     ['README.md', 'a withheld entry'],
+    ['server/migrations/001.sql', "a private server bundle's file"],
+    ['./server/migrations/001.sql', 'the same, spelled with ./'],
     ['../private/app.softn', 'a traversal'],
     ['/etc/passwd', 'an absolute path'],
     ['images/missing.png', 'a missing entry'],

@@ -112,7 +112,8 @@ export function sampleBundle() {
         '<logic src="../logic/main.logic" />\n<App><Box style={{display:"flex",flexDirection:"column",alignItems:"flex-start",gap:"16px",padding:"48px",maxWidth:"600px",margin:"auto"}}><Text style={{fontSize:"32px"}}>Welcome</Text><Text>Your application is ready.</Text><Button @click={increment}>{"Clicks: " + sampleClicks}</Button></Box></App>'
       ),
     },
-    { level: 6 }
+    // A fixed stamp, so two builds ship the same sample byte for byte.
+    { level: 6, mtime: new Date('2024-01-01T00:00:00Z') }
   );
 }
 
@@ -175,3 +176,24 @@ export const privateHtaccess = `# This directory is private. If it ends up under
     Deny from all
 </IfModule>
 `;
+
+/**
+ * What a release archive's private/ holds, and nothing else: the built shell
+ * template, the deny-all rules, and the sample bundle and configuration made
+ * fresh here. Never the files dist/private has: assemble.mjs keeps an
+ * operator's own bundle and configuration there on purpose (so a preview
+ * runs their app), and a release packaged from that directory would ship
+ * them, a `secret` or a private application included, to everyone who
+ * downloads it.
+ *
+ * @param {Uint8Array} shellHtml the built dist/private/shell.html
+ * @returns {Record<string, Uint8Array>}
+ */
+export function releasePrivateFiles(shellHtml) {
+  return {
+    '.htaccess': strToU8(privateHtaccess),
+    'app.softn': sampleBundle(),
+    'serve.config.php': strToU8(sampleConfig),
+    'shell.html': shellHtml,
+  };
+}

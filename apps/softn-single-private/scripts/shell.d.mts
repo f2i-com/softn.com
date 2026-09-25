@@ -4,3 +4,4 @@ export function shellTemplate(tags: string): string;
 export function sampleBundle(): Uint8Array;
 export const sampleConfig: string;
 export const privateHtaccess: string;
+export function releasePrivateFiles(shellHtml: Uint8Array): Record<string, Uint8Array>;

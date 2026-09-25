@@ -23,7 +23,7 @@ absolute paths.
 
 ## The application
 
-Requirements: PHP 8.1 or newer with the `zip` extension, Apache with
+Requirements: PHP 8.1 or newer with the `zip` and `mbstring` extensions, Apache with
 `.htaccess` honoured (`AllowOverride All`) or an equivalent server
 configuration. Replace `private/app.softn` with your application and edit
 `private/serve.config.php`; DEPLOYMENT-SERVE.md documents every setting,
@@ -47,7 +47,10 @@ systemd service is required.
 1. Install your expanded PRIVATE server API v1 bundle at `backend/app/`, with
    its `manifest.json`, server logic and SQL migrations. Its separate PUBLIC
    client is the `private/app.softn` the page serves. Never publish server
-   source; the served client must not contain `server/` entries.
+   source; the served client must not contain `server/` entries. (As a
+   backstop, `softn-serve.php` withholds every `server/` entry from the
+   browser whatever `withhold` says, so a server bundle deployed here by
+   mistake does not hand out its routes and migrations — but keep them out.)
 2. Set `manifest.config.server.allowedOrigins` in the private manifest to the
    exact HTTPS origins serving the page. Include www and non-www separately
    if you serve both.
@@ -78,6 +81,23 @@ To update the runtime, replace `webroot/assets/`, `webroot/index.php`,
 `webroot/apple-touch-icon.png` and `webroot/share.png` if you replaced the
 placeholders (see DEPLOYMENT-SERVE.md, "Installable app and link previews"). A backend packaged for Linux x64 will not run on ARM or Windows; the
 served application itself needs only PHP.
+
+## Before going live
+
+- `private/` and `backend/` are outside every document root: requesting
+  `/private/app.softn`, `/private/serve.config.php` and `/backend/` on the
+  live site must not return them (`index.php` also refuses to run when
+  `private/` is inside the document root, unless `allowPrivateInWebroot`).
+- Only your own site can show the app in a frame. If another of your sites
+  embeds it, list that site in `frameAncestors` in `serve.config.php`.
+- The site is served over HTTPS, so the viewer cookie is `Secure`. Behind a
+  proxy that terminates TLS, make sure PHP sees `HTTPS=on`.
+- `display_errors` is off for PHP (`softn-serve.php` turns it off for its
+  own requests; `api.php` and the backend need the host's setting).
+- Back up `private/serve.config.php`, `private/secret.key` (or your
+  `secret`), and `backend/private/` with the database. Treat them as
+  credentials; they are not in any release archive, and a release is always
+  packaged from the samples, never from a working `dist/private`.
 
 ## Build from source
 

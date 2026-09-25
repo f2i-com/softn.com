@@ -6,23 +6,17 @@ import path from 'node:path';
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 const coreDistRoot = path.resolve(__dirname, '../../packages/@softn/core/dist');
 
-// The engine binary is the one thing this copy must not bring. Vite already
-// emits a content-hashed copy for the main thread, from the `new URL(...,
-// import.meta.url)` in core's inlined glue, and that is the one the app
-// actually loads. Copying core's dist wholesale duplicated 6 MB next to chunks
-// that do not reference it — dead weight in every deployment and every upload.
-//
-// If the off-main-thread script runtime is ever unparked, its worker resolves
-// the binary relative to ITSELF, here, so this line has to come back in the
-// same commit that re-enables it. Dev is unaffected either way: the middleware
-// above serves these files straight from core's dist.
-const WORKER_COPY_SKIP = new Set(['zipp_wasm_bg.wasm']);
-
+// The whole of core's dist, engine binary included. The main thread loads a
+// content-hashed copy Vite emits from core's inlined glue; the off-main-thread
+// script runtime, which a bundle asks for with `config.execution: "worker"`,
+// loads the one beside its own chunk, here. This copy used to skip that
+// binary while the loader ran every script on the main thread, and a worker
+// bundle would now die on its 404. Dev is unaffected either way: the
+// middleware below serves these files straight from core's dist.
 function copyDirRecursive(srcDir: string, destDir: string) {
   if (!fs.existsSync(srcDir)) return;
   fs.mkdirSync(destDir, { recursive: true });
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
-    if (WORKER_COPY_SKIP.has(entry.name)) continue;
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
     if (entry.isDirectory()) {

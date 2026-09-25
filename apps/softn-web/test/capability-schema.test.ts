@@ -20,7 +20,7 @@ import { CAPABILITIES, CAPABILITY_INFO, CAPABILITY_SCHEMA_VERSION, STORAGE_POLIC
 import { inspectBundle as siteInspect } from '../../softn-site/src/lib/inspectBundle';
 import * as site from '../../softn-site/src/lib/capabilities';
 import { CAPABILITIES as loaderList } from '../src/lib/bundleProcessor';
-import { PERMISSION_INFO } from '../src/components/PermissionPrompt';
+import { PERMISSION_INFO } from '@softn/runtime-shell/PermissionPrompt';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../../..');

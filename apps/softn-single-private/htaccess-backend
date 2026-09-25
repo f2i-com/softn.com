@@ -15,10 +15,15 @@ DirectoryIndex index.php
 AddType application/wasm .wasm
 AddType text/javascript .mjs
 # The optional backend: /api/... is answered by api.php once backend/ is set
-# up, and the Authorization header reaches PHP under CGI and FastCGI.
-RewriteEngine On
-RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-RewriteRule ^api(?:/.*)?$ api.php [END]
+# up, and the Authorization header reaches PHP under CGI and FastCGI. Inside
+# IfModule: without mod_rewrite the backend has no routes, but the
+# application itself, which needs none, still loads instead of every request
+# answering 500.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+    RewriteRule ^api(?:/.*)?$ api.php [END]
+</IfModule>
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
     # The same cross-origin isolation softn.com sends for this shell: it gives

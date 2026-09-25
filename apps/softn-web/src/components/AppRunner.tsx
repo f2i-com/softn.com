@@ -1,14 +1,16 @@
-import React, { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo } from 'react';
-import { SoftNWithXDB, type AppAssetResolver } from '@softn/core';
+import React, { Component, useCallback, useMemo, useRef, useState, type ErrorInfo } from 'react';
+import { SoftNWithXDB, type AppAssetResolver, type PythonProject } from '@softn/core';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
-import { Spinner, Box, Text, Card } from '@softn/components/minimal';
+import { Spinner, Box, Text } from '@softn/components/minimal';
 import { ThemeProvider } from '@softn/components/theme';
-import { PermissionBar, type ConsentRequest } from './PermissionBar';
+import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
 
 interface AppRunnerProps {
+  /** The shell's id for this tab, so the shell can move focus into it. */
+  tabId?: string;
   source: string;
   /** Shown to the user. Chosen by the bundle, so never used to identify it. */
   appName: string;
@@ -26,6 +28,8 @@ interface AppRunnerProps {
   assetResolver?: AppAssetResolver;
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
+  /** The app's Python project, when its logic is Python; without it a Python app runs no logic. */
+  python?: PythonProject;
   /** The manifest's `config.execution`, forwarded to the renderer. */
   executionPreference?: 'worker' | 'main';
   permissionConfig?: import('@softn/core').PermissionConfig;
@@ -49,31 +53,77 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
+/**
+ * The box an app renders into: everything below the permission bar. See the
+ * comment where it is used for why it contains the app's paint.
+ */
+const APP_BOX_STYLE: React.CSSProperties = {
+  position: 'relative',
+  flex: '1 1 auto',
+  minHeight: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+  contain: 'paint',
+  isolation: 'isolate',
+};
+
 const appRunnerStyles = `
   @keyframes softn-runner-fade-in {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
   }
+  /* An app that failed while running. Drawn from the shared tokens, like the
+     shell's own error card; danger marks only the icon. */
   .softn-runner-error-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100%;
+    padding: clamp(1rem, 4vw, 2rem);
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--body);
     animation: softn-runner-fade-in 350ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
   .softn-runner-error-card {
-    transition: box-shadow 250ms cubic-bezier(0.16, 1, 0.3, 1);
+    width: 100%;
+    max-width: 520px;
+    padding: clamp(1.25rem, 5vw, 1.75rem);
+    background: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
   }
-  .softn-runner-error-card:hover {
-    box-shadow: 0 8px 32px rgba(239, 68, 68, 0.08), 0 0 0 1px rgba(239, 68, 68, 0.2);
+  .softn-runner-error-head { display: flex; align-items: center; gap: 0.75rem; }
+  .softn-runner-error-icon {
+    width: 32px; height: 32px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 8px; border: 1px solid var(--line); background: var(--ink-3); color: var(--danger);
+  }
+  .softn-runner-error-title { margin: 0; font-family: var(--display); font-weight: 700; font-size: 1.0625rem; letter-spacing: -0.02em; }
+  .softn-runner-error-hint { margin: 0.75rem 0 0; color: var(--dim); font-size: 0.875rem; line-height: 1.55; }
+  .softn-runner-error-detail {
+    margin: 0.875rem 0 0; padding: 0.75rem 0.875rem; border-radius: 8px;
+    background: var(--inset); color: var(--dim);
+    font-family: var(--mono); font-size: 0.78rem; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap;
   }
   .softn-runner-retry-btn {
-    transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    margin-top: 1.25rem;
+    min-height: 2.5rem;
+    padding: 0 1.125rem;
+    border-radius: 8px;
+    border: 1px solid var(--paper);
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 160ms var(--ease, ease);
   }
-  .softn-runner-retry-btn:hover {
-    background: var(--ink-3) !important;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  }
-  .softn-runner-retry-btn:active {
-    transform: translateY(0) scale(0.98);
-  }
+  .softn-runner-retry-btn:hover { background: var(--invert-hover); }
+  .softn-runner-retry-btn:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
   .softn-runner-loading {
     animation: softn-runner-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
@@ -96,47 +146,27 @@ const appRunnerStyles = `
   }
 `;
 
-/**
- * Only the text-shaped input types carry a selection. `selectionStart` on a
- * checkbox or a colour picker throws rather than answering null, so the type is
- * narrowed before it is read.
- */
-function isTextEntry(el: Element | null): el is HTMLInputElement | HTMLTextAreaElement {
-  if (el instanceof HTMLTextAreaElement) return true;
-  if (!(el instanceof HTMLInputElement)) return false;
-  return /^(?:text|search|url|tel|password|email|)$/i.test(el.type);
-}
+const ERROR_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="8" x2="12" y2="12" />
+    <line x1="12" y1="16" x2="12.01" y2="16" />
+  </svg>
+);
 
-/**
- * Put focus and caret back where the app had them.
- *
- * Only the element is remembered, never the offsets: a browser keeps an
- * input's selection across a blur, so reading it here — after the user has
- * finished typing and pressed Allow — is the position they actually left,
- * while a number captured when the field was first focused would be stale by
- * every character since. Reading before `focus()` matters too, because
- * focusing a text field can collapse the selection to its end.
- *
- * Returns false when there is nothing to restore or the element has gone. The
- * grant reloads the script against the granted config, so a field the bundle
- * renders conditionally may not survive it — that is the app-root fallback's
- * case, not a failure.
- */
-function restoreFocus(element: HTMLElement | null): boolean {
-  if (!element || !element.isConnected) return false;
-  const selection = isTextEntry(element)
-    ? { start: element.selectionStart, end: element.selectionEnd, direction: element.selectionDirection ?? 'none' as const }
-    : null;
-  element.focus();
-  if (selection && selection.start !== null && selection.end !== null && isTextEntry(element)) {
-    try {
-      element.setSelectionRange(selection.start, selection.end, selection.direction);
-    } catch {
-      // Still in the document but no longer takes a selection. Focus landed,
-      // which is the part that stops the next keystroke going nowhere.
-    }
-  }
-  return document.activeElement === element;
+/** What a running app's failure looks like, from either the boundary or the renderer. */
+function RunnerErrorCard({ title, hint, detail, action }: { title: string; hint: string; detail?: string; action?: React.ReactNode }): React.ReactElement {
+  return (
+    <div className="softn-runner-error-card">
+      <div className="softn-runner-error-head">
+        <div className="softn-runner-error-icon">{ERROR_ICON}</div>
+        <h2 className="softn-runner-error-title">{title}</h2>
+      </div>
+      <p className="softn-runner-error-hint">{hint}</p>
+      {detail && <p className="softn-runner-error-detail">{detail}</p>}
+      {action}
+    </div>
+  );
 }
 
 /** Error boundary for the SoftN renderer */
@@ -159,85 +189,17 @@ class RunnerErrorBoundary extends Component<
       return (
         <>
           <style dangerouslySetInnerHTML={{ __html: appRunnerStyles }} />
-          <div className="softn-runner-error-wrap" style={{
-            padding: '2rem',
-            background: 'var(--ink)',
-            minHeight: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}>
-            <div
-              className="softn-runner-error-card"
-              style={{
-                padding: '2rem',
-                background: 'var(--ink-2)',
-                border: '1px solid rgba(239, 68, 68, 0.3)',
-                borderRadius: '14px',
-                maxWidth: '480px',
-                width: '100%',
-                boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-                <div style={{
-                  width: '36px',
-                  height: '36px',
-                  borderRadius: '10px',
-                  background: 'rgba(239, 68, 68, 0.1)',
-                  border: '1px solid rgba(239, 68, 68, 0.15)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="15" y1="9" x2="9" y2="15" />
-                    <line x1="9" y1="9" x2="15" y2="15" />
-                  </svg>
-                </div>
-                <div style={{
-                  color: 'var(--paper)',
-                  fontWeight: 600,
-                  fontSize: '1.0625rem',
-                  letterSpacing: '-0.02em',
-                }}>
-                  Application Error
-                </div>
-              </div>
-              <div style={{
-                color: 'var(--dim)',
-                fontSize: '0.8125rem',
-                lineHeight: 1.6,
-                padding: '0.75rem 1rem',
-                background: 'var(--inset)',
-                borderRadius: '8px',
-                border: '1px solid var(--inset)',
-                fontFamily: 'monospace',
-                wordBreak: 'break-word',
-              }}>
-                {this.state.error.message}
-              </div>
-              <button
-                className="softn-runner-retry-btn"
-                onClick={() => this.setState({ error: null })}
-                style={{
-                  marginTop: '1.25rem',
-                  padding: '0.5rem 1.25rem',
-                  background: 'var(--ink-3)',
-                  border: '1px solid var(--line)',
-                  borderRadius: '8px',
-                  color: 'var(--paper)',
-                  cursor: 'pointer',
-                  fontSize: '0.8125rem',
-                  fontWeight: 500,
-                  letterSpacing: '-0.01em',
-                }}
-              >
-                Retry
-              </button>
-            </div>
+          <div className="softn-runner-error-wrap" role="alert">
+            <RunnerErrorCard
+              title="This app stopped working"
+              hint="Something in the app failed while it was running. Try again; if it keeps happening, close it from the bar above and open it again, or tell its author."
+              detail={this.state.error.message}
+              action={
+                <button type="button" className="softn-runner-retry-btn" onClick={() => this.setState({ error: null })}>
+                  Try again
+                </button>
+              }
+            />
           </div>
         </>
       );
@@ -246,53 +208,15 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, executionPreference, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, executionPreference, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
   const hostRef = useRef<HTMLDivElement>(null);
   // Stable, or the bar's ResizeObserver effect tears down and re-observes on
   // every render of this tab.
   const handleBarHeight = useCallback((px: number) => setBarHeight(px), []);
-  // The bar unmounts when the grant lands, taking the focused Allow button
-  // with it. Without somewhere for focus to go a keyboard user is dropped on
-  // <body>, at the top of the document, having just pressed a button.
-  //
-  // The app root is the fallback, not the answer. Allow is pressed by someone
-  // who was already using the app, so the field they were typing in is usually
-  // still there afterwards — the grant upgrades the tab in place rather than
-  // remounting it. Measured before this: typing into WarbleWire's textarea at
-  // selectionStart 33 and pressing Allow left activeElement on the app root
-  // DIV, and everything typed next went nowhere. The text survived; the caret
-  // did not.
-  const hadConsentRef = useRef(Boolean(consent));
-  // The last thing inside the app itself to take focus, tracked as it happens
-  // rather than read at Allow: by the time the click handler runs, focus is
-  // already on the Allow button, and a keyboard user tabbed away from the
-  // field before that.
-  const lastAppFocusRef = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host || !consent) return;
-    const remember = (event: FocusEvent): void => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement) || target === host) return;
-      // The bar, its collapsed chip and its detail dialog are runtime chrome
-      // that disappears on Allow; restoring focus into them would be restoring
-      // it to nothing.
-      if (target.closest('.softn-consent-bar, .softn-consent-chip-strip, [role="dialog"]')) return;
-      lastAppFocusRef.current = target;
-    };
-    host.addEventListener('focusin', remember);
-    return () => host.removeEventListener('focusin', remember);
-  }, [consent]);
-  useEffect(() => {
-    if (hadConsentRef.current && !consent) {
-      const remembered = lastAppFocusRef.current;
-      lastAppFocusRef.current = null;
-      if (!restoreFocus(remembered)) hostRef.current?.focus();
-    }
-    hadConsentRef.current = Boolean(consent);
-  }, [consent]);
-
+  // After Allow the bar puts focus back into the app — where it was, or on
+  // this host — rather than leaving a keyboard user on <body>; see
+  // PermissionBar's appRootRef.
   // Measured height is only meaningful while the bar exists. PermissionBar's
   // ResizeObserver effect reports 0 when it collapses but not when it
   // unmounts, so on Allow the last measurement stuck and the app kept a 46px
@@ -325,12 +249,15 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
   if (!source) {
     return (
       <div
+        data-softn-tab={tabId}
+        tabIndex={-1}
         style={{
           position: 'absolute',
           inset: 0,
           overflow: 'hidden',
           display: active ? 'flex' : 'none',
           flexDirection: 'column',
+          outline: 'none',
         }}
       >
         <style dangerouslySetInnerHTML={{ __html: appRunnerStyles }} />
@@ -348,7 +275,9 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
             }}
           >
             <Spinner size="lg" />
-            <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {appName}...</Text>
+            <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
+              <span role="status">Opening {appName}…</span>
+            </Text>
           </Box>
         </ThemeProvider>
       </div>
@@ -358,6 +287,7 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
   return (
     <div
       ref={hostRef}
+      data-softn-tab={tabId}
       // Allow unmounts the bar mid-click, so there has to be somewhere for
       // focus to land other than <body>.
       tabIndex={-1}
@@ -379,110 +309,84 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
           mistaken for the app's own UI: the bundle picks its theme and would
           otherwise paint this bar in it. */}
       {consent && (
-        <PermissionBar
-          appName={consent.appName}
-          appIcon={consent.appIcon}
-          config={consent.config}
-          capabilities={consent.capabilities}
-          onHeightChange={handleBarHeight}
-          onAllow={consent.onAllow}
-        />
+        // `previous` included: the comparison with the build opened before
+        // this one was worked out by App and then dropped here, so an update
+        // that added a capability read exactly like the request before it.
+        <PermissionBar {...consent} onHeightChange={handleBarHeight} appRootRef={hostRef} />
       )}
-      <RunnerErrorBoundary>
-        <ThemeProvider followHost followSystem>
-          <SoftNWithXDB
-            source={source}
-            initialState={initialState}
-            permissions={permissions}
-            importResolver={importResolver}
-            functions={
-              assetResolver
-                ? { asset: (...args: unknown[]) => assetResolver(String(args[0] ?? '')) }
-                : undefined
-            }
-            logicBasePath={logicBasePath}
-            preIncludedLogicPaths={preIncludedLogicPaths}
-            executionPreference={executionPreference}
-            permissionConfig={permissionConfig}
-            appId={runtimeAppId}
-            // Every tab stays mounted; only this says which one is on screen.
-            active={active}
-            assetResolver={assetResolver}
-            onPageChange={onPageChange}
-            onLoad={onReady}
-            serverUrl={serverUrl}
-            serverToken={serverToken}
-            serverCollections={serverCollections}
-            storageEndpoint={storageEndpoint}
-            loading={
-              <Box
-                className="softn-runner-loading"
-                style={{
-                  display: 'flex',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  height: '100%',
-                  minHeight: '300px',
-                  flexDirection: 'column',
-                  gap: '1rem',
-                  background: 'var(--ink)',
-                }}
-              >
-                <Spinner size="lg" />
-                <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {appName}...</Text>
-              </Box>
-            }
-            error={(err) => (
-              <Box className="softn-runner-error-wrap" style={{
-                padding: '2rem',
-                display: 'flex',
-                justifyContent: 'center',
-              }}>
-                <Card
-                  className="softn-runner-error-card"
+      {/* The app's own box, below the bar and never over it. Without
+          containment a bundle's `position: fixed` element was positioned
+          against the viewport: a full-screen overlay painted over the consent
+          bar and could put its own "Allow" where the real one was, or hide the
+          bar and the capabilities it lists. `contain: paint` makes this box
+          the containing block for fixed descendants and clips everything the
+          app draws to it, and the stacking context it creates keeps any
+          z-index the app picks inside it — the bar, a sibling painted outside,
+          stays whole. A full-screen app still fills the whole of its tab: the
+          box is the area it was always meant to occupy. (Markup that would
+          reach the browser's top layer, which no containment clips, is refused
+          by the renderer.) */}
+      <div className="softn-runner-app" style={APP_BOX_STYLE}>
+        <RunnerErrorBoundary>
+          <ThemeProvider followHost followSystem>
+            <SoftNWithXDB
+              source={source}
+              initialState={initialState}
+              permissions={permissions}
+              importResolver={importResolver}
+              functions={
+                assetResolver
+                  ? { asset: (...args: unknown[]) => assetResolver(String(args[0] ?? '')) }
+                  : undefined
+              }
+              logicBasePath={logicBasePath}
+              preIncludedLogicPaths={preIncludedLogicPaths}
+              python={python}
+              executionPreference={executionPreference}
+              permissionConfig={permissionConfig}
+              appId={runtimeAppId}
+              // Every tab stays mounted; only this says which one is on screen.
+              active={active}
+              assetResolver={assetResolver}
+              onPageChange={onPageChange}
+              onLoad={onReady}
+              serverUrl={serverUrl}
+              serverToken={serverToken}
+              serverCollections={serverCollections}
+              storageEndpoint={storageEndpoint}
+              loading={
+                <Box
+                  className="softn-runner-loading"
                   style={{
-                    padding: '1.5rem',
-                    background: 'var(--ink-2)',
-                    border: '1px solid rgba(239, 68, 68, 0.3)',
-                    maxWidth: '480px',
-                    width: '100%',
-                    borderRadius: '14px',
-                    boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    height: '100%',
+                    minHeight: '300px',
+                    flexDirection: 'column',
+                    gap: '1rem',
+                    background: 'var(--ink)',
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <div style={{
-                      width: '32px',
-                      height: '32px',
-                      borderRadius: '8px',
-                      background: 'rgba(239, 68, 68, 0.1)',
-                      border: '1px solid rgba(239, 68, 68, 0.15)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                    }}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="12" cy="12" r="10" />
-                        <line x1="15" y1="9" x2="9" y2="15" />
-                        <line x1="9" y1="9" x2="15" y2="15" />
-                      </svg>
-                    </div>
-                    <Text style={{
-                      color: 'var(--dim)',
-                      fontSize: '0.8125rem',
-                      fontFamily: 'monospace',
-                      wordBreak: 'break-word',
-                    }}>
-                      {err.message}
-                    </Text>
-                  </div>
-                </Card>
-              </Box>
-            )}
-          />
-        </ThemeProvider>
-      </RunnerErrorBoundary>
+                  <Spinner size="lg" />
+                  <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
+                    <span role="status">Starting {appName}…</span>
+                  </Text>
+                </Box>
+              }
+              error={(err) => (
+                <div className="softn-runner-error-wrap" role="alert">
+                  <RunnerErrorCard
+                    title="This app couldn’t start"
+                    hint="The runtime could not run this app’s markup or logic. If you made it, the reason below says where; otherwise tell whoever shared it."
+                    detail={err.message}
+                  />
+                </div>
+              )}
+            />
+          </ThemeProvider>
+        </RunnerErrorBoundary>
+      </div>
     </div>
   );
 }

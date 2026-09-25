@@ -20,6 +20,8 @@ use tauri_plugin_cli::CliExt;
 use tauri_plugin_dialog::DialogExt;
 use tracing::info;
 
+mod net;
+
 /// State for the opened file path
 struct OpenedFile {
     path: Mutex<Option<String>>,
@@ -311,6 +313,7 @@ pub fn run() {
                     read_softn_bundle,
                     read_cached_bundle,
                     get_opened_file,
+                    net::net_fetch,
                     pick_softn_bundle,
                     set_window_icon,
                     backup_database,
@@ -344,6 +347,7 @@ pub fn run() {
                     read_softn_bundle,
                     read_cached_bundle,
                     get_opened_file,
+                    net::net_fetch,
                     // XDB P2P Database commands
                     xdb::tauri::create_record,
                     xdb::tauri::update_record,

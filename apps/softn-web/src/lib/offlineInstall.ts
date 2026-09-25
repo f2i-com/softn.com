@@ -17,7 +17,9 @@
  * worker and stays in the runtime cache; the peer-sync runtime is fetched
  * when the app asked for `sync`; and for an app whose manifest runs its
  * script in a worker, the worker's files are fetched through the worker
- * asset route. Only when all of that is held does the result say `ready`.
+ * asset route; for an app that declares the torch Python package, its loader
+ * chunk and zipp_torch.wasm are fetched the same way. Only when all of that
+ * is held does the result say `ready`.
  * Nothing here imports a feature itself — every load goes through the
  * registry's own loaders — so this file adds nothing to the entry closure,
  * which test/build-graph.test.ts holds.
@@ -34,6 +36,7 @@ import {
   getDefaultRegistry,
   parse,
   preloadSyncRuntime,
+  preloadZippTorch,
   type ComponentRegistry,
 } from '@softn/core';
 
@@ -46,6 +49,12 @@ export interface OfflineInstallApp {
   execution?: 'worker' | 'main';
   /** What the bundle's permission.json asked for, as bundleProcessor reads it. */
   capabilities?: readonly string[];
+  /**
+   * The Python packages the app declares (`config.python.packages`, from the
+   * composition's `python.packages`). torch is a separate engine module
+   * fetched on demand, so an app that declares it needs it held as well.
+   */
+  pythonPackages?: readonly string[];
 }
 
 export type WorkerAssetsState = 'not-needed' | 'installed' | 'unavailable';
@@ -69,6 +78,8 @@ export interface OfflineInstallResult {
 
 /** The name `features` and `missing` use for the peer-sync runtime chunk. */
 export const SYNC_RUNTIME = 'sync-runtime';
+/** The name `missing` uses for the torch package (its loader chunk and zipp_torch.wasm). */
+export const TORCH_PACKAGE = 'torch';
 
 /**
  * What an install reaches the world through. Every member defaults to the
@@ -79,6 +90,8 @@ export interface OfflineInstallHost {
   registry?: ComponentRegistry;
   /** Fetches the sync runtime's chunk; core's preloadSyncRuntime outside tests. */
   preloadSync?: () => Promise<void>;
+  /** Fetches the torch package's loader and module; core's preloadZippTorch outside tests. */
+  preloadTorch?: (init: RequestInit) => Promise<void>;
   /** Resolves true once something will keep what is fetched: a controlling service worker. */
   cacheHolder?: () => Promise<boolean>;
   /** For the worker's files. */
@@ -217,6 +230,22 @@ async function performInstall(
       const installed = await abortable(installWorkerAssets(options), signal);
       if (installed === ABORTED) return cancelled(result);
       result.workerAssets = installed ? 'installed' : 'unavailable';
+    }
+
+    // torch is not in the engine the shell loads; the first `import torch`
+    // fetches its loader chunk and zipp_torch.wasm. core's preloadZippTorch
+    // fetches both past the HTTP cache, so the worker-assets route keeps them.
+    if (app.pythonPackages?.includes(TORCH_PACKAGE)) {
+      const preload = options.preloadTorch ?? preloadZippTorch;
+      const ok = await abortable(
+        preload({ signal }).then(
+          () => true,
+          () => false
+        ),
+        signal
+      );
+      if (ok === ABORTED) return cancelled(result);
+      if (!ok) result.missing.push(TORCH_PACKAGE);
     }
 
     result.ready = result.missing.length === 0 && result.workerAssets !== 'unavailable';

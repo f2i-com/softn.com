@@ -27,7 +27,7 @@
     ],
     "security": {
       "dangerousDisableAssetCspModification": ["style-src"],
-      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob: ipc: http://ipc.localhost wss:; worker-src 'self' blob:"
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob: ipc: http://ipc.localhost wss: ws://localhost:* ws://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://*.hf.co; worker-src 'self' blob:"
     }
   },
   "bundle": {
