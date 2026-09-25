@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { Reveal } from './Reveal';
-import { Code } from '../lib/highlight';
+import { Code, languageOf } from '../lib/highlight';
 import { SAMPLES } from '../data/language';
 
 export function Language(): React.ReactElement {
@@ -46,8 +46,9 @@ export function Language(): React.ReactElement {
           <h2 className="band-title">Five ideas, and you have read the whole thing.</h2>
           <p className="band-sub">
             Tags for structure, braces for expressions, <code>@</code> to send an event out and <code>:</code> to bind a
-            value both ways, <code>#</code> for control flow, and a <code>.logic</code> file for everything else. It is
-            small on purpose — a language a model can write correctly on the first attempt is a language you can read.
+            value both ways, <code>#</code> for control flow, and a logic file for everything else: JavaScript in a{' '}
+            <code>.logic</code> file, or <a href="/docs/language-support/">Python</a> in a <code>.py</code>. It is small on
+            purpose — a language a model can write correctly on the first attempt is a language you can read.
           </p>
         </div>
 
@@ -78,7 +79,7 @@ export function Language(): React.ReactElement {
           <div className="lang-body">
             <div className="panel-bar">
               <span className="panel-bar-name">{sample.file}</span>
-              <span className="panel-bar-tag">{sample.file.endsWith('.logic') ? 'logic' : 'markup'}</span>
+              <span className="panel-bar-tag">{panelTag(sample.file)}</span>
             </div>
             <div
               role="tabpanel"
@@ -86,11 +87,17 @@ export function Language(): React.ReactElement {
               aria-labelledby={`lang-tab-${sample.id}`}
               style={{ display: 'contents' }}
             >
-              <Code source={sample.source} className="lang-code" label={`${sample.file} source`} />
+              <Code source={sample.source} className="lang-code" label={`${sample.file} source`} language={languageOf(sample.file)} />
             </div>
           </div>
         </div>
       </div>
     </Reveal>
   );
+}
+
+/** What the panel bar calls a sample's file: markup, or logic in one of its two languages. */
+export function panelTag(file: string): string {
+  if (languageOf(file) === 'python') return 'python';
+  return file.endsWith('.logic') ? 'logic' : 'markup';
 }

@@ -22,7 +22,7 @@ const stroke = {
 const DOORS: Door[] = [
   {
     name: 'Studio',
-    copy: 'Describe your idea, review a plan and let your chosen AI write the app. Inspect the files, preview each change and undo edits as you go.',
+    copy: 'Describe your idea, choose JavaScript or Python, review a plan and let the AI you connect — a local model or your own API key — write the app. Preview each change and undo edits as you go.',
     href: STUDIO_HREF,
     action: 'Open Studio',
     badge: 'Your AI',
@@ -37,7 +37,7 @@ const DOORS: Door[] = [
   },
   {
     name: 'Builder',
-    copy: 'Arrange components, shape your data collections and test the result at different screen sizes. Switch to code when you want finer control.',
+    copy: 'Arrange components, shape your data collections and test the result at different screen sizes. Switch to code — JavaScript or Python — when you want finer control.',
     href: BUILDER_HREF,
     action: 'Open Builder',
     badge: 'Visual + code',

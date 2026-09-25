@@ -43,6 +43,32 @@
     });
     input.addEventListener('keydown',event => { if(event.key==='Escape'){input.value='';results.replaceChildren();results.hidden=true;serial++;} });
   }
+  // On a phone the product links scroll sideways (bar.css). Keep the current
+  // page in view, and mark the ends that have more so docs.css can fade them.
+  const links = document.querySelector('.softn-bar-links');
+  if (links) {
+    const mark = () => {
+      const more = [];
+      if (links.scrollLeft > 1) more.push('start');
+      if (links.scrollLeft + links.clientWidth < links.scrollWidth - 1) more.push('end');
+      if (more.length) links.dataset.more = more.join(' '); else delete links.dataset.more;
+    };
+    const current = links.querySelector('[aria-current="page"]');
+    const reveal = () => {
+      if (current && links.scrollWidth > links.clientWidth) {
+        // Clear of the padding and of the 3rem fade, or to the end if that is nearer.
+        const clear = (parseFloat(getComputedStyle(links).paddingRight) || 0) + 3 * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+        const past = current.getBoundingClientRect().right + clear - links.getBoundingClientRect().right;
+        if (past > 0) links.scrollLeft = Math.min(links.scrollLeft + past, links.scrollWidth - links.clientWidth);
+      }
+      mark();
+    };
+    reveal();
+    // The brand faces change the labels' widths once they load.
+    document.fonts?.ready.then(reveal);
+    links.addEventListener('scroll', mark, {passive:true});
+    window.addEventListener('resize', mark);
+  }
   // The theme switch, as on the site: the stored value is the reader's
   // choice, and every SoftN app on this origin reads the same key.
   const toggle = document.querySelector('.theme-toggle');

@@ -10,6 +10,11 @@ export function formatCount(n: number): string {
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
 }
 
+/** "1 run", "12 runs", "1.2k runs": the count with the noun that agrees with it. */
+export function runsLabel(n: number): string {
+  return `${formatCount(n)} ${n === 1 ? 'run' : 'runs'}`;
+}
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '—';
   if (n < 1024) return `${n} B`;

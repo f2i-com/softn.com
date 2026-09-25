@@ -125,6 +125,12 @@ main:focus-visible {
   color: var(--coral);
 }
 
+.band-sub a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 .band-sub a:hover,
 .hero-lede a:hover {
   color: var(--paper);
@@ -323,6 +329,8 @@ main:focus-visible {
 .workspace-live-footer[data-state='ready'] .workspace-live-status > span { background: #60894f; }
 .workspace-live-action { min-height: 44px; padding: 0.625rem 0.875rem; border-radius: 7px; background: var(--paper); color: var(--ink); font-weight: 600; }
 .workspace-live-action:hover { opacity: 0.85; }
+.workspace-live-start { min-height: 44px; padding: 0.625rem 0.875rem; border-radius: 7px; border: 1px solid var(--line); color: var(--paper); font-size: 0.75rem; font-weight: 600; margin-left: auto; }
+.workspace-live-start:hover { border-color: var(--dimmer); }
 .workspace-live-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.625rem; padding: 2rem 1rem 4rem; color: #596145; text-align: center; font-size: 0.75rem; }
 .workspace-live-placeholder strong { font-size: 1.2rem; letter-spacing: -0.04em; }
 .workspace-live-monogram { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: #656543; color: #fffefa; font: italic 32px Georgia, serif; }
@@ -668,6 +676,10 @@ main:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 1.75rem;
+}
+
+.pipe-note {
+  margin-top: 1.75rem;
 }
 
 .pipe {
@@ -1244,12 +1256,26 @@ main:focus-visible {
 .hero-pills {
   margin-bottom: 1.5rem;
 }
+/* A heading with a control beside it. It is a .band-head too, so it has to
+   undo two things that class sets: the column direction — which, with
+   align-items: flex-end, pushed the heading block to the right edge instead
+   of beside its control — and the 46rem cap, which left no room for the
+   control on the heading's row. The heading block keeps the cap and the
+   eyebrow/title/sub rhythm of a plain .band-head. */
 .band-head-row {
   display: flex;
+  flex-direction: row;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 1rem 2rem;
   flex-wrap: wrap;
+  max-width: none;
+}
+.band-head-row > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  max-width: 46rem;
 }
 .band-head-row .band-title {
   margin-bottom: 0;
@@ -1911,11 +1937,16 @@ main:focus-visible {
   color: var(--dim);
   line-height: 1.5;
 }
+/* Block, not a wrapping flex row: in a flex row every text run is its own
+   item, so "Files — may read files…" broke into a label on one line and a
+   dash-led sentence on the next, and the sandbox dot sat alone above its
+   sentence. */
 .side-list li {
-  display: flex;
-  gap: 0.5rem;
-  align-items: baseline;
-  flex-wrap: wrap;
+  display: block;
+}
+.side-list li > .badge-dot {
+  margin-right: 0.375rem;
+  vertical-align: 0.125em;
 }
 .side-list strong {
   color: var(--paper);
@@ -2930,6 +2961,19 @@ main:focus-visible {
   position: absolute;
   inset: 0;
   background: linear-gradient(to top, rgba(10, 12, 15, 0.94) 0%, rgba(10, 12, 15, 0.62) 34%, rgba(10, 12, 15, 0.08) 62%, rgba(10, 12, 15, 0) 100%);
+}
+/* The lead carries four lines of text over its picture, and the shared shade
+   has faded out by the time it reaches the category and the name — over a
+   screenshot of a terminal the title sat on white text. Its shade climbs
+   further, and the text keeps a soft shadow for pictures brighter still. */
+.featured-lead .featured-shade {
+  background: linear-gradient(to top, rgba(10, 12, 15, 0.95) 0%, rgba(10, 12, 15, 0.86) 45%, rgba(10, 12, 15, 0.45) 78%, rgba(10, 12, 15, 0.12) 100%);
+}
+.featured-lead .featured-body {
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.55);
+}
+.featured-lead .featured-actions {
+  text-shadow: none;
 }
 .featured-body {
   position: absolute;

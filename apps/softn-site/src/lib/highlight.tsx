@@ -1,7 +1,7 @@
 import React from 'react';
 
 /**
- * A deliberately small highlighter for `.ui` and `.logic` source.
+ * A deliberately small highlighter for `.ui`, `.logic` and `.py` source.
  *
  * It exists to make one point visually — that the marks belonging to SoftN
  * itself (`#each`, `@click`, `:bind`, the braces around an expression, the
@@ -39,7 +39,33 @@ const RULES: Rule[] = [
   { cls: 'tok-expr', re: /^[^\s<>{}"'`@:#=(),;[\]/]+|^\s+|^./ },
 ];
 
-export function highlight(source: string): React.ReactElement[] {
+/**
+ * Python logic (a `.py` file). Kept apart from the rules above rather than
+ * merged into them: in Python `#` opens a comment, and in markup it opens
+ * `#each`, so no single list can be right about both.
+ */
+const PYTHON_RULES: Rule[] = [
+  { cls: 'tok-com', re: /^#[^\n]*/ },
+  { cls: 'tok-str', re: /^(?:"""[\s\S]*?"""|'''[\s\S]*?''')|^"(?:[^"\\\n]|\\.)*"|^'(?:[^'\\\n]|\\.)*'/ },
+  {
+    cls: 'tok-mark',
+    re: /^\b(?:def|global|nonlocal|return|if|elif|else|for|while|in|not|and|or|is|import|from|as|with|class|lambda|pass|break|continue|try|except|finally|raise|yield|del|assert)\b/,
+  },
+  { cls: 'tok-num', re: /^\b(?:True|False|None|\d+(?:\.\d+)?)\b/ },
+  { cls: 'tok-punc', re: /^[=(),:[\]]/ },
+  { cls: 'tok-expr', re: /^[^\s#"'=(),:[\]]+|^\s+|^./ },
+];
+
+/** Which rules a source is read with: SoftN markup and `.logic`, or Python. */
+export type HighlightLanguage = 'softn' | 'python';
+
+/** A file's highlighting language from its name — the composer's own rule: `.py` is Python. */
+export function languageOf(path: string): HighlightLanguage {
+  return /\.py$/i.test(path) ? 'python' : 'softn';
+}
+
+export function highlight(source: string, language: HighlightLanguage = 'softn'): React.ReactElement[] {
+  const rules = language === 'python' ? PYTHON_RULES : RULES;
   const out: React.ReactElement[] = [];
   let rest = source;
   let key = 0;
@@ -60,7 +86,7 @@ export function highlight(source: string): React.ReactElement[] {
 
   while (rest.length > 0) {
     let matched = false;
-    for (const rule of RULES) {
+    for (const rule of rules) {
       const m = rule.re.exec(rest);
       if (!m || m[0].length === 0) continue;
       if (rule.cls !== pendingCls) {
@@ -100,10 +126,12 @@ export function Code({
   source,
   className,
   label,
+  language = 'softn',
 }: {
   source: string;
   className?: string;
   label?: string;
+  language?: HighlightLanguage;
 }): React.ReactElement {
   return (
     <pre
@@ -112,7 +140,7 @@ export function Code({
       role={label ? 'region' : undefined}
       aria-label={label}
     >
-      <code>{highlight(source)}</code>
+      <code>{highlight(source, language)}</code>
     </pre>
   );
 }

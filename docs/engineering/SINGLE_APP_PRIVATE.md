@@ -31,7 +31,10 @@ for the CPU language-model provider). Nothing to configure on nginx.
 
 The manifest is never sent raw: `config.server`, with any token in it, and
 every field the runtime does not read are dropped. Entries listed under
-`withhold` in the configuration are neither packed nor served. Text-form
+`withhold` in the configuration are neither packed nor served. A bundle's
+`server/` folder is withheld whatever `withhold` says: if the full private
+server bundle is deployed as `app.softn`, its server logic and SQL are never
+packed or served, because they are the backend's and not the page's. Text-form
 models (`.gltf`, `.obj`) are served as entries, not packed, so a large scene
 does not sit inside the JSON the application boots from.
 
@@ -124,6 +127,11 @@ return [
 - `allowPrivateInWebroot` lifts the refusal to run when the private
   directory is inside the document root, for a host that can only offer one
   folder; its `.htaccess` then has to be honoured.
+- `frameAncestors` lists the other sites allowed to show the page in a frame
+  (origins such as `https://portal.example.com`). By default only the page's
+  own site may frame it (`frame-ancestors 'self'`, `X-Frame-Options:
+  SAMEORIGIN`): a page any site can frame can have its permission bar covered
+  with a look-alike and its Allow clicked for the visitor.
 
 The sample bundle is generated only when `dist/private/app.softn` is absent,
 and the sample configuration only when `dist/private/serve.config.php` is

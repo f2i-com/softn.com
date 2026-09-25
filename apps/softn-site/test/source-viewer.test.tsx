@@ -85,3 +85,15 @@ describe('source reader recovery and mobile actions', () => {
     expect(button('Copy source')).toBeUndefined();
   });
 });
+
+describe('Python logic', () => {
+  it('highlights a .py file as Python and leaves .logic plain', async () => {
+    const py: SourceFile = { path: 'logic/main.py', size: 30, text: '# state\ncount = 0\n' };
+    getSource.mockResolvedValue(reply([ui, logic, py]));
+    await render();
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('.source-file')].find((b) => b.textContent?.startsWith('main.py'))!.click());
+    expect(container.querySelector('.source-code .tok-com')?.textContent).toBe('# state');
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('.source-file')].find((b) => b.textContent?.startsWith('main.logic'))!.click());
+    expect(container.querySelector('.source-plain')?.textContent).toBe('let count = 1;');
+  });
+});

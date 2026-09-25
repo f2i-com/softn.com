@@ -1,0 +1,36 @@
+<logic src="../logic/main.py" />
+
+<App theme="light" title="Torch Trainer">
+  <Container size="sm">
+    <Stack direction="vertical" gap="lg" padding="xl">
+      <Stack direction="vertical" gap="xs">
+        <Heading level={1}>Torch Trainer</Heading>
+        <Text variant="muted">A one-neuron network learns y = 2x + 1, in Python with torch, in your browser.</Text>
+      </Stack>
+
+      <Card>
+        <Stack direction="vertical" gap="sm" padding="lg">
+          <Text>Steps trained: {steps}</Text>
+          <Text>Loss: {loss}</Text>
+          <Text>Learned: y = {weight}x + {bias}</Text>
+          <Text>Prediction at x = 10 (the answer is 21): {prediction}</Text>
+        </Stack>
+      </Card>
+
+      <Stack direction="horizontal" gap="sm" wrap>
+        <Button variant="primary" @click={() => train(50)}>Train 50 steps</Button>
+        <Button variant="secondary" @click={() => train(500)}>Train 500 steps</Button>
+        <Button variant="ghost" @click={() => reset()}>Reset</Button>
+      </Stack>
+
+      #if (history.length > 0)
+        <Stack direction="vertical" gap="xs">
+          <Text variant="muted">Loss after each click, newest last</Text>
+          #each (value in history)
+            <Text>{value}</Text>
+          #end
+        </Stack>
+      #end
+    </Stack>
+  </Container>
+</App>

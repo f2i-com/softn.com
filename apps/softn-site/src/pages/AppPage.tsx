@@ -4,6 +4,7 @@ import { launchApp } from '../lib/launch';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
 import { runtimeAppUrl } from '../lib/appUrls';
 import type { Route } from '../lib/router';
+import { setDescription } from '../lib/meta';
 import { AppGrid, Thumb } from '../components/directory/AppCard';
 import { StarInput, Stars } from '../components/directory/Stars';
 import { ShareMenu } from '../components/directory/ShareMenu';
@@ -174,6 +175,7 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
         if (ac.signal.aborted) return;
         setApp(a);
         document.title = `${a.name} — SoftN`;
+        if (a.description) setDescription(a.description);
         // A link opened by its manifest name lands on the slug.
         if (a.slug !== slug) window.history.replaceState({}, '', `/app/${a.slug}${window.location.search}`);
       })

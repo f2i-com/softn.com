@@ -45,13 +45,19 @@ it), `app-editors/` (Builder and Studio built as hosted editors, with the
 editor bridge protocol in `manifest.json`), `native-runtime/`
 (`apps/softn-host-php/runtime/*` byte for byte, the ZIPP engine, licences,
 `provenance.json`), `zipp/` (`packages/@softn/core/wasm-zipp/` byte for byte:
-ZIPP's web-python release files with the bundle's `SHA256SUMS`, ZIPP's release
+ZIPP's web-python-base release files with the bundle's `SHA256SUMS`, ZIPP's release
 `SHA256SUMS` as `RELEASE-SHA256SUMS`, the notices and `SOURCE.json`), `zipp-web/`
 (`packages/@softn/core/wasm-zipp-web/` byte for byte: the same ZIPP release's
 JavaScript-only build — its module, `BUILD-INFO.txt`, `PROFILE.json`, its
 bundle's `SHA256SUMS` and its own `SOURCE.json` — verified as a variant of
 `zipp/`: same commit, same imports, no export `zipp/` lacks, so it runs under
-`zipp/`'s glue; `zipp/SOURCE.json` names it under `variants.web`), `adapter/`
+`zipp/`'s glue; `zipp/SOURCE.json` names it under `variants.web`), `zipp-torch/`
+(`packages/@softn/core/wasm-zipp-torch/` byte for byte: the same release's
+torch package — `zipp_torch.wasm`, ZIPP's `zipp_torch.js` loader, its
+`BUILD-INFO.txt` pairing it with exactly the `zipp/` bundle, its `SHA256SUMS`
+and `SOURCE.json` — which `zipp/SOURCE.json` records under `packages.torch`;
+the runtime loads it only for an app that declares
+`config.python.packages: ["torch"]`), `adapter/`
 (`packages/@softn/core/src/integrations/formlogic.ts` with its provenance) and
 `softn-release.json` (tag, commit, the engine's whole `SOURCE.json` record with
 its `variants`, protocols, adapter digest, a digest of every other file). Each built folder
@@ -68,6 +74,9 @@ records, and which may carry that digest nowhere else. `zipp/` itself holds
 exactly the engine install, so a FormLogic that offers only `zipp-web-python`
 sees what it always saw; one that offers `zipp-web` takes the variant from
 `zipp-web/`, checks it against `variants.web`, and announces it under that id.
+Every copy of the torch package, recognised by its exports, must carry the
+digest `packages.torch` records: `zipp-torch/` and the `assets/core-runtime/`
+copy beside each built runtime and editor.
 
 `hosted-runtime/` has two entry documents. `index.html` serves the ZIPP
 engines; `host.html` is the same document with one attribute and serves only
@@ -106,3 +115,51 @@ differ fails there, before any FormLogic test or package step, with a message
 naming what to update. (A FormLogic that still vendors its own engine refuses
 any release built with a different one; pin `SOFTN_RELEASE` there.) `npm run package:formlogic-runtime -- --tag vX.Y.Z` builds the
 archive locally (`--allow-dirty` for a trial from an uncommitted tree).
+
+## The editor bridge's AI requests
+
+The hosted editors talk to FormLogic over the channel in
+`packages/@softn/editor-shared/src/hostedEditor.ts` (the editor sends
+`formlogic-editor-ready`, FormLogic answers `formlogic-editor-connect` with a
+`MessagePort`). Studio's AI requests go over that port as `ai-request` /
+`ai-response` / `ai-cancel`. The bridge protocol stays `1` (it is what
+`app-editors/manifest.json` records); tool calls are an optional capability
+on top of it, `aiTools`, currently version `1`:
+
+- The editor announces it: `{ kind: 'formlogic-editor-ready', protocol: 1, aiTools: 1 }`.
+- A host that speaks it announces it back: `{ kind: 'formlogic-editor-connect', protocol: 1, aiTools: 1 }`.
+  A host that says nothing is a host from before it, and the editor sends it
+  only what every host takes.
+- Without `aiTools` (every FormLogic today): `{ kind: 'ai-request', id, messages }`,
+  each message `{ role: 'system' | 'user' | 'assistant', content: string }`,
+  answered `{ kind: 'ai-response', id, ok: true, value: string }` or
+  `{ kind: 'ai-response', id, ok: false, error }`. Studio's agent then writes
+  its tool calls as text (`<tool_call>` blocks) and reads them back itself.
+- With `aiTools: 1` announced, Studio sends
+  `{ kind: 'ai-request', id, aiTools: 1, messages, tools, maxOutputTokens }`:
+  - `tools`: `[{ name, description, inputSchema }]`, `inputSchema` a JSON
+    schema object — the list Studio sends Anthropic (`input_schema`) and
+    OpenAI (`function.parameters`), in one neutral shape;
+  - `messages`: `{ role: 'system' | 'user', content }`,
+    `{ role: 'assistant', content, toolCalls?: [{ id, name, arguments }] }`
+    (`arguments` an object) and
+    `{ role: 'tool', toolCallId, name, content, isError? }`.
+
+  The host maps these to its provider (Anthropic `tool_use` / `tool_result`
+  blocks, OpenAI `tool_calls` / `role: 'tool'` messages) and answers
+  `{ kind: 'ai-response', id, ok: true, value: { text, toolCalls: [{ id, name, arguments }], stopReason, usage: { inputTokens, outputTokens } } }`.
+  `arguments` may be the parsed object or the provider's raw JSON string;
+  `stopReason` is the provider's own (`max_tokens`/`length` marks a reply cut
+  at the output limit, `refusal`/`content_filter` one the model declined);
+  `usage` may be left out, and Studio then counts by estimate.
+- A host whose provider cannot take tools answers
+  `{ ok: false, code: 'tools-unsupported', error }`, or simply answers with a
+  string `value`: either way Studio carries on with text tool calls for that
+  provider and model, and remembers it.
+- Replies are whole; the bridge does not stream. `ai-cancel` (same `id`)
+  still stops a request.
+
+The host side lives in FormLogic (`ui/src/components/studio/AppEditorDialog.tsx`,
+the `ai-request` handler). Its current check refuses any message whose role is
+not system/user/assistant or whose content is not a string, which is why
+Studio never sends the structured form until the host has announced `aiTools`.
