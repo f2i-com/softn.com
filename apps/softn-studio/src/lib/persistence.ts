@@ -10,6 +10,7 @@ import type {
   VFSFile,
 } from '../types/studio';
 import { normalizeProjectPath } from './projectImport';
+import type { PersistedUndoJournal } from './undoJournal';
 
 /**
  * Where Studio keeps a project between visits.
@@ -139,6 +140,13 @@ export interface ProjectRecord {
   workspace: PersistedWorkspace;
   files: PersistedFile[];
   session: PersistedSession;
+  /**
+   * What the AI's changes need to be undone after a reload: text only, bounded
+   * (see lib/undoJournal.ts). Absent in a project saved before it existed;
+   * such a project opens with its steps' Undo explained as unavailable. Read
+   * leniently: a malformed journal costs the undo data, never the project.
+   */
+  undo?: PersistedUndoJournal;
 }
 
 /** What the dashboard needs to know about a saved project, without its files. */
@@ -924,6 +932,7 @@ export function sameProjectContent(a: ProjectRecord, b: ProjectRecord): boolean 
   if (a.projectId !== b.projectId || a.revision !== b.revision) return false;
   if (JSON.stringify(a.workspace) !== JSON.stringify(b.workspace)) return false;
   if (JSON.stringify(a.session) !== JSON.stringify(b.session)) return false;
+  if (JSON.stringify(a.undo ?? null) !== JSON.stringify(b.undo ?? null)) return false;
   if (a.files.length !== b.files.length) return false;
   for (let i = 0; i < a.files.length; i++) {
     const x = a.files[i];

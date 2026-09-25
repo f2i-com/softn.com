@@ -467,18 +467,41 @@ describe('stopping and limits', () => {
     expect(provider.count()).toBe(0);
   });
 
-  it('never applies a reply cut off at the output limit, and asks for smaller steps', async () => {
-    fakeProvider('anthropic', [
-      { calls: [{ name: 'write_file', input: { path: 'ui/cut.ui', content: '<App>' } }], stop: 'max_tokens' },
+  it('never applies a reply cut off at the output limit, and tries the step again asking for shorter reasoning', async () => {
+    // From a real run: a reasoning model spent ~12k of a 16,384-token allowance thinking, and its reply was cut.
+    const provider = fakeProvider('anthropic', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/cut.ui', content: '<App>' } }], stop: 'max_tokens', usage: { input: 500, output: 4_096 } },
       (body) => {
-        expect(resultsIn(body)).toContain('cut off at the output limit');
+        expect(resultsIn(body)).toContain('cut off at the output limit (4,096 tokens)');
+        expect(resultsIn(body)).toMatch(/keep your reasoning short, and split the work/);
         return { calls: [{ name: 'finish', input: { summary: 'ok' } }] };
       },
     ]);
     say('Go');
     await startAgentRun();
+    expect(provider.count()).toBe(2);
+    // Every request goes out with the setting as the provider's output cap.
+    expect(provider.bodies.every((b) => b.max_tokens === 4_096)).toBe(true);
     expect(useVFSStore.getState().files.has('ui/cut.ui')).toBe(false);
-    expect(lastRun().run.status).toBe('finished');
+    const { run } = lastRun();
+    expect(run.status).toBe('finished');
+    // The cut reply's tokens are counted like any other's.
+    expect(run.tokens.output).toBe(4_096 + 20);
+    expect(run.entries.some((e) => e.kind === 'text' && /tried again/.test(e.text))).toBe(true);
+  });
+
+  it('stops when the retried step is cut off at the output limit again, and points at the setting', async () => {
+    const provider = fakeProvider('anthropic', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/cut.ui', content: '<App>' } }], stop: 'max_tokens' },
+      { calls: [{ name: 'write_file', input: { path: 'ui/cut.ui', content: '<App>' } }], stop: 'max_tokens' },
+    ]);
+    say('Go');
+    await startAgentRun();
+    expect(provider.count()).toBe(2);
+    const { run } = lastRun();
+    expect(run.status).toBe('failed');
+    expect(run.reason).toMatch(/cut off at the output limit \(4,096 tokens\) again .* Raise Max output tokens in Settings → Agent runs/);
+    expect(useVFSStore.getState().files.has('ui/cut.ui')).toBe(false);
   });
 
   it('pauses on a network failure and resumes the same request', async () => {

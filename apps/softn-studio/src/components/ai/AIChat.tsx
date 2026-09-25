@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { runAgentTurn } from '../../lib/agentOrchestrator';
-import { activeAgentRunId, answerAgentQuestion, isRunLive, stopAgentRun } from '../../lib/agent/runAgent';
+import { activeAgentRunId, answerAgentQuestion, isRunLive, revertChatTurn, stopAgentRun, turnRevertState } from '../../lib/agent/runAgent';
 import { isReadableRun, RunTimeline } from './RunTimeline';
 import type { ChatMessage } from '../../types/studio';
 import { AIStatusPill, openSetupFor, useAIReadiness } from './AIStatusPill';
@@ -18,24 +18,25 @@ export const AIChat: React.FC = () => {
   const readiness = useAIReadiness();
   const { blueprint } = useWorkspaceStore();
   // A turn that committed files did so as one VFS transaction under the
-  // message's transactionId. While that transaction is still in the
-  // history, the message offers to revert it — the whole turn, by id, not
-  // "whatever the AI did last".
-  const history = useVFSStore((s) => s.history);
+  // message's transactionId. The message offers to revert it — the whole
+  // turn, by id, not "whatever the AI did last" — from the undo journal saved
+  // with the project, so it still works after a reload.
+  const journal = useVFSStore((s) => s.journal);
+  const files = useVFSStore((s) => s.files);
   const [revertNotice, setRevertNotice] = useState<{ id: string; text: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const revertTurn = (transactionId: string) => {
-    const result = useVFSStore.getState().revertTransaction(transactionId);
+  const revertTurn = (message: ChatMessage) => {
+    const id = message.transactionId!;
+    const result = revertChatTurn(message.id);
     const ws = useWorkspaceStore.getState();
     if (!result.ok) {
-      setRevertNotice({ id: transactionId, text: result.reason });
+      setRevertNotice({ id, text: result.reason });
       ws.addConsoleOutput(`[AI] Revert refused: ${result.reason}`);
       return;
     }
-    setRevertNotice({ id: transactionId, text: `Reverted ${result.paths.length} file(s): ${result.paths.join(', ')}` });
-    ws.setDirty(true);
+    setRevertNotice({ id, text: `Reverted ${result.paths.length} file(s): ${result.paths.join(', ')}` });
     ws.addConsoleOutput(`[AI] Reverted turn: ${result.paths.join(', ')}`);
   };
 
@@ -286,28 +287,32 @@ export const AIChat: React.FC = () => {
                   ))}
                 </div>
               )}
-              {msg.role === 'assistant' && msg.transactionId && (
-                <div style={styles.revertRow}>
-                  {history.some((e) => e.transactionId === msg.transactionId) ? (
-                    <button
-                      onClick={() => revertTurn(msg.transactionId!)}
-                      disabled={agentState !== 'idle'}
-                      title="Put back every file this turn changed, as one step"
-                      style={styles.revertBtn}
-                    >
-                      <Icon name="undo" size={12} color="var(--studio-error)" />
-                      Revert this turn
-                    </button>
-                  ) : (
-                    <span style={styles.revertDone}>
-                      {revertNotice?.id === msg.transactionId ? revertNotice.text : 'This turn is no longer in the history.'}
-                    </span>
-                  )}
-                  {revertNotice?.id === msg.transactionId && history.some((e) => e.transactionId === msg.transactionId) && (
-                    <span role="alert" style={styles.revertDone}>{revertNotice.text}</span>
-                  )}
-                </div>
-              )}
+              {msg.role === 'assistant' && msg.transactionId && (() => {
+                const turn = turnRevertState(msg, journal, (path) => files.get(path)?.content);
+                const notice = revertNotice?.id === msg.transactionId ? revertNotice.text : null;
+                return (
+                  <div style={styles.revertRow}>
+                    {turn?.kind === 'available' ? (
+                      <button
+                        onClick={() => revertTurn(msg)}
+                        disabled={agentState !== 'idle'}
+                        title="Put back every file this turn changed, as one step"
+                        style={styles.revertBtn}
+                      >
+                        <Icon name="undo" size={12} color="var(--studio-error)" />
+                        Revert this turn
+                      </button>
+                    ) : (
+                      !notice && (
+                        <span style={styles.revertDone}>
+                          {turn?.kind === 'unavailable' ? turn.reason : 'This turn is undone.'}
+                        </span>
+                      )
+                    )}
+                    {notice && <span role="alert" style={styles.revertDone}>{notice}</span>}
+                  </div>
+                );
+              })()}
               {msg.tokens && (
                 <span style={styles.tokenCount}>
                   {msg.tokens.input + msg.tokens.output} tokens

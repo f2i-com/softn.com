@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import type { ChatMessage } from '../../types/studio';
@@ -12,6 +12,8 @@ import {
   interruptionReason,
   isRunLive,
   revertAgentRun,
+  runRevertState,
+  stepUndoState,
   stopAgentRun,
   undoAgentStep,
   wasInterrupted,
@@ -78,8 +80,17 @@ function StepRow({ entry, run, message, busy }: { entry: Extract<RunEntry, { kin
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const label = TOOL_LABEL[entry.name] ?? { done: entry.name, doing: entry.name, icon: 'terminal' as IconName };
-  const history = useVFSStore((s) => s.history);
-  const canUndo = Boolean(entry.transactionId && !entry.undone && !busy && history.some((e) => e.transactionId === entry.transactionId));
+  // Undo works from the journal saved with the project, so it is offered after a reload too;
+  // a step already undone another way (Ctrl+Z, the History panel) shows as undone, derived from the files.
+  const journal = useVFSStore((s) => s.journal);
+  const files = useVFSStore((s) => s.files);
+  const undo = useMemo(
+    () => stepUndoState(entry, journal, (path) => files.get(path)?.content),
+    [entry, journal, files],
+  );
+  const unavailable = !run.reverted && undo?.kind === 'unavailable' ? undo.reason : null;
+  const undone = undo?.kind === 'undone';
+  const canUndo = Boolean(!run.reverted && !busy && undo?.kind === 'available');
   const hasDetail = Boolean(entry.diff?.length || entry.check || entry.result);
   // A row waiting on the person is not the machine running: no mint spinner.
   const waiting = entry.status === 'running' && run.status === 'waiting' && run.question?.callId === entry.id;
@@ -109,7 +120,12 @@ function StepRow({ entry, run, message, busy }: { entry: Extract<RunEntry, { kin
           )}
           {entry.check && <span className={`st-run-badge${checkFailed ? ' is-error' : ''}`}>{entry.check.ok ? 'passed' : `${entry.check.errors.length} error${entry.check.errors.length === 1 ? '' : 's'}`}</span>}
           {entry.status === 'error' && !entry.check && <span className="st-run-badge is-error">failed</span>}
-          {entry.undone && <span className="st-run-badge">undone</span>}
+          {undone && <span className="st-run-badge">undone</span>}
+          {unavailable && (
+            <span className="st-run-badge is-muted" title={unavailable}>
+              no undo<span className="st-visually-hidden">: {unavailable}</span>
+            </span>
+          )}
           {hasDetail && <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} className="st-run-chevron" />}
         </button>
         {canUndo && (
@@ -252,7 +268,8 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
   const run = message.run!;
   const agentState = useAIStore((s) => s.agentState);
   const currentStep = useAIStore((s) => s.currentStep);
-  const history = useVFSStore((s) => s.history);
+  const journal = useVFSStore((s) => s.journal);
+  const files = useVFSStore((s) => s.files);
   const [notice, setNotice] = useState<string | null>(null);
   const live = isRunLive(run.id);
   // A run saved mid-way by an earlier session cannot be driven from here.
@@ -262,7 +279,8 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
   const running = status === 'running';
   const busy = agentState === 'building';
   const canContinue = ((live && (status === 'stopped' || status === 'failed' || status === 'paused')) || interrupted) && !busy;
-  const revertable = !run.reverted && run.transactions.some((t) => history.some((e) => e.transactionId === t));
+  const revertState = useMemo(() => runRevertState(run, journal, (path) => files.get(path)?.content), [run, journal, files]);
+  const revertable = revertState.available;
   const plan = run.plan;
   const done = plan.filter((p) => p.status === 'done').length;
   const reason = interrupted ? `${interruptionReason(run)} Continue starts a new run from its request, its plan and the files as they are now.` : run.reason;
@@ -337,6 +355,7 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
       )}
       {reason && status !== 'running' && status !== 'finished' && <p className={`st-run-reason${status === 'failed' ? ' is-error' : ''}`}>{reason}</p>}
       {notice && <p className="st-run-notice" role="alert">{notice}</p>}
+      {revertState.reason && !running && <p className="st-run-reason">{revertState.reason}</p>}
 
       {(running || canContinue || revertable) && (
         <div className="st-run-actions">

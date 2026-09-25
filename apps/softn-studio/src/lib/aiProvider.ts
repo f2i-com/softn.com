@@ -30,8 +30,14 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
  * max_tokens. It is also what the budget check reserves before sending: a
  * reply cannot be longer than this, so a request the remaining budget
  * cannot cover at this size is refused before it costs anything.
+ *
+ * A reasoning model spends output tokens thinking before it answers, from
+ * the same allowance: a real run's reply was cut at 16,384 after about 12k
+ * of reasoning. Hence 32k, settable in Settings → Agent runs.
  */
-export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
+export const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
+/** The default before it was raised; a saved setting still at it is read as the new default (projectSession.ts). */
+export const PREVIOUS_DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**
  * How a reply ended. `complete` is the only status whose file blocks may be

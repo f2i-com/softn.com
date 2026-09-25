@@ -54,6 +54,18 @@ describe('editing AI limits', () => {
     expect(loadGlobalSettings()?.providers[0].apiKey).toBe('test-only');
   });
 
+  it('sets Max output tokens under Agent runs, and says reasoning models spend it thinking', () => {
+    const input = container.querySelector<HTMLInputElement>('#studio-max-output-tokens')!;
+    const section = input.closest('section')!;
+    expect(section.getAttribute('aria-labelledby')).toBe('studio-agent-heading');
+    expect(section.querySelector('h3')?.textContent).toBe('Agent runs');
+    const row = input.closest('.st-limit-row')!;
+    expect(row.textContent).toMatch(/Reasoning models spend output tokens thinking/);
+    expect(row.textContent).toContain('256–128,000');
+    expect(input.min).toBe('256');
+    expect(input.max).toBe('128000');
+  });
+
   it('restores an empty field on blur and cancels an edit with Escape', () => {
     const input = container.querySelector<HTMLInputElement>('#studio-token-budget')!;
     act(() => input.focus());

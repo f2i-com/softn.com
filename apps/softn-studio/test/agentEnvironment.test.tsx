@@ -54,6 +54,22 @@ describe('check_app', () => {
     expect(report.warnings.join('\n')).toMatch(/ui\/main\.ui line 7: <Input :value=\{…\}> is one-way/);
   }, 20_000);
 
+  it('reports a parse error in an imported page against that page and its own line, not the composed main page', async () => {
+    // From a real run: home.ui's `new Date()` was reported as "ui/main.ui ... line 17", a line of
+    // the composed source in neither file, and the model spent a step editing the wrong file.
+    const files = vfs({
+      'manifest.json': JSON.stringify({ name: 'Habits', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui', 'ui/pages/home.ui'], logic: ['logic/main.logic'] } }),
+      'logic/main.logic': 'let count = 0',
+      'ui/main.ui': '<import HomePage from="./pages/home.ui" />\n\n<logic src="../logic/main.logic" />\n\n<App>\n  <Heading level={1}>Habits</Heading>\n  <HomePage />\n</App>',
+      'ui/pages/home.ui': '<Stack>\n  <Heading level={2}>Today</Heading>\n  <Text>{new Date().getDay()}</Text>\n</Stack>',
+    });
+    const report = await browserEnvironment.checkApp(files, { blueprint: null });
+    expect(report.ok).toBe(false);
+    const parse = report.errors.filter((e) => /Parse error/.test(e));
+    expect(parse.length).toBeGreaterThan(0);
+    expect(parse.every((e) => e.startsWith('ui/pages/home.ui: Parse error at line 3:'))).toBe(true);
+  }, 20_000);
+
   it('reports a logic error thrown while the app loads', async () => {
     const report = await browserEnvironment.checkApp(app(APP.ui, 'let count = 0\nfunction _init() {\n  count = missing.value\n}\nfunction add() {}'), { blueprint: null });
     expect(report.ok).toBe(false);
@@ -99,6 +115,28 @@ describe('run_app_function', () => {
     expect(result.text).toContain('add() returned 1');
     expect(result.text).toContain('tasks: 0 → 1 items; added {"title":"Milk"}');
     expect(result.text).toContain('draft: "Milk" → ""');
+  }, 20_000);
+
+  it('takes a state assignment written as a call to "set", and says how to set state when a setup call is not a function', async () => {
+    // From a real run: the model wrote the assignment as { name: "set", ... } three times, was told
+    // only that set is not a function, and the run stopped on the repeated failure.
+    const logic = 'let tasks = []\nlet draft = ""\nfunction add() {\n  tasks = tasks.concat([{ title: draft }])\n  draft = ""\n  return tasks.length\n}';
+    const files = vfs({ 'manifest.json': APP.manifest, 'ui/main.ui': '<logic src="../logic/main.logic" />\n<App><Text>{tasks.length}</Text></App>', 'logic/main.logic': logic });
+    const shapes = [{ name: 'set', args: ['draft', 'Milk'] }, { name: 'set', args: [{ draft: 'Milk' }] }, { name: 'set', state: 'draft', value: 'Milk' }, { set: { draft: 'Milk' } }];
+    for (const setup of shapes) {
+      const result = await browserEnvironment.runFunction(files, { name: 'add', setup_calls: [setup] });
+      expect(result.ok, JSON.stringify(setup)).toBe(true);
+      expect(result.text).toContain('set draft = "Milk"');
+      expect(result.text).toContain('tasks: 0 → 1 items; added {"title":"Milk"}');
+    }
+    const wrong = await browserEnvironment.runFunction(files, { name: 'add', setup_calls: [{ name: 'prepare' }] });
+    expect(wrong.ok).toBe(false);
+    expect(wrong.text).toContain('Setup call prepare is not a function of the app. Functions: add. To set a state variable first, pass { "set": "stateName", "value": ... }');
+    // An app with its own function called set keeps it.
+    const own = vfs({ 'manifest.json': APP.manifest, 'ui/main.ui': '<logic src="../logic/main.logic" />\n<App><Text>{n}</Text></App>', 'logic/main.logic': 'let n = 0\nfunction set(v) {\n  n = v\n}\nfunction twice() {\n  n = n * 2\n}' });
+    const kept = await browserEnvironment.runFunction(own, { name: 'twice', setup_calls: [{ name: 'set', args: [4] }] });
+    expect(kept.text).toContain('set(4)');
+    expect(kept.text).toContain('n: 4 → 8');
   }, 20_000);
 
   it('names the functions there are when asked for one that is not', async () => {

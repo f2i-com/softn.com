@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { classifyAsset } from '@softn/core';
 import type { VFSFile, VFSEvent } from '../types/studio';
 import { findAlias, resolveProjectPath } from '../lib/paths';
+import { beforeImage, boundJournal, fingerprint, planRevert, type UndoEntry } from '../lib/undoJournal';
 
 /**
  * A record in a transaction: one file, one operation. A create must not
@@ -32,6 +33,12 @@ interface VFSState {
    * and neither undo nor redo lowers it.
    */
   versionFloor: Map<string, number>;
+  /**
+   * What each AI transaction needs to be put back, saved with the project
+   * (see lib/undoJournal.ts). The history above is not saved; this is, so a
+   * run's steps can still be undone after the page reloads.
+   */
+  journal: UndoEntry[];
 
   /** Create a file. Throws if the path exists: an overwrite is an update, and is recorded as one. */
   createFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
@@ -53,6 +60,15 @@ interface VFSState {
    * provided nothing later touched the same files. Not redoable.
    */
   revertTransaction(transactionId: string): RevertResult;
+  /**
+   * Put back AI transactions (newest first) from the journal, as one new
+   * unit: works whether or not they are still in the history, and refuses —
+   * changing nothing — when a file was edited after them. Their journal
+   * entries are used up.
+   */
+  revertJournaled(transactionIds: string[], what?: string): RevertResult;
+  /** Restore a saved journal with a saved project. */
+  hydrateJournal(entries: UndoEntry[]): void;
   readFile(path: string): string | Uint8Array | null;
   listFiles(prefix?: string): string[];
   getSnapshot(): Map<string, VFSFile>;
@@ -204,6 +220,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
   history: [],
   undoStack: [],
   versionFloor: new Map(),
+  journal: [],
 
   createFile(path, content, source = 'user') {
     get().applyTransaction([{ op: 'create', path, content }], source);
@@ -270,8 +287,14 @@ export const useVFSStore = create<VFSState>((set, get) => ({
       const versionFloor = new Map(s.versionFloor);
       const now = Date.now();
       const events: VFSEvent[] = [];
+      const undo: UndoEntry | null = source === 'ai' ? { id, at: now, changes: [] } : null;
       for (const record of records) {
         const existing = files.get(record.path);
+        undo?.changes.push({
+          path: record.path,
+          before: beforeImage(existing?.content, record.op === 'delete' ? undefined : record.content),
+          after: record.op === 'delete' ? null : fingerprint(record.content!),
+        });
         if (record.op === 'delete') {
           files.delete(record.path);
           events.push({
@@ -310,9 +333,27 @@ export const useVFSStore = create<VFSState>((set, get) => ({
       }
       // A new edit after an undo makes the undone future unreachable: the
       // files it would restore are not the files that are there now.
-      return { files, history: pruneHistory([...s.history, ...events]), undoStack: [], versionFloor };
+      const journal = undo ? boundJournal([...s.journal.filter((e) => e.id !== id), undo]) : s.journal;
+      return { files, history: pruneHistory([...s.history, ...events]), undoStack: [], versionFloor, journal };
     });
     return id;
+  },
+
+  revertJournaled(transactionIds, what) {
+    const s = get();
+    const plan = planRevert(s.journal, transactionIds, (path) => s.files.get(path)?.content, what);
+    if (!plan.ok) return { ok: false, reason: plan.reason };
+    const records: VFSChangeRecord[] = plan.files.map(({ path, content }) =>
+      content === undefined ? { op: 'delete', path } : s.files.has(path) ? { op: 'update', path, content } : { op: 'create', path, content },
+    );
+    if (records.length > 0) get().applyTransaction(records, 'user');
+    const used = new Set(transactionIds);
+    set((state) => ({ journal: state.journal.filter((e) => !used.has(e.id)) }));
+    return { ok: true, paths: plan.paths };
+  },
+
+  hydrateJournal(entries) {
+    set({ journal: boundJournal(entries) });
   },
 
   revertTransaction(transactionId) {
@@ -404,6 +445,6 @@ export const useVFSStore = create<VFSState>((set, get) => ({
   reset() {
     // A reset is a project going away, and with it every version its files
     // had; the floor starts again for whatever is placed next.
-    set({ files: new Map(), history: [], undoStack: [], versionFloor: new Map() });
+    set({ files: new Map(), history: [], undoStack: [], versionFloor: new Map(), journal: [] });
   },
 }));
