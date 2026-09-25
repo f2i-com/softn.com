@@ -419,3 +419,198 @@ async fn an_ipv6_host_binds() {
         Err(e) => assert!(e.contains("::1"), "{e}"),
     }
 }
+
+// ── Slow bodies, refused requests and one visitor's sockets ──
+
+/// Headers for a POST whose body is `length` bytes, none of which are sent.
+fn post_head(host: &str, path: &str, origin: Option<&str>, length: usize) -> String {
+    let origin = origin.map(|o| format!("Origin: {o}\r\n")).unwrap_or_default();
+    format!("POST {path} HTTP/1.1\r\nHost: {host}\r\n{origin}Content-Type: application/json\r\nContent-Length: {length}\r\n\r\n")
+}
+
+/// Send `head`, then its body a byte every 100 ms, and read until the host
+/// closes the connection or `wait` passes. The status and body of what came
+/// back, and whether the connection was closed within `wait`.
+async fn trickle(addr: SocketAddr, head: String, wait: std::time::Duration) -> (u16, String, bool) {
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (mut reader, mut writer) = stream.into_split();
+    writer.write_all(head.as_bytes()).await.unwrap();
+    let dribble = tokio::spawn(async move {
+        for _ in 0..600 {
+            if writer.write_all(b" ").await.is_err() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let closed = tokio::time::timeout(wait, async {
+        loop {
+            match reader.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+    })
+    .await
+    .is_ok();
+    dribble.abort();
+    let text = String::from_utf8_lossy(&buf).to_string();
+    let status = text.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    (status, body, closed)
+}
+
+/// A client that keeps a body coming, a byte at a time and never 60 seconds
+/// apart, used to hold the connection and its task for as long as it liked:
+/// only the gap between pieces had a limit. The body as a whole now has one.
+#[tokio::test]
+async fn a_body_that_trickles_past_its_deadline_is_answered_408_and_closed() {
+    let addr = serve(legacy_app(serde_json::json!({"bodyTimeoutSeconds": 1}))).await;
+    let host = addr.to_string();
+    let started = std::time::Instant::now();
+    let (status, body, closed) = trickle(addr, post_head(&host, "/api/echo", None, 1000), std::time::Duration::from_secs(8)).await;
+    assert_eq!(status, 408, "{body}");
+    assert!(body.contains("request_timeout"), "{body}");
+    assert!(closed, "the connection was still open eight seconds later");
+    assert!(started.elapsed() >= std::time::Duration::from_millis(900), "answered before the deadline");
+}
+
+/// The status `head` (whose body is never sent) is answered with within five
+/// seconds, or `None`.
+async fn answer_without_body(addr: SocketAddr, head: String) -> Option<u16> {
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !String::from_utf8_lossy(&buf).contains("\r\n\r\n") {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+    })
+    .await;
+    read.ok()?;
+    String::from_utf8_lossy(&buf).get(9..12).and_then(|s| s.parse().ok())
+}
+
+/// A page on another site, a name this host does not answer to, or a client
+/// over its rate is refused on its headers: the host does not first read a
+/// body of up to the route's limit, nor wait for one that never comes.
+#[tokio::test]
+async fn a_refused_request_is_answered_before_its_body_is_read() {
+    let addr = serve(legacy_app(serde_json::json!({"allowedOrigins":["https://app.example"], "requestsPerMinute": 1}))).await;
+    let host = addr.to_string();
+    let big = 1_000_000;
+    assert_eq!(answer_without_body(addr, post_head(&host, "/api/echo", Some("https://evil.example"), big)).await, Some(403));
+    assert_eq!(answer_without_body(addr, post_head(&host, "/sync/ticket", Some("https://evil.example"), big)).await, Some(403));
+    assert_eq!(answer_without_body(addr, post_head("evil.example", "/api/echo", None, big)).await, Some(403));
+    // Spend the one request a minute; the next is refused unread.
+    assert_eq!(send(addr, post(&host, "/api/echo", None, "{}", "application/json")).await.0, 200);
+    assert_eq!(answer_without_body(addr, post_head(&host, "/api/echo", None, big)).await, Some(429));
+}
+
+/// Open a sync socket and keep it; the handshake's status.
+async fn hold_socket(addr: SocketAddr, request: String) -> (u16, tokio::net::TcpStream) {
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = [0u8; 12];
+    stream.read_exact(&mut buf).await.unwrap();
+    (String::from_utf8_lossy(&buf[9..12]).parse().unwrap(), stream)
+}
+
+/// Retry `request` until it upgrades (the slot is returned when a socket's
+/// task notices the close), for up to five seconds.
+async fn upgrades_again(addr: SocketAddr, request: String) -> bool {
+    for _ in 0..100 {
+        if send(addr, request.clone()).await.0 == 101 {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// `maxSyncConnections` is the app's; one visitor may hold no more than
+/// `maxSyncConnectionsPerVisitor` of it, and gets its places back on close.
+#[tokio::test]
+async fn one_visitor_cannot_hold_every_sync_socket() {
+    let addr = serve(legacy_app(serde_json::json!({"maxSyncConnectionsPerVisitor": 1}))).await;
+    let host = addr.to_string();
+    let origin = format!("http://{host}");
+    let (status, first) = hold_socket(addr, upgrade(&host, "", &origin)).await;
+    assert_eq!(status, 101);
+    let (status, _, body) = send(addr, upgrade(&host, "", &origin)).await;
+    assert_eq!(status, 429);
+    assert!(body.contains("too_many_connections"), "{body}");
+    drop(first);
+    assert!(upgrades_again(addr, upgrade(&host, "", &origin)).await, "the visitor's place came back");
+}
+
+/// Behind a trusted proxy the visitor is the forwarded client, as for the
+/// rate limits: two clients of one proxy are two visitors.
+#[tokio::test]
+async fn behind_a_trusted_proxy_each_forwarded_client_is_a_visitor() {
+    let ctx = legacy_app(serde_json::json!({"maxSyncConnectionsPerVisitor": 1}));
+    let (conn_tx, conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+    std::mem::forget(conn_rx);
+    let options = ServeOptions { trusted_proxy: TrustedProxy::parse(Some("127.0.0.1")).unwrap(), ..test_options(false) };
+    let router = build_single_tenant_router(ctx, &options, conn_tx);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve_router(listener, router, HEADER_READ_TIMEOUT, std::future::pending()));
+    let host = addr.to_string();
+    let forwarded = |client: &str| {
+        upgrade(&host, "", &format!("http://{host}")).replace("\r\n\r\n", &format!("\r\nX-Forwarded-For: {client}\r\n\r\n"))
+    };
+    let (status, _a) = hold_socket(addr, forwarded("198.51.100.1")).await;
+    assert_eq!(status, 101);
+    let (status, _b) = hold_socket(addr, forwarded("198.51.100.2")).await;
+    assert_eq!(status, 101, "another client of the same proxy is another visitor");
+    assert_eq!(send(addr, forwarded("198.51.100.1")).await.0, 429);
+    // One IPv6 /64 is one visitor.
+    let (status, _c) = hold_socket(addr, forwarded("2001:db8:0:1::1")).await;
+    assert_eq!(status, 101);
+    assert_eq!(send(addr, forwarded("2001:db8:0:1::2")).await.0, 429);
+}
+
+/// A multi-tenant host holds each tenant to the same three rules.
+#[tokio::test]
+async fn a_tenant_gets_the_body_deadline_the_early_refusal_and_the_visitor_cap() {
+    let root = std::env::temp_dir().join(format!("softn-tenant-limits-{}", uuid::Uuid::new_v4()));
+    let bundle = root.join("bundles").join("limits");
+    std::fs::create_dir_all(bundle.join("server")).unwrap();
+    let manifest = serde_json::json!({"id":"limits","name":"Limits","version":"1",
+        "config":{"server":{"allowedOrigins":["https://tenant.example"], "bodyTimeoutSeconds": 1, "maxSyncConnectionsPerVisitor": 1}},
+        "server":{"routes":[{"method":"POST","path":"/api/echo","handler":"echo","public":true}]}});
+    std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(bundle.join("server/main.logic"), "function echo(req) { return { status: 200, body: { ok: true } }; }").unwrap();
+    let manager = TenantManager::load(&root.join("bundles"), Some(&root.join("data")), Some(1), false).unwrap();
+    let (conn_tx, conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+    std::mem::forget(conn_rx);
+    let router = build_multi_tenant_router(manager, &test_options(false), conn_tx);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve_router(listener, router, HEADER_READ_TIMEOUT, std::future::pending()));
+    let host = addr.to_string();
+
+    assert_eq!(send(addr, post(&host, "/limits/api/echo", None, "{}", "application/json")).await.0, 200);
+    let (status, body, closed) = trickle(addr, post_head(&host, "/limits/api/echo", None, 1000), std::time::Duration::from_secs(8)).await;
+    assert_eq!(status, 408, "{body}");
+    assert!(closed);
+
+    let big = 1_000_000;
+    assert_eq!(answer_without_body(addr, post_head(&host, "/limits/api/echo", Some("https://evil.example"), big)).await, Some(403));
+    assert_eq!(answer_without_body(addr, post_head(&host, "/limits/sync/ticket", Some("https://evil.example"), big)).await, Some(403));
+    assert_eq!(answer_without_body(addr, post_head("evil.example", "/limits/api/echo", None, big)).await, Some(403));
+
+    let socket = |origin: &str| upgrade(&host, "", origin).replacen("GET /sync", "GET /limits/sync", 1);
+    let (status, first) = hold_socket(addr, socket("https://tenant.example")).await;
+    assert_eq!(status, 101);
+    assert_eq!(send(addr, socket("https://tenant.example")).await.0, 429);
+    drop(first);
+    assert!(upgrades_again(addr, socket("https://tenant.example")).await);
+}

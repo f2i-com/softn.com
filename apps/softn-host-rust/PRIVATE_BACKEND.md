@@ -321,15 +321,40 @@ error, not a silent default): `auth_token` or `authToken` (non-empty string;
 the environment wins), `allowedOrigins` (origins such as
 `"https://app.example"`, no wildcard; a literal `"null"` is accepted with a
 warning), `maxBodySize` (1-16777216), `workers`, `readPoolSize`,
-`syncPermits`, `maxStorageMB`, `maxSyncConnections`, `requestsPerMinute`
-(whole numbers) and `forceServerTimestamps` (boolean).
+`syncPermits`, `maxStorageMB`, `maxSyncConnections`,
+`maxSyncConnectionsPerVisitor`, `requestsPerMinute` (whole numbers),
+`bodyTimeoutSeconds` (1-600) and `forceServerTimestamps` (boolean).
 
-Connections: request headers must arrive within 30 seconds, no more than 60
-seconds may pass between two pieces of a body (there is no deadline on the
-body as a whole), and an idle keep-alive connection is closed after 30 seconds, so a proxy
-that pools upstream connections should idle them out sooner. Unknown paths and
-methods answer JSON 404/405, and a body over the limit JSON 413. A handler's
-status must be 200-599 (anything else is a 500), as on the PHP host.
+Connections: request headers must arrive within 30 seconds, and a request's
+whole body within `bodyTimeoutSeconds` of them (60 by default, which is about
+280 KB/s for the largest 16 MiB body and 95 KB/s for a photo upload; raise it
+for slow clients sending large bodies). A body past its deadline is answered
+JSON 408 `request_timeout` and the connection closed, however steadily it was
+arriving; no more than 60 seconds may pass between two pieces of it either.
+The PHP host leaves body reading to its web server (Apache's `mod_reqtimeout`,
+nginx's `client_body_timeout`), so set a comparable limit there. An idle
+keep-alive connection is closed after 30 seconds, so a proxy that pools
+upstream connections should idle them out sooner. Unknown paths and methods
+answer JSON 404/405, and a body over the limit JSON 413. A handler's status
+must be 200-599 (anything else is a 500), as on the PHP host.
+
+A request is judged on its headers before its body is read: a name the host
+does not answer to (403 `host_not_allowed`), a foreign `Origin` (403
+`origin_not_allowed`) and a client over `requestsPerMinute` (429) are refused
+without the host reading, or waiting for, a byte of the body. `/sync/ticket`
+never reads one.
+
+Sync sockets: at most `maxSyncConnections` per app (1024 by default; 503
+`server_busy` past it), and at most `maxSyncConnectionsPerVisitor` of those
+from one visitor (16 by default, never more than `maxSyncConnections`; 429
+`too_many_connections` past it). A visitor is what the rate limits count: the
+socket's peer, or the client a `--trusted-proxy` forwards for, with an IPv6
+/64 counting as one. The client opens one socket per app per browser tab, so
+16 is sixteen tabs from one address; raise it for an office or school behind
+one NAT, and set `--trusted-proxy` behind a reverse proxy, or every visitor
+shares the proxy's address and its 16 sockets. A place is returned when its
+socket closes. (The PHP host's live-updates bridge, a different workload,
+holds a visitor to 2 of its 8 connections.)
 
 Stopping: Ctrl+C or SIGTERM (what systemd, Docker and Kubernetes send) stop
 accepting, let requests in flight finish, and close sync sockets with 1001

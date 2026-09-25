@@ -6,7 +6,7 @@ use crate::util;
 use crate::ws;
 use axum::extract::rejection::BytesRejection;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequest, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
@@ -22,9 +22,68 @@ use tower_http::trace::TraceLayer;
 /// How long a client may take to send a request's headers, and how long an
 /// idle keep-alive connection is kept.
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a client may take to send a request's body. The largest a route
-/// may accept is 16 MiB, which is under 300 KB/s over this.
+/// The longest a request body may go without a byte arriving (a gap limit,
+/// reset by every piece of the body). The body as a whole is held to the
+/// app's `bodyTimeoutSeconds` ([`limit_body_time`]); this one frees a stalled
+/// client sooner when that is raised.
 const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A request body held to a deadline for the whole of it, set when the
+/// request's headers were read. `tower_http`'s body timeout starts again with
+/// every piece, so a client sending a byte every 59 seconds used to hold a
+/// connection, and a task, for as long as it liked.
+struct DeadlineBody {
+    inner: axum::body::Body,
+    deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
+    limit: Duration,
+}
+
+/// The error a body past its deadline ends with. `body_rejection` answers it
+/// 408 `request_timeout`, as it does the gap limit's.
+#[derive(Debug)]
+struct BodyDeadlineElapsed(Duration);
+
+impl std::fmt::Display for BodyDeadlineElapsed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the request body timed out: it took longer than {} s to arrive", self.0.as_secs())
+    }
+}
+
+impl std::error::Error for BodyDeadlineElapsed {}
+
+impl hyper::body::Body for DeadlineBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::BoxError;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if std::future::Future::poll(this.deadline.as_mut(), cx).is_ready() {
+            return std::task::Poll::Ready(Some(Err(Box::new(BodyDeadlineElapsed(this.limit)))));
+        }
+        std::pin::Pin::new(&mut this.inner).poll_frame(cx).map_err(Into::into)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// Hold every request's body to `limit` from now (see [`DeadlineBody`]).
+async fn limit_body_time(
+    State(limit): State<Duration>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let deadline = Box::pin(tokio::time::sleep(limit));
+    next.run(request.map(|inner| axum::body::Body::new(DeadlineBody { inner, deadline, limit }))).await
+}
 
 /// How the process was asked to serve, from the command line.
 #[derive(Clone, Debug)]
@@ -91,7 +150,7 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, options: ServeOp
     let policy = RequestPolicy::from_manifest(&ctx.manifest, &options);
     policy.announce_hosts(None, &options.trusted_proxy);
     if crate::private_backend::sync_enabled(&ctx.manifest) {
-        policy.announce_sync(None, ctx.sync_manager.has_auth());
+        policy.announce_sync(None, &ctx.sync_manager);
     }
     let shutdown_tx = ctx.shutdown.clone();
     // Start background ticket cleanup so expired tickets are pruned even when
@@ -127,7 +186,7 @@ pub async fn serve_multi(manager: Arc<TenantManager>, host: &str, port: u16, opt
         let policy = RequestPolicy::from_manifest(&tenant.manifest, &options);
         policy.announce_hosts(Some(&tenant.tenant_id), &options.trusted_proxy);
         if crate::private_backend::sync_enabled(&tenant.manifest) {
-            policy.announce_sync(Some(&tenant.tenant_id), tenant.sync_manager.has_auth());
+            policy.announce_sync(Some(&tenant.tenant_id), &tenant.sync_manager);
         }
     }
 
@@ -250,11 +309,13 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, options: &ServeOptions, conn
     }
 
     let guard = HostGuard { policy: policy.clone(), proxy: options.trusted_proxy.clone(), exempt_health: true };
+    let body_time = bundle::body_timeout(&ctx.manifest);
     router
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(max_body))
         .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(REQUEST_BODY_TIMEOUT))
+        .layer(axum::middleware::from_fn_with_state(body_time, limit_body_time))
         .layer(cors)
         .layer(axum::Extension(policy))
         .layer(axum::middleware::from_fn_with_state(guard, guard_host))
@@ -349,11 +410,13 @@ fn build_multi_tenant_router(
         // host guard is the tenant's: another tenant's allowedOrigins must
         // not make a name acceptable here.
         let guard = HostGuard { policy: policy.clone(), proxy: options.trusted_proxy.clone(), exempt_health: false };
+        let body_time = bundle::body_timeout(&tenant.manifest);
         let tenant_router: Router<()> = tenant_router
             .fallback(not_found)
             .method_not_allowed_fallback(method_not_allowed)
             .layer(DefaultBodyLimit::max(max_body))
             .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(REQUEST_BODY_TIMEOUT))
+            .layer(axum::middleware::from_fn_with_state(body_time, limit_body_time))
             .layer(cors)
             .layer(axum::Extension(policy))
             .layer(axum::middleware::from_fn_with_state(guard, guard_host))
@@ -424,8 +487,11 @@ fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bun
                 uri: axum::http::Uri,
                 headers: axum::http::HeaderMap,
                 query: axum::extract::Query<HashMap<String, String>>,
-                body: Result<axum::body::Bytes, BytesRejection>,
+                request: axum::extract::Request,
             | async move {
+                // Who may ask comes before what they sent: the Host was held
+                // to the allowlist by `guard_host`, and Origin and the rate
+                // are checked here, all before the body is read.
                 let peer_is_proxy = proxy.is_proxy(info.0.ip());
                 if let Some(rejection) = check_origin(&policy, &headers, peer_is_proxy) {
                     return rejection;
@@ -434,7 +500,9 @@ fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bun
                 if let Some(rejection) = check_rate(ctx.api_limiter.as_deref(), client_ip) {
                     return rejection;
                 }
-                let body = match body {
+                // The body is read only now: a request the checks above
+                // refuse is answered without the host reading a byte of it.
+                let body = match axum::body::Bytes::from_request(request, &()).await {
                     Ok(body) => body,
                     Err(rejection) => return body_rejection(rejection),
                 };
@@ -501,8 +569,11 @@ fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[
                 uri: axum::http::Uri,
                 headers: axum::http::HeaderMap,
                 query: axum::extract::Query<HashMap<String, String>>,
-                body: Result<axum::body::Bytes, BytesRejection>,
+                request: axum::extract::Request,
             | async move {
+                // Who may ask comes before what they sent: the Host was held
+                // to the allowlist by `guard_host`, and Origin and the rate
+                // are checked here, all before the body is read.
                 let peer_is_proxy = proxy.is_proxy(info.0.ip());
                 if let Some(rejection) = check_origin(&policy, &headers, peer_is_proxy) {
                     return rejection;
@@ -511,7 +582,9 @@ fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[
                 if let Some(rejection) = check_rate(tenant.api_limiter.as_deref(), client_ip) {
                     return rejection;
                 }
-                let body = match body {
+                // The body is read only now: a request the checks above
+                // refuse is answered without the host reading a byte of it.
+                let body = match axum::body::Bytes::from_request(request, &()).await {
                     Ok(body) => body,
                     Err(rejection) => return body_rejection(rejection),
                 };
@@ -823,14 +896,18 @@ impl RequestPolicy {
 
     /// The startup line: who may connect, and the warning when nothing but
     /// the Origin check stands between a client and the database.
-    fn announce_sync(&self, tenant: Option<&str>, has_token: bool) {
+    fn announce_sync(&self, tenant: Option<&str>, sync: &crate::sync::SyncManager) {
         let label = tenant.map(|t| format!(" for tenant '{}'", t)).unwrap_or_default();
         if self.any_origin {
             tracing::warn!("Sync{}: --dev with no allowedOrigins — any web page may open /sync", label);
         } else {
             tracing::info!("Sync{}: /sync accepts its own origin and {} listed origin(s)", label, self.allowed_origins.len());
         }
-        if !has_token {
+        tracing::info!(
+            "Sync{}: at most {} socket(s) per visitor (an address, or an IPv6 /64; config.server.maxSyncConnectionsPerVisitor)",
+            label, sync.max_connections_per_visitor()
+        );
+        if !sync.has_auth() {
             tracing::warn!(
                 "Sync{} is enabled with no auth token: any page that passes the Origin check, and any non-browser client with a ticket from /sync/ticket, can read and write this app's database. Set SOFTN_AUTH_TOKEN, or turn sync off with server.sync.enabled: false in the manifest.",
                 label
@@ -1021,11 +1098,27 @@ fn upgrade_response(
         Ok(cid) => cid,
         Err((status, message)) => return json_error(status, message, if status == StatusCode::FORBIDDEN { "origin_not_allowed" } else { "unauthorized" }),
     };
-    let Some(slot) = sync.try_open_connection() else {
-        tracing::warn!("Sync connection refused: the app is at its maxSyncConnections limit");
-        let mut response = json_error(StatusCode::SERVICE_UNAVAILABLE, "Too many sync connections; retry shortly.", "server_busy");
-        response.headers_mut().insert(axum::http::header::RETRY_AFTER, 5u64.into());
-        return response;
+    // Counted against the visitor the rate limits name: the socket peer, or
+    // the client a trusted proxy forwards for, an IPv6 /64 counting as one.
+    let client_ip = extract_client_ip(headers, peer.ip(), proxy);
+    let slot = match sync.try_open_connection(client_ip) {
+        Ok(slot) => slot,
+        Err(crate::sync::ConnectionRefused::Full) => {
+            tracing::warn!("Sync connection refused: the app is at its maxSyncConnections limit");
+            let mut response = json_error(StatusCode::SERVICE_UNAVAILABLE, "Too many sync connections; retry shortly.", "server_busy");
+            response.headers_mut().insert(axum::http::header::RETRY_AFTER, 5u64.into());
+            return response;
+        }
+        Err(crate::sync::ConnectionRefused::VisitorFull) => {
+            tracing::debug!("Sync connection refused: the visitor is at its maxSyncConnectionsPerVisitor limit");
+            let mut response = json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many sync connections from this address; close one and retry.",
+                "too_many_connections",
+            );
+            response.headers_mut().insert(axum::http::header::RETRY_AFTER, 5u64.into());
+            return response;
+        }
     };
     // The frame limit matters as much as the message limit: tungstenite's
     // default frame limit is 16 MiB, buffered before the message check runs.

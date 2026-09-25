@@ -119,6 +119,27 @@ pub const PHOTO_UPLOAD_BODY_LIMIT: usize = 5_600_100;
 /// The most any route may accept.
 pub const MAX_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
+/// How long a request's whole body may take to arrive, by default. The
+/// largest body a route may accept (16 MiB) needs about 280 KB/s over this; a
+/// photo upload (5.6 MB) about 95 KB/s.
+pub const DEFAULT_BODY_TIMEOUT_SECS: u64 = 60;
+/// The longest `config.server.bodyTimeoutSeconds` may set.
+pub const MAX_BODY_TIMEOUT_SECS: u64 = 600;
+
+/// How long a request's whole body may take to arrive, from when its headers
+/// were read: `config.server.bodyTimeoutSeconds`, else 60 seconds. Past it the
+/// request is answered 408 and the connection closed, however steadily the
+/// bytes were coming.
+pub fn body_timeout(manifest: &ServerManifest) -> std::time::Duration {
+    let seconds = manifest.config.as_ref()
+        .and_then(|c| c.get("server"))
+        .and_then(|s| s.get("bodyTimeoutSeconds"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_BODY_TIMEOUT_SECS)
+        .clamp(1, MAX_BODY_TIMEOUT_SECS);
+    std::time::Duration::from_secs(seconds)
+}
+
 /// The body `route` accepts: the smaller of its own `maxBodySize` and the
 /// app's `config.server.maxBodySize` when either is declared, else the
 /// default (larger for a photo upload). The PHP host's rule, with this host's
@@ -205,7 +226,12 @@ fn validate_server_config(manifest: &ServerManifest) -> Result<(), String> {
             return Err("config.server.maxBodySize must be a whole number of bytes between 1 and 16777216".into());
         }
     }
-    for key in ["workers", "readPoolSize", "syncPermits", "maxStorageMB", "maxSyncConnections", "requestsPerMinute"] {
+    if let Some(seconds) = server.get("bodyTimeoutSeconds") {
+        if !seconds.as_u64().is_some_and(|n| (1..=MAX_BODY_TIMEOUT_SECS).contains(&n)) {
+            return Err(format!("config.server.bodyTimeoutSeconds must be a whole number of seconds between 1 and {MAX_BODY_TIMEOUT_SECS}"));
+        }
+    }
+    for key in ["workers", "readPoolSize", "syncPermits", "maxStorageMB", "maxSyncConnections", "maxSyncConnectionsPerVisitor", "requestsPerMinute"] {
         if server.get(key).is_some_and(|v| v.as_u64().is_none()) {
             return Err(format!("config.server.{key} must be a non-negative whole number"));
         }
@@ -655,6 +681,8 @@ mod tests {
         assert_eq!(route_body_limit(&route(None), &manifest(serde_json::json!({}))), DEFAULT_BODY_LIMIT);
         assert_eq!(requests_per_minute(&manifest(serde_json::json!({}))), None, "a legacy bundle has no limit unless it sets one");
         assert_eq!(requests_per_minute(&manifest(serde_json::json!({"requestsPerMinute": 30}))), Some(30));
+        assert_eq!(body_timeout(&manifest(serde_json::json!({}))), std::time::Duration::from_secs(DEFAULT_BODY_TIMEOUT_SECS));
+        assert_eq!(body_timeout(&manifest(serde_json::json!({"bodyTimeoutSeconds": 5}))), std::time::Duration::from_secs(5));
     }
 
     #[test]
@@ -677,6 +705,10 @@ mod tests {
             serde_json::json!({"maxBodySize": 16 * 1024 * 1024 + 1}),
             serde_json::json!({"workers": "4"}),
             serde_json::json!({"forceServerTimestamps": "yes"}),
+            serde_json::json!({"bodyTimeoutSeconds": 0}),
+            serde_json::json!({"bodyTimeoutSeconds": 601}),
+            serde_json::json!({"bodyTimeoutSeconds": 1.5}),
+            serde_json::json!({"maxSyncConnectionsPerVisitor": "8"}),
         ] {
             assert!(load(bad.clone()).is_err(), "{bad} was accepted");
         }
