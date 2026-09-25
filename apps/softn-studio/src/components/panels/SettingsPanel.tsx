@@ -199,7 +199,7 @@ export const SettingsPanel: React.FC = () => {
             <section className="st-settings-section" aria-labelledby="studio-agent-heading">
               <h3 id="studio-agent-heading" className="st-settings-heading">Agent runs</h3>
               <p className="st-settings-note">
-                The AI builds by calling tools in a loop — reading, editing, checking — until your request is done. These bound one run.
+                The AI builds by calling tools in a loop — reading, editing, checking — until your request is done. These bound one run and each of its replies.
               </p>
               <div className="st-limits">
                 <div className="st-limit-row">
@@ -231,6 +231,23 @@ export const SettingsPanel: React.FC = () => {
                     step={50000}
                     value={agentSettings.runTokenBudget}
                     onCommit={(runTokenBudget) => updateAgentSettings({ runTokenBudget })}
+                  />
+                </div>
+                <div className="st-limit-row">
+                  <div className="st-limit-text">
+                    <label htmlFor="studio-max-output-tokens" className="st-limit-label">Max output tokens</label>
+                    <span className="st-limit-hint">
+                      The longest one reply may be ({MAX_OUTPUT_TOKENS_BOUNDS.min.toLocaleString()}–{MAX_OUTPUT_TOKENS_BOUNDS.max.toLocaleString()}). Reasoning models spend output tokens thinking before they answer, from this same allowance, so set it well above what a file needs. A reply cut off here is not applied; the step is tried once more, asking for shorter reasoning. Keep it within what the model allows.
+                    </span>
+                  </div>
+                  <IntegerLimitInput
+                    id="studio-max-output-tokens"
+                    className="st-input st-input-mono st-limit-input"
+                    min={MAX_OUTPUT_TOKENS_BOUNDS.min}
+                    max={MAX_OUTPUT_TOKENS_BOUNDS.max}
+                    step={1024}
+                    value={maxOutputTokens}
+                    onCommit={setMaxOutputTokens}
                   />
                 </div>
                 <div className="st-limit-row">
@@ -319,24 +336,9 @@ export const SettingsPanel: React.FC = () => {
                     onCommit={(seconds) => setRequestTimeoutMs(seconds * 1000)}
                   />
                 </div>
-                <div className="st-limit-row">
-                  <div className="st-limit-text">
-                    <label htmlFor="studio-max-output-tokens" className="st-limit-label">Max output tokens</label>
-                    <span className="st-limit-hint">Per reply ({MAX_OUTPUT_TOKENS_BOUNDS.min.toLocaleString()}–{MAX_OUTPUT_TOKENS_BOUNDS.max.toLocaleString()})</span>
-                  </div>
-                  <IntegerLimitInput
-                    id="studio-max-output-tokens"
-                    className="st-input st-input-mono st-limit-input"
-                    min={MAX_OUTPUT_TOKENS_BOUNDS.min}
-                    max={MAX_OUTPUT_TOKENS_BOUNDS.max}
-                    step={1024}
-                    value={maxOutputTokens}
-                    onCommit={setMaxOutputTokens}
-                  />
-                </div>
               </div>
               <p className="st-settings-note">
-                Max output tokens is the provider’s output cap, and it is reserved from the session budget before each request: a request is refused when the remaining budget is below it, and a reply that hits the cap is reported as cut off and not applied. Set it above what a whole file needs, and no higher than the model allows.
+                Max output tokens, under Agent runs, is reserved from the session budget before each request: a request is refused when the remaining budget is below it.
               </p>
             </section>
           </>

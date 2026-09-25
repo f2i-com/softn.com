@@ -1265,6 +1265,12 @@ button.st-status-item[aria-expanded='true'] {
   color: var(--studio-text-muted);
 }
 
+.st-run-badge.is-muted {
+  border-style: dashed;
+  color: var(--studio-text-dim);
+  cursor: help;
+}
+
 .st-run-badge.is-error {
   border-color: transparent;
   background: var(--studio-error-soft);

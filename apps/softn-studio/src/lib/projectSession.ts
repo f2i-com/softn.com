@@ -22,6 +22,8 @@ import {
   type SaveFailureReason,
   type SaveResult,
 } from './persistence';
+import { persistJournal, readPersistedJournal } from './undoJournal';
+import { DEFAULT_MAX_OUTPUT_TOKENS, PREVIOUS_DEFAULT_MAX_OUTPUT_TOKENS } from './aiProvider';
 
 /**
  * The life of a project in this tab: which project the stores hold, whether
@@ -231,6 +233,7 @@ export function collectProjectRecord(rev: number, now = Date.now()): ProjectReco
       tokensUsed: ai.tokensUsed,
       filesChanged: ai.filesChanged,
     },
+    undo: persistJournal(useVFSStore.getState().journal),
   };
 }
 
@@ -277,6 +280,8 @@ export function applyProjectRecord(record: ProjectRecord): void {
     });
     useVFSStore.getState().reset();
     useVFSStore.getState().hydrateFiles(decodeRecordFiles(record));
+    // A project saved before the journal existed has none: its steps' Undo is explained, not offered.
+    useVFSStore.getState().hydrateJournal(readPersistedJournal(record.undo));
   } finally {
     hydrating = false;
   }
@@ -305,7 +310,12 @@ function applyGlobalSettings(): void {
   // is kept as chosen.
   ai.setTokenBudget(settings.agentSettings === undefined ? Math.max(settings.tokenBudget, DEFAULT_TOKEN_BUDGET) : settings.tokenBudget);
   if (settings.requestTimeoutMs !== undefined) ai.setRequestTimeoutMs(settings.requestTimeoutMs);
-  if (settings.maxOutputTokens !== undefined) ai.setMaxOutputTokens(settings.maxOutputTokens);
+  // Every Studio saved the output cap whether or not it was changed, so a
+  // saved 16,384 is almost always the old default, which a reasoning model
+  // can spend thinking. It is read as the current default.
+  if (settings.maxOutputTokens !== undefined) {
+    ai.setMaxOutputTokens(settings.maxOutputTokens === PREVIOUS_DEFAULT_MAX_OUTPUT_TOKENS ? DEFAULT_MAX_OUTPUT_TOKENS : settings.maxOutputTokens);
+  }
   if (settings.agentSettings !== undefined) ai.updateAgentSettings(settings.agentSettings);
   if (settings.toolProtocols !== undefined) useAIStore.setState({ toolProtocols: settings.toolProtocols });
   if (settings.streamModes !== undefined) useAIStore.setState({ streamModes: settings.streamModes });

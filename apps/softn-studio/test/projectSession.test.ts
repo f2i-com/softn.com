@@ -30,6 +30,7 @@ import {
 import { loadActiveProjectId, loadGlobalSettings, loadProjectRecord, loadRecentProjects, saveGlobalSettings, type ProjectRecord, type SaveResult } from '../src/lib/persistence';
 import { buildBundle } from '../src/lib/exportBundle';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../src/stores';
+import { DEFAULT_MAX_OUTPUT_TOKENS } from '../src/lib/aiProvider';
 
 function memoryStorage() {
   const data = new Map<string, string>();
@@ -291,6 +292,17 @@ describe('autosave', () => {
     await restoreSession();
     expect(useAIStore.getState().requestTimeoutMs).toBe(5_000);
     expect(useAIStore.getState().maxOutputTokens).toBe(128_000);
+  });
+
+  it('reads a saved output cap still at the old default of 16,384 as the new default, and keeps any other', async () => {
+    // Every Studio saved the cap whether or not it was changed; 16,384 cut a reasoning model's reply after ~12k of thinking.
+    expect(DEFAULT_MAX_OUTPUT_TOKENS).toBe(32_768);
+    saveGlobalSettings({ providers: [provider], activeProviderId: provider.id, modelProfile: { architect: '', builder: '', repair: '', vision: '' }, maxIterations: 15, tokenBudget: 2_000_000, maxOutputTokens: 16_384 });
+    await restoreSession();
+    expect(useAIStore.getState().maxOutputTokens).toBe(32_768);
+    storage.data.set('softn.studio.settings.v1', JSON.stringify({ ...loadGlobalSettings(), maxOutputTokens: 20_000 }));
+    await restoreSession();
+    expect(useAIStore.getState().maxOutputTokens).toBe(20_000);
   });
 });
 

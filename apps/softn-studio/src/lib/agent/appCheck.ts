@@ -23,7 +23,8 @@ import type { CheckReport } from './types';
 export interface RunFunctionRequest {
   name: string;
   args?: unknown[];
-  setup_calls?: Array<{ name?: string; args?: unknown[]; set?: string; value?: unknown }>;
+  /** Each a call ({ name, args }) or an assignment ({ set, value }); see setupAssignments for the other spellings taken. */
+  setup_calls?: Array<{ name?: string; args?: unknown[]; set?: string | Record<string, unknown>; value?: unknown; [key: string]: unknown }>;
   page?: string;
 }
 
@@ -466,6 +467,38 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
   });
 }
 
+/**
+ * Parse errors in the page and the pages it imports, each against its own
+ * file and lines. The composed page inlines its imports, so an error in an
+ * imported page used to be reported against the main page at a line of the
+ * composed source — a line the model could not find in either file (a real
+ * run spent a step "fixing" the wrong file). Empty when no file fails on its
+ * own, and the composed report is kept.
+ */
+async function ownParseErrors(files: Map<string, VFSFile>, page: string): Promise<string[]> {
+  const core = await import('@softn/core');
+  const errors: string[] = [];
+  const queue = [page];
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const path = queue.shift()!;
+    if (visited.has(path)) continue;
+    visited.add(path);
+    const file = files.get(path);
+    if (!file || typeof file.content !== 'string') continue;
+    for (const match of file.content.matchAll(UI_IMPORT)) {
+      try {
+        queue.push(core.resolveBundlePath(path, match[2]));
+      } catch {
+        // An unsafe path is the composer's to report.
+      }
+    }
+    const own = await parseDiagnostics(blankTemplateComments(file.content));
+    errors.push(...own.errors.map((e) => `${path}: ${e}`));
+  }
+  return errors;
+}
+
 /** The real environment: validator and composer everywhere, the render wherever there is a document. */
 export const browserEnvironment: AgentEnvironment = {
   async checkApp(files, { page, blueprint }) {
@@ -492,7 +525,8 @@ export const browserEnvironment: AgentEnvironment = {
       return { ok: false, errors: dedupe(errors), warnings: dedupe(warnings), page: target, renderedHeadless: false };
     }
     const diagnostics = await parseDiagnostics(stripTemplateComments(composed.composition.source));
-    errors.push(...diagnostics.errors.map((e) => `${target}: ${e}`));
+    const own = diagnostics.errors.length > 0 ? await ownParseErrors(files, target) : [];
+    errors.push(...(own.length > 0 ? own : diagnostics.errors.map((e) => `${target}: ${e}`)));
     warnings.push(...diagnostics.warnings.map((w) => `${target}: ${w}`));
     if (diagnostics.errors.length === 0) {
       const names = await templateNameErrors(files, target);
@@ -508,7 +542,9 @@ export const browserEnvironment: AgentEnvironment = {
         errors.push(`${target}: ${outcome.composeError}`);
       } else {
         renderedHeadless = true;
-        errors.push(...outcome.errors.map((e) => `${target} (render): ${e}`));
+        // The renderer reports the same parse errors at composed lines; with each file's own report above they only mislead.
+        const renderErrors = own.length > 0 ? outcome.errors.filter((e) => !/Parse error at line/.test(e)) : outcome.errors;
+        errors.push(...renderErrors.map((e) => `${target} (render): ${e}`));
         warnings.push(...outcome.warnings.map((w) => `${target} (render): ${w}`));
         rendered = outcome.text.slice(0, 600);
         if (!outcome.text) warnings.push(`${target} (render): the page rendered no visible text.`);
@@ -591,6 +627,33 @@ function snapshotState(state: Record<string, unknown>): Record<string, unknown> 
   return out;
 }
 
+type SetupCall = NonNullable<RunFunctionRequest['setup_calls']>[number];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The state a setup call assigns, when it is an assignment, or null when it
+ * is a call. The documented shape is { "set": "name", "value": … }. Models
+ * also write the assignment as a call to a function named "set" — with
+ * ["name", value], a { name: value } map, or the name beside the value — and
+ * were told only that "set" is not a function, three times, until the run
+ * stopped. An app that has its own function called set keeps it.
+ */
+export function setupAssignments(step: SetupCall, functions: Record<string, unknown>): Array<[string, unknown]> | null {
+  if (typeof step.set === 'string') return [[step.set, step.value]];
+  if (isPlainObject(step.set)) return Object.entries(step.set);
+  const name = step.name;
+  if ((name !== 'set' && name !== 'setState') || typeof functions[name] === 'function') return null;
+  const args = Array.isArray(step.args) ? step.args : [];
+  if (typeof args[0] === 'string' && args.length >= 2) return [[args[0], args[1]]];
+  if (isPlainObject(args[0])) return Object.entries(args[0]);
+  const key = [step.state, step.key, step.variable, step.stateName].find((k): k is string => typeof k === 'string');
+  if (key !== undefined && 'value' in step) return [[key, step.value]];
+  return null;
+}
+
 /**
  * Load a page's logic in a fresh runtime, run its setup calls, call one
  * function, and report what came back and what changed.
@@ -625,14 +688,22 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
     if (loaded.functions._init) await withTimeout(loaded.functions._init(), 10_000, '_init()');
     const lines: string[] = [];
     for (const step of request.setup_calls ?? []) {
-      if (typeof step.set === 'string') {
-        runtime.updateContext({ [step.set]: step.value } as never);
-        state[step.set] = step.value;
-        lines.push(`set ${step.set} = ${preview(step.value)}`);
+      const sets = setupAssignments(step, loaded.functions);
+      if (sets) {
+        for (const [key, value] of sets) {
+          runtime.updateContext({ [key]: value } as never);
+          state[key] = value;
+          lines.push(`set ${key} = ${preview(value)}`);
+        }
         continue;
       }
       const fn = step.name ? loaded.functions[step.name] : undefined;
-      if (!fn) return { ok: false, text: `Setup call ${step.name ?? '(unnamed)'} is not a function of the app. Functions: ${Object.keys(loaded.functions).sort().join(', ') || '(none)'}` };
+      if (!fn) {
+        return {
+          ok: false,
+          text: `Setup call ${step.name ?? '(unnamed)'} is not a function of the app. Functions: ${Object.keys(loaded.functions).filter((n) => !n.startsWith('__')).sort().join(', ') || '(none)'}. To set a state variable first, pass { "set": "stateName", "value": ... } as the setup call.`,
+        };
+      }
       const value = await withTimeout(fn(...(step.args ?? [])), 10_000, `${step.name}()`);
       lines.push(`${step.name}(${(step.args ?? []).map(preview).join(', ')}) → ${preview(value)}`);
     }

@@ -16,7 +16,7 @@ import type { Blueprint, VFSFile } from '../../types/studio';
 import { useVFSStore, type VFSChangeRecord } from '../../stores/vfsStore';
 import { checkWrite, type SuppliedFiles } from '../changeset';
 import { findAlias, isPrivatePath, resolveProjectPath } from '../paths';
-import { formatCheckReport, type AgentEnvironment } from './appCheck';
+import { formatCheckReport, type AgentEnvironment, type RunFunctionRequest } from './appCheck';
 import { lineDiff, type LineDiff } from './diff';
 import { lookupComponents, readDocs } from './knowledge';
 import type { AgentToolCall, CheckReport, PlanItem } from './types';
@@ -395,7 +395,7 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       if (!name) return fail('function', 'name is required: the function to call.');
       const args = Array.isArray(input.args) ? input.args : [];
       const setup = Array.isArray(input.setup_calls)
-        ? (input.setup_calls.filter((c) => c && typeof c === 'object') as Array<{ name?: string; args?: unknown[]; set?: string; value?: unknown }>)
+        ? (input.setup_calls.filter((c) => c && typeof c === 'object' && !Array.isArray(c)) as NonNullable<RunFunctionRequest['setup_calls']>)
         : [];
       const result = await ctx.env.runFunction(files, { name, args, setup_calls: setup, page: str(input, 'page') });
       return { content: result.text, isError: !result.ok, subject: `${name}()` };
