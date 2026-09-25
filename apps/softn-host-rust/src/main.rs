@@ -60,6 +60,14 @@ enum Commands {
         /// client behind a proxy shares the proxy's address.
         #[arg(long, alias = "trust-proxy", num_args = 0..=1, require_equals = true, default_missing_value = "any", value_name = "PEERS")]
         trusted_proxy: Option<String>,
+        /// Host names this server answers to besides address literals and
+        /// localhost, comma-separated (`--allowed-hosts=app.example,www.app.example`).
+        /// A request naming any other host is refused (403) unless it comes
+        /// through --trusted-proxy: that is what stops a DNS-rebinding page
+        /// from reaching a server on this machine or network. The hosts of
+        /// config.server.allowedOrigins are accepted too.
+        #[arg(long, value_name = "HOSTS", value_delimiter = ',')]
+        allowed_hosts: Vec<String>,
     },
     /// Run multiple .softn bundles (multi-tenant mode)
     ///
@@ -93,6 +101,9 @@ enum Commands {
         /// of addresses or CIDR ranges (see `run`).
         #[arg(long, alias = "trust-proxy", num_args = 0..=1, require_equals = true, default_missing_value = "any", value_name = "PEERS")]
         trusted_proxy: Option<String>,
+        /// Host names this server answers to (see `run`).
+        #[arg(long, value_name = "HOSTS", value_delimiter = ',')]
+        allowed_hosts: Vec<String>,
     },
     /// Show bundle info
     Info {
@@ -101,27 +112,51 @@ enum Commands {
     },
 }
 
+/// The command-line options every serving mode shares, checked.
+fn serve_options(dev: bool, trusted_proxy: Option<&str>, allowed_hosts: &[String], host: &str) -> Result<http::ServeOptions, String> {
+    let options = http::ServeOptions {
+        dev_mode: dev,
+        trusted_proxy: http::TrustedProxy::parse(trusted_proxy)?,
+        allowed_hosts: http::ServeOptions::parse_allowed_hosts(allowed_hosts)?,
+    };
+    let loopback = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or_else(|_| host.eq_ignore_ascii_case("localhost"));
+    if dev && !loopback {
+        tracing::warn!(
+            "--dev on {}, which is not a loopback address: every page on the network may use this server's CORS \
+             and, where a bundle lists no allowedOrigins, open /sync. --dev is for a development machine.",
+            host
+        );
+    }
+    Ok(options)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter("softn_server=info,softn_script=info,tower_http=debug")
-        .init();
+    // RUST_LOG, when set, replaces the default filter (e.g. RUST_LOG=softn_server=debug).
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("softn_server=info,softn_script=info,tower_http=debug"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { path, port, host, data_dir, workers, dev, allow_all_capabilities, trusted_proxy } => {
-            let trusted_proxy = http::TrustedProxy::parse(trusted_proxy.as_deref())?;
+        Commands::Run { path, port, host, data_dir, workers, dev, allow_all_capabilities, trusted_proxy, allowed_hosts } => {
+            let options = serve_options(dev, trusted_proxy.as_deref(), &allowed_hosts, &host)?;
             // Check both CLI flag and env var for allow-all-capabilities
             let allow_all = allow_all_capabilities || std::env::var("SOFTN_ALLOW_ALL_CAPABILITIES")
                 .ok()
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
             let ctx = app::AppContext::load(path, data_dir, workers, allow_all)?;
-            http::serve(ctx, &host, port, dev, trusted_proxy).await?;
+            http::serve(ctx, &host, port, options).await?;
         }
-        Commands::ServeMulti { bundles_dir, port, host, data_dir, workers_per_tenant, dev, allow_all_capabilities, trusted_proxy } => {
-            let trusted_proxy = http::TrustedProxy::parse(trusted_proxy.as_deref())?;
+        Commands::ServeMulti { bundles_dir, port, host, data_dir, workers_per_tenant, dev, allow_all_capabilities, trusted_proxy, allowed_hosts } => {
+            let options = serve_options(dev, trusted_proxy.as_deref(), &allowed_hosts, &host)?;
             let allow_all = allow_all_capabilities || std::env::var("SOFTN_ALLOW_ALL_CAPABILITIES")
                 .ok()
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -132,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 workers_per_tenant,
                 allow_all,
             )?;
-            http::serve_multi(manager, &host, port, dev, trusted_proxy).await?;
+            http::serve_multi(manager, &host, port, options).await?;
         }
         Commands::Info { path } => {
             let manifest = bundle::load_manifest(&path)?;

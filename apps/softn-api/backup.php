@@ -154,6 +154,9 @@ final class Backup
             try {
                 self::writeArchive($tmp, $format, $dataDir, $files, $manifest);
                 self::verify($tmp, $manifest);
+                // The archive holds the admin key and the visitor-hash salt:
+                // readable by its owner alone, whatever the umask would give.
+                @chmod($tmp, 0600);
                 if (!rename($tmp, $dest)) throw new RuntimeException("cannot move the archive to $dest");
             } finally {
                 if (is_file($tmp)) @unlink($tmp);

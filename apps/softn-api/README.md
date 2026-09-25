@@ -9,7 +9,7 @@ takes a zip upload.
 
 ## Requirements
 
-- PHP 8.1 or newer with `zip` and `mbstring`; `pdo_sqlite` is needed only for legacy migration and apps that use server-side storage
+- PHP 8.1 or newer with `zip` and `mbstring`; `pdo_sqlite` is needed only for legacy migration and apps that use server-side storage, and `dom` for SVG icons (without it every SVG icon is dropped). `GET /api/health` lists all four under `extensions` and names any that is missing under `warnings`
 - A writable `data/` directory beside `api/` (the build creates it; `GET /api/health` reports whether it is writable)
 - Upload limits large enough for a bundle; `api/.user.ini` asks for 64 MB on PHP-FPM and CGI hosts, and `GET /api/health` says whether the host agreed (see "Limits")
 
@@ -23,7 +23,8 @@ data/
     urbanward/
       v1.softn
       app.json           generated on discovery; kept with the app
-      icon.svg           extracted from a declared bundle icon, when present
+      icon.svg           extracted from a declared bundle icon, when present (an SVG only
+                         when it parses as a script-free icon: see Bundle::safeSvg)
       thumb.png          optional: reference it as app.thumb in app.json
       storage.sqlite     optional app-owned saved data, not directory metadata
   sequences.json         monotonic comment identifier allocation
@@ -164,8 +165,11 @@ name matches ranked first, rather than SQLite FTS stemming.
 ## Limits
 
 `display_errors` must be off wherever the API runs (`api/.user.ini` says so for FPM and
-CGI hosts; mod_php reads `php_flag display_errors off` from `.htaccess`; a `php -S`
-development server takes `-d display_errors=0`). PHP refuses a POST body past
+CGI hosts; mod_php does not read `.user.ini`, and the shipped `api/.htaccess` carries no
+`php_flag` lines — on a host without mod_php, or without `AllowOverride Options`, one
+answers 500 for the whole directory — so a mod_php host sets it in the virtual host or
+`php.ini`, or adds `php_flag display_errors off` to `api/.htaccess` inside
+`<IfModule php_module>`; a `php -S` development server takes `-d display_errors=0`). PHP refuses a POST body past
 `post_max_size` before `index.php` runs, and with display_errors on it writes that warning
 into the response first, so the headers are already sent when the API answers 413 and the
 client sees a 200 with a warning in the body instead.
@@ -223,9 +227,11 @@ How the checks fall:
 server in front (nginx `client_max_body_size`, Apache `LimitRequestBody`)
 may cut earlier still. Each must be at least the bundle envelope, or an
 upload the API would take arrives empty and fails as "no bundle was sent".
-`api/.user.ini` sets 64 MB for PHP-FPM and CGI hosts; a mod_php host reads
-`php_value post_max_size 64M` and `php_value upload_max_filesize 64M` from
-`.htaccess` instead, and a host that allows neither takes them in `php.ini`.
+`api/.user.ini` sets 64 MB for PHP-FPM and CGI hosts; a mod_php host ignores
+that file and needs `php_value post_max_size 64M` and
+`php_value upload_max_filesize 64M` added (the shipped `.htaccess` has none,
+for the reason under display_errors above), and a host that allows neither
+takes them in `php.ini`.
 `GET /api/health` reports `uploadMax`, `postMax`, `memoryLimit` and
 `limits.hostAligned`, which is `true` when the PHP values cover the
 envelope. When they do not, the API answers a body between the two limits
@@ -278,6 +284,15 @@ arrives with `X-Forwarded-For` while nothing is trusted reports
 `proxy.forwardedButUntrusted: true` and a line under `warnings` saying so;
 make the request through the proxy, not from the host itself.
 
+An IPv6 visitor is rate-limited by its /64, not its full address: one
+subscriber is handed a whole /64 and can pick a fresh address in it for
+every request, which used to make every per-visitor limit (publish, comment,
+rating, run, storage) a limit on nothing. IPv4 addresses are counted one by
+one, as before. A rating is counted the same way, one per /64 (an IPv6
+rating made before that change was keyed by the full address, so its
+visitor may vote once more); a comment still records the full address's
+hash.
+
 ## The site's own address, and who may use the owner routes
 
 `siteOrigin` in `data/config.json` (`"https://softn.example"`) is the
@@ -298,7 +313,11 @@ address the site is reached at. Two things depend on it:
   `403` from them, at the preflight or at the request itself, whichever the
   browser sends first; a script with no `Origin` header is not a page and
   is not restricted. Every other route still answers any origin, so apps,
-  the runtime and a page revalidating a bundle see no change.
+  the runtime and a page revalidating a bundle see no change. That includes
+  `POST /api/apps/{slug}/storage`, which anyone running the app may call
+  and which also accepts the edit key (a `publisher` collection, `clear`):
+  a browser cannot tell the two apart at the preflight, so it stays open to
+  every origin, and a key pasted into a page elsewhere reaches storage.
 
 ## Timings, atomic commits and the benchmark
 
@@ -445,9 +464,16 @@ Moderation uses an **admin key**, generated into `data/config.json` on first
 run and sent as `X-Admin-Key`. Seeded demo apps have no edit key, so only the
 admin can change them.
 
+A lost edit key cannot be recovered, only replaced: the admin can do
+everything the key did, and can issue a new one by writing the SHA-256 of a
+fresh random key into `edit_key_hash` in the app's `app.json` (with the API
+stopped or `catalog.lock` held). To rotate the admin key, replace
+`adminKey` in `data/config.json`; the next request reads it.
+
 Visitors are identified by a salted hash of their address, used for rate
-limits and one rating per person per app. Nothing else about a visitor is
-kept.
+limits and one rating per person per app. An IPv6 address counts as its /64
+for both, since a subscriber picks a fresh address in their prefix at will.
+Nothing else about a visitor is kept.
 
 ## Routes
 
@@ -458,7 +484,7 @@ kept.
 | `GET /api/apps` | Search and browse. `q=`, `category=`, `tag=`, `author=`, `cap=nonet\|none\|storage\|worker`, `sort=trending\|newest\|top\|remixed\|runs\|name`, `page=`, `perPage=` |
 | `GET /api/apps/{slug}` | One listing, with its versions |
 | `GET /api/apps/{slug}/bundle.softn` | The bundle. `v=` picks a version, `download=1` sends it as an attachment. Carries an `ETag` and answers `If-None-Match` with a 304; `HEAD` gives the headers alone. See "Caching a bundle" |
-| `GET /api/apps/{slug}/thumbnail`, `/icon` | Pictures. The URLs the API hands out carry `?v=<updated_at>` because pictures are cached for ten minutes |
+| `GET /api/apps/{slug}/thumbnail`, `/icon` | Pictures. The URLs the API hands out carry `?v=<updated_at>` because pictures are cached for ten minutes. Served, like every bundle, with `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` and `X-Content-Type-Options: nosniff`: they are publishers' bytes on the site's own origin, and an SVG opened as a page must run nothing there |
 | `GET /api/apps/{slug}/source` | The bundle's source files, for the app page's viewer |
 | `GET /api/apps/{slug}/comments`, `/rating` | Comments (paged) and the rating summary |
 | `GET /api/categories` | Categories with counts. The site-owned ones (Games, Examples, …) are refreshed on every request so renamed core categories reach existing directories |
@@ -531,7 +557,11 @@ hand, in the `app` object of the app's own `app.json`:
 
 No route sets that key — publishing, patching and remixing never write it —
 and the catalogue carries it along when it rewrites the file for a run
-count or a comment. Only the JSON `true` counts; `"true"`, `1` or a missing
+count or a comment. A new version uploaded with the edit key **removes** it:
+trust is the operator's word about the bundle they looked at, and the
+publisher's next upload (new code, perhaps new capabilities) is not that
+bundle. Set it again once you have looked at the new version. A version the
+admin uploads, or one the operator drops into the app's folder, keeps it. Only the JSON `true` counts; `"true"`, `1` or a missing
 key read as untrusted, so a typo fails closed. The listing reports the
 setting as `trusted`, and the app's page on the site says so under "What it
 asks for". Remove the key, or set `false`, to take the trust back. Edit the
@@ -660,5 +690,18 @@ that the sweep is bounded, and that listing, cards and details answer
 exactly as they did before the round-2 repair (`test/fixtures/catalog`,
 whose `make.mjs` regenerates `expected.json` from a known-good revision);
 `backup.test.mjs` export, verify and restore, tampered archives and the
-`--force` rule. Each starts servers of its own under the system temp
-directory, with the ini values `.user.ini` asks for, and removes them.
+`--force` rule; `review.test.mjs` a slow body holding no catalogue lock,
+trust dropped by a publisher's new version, one rating per /64, duplicate
+archive entries, the extension report, and no file in `api/` or a dotfile
+served as itself; `user-content.test.mjs` the SVG icon check against
+script-capable payloads, the sandboxing headers on icons, thumbnails and
+bundles, literal names on the share page, and a 503 that names no path. Each
+starts servers of its own under the system temp directory, with the ini
+values `.user.ini` asks for, and removes them.
+
+The suites need `php` (8.1 or newer, with `zip` and `mbstring`; `pdo_sqlite`
+for the storage and migration cases) on PATH. Without it every test is
+**skipped, not failed** — the site builds without PHP — and the run says so:
+each test is marked skipped with the reason, and a `WARNING: php is not on
+PATH …` line goes to stderr. A green run with skips has not tested the API;
+install PHP and run it again (`php -v` should answer).

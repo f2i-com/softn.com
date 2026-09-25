@@ -12,7 +12,7 @@
 //! and routed via URL path prefix: `/<tenant-id>/...`.
 
 use crate::bridges::{db::NativeDbBridge, env::NativeEnvBridge, fs::NativeFsBridge, http::NativeHttpBridge};
-use crate::bundle::{self, ServerConfig, ServerManifest};
+use crate::bundle::{self, ServerManifest};
 use crate::pool::ServerDb;
 use crate::runtime::{BridgeSet, ServerRuntime};
 use crate::sync::SyncManager;
@@ -36,6 +36,8 @@ pub struct TenantContext {
     /// Shared shutdown signal — WebSocket connections subscribe to this
     /// to receive clean shutdown notifications.
     pub shutdown: tokio::sync::watch::Sender<bool>,
+    /// Per-address allowance for the app's routes (see bundle::requests_per_minute).
+    pub api_limiter: Option<Arc<crate::sync::AddressLimiter>>,
 }
 
 /// Top-level multi-tenant manager. Holds all loaded tenants and provides
@@ -105,6 +107,13 @@ impl TenantManager {
             if !is_bundle_dir && !is_softn_file {
                 continue;
             }
+            if is_bundle_dir && is_extraction_of_sibling_archive(&bundles_dir, &name_str) {
+                // `app.softn` is unpacked beside itself as `app_bundle`
+                // (with `_bundle_new`/`_bundle_old` during the swap). Loaded
+                // as a directory as well, it was a second copy of the tenant:
+                // its onStart ran, and whichever copy was read first won.
+                continue;
+            }
 
             if tenants.len() >= MAX_TENANTS {
                 tracing::error!(
@@ -127,7 +136,10 @@ impl TenantManager {
                         continue;
                     }
 
-                    if tenants.contains_key(&id) {
+                    // Case-insensitively: on Windows and macOS `App` and
+                    // `app` are one data directory, so two such tenants
+                    // would share a database.
+                    if tenants.keys().any(|k: &String| k.eq_ignore_ascii_case(&id)) {
                         tracing::error!(
                             "Duplicate tenant ID '{}' — skipping {}",
                             id, path.display()
@@ -179,6 +191,17 @@ impl TenantManager {
     pub fn tenants(&self) -> impl Iterator<Item = &Arc<TenantContext>> {
         self.tenants.values()
     }
+}
+
+/// Whether directory `name` in `dir` is where a sibling `.softn`/`.zip` was
+/// (or is being) unpacked by `bundle::extract_softn_zip`.
+fn is_extraction_of_sibling_archive(dir: &Path, name: &str) -> bool {
+    ["_bundle", "_bundle_new", "_bundle_old"].iter().any(|suffix| {
+        name.strip_suffix(suffix).is_some_and(|stem| {
+            !stem.is_empty()
+                && ["softn", "zip"].iter().any(|ext| dir.join(format!("{stem}.{ext}")).is_file())
+        })
+    })
 }
 
 /// Load a single tenant from a bundle path (directory or .softn file).
@@ -258,12 +281,7 @@ fn load_tenant(
     let auth_token = std::env::var(&env_key).ok()
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("SOFTN_AUTH_TOKEN").ok().filter(|s| !s.is_empty()))
-        .or_else(|| {
-            manifest.config.as_ref()
-                .and_then(|c| c.get("server"))
-                .and_then(|s| serde_json::from_value::<ServerConfig>(s.clone()).ok())
-                .and_then(|sc| sc.auth_token)
-        });
+        .or_else(|| bundle::manifest_auth_token(&manifest));
 
     if auth_token.is_none() && manifest.server.as_ref().is_some_and(|s|
         s.requires.is_some() && s.routes.as_ref().is_some_and(|routes|
@@ -320,7 +338,7 @@ fn load_tenant(
             allow_time: private_backend.time,
             development: private_backend.development,
                 allow_photos: private_backend.photos,
-        }, configured_workers);
+        }, configured_workers)?;
 
         rt.init(source)?;
 
@@ -349,31 +367,10 @@ fn load_tenant(
         None
     };
 
-    // SyncManager
-    let max_storage_bytes = manifest.config.as_ref()
-        .and_then(|c| c.get("server"))
-        .and_then(|s| s.get("maxStorageMB"))
-        .and_then(|v| v.as_u64())
-        .map(|mb| mb.min(10 * 1024) * 1024 * 1024)
-        .unwrap_or(512 * 1024 * 1024);
-
-    let sync_permits = manifest.config.as_ref()
-        .and_then(|c| c.get("server"))
-        .and_then(|s| s.get("syncPermits"))
-        .and_then(|v| v.as_u64())
-        .map(|n| (n as usize).clamp(4, 64))
-        .unwrap_or(16); // Lower default for multi-tenant
-
-    let force_server_timestamps = manifest.config.as_ref()
-        .and_then(|c| c.get("server"))
-        .and_then(|s| s.get("forceServerTimestamps"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
+    let api_limiter = bundle::requests_per_minute(&manifest).map(|n| Arc::new(crate::sync::AddressLimiter::per_minute(n)));
     let sync_manager = SyncManager::new(
         db.clone(), runtime.clone(), auth_token.clone(),
-        db_path, max_storage_bytes, sync_permits,
-        force_server_timestamps,
+        db_path, crate::sync::SyncSettings::from_manifest(&manifest, true),
     );
 
     Ok(TenantContext {
@@ -386,5 +383,44 @@ fn load_tenant(
         sync_manager,
         auth_token,
         shutdown: shutdown.clone(),
+        api_limiter,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn bundle(dir: &Path, id: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let manifest = serde_json::json!({"id": id, "name": id, "version": "1"});
+        std::fs::write(dir.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn tenant_ids_that_differ_only_in_case_are_one_tenant() {
+        let root = std::env::temp_dir().join(format!("softn-tenants-case-{}", uuid::Uuid::new_v4()));
+        bundle(&root.join("bundles").join("upper"), "Shop");
+        bundle(&root.join("bundles").join("lower"), "shop");
+        let manager = TenantManager::load(&root.join("bundles"), Some(&root.join("data")), Some(1), false).unwrap();
+        assert_eq!(manager.tenant_ids().len(), 1, "{:?}", manager.tenant_ids());
+    }
+
+    #[test]
+    fn an_archive_and_its_unpacked_copy_are_one_tenant() {
+        let root = std::env::temp_dir().join(format!("softn-tenants-zip-{}", uuid::Uuid::new_v4()));
+        let bundles = root.join("bundles");
+        std::fs::create_dir_all(&bundles).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(bundles.join("game.softn")).unwrap());
+        zip.start_file("manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(br#"{"id":"game","name":"game","version":"2"}"#).unwrap();
+        zip.finish().unwrap();
+        // What a previous start left beside the archive.
+        bundle(&bundles.join("game_bundle"), "game");
+        bundle(&bundles.join("game_bundle_old"), "game");
+        let manager = TenantManager::load(&bundles, Some(&root.join("data")), Some(1), false).unwrap();
+        assert_eq!(manager.tenant_ids(), vec!["game"]);
+        assert_eq!(manager.get("game").unwrap().manifest.version, "2", "the archive, not a stale copy, is the tenant");
+    }
 }

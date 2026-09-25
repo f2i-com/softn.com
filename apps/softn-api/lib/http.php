@@ -719,6 +719,21 @@ final class Net
         return is_string($text) ? strtolower($text) : null;
     }
 
+    /**
+     * What a rate limit counts an address as: an IPv4 address itself, an
+     * IPv6 address as its /64 (`2001:db8:1:2::/64`). Anything that is not an
+     * address is returned as it was.
+     */
+    public static function limitBucket(string $ip): string
+    {
+        $normal = self::normalize($ip);
+        if ($normal === null) return $ip;
+        $packed = inet_pton($normal);
+        if ($packed === false || strlen($packed) !== 16) return $normal;
+        $prefix = inet_ntop(substr($packed, 0, 8) . str_repeat("\0", 8));
+        return (is_string($prefix) ? $prefix : $normal) . '/64';
+    }
+
     /** `1.2.3.4:5678` and `[2001:db8::1]:443` without their ports; anything else as it was. */
     public static function stripPort(string $entry): string
     {
@@ -789,6 +804,21 @@ final class Response
     /** @var array<string, string> */
     public array $headers;
     public string $body;
+    /**
+     * The headers every reply carrying bytes a publisher chose goes out with:
+     * an icon, a thumbnail, a bundle. They are served from the site's own
+     * origin, and an SVG opened as a document runs its scripts there — where
+     * the site keeps every edit key the visitor holds. `sandbox` gives such a
+     * document an opaque origin and no script; `default-src 'none'` stops it
+     * loading anything; nosniff keeps a browser from deciding a bundle is a
+     * page. None of it changes an <img>, a download or a fetch. The same
+     * policy softn-single-private's softn-serve.php puts on bundle entries.
+     */
+    public const USER_CONTENT = [
+        'Content-Security-Policy' => "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        'X-Content-Type-Options' => 'nosniff',
+    ];
+
     /** When set, the body is streamed from this file instead. */
     public ?string $file = null;
     /** The file, open since the response was built. @var resource|null */

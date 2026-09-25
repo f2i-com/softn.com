@@ -9,6 +9,7 @@ const skip=input?false:'Set SOFTN_PHP_TEST_BACKEND to a disposable initialized L
 // Without the backend fixture these tests are SKIPPED, visibly, not thrown
 // out of: the suite runs in every checkout and CI, and the fixture-bound
 // cases report why they did not run.
+if(skip)console.warn(`WARNING: tests/startup-diagnostics.test.mjs skipped: ${skip}. See apps/softn-host-php/README.md, Validation.`);
 const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
 
 test('startup failures expose only static labels and normal startup still succeeds',t=>{

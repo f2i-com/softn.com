@@ -89,13 +89,15 @@ async fn send_response_with_timeout(
 /// Auth is performed during the HTTP upgrade phase (see http::ws_upgrade),
 /// so `cid` is already validated before this function is called.
 /// `_conn_guard` is held for the lifetime of the connection — when dropped,
-/// it signals the shutdown drain that this connection has closed.
+/// it signals the shutdown drain that this connection has closed. `_slot` is
+/// the connection's place under `maxSyncConnections`, returned on drop.
 pub async fn handle_ws(
     socket: WebSocket,
     sync: Arc<SyncManager>,
     shutdown_rx: watch::Receiver<bool>,
     cid: String,
     _conn_guard: tokio::sync::mpsc::Sender<()>,
+    _slot: crate::sync::ConnectionSlot,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -230,6 +232,12 @@ async fn writer_task(
                     if let Ok(json) = serde_json::to_string(&msg) {
                         let _ = ws_tx.send(Message::Text(json.into())).await;
                     }
+                    // 1001 Going Away: the endpoint is leaving, which a
+                    // client can tell from a normal close and reconnect to.
+                    let _ = ws_tx.send(Message::Close(Some(CloseFrame {
+                        code: 1001,
+                        reason: "Server shutting down".into(),
+                    }))).await;
                     break;
                 }
             }

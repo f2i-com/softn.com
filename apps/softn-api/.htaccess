@@ -1,6 +1,7 @@
-# Everything under /api/ is answered by index.php. The site's own .htaccess
-# routes here too; this one is for a host that applies per-directory rules
-# first, and for serving this directory on its own.
+# Everything under /api/ is answered by index.php. The site's .htaccess
+# routes /api/ here too, but Apache applies the rewrite rules of the deepest
+# directory that turns the engine on, so for addresses under /api/ these are
+# the rules in force; they are also what serves this directory on its own.
 Options -Indexes
 
 <IfModule mod_rewrite.c>
@@ -12,8 +13,12 @@ Options -Indexes
   # FilesMatch sees only a file's name, never its directory, so lib/ is
   # kept out here.
   RewriteRule ^lib/ - [F,L]
-  RewriteCond %{REQUEST_FILENAME} !-f
-  RewriteRule ^ index.php [QSA,L]
+  # Every other address is the script's, a file's included: nothing here is
+  # served as itself. This file's rules replace the site's for /api/..., so
+  # "unless it is a file" ran router.php, served a benchmark's results and
+  # .user.ini, and would serve whatever is uploaded here next. nginx sends
+  # every /api/ address to index.php the same way.
+  RewriteRule !^index\.php$ index.php [QSA,L]
 </IfModule>
 
 <FilesMatch "\.md$">

@@ -13,6 +13,18 @@ import {invokeWithHook} from './request-hook.mjs';
 const root=realpathSync(process.env.SOFTN_BACKEND_ROOT || dirname(fileURLToPath(import.meta.url)));
 const contained=(parent,child)=>{const path=relative(parent,child);return path!==''&&!isAbsolute(path)&&path!=='..'&&!path.startsWith('..'+(process.platform==='win32'?'\\':'/'));};
 let db;
+// The answer PHP reads: exactly `{"status":N,"body":...}`, status first and
+// body last, so http.php passes the body's JSON text through untouched
+// (runtime/request.php softn_runner_result). Anything else is a host error.
+function emit(result) {
+  const valid=result&&typeof result==='object'&&Number.isInteger(result.status)&&result.status>=200&&result.status<=599&&Object.hasOwn(result,'body');
+  const status=valid?result.status:500,body=valid?result.body:{error:'The request could not be completed.',code:'host_error'};
+  process.stdout.write('{"status":'+status+',"body":'+(JSON.stringify(body)??'null')+'}');
+}
+// SQLite's "database is busy/locked": another request holds the write lock
+// past busy_timeout. Transient, so answered as the retryable busy response,
+// not as a configuration fault.
+const busy=e=>e?.errcode===5||e?.errcode===6||/database is (locked|busy)/i.test(String(e?.message));
 // Static diagnostic labels identify the failed check without exposing values,
 // paths, SQL, provider responses, or exception messages to clients.
 let startupStage='configuration_read';
@@ -55,7 +67,8 @@ try {
     // a write for anything else, so a handler written against that host's
     // defaults keeps its writes.
     const transaction=r.transaction===undefined||r.transaction==='none'?(r.method==='GET'?'read':'write'):r.transaction;
-    const authorization=r.authorization===undefined?'application':r.authorization;
+    // `host-token` is the Rust host's spelling (bundle.rs, kebab-case); `hosttoken` is this host's older one.
+    const authorization=r.authorization===undefined?'application':r.authorization==='host-token'?'hosttoken':r.authorization;
     if(!['read','write'].includes(transaction)||!['application','anonymous','hosttoken'].includes(authorization))throw new Error('Unsupported route declaration');
     let reason=null;
     if(!/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path))reason='path outside /api/ is not routed to this host';
@@ -80,26 +93,39 @@ try {
   const file=join(data,'application.sqlite');
   try{if(lstatSync(file).isSymbolicLink())throw new Error('Invalid database');}catch(e){if(e.code!=='ENOENT')throw e;}
   db=new DatabaseSync(file,{allowExtension:false});chmodSync(file,0o600);
-  db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1500; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072;');
+  // Lock waits are three seconds, as on the Rust host.
+  db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072;');
   startupStage='database_lock';
   db.exec('BEGIN IMMEDIATE');
   try {
     startupStage='database_migrations';
     db.exec('CREATE TABLE IF NOT EXISTS _migrations(name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at INTEGER NOT NULL) STRICT');
-    for(const name of (manifest.server.database?.migrations||[])) {
+    // In sorted order, as the Rust host applies them (private_backend.rs), not
+    // in the order listed: `["002.sql","001.sql"]` builds the same schema on
+    // both. A path listed twice, or one applied before and no longer listed,
+    // stops startup there too: the ledger must describe this deployment.
+    const migrations=[...(manifest.server.database?.migrations||[])];
+    if(migrations.some(name=>typeof name!=='string'))throw new Error('Invalid migration list');
+    migrations.sort((a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b)));
+    if(migrations.some((name,i)=>i>0&&name===migrations[i-1]))throw new Error('Duplicate migration path');
+    for(const name of migrations) {
       const sql=readFileSync(inside(name),'utf8'),hash=createHash('sha256').update(sql).digest('hex');
       const old=db.prepare('SELECT sha256 FROM _migrations WHERE name=?').get(name);
       if(old){if(old.sha256!==hash)throw new Error('Migration mismatch');continue;}
       applyMigration(db,sql);db.prepare('INSERT INTO _migrations VALUES(?,?,?)').run(name,hash,Math.floor(Date.now()/1000));
     }
+    const listed=new Set(migrations);
+    if(db.prepare('SELECT name FROM _migrations').all().some(row=>!listed.has(row.name)))throw new Error('Deployment removed a previously applied migration');
     startupStage='request_limits';
     db.exec('CREATE TABLE IF NOT EXISTS _request_limits(ip TEXT PRIMARY KEY, minute INTEGER NOT NULL, count INTEGER NOT NULL) STRICT');
-    const minute=Math.floor(Date.now()/60000),ip=createHash('sha256').update(request.client_ip).digest('hex');
+    // http.php supplies the bucket (an IPv6 client's /64); older callers only the address.
+    const rateKey=typeof request.rate_key==='string'&&request.rate_key?request.rate_key:request.client_ip;
+    const minute=Math.floor(Date.now()/60000),ip=createHash('sha256').update(rateKey).digest('hex');
     db.prepare('DELETE FROM _request_limits WHERE minute<?').run(minute-1);
     db.prepare('INSERT INTO _request_limits VALUES(?,?,1) ON CONFLICT(ip) DO UPDATE SET count=CASE WHEN minute=excluded.minute THEN count+1 ELSE 1 END,minute=excluded.minute').run(ip,minute);
     const count=db.prepare('SELECT count FROM _request_limits WHERE ip=?').get(ip).count;
     db.exec('COMMIT');
-    if(count>120){process.stdout.write(JSON.stringify({status:429,body:{error:'Too many requests.'}}));process.exit(0);}
+    if(count>120){emit({status:429,body:{error:'Too many requests.',code:'rate_limited'}});process.exit(0);}
   } catch(e){try{db.exec('ROLLBACK');}catch{}throw e;}
   startupStage='record_events';
   const recordSubscriptions=config.enableHostContext===true?JSON.parse(process.env.SOFTN_RECORD_EVENTS||'[]'):[];
@@ -115,6 +141,8 @@ try {
     result=aside&&aside.reason.startsWith('hosttoken')?{status:401,body:{error:'Authorization required'}}:{status:404,body:{error:'Endpoint not found.'}};
   }
   else {
+    // The rate bucket is the host's; the address only for an app granted trusted-client-ip.
+    delete request.rate_key;
     if(!required.capabilities.includes('trusted-client-ip'))delete request.client_ip;
     if(route.upload!=='photo')delete request.upload;
     startupStage='request_integration';
@@ -126,7 +154,8 @@ try {
   if(config.enableAfterRequestHook===true) {
     try {const hook=await import(pathToFileURL(join(root,'operator/after-request.mjs')).href);await hook.afterRequest({db,crypto:host.crypto,config});}catch{ /* Adapter owns durable retries. */ }
   }
-  process.stdout.write(JSON.stringify(result));
-} catch {
-  process.stdout.write(JSON.stringify({status:503,body:{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:startupStage}}));
+  emit(result);
+} catch(e) {
+  emit(busy(e)?{status:503,body:{error:'The server is busy. Please retry.',code:'database_busy'}}
+    :{status:503,body:{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:startupStage}});
 } finally {try{db?.close();}catch{}}

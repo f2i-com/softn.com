@@ -38,6 +38,11 @@ impl NativeHttpBridge {
             // initial request. Scripts receive the 3xx response and can implement
             // their own redirect logic if needed.
             .max_redirects(0)
+            // ureq reads HTTP_PROXY/HTTPS_PROXY by default. Through a proxy
+            // the target is resolved by the proxy, so SsrfSafeResolver would
+            // check only the proxy's address and a script could reach any
+            // internal host the proxy can.
+            .proxy(None)
             .build();
 
         // Use a custom resolver that wraps ureq's DefaultResolver but checks
@@ -190,19 +195,31 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_blocked_ipv4(&v4),
         IpAddr::V6(v6) => {
-            if v6.is_loopback() || v6.is_unspecified() {
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
                 return true;
             }
-            // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
             let segments = v6.segments();
-            if segments[0..5] == [0, 0, 0, 0, 0] && segments[5] == 0xffff {
-                let v4 = Ipv4Addr::new(
-                    (segments[6] >> 8) as u8,
-                    segments[6] as u8,
-                    (segments[7] >> 8) as u8,
-                    segments[7] as u8,
-                );
-                return is_blocked_ipv4(&v4);
+            let bits = u128::from(v6);
+            // fc00::/7 unique-local (AWS's IPv6 metadata service is
+            // fd00:ec2::254), fe80::/10 link-local, fec0::/10 site-local.
+            if (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80 || (segments[0] & 0xffc0) == 0xfec0 {
+                return true;
+            }
+            // Addresses that carry an IPv4 address a gateway or the stack
+            // will reach: ::ffff:a.b.c.d (mapped), ::a.b.c.d (compatible,
+            // deprecated), 64:ff9b::/96 and 64:ff9b:1::/48 (NAT64) with the
+            // IPv4 address in the low 32 bits, 2002::/16 (6to4) with it in
+            // bits 16-47.
+            let low32 = Ipv4Addr::from(bits as u32);
+            if segments[0..5] == [0, 0, 0, 0, 0] && (segments[5] == 0xffff || segments[5] == 0) {
+                return is_blocked_ipv4(&low32);
+            }
+            let nat64 = segments[0] == 0x64 && segments[1] == 0xff9b;
+            if nat64 && (segments[2..6] == [0, 0, 0, 0] || segments[2] == 1) {
+                return is_blocked_ipv4(&low32);
+            }
+            if segments[0] == 0x2002 {
+                return is_blocked_ipv4(&Ipv4Addr::from((bits >> 80) as u32));
             }
             false
         }
@@ -210,12 +227,15 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
 }
 
 fn is_blocked_ipv4(v4: &Ipv4Addr) -> bool {
-    v4.is_loopback()                                                    // 127.0.0.0/8
-        || v4.is_private()                                              // 10/8, 172.16/12, 192.168/16
-        || v4.is_link_local()                                           // 169.254.0.0/16 (metadata)
-        || v4.is_broadcast()                                            // 255.255.255.255
-        || v4.is_unspecified()                                          // 0.0.0.0
-        || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)    // 100.64.0.0/10 (CGN)
+    let [a, b, c, _] = v4.octets();
+    a == 0                                          // 0.0.0.0/8 ("this network"; 0.x reaches loopback on Linux)
+        || v4.is_loopback()                         // 127.0.0.0/8
+        || v4.is_private()                          // 10/8, 172.16/12, 192.168/16
+        || v4.is_link_local()                       // 169.254.0.0/16 (metadata)
+        || (a == 100 && (b & 0xC0) == 64)           // 100.64.0.0/10 (CGN)
+        || (a == 192 && b == 0 && c == 0)           // 192.0.0.0/24 (IETF protocol assignments)
+        || (a == 198 && (b & 0xFE) == 18)           // 198.18.0.0/15 (benchmarking)
+        || a >= 224                                 // 224/4 multicast, 240/4 reserved, broadcast
 }
 
 impl HttpBridge for NativeHttpBridge {
@@ -255,5 +275,40 @@ impl HttpBridge for NativeHttpBridge {
             .call()
             .map_err(|e| format!("HTTP DELETE error: {}", e))?;
         to_http_response(resp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_and_translated_ranges_are_blocked() {
+        for blocked in [
+            "127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1",
+            "0.0.0.0", "0.1.2.3", "192.0.0.170", "198.18.0.1", "224.0.0.251", "240.0.0.1", "255.255.255.255",
+            "::1", "::", "::ffff:127.0.0.1", "::127.0.0.1",
+            // AWS's IPv6 instance metadata service is unique-local.
+            "fd00:ec2::254", "fc00::1", "fe80::1", "fec0::1", "ff02::1",
+            // NAT64 and 6to4 carry an IPv4 address the gateway will reach.
+            "64:ff9b::7f00:1", "64:ff9b:1::a00:1", "2002:7f00:1::1", "2002:a9fe:a9fe::1",
+        ] {
+            assert!(is_blocked_ip(blocked.parse().unwrap()), "{blocked} is reachable");
+        }
+        for public in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "2002:808:808::1", "64:ff9b::808:808"] {
+            assert!(!is_blocked_ip(public.parse().unwrap()), "{public} is blocked");
+        }
+    }
+
+    /// A proxy from HTTP_PROXY/HTTPS_PROXY would resolve the target itself,
+    /// so the resolver's check would only ever see the proxy's address.
+    #[test]
+    fn the_environment_proxy_is_not_used() {
+        std::env::set_var("HTTPS_PROXY", "http://proxy.example:3128");
+        std::env::set_var("HTTP_PROXY", "http://proxy.example:3128");
+        let bridge = NativeHttpBridge::new();
+        std::env::remove_var("HTTPS_PROXY");
+        std::env::remove_var("HTTP_PROXY");
+        assert!(bridge.agent.config().proxy().is_none());
     }
 }

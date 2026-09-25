@@ -1,6 +1,6 @@
 import {readFileSync} from 'node:fs';
-import {constants} from 'node:sqlite';
 import {createCrypto} from './crypto.mjs';
+import {createSql} from './sql.mjs';
 import {parseZoned,formatZoned} from './time.mjs';
 import {initSync,Engine,zippProfile} from './wasm/zipp_wasm.mjs';
 
@@ -55,42 +55,19 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
       const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now()*1000).map(v=>[v.type,v.value]));
       const [y,m,day]=birth.split('-').map(Number);return Number(p.year)-y-(Number(p.month)<m||Number(p.month)===m&&Number(p.day)<day?1:0);
     }}};
-  const tables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '\\_%' ESCAPE '\\'").all().map(r=>r.name));
-  const functions=new Set(['count','coalesce','min','max','sum','avg','lower','upper','length','substr','replace','abs']);
-  function authorize(action,a,b,database,source) {
-    if(authorizeRecordEvent(action,a,b,database,source))return constants.SQLITE_OK;
-    if(database&&database!=='main')return constants.SQLITE_DENY;
-    if(action===constants.SQLITE_SELECT)return constants.SQLITE_OK;
-    if(action===constants.SQLITE_FUNCTION)return functions.has(String(b).toLowerCase())?constants.SQLITE_OK:constants.SQLITE_DENY;
-    if([constants.SQLITE_READ,constants.SQLITE_INSERT,constants.SQLITE_UPDATE,constants.SQLITE_DELETE].includes(action))return tables.has(a)?constants.SQLITE_OK:constants.SQLITE_DENY;
-    return constants.SQLITE_DENY;
-  }
-  const sql=(kind,text,params=[])=>{
-    if(typeof text!=='string'||text.length>20000||!Array.isArray(params)||params.length>100)throw new Error('Invalid query');
-    if(!(kind==='execute'?/^\s*(INSERT|UPDATE|DELETE)\b/i:/^\s*SELECT\b/i).test(text)||text.includes(';'))throw new Error('Only one app query is allowed');
-    for(const p of params)if(p!==null&&typeof p!=='string'&&!(typeof p==='number'&&Number.isFinite(p)))throw new Error('Invalid parameter');
-    db.setAuthorizer(authorize);
-    try {
-      const statement=db.prepare(text);
-      if(kind==='execute') {const r=statement.run(...params);return {changes:Number(r.changes),lastInsertRowid:Number(r.lastInsertRowid)};}
-      const rows=[];let bytes=0;
-      for(const row of statement.iterate(...params)) {
-        bytes+=Buffer.byteLength(JSON.stringify(row));
-        if(bytes>2*1024*1024||rows.length>=1000)throw new Error('Query result limit');
-        rows.push(row);if(kind==='first')break;
-      }
-      return kind==='first'?(rows[0]||null):rows;
-    } finally {db.setAuthorizer(null);}
-  };
+  // The SQL rules are the Rust host's (sql.mjs); the route's transaction decides whether execute may write.
+  const sql=createSql(db,{authorizeRecordEvent});
+  let writable=false;
   const operations=Object.freeze({
-    'sql.query':(s,p)=>sql('query',s,p),'sql.first':(s,p)=>sql('first',s,p),'sql.execute':(s,p)=>sql('execute',s,p),
+    'sql.query':(s,p)=>sql('query',s,p),'sql.first':(s,p)=>sql('first',s,p),'sql.execute':(s,p)=>sql('execute',s,p,writable),
     ...Object.fromEntries(['sha256','hmac','randomHex','randomInt','equal','seal'].map(k=>['crypto.'+k,services.crypto[k]])),
     ...Object.fromEntries(['now','parseZoned','format','age'].map(k=>['time.'+k,services.time[k]]))
   });
   function invoke(request,route,context={}) {
     let engine,transaction=false,calls=0;
     try {
-      db.exec(route.transaction==='read'?'BEGIN':'BEGIN IMMEDIATE');transaction=true;
+      writable=route.transaction!=='read';
+      db.exec(writable?'BEGIN IMMEDIATE':'BEGIN');transaction=true;
       engine=new Engine();engine.setInstructionBudget(steps);engine.setSyncHostCapabilities(['db.query']);
       engine.setDbBridge({query:(op,args)=>{
         if(++calls>512||!Object.hasOwn(operations,op)||!capabilities.includes(op.split('.')[0])||!Array.isArray(args)||args.length>4||Buffer.byteLength(JSON.stringify(args))>1_000_000)throw new Error('Host capability denied');

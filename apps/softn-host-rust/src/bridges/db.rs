@@ -90,9 +90,18 @@ impl DbBridge for NativeDbBridge {
         Ok(())
     }
 
-    fn hard_delete(&mut self, _collection: &str, id: &str) -> Result<(), String> {
+    fn hard_delete(&mut self, collection: &str, id: &str) -> Result<(), String> {
         // XDB only supports soft delete (sets deleted=1 for CRDT sync)
         let mut db = self.db.write();
+        // xdb deletes by id alone; the collection the script named is the
+        // one it meant, as for `db.get`.
+        match db.get_record(id) {
+            Ok(record) if record.collection == collection => {}
+            Ok(_) | Err(xdb::DbError::NotFound(_)) => {
+                return Err(format!("db.hard_delete failed: no record {id} in {collection}"))
+            }
+            Err(e) => return Err(format!("db.hard_delete failed: {}", e)),
+        }
         db.delete_record(id)
             .map_err(|e| format!("db.hard_delete failed: {}", e))?;
         Ok(())
@@ -125,5 +134,27 @@ impl DbBridge for NativeDbBridge {
     }
     fn get_saved_sync_room(&self) -> Option<String> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `db.hardDelete("notes", id)` with an id from a request must not delete
+    /// a record in another collection: `db.get` is held to its collection, and
+    /// so is this.
+    #[test]
+    fn hard_delete_is_held_to_its_collection() {
+        let dir = std::env::temp_dir().join(format!("softn-db-bridge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xdb.sqlite");
+        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
+        let mut bridge = NativeDbBridge::new(db);
+        let admin = bridge.create("admin", r#"{"role":"owner"}"#).unwrap();
+        assert!(bridge.hard_delete("notes", &admin.id).is_err());
+        assert!(bridge.get("admin", &admin.id).unwrap().is_some());
+        bridge.hard_delete("admin", &admin.id).unwrap();
+        assert!(bridge.get("admin", &admin.id).unwrap().is_none());
     }
 }

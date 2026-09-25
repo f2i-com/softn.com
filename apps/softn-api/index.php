@@ -155,6 +155,17 @@ try {
     $matched = match_route($req->method, $req->path, $routes);
     if ($matched === null) throw new ApiError(404, 'No such route: ' . $req->method . ' ' . $req->path);
     [$handler, $args] = $matched;
+    // A JSON body is read here, whole and within the route's limit, before
+    // any handler opens the catalogue: the lock is held until the reply,
+    // and a handler that resolved its slug first and then read the body
+    // (a comment, a rating, a storage operation, a PATCH) held every other
+    // request, reads included, for as long as one client took to send a few
+    // bytes — under mod_php and Apache's FastCGI proxy PHP reads the body as
+    // it arrives. Form bodies PHP has read before the script starts; a raw
+    // bundle is spooled by its handler before the catalogue, likewise.
+    // Only a body held to the JSON limit: the bundle and image routes read
+    // theirs before the catalogue themselves, after their own checks.
+    if ($req->method !== 'GET' && $req->method !== 'HEAD' && $req->contentType() === 'application/json' && $req->bodyLimit() === Limits::json()) $req->json();
     $response = handle($handler, $args, $req);
     Catalog::release();
     server_timing();
@@ -240,17 +251,34 @@ function handle(string $handler, array $args, Request $req): Response
         case 'health': {
             $sqlite = null;
             $writable = false;
+            // What each extension is for, so a host without one learns it
+            // here and not from a bare 500 on the first request that needs it.
+            $extensions = [];
+            $warnings = [];
+            foreach ([
+                'zip' => 'reading bundles: nothing can be published',
+                'mbstring' => 'text handling: most routes fail',
+                'pdo_sqlite' => 'per-app storage and the legacy import',
+                'dom' => 'checking SVG icons: every SVG icon is dropped',
+            ] as $ext => $for) {
+                $extensions[$ext] = extension_loaded($ext);
+                if (!$extensions[$ext]) $warnings[] = "The PHP extension $ext is not loaded; it is needed for $for.";
+            }
+            // Without these the catalogue cannot even be read; say so rather
+            // than fail on the first bundle it inspects.
+            if (!$extensions['zip'] || !$extensions['mbstring']) {
+                return Response::json(['ok' => false, 'error' => 'A PHP extension the directory needs is missing.', 'php' => PHP_VERSION, 'extensions' => $extensions, 'warnings' => $warnings], 503);
+            }
             try {
                 Catalog::boot();
                 $writable = is_writable(Config::dataDir());
             } catch (ApiError $e) {
-                return Response::json(['ok' => false, 'error' => $e->getMessage(), 'php' => PHP_VERSION], 503);
+                return Response::json(['ok' => false, 'error' => $e->getMessage(), 'php' => PHP_VERSION, 'extensions' => $extensions], 503);
             }
             $trusted = Config::get('trustedProxies', []);
             $siteOrigin = Pages::origin();
             // What an operator should know before the site is public. The
             // site works without either; what it cannot do is said here.
-            $warnings = [];
             if ($siteOrigin === null) {
                 $warnings[] = 'siteOrigin is not set in data/config.json: share pages carry no canonical address or og:url, and only this host\'s own pages may use the owner routes, until it is.';
             }
@@ -268,6 +296,7 @@ function handle(string $handler, array $args, Request $req): Response
                 'catalog' => 'folder-json',
                 'cache' => 'rebuildable-json',
                 'zip' => class_exists('ZipArchive'),
+                'extensions' => $extensions,
                 'dataWritable' => $writable,
                 'uploadMax' => ini_get('upload_max_filesize'),
                 'postMax' => ini_get('post_max_size'),
@@ -289,7 +318,7 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'suggestCategory': {
             if (($req->field('website') ?? '') !== '') throw new ApiError(400, 'The suggestion was not accepted.');
-            Db::rateLimit('suggest', Config::visitorHash($req->ip));
+            Db::rateLimit('suggest', Config::limitKey($req->ip));
             $c = Categories::suggest((string) $req->field('name'), (string) ($req->field('description') ?? ''), (string) ($req->field('emoji') ?? ''));
             return Response::json(['ok' => true, 'category' => $c], 201);
         }
@@ -304,7 +333,7 @@ function handle(string $handler, array $args, Request $req): Response
             // admin key from data/config.json, fills a fresh directory in one
             // batch — a whole folder of bundles dropped on the publish page.
             if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) {
-                Db::rateLimit('publish', Config::visitorHash($req->ip));
+                Db::rateLimit('publish', Config::limitKey($req->ip));
             }
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent. Upload a .softn as the multipart field "bundle", as the raw request body, or as JSON {"bundleBase64": ...}.');
@@ -371,7 +400,7 @@ function handle(string $handler, array $args, Request $req): Response
             $headers = [
                 'Cache-Control' => $v === null ? 'no-cache, must-revalidate' : 'public, max-age=86400',
                 'ETag' => '"' . $ver['sha256'] . '"',
-            ];
+            ] + Response::USER_CONTENT;
             // The validator is the archive's own digest, so a client holding
             // these bytes is told so without them being sent again. Only the
             // headers a cache refreshes from go with the 304: the attachment
@@ -433,16 +462,17 @@ function handle(string $handler, array $args, Request $req): Response
             // Its own window, wider than publishing's: an owner iterating on
             // one app is not ten new apps an hour, but a stolen key must not
             // be a way to fill a folder to its version limit in a minute.
-            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) {
-                Db::rateLimit('version', Config::visitorHash($req->ip));
+            $byAdmin = Config::isAdmin($req->credential('x-admin-key', 'adminKey'));
+            if (!$byAdmin) {
+                Db::rateLimit('version', Config::limitKey($req->ip));
             }
             if ($file === null) throw new ApiError(400, 'No bundle was sent.');
-            return Response::json(['ok' => true, 'app' => Apps::addVersion($slug, $file, $req->field('notes'))], 201);
+            return Response::json(['ok' => true, 'app' => Apps::addVersion($slug, $file, $req->field('notes'), $byAdmin)], 201);
         }
 
         case 'remix': {
             if (($req->field('website') ?? '') !== '') throw new ApiError(400, 'The remix was not accepted.');
-            Db::rateLimit('publish', Config::visitorHash($req->ip));
+            Db::rateLimit('publish', Config::limitKey($req->ip));
             // Read before the catalogue is opened; see addVersion.
             $file = $req->bundleFile();
             $parentSlug = Apps::resolveSlug($args[0]);

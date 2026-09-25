@@ -28,7 +28,7 @@ final class Social
         $body = Text::clean($req->field('body') ?? $req->field('comment'), 2000, true);
         if (mb_strlen($body) < 2) throw new ApiError(400, 'A comment needs some words in it.');
         $visitor = Config::visitorHash($req->ip);
-        Db::rateLimit('comment', $visitor);
+        Db::rateLimit('comment', Config::limitKey($req->ip));
         $doc=Catalog::doc($slug);$now=time();
         // Reserve a monotonic, browser-safe ID under the catalogue lock.
         // A crash may leave a gap; it cannot reuse an ID or reorder same-second comments.
@@ -52,10 +52,22 @@ final class Social
         throw new ApiError(404,'No such comment.');
     }
 
+    /**
+     * Who a rating belongs to: the visitor as the rate limits count one, so
+     * an IPv6 /64 is one voter. Keyed by the full address, every address a
+     * subscriber picks from their prefix was a fresh vote, and one person
+     * could fill an app's average at the rate limit's pace. An IPv4 address
+     * hashes as it always did, so its existing votes are still its own.
+     */
+    private static function voter(Request $req): string
+    {
+        return Config::limitKey($req->ip);
+    }
+
     /** @return array<string, mixed> */
     public static function rating(Request $req, string $slug): array
     {
-        $visitor = Config::visitorHash($req->ip);
+        $visitor = self::voter($req);
         $stars=null;foreach(Catalog::doc($slug)['ratings'] as $r)if($r['visitor']===$visitor)$stars=$r['stars'];
         $row = Apps::row($slug);
         $count = (int) $row['rating_count'];
@@ -72,8 +84,8 @@ final class Social
         $stars = (int) ($req->field('stars') ?? 0);
         if ($stars < 1 || $stars > 5) throw new ApiError(400, 'A rating is one to five stars.');
         Apps::row($slug); // refused for an unpublished app before anything is written
-        $visitor = Config::visitorHash($req->ip);
-        Db::rateLimit('rate', $visitor);
+        $visitor = self::voter($req);
+        Db::rateLimit('rate', Config::limitKey($req->ip));
         $doc=Catalog::doc($slug);$ratings=[];
         foreach($doc['ratings'] as $r)if($r['visitor']!==$visitor)$ratings[]=$r;
         $ratings[]=['slug'=>$slug,'visitor'=>$visitor,'stars'=>$stars,'created_at'=>time()];
@@ -91,7 +103,7 @@ final class Social
      * request naming no stage is an open, which is what the count always meant.
      */
     public static function recordRun(Request $req, string $slug, string $stage = 'open'): void {
-        Db::rateLimit('run',Config::visitorHash($req->ip));$doc=Catalog::doc($slug);
+        Db::rateLimit('run',Config::limitKey($req->ip));$doc=Catalog::doc($slug);
         if($stage==='launch')$doc['app']['launches']++;
         // A linked app plays on its own site, so no runtime ever reports it up:
         // the press of Play is the only signal there is, and it is the run.

@@ -63,8 +63,32 @@ fn application_table(table: &str) -> bool {
 /// below is only for enforcing the one-statement bridge contract.
 pub fn authorize(ctx: AuthContext<'_>, migration: bool, writable: bool) -> Authorization {
     use AuthAction::*;
+    // ALTER TABLE names (database, table) in the action itself; DROP COLUMN
+    // passes the dropped column where other actions pass the database name,
+    // so the check below would refuse every DROP COLUMN. The new name of a
+    // RENAME TO is never shown to the authorizer: `apply_migrations` checks
+    // the schema afterwards.
+    if let AlterTable { database_name, table_name } = ctx.action {
+        return if migration && database_name == "main" && application_table(table_name) {
+            Authorization::Allow
+        } else {
+            Authorization::Deny
+        };
+    }
     if ctx.database_name.is_some_and(|db| db != "main") {
-        return Authorization::Deny;
+        // RENAME COLUMN/TABLE also rewrites any temp trigger or view that
+        // names the table, so it reads (and may update) the temp schema. The
+        // migration connection can create no temp objects, so there is none.
+        let temp_schema = |table: &str| matches!(table, "sqlite_temp_master" | "sqlite_temp_schema");
+        let rename_reads_temp = migration
+            && ctx.database_name == Some("temp")
+            && match ctx.action {
+                AuthAction::Read { table_name, .. } | AuthAction::Update { table_name, .. } => temp_schema(table_name),
+                _ => false,
+            };
+        if !rename_reads_temp {
+            return Authorization::Deny;
+        }
     }
     let allowed = match ctx.action {
         Select | Recursive => true,
@@ -79,10 +103,36 @@ pub fn authorize(ctx: AuthContext<'_>, migration: bool, writable: bool) -> Autho
             migration && (application_table(table_name) || table_name == "sqlite_sequence")
         }
         DropTable { table_name } => migration && application_table(table_name),
-        CreateIndex { table_name, .. } | DropIndex { table_name, .. } => {
-            migration && application_table(table_name)
+        // An index of an app table, under a name outside the host's `_`
+        // namespace (SQLite's CREATE INDEX also asks for REINDEX of the new
+        // name, but that is incidental, and DROP INDEX asks nothing more).
+        CreateIndex { index_name, table_name } | DropIndex { index_name, table_name } => {
+            migration && application_table(table_name) && !index_name.starts_with('_')
         }
         Reindex { index_name } => migration && application_table(index_name),
+        // The clock, for defaults and backfills in a migration, as on the PHP
+        // host. Not at request time: a request uses `softn.time`.
+        Function { function_name }
+            if migration
+                && matches!(
+                    function_name.to_ascii_lowercase().as_str(),
+                    "datetime" | "date" | "time" | "strftime" | "julianday" | "unixepoch"
+                ) =>
+        {
+            true
+        }
+        // ALTER TABLE rewrites the schema with SQL of SQLite's own, which
+        // calls these; the sqlite_* ones cannot be called from app SQL at all.
+        Function { function_name }
+            if migration
+                && matches!(
+                    function_name.to_ascii_lowercase().as_str(),
+                    "printf" | "format" | "sqlite_rename_column" | "sqlite_rename_table"
+                        | "sqlite_rename_test" | "sqlite_rename_quotefix" | "sqlite_drop_column"
+                ) =>
+        {
+            true
+        }
         // Migrations do not install triggers, views, virtual tables or extensions.
         Function { function_name } => matches!(
             function_name.to_ascii_lowercase().as_str(),

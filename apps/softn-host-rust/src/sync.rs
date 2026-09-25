@@ -22,6 +22,148 @@ const TICKET_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
 /// Maximum outstanding tickets before we start rejecting (prevents memory exhaustion).
 const MAX_PENDING_TICKETS: usize = 1000;
 
+/// Ticket requests one client address may make at once, and how fast that
+/// allowance comes back. A client asks for one ticket per connection; the
+/// burst absorbs a reconnect storm (a server restart, a flapping network, an
+/// office behind one address) that a fixed 10-a-minute window turned into a
+/// run of 429s, and the refill still holds a single address to 30 a minute.
+const TICKET_BURST: f64 = 20.0;
+const TICKET_REFILL_PER_SEC: f64 = 0.5;
+/// Addresses the limiter remembers. A full bucket is the same as no entry,
+/// so those are dropped first; past this, a new address waits.
+const MAX_LIMITER_KEYS: usize = 10_000;
+
+/// Default ceiling on open sync sockets per app (`config.server.maxSyncConnections`).
+pub const DEFAULT_MAX_SYNC_CONNECTIONS: usize = 1024;
+
+/// Why `/sync/ticket` said no.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TicketError {
+    /// Wrong or missing token: permanent until the credential changes.
+    Unauthorized,
+    /// This address asked too often; retry after this long.
+    RateLimited(std::time::Duration),
+    /// The host is holding too many unredeemed tickets: transient.
+    Busy,
+}
+
+/// The key a client address is limited under. An IPv6 client usually holds a
+/// whole /64 and can rotate through it freely, so one /64 is one client.
+fn limiter_key(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => std::net::IpAddr::V4(v4),
+            None => std::net::IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6) & !((1u128 << 64) - 1))),
+        },
+        v4 => v4,
+    }
+}
+
+struct Bucket {
+    tokens: f64,
+    updated: std::time::Instant,
+}
+
+/// A token bucket per client address (an IPv6 /64 counting as one), per app:
+/// one tenant's visitors do not spend another's allowance.
+pub struct AddressLimiter {
+    burst: f64,
+    refill_per_sec: f64,
+    buckets: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, Bucket>>,
+}
+
+impl AddressLimiter {
+    pub fn new(burst: f64, refill_per_sec: f64) -> Self {
+        Self { burst, refill_per_sec, buckets: std::sync::Mutex::new(std::collections::HashMap::new()) }
+    }
+
+    /// `per_minute` requests a minute, all of which may come at once (the
+    /// PHP host's per-minute count, without its cliff at the minute's edge).
+    pub fn per_minute(per_minute: u32) -> Self {
+        Self::new(f64::from(per_minute), f64::from(per_minute) / 60.0)
+    }
+
+    fn refill(&self, bucket: &mut Bucket, now: std::time::Instant) {
+        let elapsed = now.duration_since(bucket.updated).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(self.burst);
+        bucket.updated = now;
+    }
+
+    /// Spend one request of `ip`'s allowance, or say how long to wait.
+    pub fn check(&self, ip: std::net::IpAddr) -> Result<(), std::time::Duration> {
+        let now = std::time::Instant::now();
+        let key = limiter_key(ip);
+        let mut buckets = self.buckets.lock().unwrap_or_else(|p| p.into_inner());
+        if !buckets.contains_key(&key) && buckets.len() >= MAX_LIMITER_KEYS {
+            buckets.retain(|_, b| {
+                self.refill(b, now);
+                b.tokens < self.burst
+            });
+            if buckets.len() >= MAX_LIMITER_KEYS {
+                return Err(std::time::Duration::from_secs(60));
+            }
+        }
+        let bucket = buckets.entry(key).or_insert(Bucket { tokens: self.burst, updated: now });
+        self.refill(bucket, now);
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            Ok(())
+        } else {
+            let wait = ((1.0 - bucket.tokens) / self.refill_per_sec).ceil().max(1.0);
+            Err(std::time::Duration::from_secs(wait as u64))
+        }
+    }
+}
+
+/// An open sync socket's claim on the app's connection budget, returned when
+/// the socket is dropped.
+pub struct ConnectionSlot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// The sync limits an app's manifest may set under `config.server`.
+#[derive(Clone, Debug)]
+pub struct SyncSettings {
+    /// Refuse pushes once the database file reaches this size; 0 disables.
+    pub max_storage_bytes: u64,
+    /// Concurrent blocking sync operations.
+    pub sync_permits: usize,
+    pub force_server_timestamps: bool,
+    /// Open sync sockets at once.
+    pub max_connections: usize,
+}
+
+impl SyncSettings {
+    /// Read from `config.server`. `multi_tenant` selects the lower defaults
+    /// and caps one process hosting many apps uses.
+    pub fn from_manifest(manifest: &crate::bundle::ServerManifest, multi_tenant: bool) -> Self {
+        let server = manifest.config.as_ref().and_then(|c| c.get("server"));
+        let number = |key: &str| server.and_then(|s| s.get(key)).and_then(|v| v.as_u64());
+        let max_storage_bytes = number("maxStorageMB")
+            .map(|mb| mb.min(10 * 1024) * 1024 * 1024) // cap at 10 GiB
+            .unwrap_or(512 * 1024 * 1024);
+        let sync_permits = if multi_tenant {
+            number("syncPermits").map(|n| (n as usize).clamp(4, 64)).unwrap_or(16)
+        } else {
+            number("syncPermits").map(|n| (n as usize).clamp(4, 256)).unwrap_or_else(|| {
+                std::thread::available_parallelism().map(|n| (n.get() * 4).min(64)).unwrap_or(32)
+            })
+        };
+        let max_connections = number("maxSyncConnections")
+            .map(|n| (n as usize).clamp(1, 65_536))
+            .unwrap_or(DEFAULT_MAX_SYNC_CONNECTIONS);
+        let force_server_timestamps = server
+            .and_then(|s| s.get("forceServerTimestamps"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Self { max_storage_bytes, sync_permits, force_server_timestamps, max_connections }
+    }
+}
+
 /// Valid operations for sync ops.
 const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 
@@ -45,6 +187,18 @@ const MAX_BATCH_DATA_BYTES: usize = 4 * 1024 * 1024;
 /// Multiple SyncState messages are sent for the same collection when there are
 /// more records than this limit.
 const SYNC_PULL_CHUNK_SIZE: usize = 500;
+
+/// Serialized bytes per SyncState message. The client discards any message
+/// over 2 MB (`xdb-server-sync.ts` MAX_MESSAGE_SIZE), so a chunk bounded by
+/// count alone — 500 records of up to 512 KB each — could be a 256 MB frame
+/// the client drops, leaving that collection never synced. One record larger
+/// than this still travels alone.
+const SYNC_PULL_CHUNK_BYTES: usize = 1024 * 1024;
+
+/// Distinct collections one sync_pull may name. Each is a query of up to
+/// 10,000 rows held in memory; the names are deduplicated first, since one
+/// 4 MB message could otherwise repeat a collection a hundred thousand times.
+const MAX_PULL_COLLECTIONS: usize = 100;
 
 /// Maximum allowed clock drift from clients into the future (in seconds).
 /// Timestamps further ahead than this are clamped to server time to prevent
@@ -140,6 +294,11 @@ pub struct SyncManager {
     /// ordering may not reflect the actual sequence of user actions. Enable
     /// this for apps where data integrity matters more than offline ordering.
     force_server_timestamps: bool,
+    /// Per-address allowance for `/sync/ticket`.
+    ticket_limiter: AddressLimiter,
+    /// Open sync sockets, and how many may be open at once.
+    connections: Arc<std::sync::atomic::AtomicUsize>,
+    max_connections: usize,
 }
 
 impl SyncManager {
@@ -148,10 +307,9 @@ impl SyncManager {
         runtime: Option<Arc<ServerRuntime>>,
         auth_token: Option<String>,
         db_path: PathBuf,
-        max_storage_bytes: u64,
-        max_sync_permits: usize,
-        force_server_timestamps: bool,
+        settings: SyncSettings,
     ) -> Arc<Self> {
+        let SyncSettings { max_storage_bytes, sync_permits: max_sync_permits, force_server_timestamps, max_connections } = settings;
         let (broadcast_tx, _) = broadcast::channel(256);
 
         let has_before_sync_batch = runtime
@@ -213,7 +371,28 @@ impl SyncManager {
             sync_permits,
             tickets: std::sync::Mutex::new(std::collections::HashMap::new()),
             force_server_timestamps,
+            ticket_limiter: AddressLimiter::new(TICKET_BURST, TICKET_REFILL_PER_SEC),
+            connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_connections,
         })
+    }
+
+    /// Claim a place for one more sync socket, or `None` when the app is at
+    /// `maxSyncConnections`. Each socket holds a broadcast receiver, a 512-slot
+    /// outbound queue and two tasks; without a ceiling a token-less host could
+    /// be walked into file-descriptor and memory exhaustion.
+    pub fn try_open_connection(&self) -> Option<ConnectionSlot> {
+        use std::sync::atomic::Ordering;
+        let mut current = self.connections.load(Ordering::Acquire);
+        loop {
+            if current >= self.max_connections {
+                return None;
+            }
+            match self.connections.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(ConnectionSlot(self.connections.clone())),
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<(String, ServerMessage)> {
@@ -252,9 +431,15 @@ impl SyncManager {
     /// The client calls POST /sync/ticket with their auth token in the
     /// Authorization header; the returned ticket replaces the raw token in the
     /// WebSocket URL, preventing long-lived tokens from appearing in proxy logs.
-    pub fn issue_ticket(&self, token: Option<&str>, app_version: Option<&str>) -> Result<String, String> {
-        // Validate the auth token first (reuse existing logic).
-        let client_id = self.handle_auth(token, app_version)?;
+    ///
+    /// Every request spends from `client_ip`'s allowance, a failed one too,
+    /// so the endpoint is no faster a way to guess the token than any other.
+    /// A full ticket table is `Busy`, not `Unauthorized`: the client gives up
+    /// for good on a 401, and anyone able to fill the table would otherwise
+    /// switch every client's sync off.
+    pub fn issue_ticket(&self, token: Option<&str>, client_ip: std::net::IpAddr) -> Result<String, TicketError> {
+        self.ticket_limiter.check(client_ip).map_err(TicketError::RateLimited)?;
+        let client_id = self.handle_auth(token, None).map_err(|_| TicketError::Unauthorized)?;
 
         let mut tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -263,7 +448,7 @@ impl SyncManager {
         tickets.retain(|_, t| t.expires_at > now);
 
         if tickets.len() >= MAX_PENDING_TICKETS {
-            return Err("Too many pending tickets — try again later".into());
+            return Err(TicketError::Busy);
         }
 
         let ticket_id = uuid::Uuid::new_v4().to_string();
@@ -289,7 +474,6 @@ impl SyncManager {
     }
 
     /// Returns true if auth token is configured (clients should use ticket flow).
-    #[allow(dead_code)]
     pub fn has_auth(&self) -> bool {
         self.auth_token.is_some()
     }
@@ -332,6 +516,14 @@ impl SyncManager {
         last_id: Option<&str>,
     ) -> Vec<ServerMessage> {
         let mut messages = Vec::new();
+
+        let mut seen = std::collections::HashSet::new();
+        let collections: Vec<&String> = collections.iter().filter(|c| seen.insert(c.as_str())).collect();
+        if collections.len() > MAX_PULL_COLLECTIONS {
+            return vec![ServerMessage::Error {
+                message: format!("Too many collections in one sync_pull ({}, max {})", collections.len(), MAX_PULL_COLLECTIONS),
+            }];
+        }
 
         for collection in collections {
             if !is_valid_collection_name(collection) {
@@ -407,14 +599,24 @@ impl SyncManager {
                     records: Vec::new(),
                 });
             } else {
-                while !json_records.is_empty() {
-                    let at = json_records.len().min(SYNC_PULL_CHUNK_SIZE);
-                    let rest = json_records.split_off(at);
-                    messages.push(ServerMessage::SyncState {
-                        collection: collection.clone(),
-                        records: json_records,
-                    });
-                    json_records = rest;
+                let mut chunk = Vec::new();
+                let mut chunk_bytes = 0usize;
+                for record in json_records.drain(..) {
+                    let size = serde_json::to_vec(&record).map(|b| b.len() + 1).unwrap_or(0);
+                    if !chunk.is_empty()
+                        && (chunk.len() >= SYNC_PULL_CHUNK_SIZE || chunk_bytes + size > SYNC_PULL_CHUNK_BYTES)
+                    {
+                        messages.push(ServerMessage::SyncState {
+                            collection: collection.clone(),
+                            records: std::mem::take(&mut chunk),
+                        });
+                        chunk_bytes = 0;
+                    }
+                    chunk_bytes += size;
+                    chunk.push(record);
+                }
+                if !chunk.is_empty() {
+                    messages.push(ServerMessage::SyncState { collection: collection.clone(), records: chunk });
                 }
             }
         }
@@ -489,9 +691,7 @@ impl SyncManager {
             // skew. A Hybrid Logical Clock (HLC) would provide causal ordering, but
             // requires client-side HLC support and a protocol change. For the current
             // use case (single-user multi-device sync) this is acceptable.
-            if self.force_server_timestamps {
-                op.timestamp = server_time.clone();
-            } else if op.timestamp.is_empty() {
+            if self.force_server_timestamps || op.timestamp.is_empty() {
                 op.timestamp = server_time.clone();
             } else if let Ok(client_ts) = chrono::DateTime::parse_from_rfc3339(&op.timestamp) {
                 let drift = client_ts.signed_duration_since(server_now).num_seconds();
@@ -632,6 +832,19 @@ impl SyncManager {
                 let mut batch_rejected = Vec::new();
 
                 for mut op in validated_ops {
+                    // xdb finds a record by id alone. An op names a collection,
+                    // and that is what a before-sync hook authorized; an id that
+                    // lives in another collection would otherwise let an op
+                    // "in notes" update, delete or (by INSERT OR REPLACE)
+                    // overwrite a record the hook never saw.
+                    match db.get_record(&op.record_id) {
+                        Ok(existing) if existing.collection != op.collection => {
+                            batch_rejected.push((op.id.clone(), "recordId belongs to another collection".to_string()));
+                            continue;
+                        }
+                        Ok(_) | Err(xdb::DbError::NotFound(_)) => {}
+                        Err(e) => return Err(e),
+                    }
                     let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
                         "create" => {
                             let data = op.data.clone().unwrap_or(serde_json::json!({}));
@@ -902,5 +1115,158 @@ impl SyncManager {
             "timestamp": op.timestamp,
             "clientId": op.client_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manager(script: Option<&str>) -> (Arc<SyncManager>, ServerDb) {
+        let dir = std::env::temp_dir().join(format!("softn-sync-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xdb.sqlite");
+        let shared = xdb::create_shared_db(path.clone()).unwrap();
+        let db = ServerDb::new(shared, &path, 2).unwrap();
+        let runtime = script.map(|source| {
+            let rt = ServerRuntime::new(|| crate::host::BridgeSet {
+                db: None, http: None, fs: None, env: None, sql: None, crypto: None,
+                allow_time: false, development: true, allow_photos: false,
+            }, Some(1)).unwrap();
+            rt.init(source.to_string()).unwrap();
+            rt
+        });
+        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2 };
+        (SyncManager::new(db.clone(), runtime, None, path, settings), db)
+    }
+
+    #[test]
+    fn tickets_are_limited_per_address_with_a_burst_and_a_retry_hint() {
+        let limiter = AddressLimiter::new(TICKET_BURST, TICKET_REFILL_PER_SEC);
+        let a: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        for _ in 0..TICKET_BURST as usize {
+            assert!(limiter.check(a).is_ok());
+        }
+        let wait = limiter.check(a).unwrap_err();
+        assert!(wait >= std::time::Duration::from_secs(1) && wait <= std::time::Duration::from_secs(2), "{wait:?}");
+        assert!(limiter.check("203.0.113.8".parse().unwrap()).is_ok(), "another address has its own allowance");
+        // One IPv6 /64 is one client; the next /64 is another.
+        let v6 = AddressLimiter::new(TICKET_BURST, TICKET_REFILL_PER_SEC);
+        for i in 0..TICKET_BURST as usize {
+            assert!(v6.check(format!("2001:db8:0:1::{:x}", i + 1).parse().unwrap()).is_ok());
+        }
+        assert!(v6.check("2001:db8:0:1:ffff::1".parse().unwrap()).is_err());
+        assert!(v6.check("2001:db8:0:2::1".parse().unwrap()).is_ok());
+        assert_eq!(limiter_key("::ffff:10.0.0.1".parse().unwrap()), "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn a_full_ticket_table_is_busy_and_a_wrong_token_unauthorized() {
+        let (sync, _) = manager(None);
+        let mut ip = 0u32;
+        for _ in 0..MAX_PENDING_TICKETS {
+            ip += 1;
+            sync.issue_ticket(None, std::net::IpAddr::V4(ip.into())).unwrap();
+        }
+        assert_eq!(sync.issue_ticket(None, "198.51.100.1".parse().unwrap()), Err(TicketError::Busy));
+        let dir = std::env::temp_dir().join(format!("softn-sync-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xdb.sqlite");
+        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
+        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2 };
+        let guarded = SyncManager::new(db, None, Some("s3cret".into()), path, settings);
+        let ip: std::net::IpAddr = "198.51.100.2".parse().unwrap();
+        assert_eq!(guarded.issue_ticket(Some("wrong"), ip), Err(TicketError::Unauthorized));
+        assert!(guarded.issue_ticket(Some("s3cret"), ip).is_ok());
+    }
+
+    #[test]
+    fn connection_slots_are_bounded_and_returned() {
+        let (sync, _) = manager(None);
+        let first = sync.try_open_connection().unwrap();
+        let _second = sync.try_open_connection().unwrap();
+        assert!(sync.try_open_connection().is_none());
+        drop(first);
+        assert!(sync.try_open_connection().is_some());
+    }
+
+    fn op(id: &str, collection: &str, operation: &str, record: &str, data: serde_json::Value) -> SyncOp {
+        SyncOp {
+            id: id.into(), collection: collection.into(), operation: operation.into(),
+            record_id: record.into(), data: Some(data), timestamp: String::new(), client_id: String::new(),
+        }
+    }
+
+    fn rejected(responses: &[ServerMessage]) -> Vec<String> {
+        responses.iter().filter_map(|m| match m {
+            ServerMessage::SyncReject { op_id, .. } => Some(op_id.clone()),
+            _ => None,
+        }).collect()
+    }
+
+    /// A hook that guards a collection is the app's authorization for sync.
+    /// An op naming an allowed collection must not reach a record that lives
+    /// in a guarded one: xdb looks a record up by id alone.
+    #[test]
+    fn an_op_cannot_reach_a_record_in_another_collection() {
+        let (sync, db) = manager(Some("function onBeforeSyncBatch(ops) { return ops.filter(function (o) { return o.collection === 'admin'; }).map(function (o) { return o.id; }); }"));
+        db.write().upsert_record(xdb::Record {
+            id: "root".into(), collection: "admin".into(), data: serde_json::json!({"role":"owner"}),
+            created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
+        }).unwrap();
+        let responses = sync.handle_sync_push(vec![
+            op("u1", "notes", "update", "root", serde_json::json!({"role":"guest"})),
+            op("d1", "notes", "delete", "root", serde_json::json!({})),
+            op("c1", "notes", "create", "root", serde_json::json!({"title":"moved"})),
+            op("ok", "notes", "create", "n1", serde_json::json!({"title":"fine"})),
+        ], "client");
+        let mut refused = rejected(&responses);
+        refused.sort();
+        assert_eq!(refused, vec!["c1", "d1", "u1"], "{responses:?}");
+        let root = db.write().get_record("root").unwrap();
+        assert_eq!(root.collection, "admin");
+        assert_eq!(root.data, serde_json::json!({"role":"owner"}));
+        assert!(!root.deleted);
+        assert_eq!(db.write().get_record("n1").unwrap().collection, "notes");
+    }
+
+    /// A pull is chunked by bytes as well as by count: the client drops any
+    /// message over 2 MB, so a count-only chunk of large records never lands.
+    #[test]
+    fn a_pull_is_chunked_under_the_clients_message_limit() {
+        let (sync, db) = manager(None);
+        let big = "x".repeat(300 * 1024);
+        for i in 0..20 {
+            db.write().upsert_record(xdb::Record {
+                id: format!("r{i}"), collection: "docs".into(), data: serde_json::json!({"body": big}),
+                created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
+            }).unwrap();
+        }
+        let messages = sync.handle_sync_pull(&["docs".to_string()], None, None);
+        let mut total = 0;
+        for message in &messages {
+            let bytes = serde_json::to_vec(message).unwrap().len();
+            assert!(bytes <= 2 * 1024 * 1024, "a {bytes}-byte sync_state would be discarded by the client");
+            if let ServerMessage::SyncState { records, .. } = message { total += records.len(); }
+        }
+        assert_eq!(total, 20);
+        assert!(messages.len() > 1);
+    }
+
+    /// Naming one collection many times in one pull used to read it that many
+    /// times into memory: a 4 MB message could hold a hundred thousand names.
+    #[test]
+    fn a_pull_reads_each_collection_once_and_bounds_how_many() {
+        let (sync, db) = manager(None);
+        db.write().upsert_record(xdb::Record {
+            id: "a".into(), collection: "notes".into(), data: serde_json::json!({}),
+            created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
+        }).unwrap();
+        let repeated: Vec<String> = std::iter::repeat_n("notes".to_string(), 5_000).collect();
+        let messages = sync.handle_sync_pull(&repeated, None, None);
+        assert_eq!(messages.len(), 1, "one sync_state for one distinct collection");
+        let many: Vec<String> = (0..MAX_PULL_COLLECTIONS + 1).map(|i| format!("c{i}")).collect();
+        let messages = sync.handle_sync_pull(&many, None, None);
+        assert!(matches!(messages.as_slice(), [ServerMessage::Error { .. }]), "{} messages", messages.len());
     }
 }

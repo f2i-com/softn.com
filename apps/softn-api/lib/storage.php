@@ -199,9 +199,8 @@ SQL);
     public static function run(Request $req, string $slug, array $body): mixed
     {
         $op = is_string($body['op'] ?? null) ? $body['op'] : '';
-        $visitor = Config::visitorHash($req->ip);
         $writes = ['insert', 'update', 'set', 'remove', 'clear', 'kvSet', 'kvRemove'];
-        Db::rateLimit(in_array($op, $writes, true) ? 'storageWrite' : 'storageRead', "$visitor|$slug");
+        Db::rateLimit(in_array($op, $writes, true) ? 'storageWrite' : 'storageRead', Config::limitKey($req->ip) . "|$slug");
         $pdo = self::open($slug);
         $limits = Config::get('storage');
         // The quota is checked by each write, inside its transaction: see assertQuota.

@@ -10,6 +10,12 @@ RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 RewriteRule ^api(?:/.*)?$ api.php [END]
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
+    # Only this site may frame the app, so another page cannot overlay it and
+    # steer a signed-in visitor's clicks. To embed the app on another site,
+    # list that origin after 'self' (and remove X-Frame-Options).
+    Header always set Content-Security-Policy "frame-ancestors 'self'"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
     <FilesMatch "^(index\.html|runtime\.config\.json|app\.softn)$">
         Header set Cache-Control "no-cache"
     </FilesMatch>
