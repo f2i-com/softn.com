@@ -3,9 +3,15 @@
  *
  * Types out text character by character with optional looping,
  * deletion, and a blinking cursor.
+ *
+ * A screen reader hears the text whole, once: the typing is hidden from it
+ * and a visually hidden copy carries the words, instead of a stream of
+ * partial strings and "vertical bar". With reduced motion requested the
+ * first text is shown complete, without typing or a blinking cursor.
  */
 
 import * as React from 'react';
+import { usePrefersReducedMotion } from '../utils/motion';
 
 export interface TypewriterProps {
   /** The text(s) to type out. When an array, cycles through each text. */
@@ -57,7 +63,8 @@ export function Typewriter({
   className,
   style,
 }: TypewriterProps): React.ReactElement {
-  const texts = Array.isArray(text) ? text : [text];
+  const texts = (Array.isArray(text) ? text : [text]).map((t) => (t == null ? '' : String(t)));
+  const reducedMotion = usePrefersReducedMotion();
   const shouldLoop = loop !== undefined ? loop : texts.length > 1;
 
   const [displayedText, setDisplayedText] = React.useState('');
@@ -78,6 +85,12 @@ export function Typewriter({
     textIndexRef.current = 0;
     charIndexRef.current = 0;
     isDeletingRef.current = false;
+
+    if (reducedMotion) {
+      setDisplayedText(texts[0] ?? '');
+      onCompleteRef.current?.();
+      return;
+    }
     setDisplayedText('');
 
     const tick = () => {
@@ -139,7 +152,7 @@ export function Typewriter({
     // We intentionally use a serialized version of texts to avoid re-running
     // on every render when an inline array literal is passed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(texts), speed, deleteSpeed, pauseDuration, shouldLoop]);
+  }, [JSON.stringify(texts), speed, deleteSpeed, pauseDuration, shouldLoop, reducedMotion]);
 
   const cursorStyle: React.CSSProperties = {
     animation: 'softn-typewriter-blink 1s step-end infinite',
@@ -147,10 +160,25 @@ export function Typewriter({
     fontWeight: 'normal',
   };
 
+  const visuallyHidden: React.CSSProperties = {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    padding: 0,
+    margin: -1,
+    overflow: 'hidden',
+    clip: 'rect(0, 0, 0, 0)',
+    whiteSpace: 'nowrap',
+    border: 0,
+  };
+
   return (
     <span className={className} style={style}>
-      {displayedText}
-      {cursor && <span style={cursorStyle}>{cursorChar}</span>}
+      <span style={visuallyHidden}>{reducedMotion ? texts[0] : texts.join(' ')}</span>
+      <span aria-hidden="true">
+        {displayedText}
+        {cursor && !reducedMotion && <span style={cursorStyle}>{cursorChar}</span>}
+      </span>
     </span>
   );
 }

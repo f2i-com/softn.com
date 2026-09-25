@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { cssPaint } from '../utils/egress';
 
 export interface ProgressProps {
   /** Progress value (0-100) */
@@ -34,6 +35,8 @@ export interface ProgressProps {
   animated?: boolean;
   /** Border radius */
   borderRadius?: 'none' | 'sm' | 'md' | 'lg' | 'full';
+  /** Accessible name for the bar (default "Progress") */
+  ariaLabel?: string;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -109,19 +112,28 @@ export function Progress({
   striped = false,
   animated = false,
   borderRadius = 'full',
+  ariaLabel,
   className,
   style,
 }: ProgressProps): React.ReactElement {
-  const percentage = Math.min(100, Math.max(0, (value / max) * 100));
-  const colorConfig = colorValues[variant];
-  const barColor = color ?? colorConfig.color;
-  const barGradient = color ? undefined : colorConfig.gradient;
-  const barGlow = color ? undefined : colorConfig.glow;
-  const bgColor = backgroundColor ?? 'var(--color-gray-200, #3f3f46)';
-  const radius = radiusValues[borderRadius];
-  const sizeConfig = sizeValues[size];
+  // `max` of zero (or a value that is not a number) would put `NaN%` into
+  // the width and the label; the bar reads empty instead.
+  const safeMax = Number.isFinite(max) && max > 0 ? max : 100;
+  const safeValue = Number.isFinite(value) ? Math.min(safeMax, Math.max(0, value)) : 0;
+  const percentage = (safeValue / safeMax) * 100;
+  const colorConfig = colorValues[variant] ?? colorValues.primary;
+  // Both land in `background`, which would fetch a `url()` the bundle wrote
+  // as a "colour"; a value that is not a colour falls back to the variant.
+  const paint = cssPaint(color);
+  const barColor = paint ?? colorConfig.color;
+  const barGradient = paint ? undefined : colorConfig.gradient;
+  const barGlow = paint ? undefined : colorConfig.glow;
+  const bgColor = cssPaint(backgroundColor) ?? 'var(--color-gray-200, #3f3f46)';
+  const radius = radiusValues[borderRadius] ?? radiusValues.full;
+  const sizeConfig = sizeValues[size] ?? sizeValues.md;
+  const labelId = React.useId();
 
-  const defaultLabel = formatLabel ? formatLabel(value, max) : `${Math.round(percentage)}%`;
+  const defaultLabel = formatLabel ? formatLabel(safeValue, safeMax) : `${Math.round(percentage)}%`;
 
   const wrapperStyle: React.CSSProperties = {
     width: '100%',
@@ -227,28 +239,33 @@ export function Progress({
           100% { background-position: 0 0; }
         }
         @media (prefers-reduced-motion: reduce) {
-          .softn-progress-bar { animation: none !important; }
+          .softn-progress-bar { animation: none !important; transition: none !important; }
         }
       `}</style>
       <div className={className} style={wrapperStyle}>
         {showTopLabel && (
           <div style={topLabelStyle}>
-            <span>Progress</span>
+            <span id={labelId}>{ariaLabel ?? 'Progress'}</span>
             <span>{defaultLabel}</span>
           </div>
         )}
         <div style={{ display: 'flex', alignItems: 'center' }}>
-          <div style={containerStyle}>
-            <div
-              style={barStyle}
-              role="progressbar"
-              aria-valuenow={value}
-              aria-valuemin={0}
-              aria-valuemax={max}
-            />
-            {showInsideLabel && <span style={insideLabelStyle}>{defaultLabel}</span>}
+          <div
+            style={containerStyle}
+            role="progressbar"
+            aria-label={showTopLabel ? undefined : (ariaLabel ?? 'Progress')}
+            aria-labelledby={showTopLabel ? labelId : undefined}
+            // An indeterminate bar has no current value to report.
+            aria-valuenow={indeterminate ? undefined : safeValue}
+            aria-valuemin={0}
+            aria-valuemax={safeMax}
+            aria-valuetext={indeterminate ? undefined : defaultLabel}
+            aria-busy={indeterminate || undefined}
+          >
+            <div className="softn-progress-bar" style={barStyle} />
+            {showInsideLabel && <span style={insideLabelStyle} aria-hidden="true">{defaultLabel}</span>}
           </div>
-          {showOutsideLabel && <span style={outsideLabelStyle}>{defaultLabel}</span>}
+          {showOutsideLabel && <span style={outsideLabelStyle} aria-hidden="true">{defaultLabel}</span>}
         </div>
       </div>
     </>

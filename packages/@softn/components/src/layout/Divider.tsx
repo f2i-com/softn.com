@@ -47,6 +47,9 @@ export function Divider({
     return (
       <div
         className={className}
+        role="separator"
+        aria-orientation={direction === 'vertical' ? 'vertical' : undefined}
+        aria-label={typeof label === 'string' ? label : undefined}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -100,7 +103,13 @@ export function Divider({
     ...style,
   };
 
-  return <hr className={className} style={computedStyle} />;
+  return (
+    <hr
+      className={className}
+      style={computedStyle}
+      aria-orientation={direction === 'vertical' ? 'vertical' : undefined}
+    />
+  );
 }
 
 export default Divider;

@@ -547,7 +547,6 @@ export function SmartGrid<T extends Record<string, unknown>>({
     background: 'var(--color-surface, #ffffff)',
     color: 'var(--color-text, #1a1a2e)',
     fontSize: '0.875rem',
-    outline: 'none',
     transition: 'border-color 0.15s, box-shadow 0.15s',
   };
 
@@ -668,7 +667,6 @@ export function SmartGrid<T extends Record<string, unknown>>({
     background: 'var(--color-gray-50, #f3f3f6)',
     color: 'var(--color-text, #1a1a2e)',
     fontSize: '0.875rem',
-    outline: 'none',
   };
 
   // Render form for add/edit
@@ -696,7 +694,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
             margin: '0 0 1rem',
             fontSize: '1.125rem',
             fontWeight: 600,
-            color: 'var(--color-gray-900, #1a1a2e)',
+            color: 'var(--color-text, #1a1a2e)',
           }}
         >
           {title}
@@ -945,11 +943,15 @@ export function SmartGrid<T extends Record<string, unknown>>({
                   cursor: onSelect ? 'pointer' : 'default',
                 }}
                 onClick={() => onSelect?.(row)}
-                role={onSelect ? 'button' : undefined}
-                tabIndex={onSelect ? 0 : undefined}
-                onKeyDown={(event) => handleRowKeyDown(event, row)}
               >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+                {/* The card's content is the button; Edit and Delete sit beside
+                    it, not inside it, so each is a control of its own. */}
+                <div
+                  style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}
+                  role={onSelect ? 'button' : undefined}
+                  tabIndex={onSelect ? 0 : undefined}
+                  onKeyDown={(event) => handleRowKeyDown(event, row)}
+                >
                   {/* First column as title */}
                   {columns.length > 0 && (
                     <div
@@ -1106,8 +1108,9 @@ export function SmartGrid<T extends Record<string, unknown>>({
                     onMouseEnter={() => setHoveredRow(index)}
                     onMouseLeave={() => setHoveredRow(null)}
                     onClick={() => onSelect?.(row)}
+                    // Focusable and selected with Enter or Space. No aria-label:
+                    // one on the row replaced everything its cells say.
                     tabIndex={onSelect ? 0 : undefined}
-                    aria-label={onSelect ? `Select row ${getRowKey(row, index)}` : undefined}
                     onKeyDown={(event) => handleRowKeyDown(event, row)}
                   >
                     {columns.map((col) => {

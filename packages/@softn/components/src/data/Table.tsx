@@ -64,8 +64,10 @@ function TableRow<T extends Record<string, unknown>>({
       onKeyDown={onRowClick ? handleRowKeyDown : undefined}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      // Focusable and activated with Enter or Space, but still a row: a
+      // `role="button"` here took the row out of the table, and its cells
+      // with it, for anyone reading by table navigation.
       tabIndex={onRowClick ? 0 : undefined}
-      role={onRowClick ? 'button' : undefined}
     >
       {columns.map((column) => (
         <td key={column.key} style={getBodyCellStyle(column)} role="cell">
@@ -75,6 +77,25 @@ function TableRow<T extends Record<string, unknown>>({
         </td>
       ))}
     </tr>
+  );
+}
+
+/** The sort arrows in a header. Module scope, so it is updated, not remounted. */
+function SortIcon({ active, direction }: { active: boolean; direction?: 'asc' | 'desc' }): React.ReactElement {
+  const on = 'var(--color-primary-500, #6366f1)';
+  const off = 'var(--color-text-muted, #a1a1aa)';
+  return (
+    <span
+      style={{ marginLeft: '0.25rem', display: 'inline-flex', flexDirection: 'column', verticalAlign: 'middle' }}
+      aria-hidden="true"
+    >
+      <svg width="8" height="8" viewBox="0 0 8 8" fill={active && direction === 'asc' ? on : off} style={{ marginBottom: '-2px' }}>
+        <path d="M4 0L8 4H0L4 0Z" />
+      </svg>
+      <svg width="8" height="8" viewBox="0 0 8 8" fill={active && direction === 'desc' ? on : off} style={{ marginTop: '-2px' }}>
+        <path d="M4 8L0 4H8L4 8Z" />
+      </svg>
+    </span>
   );
 }
 
@@ -103,6 +124,10 @@ export interface TableProps<T> {
   onSort?: (column: string, direction: 'asc' | 'desc') => void;
   /** Empty state content */
   emptyContent?: React.ReactNode;
+  /** Visible caption naming the table */
+  caption?: React.ReactNode;
+  /** Accessible name for the table (default: the caption, else "Data table") */
+  ariaLabel?: string;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -116,8 +141,8 @@ const sizeStyles: Record<string, { cell: string; header: string }> = {
 };
 
 export function Table<T extends Record<string, unknown>>({
-  columns,
-  data,
+  columns: rawColumns,
+  data: rawData,
   rowKey = 'id',
   variant = 'default',
   size = 'md',
@@ -128,10 +153,16 @@ export function Table<T extends Record<string, unknown>>({
   sortDirection,
   onSort,
   emptyContent = 'No data available',
+  caption,
+  ariaLabel,
   className,
   style,
 }: TableProps<T>): React.ReactElement {
-  const sizes = sizeStyles[size];
+  const sizes = sizeStyles[size] ?? sizeStyles.md;
+  // Bound to rows that have not arrived, the table is empty, not an error.
+  const data = Array.isArray(rawData) ? rawData : [];
+  const columns = Array.isArray(rawColumns) ? rawColumns : [];
+  const captionId = React.useId();
 
   const getRowKey = (row: T, index: number): string => {
     if (typeof rowKey === 'function') {
@@ -178,7 +209,6 @@ export function Table<T extends Record<string, unknown>>({
     color: 'var(--color-text, #ececf0)',
     borderBottom: '2px solid var(--color-border, rgba(255, 255, 255, 0.08))',
     width: column.width,
-    cursor: column.sortable ? 'pointer' : 'default',
     userSelect: column.sortable ? 'none' : 'auto',
     whiteSpace: 'nowrap',
     ...(variant === 'bordered' && {
@@ -222,65 +252,55 @@ export function Table<T extends Record<string, unknown>>({
     return 'none';
   };
 
-  // Handle keyboard navigation on sortable headers
-  const handleHeaderKeyDown = (e: React.KeyboardEvent, column: Column<T>) => {
-    if (column.sortable && (e.key === 'Enter' || e.key === ' ')) {
-      e.preventDefault();
-      handleSort(column);
-    }
-  };
-
-  const SortIcon = ({ column }: { column: Column<T> }) => {
-    if (!column.sortable) return null;
-    const isActive = sortColumn === column.key;
-    const isAsc = isActive && sortDirection === 'asc';
-    const isDesc = isActive && sortDirection === 'desc';
-
-    return (
-      <span
-        style={{ marginLeft: '0.25rem', display: 'inline-flex', flexDirection: 'column' }}
-        aria-hidden="true"
-      >
-        <svg
-          width="8"
-          height="8"
-          viewBox="0 0 8 8"
-          fill={isAsc ? '#6366f1' : '#a1a1aa'}
-          style={{ marginBottom: '-2px' }}
-        >
-          <path d="M4 0L8 4H0L4 0Z" />
-        </svg>
-        <svg
-          width="8"
-          height="8"
-          viewBox="0 0 8 8"
-          fill={isDesc ? '#6366f1' : '#a1a1aa'}
-          style={{ marginTop: '-2px' }}
-        >
-          <path d="M4 8L0 4H8L4 8Z" />
-        </svg>
-      </span>
-    );
-  };
-
   return (
-    <div className={className} style={containerStyle} role="region" aria-label="Data table">
-      <table style={tableStyle} role="table">
+    <div
+      className={className}
+      style={containerStyle}
+      role="region"
+      aria-label={ariaLabel ?? (caption ? undefined : 'Data table')}
+      aria-labelledby={ariaLabel || !caption ? undefined : captionId}
+      // A scrolling region is focusable so its overflow can be scrolled from the keyboard.
+      tabIndex={0}
+    >
+      <table style={tableStyle} role="table" aria-label={ariaLabel} aria-labelledby={ariaLabel || !caption ? undefined : captionId}>
+        {caption && (
+          <caption id={captionId} style={{ textAlign: 'left', padding: '0.5rem 0', color: 'var(--color-text, inherit)', fontWeight: 600 }}>
+            {caption}
+          </caption>
+        )}
         <thead role="rowgroup">
           <tr style={headerRowStyle} role="row">
             {columns.map((column) => (
               <th
                 key={column.key}
                 style={getHeaderCellStyle(column)}
-                onClick={() => handleSort(column)}
-                onKeyDown={(e) => handleHeaderKeyDown(e, column)}
-                tabIndex={column.sortable ? 0 : undefined}
                 role="columnheader"
                 aria-sort={getAriaSort(column)}
                 scope="col"
               >
-                {column.header}
-                <SortIcon column={column} />
+                {column.sortable ? (
+                  <button
+                    type="button"
+                    onClick={() => handleSort(column)}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      padding: 0,
+                      margin: 0,
+                      border: 0,
+                      background: 'transparent',
+                      color: 'inherit',
+                      font: 'inherit',
+                      textAlign: 'inherit',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {column.header}
+                    <SortIcon active={sortColumn === column.key} direction={sortDirection} />
+                  </button>
+                ) : (
+                  column.header
+                )}
               </th>
             ))}
           </tr>

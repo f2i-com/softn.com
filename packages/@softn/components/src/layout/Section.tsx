@@ -28,6 +28,8 @@ export interface SectionProps {
   collapsible?: boolean;
   /** Default collapsed state */
   defaultCollapsed?: boolean;
+  /** Heading level of the title (default 2) */
+  headingLevel?: 1 | 2 | 3 | 4 | 5 | 6;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -53,10 +55,16 @@ export function Section({
   borderRadius = 'var(--radius-lg, 0.75rem)',
   collapsible = false,
   defaultCollapsed = false,
+  headingLevel = 2,
   className,
   style,
 }: SectionProps): React.ReactElement {
   const [collapsed, setCollapsed] = React.useState(defaultCollapsed);
+  const baseId = React.useId();
+  const titleId = `${baseId}-title`;
+  const contentId = `${baseId}-content`;
+  const level = Math.min(6, Math.max(1, Math.round(Number(headingLevel)) || 2));
+  const HeadingTag = `h${level}` as 'h2';
   const paddingValue = sizeMap[padding] || padding;
   const gapValue = sizeMap[gap] || gap;
   // A `url()` in `background` is a fetch the renderer's scrub of `style`
@@ -125,8 +133,16 @@ export function Section({
     transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
   };
 
-  const ChevronIcon = () => (
-    <svg style={chevronStyle} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  const chevron = (
+    <svg
+      style={chevronStyle}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden="true"
+      focusable="false"
+    >
       <polyline points="6 9 12 15 18 9" />
     </svg>
   );
@@ -137,23 +153,60 @@ export function Section({
     }
   };
 
+  // A collapsible title is a disclosure button inside the heading, so the
+  // keyboard can reach it and a screen reader hears whether it is open.
+  const toggle = collapsible && title;
+
   return (
-    <section className={`softn-section ${className || ''}`} style={containerStyle}>
+    <section
+      className={`softn-section ${className || ''}`}
+      style={containerStyle}
+      aria-labelledby={title ? titleId : undefined}
+    >
       {(title || action) && (
         <div style={headerStyle} onClick={handleHeaderClick}>
           <div style={titleContainerStyle}>
             {title && (
-              <h2 style={titleStyle}>
-                {collapsible && <ChevronIcon />}
-                {title}
-              </h2>
+              <HeadingTag style={titleStyle} id={titleId}>
+                {toggle ? (
+                  <button
+                    type="button"
+                    aria-expanded={!collapsed}
+                    aria-controls={contentId}
+                    // No handler of its own: the click bubbles to the header's.
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      padding: 0,
+                      margin: 0,
+                      border: 0,
+                      background: 'transparent',
+                      color: 'inherit',
+                      font: 'inherit',
+                      textAlign: 'inherit',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {chevron}
+                    {title}
+                  </button>
+                ) : (
+                  <>
+                    {collapsible && chevron}
+                    {title}
+                  </>
+                )}
+              </HeadingTag>
             )}
             {subtitle && <p style={subtitleStyle}>{subtitle}</p>}
           </div>
           {action && <div onClick={(e) => e.stopPropagation()}>{action}</div>}
         </div>
       )}
-      <div style={contentStyle}>{children}</div>
+      <div id={contentId} style={contentStyle} hidden={collapsed || undefined}>
+        {children}
+      </div>
     </section>
   );
 }

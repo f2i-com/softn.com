@@ -29,6 +29,8 @@ import { mount } from './dom';
 // this file is about: constructing the scanner is what opens the device, so a
 // scanner that is never constructed is a device that is never opened.
 vi.mock('@yudiel/react-qr-scanner', () => ({
+  // QRReader points the decoder at the host's copy when its module loads.
+  prepareZXingModule: () => {},
   Scanner: (): React.ReactElement => {
     React.useEffect(() => {
       void navigator.mediaDevices.getUserMedia({ video: true });

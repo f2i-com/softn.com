@@ -19,6 +19,8 @@ export interface QRCodeProps {
   bgColor?: string;
   /** Error correction level (default 'M') */
   errorCorrection?: 'L' | 'M' | 'Q' | 'H';
+  /** Accessible name for the code (default "QR code") */
+  ariaLabel?: string;
   /** Inline styles */
   style?: React.CSSProperties;
   /** CSS class name */
@@ -31,6 +33,7 @@ export function QRCode({
   color = '#000',
   bgColor = '#fff',
   errorCorrection = 'M',
+  ariaLabel = 'QR code',
   style,
   className,
 }: QRCodeProps): React.ReactElement {
@@ -43,6 +46,9 @@ export function QRCode({
     marginSize: 4,
     className,
     style,
+    // A canvas is nothing to a screen reader until it is named as an image.
+    role: 'img',
+    'aria-label': ariaLabel,
   });
 }
 

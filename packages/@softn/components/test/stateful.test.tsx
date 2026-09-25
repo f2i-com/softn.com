@@ -83,7 +83,8 @@ describe('Toast paused by hovering', () => {
     // React derives onMouseEnter/onMouseLeave from delegated mouseover /
     // mouseout, comparing relatedTarget to decide whether the pointer really
     // crossed the boundary — a bare `mouseenter` never reaches the handler.
-    const toast = container.querySelector<HTMLElement>('[role=alert]');
+    // An info toast is a polite `status`; errors and warnings are `alert`s.
+    const toast = container.querySelector<HTMLElement>('[role=status]');
     expect(toast, 'the toast should render').not.toBeNull();
 
     act(() => {
@@ -139,7 +140,9 @@ describe('AnimatedNumber interrupted mid-flight', () => {
     // live counter updating faster than the animation lasts snapped back
     // toward the old number on every tick and never settled.
     const { container, rerender } = mount(<AnimatedNumber value={0} duration={1000} />);
-    const read = () => Number((container.textContent ?? '').replace(/[^0-9.-]/g, ''));
+    // The digits on screen; a visually hidden copy carries the target value.
+    const read = () =>
+      Number((container.querySelector('[aria-hidden="true"]')?.textContent ?? '').replace(/[^0-9.-]/g, ''));
 
     rerender(<AnimatedNumber value={100} duration={1000} />);
     await new Promise((r) => setTimeout(r, 300));

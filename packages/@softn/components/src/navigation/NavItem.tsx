@@ -900,6 +900,17 @@ const iconMap: Record<string, React.ReactNode> = {
   ),
 };
 
+/** The text a node reads as: strings and numbers, and the text inside elements. */
+function textOf(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (React.isValidElement(node)) {
+    return textOf((node.props as { children?: React.ReactNode }).children);
+  }
+  return '';
+}
+
 export function NavItem({
   label,
   children,
@@ -920,6 +931,9 @@ export function NavItem({
 
   const resolvedIcon = typeof icon === 'string' ? iconMap[icon] : icon;
   const displayLabel = label || children;
+  // `data-label` and `title` are attributes: a label given as elements used
+  // to reach them as "[object Object]". Its text is what they should say.
+  const textLabel = textOf(displayLabel).replace(/\s+/g, ' ').trim();
 
   const baseStyle: React.CSSProperties = {
     display: 'flex',
@@ -979,7 +993,8 @@ export function NavItem({
         .softn-nav-item:active {
           transform: scale(0.98) translateX(0);
         }
-        .softn-nav-item.collapsed[data-label]:hover::after {
+        .softn-nav-item.collapsed[data-label]:hover::after,
+        .softn-nav-item.collapsed[data-label]:focus-visible::after {
           content: attr(data-label);
           position: absolute;
           left: 100%;
@@ -1002,6 +1017,10 @@ export function NavItem({
           from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
           to { opacity: 1; transform: translateY(-50%) translateX(0); }
         }
+        @media (prefers-reduced-motion: reduce) {
+          .softn-nav-item, .softn-nav-item::after { transition: none !important; animation: none !important; }
+          .softn-nav-item:hover:not(.active), .softn-nav-item:active { transform: none !important; }
+        }
       `}</style>
       <button
         type="button"
@@ -1010,11 +1029,14 @@ export function NavItem({
         onClick={handleClick}
         data-page={page}
         data-navigate={navigate}
-        data-label={collapsed ? displayLabel : undefined}
-        title={collapsed ? String(displayLabel) : undefined}
+        data-label={collapsed && textLabel ? textLabel : undefined}
+        title={collapsed && textLabel ? textLabel : undefined}
+        // Collapsed, only the icon shows; the name has to come from somewhere.
+        aria-label={collapsed && textLabel ? textLabel : undefined}
+        aria-current={active ? 'page' : undefined}
       >
         {resolvedIcon && (
-          <span className="nav-icon" style={iconStyle}>
+          <span className="nav-icon" style={iconStyle} aria-hidden={textLabel ? true : undefined}>
             {resolvedIcon}
           </span>
         )}

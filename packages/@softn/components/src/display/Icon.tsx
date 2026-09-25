@@ -17,6 +17,12 @@ export interface IconProps {
   size?: number | string;
   /** Icon color (default currentColor) */
   color?: string;
+  /**
+   * What the icon means, when it is the only thing saying it (an icon-only
+   * status, say). Without one the icon is decoration and hidden from
+   * assistive technology; the text or button beside it carries the meaning.
+   */
+  ariaLabel?: string;
   /** Additional CSS class */
   className?: string;
   /** Inline styles applied to the wrapper */
@@ -74,9 +80,13 @@ export function Icon({
   svg,
   size = 20,
   color = 'currentColor',
+  ariaLabel,
   className,
   style,
 }: IconProps): React.ReactElement {
+  const a11y = ariaLabel
+    ? ({ role: 'img', 'aria-label': ariaLabel } as const)
+    : ({ 'aria-hidden': true } as const);
   // What custom markup may fetch: a `<use href="https://…">` is a request to
   // that host, judged by the bundle's `net` like any other.
   const judge = markupUrlJudge(useEgressConfig());
@@ -103,6 +113,7 @@ export function Icon({
       <span
         className={className}
         style={wrapperStyle}
+        {...a11y}
         dangerouslySetInnerHTML={{ __html: sanitizeSvg(svg, judge) }}
       />
     );
@@ -111,15 +122,16 @@ export function Icon({
   // Built-in icon
   const iconSvg = name ? ICONS[name] : null;
   if (!iconSvg) {
-    return <span className={className} style={wrapperStyle} />;
+    return <span className={className} style={wrapperStyle} {...a11y} />;
   }
 
   // Determine if the icon uses fill or stroke
   const usesFill = iconSvg.includes('fill=') || name === 'send' || name === 'star' || name === 'heart';
 
   return (
-    <span className={className} style={wrapperStyle}>
+    <span className={className} style={wrapperStyle} {...a11y}>
       <svg
+        focusable="false"
         xmlns="http://www.w3.org/2000/svg"
         width={pxSize}
         height={pxSize}

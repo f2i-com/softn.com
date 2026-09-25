@@ -5,7 +5,7 @@
  * grouped options, and keyboard navigation.
  */
 
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, useId } from 'react';
 
 export interface SelectOption {
   value: string;
@@ -150,9 +150,20 @@ export function Select({
     defaultValue ?? (multiple ? [] : '')
   );
 
+  const [isFocused, setIsFocused] = useState(false);
+
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  /** Typeahead: what has been typed on the trigger, and when. */
+  const typeahead = useRef({ text: '', at: 0 });
+
+  const baseId = useId();
+  const labelId = `${baseId}-label`;
+  const listboxId = `${baseId}-listbox`;
+  const errorId = `${baseId}-error`;
+  const optionId = (index: number) => `${baseId}-option-${index}`;
 
   const value = controlledValue !== undefined ? controlledValue : internalValue;
   const hasError = Boolean(error);
@@ -203,8 +214,39 @@ export function Select({
       const values = Array.isArray(value) ? value : [];
       return values.map((v) => allOptions.find((o) => o.value === v)?.label ?? v).join(', ');
     }
-    return allOptions.find((o) => o.value === value)?.label ?? '';
+    // A value the options do not (yet) list shows as itself, as each value of
+    // a multi-select already did — not as the placeholder beside a clear
+    // button that clears something invisible.
+    if (typeof value !== 'string' || value === '') return '';
+    return allOptions.find((o) => o.value === value)?.label ?? value;
   }, [value, allOptions, multiple]);
+
+  /** The next enabled option from `from` in direction `step`, or -1. */
+  const findEnabled = useCallback(
+    (from: number, step: 1 | -1): number => {
+      for (let i = from; i >= 0 && i < flatFilteredOptions.length; i += step) {
+        if (!flatFilteredOptions[i].disabled) return i;
+      }
+      return -1;
+    },
+    [flatFilteredOptions]
+  );
+
+  /** Open the list with the selected option (or the first enabled one) highlighted. */
+  const openList = useCallback(() => {
+    const selected = flatFilteredOptions.findIndex(
+      (o) => !o.disabled && (Array.isArray(value) ? value.includes(o.value) : o.value === value)
+    );
+    setHighlightedIndex(selected >= 0 ? selected : findEnabled(0, 1));
+    setIsOpen(true);
+  }, [flatFilteredOptions, value, findEnabled]);
+
+  /** Close the list; with `refocus`, put focus back on the trigger it opened from. */
+  const closeList = useCallback((refocus: boolean) => {
+    setIsOpen(false);
+    setSearchQuery('');
+    if (refocus) triggerRef.current?.focus();
+  }, []);
 
   // Handle value change
   const handleSelect = useCallback(
@@ -231,11 +273,10 @@ export function Select({
           setInternalValue(optionValue);
         }
         onChange?.(optionValue);
-        setIsOpen(false);
-        setSearchQuery('');
+        closeList(true);
       }
     },
-    [value, multiple, maxSelections, controlledValue, onChange]
+    [value, multiple, maxSelections, controlledValue, onChange, closeList]
   );
 
   // Handle clear
@@ -247,6 +288,7 @@ export function Select({
         setInternalValue(newValue);
       }
       onChange?.(newValue);
+      triggerRef.current?.focus();
     },
     [multiple, controlledValue, onChange]
   );
@@ -254,38 +296,94 @@ export function Select({
   // Handle keyboard navigation
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (disabled) return;
+      const target = e.target as HTMLElement;
+      // The clear and create buttons handle their own Enter and Space.
+      if (target.tagName === 'BUTTON' && e.key !== 'Escape' && e.key !== 'Tab') return;
+      const inSearch = target === inputRef.current;
+      const selectHighlighted = () => {
+        const option = flatFilteredOptions[highlightedIndex];
+        if (option && !option.disabled) handleSelect(option.value);
+      };
+
       switch (e.key) {
-        case 'ArrowDown':
+        case 'ArrowDown': {
           e.preventDefault();
           if (!isOpen) {
-            setIsOpen(true);
+            openList();
           } else {
-            setHighlightedIndex((prev) => Math.min(prev + 1, flatFilteredOptions.length - 1));
+            const next = findEnabled(highlightedIndex + 1, 1);
+            if (next >= 0) setHighlightedIndex(next);
           }
           break;
-        case 'ArrowUp':
+        }
+        case 'ArrowUp': {
           e.preventDefault();
-          setHighlightedIndex((prev) => Math.max(prev - 1, 0));
+          if (!isOpen) {
+            openList();
+          } else {
+            const previous = findEnabled(highlightedIndex - 1, -1);
+            if (previous >= 0) setHighlightedIndex(previous);
+          }
           break;
+        }
+        case 'Home':
+        case 'End': {
+          // In the search box these move the caret.
+          if (!isOpen || inSearch) break;
+          e.preventDefault();
+          const edge =
+            e.key === 'Home' ? findEnabled(0, 1) : findEnabled(flatFilteredOptions.length - 1, -1);
+          if (edge >= 0) setHighlightedIndex(edge);
+          break;
+        }
         case 'Enter':
           e.preventDefault();
-          if (isOpen && flatFilteredOptions[highlightedIndex]) {
-            handleSelect(flatFilteredOptions[highlightedIndex].value);
-          } else if (!isOpen) {
-            setIsOpen(true);
-          }
+          if (isOpen) selectHighlighted();
+          else openList();
+          break;
+        case ' ':
+          // A space typed into the search box is a space.
+          if (inSearch) break;
+          e.preventDefault();
+          if (isOpen) selectHighlighted();
+          else openList();
           break;
         case 'Escape':
-          setIsOpen(false);
-          setSearchQuery('');
+          if (!isOpen) break;
+          // Closing the list is all Escape does here: a Modal or Drawer
+          // around the Select must not close with it.
+          e.preventDefault();
+          e.stopPropagation();
+          closeList(true);
           break;
         case 'Tab':
-          setIsOpen(false);
-          setSearchQuery('');
+          if (isOpen) closeList(false);
           break;
+        default: {
+          // Typeahead on the trigger: jump to the next option whose label
+          // starts with what was typed.
+          if (inSearch || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) break;
+          const now = Date.now();
+          const state = typeahead.current;
+          const key = e.key.toLowerCase();
+          state.text = now - state.at > 700 ? key : state.text + key;
+          state.at = now;
+          const count = flatFilteredOptions.length;
+          const from = isOpen ? highlightedIndex + (state.text.length === 1 ? 1 : 0) : 0;
+          for (let n = 0; n < count; n++) {
+            const index = (((from + n) % count) + count) % count;
+            const option = flatFilteredOptions[index];
+            if (!option.disabled && option.label.toLowerCase().startsWith(state.text)) {
+              if (!isOpen) setIsOpen(true);
+              setHighlightedIndex(index);
+              break;
+            }
+          }
+        }
       }
     },
-    [isOpen, highlightedIndex, flatFilteredOptions, handleSelect]
+    [disabled, isOpen, highlightedIndex, flatFilteredOptions, handleSelect, openList, closeList, findEnabled]
   );
 
   // Handle search input
@@ -293,7 +391,7 @@ export function Select({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const query = e.target.value;
       setSearchQuery(query);
-      setHighlightedIndex(0);
+      setHighlightedIndex(-1);
       onSearch?.(query);
     },
     [onSearch]
@@ -307,8 +405,19 @@ export function Select({
     }
   }, [onCreate, searchQuery]);
 
+  // After a search narrows the list, highlight its first enabled option.
+  useEffect(() => {
+    if (!isOpen) return;
+    const current = flatFilteredOptions[highlightedIndex];
+    if (!current || current.disabled) {
+      const first = findEnabled(0, 1);
+      if (first !== highlightedIndex) setHighlightedIndex(first);
+    }
+  }, [isOpen, flatFilteredOptions, highlightedIndex, findEnabled]);
+
   // Close dropdown on outside click
   useEffect(() => {
+    if (!isOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setIsOpen(false);
@@ -318,7 +427,7 @@ export function Select({
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  }, [isOpen]);
 
   // Focus search input when dropdown opens
   useEffect(() => {
@@ -351,18 +460,21 @@ export function Select({
     padding: config.padding,
     paddingRight: '2.5rem',
     fontSize: config.fontSize,
-    border: `1px solid ${hasError ? 'var(--color-error-500, #ef4444)' : isOpen ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border, rgba(255, 255, 255, 0.08))'}`,
+    border: `1px solid ${hasError ? 'var(--color-error-500, #ef4444)' : isOpen || isFocused ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border, rgba(255, 255, 255, 0.08))'}`,
     borderRadius: 'var(--radius-lg, 0.5rem)',
     backgroundColor: disabled ? 'var(--color-surface-hover, #1e1e23)' : 'var(--color-surface, #16161a)',
     color: selectedLabels ? 'var(--color-text, #ececf0)' : 'var(--color-text-muted, #a1a1aa)',
     cursor: disabled ? 'not-allowed' : 'pointer',
     outline: 'none',
+    // The trigger draws its own focus ring (its outline is off), so the ring
+    // shows while it is focused, not only while the list is open: a keyboard
+    // user who has just picked an option is left on a closed Select.
     boxShadow: hasError
-      ? isOpen
-        ? '0 0 0 3px rgba(239, 68, 68, 0.15), 0 1px 2px rgba(0, 0, 0, 0.05)'
+      ? isOpen || isFocused
+        ? '0 0 0 3px rgba(239, 68, 68, 0.35), 0 1px 2px rgba(0, 0, 0, 0.05)'
         : '0 1px 2px rgba(0, 0, 0, 0.05)'
-      : isOpen
-        ? '0 0 0 3px rgba(99, 102, 241, 0.15), 0 1px 2px rgba(0, 0, 0, 0.05)'
+      : isOpen || isFocused
+        ? '0 0 0 3px rgba(99, 102, 241, 0.35), 0 1px 2px rgba(0, 0, 0, 0.05)'
         : '0 1px 2px rgba(0, 0, 0, 0.05)',
     transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
     opacity: disabled ? 0.6 : 1,
@@ -484,11 +596,87 @@ export function Select({
     return value === optionValue;
   };
 
+  const renderOption = (option: SelectOption, index: number) => {
+    const isHighlighted = index === highlightedIndex;
+    const isSelected = isValueSelected(option.value);
+    const isDisabled = option.disabled ?? false;
+    return (
+      <div
+        key={option.value}
+        id={optionId(index)}
+        role="option"
+        aria-selected={isSelected}
+        aria-disabled={isDisabled || undefined}
+        data-highlighted={isHighlighted}
+        style={optionStyle(isHighlighted, isSelected, isDisabled)}
+        onClick={() => !isDisabled && handleSelect(option.value)}
+        onMouseEnter={() => setHighlightedIndex(index)}
+      >
+        {multiple && (
+          <span
+            aria-hidden="true"
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 3,
+              border: `2px solid ${isSelected ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border-hover, rgba(255, 255, 255, 0.14))'}`,
+              backgroundColor: isSelected ? 'var(--color-primary-500, #6366f1)' : 'transparent',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flex: 'none',
+            }}
+          >
+            {isSelected && (
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                <path
+                  d="M2 6l3 3 5-6"
+                  stroke="white"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </span>
+        )}
+        {option.icon && <span aria-hidden="true">{option.icon}</span>}
+        <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+          {option.label}
+          {option.description && (
+            <span
+              style={{
+                display: 'block',
+                fontSize: '0.75rem',
+                color: 'var(--color-text-muted, #8b8b96)',
+              }}
+            >
+              {option.description}
+            </span>
+          )}
+        </span>
+        {!multiple && isSelected && (
+          <svg
+            aria-hidden="true"
+            width={config.iconSize}
+            height={config.iconSize}
+            viewBox="0 0 16 16"
+            fill="currentColor"
+            style={{ flex: 'none' }}
+          >
+            <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06l2.72 2.72 6.72-6.72a.75.75 0 011.06 0z" />
+          </svg>
+        )}
+      </div>
+    );
+  };
+
   // Render dropdown
   const renderDropdown = () => {
     if (!isOpen) return null;
 
     let optionIndex = 0;
+    const hasOptions = !loading && flatFilteredOptions.length > 0;
 
     return (
       <>
@@ -498,7 +686,17 @@ export function Select({
             100% { opacity: 1; transform: scale(1) translateY(0); }
           }
         `}</style>
-        <div style={dropdownStyle}>
+        {/*
+          Pressing an option must not take focus off the trigger or the search
+          box: the list is not focusable, so the press would blur to <body>
+          and the Select would close before the click that selects landed.
+        */}
+        <div
+          style={dropdownStyle}
+          onMouseDown={(e) => {
+            if (e.target !== inputRef.current) e.preventDefault();
+          }}
+        >
           {searchable && (
             <input
               ref={inputRef}
@@ -508,11 +706,27 @@ export function Select({
               placeholder={searchPlaceholder}
               style={searchInputStyle}
               onClick={(e) => e.stopPropagation()}
+              role="combobox"
+              aria-label={searchPlaceholder}
+              aria-expanded={true}
+              aria-controls={hasOptions ? listboxId : undefined}
+              aria-autocomplete="list"
+              aria-activedescendant={
+                hasOptions && highlightedIndex >= 0 ? optionId(highlightedIndex) : undefined
+              }
             />
           )}
-          <div ref={listRef} style={listStyle}>
+          <div
+            ref={listRef}
+            style={listStyle}
+            id={hasOptions ? listboxId : undefined}
+            role={hasOptions ? 'listbox' : undefined}
+            aria-labelledby={hasOptions && label ? labelId : undefined}
+            aria-multiselectable={hasOptions && multiple ? true : undefined}
+          >
             {loading ? (
               <div
+                role="status"
                 style={{
                   padding: '1rem',
                   textAlign: 'center',
@@ -523,11 +737,15 @@ export function Select({
               </div>
             ) : flatFilteredOptions.length === 0 ? (
               <div style={{ padding: '1rem' }}>
-                <div style={{ textAlign: 'center', color: 'var(--color-text-muted, #8b8b96)' }}>
+                <div
+                  role="status"
+                  style={{ textAlign: 'center', color: 'var(--color-text-muted, #8b8b96)' }}
+                >
                   {noOptionsText}
                 </div>
                 {onCreate && searchQuery.trim() && (
                   <button
+                    type="button"
                     onClick={handleCreate}
                     style={{
                       display: 'block',
@@ -549,149 +767,17 @@ export function Select({
             ) : (
               filteredOptions.map((opt, groupIndex) => {
                 if (isOptionGroup(opt)) {
+                  const groupLabelId = `${baseId}-group-${groupIndex}`;
                   return (
-                    <div key={`group-${groupIndex}`}>
-                      <div style={groupLabelStyle}>{opt.label}</div>
-                      {opt.options.map((option) => {
-                        const currentIndex = optionIndex++;
-                        const isHighlighted = currentIndex === highlightedIndex;
-                        const isSelected = isValueSelected(option.value);
-
-                        return (
-                          <div
-                            key={option.value}
-                            data-highlighted={isHighlighted}
-                            style={optionStyle(isHighlighted, isSelected, option.disabled ?? false)}
-                            onClick={() => !option.disabled && handleSelect(option.value)}
-                            onMouseEnter={() => setHighlightedIndex(currentIndex)}
-                          >
-                            {multiple && (
-                              <span
-                                style={{
-                                  width: 16,
-                                  height: 16,
-                                  borderRadius: 3,
-                                  border: `2px solid ${isSelected ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border-hover, rgba(255, 255, 255, 0.14))'}`,
-                                  backgroundColor: isSelected
-                                    ? 'var(--color-primary-500, #6366f1)'
-                                    : 'transparent',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                }}
-                              >
-                                {isSelected && (
-                                  <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
-                                    <path
-                                      d="M2 6l3 3 5-6"
-                                      stroke="white"
-                                      strokeWidth="2"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  </svg>
-                                )}
-                              </span>
-                            )}
-                            {option.icon && <span>{option.icon}</span>}
-                            <span style={{ flex: 1 }}>
-                              {option.label}
-                              {option.description && (
-                                <span
-                                  style={{
-                                    display: 'block',
-                                    fontSize: '0.75rem',
-                                    color: 'var(--color-text-muted, #8b8b96)',
-                                  }}
-                                >
-                                  {option.description}
-                                </span>
-                              )}
-                            </span>
-                            {!multiple && isSelected && (
-                              <svg
-                                width={config.iconSize}
-                                height={config.iconSize}
-                                viewBox="0 0 16 16"
-                                fill="currentColor"
-                              >
-                                <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06l2.72 2.72 6.72-6.72a.75.75 0 011.06 0z" />
-                              </svg>
-                            )}
-                          </div>
-                        );
-                      })}
+                    <div key={`group-${groupIndex}`} role="group" aria-labelledby={groupLabelId}>
+                      <div id={groupLabelId} role="presentation" style={groupLabelStyle}>
+                        {opt.label}
+                      </div>
+                      {opt.options.map((option) => renderOption(option, optionIndex++))}
                     </div>
                   );
                 }
-
-                const currentIndex = optionIndex++;
-                const isHighlighted = currentIndex === highlightedIndex;
-                const isSelected = isValueSelected(opt.value);
-
-                return (
-                  <div
-                    key={opt.value}
-                    data-highlighted={isHighlighted}
-                    style={optionStyle(isHighlighted, isSelected, opt.disabled ?? false)}
-                    onClick={() => !opt.disabled && handleSelect(opt.value)}
-                    onMouseEnter={() => setHighlightedIndex(currentIndex)}
-                  >
-                    {multiple && (
-                      <span
-                        style={{
-                          width: 16,
-                          height: 16,
-                          borderRadius: 3,
-                          border: `2px solid ${isSelected ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border-hover, rgba(255, 255, 255, 0.14))'}`,
-                          backgroundColor: isSelected
-                            ? 'var(--color-primary-500, #6366f1)'
-                            : 'transparent',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        {isSelected && (
-                          <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
-                            <path
-                              d="M2 6l3 3 5-6"
-                              stroke="white"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
-                        )}
-                      </span>
-                    )}
-                    {opt.icon && <span>{opt.icon}</span>}
-                    <span style={{ flex: 1 }}>
-                      {opt.label}
-                      {opt.description && (
-                        <span
-                          style={{
-                            display: 'block',
-                            fontSize: '0.75rem',
-                            color: 'var(--color-text-muted, #8b8b96)',
-                          }}
-                        >
-                          {opt.description}
-                        </span>
-                      )}
-                    </span>
-                    {!multiple && isSelected && (
-                      <svg
-                        width={config.iconSize}
-                        height={config.iconSize}
-                        viewBox="0 0 16 16"
-                        fill="currentColor"
-                      >
-                        <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06l2.72 2.72 6.72-6.72a.75.75 0 011.06 0z" />
-                      </svg>
-                    )}
-                  </div>
-                );
+                return renderOption(opt, optionIndex++);
               })
             )}
           </div>
@@ -702,12 +788,28 @@ export function Select({
 
   const hasValue = multiple ? Array.isArray(value) && value.length > 0 : Boolean(value);
 
+  const activeDescendant =
+    isOpen && !searchable && !loading && flatFilteredOptions[highlightedIndex]
+      ? optionId(highlightedIndex)
+      : undefined;
+
   return (
     <div style={{ width: fullWidth ? '100%' : undefined }}>
       {label && (
-        <label style={labelStyle}>
+        <label
+          id={labelId}
+          style={labelStyle}
+          onClick={() => {
+            if (!disabled) triggerRef.current?.focus();
+          }}
+        >
           {label}
-          {required && <span style={{ color: 'var(--color-error-500, #ef4444)' }}> *</span>}
+          {required && (
+            <span aria-hidden="true" style={{ color: 'var(--color-error-500, #ef4444)' }}>
+              {' '}
+              *
+            </span>
+          )}
         </label>
       )}
       {/*
@@ -718,20 +820,49 @@ export function Select({
         Enter selected nothing; inside a <form>, Enter submitted it instead.
         Bound here, the handler sees keys from the trigger and the dropdown
         both.
+
+        Blur is judged here too: focus moving from the trigger to the search
+        box is still inside the Select, and focus leaving it while the list is
+        open is still the field losing focus, so `onBlur` hears about it.
       */}
-      <div ref={containerRef} className={className} style={containerStyle} onKeyDown={handleKeyDown}>
+      <div
+        ref={containerRef}
+        className={className}
+        style={containerStyle}
+        onKeyDown={handleKeyDown}
+        onBlur={(e) => {
+          if (containerRef.current?.contains(e.relatedTarget as Node | null)) return;
+          if (isOpen) {
+            setIsOpen(false);
+            setSearchQuery('');
+          }
+          onBlur?.();
+        }}
+      >
         <input type="hidden" name={name} value={Array.isArray(value) ? value.join(',') : value} />
         <div
+          ref={triggerRef}
           tabIndex={disabled ? -1 : 0}
           style={triggerStyle}
-          onClick={() => !disabled && setIsOpen(!isOpen)}
-          onFocus={onFocus}
-          onBlur={() => {
-            if (!isOpen) onBlur?.();
+          onClick={() => {
+            if (disabled) return;
+            if (isOpen) closeList(false);
+            else openList();
           }}
+          onFocus={() => {
+            setIsFocused(true);
+            onFocus?.();
+          }}
+          onBlur={() => setIsFocused(false)}
           role="combobox"
           aria-expanded={isOpen}
           aria-haspopup="listbox"
+          aria-controls={isOpen && !loading && flatFilteredOptions.length > 0 ? listboxId : undefined}
+          aria-activedescendant={activeDescendant}
+          aria-labelledby={label ? labelId : undefined}
+          aria-describedby={errorMessage ? errorId : undefined}
+          aria-invalid={hasError || undefined}
+          aria-required={required || undefined}
           aria-disabled={disabled}
         >
           <span
@@ -744,6 +875,7 @@ export function Select({
               <button
                 type="button"
                 onClick={handleClear}
+                aria-label="Clear selection"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -759,6 +891,7 @@ export function Select({
                 }}
               >
                 <svg
+                  aria-hidden="true"
                   width="14"
                   height="14"
                   viewBox="0 0 14 14"
@@ -771,6 +904,7 @@ export function Select({
               </button>
             )}
             <svg
+              aria-hidden="true"
               width={config.iconSize}
               height={config.iconSize}
               viewBox="0 0 16 16"
@@ -789,7 +923,11 @@ export function Select({
         </div>
         {renderDropdown()}
       </div>
-      {errorMessage && <div style={errorStyle}>{errorMessage}</div>}
+      {errorMessage && (
+        <div id={errorId} style={errorStyle}>
+          {errorMessage}
+        </div>
+      )}
     </div>
   );
 }

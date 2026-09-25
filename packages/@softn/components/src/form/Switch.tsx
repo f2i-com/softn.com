@@ -5,7 +5,8 @@
  * Uses CSS variables for theming support.
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useId } from 'react';
+import { focusRing, isFocusVisible } from './focus';
 
 export interface SwitchProps {
   /** Input name */
@@ -86,6 +87,7 @@ export function Switch({
   const [isFocused, setIsFocused] = useState(false);
   const isControlled = checked !== undefined;
   const currentChecked = isControlled ? checked : isChecked;
+  const descriptionId = useId();
 
   const sizes = sizeValues[size];
 
@@ -101,7 +103,10 @@ export function Switch({
 
   const handleMouseEnter = useCallback(() => !disabled && setIsHovered(true), [disabled]);
   const handleMouseLeave = useCallback(() => setIsHovered(false), []);
-  const handleFocus = useCallback(() => !disabled && setIsFocused(true), [disabled]);
+  const handleFocus = useCallback(
+    (event: React.FocusEvent<HTMLInputElement>) => !disabled && setIsFocused(isFocusVisible(event.target)),
+    [disabled]
+  );
   const handleBlur = useCallback(() => setIsFocused(false), []);
 
   const getTrackBackground = () => {
@@ -111,26 +116,23 @@ export function Switch({
       // Gradient for "on" state
       return 'linear-gradient(135deg, var(--color-primary-400, #818cf8), var(--color-primary-500, #6366f1), var(--color-primary-600, #4f46e5))';
     }
+    // The off track is a step darker than it was: a white thumb on the
+    // palest grey was all but invisible on a light page.
     if (disabled) return 'var(--color-gray-200, #3f3f46)';
-    if (isHovered) return offColor || 'var(--color-gray-300, #d1d5db)';
-    return offColor || 'var(--color-gray-200, #3f3f46)';
+    if (isHovered) return offColor || 'var(--color-gray-400, #d1d5db)';
+    return offColor || 'var(--color-gray-300, #3f3f46)';
   };
 
   const getTrackShadow = () => {
     if (disabled) return 'none';
+    // The real input is invisible, so the track carries the focus ring — a
+    // solid one: the old 15–25% wash could not be seen on a checked switch.
+    const ring = isFocused ? `${focusRing}, ` : '';
     if (currentChecked) {
       // Glow effect when checked
-      const glowShadow =
-        '0 0 12px rgba(59, 130, 246, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.1)';
-      if (isFocused) {
-        return `0 0 0 3px rgba(59, 130, 246, 0.25), ${glowShadow}`;
-      }
-      return glowShadow;
+      return `${ring}0 0 12px rgba(59, 130, 246, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.1)`;
     }
-    if (isFocused) {
-      return '0 0 0 3px rgba(107, 114, 128, 0.15), inset 0 1px 2px rgba(0, 0, 0, 0.1)';
-    }
-    return 'inset 0 1px 2px rgba(0, 0, 0, 0.1)';
+    return `${ring}inset 0 1px 2px rgba(0, 0, 0, 0.1)`;
   };
 
   const containerStyle: React.CSSProperties = {
@@ -164,7 +166,7 @@ export function Switch({
     transform: `translateY(-50%) ${isHovered && !disabled ? 'scale(1.08)' : 'scale(1)'}`,
     width: sizes.thumb,
     height: sizes.thumb,
-    background: 'linear-gradient(180deg, #e4e4e7 0%, #d4d4d8 100%)',
+    background: 'var(--color-white, white)',
     borderRadius: '50%',
     boxShadow: currentChecked
       ? '0 2px 4px rgba(99, 102, 241, 0.25), 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 -1px 1px rgba(0, 0, 0, 0.04)'
@@ -219,15 +221,22 @@ export function Switch({
           onFocus={handleFocus}
           onBlur={handleBlur}
           style={hiddenInputStyle}
+          role="switch"
+          aria-checked={currentChecked}
+          aria-describedby={description ? descriptionId : undefined}
         />
-        <div style={trackStyle}>
+        <div style={trackStyle} aria-hidden="true">
           <div style={thumbStyle} />
         </div>
       </div>
       {(label || description) && (
         <div style={labelContainerStyle}>
           {label && <span style={labelStyle}>{label}</span>}
-          {description && <span style={descriptionStyle}>{description}</span>}
+          {description && (
+            <span id={descriptionId} style={descriptionStyle}>
+              {description}
+            </span>
+          )}
         </div>
       )}
     </label>

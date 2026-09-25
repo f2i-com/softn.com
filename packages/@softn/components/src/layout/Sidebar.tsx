@@ -52,13 +52,16 @@ export function Sidebar({
   collapsed: controlledCollapsed,
   defaultCollapsed = false,
   onCollapse,
-  background = 'linear-gradient(180deg, #1c1917 0%, #0c0a09 100%)',
-  borderColor = 'rgba(255, 255, 255, 0.05)',
+  // The theme's surface: a fixed near-black default put the page's own dark
+  // text on it in the light theme.
+  background = 'var(--color-surface, #1c1917)',
+  borderColor = 'var(--color-border, rgba(255, 255, 255, 0.05))',
   showToggle = true,
   className,
   style,
 }: SidebarProps): React.ReactElement {
   const [internalCollapsed, setInternalCollapsed] = useState(defaultCollapsed);
+  const contentId = React.useId();
 
   const isCollapsed = controlledCollapsed !== undefined ? controlledCollapsed : internalCollapsed;
 
@@ -109,11 +112,11 @@ export function Sidebar({
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: 'rgba(255, 255, 255, 0.05)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
+    background: 'var(--color-surface-hover, rgba(255, 255, 255, 0.05))',
+    border: '1px solid var(--color-border, rgba(255, 255, 255, 0.1))',
     cursor: 'pointer',
     borderRadius: '8px',
-    color: 'rgba(255, 255, 255, 0.6)',
+    color: 'var(--color-text-muted, rgba(255, 255, 255, 0.6))',
     fontSize: '16px',
     transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
   };
@@ -122,9 +125,9 @@ export function Sidebar({
     <SidebarContext.Provider value={{ collapsed: isCollapsed }}>
       <style>{`
         .softn-sidebar-toggle:hover {
-          background: rgba(255, 255, 255, 0.1) !important;
-          color: rgba(255, 255, 255, 0.9) !important;
-          border-color: rgba(255, 255, 255, 0.2) !important;
+          background: var(--color-gray-100, rgba(255, 255, 255, 0.1)) !important;
+          color: var(--color-text, rgba(255, 255, 255, 0.9)) !important;
+          border-color: var(--color-border-hover, rgba(255, 255, 255, 0.2)) !important;
         }
         .softn-sidebar-toggle:active {
           transform: ${isCollapsed ? 'translateX(50%) scale(0.95)' : 'scale(0.95)'};
@@ -134,7 +137,7 @@ export function Sidebar({
         className={`softn-sidebar ${isCollapsed ? 'collapsed' : ''} ${className || ''}`}
         style={containerStyle}
       >
-        <div style={contentStyle}>{children}</div>
+        <div id={contentId} style={contentStyle}>{children}</div>
         {collapsible && showToggle && (
           <button
             type="button"
@@ -142,8 +145,12 @@ export function Sidebar({
             onClick={handleToggle}
             style={toggleButtonStyle}
             aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!isCollapsed}
+            aria-controls={contentId}
           >
             <svg
+              aria-hidden="true"
+              focusable="false"
               width="16"
               height="16"
               viewBox="0 0 24 24"

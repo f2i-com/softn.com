@@ -19,6 +19,8 @@ export interface PaginationProps {
   showFirstLast?: boolean;
   siblingCount?: number;
   size?: 'sm' | 'md' | 'lg';
+  /** Accessible name for the navigation landmark */
+  ariaLabel?: string;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -30,13 +32,13 @@ const sizeStyles = {
 };
 
 function range(start: number, end: number): number[] {
-  const length = end - start + 1;
+  const length = Math.max(0, end - start + 1);
   return Array.from({ length }, (_, i) => start + i);
 }
 
 export function Pagination({
-  currentPage,
-  totalPages,
+  currentPage: rawCurrentPage,
+  totalPages: rawTotalPages,
   totalItems,
   pageSize = 10,
   onPageChange,
@@ -47,10 +49,19 @@ export function Pagination({
   showFirstLast = true,
   siblingCount = 1,
   size = 'md',
+  ariaLabel = 'Pagination',
   className = '',
   style,
 }: PaginationProps) {
-  const sizes = sizeStyles[size];
+  const sizes = sizeStyles[size] ?? sizeStyles.md;
+  // Page counts arrive from data: zero, negative, fractional or not a number
+  // at all. Read them as a whole count and a page inside it, so Next is not
+  // left enabled past the last page and the page list never gets a negative
+  // length.
+  const totalPages = Math.max(0, Math.floor(Number(rawTotalPages)) || 0);
+  const currentPage = Math.min(Math.max(1, Math.floor(Number(rawCurrentPage)) || 1), Math.max(1, totalPages));
+  const atStart = currentPage <= 1;
+  const atEnd = currentPage >= totalPages;
 
   // Calculate page numbers to display
   const getPageNumbers = (): (number | 'ellipsis')[] => {
@@ -93,14 +104,16 @@ export function Pagination({
     cursor: 'pointer',
     borderRadius: '4px',
     margin: '0 2px',
-    transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
+    transition: 'background-color 180ms cubic-bezier(0.16, 1, 0.3, 1), border-color 180ms cubic-bezier(0.16, 1, 0.3, 1), color 180ms cubic-bezier(0.16, 1, 0.3, 1)',
   };
 
   const activeButtonStyle: React.CSSProperties = {
     ...buttonStyle,
-    backgroundColor: '#6366f1',
-    borderColor: '#6366f1',
-    color: 'var(--color-surface, #16161a)',
+    backgroundColor: 'var(--color-primary-500, #6366f1)',
+    borderColor: 'var(--color-primary-500, #6366f1)',
+    // The theme's text-on-primary colour: the surface colour was near-black
+    // on indigo in the light theme and dim in the dark one.
+    color: 'var(--color-primary-text, white)',
   };
 
   const disabledButtonStyle: React.CSSProperties = {
@@ -151,41 +164,48 @@ export function Pagination({
         <span style={infoStyle}>Total: {totalItems} items</span>
       )}
 
-      <nav style={navStyle}>
+      <nav style={navStyle} aria-label={ariaLabel}>
         {showFirstLast && (
           <button
-            style={currentPage === 1 ? disabledButtonStyle : buttonStyle}
+            type="button"
+            style={atStart ? disabledButtonStyle : buttonStyle}
             onClick={() => onPageChange(1)}
-            disabled={currentPage === 1}
+            disabled={atStart}
+            aria-label="First page"
             title="First page"
           >
-            ««
+            <span aria-hidden="true">««</span>
           </button>
         )}
 
         <button
-          style={currentPage === 1 ? disabledButtonStyle : buttonStyle}
+          type="button"
+          style={atStart ? disabledButtonStyle : buttonStyle}
           onClick={() => onPageChange(currentPage - 1)}
-          disabled={currentPage === 1}
+          disabled={atStart}
+          aria-label="Previous page"
           title="Previous page"
         >
-          «
+          <span aria-hidden="true">«</span>
         </button>
 
         {pageNumbers.map((page, index) =>
           page === 'ellipsis' ? (
-            <span key={`ellipsis-${index}`} style={ellipsisStyle}>
+            <span key={`ellipsis-${index}`} style={ellipsisStyle} aria-hidden="true">
               ...
             </span>
           ) : (
             <button
+              type="button"
               key={page}
               style={currentPage === page ? activeButtonStyle : buttonStyle}
               onClick={() => onPageChange(page)}
+              aria-label={`Page ${page}`}
+              aria-current={currentPage === page ? 'page' : undefined}
               onMouseEnter={(e) => {
                 if (currentPage !== page) {
-                  e.currentTarget.style.borderColor = '#6366f1';
-                  e.currentTarget.style.color = '#6366f1';
+                  e.currentTarget.style.borderColor = 'var(--color-primary-500, #6366f1)';
+                  e.currentTarget.style.color = 'var(--color-primary-500, #6366f1)';
                 }
               }}
               onMouseLeave={(e) => {
@@ -201,22 +221,26 @@ export function Pagination({
         )}
 
         <button
-          style={currentPage === totalPages ? disabledButtonStyle : buttonStyle}
+          type="button"
+          style={atEnd ? disabledButtonStyle : buttonStyle}
           onClick={() => onPageChange(currentPage + 1)}
-          disabled={currentPage === totalPages}
+          disabled={atEnd}
+          aria-label="Next page"
           title="Next page"
         >
-          »
+          <span aria-hidden="true">»</span>
         </button>
 
         {showFirstLast && (
           <button
-            style={currentPage === totalPages ? disabledButtonStyle : buttonStyle}
+            type="button"
+            style={atEnd ? disabledButtonStyle : buttonStyle}
             onClick={() => onPageChange(totalPages)}
-            disabled={currentPage === totalPages}
+            disabled={atEnd}
+            aria-label="Last page"
             title="Last page"
           >
-            »»
+            <span aria-hidden="true">»»</span>
           </button>
         )}
       </nav>
@@ -225,6 +249,7 @@ export function Pagination({
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span style={infoStyle}>Show:</span>
           <select
+            aria-label="Items per page"
             style={selectStyle}
             value={pageSize}
             onChange={(e) => onPageSizeChange(Number(e.target.value))}

@@ -57,7 +57,7 @@ export function Image({
   fallbackSrc,
   loading = 'lazy',
   showPlaceholder = true,
-  placeholderColor = '#3f3f46',
+  placeholderColor = 'var(--color-gray-100, #3f3f46)',
   onClick,
   className,
   style,
@@ -134,20 +134,47 @@ export function Image({
     top: '50%',
     left: '50%',
     transform: 'translate(-50%, -50%)',
-    color: '#9ca3af',
+    color: 'var(--color-text-muted, #9ca3af)',
     fontSize: '0.875rem',
     textAlign: 'center',
   };
 
   return (
-    <div className={className} style={containerStyle} onClick={onClick}>
+    <div
+      className={className}
+      style={containerStyle}
+      onClick={onClick}
+      // A clickable image is a button: reachable with Tab, pressed with Enter
+      // or Space, and named by its alt text.
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.target !== e.currentTarget) return;
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.currentTarget.click();
+              }
+            }
+          : undefined
+      }
+    >
       {!currentSrc && consentPending ? (
         <div style={{ ...errorStyle, width: '100%', padding: '0 0.25rem', fontSize: '0.75rem' }}>
           Images load once you choose Allow in the permission bar.
         </div>
       ) : !currentSrc || (hasError && (!safeFallbackSrc || currentSrc === safeFallbackSrc)) ? (
-        <div style={errorStyle}>
+        // The <img> and its alt are gone once it fails; the panel carries the
+        // name in their place.
+        <div
+          style={errorStyle}
+          role="img"
+          aria-label={alt ? `${alt} (image failed to load)` : 'Image failed to load'}
+        >
           <svg
+            aria-hidden="true"
+            focusable="false"
             width="24"
             height="24"
             viewBox="0 0 24 24"

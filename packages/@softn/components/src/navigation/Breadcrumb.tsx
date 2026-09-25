@@ -37,6 +37,15 @@ const sizeStyles: Record<string, { fontSize: string; gap: string }> = {
   lg: { fontSize: '1rem', gap: '0.625rem' },
 };
 
+const LINK_RESET: React.CSSProperties = {
+  padding: 0,
+  margin: 0,
+  border: 'none',
+  background: 'none',
+  font: 'inherit',
+  textAlign: 'inherit',
+};
+
 export function Breadcrumb({
   items,
   separator = '/',
@@ -44,14 +53,31 @@ export function Breadcrumb({
   className,
   style,
 }: BreadcrumbProps): React.ReactElement {
-  const sizes = sizeStyles[size];
+  const sizes = sizeStyles[size] ?? sizeStyles.md;
+  const trail = Array.isArray(items) ? items.filter(Boolean) : [];
 
   const containerStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: sizes.gap,
     fontSize: sizes.fontSize,
     ...style,
+  };
+
+  // An ordered list, as the pattern asks: a screen reader announces how many
+  // steps the trail has and where in it each one is.
+  const listStyle: React.CSSProperties = {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: sizes.gap,
+    listStyle: 'none',
+    margin: 0,
+    padding: 0,
+  };
+
+  const itemStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: sizes.gap,
+    minWidth: 0,
   };
 
   const separatorStyle: React.CSSProperties = {
@@ -67,24 +93,30 @@ export function Breadcrumb({
     textDecoration: 'none',
     fontWeight: isLast ? 500 : 400,
     cursor: isLast ? 'default' : 'pointer',
+    overflowWrap: 'anywhere',
   });
 
   return (
     <nav aria-label="Breadcrumb" className={className} style={containerStyle}>
-      {items.map((item, index) => {
-        const isLast = index === items.length - 1;
-        const linkStyle = getLinkStyle(isLast);
-        // A trail is bundle-supplied data, so `href` is whatever the bundle put
-        // there. React only warns about `javascript:` and emits it anyway, and
-        // one click then runs bundle code on the host origin. An item that
-        // fails the check still renders — as the span below, which keeps its
-        // label and its `onClick`.
-        const href = item.href && isSafeUrl(item.href) ? item.href : undefined;
+      <ol style={listStyle}>
+        {trail.map((item, index) => {
+          const isLast = index === trail.length - 1;
+          const linkStyle = getLinkStyle(isLast);
+          // A trail is bundle-supplied data, so `href` is whatever the bundle
+          // put there. React only warns about `javascript:` and emits it
+          // anyway, and one click then runs bundle code on the host origin. An
+          // item that fails the check still renders, keeping its label and its
+          // `onClick`.
+          const href = item.href && isSafeUrl(item.href) ? item.href : undefined;
+          const icon = item.icon ? (
+            <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+              {item.icon}
+            </span>
+          ) : null;
 
-        return (
-          <React.Fragment key={index}>
-            {index > 0 && <span style={separatorStyle}>{separator}</span>}
-            {href && !isLast ? (
+          let content: React.ReactNode;
+          if (href && !isLast) {
+            content = (
               <a
                 href={href}
                 onClick={(e) => {
@@ -95,22 +127,40 @@ export function Breadcrumb({
                 }}
                 style={linkStyle}
               >
-                {item.icon}
+                {icon}
                 {item.label}
               </a>
-            ) : (
-              <span
-                onClick={!isLast ? item.onClick : undefined}
-                style={linkStyle}
-                aria-current={isLast ? 'page' : undefined}
-              >
-                {item.icon}
+            );
+          } else if (item.onClick && !isLast) {
+            // A step with a handler and no link was a <span onClick>: no tab
+            // stop, nothing for Enter to press. A button is both.
+            content = (
+              <button type="button" onClick={item.onClick} style={{ ...LINK_RESET, ...linkStyle }}>
+                {icon}
+                {item.label}
+              </button>
+            );
+          } else {
+            content = (
+              <span style={linkStyle} aria-current={isLast ? 'page' : undefined}>
+                {icon}
                 {item.label}
               </span>
-            )}
-          </React.Fragment>
-        );
-      })}
+            );
+          }
+
+          return (
+            <li key={index} style={itemStyle}>
+              {index > 0 && (
+                <span aria-hidden="true" style={separatorStyle}>
+                  {separator}
+                </span>
+              )}
+              {content}
+            </li>
+          );
+        })}
+      </ol>
     </nav>
   );
 }

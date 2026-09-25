@@ -5,7 +5,8 @@
  * Uses CSS variables for theming support.
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useId } from 'react';
+import { focusRing, isFocusVisible } from './focus';
 
 export interface CheckboxProps {
   /** Input name */
@@ -64,6 +65,7 @@ export function Checkbox({
 
   const isControlled = checked !== undefined;
   const isChecked = isControlled ? checked : internalChecked;
+  const descriptionId = useId();
 
   React.useEffect(() => {
     if (inputRef.current) {
@@ -85,14 +87,17 @@ export function Checkbox({
 
   const handleMouseEnter = useCallback(() => !disabled && setIsHovered(true), [disabled]);
   const handleMouseLeave = useCallback(() => setIsHovered(false), []);
-  const handleFocus = useCallback(() => !disabled && setIsFocused(true), [disabled]);
+  const handleFocus = useCallback(
+    (event: React.FocusEvent<HTMLInputElement>) => !disabled && setIsFocused(isFocusVisible(event.target)),
+    [disabled]
+  );
   const handleBlur = useCallback(() => setIsFocused(false), []);
 
   const getBoxShadow = () => {
     if (disabled) return 'none';
-    if (isFocused) {
-      return error ? '0 0 0 3px rgba(239, 68, 68, 0.15)' : '0 0 0 3px rgba(99, 102, 241, 0.15)';
-    }
+    // The input is invisible; the box shows its focus, solidly enough to see
+    // on a checked box whose border is already the primary colour.
+    if (isFocused) return focusRing;
     return '0 1px 2px rgba(0, 0, 0, 0.05)';
   };
 
@@ -204,8 +209,10 @@ export function Checkbox({
           onFocus={handleFocus}
           onBlur={handleBlur}
           style={hiddenInputStyle}
+          aria-invalid={error || undefined}
+          aria-describedby={description ? descriptionId : undefined}
         />
-        <div style={checkboxStyle}>
+        <div style={checkboxStyle} aria-hidden="true">
           {indeterminate ? (
             <svg style={iconStyle} viewBox="0 0 12 12" fill="none">
               <path d="M2.5 6H9.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -226,7 +233,11 @@ export function Checkbox({
       {(label || description) && (
         <div style={labelContainerStyle}>
           {label && <span style={labelStyle}>{label}</span>}
-          {description && <span style={descriptionStyle}>{description}</span>}
+          {description && (
+            <span id={descriptionId} style={descriptionStyle}>
+              {description}
+            </span>
+          )}
         </div>
       )}
     </label>

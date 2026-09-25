@@ -187,6 +187,7 @@ export function Input({
   const inputId = id ?? generatedId;
   const helperId = `${inputId}-helper`;
   const [isFocused, setIsFocused] = useState(false);
+  const inputRef = React.useRef<HTMLInputElement>(null);
   const [internalValue, setInternalValue] = useState(value ?? defaultValue ?? '');
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
@@ -241,6 +242,9 @@ export function Input({
       currentTarget: { value: '', name },
     } as React.ChangeEvent<HTMLInputElement>;
     onChange?.(syntheticEvent);
+    // The clear button is gone once the field is empty; leave focus where
+    // the user is going to type next, not on <body>.
+    inputRef.current?.focus();
   }, [onClear, onChange, name, value]);
 
   // Get border color based on state
@@ -450,6 +454,7 @@ export function Input({
         )}
         {leftElement && !showSearchIcon && <div style={leftElementStyle}>{leftElement}</div>}
         <input
+          ref={inputRef}
           id={inputId}
           type={type}
           name={name}
@@ -505,7 +510,7 @@ export function Input({
       <style>{`
         .softn-input-clear:hover {
           background: var(--color-gray-200, rgba(255, 255, 255, 0.1)) !important;
-          color: var(--color-gray-200, #e4e4e7) !important;
+          color: var(--color-text, #e4e4e7) !important;
         }
         .softn-input-clear:active {
           transform: scale(0.85);
@@ -516,7 +521,11 @@ export function Input({
           {label && (
             <label htmlFor={inputId} style={labelStyle}>
               {label}
-              {required && <span style={requiredStyle}>*</span>}
+              {required && (
+                <span aria-hidden="true" style={requiredStyle}>
+                  *
+                </span>
+              )}
             </label>
           )}
           {inputElement}

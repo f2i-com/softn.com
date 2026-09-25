@@ -13,6 +13,7 @@
  */
 
 import React from 'react';
+import { cssPaint } from '../utils/egress';
 
 export interface StatItem {
   label: string;
@@ -314,6 +315,9 @@ export function SmartStats({
         const gradient = gradientColors[index % gradientColors.length];
 
         const isGradient = variant === 'gradient';
+        // A stat's colour comes from the bundle's data and lands in
+        // `background`, where a `url()` would be fetched.
+        const tint = cssPaint(stat.color) || gradient.from;
         const isOutline = variant === 'outline';
         const isMinimal = variant === 'minimal';
 
@@ -321,7 +325,7 @@ export function SmartStats({
           padding: sizeStyle.padding,
           borderRadius: 'var(--radius-lg, 0.75rem)',
           background: isGradient
-            ? `linear-gradient(135deg, ${stat.color || gradient.from}, ${gradient.to})`
+            ? `linear-gradient(135deg, ${tint}, ${gradient.to})`
             : isMinimal
               ? 'transparent'
               : 'var(--color-surface, #16161a)',
@@ -345,8 +349,8 @@ export function SmartStats({
           width: size === 'lg' ? '3rem' : '2.5rem',
           height: size === 'lg' ? '3rem' : '2.5rem',
           borderRadius: 'var(--radius-md, 0.5rem)',
-          background: isGradient ? 'rgba(255, 255, 255, 0.2)' : `${stat.color || gradient.from}20`,
-          color: isGradient ? 'var(--color-surface, #16161a)' : stat.color || gradient.from,
+          background: isGradient ? 'rgba(255, 255, 255, 0.2)' : `${tint}20`,
+          color: isGradient ? 'var(--color-surface, #16161a)' : tint,
           flexShrink: 0,
         };
 

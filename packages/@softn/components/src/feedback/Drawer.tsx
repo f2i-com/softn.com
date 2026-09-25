@@ -4,8 +4,9 @@
  * A slide-in side panel component.
  */
 
-import React, { useEffect, useCallback, useRef } from 'react';
+import React, { useEffect, useCallback, useRef, useId } from 'react';
 import { lockBodyScroll } from './body-scroll-lock';
+import { useModalLayer } from './layer-stack';
 
 export interface DrawerProps {
   /** Whether the drawer is open */
@@ -20,6 +21,8 @@ export interface DrawerProps {
   size?: string;
   /** Title shown in header */
   title?: string;
+  /** Accessible name for the drawer when it has no `title` */
+  ariaLabel?: string;
   /** Show close button */
   showClose?: boolean;
   /** Show overlay backdrop */
@@ -41,6 +44,7 @@ export function Drawer({
   position = 'right',
   size = '320px',
   title,
+  ariaLabel,
   showClose = true,
   showOverlay = true,
   closeOnOverlay = true,
@@ -50,19 +54,11 @@ export function Drawer({
 }: DrawerProps): React.ReactElement | null {
   const drawerRef = useRef<HTMLDivElement>(null);
 
-  // Handle escape key
-  useEffect(() => {
-    if (!open || !closeOnEscape) return;
+  const titleId = useId();
 
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [open, closeOnEscape, onClose]);
+  // Focus in, Tab trapped, Escape for the topmost layer only (a Modal opened
+  // from inside the drawer closes alone), focus back on close.
+  useModalLayer(open, drawerRef, { onEscape: closeOnEscape ? onClose : undefined });
 
   // Lock body scroll when open. The lock is the one Modal uses, counted per
   // body: a drawer that saved `overflow` on its own and put it back on close
@@ -71,52 +67,6 @@ export function Drawer({
   useEffect(() => {
     if (!open) return;
     return lockBodyScroll(document.body);
-  }, [open]);
-
-  // Focus trap and restore focus on close
-  useEffect(() => {
-    if (!open) return;
-
-    const previouslyFocused = document.activeElement as HTMLElement;
-
-    // Focus the drawer
-    if (drawerRef.current) {
-      drawerRef.current.focus();
-    }
-
-    // Focus trap: keep focus within drawer
-    const handleTabKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab' || !drawerRef.current) return;
-
-      const focusableElements = drawerRef.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      );
-
-      if (focusableElements.length === 0) return;
-
-      const firstElement = focusableElements[0];
-      const lastElement = focusableElements[focusableElements.length - 1];
-
-      if (e.shiftKey) {
-        if (document.activeElement === firstElement) {
-          e.preventDefault();
-          lastElement.focus();
-        }
-      } else {
-        if (document.activeElement === lastElement) {
-          e.preventDefault();
-          firstElement.focus();
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleTabKey);
-
-    return () => {
-      document.removeEventListener('keydown', handleTabKey);
-      // Restore focus to previously focused element
-      previouslyFocused?.focus?.();
-    };
   }, [open]);
 
   const handleOverlayClick = useCallback(() => {
@@ -132,7 +82,7 @@ export function Drawer({
   const overlayStyle: React.CSSProperties = {
     position: 'fixed',
     inset: 0,
-    background: 'rgba(0, 0, 0, 0.5)',
+    background: 'var(--color-overlay, rgba(0, 0, 0, 0.5))',
     backdropFilter: 'blur(4px)',
     WebkitBackdropFilter: 'blur(4px)',
     zIndex: 1000,
@@ -155,7 +105,10 @@ export function Drawer({
     display: 'flex',
     flexDirection: 'column',
     outline: 'none',
-    animation: `slideIn${capitalize(position)} 0.25s cubic-bezier(0.16, 1, 0.3, 1)`,
+    // The keyframes are named per side below. This used to ask for
+    // `slideInRight` while the stylesheet defined `slideInright` — animation
+    // names are case-sensitive, so the drawer never slid in.
+    animation: `softn-drawer-in-${position} 0.25s cubic-bezier(0.16, 1, 0.3, 1)`,
     ...style,
   };
 
@@ -173,6 +126,8 @@ export function Drawer({
     fontWeight: 600,
     color: 'var(--color-text, #ececf0)',
     margin: 0,
+    overflowWrap: 'anywhere',
+    minWidth: 0,
   };
 
   const closeButtonStyle: React.CSSProperties = {
@@ -201,27 +156,30 @@ export function Drawer({
     <>
       <style>{`
         .softn-drawer-close:hover {
-          background: var(--color-gray-700, rgba(255, 255, 255, 0.08)) !important;
-          color: var(--color-gray-200, #e4e4e7) !important;
+          background: var(--color-surface-hover, rgba(255, 255, 255, 0.08)) !important;
+          color: var(--color-text, #e4e4e7) !important;
         }
         .softn-drawer-close:active {
           transform: scale(0.9);
         }
-        @keyframes slideInleft {
+        @keyframes softn-drawer-in-left {
           from { transform: translateX(-100%); }
           to { transform: translateX(0); }
         }
-        @keyframes slideInright {
+        @keyframes softn-drawer-in-right {
           from { transform: translateX(100%); }
           to { transform: translateX(0); }
         }
-        @keyframes slideIntop {
+        @keyframes softn-drawer-in-top {
           from { transform: translateY(-100%); }
           to { transform: translateY(0); }
         }
-        @keyframes slideInbottom {
+        @keyframes softn-drawer-in-bottom {
           from { transform: translateY(100%); }
           to { transform: translateY(0); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .softn-drawer-panel { animation: none !important; }
         }
       `}</style>
       {/*
@@ -233,15 +191,21 @@ export function Drawer({
       {showOverlay && <div style={overlayStyle} onClick={handleOverlayClick} />}
       <div
         ref={drawerRef}
-        className={className}
+        className={className ? `softn-drawer-panel ${className}` : 'softn-drawer-panel'}
         style={drawerStyle}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        aria-label={title ? undefined : ariaLabel}
         tabIndex={-1}
       >
         {(title || showClose) && (
           <div style={headerStyle}>
-            {title && <h2 style={titleStyle}>{title}</h2>}
+            {title && (
+              <h2 id={titleId} style={titleStyle}>
+                {title}
+              </h2>
+            )}
             {!title && <span />}
             {showClose && (
               <button
@@ -251,7 +215,7 @@ export function Drawer({
                 style={closeButtonStyle}
                 aria-label="Close drawer"
               >
-                &times;
+                <span aria-hidden="true">&times;</span>
               </button>
             )}
           </div>
@@ -260,10 +224,6 @@ export function Drawer({
       </div>
     </>
   );
-}
-
-function capitalize(str: string): string {
-  return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
 export default Drawer;

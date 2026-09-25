@@ -80,10 +80,13 @@ export function Badge({
               0%, 100% { transform: scale(1); opacity: 1; }
               50% { transform: scale(1.2); opacity: 0.7; }
             }
+            @media (prefers-reduced-motion: reduce) {
+              .softn-badge-pulse { animation: none !important; }
+            }
           `}</style>
         )}
         <span
-          className={className}
+          className={pulse ? (className ? `softn-badge-pulse ${className}` : 'softn-badge-pulse') : className}
           style={{
             display: 'inline-block',
             width: sizeStyles.dotSize,
@@ -145,9 +148,15 @@ export function Badge({
             0%, 100% { transform: scale(1); opacity: 1; }
             50% { transform: scale(1.05); opacity: 0.85; }
           }
+          @media (prefers-reduced-motion: reduce) {
+            .softn-badge-pulse { animation: none !important; }
+          }
         `}</style>
       )}
-      <span className={className} style={computedStyle}>
+      <span
+        className={pulse ? (className ? `softn-badge-pulse ${className}` : 'softn-badge-pulse') : className}
+        style={computedStyle}
+      >
         {leftIcon && <span style={iconStyle}>{leftIcon}</span>}
         {displayContent}
         {rightIcon && <span style={iconStyle}>{rightIcon}</span>}

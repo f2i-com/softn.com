@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { cssPaint } from '../utils/egress';
 
 export interface CardProps {
   /** Card title (shown in header) */
@@ -72,12 +73,12 @@ interface VariantStyle {
 const variantStyles: Record<string, VariantStyle> = {
   default: {
     background: 'var(--color-surface, #16161a)',
-    border: '1px solid var(--color-gray-700, #3f3f46)',
+    border: '1px solid var(--color-border, #3f3f46)',
     boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.2)',
   },
   outlined: {
     background: 'transparent',
-    border: '1px solid var(--color-gray-600, #52525b)',
+    border: '1px solid var(--color-border-hover, #52525b)',
   },
   elevated: {
     background: 'var(--color-surface, #16161a)',
@@ -85,8 +86,8 @@ const variantStyles: Record<string, VariantStyle> = {
     boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -2px rgba(0, 0, 0, 0.2)',
   },
   filled: {
-    background: 'var(--color-gray-800, #1e1e23)',
-    border: '1px solid var(--color-gray-700, #3f3f46)',
+    background: 'var(--color-surface-hover, #1e1e23)',
+    border: '1px solid var(--color-border, #3f3f46)',
   },
   ghost: {
     background: 'transparent',
@@ -107,7 +108,7 @@ const variantStyles: Record<string, VariantStyle> = {
 
 const hoverStyles: Record<string, React.CSSProperties> = {
   default: {
-    border: '1px solid var(--color-gray-500, #71717a)',
+    border: '1px solid var(--color-border-hover, #71717a)',
     boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2)',
   },
   outlined: {
@@ -119,11 +120,11 @@ const hoverStyles: Record<string, React.CSSProperties> = {
     transform: 'translateY(-2px)',
   },
   filled: {
-    background: 'var(--color-gray-700, #3f3f46)',
-    border: '1px solid var(--color-gray-600, #52525b)',
+    background: 'var(--color-gray-100, #3f3f46)',
+    border: '1px solid var(--color-border-hover, #52525b)',
   },
   ghost: {
-    background: 'var(--color-gray-800, #1e1e23)',
+    background: 'var(--color-surface-hover, #1e1e23)',
   },
   glass: {
     background: 'rgba(255, 255, 255, 0.08)',
@@ -183,8 +184,10 @@ export function Card({
   // Handle custom gradient colors
   const getBackground = () => {
     if (variant === 'gradient' && (gradientFrom || gradientTo)) {
-      const from = gradientFrom || 'var(--color-primary-500, #6366f1)';
-      const to = gradientTo || 'var(--color-primary-600, #4f46e5)';
+      // Interpolated into `background`: a stop that is not a colour could
+      // close the gradient and add a `url()` layer the browser would fetch.
+      const from = cssPaint(gradientFrom) || 'var(--color-primary-500, #6366f1)';
+      const to = cssPaint(gradientTo) || 'var(--color-primary-600, #4f46e5)';
       return `linear-gradient(135deg, ${from} 0%, ${to} 100%)`;
     }
     return variantStyle.background;
@@ -248,27 +251,62 @@ export function Card({
   };
 
   const hasHeader = title || subtitle || header || headerActions;
+  // A clickable card with its own controls in the header cannot itself be a
+  // button: a button inside a button is announced as neither, and the inner
+  // one's clicks also open the card. Its title becomes the button instead —
+  // the whole card still takes the click — and the heading stays a heading.
+  const titleIsControl = !!onClick && !!headerActions && !!title && !header;
+  const rootIsButton = !!onClick && !titleIsControl;
 
   return (
     <div
       className={className}
       style={baseStyle}
       onClick={onClick}
-      onKeyDown={onClick || onKeyDown ? handleKeyDown : undefined}
+      onKeyDown={rootIsButton || onKeyDown ? handleKeyDown : undefined}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      role={onClick ? 'button' : undefined}
-      tabIndex={onClick ? 0 : undefined}
+      role={rootIsButton ? 'button' : undefined}
+      tabIndex={rootIsButton ? 0 : undefined}
     >
       {hasHeader && (
         <div style={headerStyle}>
           {header ?? (
             <div style={titleContainerStyle}>
-              {title && <h3 style={titleStyle}>{title}</h3>}
+              {title && (
+                <h3 style={titleStyle}>
+                  {titleIsControl ? (
+                    <button
+                      // No handler of its own: the click bubbles to the card's.
+                      type="button"
+                      style={{
+                        padding: 0,
+                        margin: 0,
+                        border: 0,
+                        background: 'transparent',
+                        color: 'inherit',
+                        font: 'inherit',
+                        textAlign: 'inherit',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {title}
+                    </button>
+                  ) : (
+                    title
+                  )}
+                </h3>
+              )}
               {subtitle && <p style={subtitleStyle}>{subtitle}</p>}
             </div>
           )}
-          {headerActions && <div>{headerActions}</div>}
+          {headerActions && (
+            // The actions are their own controls: their clicks and keys do not
+            // also activate the card.
+            <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+              {headerActions}
+            </div>
+          )}
         </div>
       )}
       <div style={contentStyle}>{children}</div>

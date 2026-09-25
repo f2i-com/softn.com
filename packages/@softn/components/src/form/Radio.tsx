@@ -42,6 +42,22 @@ export interface RadioProps {
   style?: React.CSSProperties;
 }
 
+/**
+ * `options={['a', 'b']}` is what SmartForm and Select accept, and here it
+ * rendered a row of unlabelled radios with no value. A missing list renders
+ * no options rather than throwing.
+ */
+function normaliseOptions(options: unknown): RadioOption[] {
+  if (!Array.isArray(options)) return [];
+  return options
+    .filter((option) => option !== null && option !== undefined)
+    .map((option) =>
+      typeof option === 'object'
+        ? (option as RadioOption)
+        : { value: String(option), label: String(option) }
+    );
+}
+
 const sizeValues: Record<string, { radio: string; text: string; gap: string }> = {
   sm: { radio: '0.875rem', text: '0.875rem', gap: '0.375rem' },
   md: { radio: '1rem', text: '0.875rem', gap: '0.5rem' },
@@ -65,6 +81,13 @@ export function Radio({
   const sizes = sizeValues[size];
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
+  const baseId = React.useId();
+  const labelId = `${baseId}-label`;
+  const errorId = `${baseId}-error`;
+  // Radios group by name; without one each would be a group of its own and
+  // the arrow keys would move nowhere.
+  const groupName = name || `${baseId}-radio`;
+  const items = React.useMemo(() => normaliseOptions(options), [options]);
 
   const [internalValue, setInternalValue] = React.useState(value ?? defaultValue ?? '');
 
@@ -143,9 +166,20 @@ export function Radio({
 
   return (
     <div className={className} style={containerStyle}>
-      {label && <span style={labelStyle}>{label}</span>}
-      <div style={optionsContainerStyle}>
-        {options.map((option) => {
+      {label && (
+        <span id={labelId} style={labelStyle}>
+          {label}
+        </span>
+      )}
+      <div
+        role="radiogroup"
+        aria-labelledby={label ? labelId : undefined}
+        aria-invalid={hasError || undefined}
+        aria-describedby={errorMessage ? errorId : undefined}
+        aria-disabled={disabled || undefined}
+        style={optionsContainerStyle}
+      >
+        {items.map((option) => {
           const isDisabled = disabled || option.disabled;
           return (
             <label
@@ -158,7 +192,7 @@ export function Radio({
             >
               <input
                 type="radio"
-                name={name}
+                name={groupName}
                 value={option.value}
                 checked={selectedValue === option.value}
                 disabled={isDisabled}
@@ -170,7 +204,11 @@ export function Radio({
           );
         })}
       </div>
-      {errorMessage && <div style={errorStyle}>{errorMessage}</div>}
+      {errorMessage && (
+        <div id={errorId} style={errorStyle}>
+          {errorMessage}
+        </div>
+      )}
     </div>
   );
 }

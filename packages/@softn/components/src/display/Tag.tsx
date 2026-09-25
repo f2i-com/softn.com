@@ -24,6 +24,8 @@ export interface TagProps {
   removable?: boolean;
   /** Remove handler */
   onRemove?: () => void;
+  /** Accessible name for the remove button (default: "Remove" plus the tag's text) */
+  removeLabel?: string;
   /** Click handler */
   onClick?: () => void;
   /** Disabled state */
@@ -46,6 +48,7 @@ export function Tag({
   rightIcon,
   removable = false,
   onRemove,
+  removeLabel,
   onClick,
   disabled = false,
   rounded = true,
@@ -58,7 +61,7 @@ export function Tag({
   const config = tagSizeConfig[size] ?? tagSizeConfig.md;
   const styleProps = getStyleForVariantStyle(tagStyle, colors);
 
-  const handleRemove = (e: React.MouseEvent) => {
+  const handleRemove = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.stopPropagation();
     if (!disabled) {
       onRemove?.();
@@ -75,9 +78,8 @@ export function Tag({
     lineHeight: 1.4,
     borderRadius: rounded ? 'var(--radius-full, 9999px)' : 'var(--radius-sm, 0.25rem)',
     whiteSpace: 'nowrap',
-    cursor: onClick && !disabled ? 'pointer' : 'default',
     opacity: disabled ? 0.5 : 1,
-    transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
+    transition: 'background-color 180ms cubic-bezier(0.16, 1, 0.3, 1), border-color 180ms cubic-bezier(0.16, 1, 0.3, 1), opacity 180ms cubic-bezier(0.16, 1, 0.3, 1)',
     ...styleProps,
     ...style,
   };
@@ -105,7 +107,7 @@ export function Tag({
     transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
   };
 
-  const RemoveIcon = () => (
+  const removeIcon = (
     <svg
       width={config.iconSize - 4}
       height={config.iconSize - 4}
@@ -114,36 +116,69 @@ export function Tag({
       stroke="currentColor"
       strokeWidth="2"
       strokeLinecap="round"
+      aria-hidden="true"
+      focusable="false"
     >
       <path d="M3 3l6 6M9 3l-6 6" />
     </svg>
   );
 
-  return (
-    <span
-      className={className}
-      style={computedStyle}
-      onClick={onClick && !disabled ? onClick : undefined}
-      role={onClick ? 'button' : undefined}
-      tabIndex={onClick && !disabled ? 0 : undefined}
-    >
+  // Two controls side by side, never one inside the other: a clickable tag's
+  // content is a button, and the remove control is a second button next to
+  // it. A `span role="button"` holding another `span role="button"` gave
+  // keyboard users two tab stops that Enter and Space did nothing on.
+  const textName =
+    typeof children === 'string' || typeof children === 'number' ? String(children) : undefined;
+  const content = (
+    <>
       {leftIcon && <span style={iconStyle}>{leftIcon}</span>}
       {children}
       {rightIcon && <span style={iconStyle}>{rightIcon}</span>}
-      {removable && (
-        <span
-          style={removeButtonStyle}
-          onClick={handleRemove}
-          role="button"
-          aria-label="Remove"
-          tabIndex={!disabled ? 0 : undefined}
+    </>
+  );
+
+  return (
+    <span className={className} style={computedStyle}>
+      {onClick ? (
+        <button
+          type="button"
+          onClick={disabled ? undefined : onClick}
+          disabled={disabled}
+          style={{ ...buttonReset, gap: config.gap, cursor: disabled ? 'not-allowed' : 'pointer' }}
         >
-          <RemoveIcon />
-        </span>
+          {content}
+        </button>
+      ) : (
+        content
+      )}
+      {removable && (
+        <button
+          type="button"
+          style={{ ...buttonReset, ...removeButtonStyle }}
+          onClick={handleRemove}
+          disabled={disabled}
+          aria-label={removeLabel ?? (textName ? `Remove ${textName}` : 'Remove')}
+        >
+          {removeIcon}
+        </button>
       )}
     </span>
   );
 }
+
+/** A button that looks like the text around it. */
+const buttonReset: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: 0,
+  margin: 0,
+  border: 0,
+  background: 'transparent',
+  color: 'inherit',
+  font: 'inherit',
+  lineHeight: 'inherit',
+  borderRadius: 'inherit',
+};
 
 /**
  * TagGroup - Container for multiple tags

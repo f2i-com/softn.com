@@ -39,6 +39,9 @@ export interface PanViewProps {
   children?: React.ReactNode;
 }
 
+/** Pixels a mouse moves with the button down before a press becomes a pan. */
+const DRAG_THRESHOLD = 4;
+
 export function PanView({
   contentWidth,
   contentHeight,
@@ -63,7 +66,7 @@ export function PanView({
   const scaledH = safeH * safeScale;
 
   const viewportRef = React.useRef<HTMLDivElement>(null);
-  const dragRef = React.useRef<{ id: number; x: number; y: number; left: number; top: number } | null>(null);
+  const dragRef = React.useRef<{ id: number; x: number; y: number; left: number; top: number; moving: boolean } | null>(null);
   const prevScaleRef = React.useRef(safeScale);
   const centredRef = React.useRef(false);
   const placedRef = React.useRef<{ left: number; top: number } | null>(null);
@@ -148,16 +151,24 @@ export function PanView({
     if (!draggable || e.pointerType !== 'mouse' || e.button !== 0) return;
     const el = viewportRef.current;
     if (!el) return;
-    dragRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop };
-    el.setPointerCapture(e.pointerId);
-    el.style.cursor = 'grabbing';
-    el.style.userSelect = 'none';
+    // The pointer is captured only once it has moved: a captured pointer's
+    // click goes to the capturing element (Pointer Events 3), so capturing on
+    // press sent every click on a button or marker inside the view to the
+    // viewport instead.
+    dragRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop, moving: false };
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
     const drag = dragRef.current;
     const el = viewportRef.current;
     if (!drag || !el || drag.id !== e.pointerId) return;
+    if (!drag.moving) {
+      if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < DRAG_THRESHOLD) return;
+      drag.moving = true;
+      el.setPointerCapture?.(e.pointerId);
+      el.style.cursor = 'grabbing';
+      el.style.userSelect = 'none';
+    }
     el.scrollLeft = drag.left - (e.clientX - drag.x);
     el.scrollTop = drag.top - (e.clientY - drag.y);
   };

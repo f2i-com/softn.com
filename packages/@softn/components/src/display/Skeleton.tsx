@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { cssPaint } from '../utils/egress';
 
 export interface SkeletonProps {
   /** Variant of skeleton */
@@ -75,9 +76,10 @@ export function Skeleton({
   children,
   loading = true,
 }: SkeletonProps): React.ReactElement {
-  // If not loading, show children
-  if (!loading && children) {
-    return <>{children}</>;
+  // Loaded: the content, or nothing — not a placeholder for content that
+  // is not coming.
+  if (!loading) {
+    return <>{children ?? null}</>;
   }
 
   const computedWidth = typeof width === 'number' ? `${width}px` : width;
@@ -94,7 +96,8 @@ export function Skeleton({
 
   const duration = speedDurations[speed];
   const bgColor = baseColor || 'var(--color-skeleton-base, var(--color-gray-200, #3f3f46))';
-  const hlColor = highlightColor || 'var(--color-skeleton-highlight, rgba(255, 255, 255, 0.5))';
+  // Interpolated into `background`, so only a colour may come through.
+  const hlColor = cssPaint(highlightColor) || 'var(--color-skeleton-highlight, rgba(255, 255, 255, 0.5))';
 
   const baseStyle: React.CSSProperties = {
     display: 'block',
@@ -120,7 +123,11 @@ export function Skeleton({
       0% { transform: translateX(-100%); }
       100% { transform: translateX(100%); }
     }
+    @media (prefers-reduced-motion: reduce) {
+      .softn-skeleton, .softn-skeleton * { animation: none !important; }
+    }
   `;
+  const rootClass = className ? `softn-skeleton ${className}` : 'softn-skeleton';
 
   const animationStyle: React.CSSProperties =
     animation === 'pulse'
@@ -144,8 +151,10 @@ export function Skeleton({
       />
     ) : null;
 
+  const lineCount = Math.max(1, Math.min(100, Math.floor(lines) || 1));
+
   // Render multiple lines for text variant
-  if (variant === 'text' && lines > 1) {
+  if (variant === 'text' && lineCount > 1) {
     return (
       <>
         <style>
@@ -153,17 +162,19 @@ export function Skeleton({
           {waveAnimation}
         </style>
         <div
-          className={className}
+          className={rootClass}
+          // A placeholder has nothing to say; the content that replaces it will.
+          aria-hidden="true"
           style={{ display: 'flex', flexDirection: 'column', gap: lineSpacing }}
         >
-          {Array.from({ length: lines }, (_, i) => (
+          {Array.from({ length: lineCount }, (_, i) => (
             <span
               key={i}
               style={{
                 ...baseStyle,
                 ...animationStyle,
                 // Make last line shorter for natural appearance
-                width: i === lines - 1 ? '80%' : finalWidth || '100%',
+                width: i === lineCount - 1 ? '80%' : finalWidth || '100%',
               }}
             >
               {shimmerOverlay}
@@ -180,7 +191,7 @@ export function Skeleton({
         {pulseAnimation}
         {waveAnimation}
       </style>
-      <span className={className} style={{ ...baseStyle, ...animationStyle }}>
+      <span className={rootClass} aria-hidden="true" style={{ ...baseStyle, ...animationStyle }}>
         {shimmerOverlay}
       </span>
     </>

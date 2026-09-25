@@ -3,6 +3,11 @@
  *
  * A drag-to-reorder list using pointer events.
  * Items animate smoothly to their new positions.
+ *
+ * Every item also has a grip button for the keyboard: Space or Enter picks
+ * the item up, the arrow keys (and Home/End) move it, calling `onReorder` at
+ * each step, Space or Enter drops it and Escape puts it back where it
+ * started. Each step is announced in a live region.
  */
 
 import * as React from 'react';
@@ -22,6 +27,8 @@ export interface SortableListProps {
   gap?: number;
   /** Callback with the reordered items array */
   onReorder?: (newItems: unknown[]) => void;
+  /** Accessible name for the list */
+  ariaLabel?: string;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -55,25 +62,56 @@ function getItemText(item: unknown, field?: string): string {
   return '';
 }
 
-const gripIconStyle: React.CSSProperties = {
+/** Move the item at `from` to `to`, returning a new array. */
+function moveItem(items: unknown[], from: number, to: number): unknown[] {
+  const next = [...items];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+const gripStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   width: '24px',
   height: '24px',
   flexShrink: 0,
+  padding: 0,
+  margin: 0,
+  border: 'none',
+  borderRadius: '4px',
+  background: 'transparent',
   cursor: 'grab',
-  color: '#999',
+  color: 'var(--color-text-muted, gray)',
   fontSize: '16px',
   lineHeight: 1,
   userSelect: 'none',
+  touchAction: 'none',
 };
 
-const GripIcon = (): React.ReactElement => (
-  <span style={gripIconStyle} aria-hidden="true">
-    ⠿
-  </span>
-);
+const visuallyHidden: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
+const ITEM_BACKGROUND = 'var(--color-surface, white)';
+const ITEM_HOVER_BACKGROUND = 'var(--color-surface-hover, rgba(0, 0, 0, 0.03))';
+
+interface Grabbed {
+  /** Where the picked-up item is now. */
+  index: number;
+  /** Where it started, and the order before it moved, for Escape. */
+  origin: number;
+  original: unknown[];
+}
 
 export function SortableList({
   items = [],
@@ -83,6 +121,7 @@ export function SortableList({
   direction = 'vertical',
   gap = 8,
   onReorder,
+  ariaLabel,
   className,
   style,
 }: SortableListProps): React.ReactElement {
@@ -90,6 +129,11 @@ export function SortableList({
   const containerRef = React.useRef<HTMLDivElement>(null);
   const itemRefs = React.useRef<Map<number, HTMLDivElement>>(new Map());
   const dragStateRef = React.useRef<DragState | null>(null);
+  const [grabbed, setGrabbed] = React.useState<Grabbed | null>(null);
+  const [announcement, setAnnouncement] = React.useState('');
+  const gripRefs = React.useRef<Map<number, HTMLButtonElement>>(new Map());
+  const pendingFocus = React.useRef<number | null>(null);
+  const instructionsId = React.useId();
 
   const isVertical = direction === 'vertical';
 
@@ -126,7 +170,7 @@ export function SortableList({
       const el = itemRefs.current.get(index);
       if (!el) return;
 
-      el.setPointerCapture(e.pointerId);
+      el.setPointerCapture?.(e.pointerId);
 
       const rect = el.getBoundingClientRect();
       const itemSize = isVertical ? rect.height : rect.width;
@@ -165,28 +209,97 @@ export function SortableList({
     [calculateOverIndex]
   );
 
-  const handlePointerUp = React.useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
+  const endDrag = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, commit: boolean) => {
       const state = dragStateRef.current;
       if (!state) return;
+      dragStateRef.current = null;
 
       const el = itemRefs.current.get(state.dragIndex);
-      if (el) el.releasePointerCapture(e.pointerId);
-
-      const { dragIndex, overIndex } = state;
-
-      if (dragIndex !== overIndex && onReorder) {
-        const newItems = [...items];
-        const [movedItem] = newItems.splice(dragIndex, 1);
-        newItems.splice(overIndex, 0, movedItem);
-        onReorder(newItems);
+      try {
+        if (el?.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      } catch {
+        // The capture is already gone.
       }
 
-      dragStateRef.current = null;
+      const { dragIndex, overIndex } = state;
+      if (commit && dragIndex !== overIndex && onReorder) {
+        onReorder(moveItem(items, dragIndex, overIndex));
+      }
       setDragState(null);
     },
     [items, onReorder]
   );
+
+  const handlePointerUp = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => endDrag(e, true),
+    [endDrag]
+  );
+
+  // A drag the browser takes away (a scroll gesture, a lost capture) ends
+  // without reordering, rather than leaving the item floating mid-list.
+  const handlePointerCancel = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => endDrag(e, false),
+    [endDrag]
+  );
+
+  // After a keyboard move the list re-renders in its new order, and the grip
+  // that had focus may now belong to another item: focus follows the moved one.
+  React.useEffect(() => {
+    const index = pendingFocus.current;
+    if (index === null) return;
+    pendingFocus.current = null;
+    gripRefs.current.get(index)?.focus();
+  }, [items]);
+
+  // The list shrank under a picked-up item (a parent replaced it): let go.
+  React.useEffect(() => {
+    if (grabbed && grabbed.index >= items.length) setGrabbed(null);
+  }, [grabbed, items.length]);
+
+  const describe = (item: unknown, index: number): string =>
+    getItemText(item, primary) || getItemText(item) || `Item ${index + 1}`;
+
+  const handleGripKeyDown = (index: number, e: React.KeyboardEvent<HTMLButtonElement>) => {
+    const name = describe(items[index], index);
+    const back = isVertical ? 'ArrowUp' : 'ArrowLeft';
+    const forward = isVertical ? 'ArrowDown' : 'ArrowRight';
+
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      if (grabbed) {
+        setGrabbed(null);
+        setAnnouncement(`${name} dropped at position ${index + 1} of ${items.length}.`);
+      } else {
+        setGrabbed({ index, origin: index, original: items });
+        setAnnouncement(`${name} picked up at position ${index + 1} of ${items.length}.`);
+      }
+      return;
+    }
+
+    if (e.key === 'Escape' && grabbed) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (grabbed.index !== grabbed.origin && onReorder) {
+        pendingFocus.current = grabbed.origin;
+        onReorder(grabbed.original);
+      }
+      setAnnouncement(`Reorder cancelled. ${name} is back at position ${grabbed.origin + 1}.`);
+      setGrabbed(null);
+      return;
+    }
+
+    if (!grabbed) return;
+    if (e.key !== back && e.key !== forward && e.key !== 'Home' && e.key !== 'End') return;
+    e.preventDefault();
+    const target =
+      e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : index + (e.key === back ? -1 : 1);
+    if (target < 0 || target >= items.length || target === index || !onReorder) return;
+    pendingFocus.current = target;
+    setGrabbed({ ...grabbed, index: target });
+    onReorder(moveItem(items, index, target));
+    setAnnouncement(`${name} moved to position ${target + 1} of ${items.length}.`);
+  };
 
   // Calculate the visual shift for each item during drag
   const getItemShift = (index: number): number => {
@@ -239,23 +352,33 @@ export function SortableList({
     ...style,
   };
 
+  // Theme tokens, so a dark theme does not get white cards under light text.
   const itemBaseStyle: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
     gap: '12px',
     padding: '12px',
     borderRadius: '8px',
-    backgroundColor: '#fff',
-    border: '1px solid #e5e7eb',
+    backgroundColor: ITEM_BACKGROUND,
+    color: 'var(--color-text, inherit)',
+    border: '1px solid var(--color-border, rgba(0, 0, 0, 0.1))',
     userSelect: 'none',
     touchAction: 'none',
   };
 
   return (
-    <div ref={containerRef} className={className} style={containerStyle}>
+    <div ref={containerRef} className={className} style={containerStyle} role="list" aria-label={ariaLabel}>
+      <span id={instructionsId} style={visuallyHidden}>
+        Press Space or Enter to pick the item up, the arrow keys to move it, Space or Enter to drop it, and Escape
+        to cancel.
+      </span>
+      <span style={visuallyHidden} aria-live="assertive" aria-atomic="true">
+        {announcement}
+      </span>
       {items.map((item, index) => {
         const key = getItemKey(item, index, renderKey);
         const isDragged = dragState?.dragIndex === index;
+        const isGrabbed = grabbed?.index === index;
         const shift = getItemShift(index);
 
         const shiftTransform = isVertical
@@ -270,17 +393,18 @@ export function SortableList({
                 transform: shift !== 0 ? shiftTransform : undefined,
                 transition: 'transform 200ms ease',
               }),
+          ...(isGrabbed ? { boxShadow: '0 0 0 2px var(--color-primary-500, currentColor)' } : null),
         };
 
         // Hover effect (only when not dragging)
         const handleMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
           if (!dragState) {
-            e.currentTarget.style.backgroundColor = '#f9fafb';
+            e.currentTarget.style.backgroundColor = ITEM_HOVER_BACKGROUND;
           }
         };
         const handleMouseLeave = (e: React.MouseEvent<HTMLDivElement>) => {
           if (!dragState) {
-            e.currentTarget.style.backgroundColor = '#fff';
+            e.currentTarget.style.backgroundColor = ITEM_BACKGROUND;
           }
         };
 
@@ -297,14 +421,34 @@ export function SortableList({
                 itemRefs.current.delete(index);
               }
             }}
+            role="listitem"
             style={itemStyle}
             onPointerDown={(e) => handlePointerDown(index, e)}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
+            onLostPointerCapture={handlePointerCancel}
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
           >
-            <GripIcon />
+            <button
+              type="button"
+              ref={(el) => {
+                if (el) gripRefs.current.set(index, el);
+                else gripRefs.current.delete(index);
+              }}
+              style={gripStyle}
+              aria-label={`Reorder ${describe(item, index)}`}
+              aria-describedby={instructionsId}
+              aria-pressed={isGrabbed}
+              disabled={!onReorder}
+              onKeyDown={(e) => handleGripKeyDown(index, e)}
+              onBlur={() => {
+                if (isGrabbed && pendingFocus.current === null) setGrabbed(null);
+              }}
+            >
+              <span aria-hidden="true">⠿</span>
+            </button>
             <div style={{ flex: 1, minWidth: 0 }}>
               {primaryText && (
                 <div
@@ -325,7 +469,7 @@ export function SortableList({
                   style={{
                     fontSize: '12px',
                     lineHeight: '16px',
-                    color: '#6b7280',
+                    color: 'var(--color-text-muted, gray)',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',

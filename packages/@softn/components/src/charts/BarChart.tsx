@@ -6,7 +6,7 @@
  */
 
 import * as React from 'react';
-import { normaliseSeries } from './series';
+import { describeChart, normaliseSeries, numericPoints } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface BarDataPoint {
@@ -36,6 +36,8 @@ export interface BarChartProps {
   showLegend?: boolean;
   formatValue?: (value: number) => string;
   interactive?: boolean;
+  /** Text alternative for the chart; a summary of its values by default */
+  ariaLabel?: string;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -63,11 +65,22 @@ export function BarChart({
     return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
   },
   interactive = false,
+  ariaLabel,
   className = '',
   style,
 }: BarChartProps) {
   // Data that has not arrived yet is an empty chart, not a throw.
-  const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
+  // A value that is not a number is left out; a numeric string ("42", as
+  // JSON often has it) is a number, so a stacked total adds rather than
+  // concatenates.
+  const series = React.useMemo(
+    () =>
+      normaliseSeries(rawSeries).map((s) => ({
+        ...s,
+        data: numericPoints(s.data, 'value').map((d) => ({ ...d, label: String(d.label ?? '') })),
+      })),
+    [rawSeries]
+  );
   const [hoveredBar, setHoveredBar] = React.useState<string | null>(null);
   const [tooltip, setTooltip] = React.useState<{ x: number; y: number; label: string; value: number; series: string; color: string } | null>(null);
 
@@ -240,7 +253,7 @@ export function BarChart({
         h = barWidth;
       }
 
-      const barKey = `${label}-${s.name}`;
+      const barKey = `${groupIdx}-${seriesIdx}`;
       const isHovered = interactive && hoveredBar === barKey;
       const isDimmed = interactive && hoveredBar !== null && !isHovered;
 
@@ -353,7 +366,19 @@ export function BarChart({
       className={`softn-bar-chart ${className}`}
       style={{ position: 'relative', ...style }}
     >
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" preserveAspectRatio="xMidYMid meet">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label={
+          ariaLabel ??
+          describeChart(
+            stacked ? 'Stacked bar chart' : 'Bar chart',
+            series.map((s) => ({ name: s.name, values: s.data.map((d) => `${d.label} ${formatValue(d.value)}`) }))
+          )
+        }
+      >
         {showGrid && gridLines}
         {bars}
         {labels}
@@ -424,12 +449,12 @@ export function BarChart({
         >
           {series.map((s, idx) => (
             <div
-              key={s.name}
+              key={`${idx}-${s.name}`}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: '0.3rem',
-                opacity: interactive && hoveredBar !== null && !hoveredBar.endsWith(`-${s.name}`) ? 0.4 : 1,
+                opacity: interactive && hoveredBar !== null && hoveredBar.split('-')[1] !== String(idx) ? 0.4 : 1,
                 transition: 'opacity 0.2s ease',
               }}
             >

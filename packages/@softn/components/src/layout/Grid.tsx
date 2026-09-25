@@ -6,6 +6,7 @@
  */
 
 import React, { useId } from 'react';
+import { cssColumnCount } from '../utils/egress';
 
 export interface ResponsiveColumns {
   /** Columns on mobile (< 640px) */
@@ -106,10 +107,11 @@ export function Grid({
     gridTemplateColumns = `repeat(auto-fit, minmax(min(${minColumnWidth}, 100%), 1fr))`;
   } else if (isResponsiveColumns(columns)) {
     // Responsive columns object - generate media queries
-    const sm = columns.sm || 1;
-    const md = columns.md || sm;
-    const lg = columns.lg || md;
-    const xl = columns.xl || lg;
+    // These go into <style> text, not a style object: a count, or nothing.
+    const sm = cssColumnCount(columns.sm, 1);
+    const md = cssColumnCount(columns.md, sm);
+    const lg = cssColumnCount(columns.lg, md);
+    const xl = cssColumnCount(columns.xl, lg);
 
     gridTemplateColumns = `repeat(${sm}, 1fr)`;
     responsiveCSS = `
@@ -125,7 +127,7 @@ export function Grid({
     `;
   } else if (responsive && typeof columns === 'number') {
     // Auto-responsive based on column count
-    const colCount = columns;
+    const colCount = cssColumnCount(columns, 1);
     gridTemplateColumns = '1fr';
     responsiveCSS = `
       @media (min-width: 640px) {
@@ -143,7 +145,7 @@ export function Grid({
     gridTemplateColumns = '1fr';
     responsiveCSS = `
       @media (min-width: 768px) {
-        #${gridId} { grid-template-columns: repeat(${columns}, 1fr); }
+        #${gridId} { grid-template-columns: repeat(${cssColumnCount(columns, 1)}, 1fr); }
       }
     `;
   } else if (typeof columns === 'number') {

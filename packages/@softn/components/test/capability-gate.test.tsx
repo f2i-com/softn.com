@@ -23,6 +23,8 @@ import { QRReader } from '../src/utility/QRReader';
 import { mount } from './dom';
 
 vi.mock('@yudiel/react-qr-scanner', () => ({
+  // QRReader points the decoder at the host's copy when its module loads.
+  prepareZXingModule: () => {},
   Scanner: (): React.ReactElement => {
     React.useEffect(() => {
       void navigator.mediaDevices.getUserMedia({ video: true });

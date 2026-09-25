@@ -110,6 +110,11 @@ const sizeConfig: Record<
   },
 };
 
+const BUTTON_EASE = '180ms cubic-bezier(0.16, 1, 0.3, 1)';
+const BUTTON_TRANSITION = ['background-color', 'border-color', 'box-shadow', 'transform', 'opacity']
+  .map((property) => `${property} ${BUTTON_EASE}`)
+  .join(', ');
+
 const variantStyles: Record<string, VariantStyle> = {
   primary: {
     base: {
@@ -215,7 +220,9 @@ const variantStyles: Record<string, VariantStyle> = {
     base: {
       background:
         'linear-gradient(to bottom, var(--color-warning-400, #fbbf24), var(--color-warning-500, #f59e0b))',
-      color: 'var(--color-gray-900, #111827)',
+      // Dark text on amber in either theme; `gray-900` turns near-white in a
+      // dark theme.
+      color: 'var(--color-black, #111827)',
       border: 'none',
       boxShadow:
         '0 1px 3px 0 rgb(245 158 11 / 0.4), 0 1px 2px -1px rgb(245 158 11 / 0.4), inset 0 1px 0 0 rgb(255 255 255 / 0.2)',
@@ -264,6 +271,8 @@ const variantStyles: Record<string, VariantStyle> = {
 
 const LoadingSpinner = ({ size }: { size: string }) => (
   <svg
+    aria-hidden="true"
+    focusable="false"
     style={{
       width: size,
       height: size,
@@ -351,9 +360,18 @@ export function Button({
     textDecoration: 'none',
     whiteSpace: 'nowrap',
     userSelect: 'none',
-    outline: 'none',
-    transition:
-      'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
+    // No `outline: 'none'`: an inline outline beats the `:focus-visible`
+    // ring the theme stylesheet draws, and a keyboard user tabbing through a
+    // toolbar of Buttons could not see which one had focus.
+    // Named, not `all`. A variant switch — `variant={active ? "primary" :
+    // "ghost"}` in a nav bar — changes the text colour and the background
+    // together, and only one of them can animate: a gradient does not
+    // interpolate, so the background snapped to the ghost's transparent while
+    // `all` eased the text from the primary's white over 180ms. The button
+    // that had just gone inactive drew white text on a light page until the
+    // ease caught up. Colours now change in the same frame; the feedback
+    // that does interpolate keeps its easing.
+    transition: BUTTON_TRANSITION,
 
     // Size styles
     padding: iconOnly ? '0' : sizeStyle.padding,
@@ -388,6 +406,17 @@ export function Button({
     ...style,
   };
 
+  // A loading button keeps focus: `disabled` would drop it to <body> the
+  // moment the user pressed it. It says it is busy and refuses the click
+  // (and, for a submit button, the submission) instead.
+  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (loading) {
+      event.preventDefault();
+      return;
+    }
+    onClick?.(event);
+  };
+
   return (
     <>
       <style>{`
@@ -398,8 +427,10 @@ export function Button({
       `}</style>
       <button
         type={type}
-        disabled={disabled || loading}
-        onClick={onClick}
+        disabled={disabled}
+        aria-disabled={loading && !disabled ? true : undefined}
+        aria-busy={loading ? true : undefined}
+        onClick={handleClick}
         aria-label={ariaLabel ?? ariaLabelAttr}
         title={title}
         className={className}

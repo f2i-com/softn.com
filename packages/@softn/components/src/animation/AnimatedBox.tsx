@@ -9,6 +9,14 @@
  */
 
 import * as React from 'react';
+import { usePrefersReducedMotion } from '../utils/motion';
+
+/**
+ * The "from" state has to be on the element before the browser paints it:
+ * in a plain effect, content above the fold appeared, vanished and faded
+ * back in. A layout effect runs before paint; on a server, nothing runs.
+ */
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? React.useLayoutEffect : React.useEffect;
 
 export type AnimationPreset =
   | 'fadeIn'
@@ -151,6 +159,9 @@ export function AnimatedBox({
 }: AnimatedBoxProps): React.ReactElement {
   const elementRef = React.useRef<HTMLDivElement>(null);
   const hasAnimatedRef = React.useRef(false);
+  // With reduced motion requested, entrances land on their end state and
+  // hover effects do nothing.
+  const reducedMotion = usePrefersReducedMotion();
 
   const isHover = trigger === 'hover';
   const presets = isHover ? HOVER_PRESETS : ENTRANCE_PRESETS;
@@ -162,11 +173,18 @@ export function AnimatedBox({
   const transitionValue = `opacity ${duration}ms ${transitionEasing} ${delay}ms, transform ${duration}ms ${transitionEasing} ${delay}ms`;
 
   // Entrance animation: mount or visible trigger
-  React.useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (isHover || trigger === 'state') return;
 
     const el = elementRef.current;
     if (!el) return;
+
+    if (reducedMotion) {
+      el.style.transition = 'none';
+      applyStyles(el, preset.to);
+      hasAnimatedRef.current = true;
+      return;
+    }
 
     // Apply "from" styles immediately via DOM
     applyStyles(el, preset.from);
@@ -199,6 +217,12 @@ export function AnimatedBox({
       const rafId = requestAnimationFrame(() => doAnimate());
       return () => cancelAnimationFrame(rafId);
     } else if (trigger === 'visible') {
+      // Without IntersectionObserver there is no way to wait for the element
+      // to be seen: animate now rather than throw or stay invisible.
+      if (typeof IntersectionObserver === 'undefined') {
+        const rafId = requestAnimationFrame(() => doAnimate());
+        return () => cancelAnimationFrame(rafId);
+      }
       const observer = new IntersectionObserver(
         ([entry]) => {
           if (entry.isIntersecting) {
@@ -211,7 +235,7 @@ export function AnimatedBox({
       observer.observe(el);
       return () => observer.disconnect();
     }
-  }, [trigger, animation, isHover, transitionValue, preset]);
+  }, [trigger, animation, isHover, transitionValue, preset, reducedMotion]);
 
   // State trigger
   React.useEffect(() => {
@@ -220,19 +244,19 @@ export function AnimatedBox({
     const el = elementRef.current;
     if (!el) return;
 
-    el.style.transition = transitionValue;
+    el.style.transition = reducedMotion ? 'none' : transitionValue;
     el.style.willChange = 'opacity, transform';
     applyStyles(el, isActive ? preset.to : preset.from);
-  }, [trigger, isActive, transitionValue, preset]);
+  }, [trigger, isActive, transitionValue, preset, reducedMotion]);
 
   // Hover handlers — manipulate DOM directly, no state needed
   const handleMouseEnter = React.useCallback(() => {
-    if (!isHover) return;
+    if (!isHover || reducedMotion) return;
     const el = elementRef.current;
     if (!el) return;
     el.style.transition = transitionValue;
     applyStyles(el, preset.to);
-  }, [isHover, transitionValue, preset]);
+  }, [isHover, transitionValue, preset, reducedMotion]);
 
   const handleMouseLeave = React.useCallback(() => {
     if (!isHover) return;

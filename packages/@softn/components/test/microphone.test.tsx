@@ -166,6 +166,28 @@ describe('Microphone opening the device', () => {
     expect(container.textContent).not.toContain('Permission denied');
   });
 
+  it('turns the microphone off when setup fails after the device opened', async () => {
+    // The stream is live once getUserMedia answers; everything after it — the
+    // audio context, the capture node — can still throw. The error used to be
+    // shown with the tracks still recording and the OS indicator lit.
+    vi.stubGlobal(
+      'AudioContext',
+      class extends FakeAudioContext {
+        createMediaStreamSource = vi.fn(() => {
+          throw new DOMException('The stream has no audio track', 'InvalidStateError');
+        });
+      }
+    );
+    const onError = vi.fn();
+    mount(<Microphone onError={onError} />);
+    await grant();
+
+    expect(onError).toHaveBeenCalledWith('The stream has no audio track');
+    expect(handedOut).toHaveLength(1);
+    expect(handedOut[0].tracks.every((t) => t.readyState === 'ended')).toBe(true);
+    expect(contexts[0].closed).toBe(true);
+  });
+
   it('runs the graph at the rate it was asked for', async () => {
     // The getUserMedia sampleRate constraint is widely ignored; asking the
     // AudioContext is what actually resamples. Without it the component would

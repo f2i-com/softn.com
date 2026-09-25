@@ -247,7 +247,7 @@ const statusConfig: Record<string, { icon: React.ReactNode; color: string; bg: s
         <circle cx="12" cy="12" r="4" />
       </svg>
     ),
-    color: '#a1a1aa',
+    color: 'var(--color-text-muted, #a1a1aa)',
     bg: 'rgba(161, 161, 170, 0.15)',
   },
 };
@@ -366,6 +366,20 @@ export function SmartTimeline<T extends Record<string, unknown>>({
               transition: 'all 200ms cubic-bezier(0.16, 1, 0.3, 1)',
             }}
             onClick={() => onSelect?.(item)}
+            // A selectable entry is a button for the keyboard too.
+            role={onSelect ? 'button' : undefined}
+            tabIndex={onSelect ? 0 : undefined}
+            onKeyDown={
+              onSelect
+                ? (e) => {
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelect(item);
+                    }
+                  }
+                : undefined
+            }
           >
             {/* Timeline indicator */}
             <div
@@ -390,6 +404,7 @@ export function SmartTimeline<T extends Record<string, unknown>>({
                   flexShrink: 0,
                   border: `2px solid ${config.color}`,
                 }}
+                aria-hidden="true"
               >
                 {config.icon}
               </div>

@@ -16,6 +16,7 @@ export default defineConfig({
     scene3d: 'src/entries/scene3d.ts',
     charts: 'src/entries/charts.ts',
     editors: 'src/entries/editors.ts',
+    highlight: 'src/entries/highlight.ts',
     smart: 'src/entries/smart.ts',
     media: 'src/entries/media.ts',
     animation: 'src/entries/animation.ts',
@@ -36,6 +37,9 @@ export default defineConfig({
     /^three(\/.*)?$/,
     '@rc-component/qrcode',
     '@yudiel/react-qr-scanner',
+    // QRReader imports the decoder's .wasm with `?url`, which only the host's
+    // bundler can resolve into an emitted asset and its URL.
+    /^zxing-wasm(\/.*)?$/,
   ],
   treeshake: true,
 });

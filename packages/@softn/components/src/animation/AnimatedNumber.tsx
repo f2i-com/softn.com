@@ -3,9 +3,16 @@
  *
  * Animates a numeric value from its previous value to its new value
  * using requestAnimationFrame with ease-out quadratic easing.
+ *
+ * The counting digits are hidden from assistive technology, which is given
+ * the value being counted to instead: a screen reader otherwise read "0"
+ * until a `trigger="visible"` counter was scrolled to, or whichever frame it
+ * happened to catch. With reduced motion requested the value is shown
+ * without counting.
  */
 
 import * as React from 'react';
+import { usePrefersReducedMotion } from '../utils/motion';
 
 export interface AnimatedNumberProps {
   /** The target number to animate towards */
@@ -29,8 +36,10 @@ export interface AnimatedNumberProps {
 }
 
 function formatNumber(value: number, decimals: number, separator: boolean): string {
-  const safeValue = typeof value === 'number' && !isNaN(value) ? value : 0;
-  const fixed = safeValue.toFixed(decimals);
+  const safeValue = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  // toFixed throws a RangeError outside 0–100; a bound `decimals` could be anything.
+  const places = Number.isFinite(decimals) ? Math.min(20, Math.max(0, Math.floor(decimals))) : 0;
+  const fixed = safeValue.toFixed(places);
 
   if (!separator) return fixed;
 
@@ -56,6 +65,7 @@ export function AnimatedNumber({
   const animationFrameRef = React.useRef<number | null>(null);
   const hasStartedRef = React.useRef(false);
   const elementRef = React.useRef<HTMLSpanElement>(null);
+  const reducedMotion = usePrefersReducedMotion();
 
   const animate = React.useCallback(
     (from: number, to: number) => {
@@ -63,6 +73,12 @@ export function AnimatedNumber({
       to = typeof to === 'number' && !isNaN(to) ? to : 0;
       if (animationFrameRef.current !== null) {
         cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      if (reducedMotion) {
+        setDisplayValue(to);
+        previousValueRef.current = to;
+        return;
       }
 
       const startTime = performance.now();
@@ -100,7 +116,7 @@ export function AnimatedNumber({
 
       animationFrameRef.current = requestAnimationFrame(tick);
     },
-    [duration]
+    [duration, reducedMotion]
   );
 
   // trigger="visible": start animation when element enters viewport
@@ -109,6 +125,16 @@ export function AnimatedNumber({
 
     const el = elementRef.current;
     if (!el) return;
+
+    // Without IntersectionObserver (an old engine, a test DOM) there is no
+    // way to wait for the element to be seen: count now rather than throw.
+    if (typeof IntersectionObserver === 'undefined') {
+      if (!hasStartedRef.current) {
+        hasStartedRef.current = true;
+        animate(0, value);
+      }
+      return;
+    }
 
     const observer = new IntersectionObserver(
       ([entry]) => {
@@ -157,12 +183,32 @@ export function AnimatedNumber({
   }, []);
 
   const formatted = formatNumber(displayValue, decimals, separator);
+  const final = formatNumber(value, decimals, separator);
 
   return (
     <span ref={elementRef} className={className} style={style}>
-      {prefix}
-      {formatted}
-      {suffix}
+      <span
+        style={{
+          position: 'absolute',
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: 'hidden',
+          clip: 'rect(0, 0, 0, 0)',
+          whiteSpace: 'nowrap',
+          border: 0,
+        }}
+      >
+        {prefix}
+        {final}
+        {suffix}
+      </span>
+      <span aria-hidden="true">
+        {prefix}
+        {formatted}
+        {suffix}
+      </span>
     </span>
   );
 }

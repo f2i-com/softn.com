@@ -155,6 +155,11 @@ export function Toast({
   const [isPaused, setIsPaused] = useState(false);
   const [progress, setProgress] = useState(100);
   const [isHovered, setIsHovered] = useState(false);
+  // What is holding the countdown: the pointer over the toast, or keyboard
+  // focus inside it. A keyboard user reading it, or on its close button, must
+  // not have it vanish mid-read any more than a mouse user does.
+  const holdsRef = useRef({ hover: false, focus: false });
+  const pausedRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
   const remainingTimeRef = useRef<number>(duration);
@@ -220,24 +225,44 @@ export function Toast({
     // the way Typewriter already does.
   }, [visible, duration, isPaused]);
 
+  const updatePause = useCallback(() => {
+    if (duration <= 0) return;
+    const shouldPause = (pauseOnHover && holdsRef.current.hover) || holdsRef.current.focus;
+    if (shouldPause === pausedRef.current) return;
+    if (shouldPause && timerRef.current) {
+      // Save remaining time before pausing
+      const elapsed = Date.now() - startTimeRef.current;
+      remainingTimeRef.current = Math.max(0, remainingTimeRef.current - elapsed);
+    }
+    pausedRef.current = shouldPause;
+    setIsPaused(shouldPause);
+  }, [pauseOnHover, duration]);
+
   const handleMouseEnter = useCallback(() => {
     setIsHovered(true);
-    if (pauseOnHover && duration > 0) {
-      // Save remaining time before pausing
-      if (timerRef.current) {
-        const elapsed = Date.now() - startTimeRef.current;
-        remainingTimeRef.current = Math.max(0, remainingTimeRef.current - elapsed);
-      }
-      setIsPaused(true);
-    }
-  }, [pauseOnHover, duration]);
+    holdsRef.current.hover = true;
+    updatePause();
+  }, [updatePause]);
 
   const handleMouseLeave = useCallback(() => {
     setIsHovered(false);
-    if (pauseOnHover && duration > 0) {
-      setIsPaused(false);
-    }
-  }, [pauseOnHover, duration]);
+    holdsRef.current.hover = false;
+    updatePause();
+  }, [updatePause]);
+
+  const handleFocus = useCallback(() => {
+    holdsRef.current.focus = true;
+    updatePause();
+  }, [updatePause]);
+
+  const handleBlur = useCallback(
+    (e: React.FocusEvent<HTMLDivElement>) => {
+      if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+      holdsRef.current.focus = false;
+      updatePause();
+    },
+    [updatePause]
+  );
 
   const handleClose = useCallback(() => {
     setVisible(false);
@@ -262,8 +287,10 @@ export function Toast({
     boxShadow: isHovered
       ? '0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -5px rgba(0, 0, 0, 0.08)'
       : '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
-    minWidth: '300px',
-    maxWidth: '420px',
+    // Never wider than the viewport: a fixed 300px minimum scrolled a narrow
+    // phone sideways.
+    minWidth: 'min(300px, calc(100vw - 2rem))',
+    maxWidth: 'min(420px, calc(100vw - 2rem))',
     animation: 'toast-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
     overflow: 'hidden',
     transition: 'all 200ms cubic-bezier(0.16, 1, 0.3, 1)',
@@ -294,12 +321,14 @@ export function Toast({
     color: 'var(--color-text, #ececf0)',
     marginBottom: message ? '0.25rem' : 0,
     lineHeight: 1.4,
+    overflowWrap: 'anywhere',
   };
 
   const messageStyle: React.CSSProperties = {
     fontSize: 'var(--text-sm, 0.875rem)',
     color: 'var(--color-text-muted, #6b7280)',
     lineHeight: 1.5,
+    overflowWrap: 'anywhere',
   };
 
   const closeStyle: React.CSSProperties = {
@@ -344,25 +373,33 @@ export function Toast({
             }
           }
           .softn-toast-close:hover {
-            background-color: var(--color-gray-700, rgba(255, 255, 255, 0.08)) !important;
-            color: var(--color-gray-200, #3f3f46) !important;
+            background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.08)) !important;
+            color: var(--color-text, #3f3f46) !important;
           }
           .softn-toast-close:active {
             transform: scale(0.9);
           }
+          @media (prefers-reduced-motion: reduce) {
+            .softn-toast { animation: none !important; transition: none !important; transform: none !important; }
+          }
         `}
       </style>
       <div
-        className={className}
+        className={className ? `softn-toast ${className}` : 'softn-toast'}
         style={toastStyle}
-        role="alert"
-        aria-live={variant === 'error' ? 'assertive' : 'polite'}
+        // An error or a warning interrupts; news that something worked waits
+        // its turn. `role="alert"` with `aria-live="polite"` said both.
+        role={variant === 'error' || variant === 'warning' ? 'alert' : 'status'}
         aria-atomic="true"
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
       >
         <div style={toastContentStyle}>
-          <span style={iconStyle}>{icons[variant]}</span>
+          <span style={iconStyle} aria-hidden="true">
+            {icons[variant]}
+          </span>
           <div style={contentStyle}>
             {title && <div style={titleStyle}>{title}</div>}
             {message && <div style={messageStyle}>{message}</div>}

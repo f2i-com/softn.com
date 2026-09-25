@@ -504,6 +504,14 @@ export function Microphone({
       if (settings.current.mode === 'clip' && autoStart) startRecording();
     } catch (err) {
       if (attempt.cancelled) return;
+      // A failure after getUserMedia — no Web Audio, a context that will not
+      // resume, a worklet that will not load — left the stream in streamRef
+      // with its tracks live: the error box showed while the microphone kept
+      // recording and the OS indicator stayed lit until the component went
+      // away. Release everything this attempt acquired before reporting.
+      // (A cancelled attempt was already released by the effect's cleanup,
+      // and releasing here could stop a newer attempt's device.)
+      cleanup();
       const message = describeMediaError(err, 'Failed to access microphone');
       setError(message);
       handlers.current.onError?.(message);
@@ -580,7 +588,11 @@ export function Microphone({
     width,
     padding: '0.75rem',
     borderRadius: '0.75rem',
-    background: 'var(--softn-surface, #0f172a)',
+    // --softn-surface was never defined anywhere, so this was always navy,
+    // with the host's text colour on it. The theme's surface and text follow
+    // the theme.
+    background: 'var(--color-surface, #0f172a)',
+    color: 'var(--color-text, inherit)',
     ...style,
   };
 
@@ -603,7 +615,7 @@ export function Microphone({
             minHeight: height,
             padding: '1rem',
             textAlign: 'center',
-            color: '#94a3b8',
+            color: 'var(--color-text-muted, #94a3b8)',
             fontSize: '0.875rem',
             lineHeight: 1.5,
           }}
@@ -650,7 +662,7 @@ export function Microphone({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                color: '#94a3b8',
+                color: 'var(--color-text-muted, #94a3b8)',
                 fontSize: '0.8125rem',
               }}
             >
@@ -667,6 +679,8 @@ export function Microphone({
             disabled={!isOpen}
             onClick={() => (isRecording ? stopRecording() : startRecording())}
             title={isRecording ? 'Stop recording' : 'Start recording'}
+            aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+            aria-pressed={isRecording}
             style={{
               width: 40,
               height: 40,
@@ -693,7 +707,7 @@ export function Microphone({
               }}
             />
           </button>
-          <span style={{ fontSize: '0.8125rem', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
+          <span style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted, #94a3b8)', fontVariantNumeric: 'tabular-nums' }}>
             {isRecording ? secondsLabel : `${actualRateRef.current} Hz`}
           </span>
           {isRecording && (

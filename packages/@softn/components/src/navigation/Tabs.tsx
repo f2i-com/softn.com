@@ -5,7 +5,7 @@
  * Uses CSS variables for theming support.
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useId, useMemo } from 'react';
 
 export interface Tab {
   /** Unique tab key */
@@ -35,6 +35,8 @@ export interface TabsProps {
   size?: 'sm' | 'md' | 'lg';
   /** Full width tabs */
   fullWidth?: boolean;
+  /** Accessible name for the tab list */
+  ariaLabel?: string;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -48,21 +50,33 @@ const sizeStyles: Record<string, { padding: string; fontSize: string }> = {
 };
 
 export function Tabs({
-  tabs,
+  tabs: rawTabs,
   activeKey,
   defaultActiveKey,
   onChange,
   variant = 'default',
   size = 'md',
   fullWidth = false,
+  ariaLabel = 'Tabs',
   className,
   style,
 }: TabsProps): React.ReactElement {
+  const tabs = useMemo(() => (Array.isArray(rawTabs) ? rawTabs.filter(Boolean) : []), [rawTabs]);
+  // Per instance: two Tabs with a `general` tab each gave two elements the id
+  // `tab-general`, and each tablist's aria-controls pointed into the other.
+  const idPrefix = useId();
+  const tabId = (key: string) => `${idPrefix}-tab-${key}`;
+  const panelId = (key: string) => `${idPrefix}-panel-${key}`;
   const [internalActiveKey, setInternalActiveKey] = useState(defaultActiveKey ?? tabs[0]?.key);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   const currentActiveKey = activeKey ?? internalActiveKey;
+  // The tab that holds the tab stop: the active one, or — when the active key
+  // names no tab, or a disabled one — the first enabled tab. Without this,
+  // no tab had tabIndex 0 and the whole tablist was unreachable by keyboard.
+  const activeEnabled = tabs.find((t) => t.key === currentActiveKey && !t.disabled);
+  const focusKey = activeEnabled?.key ?? tabs.find((t) => !t.disabled)?.key;
   const sizes = sizeStyles[size];
 
   const handleTabClick = useCallback(
@@ -77,10 +91,11 @@ export function Tabs({
 
   // Get next/previous enabled tab
   const getAdjacentTab = useCallback(
-    (direction: 'next' | 'prev'): string | null => {
+    (from: string, direction: 'next' | 'prev'): string | null => {
       const enabledTabs = tabs.filter((t) => !t.disabled);
-      const currentIndex = enabledTabs.findIndex((t) => t.key === currentActiveKey);
-      if (currentIndex === -1) return null;
+      if (enabledTabs.length === 0) return null;
+      const currentIndex = enabledTabs.findIndex((t) => t.key === from);
+      if (currentIndex === -1) return enabledTabs[0].key;
 
       if (direction === 'next') {
         return enabledTabs[(currentIndex + 1) % enabledTabs.length]?.key ?? null;
@@ -90,7 +105,7 @@ export function Tabs({
         );
       }
     },
-    [tabs, currentActiveKey]
+    [tabs]
   );
 
   // Keyboard navigation with arrow keys
@@ -102,12 +117,12 @@ export function Tabs({
         case 'ArrowLeft':
         case 'ArrowUp':
           e.preventDefault();
-          newKey = getAdjacentTab('prev');
+          newKey = getAdjacentTab(tabKey, 'prev');
           break;
         case 'ArrowRight':
         case 'ArrowDown':
           e.preventDefault();
-          newKey = getAdjacentTab('next');
+          newKey = getAdjacentTab(tabKey, 'next');
           break;
         case 'Home':
           e.preventDefault();
@@ -159,7 +174,8 @@ export function Tabs({
       transition: 'all 200ms cubic-bezier(0.16, 1, 0.3, 1)',
       flex: fullWidth ? 1 : undefined,
       justifyContent: fullWidth ? 'center' : undefined,
-      outline: 'none',
+      // No `outline: none`: it overrode the theme's :focus-visible ring, and
+      // arrowing between tabs showed nowhere where focus was.
     };
 
     if (variant === 'default') {
@@ -168,12 +184,12 @@ export function Tabs({
         backgroundColor: isActive
           ? 'var(--color-surface, #16161a)'
           : isHovered
-            ? 'rgba(255, 255, 255, 0.06)'
+            ? 'var(--color-surface-hover, rgba(255, 255, 255, 0.06))'
             : 'transparent',
         color: isActive
           ? 'var(--color-text, #ececf0)'
           : isHovered
-            ? 'var(--color-gray-200, #d4d4d8)'
+            ? 'var(--color-text, #d4d4d8)'
             : 'var(--color-text-muted, #a1a1aa)',
         borderRadius: 'var(--radius-md, 0.375rem)',
         boxShadow: isActive
@@ -189,12 +205,12 @@ export function Tabs({
         background: isActive
           ? 'linear-gradient(to bottom, var(--color-primary-500, #6366f1), var(--color-primary-600, #4f46e5))'
           : isHovered
-            ? 'var(--color-gray-100, rgba(255, 255, 255, 0.06))'
+            ? 'var(--color-surface-hover, rgba(255, 255, 255, 0.06))'
             : 'transparent',
         color: isActive
           ? 'var(--color-white, #fafafa)'
           : isHovered
-            ? 'var(--color-gray-200, #d4d4d8)'
+            ? 'var(--color-text, #d4d4d8)'
             : 'var(--color-text-muted, #a1a1aa)',
         borderRadius: 'var(--radius-full, 9999px)',
         boxShadow: isActive
@@ -212,7 +228,7 @@ export function Tabs({
         color: isActive
           ? 'var(--color-primary-600, #4f46e5)'
           : isHovered
-            ? 'var(--color-gray-200, #d4d4d8)'
+            ? 'var(--color-text, #d4d4d8)'
             : 'var(--color-text-muted, #a1a1aa)',
         borderBottom: `2px solid ${isActive ? 'var(--color-primary-500, #6366f1)' : 'transparent'}`,
         marginBottom: '-1px',
@@ -227,21 +243,23 @@ export function Tabs({
 
   return (
     <div className={className} style={containerStyle}>
-      <div role="tablist" style={tabListStyle} aria-label="Tabs">
+      <div role="tablist" style={tabListStyle} aria-label={ariaLabel}>
         {tabs.map((tab) => {
           const isActive = currentActiveKey === tab.key;
+          const hasPanel = isActive && !!tab.content;
           return (
             <button
               key={tab.key}
+              type="button"
               ref={(el) => {
                 if (el) tabRefs.current.set(tab.key, el);
                 else tabRefs.current.delete(tab.key);
               }}
               role="tab"
-              id={`tab-${tab.key}`}
+              id={tabId(tab.key)}
               aria-selected={isActive}
-              aria-controls={`tabpanel-${tab.key}`}
-              tabIndex={isActive ? 0 : -1}
+              aria-controls={hasPanel ? panelId(tab.key) : undefined}
+              tabIndex={tab.key === focusKey ? 0 : -1}
               disabled={tab.disabled}
               onClick={() => !tab.disabled && handleTabClick(tab.key)}
               onKeyDown={(e) => handleKeyDown(e, tab.key)}
@@ -258,8 +276,8 @@ export function Tabs({
       {activeTab?.content && (
         <div
           role="tabpanel"
-          id={`tabpanel-${activeTab.key}`}
-          aria-labelledby={`tab-${activeTab.key}`}
+          id={panelId(activeTab.key)}
+          aria-labelledby={tabId(activeTab.key)}
           tabIndex={0}
           style={{ paddingTop: '1rem' }}
         >

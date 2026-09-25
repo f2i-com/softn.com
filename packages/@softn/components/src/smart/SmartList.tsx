@@ -346,8 +346,8 @@ export function SmartList<T extends Record<string, unknown>>({
 
             const strBadge = badgeValue ? String(badgeValue).toLowerCase() : '';
             const badgeColors = statusColors[strBadge] || {
-              bg: 'var(--color-gray-700, #3f3f46)',
-              text: 'var(--color-text-muted, #a1a1aa)',
+              bg: 'var(--color-gray-100, #3f3f46)',
+              text: 'var(--color-text, #a1a1aa)',
             };
 
             return (
@@ -373,7 +373,7 @@ export function SmartList<T extends Record<string, unknown>>({
                           : 'var(--radius-full, 9999px)',
                       background:
                         iconValue && iconMap[iconValue as string]
-                          ? 'var(--color-gray-700, #3f3f46)'
+                          ? 'var(--color-gray-100, #3f3f46)'
                           : avatarGradients[index % avatarGradients.length],
                       display: 'flex',
                       alignItems: 'center',
