@@ -5242,7 +5242,7 @@ dependencies = [
 
 [[package]]
 name = "softn-loader"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "image",
  "reqwest",
