@@ -3,3 +3,16 @@ node_modules
 target
 *.softn
 package-lock.json
+
+# Generated, and written by their own tools in their own layout: Tauri's
+# capability schemas (ignored by each app's .gitignore, which Prettier does
+# not read), the component manifest (JSON.stringify in
+# packages/@softn/components/scripts/generate-manifest.mjs, which its test
+# compares against), and the benchmark reports scripts/bench writes.
+**/src-tauri/gen/
+packages/@softn/components/component-manifest.json
+scripts/bench/results/
+apps/softn-api/bench/results-*.json
+
+# Vendored third-party source, kept as upstream wrote it.
+vendor/

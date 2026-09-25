@@ -52,7 +52,7 @@ const desktop = { width: 1280, height: 800 };
  * plus the cheap UX checks. Phone and zoom specs are matched by name below
  * and never run in a desktop project.
  */
-const desktopSpecs = /\/(studio-handoff|builder-handoff|site-publish-keys|directory-navigation|site-not-found|builder-export-dialog|browser-capabilities|site-workspace|runtime-directory)\.spec\.ts$/;
+const desktopSpecs = /\/(studio-handoff|builder-handoff|site-publish-keys|directory-navigation|site-not-found|builder-export-dialog|browser-capabilities|site-workspace|runtime-directory|python-runtime|docs-and-bar|studio-onboarding)\.spec\.ts$/;
 
 /** Studio's phone editor plus the landing page and runnable teaching example. */
 const mobileSpecs = /\/(studio-mobile|site-workspace|runtime-directory)\.spec\.ts$/;

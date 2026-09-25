@@ -16,10 +16,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readArchive } from './lib/archive.mjs';
-import { isZippEngineWasm, wasmExportNames, wasmImportNames } from './lib/zipp-engine-copy.mjs';
+import { isZippEngineWasm, isZippTorchPackageWasm, wasmExportNames, wasmImportNames } from './lib/zipp-engine-copy.mjs';
 import { PACKAGES, archiveName, packageById, root } from './release-packages.mjs';
 import { HOSTED_ENGINES_PROTOCOL, LOGIC_LANGUAGES_PROTOCOL, RUNTIME_ENGINES, RUNTIME_FEATURES } from '../apps/formlogic-host/src/engineInit.ts';
-import { INSTALLED_FILES, VARIANT_INSTALLED_FILES } from '../packages/@softn/core/scripts/fetch-zipp-release.mjs';
+import { INSTALLED_FILES, PACKAGE_INSTALLED_FILES, VARIANT_INSTALLED_FILES } from '../packages/@softn/core/scripts/fetch-zipp-release.mjs';
 
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -36,7 +36,7 @@ test('the FormLogic runtime package is described like the others and named for F
   const pkg = packageById('formlogic-runtime');
   assert.equal(archiveName('formlogic-runtime', { tag: 'v1.2.3' }), 'softn-formlogic-runtime-v1.2.3.zip');
   assert.ok(pkg.inside.some((i) => i.path === 'softn-release.json'));
-  for (const folder of ['hosted-runtime/', 'app-editors/', 'native-runtime/', 'zipp/', 'zipp-web/', 'adapter/']) assert.ok(pkg.inside.some((i) => i.path === folder), folder);
+  for (const folder of ['hosted-runtime/', 'app-editors/', 'native-runtime/', 'zipp/', 'zipp-web/', 'zipp-torch/', 'adapter/']) assert.ok(pkg.inside.some((i) => i.path === folder), folder);
   assert.ok(PACKAGES.every((p) => p.id !== 'formlogic-runtime' || p.previousName === ''), 'it never had another name');
 });
 
@@ -151,19 +151,39 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     for (const [k, v] of Object.entries(web)) assert.deepEqual(variantSource[k], v, `zipp-web/SOURCE.json ${k}`);
     assert.deepEqual(variantSource.primary, { bundle: source.bundle, sha256: source.sha256, glueSha256: source.glueSha256 });
     assert.ok(!('zipp-web/zipp_wasm.js' in Object.fromEntries(entries)), 'no second glue ships; the variant runs under zipp/zipp_wasm.js');
+    // zipp-torch/: the torch package's install, byte for byte, a tree of its
+    // own at the top level. Its SOURCE.json is the record zipp/SOURCE.json's
+    // packages.torch names, and the built apps carry the same module in
+    // assets/core-runtime/, where the runtime fetches it for an app that
+    // declares torch.
+    const wasmZippTorch = path.join(root, 'packages/@softn/core/wasm-zipp-torch');
+    const packageInstalled = fs.readdirSync(wasmZippTorch).sort();
+    assert.deepEqual(packageInstalled, [...PACKAGE_INSTALLED_FILES].sort());
+    assert.deepEqual([...entries.keys()].filter((n) => n.startsWith('zipp-torch/')).map((n) => n.slice('zipp-torch/'.length)).sort(), packageInstalled, 'the archive lists exactly the package install');
+    for (const n of packageInstalled) assert.equal(sha256(bytes(`zipp-torch/${n}`)), sha256(fs.readFileSync(path.join(wasmZippTorch, n))), `zipp-torch/${n}`);
+    const torch = source.packages.torch;
+    assert.deepEqual(Object.keys(torch).sort(), ['bundle', 'bundleSha256', 'commit', 'engineAbi', 'loaderSha256', 'pairsWith', 'sha256', 'variant']);
+    assert.deepEqual(release.zipp.packages.torch, torch, 'softn-release.json carries the package record');
+    assert.equal(torch.pairsWith, source.bundle.replace(/\.zip$/, ''), 'paired with exactly the engine bundle in zipp/');
+    assert.equal(torch.commit, source.revision);
+    const packageSource = JSON.parse(bytes('zipp-torch/SOURCE.json').toString('utf8'));
+    for (const [k, v] of Object.entries(torch)) assert.deepEqual(packageSource[k], v, `zipp-torch/SOURCE.json ${k}`);
+    const torchCopies = [...entries.keys()].filter((n) => isZippTorchPackageWasm(bytes(n))).sort();
+    assert.deepEqual(torchCopies, ['app-editors/builder/assets/core-runtime/zipp_torch.wasm', 'app-editors/studio/assets/core-runtime/zipp_torch.wasm', 'hosted-runtime/assets/core-runtime/zipp_torch.wasm', 'zipp-torch/zipp_torch.wasm']);
+    for (const n of torchCopies) assert.equal(sha256(bytes(n)), torch.sha256, `${n} is the installed torch package`);
     // The record's other keys are the ones an S1 install always had, unchanged in shape.
     for (const field of ['version', 'sha256', 'revision', 'release', 'bundle', 'bundleSha256', 'sumsSha256', 'variant', 'languages', 'build', 'glueSha256', 'notices']) assert.ok(release.zipp[field] !== undefined, `release.zipp.${field}`);
 
     // Every engine copy, found by its exports, is the installed release: the
     // web variant at zipp-web/, the primary at all eight known places and
-    // nowhere else. The variant asks the host for what the primary asks and
-    // exports a subset, which is what lets one glue run both.
+    // nowhere else. The variant asks the host for nothing the primary does not
+    // and exports a subset, which is what lets one glue run both.
     const copies = [...entries.keys()].filter((n) => isZippEngineWasm(bytes(n))).sort();
     const VARIANT_AT = 'zipp-web/zipp_wasm_bg.wasm';
     for (const n of copies) assert.equal(sha256(bytes(n)), n === VARIANT_AT ? web.sha256 : source.sha256, `${n} is the installed ${n === VARIANT_AT ? 'variant' : 'engine'}`);
     assert.equal(copies.filter((n) => sha256(bytes(n)) === web.sha256).length, 1, 'the variant digest appears once');
     assert.equal(copies.filter((n) => sha256(bytes(n)) === source.sha256).length, 8, 'the primary digest appears eight times');
-    assert.deepEqual(wasmImportNames(bytes(VARIANT_AT)), wasmImportNames(bytes('zipp/zipp_wasm_bg.wasm')));
+    assert.deepEqual(wasmImportNames(bytes(VARIANT_AT)).filter((i) => !wasmImportNames(bytes('zipp/zipp_wasm_bg.wasm')).includes(i)), []);
     assert.deepEqual(wasmExportNames(bytes(VARIANT_AT)).filter((e) => !wasmExportNames(bytes('zipp/zipp_wasm_bg.wasm')).includes(e)), []);
     const known = [
       /^zipp\/zipp_wasm_bg\.wasm$/,

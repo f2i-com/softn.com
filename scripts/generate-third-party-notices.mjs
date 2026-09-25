@@ -311,6 +311,26 @@ const vendored = [
     licenseFiles: zippLicenseFiles,
   },
 ];
+// The torch package ships beside the engine (wasm-zipp-torch/, and every
+// app's core-runtime/), built from the same commit under the same licence, so
+// it is inventoried as the same vendored source. Its digest is the one the
+// fetcher proved at install and recorded under packages.torch; a copy on disk
+// that differs is refused here as the engine's own would be.
+const torch = zipp.packages?.torch;
+if (torch) {
+  const torchArtifact = path.join(path.dirname(path.dirname(ZIPP_SOURCE_FILE)), 'wasm-zipp-torch', 'zipp_torch.wasm');
+  if (!fs.existsSync(torchArtifact)) fail(`The ZIPP torch package recorded in SOURCE.json is missing: ${relative(torchArtifact)}`);
+  if (sha256(fs.readFileSync(torchArtifact)) !== torch.sha256) fail(`${relative(torchArtifact)} is not the torch package SOURCE.json records (${torch.sha256.slice(0, 12)})`);
+  vendored.push({
+    name: 'zipp-wasm-torch',
+    revision: torch.commit,
+    repository: zipp.repository,
+    license: zipp.license,
+    artifact: relative(torchArtifact),
+    sha256: torch.sha256,
+    licenseFiles: zippLicenseFiles,
+  });
+}
 
 const lockfileHash = sha256(fs.readFileSync(LOCK_FILE));
 const inventory = {
@@ -365,6 +385,6 @@ if (!check) {
 
 console.log(
   `${check ? 'Validated' : 'Generated'} ${inventoryPackages.length} npm package records, ` +
-    `${vendored.length} ZIPP engine and ${textGroups.size} unique licence/notice texts.`
+    `${vendored.length} ZIPP artifact${vendored.length === 1 ? '' : 's'} and ${textGroups.size} unique licence/notice texts.`
 );
 if (!check) console.log(`Wrote deployment inventory to ${relative(outDir)}/`);

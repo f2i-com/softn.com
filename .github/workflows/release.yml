@@ -1,7 +1,7 @@
 name: Release
 
 # A release is built from an existing version tag. The zipp WASM engine used
-# by `.logic` is not committed: each job installs a ZIPP web-python release
+# by `.logic` is not committed: each job installs a ZIPP web-python-base release
 # into packages/@softn/core/wasm-zipp/ and verifies it against that release's
 # SHA256SUMS (packages/@softn/core/scripts/fetch-zipp-release.mjs). Which
 # release is decided once, in the gate, for the whole run: the zipp-vm tag the
@@ -30,6 +30,9 @@ name: Release
 # refs/tags/<tag> and refuse if HEAD is not that tag's commit. The jobs run
 # the tag's own scripts, so a retry works for tags from v0.0.15 on, the first
 # with scripts/zipp-release-gate.mjs; the gate refuses an older tag by name.
+# Node comes from the tag's .nvmrc (tags after v0.0.15): to retry v0.0.15, run
+# the workflow from that tag ("Use workflow from"), whose copy of this file
+# still names the Node version itself.
 #
 # Nothing is packaged until the tagged commit has passed the same
 # verification a push gets (verify.yml: install, audit, build, typecheck,
@@ -112,7 +115,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
       - name: Freeze the ZIPP release
         id: zipp
         env:
@@ -163,7 +166,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - name: Install dependencies
         run: npm ci
@@ -263,7 +266,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
@@ -417,7 +420,7 @@ jobs:
           ZIPP_OLDER_ALLOWED: ${{ needs.gate.outputs.zipp-older-allowed }}
         run: |
           set -euo pipefail
-          line="> Built with ZIPP $ZIPP_RELEASE (the web-python release; its SHA256SUMS has sha256 $ZIPP_SUMS_SHA256)."
+          line="> Built with ZIPP $ZIPP_RELEASE (its web-python-base engine and web-torch package; the release SHA256SUMS has sha256 $ZIPP_SUMS_SHA256)."
           if [[ "$ZIPP_OLDER_ALLOWED" == "true" ]]; then
             line="$line Not ZIPP's latest release, $ZIPP_LATEST: shipped with allow-older-zipp."
           fi

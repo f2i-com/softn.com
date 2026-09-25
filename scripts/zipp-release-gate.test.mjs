@@ -18,7 +18,7 @@ import { root } from './release-packages.mjs';
 
 const LATEST = `${REPOSITORY}/releases/latest/download/SHA256SUMS`;
 const tagged = (tag) => `${REPOSITORY}/releases/download/${tag}/SHA256SUMS`;
-const sumsFor = (version, digit) => Buffer.from(`${digit.repeat(64)}  zipp-wasm-${version}-web.zip\n${digit.repeat(64)}  zipp-wasm-${version}-web-python.zip\n`);
+const sumsFor = (version, digit) => Buffer.from(`${digit.repeat(64)}  zipp-wasm-${version}-web.zip\n${digit.repeat(64)}  zipp-wasm-${version}-web-python-base.zip\n${digit.repeat(64)}  zipp-wasm-${version}-web-torch.zip\n`);
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zipp-release-gate-'));
@@ -74,7 +74,7 @@ test('a declared release that is newer than the latest (a pre-release) is refuse
   const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.19'), allowOlder: true, fetch: gh.fetch });
   assert.deepEqual(outputs, { 'zipp-release': 'v0.0.19', 'zipp-sums-sha256': sha256(sumsFor('0.0.19', '2')), 'zipp-latest': 'v0.0.18', 'zipp-older-allowed': 'true' });
   assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.18'), tagged('v0.0.19')], 'the declared tag\'s own SHA256SUMS');
-  // Allowed only when it is published with its web-python bundle.
+  // Allowed only when it is published with its web-python-base, web and web-torch bundles.
   await assert.rejects(zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.20'), allowOlder: true, fetch: github('v0.0.18').fetch }), /releases\/download\/v0\.0\.20\/SHA256SUMS answered 404/);
 });
 

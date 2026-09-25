@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { chromium } from '@playwright/test';
@@ -60,8 +61,16 @@ self.addEventListener('fetch', event => {
 });
 `;
 
+// The two browser cases need Playwright's Chromium. `npm test` runs this file,
+// and a machine that has never run `npm run e2e:install` has none, so those
+// cases skip with a reason rather than fail the whole suite; CI installs
+// Chromium first (.github/workflows/verify.yml), so there they run.
+const noBrowser = existsSync(chromium.executablePath())
+  ? false
+  : 'Playwright Chromium is not installed (npm run e2e:install)';
+
 for (const workerPath of ['/sw.js', '/web/sw.js']) {
-  test(`a stale ${workerPath} worker retires without clearing saved app data`, { timeout: 45_000 }, async () => {
+  test(`a stale ${workerPath} worker retires without clearing saved app data`, { timeout: 45_000, skip: noBrowser }, async () => {
     let mode = 'production';
     const middleware = middlewareFor('/web/');
     const server = createServer((request, response) => {

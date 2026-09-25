@@ -1,8 +1,11 @@
 name: Build SoftN
 
-# Automatic push/PR CI is temporarily paused while checks are run locally.
-# Run this workflow manually to execute the existing verification and builds.
-# The shared verification steps remain in verify.yml for manual builds and releases.
+# The full build, dispatched by hand: the shared verification (verify.yml),
+# then the web runtime and every hosting archive (tested under Apache/PHP), and
+# the desktop loader and Builder on Linux, Windows and macOS. Pushes to main and
+# pull requests are verified by ci.yml, which calls the same verify.yml; this
+# adds the packaging and the six-runner desktop matrix, which are too slow to
+# run on every push.
 on:
   workflow_dispatch:
 
@@ -26,7 +29,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -86,7 +90,6 @@ jobs:
   build-tauri:
     name: Build ${{ matrix.app }} (${{ matrix.platform }})
     needs: check
-    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -117,7 +120,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
+          cache: npm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

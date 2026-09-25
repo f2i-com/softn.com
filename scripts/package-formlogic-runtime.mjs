@@ -27,14 +27,25 @@
  *                      engine, licences and provenance.json, as
  *                      formlogic/scripts/prepare-native-runtime.mjs writes them.
  *   zipp/              packages/@softn/core/wasm-zipp/ byte for byte: the
- *                      verified ZIPP web-python release install FormLogic
- *                      takes its browser engine from (fetch-zipp-release.mjs).
+ *                      verified ZIPP web-python-base release install FormLogic
+ *                      takes its browser engine from (fetch-zipp-release.mjs):
+ *                      JavaScript and Python, torch not built in.
  *   zipp-web/          packages/@softn/core/wasm-zipp-web/ byte for byte: the
  *                      same release's JavaScript-only web build, verified as
  *                      a variant of zipp/ (same commit, same imports, exports a
  *                      subset, runs under zipp/'s glue), for a FormLogic that
  *                      offers the `zipp-web` engine. A tree of its own at the
  *                      top level, so zipp/ is exactly the install it always was.
+ *   zipp-torch/        packages/@softn/core/wasm-zipp-torch/ byte for byte: the
+ *                      same release's torch package for that engine
+ *                      (zipp_torch.wasm, ZIPP's zipp_torch.js loader, its
+ *                      BUILD-INFO.txt and SHA256SUMS, generated declarations,
+ *                      SOURCE.json), verified at install by adding it to the
+ *                      engine and running torch; zipp/SOURCE.json names it
+ *                      under packages.torch. The hosted runtime and the
+ *                      editors carry the same bytes in assets/core-runtime/,
+ *                      where the runtime fetches it for an app that declares
+ *                      torch, so FormLogic apps can declare it too.
  *   adapter/           packages/@softn/core/src/integrations/formlogic.ts (LF)
  *                      with the provenance FormLogic's sync-softn.mjs records.
  *   softn-release.json the tag, the commit, the engine (the install's whole
@@ -45,7 +56,9 @@
  * Every copy of the engine in the archive, found by its exports rather than
  * its name, must be the installed release — at zipp-web/zipp_wasm_bg.wasm the
  * web variant, everywhere else the primary — and each place FormLogic takes a
- * copy from must have one.
+ * copy from must have one. Every copy of the torch package, found the same
+ * way, must be the one the install records, and each place it is known to be
+ * must have one.
  *
  * Deterministic apart from the two `builtAt` stamps over one build of the
  * packages: packaging it again (--no-build-packages) gives the same file
@@ -62,9 +75,9 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeArchive } from './lib/archive.mjs';
-import { VARIANT_ENGINE_COPIES, archiveEngineProblems } from './lib/zipp-engine-copy.mjs';
+import { KNOWN_TORCH_COPIES, PACKAGE_TREES, VARIANT_ENGINE_COPIES, archiveEngineProblems } from './lib/zipp-engine-copy.mjs';
 import { archiveName, root } from './release-packages.mjs';
-import { WEB_VARIANT, ensureReleaseEngine, releaseOptions, variantDir } from '../packages/@softn/core/scripts/fetch-zipp-release.mjs';
+import { TORCH_PACKAGE, WEB_VARIANT, ensureReleaseEngine, packageDir, releaseOptions, variantDir } from '../packages/@softn/core/scripts/fetch-zipp-release.mjs';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 
 const args = process.argv.slice(2);
@@ -101,14 +114,19 @@ const wasmDir = path.join(root, 'packages/@softn/core/wasm-zipp');
 // wasm-zipp/ is generated: install the declared release (or ZIPP_RELEASE /
 // ZIPP_SUMS_SHA256) before anything reads it; the package build comes later.
 // Only a verified release install ships: every file matches the release's
-// SHA256SUMS chain, and the check covers the web variant beside it, so an
-// install that passes here has both trees. A local build (--install-local) is
+// SHA256SUMS chain, and the check covers the web variant and the torch package
+// beside it, so an
+// install that passes here has all three trees. A local build (--install-local) is
 // refused here.
 const wasmWebDir = variantDir(wasmDir);
 // The variant's tree is the one place the content scan allows its digest, so
 // the tree is named from that declaration rather than spelt again here.
 const variantTree = path.posix.dirname(VARIANT_ENGINE_COPIES[WEB_VARIANT.id]);
 if (!variantTree || variantTree === '.') fail(`scripts/lib/zipp-engine-copy.mjs names no place for the ${WEB_VARIANT.id} variant`);
+// The torch package's tree, likewise named from the place the content scan expects it.
+const wasmTorchDir = packageDir(wasmDir);
+const torchTree = PACKAGE_TREES[TORCH_PACKAGE.id];
+if (!torchTree || !KNOWN_TORCH_COPIES.some((pattern) => pattern.test(`${torchTree}/${TORCH_PACKAGE.artifact}`))) fail(`scripts/lib/zipp-engine-copy.mjs names no top-level place for the ${TORCH_PACKAGE.id} package`);
 let zippSource;
 try {
   zippSource = await ensureReleaseEngine({ ...releaseOptions(), dir: wasmDir });
@@ -284,6 +302,11 @@ try {
   // names, and its module is the one copy in the archive that may carry the
   // variant's digest.
   addTree(wasmWebDir, variantTree);
+  // zipp-torch/: the torch package's install as it is, beside zipp/ like
+  // zipp-web/. Its SOURCE.json is the record zipp/SOURCE.json's
+  // `packages.torch` names; the copies the built apps carry in
+  // assets/core-runtime/ are held to the same digest below.
+  addTree(wasmTorchDir, torchTree);
 
   // adapter/: the FormLogic starter adapter FormLogic vendors.
   add('adapter/formlogic.ts', adapterBytes);
@@ -295,7 +318,7 @@ try {
 
   // Every engine in the archive, whatever Vite named it, is the installed
   // release: the web variant at its one place, the primary everywhere else.
-  const { copies: engineCopies, problems: engineProblems } = archiveEngineProblems(entries, zippSource);
+  const { copies: engineCopies, packageCopies, problems: engineProblems } = archiveEngineProblems(entries, zippSource);
   if (engineProblems.length) fail(`the archive's ZIPP engine:\n  - ${engineProblems.join('\n  - ')}`);
 
   // softn-release.json last: a digest of everything else.
@@ -319,7 +342,7 @@ try {
   const out = path.join(outDir, name);
   const result = writeArchive(entries, out, { stamp });
   console.log(`wrote ${result.path} (${result.entries.length} files, ${(result.size / 1024 / 1024).toFixed(1)} MB) and ${name}.sha256`);
-  console.log(`  softn ${commit.slice(0, 7)}${dirty ? ' (dirty)' : ''} ${tag}, zipp ${zippSource.release} (${engineCopies.length} engine copies checked), protocols ${JSON.stringify(protocols)}`);
+  console.log(`  softn ${commit.slice(0, 7)}${dirty ? ' (dirty)' : ''} ${tag}, zipp ${zippSource.release} (${engineCopies.length} engine copies and ${packageCopies.length} torch package copies checked), protocols ${JSON.stringify(protocols)}`);
 } finally {
   fs.rmSync(stage, { recursive: true, force: true });
 }

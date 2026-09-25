@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { KNOWN_ENGINE_COPIES, VARIANT_ENGINE_COPIES, ZIPP_ENGINE_EXPORTS, archiveEngineProblems, isZippEngineWasm, wasmExportNames, wasmImportNames } from './zipp-engine-copy.mjs';
+import { KNOWN_ENGINE_COPIES, KNOWN_TORCH_COPIES, VARIANT_ENGINE_COPIES, ZIPP_ENGINE_EXPORTS, ZIPP_TORCH_EXPORTS, archiveEngineProblems, isZippEngineWasm, isZippTorchPackageWasm, wasmExportNames, wasmImportNames } from './zipp-engine-copy.mjs';
 
 /** A valid module exporting one function under each name: (type () -> ()), one body, one export per name. */
 function moduleExporting(names) {
@@ -182,13 +182,57 @@ test('a variant of the engine may carry its own digest at its one place, and now
   assert.deepEqual(archiveEngineProblems(entries, { ...source, variants: { web: {} } }).problems, ['SOURCE.json records the web variant without a sha256', `zipp-web/zipp_wasm_bg.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`]);
 });
 
-test('the installed web variant imports exactly what the engine imports and exports a subset', { skip: !fs.existsSync(new URL('../../packages/@softn/core/wasm-zipp-web/zipp_wasm_bg.wasm', import.meta.url)) && 'no web variant installed' }, () => {
+test('the installed web variant imports and exports a subset of what the engine does', { skip: !fs.existsSync(new URL('../../packages/@softn/core/wasm-zipp-web/zipp_wasm_bg.wasm', import.meta.url)) && 'no web variant installed' }, () => {
   const engine = fs.readFileSync(new URL('../../packages/@softn/core/wasm-zipp/zipp_wasm_bg.wasm', import.meta.url));
   const web = fs.readFileSync(new URL('../../packages/@softn/core/wasm-zipp-web/zipp_wasm_bg.wasm', import.meta.url));
   assert.equal(isZippEngineWasm(web), true, 'the variant is found by the content scan');
-  assert.deepEqual(wasmImportNames(web), wasmImportNames(engine));
+  // Since 0.0.21 the engine alone imports the torch kernel hook; the web build has no torch.
+  const [webImports, engineImports] = [wasmImportNames(web), wasmImportNames(engine)];
+  assert.deepEqual(webImports.filter((name) => !engineImports.includes(name)), []);
+  assert.deepEqual(engineImports.filter((name) => !webImports.includes(name)).map((name) => name.replace(/_[0-9a-f]{16}:/, ':')), ['./zipp_wasm_bg.js.__wbg_zippTorchKernel:function'], 'the engine adds exactly the torch kernel hook');
   assert.deepEqual(wasmImportNames(engine), compiledImports(engine), 'the parser reads what the compiler reads');
   const [webExports, engineExports] = [wasmExportNames(web), wasmExportNames(engine)];
   assert.deepEqual(webExports.filter((name) => !engineExports.includes(name)), []);
-  assert.deepEqual(engineExports.filter((name) => !webExports.includes(name)).sort(), ['engine_initPythonProject', 'engine_pythonCall', 'engine_pythonHas', 'engine_setPythonInput', 'engine_takeHostRequests', 'engine_takeUi'], 'the engine adds exactly its Python entry points');
+  assert.deepEqual(engineExports.filter((name) => !webExports.includes(name)).sort(), ['addPythonPackage', 'engine_initPythonProject', 'engine_pythonCall', 'engine_pythonHas', 'engine_setPythonInput', 'engine_takeHostRequests', 'engine_takeUi', 'prewarmPython', 'pythonPackages'], 'the engine adds exactly its Python entry points');
+});
+
+test('the torch package the install records is at each of its places and nowhere else under another digest', () => {
+  const { source: engineSource, entries } = archive();
+  const torch = moduleExporting(ZIPP_TORCH_EXPORTS);
+  assert.ok(WebAssembly.validate(torch));
+  assert.equal(isZippTorchPackageWasm(torch), true);
+  assert.equal(isZippEngineWasm(torch), false, 'a package is not an engine');
+  assert.equal(isZippTorchPackageWasm(moduleExporting(ZIPP_ENGINE_EXPORTS)), false, 'nor an engine a package');
+  assert.equal(isZippTorchPackageWasm(moduleExporting(ZIPP_TORCH_EXPORTS.slice(1))), false, 'every export the loader reads');
+  const digest = createHash('sha256').update(torch).digest('hex');
+  const source = { ...engineSource, packages: { torch: { sha256: digest } } };
+  // Recorded: every known place must hold it.
+  assert.deepEqual(archiveEngineProblems(entries, source).problems, KNOWN_TORCH_COPIES.map((pattern) => `no torch package matches ${pattern}; SOURCE.json records one, and the runtime takes it from there`));
+  const places = ['zipp-torch/zipp_torch.wasm', 'hosted-runtime/assets/core-runtime/zipp_torch.wasm', 'app-editors/builder/assets/core-runtime/zipp_torch.wasm', 'app-editors/studio/assets/core-runtime/zipp_torch.wasm'];
+  for (const place of places) entries.set(place, torch);
+  const ok = archiveEngineProblems(entries, source);
+  assert.deepEqual(ok.problems, []);
+  assert.deepEqual(ok.packageCopies.sort(), [...places].sort());
+  assert.equal(ok.copies.length, 8, 'the package is not counted as an engine');
+  for (const pattern of KNOWN_TORCH_COPIES) assert.equal(places.filter((name) => pattern.test(name)).length, 1, `${pattern}`);
+  // Another build of the package anywhere, whatever it is called.
+  const other = moduleExporting([...ZIPP_TORCH_EXPORTS, 'debug']);
+  const copy = new Map(entries);
+  copy.set('hosted-runtime/assets/zipp_torch-9f8e.wasm', other);
+  copy.set('app-editors/studio/assets/core-runtime/zipp_torch.wasm', { data: other, mode: 0o644 });
+  assert.deepEqual(archiveEngineProblems(copy, source).problems.sort(), [
+    `app-editors/studio/assets/core-runtime/zipp_torch.wasm is ZIPP's torch package, but not ZIPP v0.0.18's (${digest.slice(0, 12)})`,
+    `hosted-runtime/assets/zipp_torch-9f8e.wasm is ZIPP's torch package, but not ZIPP v0.0.18's (${digest.slice(0, 12)})`,
+  ]);
+  // Not recorded: a package in the archive is one nothing vouches for.
+  assert.deepEqual(archiveEngineProblems(entries, engineSource).problems, places.map((place) => `${place} is ZIPP's torch package, and SOURCE.json records none (packages.torch)`));
+  assert.deepEqual(archiveEngineProblems(entries, { ...engineSource, packages: { torch: {} } }).problems, ['SOURCE.json records the torch package without a sha256']);
+});
+
+test('the installed torch package is recognised by its exports, and imports nothing', { skip: !fs.existsSync(new URL('../../packages/@softn/core/wasm-zipp-torch/zipp_torch.wasm', import.meta.url)) && 'no torch package installed' }, () => {
+  const bytes = fs.readFileSync(new URL('../../packages/@softn/core/wasm-zipp-torch/zipp_torch.wasm', import.meta.url));
+  assert.equal(isZippTorchPackageWasm(bytes), true);
+  assert.equal(isZippEngineWasm(bytes), false);
+  assert.deepEqual(wasmImportNames(bytes), []);
+  assert.deepEqual(wasmExportNames(bytes), WebAssembly.Module.exports(new WebAssembly.Module(bytes)).map((e) => e.name), 'the parser reads what the compiler reads');
 });

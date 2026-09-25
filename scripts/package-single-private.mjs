@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 import { writeArchive } from './lib/archive.mjs';
+import { releasePrivateFiles } from '../apps/softn-single-private/scripts/shell.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, 'apps/softn-single-private/dist');
 for (const name of [
@@ -40,13 +41,17 @@ function collect(dir, relative = '') {
     if (item.isDirectory()) collect(path.join(dir, item.name), key + '/');
     else if (item.isFile()) {
       if (key.endsWith('.map')) continue;
-      // Generated on the first request of a deployment, never shipped.
-      if (key === 'private/secret.key' || key === 'private/digest.cache') continue;
+      // private/ is written below from the samples, never copied: see releasePrivateFiles.
+      if (key.startsWith('private/')) continue;
       entries[key] = fs.readFileSync(path.join(dir, item.name));
     }
   }
 }
 collect(dist);
+for (const [name, bytes] of Object.entries(
+  releasePrivateFiles(fs.readFileSync(path.join(dist, 'private/shell.html')))
+))
+  entries['private/' + name] = Buffer.from(bytes);
 const output = path.join(root, 'release', 'softn-app-private-v' + version + '.zip');
 const result = writeArchive(entries, output);
 console.log(

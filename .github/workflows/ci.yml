@@ -5,14 +5,22 @@ name: CI
 # Rust hosts). verify.yml is workflow_call only and build.yml is dispatched
 # by hand for the six-runner desktop matrix, so without this file nothing
 # ran on a push. The release workflow calls the same verification on the tag.
+#
+# A commit whose message carries `[skip ci]` (or `[ci skip]`, `[skip actions]`)
+# is not run: GitHub skips push and pull_request workflows for it. Run the
+# checks locally for such a commit, or dispatch build.yml.
 on:
   push:
     branches: [main]
   pull_request:
 
+# A newer push to a pull request's branch makes the running check moot, so it
+# is cancelled. Pushes to main are not: every commit on main keeps its own
+# complete result, so a failure is pinned to the commit that caused it rather
+# than hidden behind the next push.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:

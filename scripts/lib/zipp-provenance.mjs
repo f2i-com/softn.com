@@ -38,7 +38,7 @@ export function checkZippProvenance(zipp, dir, { check = false, warn = console.w
     if (zipp.build !== 'release') throw new Error(`zipp SOURCE.json is a '${zipp.build}' build; a release ships only a verified ZIPP release (npm run fetch:zipp).`);
     if (!zipp.notices || typeof zipp.notices.file !== 'string' || !/^[0-9a-f]{64}$/.test(zipp.notices.sha256 ?? '')) throw new Error('zipp SOURCE.json records no third-party notices.');
     if (zipp.notices.source === 'softn-curated') {
-      warn(`warning: ZIPP ${zipp.release} ships no third-party notices; the RustPython and Unicode notices are SoftN's curated copy (packages/@softn/core/zipp-notices/), which cannot prove itself complete.`);
+      warn(`warning: ZIPP ${zipp.release} ships no third-party notices; the Unicode notice is SoftN's curated copy (packages/@softn/core/zipp-notices/), which cannot prove itself complete.`);
     }
   }
   // Before notices were recorded, the file had this one name.
