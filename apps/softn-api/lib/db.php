@@ -19,11 +19,16 @@ final class Config
         if ($dir !== null) return $dir;
         $env = getenv('SOFTN_DATA_DIR');
         $dir = is_string($env) && $env !== '' ? $env : dirname(__DIR__, 2) . '/data';
+        // The reply names no path: it goes to anyone who asks, and where the
+        // site keeps its private data is not theirs to learn. The operator
+        // finds the path in the error log.
         if (!is_dir($dir) && !@mkdir($dir, 0775, true)) {
-            throw new ApiError(503, "The data directory cannot be created. Create $dir and let PHP write to it.");
+            error_log("softn-api: the data directory cannot be created: $dir");
+            throw new ApiError(503, 'The data directory cannot be created. The server error log names it: create it and let PHP write to it.');
         }
         if (!is_writable($dir)) {
-            throw new ApiError(503, "The data directory is not writable. Let PHP write to $dir.");
+            error_log("softn-api: the data directory is not writable: $dir");
+            throw new ApiError(503, 'The data directory is not writable. The server error log names it: let PHP write to it.');
         }
         return $dir;
     }
@@ -116,6 +121,19 @@ final class Config
         return substr(hash('sha256', self::get('salt') . '|' . $ip), 0, 32);
     }
 
+    /**
+     * The key a visitor's rate limits count under. An IPv4 address is one
+     * visitor; an IPv6 address is counted by its /64, because one subscriber
+     * is handed a whole /64 (often more) and picks a fresh address in it at
+     * will — keyed by the full address, every request could come from a new
+     * "visitor" and no limit held. A rating is counted the same way (one
+     * vote per /64); a storage owner is the visitor token, not an address.
+     */
+    public static function limitKey(string $ip): string
+    {
+        return self::visitorHash(Net::limitBucket($ip));
+    }
+
     public static function isAdmin(?string $presented): bool
     {
         $key = self::get('adminKey');
@@ -127,13 +145,19 @@ final class Db
 {
     public static function open(string $path): PDO
     {
+        if (!extension_loaded('pdo_sqlite')) {
+            error_log('softn-api: the pdo_sqlite extension is not loaded; per-app storage needs it');
+            throw new ApiError(503, "This server's PHP has no pdo_sqlite extension, which server-side storage needs.");
+        }
         try {
             $pdo = new PDO('sqlite:' . $path, null, null, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             ]);
         } catch (PDOException $e) {
-            throw new ApiError(503, 'The database cannot be opened: ' . $e->getMessage());
+            // PDO's message carries the file's path; it goes to the log only.
+            error_log('softn-api: the database cannot be opened: ' . $e->getMessage());
+            throw new ApiError(503, 'The database cannot be opened.');
         }
         $pdo->exec('PRAGMA journal_mode=WAL');
         $pdo->exec('PRAGMA synchronous=NORMAL');

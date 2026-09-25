@@ -26,12 +26,16 @@ separate listening server or systemd service is required.
    at webroot/app.softn and update runtime.config.json. Never publish server source.
 3. In api.php, set $backend to the absolute private backend path if it is not a
    sibling of your public folder. No Rust reverse proxy is needed for this host.
-4. Set manifest.config.server.allowedOrigins to the exact HTTPS origins serving
-   your client. Include www and non-www separately if you serve both.
+4. A page on the same site may call its API with no setting. If the client is
+   also served from another origin (www and non-www, another domain), list those
+   exact HTTPS origins in manifest.config.server.allowedOrigins. Behind a
+   TLS-terminating proxy, list it in trustedProxies (step 6) or list your origin.
 5. Make the private backend directory owned by the PHP account. Run setup once
    as that account: `sudo -u www-data php /absolute/path/backend/setup.php`.
    Substitute your actual PHP user. Setup creates private/config.json and data;
    it preserves existing settings. Keep these private and back them up securely.
+   It then checks PHP, that the bundled Node runs on this server, and that the
+   app answers /api/meta; any problem is a WARNING line and a non-zero exit.
 6. Review private/config.json: appId must match the PRIVATE manifest ID; retain
    the generated keyHex and cryptoDomains. Grant only the capabilities the app
    needs. Configure any trusted operator integrations separately. Do not put
@@ -54,7 +58,8 @@ and optional photos. It does not replace the native Rust host's persistent
 connections or XDB synchronization. Existing native databases and encryption keys
 require an explicit migration; do not point this host at native state automatically.
 
-To update, preserve backend/private/ and your edited api.php. Do not replace your
+To update, preserve backend/private/ and your edited api.php, then run setup again.
+README-RUNTIME.md covers backup/restore, upgrade notes, Nginx and a security checklist. Do not replace your
 application with the example client. A backend packaged for Linux x64 will not run
 on ARM or Windows. The static browser assets remain portable.
 

@@ -357,8 +357,17 @@ final class Apps
         return ['app' => self::card(self::row($slug)), 'editKey' => $editKey];
     }
 
-    /** @return array<string, mixed> */
-    public static function addVersion(string $slug, string $bundlePath, ?string $notes): array {
+    /**
+     * A new version. The operator's `trusted` goes with the old one unless
+     * the operator is the one uploading (`$byAdmin`): trust is their word
+     * about the bundle they looked at, and a publisher's next upload — new
+     * code, perhaps new capabilities — is not that bundle. Left in place, it
+     * ran preapproved on every visitor's machine without anyone having seen
+     * it. The operator trusts the new version by setting the key again.
+     *
+     * @return array<string, mixed>
+     */
+    public static function addVersion(string $slug, string $bundlePath, ?string $notes, bool $byAdmin = false): array {
         $row=self::row($slug,true);$info=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);
         $next=(int)$row['latest_version']+1;
         if($next>(int)Config::get('maxVersionsPerApp',50))throw new ApiError(400,'This app has reached its version limit.');
@@ -367,6 +376,7 @@ final class Apps
         $icon=self::storeIcon($dir,$info['icon'])??$row['icon'];$now=time();
         $doc['versions'][]=['slug'=>$slug,'version'=>$next,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>Text::clean($notes,400,true),'created_at'=>$now];
         $doc['app']=array_replace($doc['app'],['latest_version'=>$next,'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon,'size'=>$info['size'],'updated_at'=>$now]);
+        if(!$byAdmin && array_key_exists('trusted',$doc['app'])){unset($doc['app']['trusted']);error_log("softn-api: $slug has a new version from its publisher; it is no longer trusted until the operator sets trusted again");}
         Catalog::put($slug,$doc);
         return self::detail(self::row($slug,true));
     }
@@ -448,9 +458,18 @@ final class Apps
         self::row($slug,true);
         [$bytes, $mime] = $image;
         $dir = self::dir($slug);
-        foreach (glob("$dir/thumb.*") ?: [] as $old) @unlink($old);
         $file = 'thumb.' . Images::extension($mime);
-        if (file_put_contents("$dir/$file", $bytes, LOCK_EX) === false) throw new ApiError(500, 'Could not store the thumbnail.');
+        // The new picture is complete on disk before the old one goes: a full
+        // disk or a killed request leaves the app with the picture it had,
+        // not with none (or half of one).
+        $tmp = tempnam($dir, '.upload-');
+        if ($tmp === false) throw new ApiError(503, 'Could not store the thumbnail.');
+        try {
+            if (file_put_contents($tmp, $bytes) !== strlen($bytes) || !rename($tmp, "$dir/$file")) throw new ApiError(503, 'Could not store the thumbnail.');
+        } finally {
+            if (is_file($tmp)) @unlink($tmp);
+        }
+        foreach (glob("$dir/thumb.*") ?: [] as $old) if (basename($old) !== $file) @unlink($old);
         Catalog::patch($slug,['thumb'=>$file,'updated_at'=>time()]);
     }
 
@@ -516,9 +535,9 @@ final class Apps
     {
         $row = self::row($slug);
         $dir = Catalog::path($slug);
-        $cache = ['Cache-Control' => 'public, max-age=600'];
+        $cache = ['Cache-Control' => 'public, max-age=600'] + Response::USER_CONTENT;
         foreach ([$row['thumb'], $row['icon']] as $file) {
-            if (is_string($file) && $file !== '' && is_file("$dir/$file")) {
+            if (self::servableImage($dir, $file)) {
                 $ext = pathinfo($file, PATHINFO_EXTENSION);
                 return Response::file("$dir/$file", Images::mimeForExtension($ext), $cache + ['ETag' => '"' . md5_file("$dir/$file") . '"']);
             }
@@ -531,10 +550,25 @@ final class Apps
         $row = self::row($slug);
         $dir = Catalog::path($slug);
         $file = $row['icon'];
-        if (is_string($file) && $file !== '' && is_file("$dir/$file")) {
-            return Response::file("$dir/$file", Images::mimeForExtension(pathinfo($file, PATHINFO_EXTENSION)), ['Cache-Control' => 'public, max-age=600']);
+        $headers = ['Cache-Control' => 'public, max-age=600'] + Response::USER_CONTENT;
+        if (self::servableImage($dir, $file)) {
+            return Response::file("$dir/$file", Images::mimeForExtension(pathinfo($file, PATHINFO_EXTENSION)), $headers);
         }
-        return Response::bytes(self::placeholderSvg((string) $row['name'], $row['primary_color'] ?: null, true), 'image/svg+xml', ['Cache-Control' => 'public, max-age=600']);
+        return Response::bytes(self::placeholderSvg((string) $row['name'], $row['primary_color'] ?: null, true), 'image/svg+xml', $headers);
+    }
+
+    /**
+     * A stored picture that may be served: present, and when it is an SVG,
+     * one that still passes Bundle::safeSvg. An icon extracted before that
+     * check was strict is on disk already; it is held to today's rule at
+     * every request and answered with the placeholder when it fails.
+     */
+    private static function servableImage(string $dir, mixed $file): bool
+    {
+        if (!is_string($file) || $file === '' || !is_file("$dir/$file")) return false;
+        if (strtolower(pathinfo($file, PATHINFO_EXTENSION)) !== 'svg') return true;
+        $bytes = @file_get_contents("$dir/$file", false, null, 0, Bundle::MAX_ICON_BYTES + 1);
+        return is_string($bytes) && Bundle::safeSvg($bytes);
     }
 
     /** A card for an app that brought no picture: its initials on a colour derived from its name. */

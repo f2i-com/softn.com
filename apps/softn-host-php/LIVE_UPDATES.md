@@ -40,7 +40,8 @@ ProxyPassReverse /events ws://127.0.0.1:8788/events
 ```
 
 Keep /api/* served by PHP. Clients connect to wss://app.example/events. The bridge
-checks the handshake Origin against the private manifest's allowedOrigins and
+checks the handshake Origin against the private manifest's allowedOrigins (an HTTPS
+--upstream origin is accepted without listing) and
 refuses routes not marked poll:true. Supply the bearer credential in the first
 frame, never a URL:
 
@@ -54,7 +55,9 @@ connection. Reconnect with backoff, and never retry with revoked credentials.
 Credentials are held in memory and are not logged. Clients can always use HTTP
 polling when they have no WebSocket transport.
 
-The initial bridge supports one exact route per connection, eight clients,
+The initial bridge supports one exact route per connection, eight clients (at
+most two from one visitor — the last `X-Forwarded-For` address the proxy
+appends, IPv6 by /64 — so one visitor cannot hold every slot),
 five-second polling, ten-second upstream deadlines, an 8 KiB incoming frame cap,
 3 MiB upstream response cap and slow-client disconnection. Eight polling clients
 stay below the PHP host's default shared-IP request limit. It is a small-deployment

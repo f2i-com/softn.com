@@ -13,9 +13,26 @@
  */
 declare(strict_types=1);
 
+// A router for `php -S` and nothing else. Uploaded with the API, a request
+// for /api/router.php would otherwise run it under the real server.
+if (PHP_SAPI !== 'cli-server') {
+    if (PHP_SAPI !== 'cli') http_response_code(404);
+    exit;
+}
+
 $root = rtrim(str_replace('\\', '/', $_SERVER['DOCUMENT_ROOT'] ?? getcwd()), '/');
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $path = is_string($path) ? rawurldecode($path) : '/';
+
+// Dotfiles (.htaccess, .user.ini, .env) are configuration, never content:
+// the deployed .htaccess and nginx config refuse them, and so does this.
+// The `.` and `..` segments are not names; realpath() folds them below.
+if (preg_match('#(^|/)\.(?!\.?(/|$))(?!well-known(/|$))#', $path)) {
+    http_response_code(404);
+    header('Content-Type: text/plain');
+    echo 'Not found';
+    return true;
+}
 
 // /play/<slug> is a page the API renders — unless it names a real file in
 // the shell's directory, which the shell's own chunks do (/play/GLTFLoader-….js).

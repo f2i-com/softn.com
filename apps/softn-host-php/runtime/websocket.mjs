@@ -5,16 +5,26 @@ import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {WebSocketServer} from './vendor/ws/wrapper.mjs';
+import {clientKey} from './client-key.mjs';
+export {clientKey};
 
-export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxClients=8,fetchImpl=fetch}) {
+export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxClients=8,maxPerClient=2,fetchImpl=fetch}) {
   const target=new URL(upstream);
   if(target.username||target.password||target.search||target.hash||target.pathname!=='/'||!(target.protocol==='https:'||target.protocol==='http:'&&['127.0.0.1','[::1]','localhost'].includes(target.hostname)))throw Error('Use an HTTPS origin or loopback HTTP upstream');
-  const allowed=new Set(origins),paths=new Set(routes.filter(r=>r.poll===true&&r.method==='GET'&&(r.transaction??'read')==='read'&&/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path)).map(r=>r.path));
+  // The site's own HTTPS origin needs no listing, as PHP accepts it (runtime/request.php).
+  const allowed=new Set([...origins,...(target.protocol==='https:'?[target.origin]:[])]),paths=new Set(routes.filter(r=>r.poll===true&&r.method==='GET'&&(r.transaction??'read')==='read'&&/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path)).map(r=>r.path));
   const server=http.createServer((req,res)=>{res.writeHead(404);res.end();});
   const sockets=new WebSocketServer({noServer:true,maxPayload:8192,perMessageDeflate:false});
+  // Connections per visitor, so one visitor cannot hold every slot.
+  const perClient=new Map();
   server.on('upgrade',(req,socket,head)=>{
-    if(req.url!=='/events'||!allowed.has(req.headers.origin)||sockets.clients.size>=maxClients){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
-    sockets.handleUpgrade(req,socket,head,ws=>sockets.emit('connection',ws,req));
+    const key=clientKey(req);
+    if(req.url!=='/events'||!allowed.has(req.headers.origin)||sockets.clients.size>=maxClients||(perClient.get(key)??0)>=maxPerClient){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
+    perClient.set(key,(perClient.get(key)??0)+1);
+    let counted=true;
+    const release=()=>{if(!counted)return;counted=false;const n=(perClient.get(key)??1)-1;if(n>0)perClient.set(key,n);else perClient.delete(key);};
+    socket.once('close',release);
+    sockets.handleUpgrade(req,socket,head,ws=>{ws.once('close',release);sockets.emit('connection',ws,req);});
   });
   sockets.on('connection',(ws,req)=>{
     let subscription=null,timer=null,controller=null,closed=false;

@@ -26,7 +26,18 @@ const require = createRequire(import.meta.url);
 
 const php = spawnSync('php', ['-v'], { encoding: 'utf8' });
 export const HAVE_PHP = php.status === 0;
-export const skip = { skip: !HAVE_PHP };
+/**
+ * Without PHP on PATH every suite here is skipped, not failed: the site
+ * builds without it. It used to be skipped silently, which read in a test
+ * summary as a pass. Now each test is skipped with the reason, and the
+ * first file to load says it once on stderr.
+ */
+export const NO_PHP_REASON = 'php is not on PATH, so the directory API was not tested (install PHP 8.1+ with zip and mbstring; see apps/softn-api/README.md, Tests)';
+export const skip = { skip: HAVE_PHP ? false : NO_PHP_REASON };
+if (!HAVE_PHP && !globalThis.__softnApiNoPhpWarned) {
+  globalThis.__softnApiNoPhpWarned = true;
+  console.warn(`WARNING: ${NO_PHP_REASON}`);
+}
 
 export function copyDir(from, to) {
   fs.mkdirSync(to, { recursive: true });
@@ -40,7 +51,7 @@ export function copyDir(from, to) {
 }
 
 /** A small valid bundle built in memory; `extra` adds files (a padding blob, say). */
-export function makeBundle(name, { permissions, version = '1.0.0', extra = {}, description } = {}) {
+export function makeBundle(name, { permissions, version = '1.0.0', extra = {}, description, icon } = {}) {
   const { zipSync, strToU8 } = require('fflate');
   const files = {
     'manifest.json': strToU8(
@@ -50,12 +61,15 @@ export function makeBundle(name, { permissions, version = '1.0.0', extra = {}, d
         description: description ?? `${name}, made by the test`,
         main: 'ui/main.ui',
         files: { ui: ['ui/main.ui'], logic: ['logic/main.logic'] },
+        // `icon: {path, bytes}` declares an icon and packs its file.
+        ...(icon ? { icon: icon.path } : {}),
       })
     ),
     'ui/main.ui': strToU8('<App><Text>hello</Text></App>\n'),
     'logic/main.logic': strToU8('let x = 1\n'),
   };
   if (permissions) files['permission.json'] = strToU8(JSON.stringify({ permissions }));
+  if (icon) files[icon.path] = typeof icon.bytes === 'string' ? strToU8(icon.bytes) : icon.bytes;
   for (const [k, v] of Object.entries(extra)) files[k] = v;
   return zipSync(files);
 }

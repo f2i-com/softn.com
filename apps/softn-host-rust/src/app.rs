@@ -1,5 +1,5 @@
 use crate::bridges::{db::NativeDbBridge, env::NativeEnvBridge, fs::NativeFsBridge, http::NativeHttpBridge};
-use crate::bundle::{self, ServerConfig, ServerManifest};
+use crate::bundle::{self, ServerManifest};
 use crate::pool::ServerDb;
 use crate::runtime::{BridgeSet, ServerRuntime};
 use crate::sync::SyncManager;
@@ -20,30 +20,8 @@ pub struct AppContext {
     /// Shutdown signal — when `true` is sent, WebSocket connections should
     /// send a clean Close frame and disconnect before the process exits.
     pub shutdown: tokio::sync::watch::Sender<bool>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn missing_handlers_and_startup_faults_prevent_readiness() {
-        let root = std::env::temp_dir().join(format!("softn-readiness-{}", uuid::Uuid::new_v4()));
-        let bundle = root.join("bundle");
-        std::fs::create_dir_all(bundle.join("server")).unwrap();
-        let script = bundle.join("server/main.logic");
-        let mut manifest = serde_json::json!({"id":"com.example.startup", "name":"Startup", "version":"1",
-            "config":{"server":{"workers":1,"readPoolSize":2}},
-            "server":{"entry":"server/main.logic","routes":[{"method":"GET","path":"/api/test","handler":"missing"}]}});
-        std::fs::write(&script, "function onStart() {}").unwrap();
-        std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-        let error = AppContext::load(bundle.clone(), Some(root.join("data")), Some(1), false).err().unwrap();
-        assert!(error.contains("not defined"));
-        manifest["server"]["routes"] = serde_json::json!([]);
-        std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-        std::fs::write(script, "function onStart() { throw new Error('startup failed'); }").unwrap();
-        let error = AppContext::load(bundle, Some(root.join("data2")), Some(1), false).err().unwrap();
-        assert!(error.contains("onStart() failed"));
-    }
+    /// Per-address allowance for the app's routes (see bundle::requests_per_minute).
+    pub api_limiter: Option<Arc<crate::sync::AddressLimiter>>,
 }
 
 impl AppContext {
@@ -135,14 +113,7 @@ impl AppContext {
         // in distributable bundles), fall back to manifest config.server.auth_token.
         let auth_token = std::env::var("SOFTN_AUTH_TOKEN").ok()
             .filter(|s| !s.is_empty())
-            .or_else(|| {
-                manifest
-                    .config
-                    .as_ref()
-                    .and_then(|c| c.get("server"))
-                    .and_then(|s| serde_json::from_value::<ServerConfig>(s.clone()).ok())
-                    .and_then(|sc| sc.auth_token)
-            });
+            .or_else(|| bundle::manifest_auth_token(&manifest));
         if auth_token.is_some() && std::env::var("SOFTN_AUTH_TOKEN").ok().filter(|s| !s.is_empty()).is_some() {
             tracing::info!("Auth token loaded from SOFTN_AUTH_TOKEN environment variable");
         }
@@ -223,7 +194,7 @@ impl AppContext {
                 allow_time: private_backend.time,
                 development: private_backend.development,
                 allow_photos: private_backend.photos,
-            }, configured_workers);
+            }, configured_workers)?;
 
             // Initialize all worker threads with the same source
             rt.init(source)?;
@@ -254,39 +225,14 @@ impl AppContext {
             None
         };
 
-        // Configurable pool limits — tunable via manifest config.server for
-        // small VPS deployments where the auto-detected CPU-based defaults
-        // (4x CPUs for sync, 2x CPUs for read pool) may be too restrictive.
-        let max_storage_bytes = manifest.config.as_ref()
-            .and_then(|c| c.get("server"))
-            .and_then(|s| s.get("maxStorageMB"))
-            .and_then(|v| v.as_u64())
-            .map(|mb| mb.min(10 * 1024) * 1024 * 1024) // cap at 10TB
-            .unwrap_or(512 * 1024 * 1024); // 512MB default
-
-        let sync_permits = manifest.config.as_ref()
-            .and_then(|c| c.get("server"))
-            .and_then(|s| s.get("syncPermits"))
-            .and_then(|v| v.as_u64())
-            .map(|n| (n as usize).clamp(4, 256))
-            .unwrap_or_else(|| {
-                std::thread::available_parallelism()
-                    .map(|n| (n.get() * 4).min(64))
-                    .unwrap_or(32)
-            });
-
-        let force_server_timestamps = manifest.config.as_ref()
-            .and_then(|c| c.get("server"))
-            .and_then(|s| s.get("forceServerTimestamps"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
+        // Sync limits — tunable via manifest config.server for small VPS
+        // deployments where the auto-detected CPU-based defaults may not fit.
         let sync_manager = SyncManager::new(
             db.clone(), runtime.clone(), auth_token.clone(),
-            db_path.clone(), max_storage_bytes, sync_permits,
-            force_server_timestamps,
+            db_path.clone(), crate::sync::SyncSettings::from_manifest(&manifest, false),
         );
         let (shutdown, _) = tokio::sync::watch::channel(false);
+        let api_limiter = bundle::requests_per_minute(&manifest).map(|n| Arc::new(crate::sync::AddressLimiter::per_minute(n)));
 
         Ok(Arc::new(Self {
             manifest,
@@ -297,6 +243,31 @@ impl AppContext {
             sync_manager,
             auth_token,
             shutdown,
+            api_limiter,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn missing_handlers_and_startup_faults_prevent_readiness() {
+        let root = std::env::temp_dir().join(format!("softn-readiness-{}", uuid::Uuid::new_v4()));
+        let bundle = root.join("bundle");
+        std::fs::create_dir_all(bundle.join("server")).unwrap();
+        let script = bundle.join("server/main.logic");
+        let mut manifest = serde_json::json!({"id":"com.example.startup", "name":"Startup", "version":"1",
+            "config":{"server":{"workers":1,"readPoolSize":2}},
+            "server":{"entry":"server/main.logic","routes":[{"method":"GET","path":"/api/test","handler":"missing"}]}});
+        std::fs::write(&script, "function onStart() {}").unwrap();
+        std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let error = AppContext::load(bundle.clone(), Some(root.join("data")), Some(1), false).err().unwrap();
+        assert!(error.contains("not defined"));
+        manifest["server"]["routes"] = serde_json::json!([]);
+        std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        std::fs::write(script, "function onStart() { throw new Error('startup failed'); }").unwrap();
+        let error = AppContext::load(bundle, Some(root.join("data2")), Some(1), false).err().unwrap();
+        assert!(error.contains("onStart() failed"));
     }
 }

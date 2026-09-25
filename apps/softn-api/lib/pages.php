@@ -44,7 +44,7 @@ final class Pages
         $image = ($origin ?? '') . "/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
         $url = $origin === null ? null : "$origin/app/$slug";
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $html = preg_replace('#<title>.*?</title>#s', '<title>' . $e($title) . '</title>', $html, 1) ?? $html;
+        $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
         $replace = [
             'name="description"' => $desc,
             'property="og:title"' => $title,
@@ -58,14 +58,14 @@ final class Pages
                 $html = preg_replace('#<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*>\s*#s', '', $html, 1) ?? $html;
                 continue;
             }
-            $html = preg_replace('#(<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*content=")[^"]*(")#s', '${1}' . $e($value) . '${2}', $html, 1) ?? $html;
+            $html = self::replaceOnce('#(<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*content=")[^"]*(")#s', fn(array $m) => $m[1] . $e($value) . $m[2], $html);
         }
         $html = preg_replace('#<meta\s+property="og:image:width"[^>]*>\s*#', '', $html) ?? $html;
         $html = preg_replace('#<meta\s+property="og:image:height"[^>]*>\s*#', '', $html) ?? $html;
         $html = preg_replace('#<meta\s+property="og:type"\s+content="[^"]*"#', '<meta property="og:type" content="article"', $html, 1) ?? $html;
         $html = $url === null
             ? (preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $html, 1) ?? $html)
-            : (preg_replace('#<link\s+rel="canonical"\s+href="[^"]*"#', '<link rel="canonical" href="' . $e($url) . '"', $html, 1) ?? $html);
+            : self::replaceOnce('#<link\s+rel="canonical"\s+href="[^"]*"#', fn() => '<link rel="canonical" href="' . $e($url) . '"', $html);
         $html = str_replace('</head>', '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n  </head>", $html);
         return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
     }
@@ -140,7 +140,7 @@ final class Pages
         $config = json_encode(self::playConfig($row, $ver), JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($config === false) return Response::html('<!doctype html><title>SoftN</title><p>The app could not be described.</p>', 500);
         $name = (string) $row['name'];
-        $html = preg_replace('#<title>.*?</title>#s', '<title>' . $e($name) . '</title>', $html, 1) ?? $html;
+        $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($name) . '</title>', $html);
         // JSON_HEX_TAG has turned every < and > into \u003C and \u003E, so
         // nothing in a name or a description can close this element early.
         $origin = self::origin();
@@ -150,6 +150,22 @@ final class Pages
         $html = str_replace('</head>', $inject, $html);
         // The page names the latest version, which the next publish moves.
         return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
+    }
+
+    /**
+     * The first match of `$pattern` replaced by what `$with` builds, taken
+     * literally. A replacement string would not be: preg_replace expands
+     * `$1`, `${2}` and `\0` in it, and the text here is an app's name and
+     * description, which anyone publishing chooses. HTML escaping leaves `$`
+     * and `\` alone, so a name such as `0;url=https://evil/$2 http-equiv=refresh x=$2`
+     * pulled the matched tag's own quote into the attribute, closed it, and
+     * turned the share page into a redirect.
+     *
+     * @param callable(array<int, string>): string $with
+     */
+    private static function replaceOnce(string $pattern, callable $with, string $html): string
+    {
+        return preg_replace_callback($pattern, $with, $html, 1) ?? $html;
     }
 
     /**

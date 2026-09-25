@@ -121,3 +121,23 @@ test('the legacy trustProxy boolean still means "trust the immediate peer", and 
   const health = (await s.api('GET', '/api/health')).json;
   assert.deepEqual(health.proxy, { trustedProxies: 0, legacyTrustProxy: true, forwardedButUntrusted: false });
 });
+
+test('an IPv6 visitor is limited by its /64: a fresh address in the same prefix is the same visitor', skip, async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-proxy-64-'));
+  try {
+    const buckets = ['2001:db8:1:2:3:4:5:6', '2001:DB8:1:2::9', '2001:db8:1:3::1', '::ffff:10.0.0.7', '203.0.113.9', 'not-an-address'];
+    const r = runPhp({ dataDir, stdin: JSON.stringify(buckets), script: `echo json_encode(array_map([Net::class, 'limitBucket'], json_decode(file_get_contents('php://stdin'), true)));` });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), ['2001:db8:1:2::/64', '2001:db8:1:2::/64', '2001:db8:1:3::/64', '10.0.0.7', '203.0.113.9', 'not-an-address']);
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+  const s = await startServer({ config: { trustedProxies: ['127.0.0.1'], limits: { comment: [1, 600] } }, prefix: 'softn-proxy-64-' });
+  servers.push(s);
+  const { app } = await s.publish('Prefixed');
+  assert.equal((await comment(s, app.slug, '2001:db8:1:2::1')).status, 201);
+  assert.equal((await comment(s, app.slug, '2001:db8:1:2:ffff:ffff:ffff:9')).status, 429, 'another address in the /64 is the same visitor');
+  assert.equal((await comment(s, app.slug, '2001:db8:1:3::1')).status, 201, 'the next /64 is someone else');
+  assert.equal((await comment(s, app.slug, '198.51.100.1')).status, 201);
+  assert.equal((await comment(s, app.slug, '198.51.100.2')).status, 201, 'IPv4 is still one address, one visitor');
+});

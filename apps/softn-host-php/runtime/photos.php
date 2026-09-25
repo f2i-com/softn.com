@@ -5,7 +5,7 @@ function sanitize_photo(mixed $url): array {
     $data=base64_decode($match[2],true);
     if($data===false||strlen($data)>4000000)throw new RuntimeException('size');
     $size=@getimagesizefromstring($data);
-    if(!$size||$size[0]<32||$size[1]<32||$size[0]*$size[1]>16000000||!in_array($size[2],[IMAGETYPE_JPEG,IMAGETYPE_PNG,IMAGETYPE_WEBP],true))throw new RuntimeException('dimensions');
+    if(!$size||$size[0]<32||$size[1]<32||$size[0]>8192||$size[1]>8192||$size[0]*$size[1]>16000000||!in_array($size[2],[IMAGETYPE_JPEG,IMAGETYPE_PNG,IMAGETYPE_WEBP],true))throw new RuntimeException('dimensions');
     if(($size[2]===IMAGETYPE_PNG&&str_contains($data,'acTL'))||($size[2]===IMAGETYPE_WEBP&&str_contains($data,'ANIM')))throw new RuntimeException('animation');
     $image=@imagecreatefromstring($data);if(!$image)throw new RuntimeException('decode');
     try {
@@ -20,8 +20,8 @@ function sanitize_photo(mixed $url): array {
                 ob_start();try{imagejpeg($copy,null,82);$bytes=ob_get_contents();}finally{ob_end_clean();}
                 if(strlen($bytes)>($field==='thumbnail'?60000:400000))throw new RuntimeException('complexity');
                 $result[$field]='data:image/jpeg;base64,'.base64_encode($bytes);
-            } finally {imagedestroy($copy);}
+            } finally {unset($copy);} // A GdImage frees itself; imagedestroy() has been a no-op since PHP 8.0.
         }
         return $result;
-    } finally {imagedestroy($image);}
+    } finally {unset($image);}
 }

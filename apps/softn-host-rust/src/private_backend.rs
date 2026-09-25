@@ -140,6 +140,19 @@ pub fn sync_enabled(manifest: &ServerManifest) -> bool {
         .is_none_or(|s| s.enabled)
 }
 
+/// Schema objects in the host's `_` namespace (the migration ledger, ...).
+fn reserved_names(conn: &rusqlite::Connection) -> Result<HashSet<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE substr(name, 1, 1) = '_'")
+        .map_err(|_| "Cannot read the schema")?;
+    let names = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(|_| "Cannot read the schema")?
+        .collect::<Result<_, _>>()
+        .map_err(|_| "Cannot read the schema");
+    Ok(names?)
+}
+
 fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<(), String> {
     let conn = sql::open_connection(path)?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS _migrations(name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at INTEGER NOT NULL) STRICT;")
@@ -189,6 +202,7 @@ fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<
                     steps > 5_000_000 || Instant::now() > deadline
                 }),
             );
+            let reserved_before = reserved_names(&conn)?;
             conn.authorizer(Some(|ctx: rusqlite::hooks::AuthContext<'_>| {
                 sql::authorize(ctx, true, true)
             }));
@@ -196,6 +210,14 @@ fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<
             sql::clear_authorizer(&conn);
             conn.progress_handler(0, None::<fn() -> bool>);
             applied.map_err(|e| format!("Migration {name} failed: {e}"))?;
+            // The authorizer sees the old name of `ALTER TABLE t RENAME TO x`,
+            // never x: nothing may move into the host's `_` namespace that way.
+            // The caller rolls the whole transaction back.
+            if !reserved_names(&conn)?.is_subset(&reserved_before) {
+                return Err(format!(
+                    "Migration {name} failed: it named a host-reserved (_-prefixed) table or index"
+                ));
+            }
             conn.execute(
                 "INSERT INTO _migrations VALUES(?,?,?)",
                 rusqlite::params![name, checksum, chrono::Utc::now().timestamp()],
@@ -269,6 +291,72 @@ mod tests {
         assert!(PrivateBackend::load(&manifest, &bundle, &data).is_err());
     }
 
+    /// A second migration that adds a column, and a default taken from the
+    /// clock: both run on the PHP host (`migrations.mjs` allows ALTER TABLE
+    /// and the date/time functions) and must run here, or one bundle's schema
+    /// history would load on one host and not the other.
+    #[test]
+    fn migrations_may_alter_tables_and_use_date_functions() {
+        let root = std::env::temp_dir().join(format!("softn-migrations-alter-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("server")).unwrap();
+        std::fs::write(root.join("server/001.sql"), "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, created INTEGER DEFAULT (unixepoch()));").unwrap();
+        std::fs::write(root.join("server/002.sql"), "ALTER TABLE users ADD COLUMN email TEXT; ALTER TABLE users RENAME COLUMN name TO display_name; UPDATE users SET email = lower(display_name) || '@' || strftime('%Y', 'now');").unwrap();
+        let path = root.join("application.sqlite");
+        let server: ServerBlock = serde_json::from_value(serde_json::json!({"database":{"kind":"private-sqlite","migrations":["server/001.sql","server/002.sql"]}})).unwrap();
+        apply_migrations(&path, &root, &server).unwrap();
+        let conn = sql::open_connection(&path).unwrap();
+        conn.execute("INSERT INTO users(display_name, email) VALUES('a', 'a@example')", []).unwrap();
+        assert!(conn.query_row("SELECT created FROM users", [], |r| r.get::<_, i64>(0)).unwrap() > 0);
+        // The host's own ledger stays out of reach.
+        for bad in ["ALTER TABLE _migrations ADD COLUMN x TEXT;", "ALTER TABLE _migrations RENAME TO ledger;"] {
+            std::fs::write(root.join("server/003.sql"), bad).unwrap();
+            let server: ServerBlock = serde_json::from_value(serde_json::json!({"database":{"kind":"private-sqlite","migrations":["server/001.sql","server/002.sql","server/003.sql"]}})).unwrap();
+            assert!(apply_migrations(&path, &root, &server).is_err(), "{bad}");
+        }
+    }
+
+    /// DROP COLUMN runs (SQLite's authorizer passes the column where it
+    /// passes the database name elsewhere), and nothing enters the host's `_`
+    /// namespace: not by RENAME TO (the authorizer never sees the new name),
+    /// not by an index name, and no host index can be dropped.
+    #[test]
+    fn migrations_may_drop_columns_but_not_claim_the_host_namespace() {
+        let root = std::env::temp_dir().join(format!("softn-migrations-drop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("server")).unwrap();
+        std::fs::write(root.join("server/001.sql"), "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, note TEXT);").unwrap();
+        std::fs::write(root.join("server/002.sql"), "ALTER TABLE users DROP COLUMN note;").unwrap();
+        let path = root.join("application.sqlite");
+        let server = |files: &[&str]| -> ServerBlock {
+            serde_json::from_value(serde_json::json!({"database":{"kind":"private-sqlite","migrations":files}})).unwrap()
+        };
+        apply_migrations(&path, &root, &server(&["server/001.sql", "server/002.sql"])).unwrap();
+        let conn = sql::open_connection(&path).unwrap();
+        let columns = |conn: &rusqlite::Connection| -> i64 {
+            conn.query_row("SELECT count(*) FROM pragma_table_info('users')", [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(columns(&conn), 2);
+        // An index the host owns, which no migration may drop.
+        conn.execute_batch("CREATE INDEX _host_users ON users(name);").unwrap();
+        let schema = |conn: &rusqlite::Connection| -> Vec<String> {
+            conn.prepare("SELECT name FROM sqlite_master ORDER BY name").unwrap()
+                .query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        let before = schema(&conn);
+        for bad in [
+            "ALTER TABLE users RENAME TO _users;",
+            "CREATE TABLE later(x); ALTER TABLE later RENAME TO _later;",
+            "CREATE INDEX _users_name ON users(name);",
+            "DROP INDEX _host_users;",
+            "ALTER TABLE _migrations DROP COLUMN applied_at;",
+        ] {
+            std::fs::write(root.join("server/003.sql"), bad).unwrap();
+            let files = ["server/001.sql", "server/002.sql", "server/003.sql"];
+            assert!(apply_migrations(&path, &root, &server(&files)).is_err(), "{bad}");
+            assert_eq!(schema(&conn), before, "{bad}");
+        }
+        assert!(apply_migrations(&path, &root, &server(&["server/001.sql", "server/002.sql"])).is_ok());
+    }
+
     #[test]
     fn migrations_are_atomic_checksummed_and_cannot_escape() {
         let root = std::env::temp_dir().join(format!("softn-migrations-{}", uuid::Uuid::new_v4()));
@@ -304,3 +392,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "sql_parity_tests.rs"]
+mod sql_parity_tests;

@@ -78,11 +78,142 @@ pub struct RouteDefinition {
     /// Per-route JSON body limit, also bounded by config.server.maxBodySize.
     #[serde(default, rename = "maxBodySize")]
     pub max_body_size: Option<usize>,
+    /// A GET route clients poll: a 200 carries an `ETag` and
+    /// `X-SoftN-Poll-Interval`, and a matching `If-None-Match` is a 304 (the
+    /// handler still runs, so revocation is never skipped). As on the PHP host.
+    #[serde(default)]
+    pub poll: Option<bool>,
+    /// `"photo"`: the body's `data_url` is sanitized by the host before the
+    /// handler runs and handed over as `req.upload` (`{sanitized, image,
+    /// thumbnail}`), with an empty body. POST only; needs `photos`. As on the
+    /// PHP host.
+    #[serde(default)]
+    pub upload: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ServerConfig {
-    pub auth_token: Option<String>,
+/// Requests a minute one client address may make to the app's routes:
+/// `config.server.requestsPerMinute`, else 120 for an API v1 app (the PHP
+/// host's fixed limit, so the shared contract behaves alike) and no limit for
+/// a legacy bundle, whose clients (a polling game table) were never held to
+/// one. 0 turns it off.
+pub fn requests_per_minute(manifest: &ServerManifest) -> Option<u32> {
+    let configured = manifest.config.as_ref()
+        .and_then(|c| c.get("server"))
+        .and_then(|s| s.get("requestsPerMinute"))
+        .and_then(|v| v.as_u64());
+    let api_v1 = manifest.server.as_ref().is_some_and(|s| s.requires.is_some());
+    match configured {
+        Some(0) => None,
+        Some(n) => Some(n.min(u64::from(u32::MAX)) as u32),
+        None if api_v1 => Some(120),
+        None => None,
+    }
+}
+
+/// Default request-body limit for a route that declares none (the PHP host's
+/// default is 256 KB; this host has always allowed 2 MiB).
+pub const DEFAULT_BODY_LIMIT: usize = 2 * 1024 * 1024;
+/// The body a photo upload route may carry by default: a 4 MB image as base64
+/// plus its JSON wrapper, as on the PHP host.
+pub const PHOTO_UPLOAD_BODY_LIMIT: usize = 5_600_100;
+/// The most any route may accept.
+pub const MAX_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// The body `route` accepts: the smaller of its own `maxBodySize` and the
+/// app's `config.server.maxBodySize` when either is declared, else the
+/// default (larger for a photo upload). The PHP host's rule, with this host's
+/// own default and ceiling.
+pub fn route_body_limit(route: &RouteDefinition, manifest: &ServerManifest) -> usize {
+    let app = manifest.config.as_ref()
+        .and_then(|c| c.get("server"))
+        .and_then(|s| s.get("maxBodySize"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let declared: Vec<usize> = route.max_body_size.into_iter().chain(app).collect();
+    let limit = declared.into_iter().min().unwrap_or(if route.upload.is_some() {
+        PHOTO_UPLOAD_BODY_LIMIT
+    } else {
+        DEFAULT_BODY_LIMIT
+    });
+    limit.min(MAX_BODY_LIMIT)
+}
+
+/// The token a bundle's manifest sets in `config.server`, under `auth_token`
+/// or `authToken`. `client_manifest` has always redacted both spellings, but
+/// the server read only the first, so a manifest using the second ran with
+/// no authentication at all. `validate_server_config` has already refused
+/// empty, non-string and conflicting values.
+pub fn manifest_auth_token(manifest: &ServerManifest) -> Option<String> {
+    let server = manifest.config.as_ref()?.get("server")?;
+    server
+        .get("auth_token")
+        .or_else(|| server.get("authToken"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// Check the `config.server` keys the host reads, so a wrong type is a clear
+/// startup error rather than a silent default: `"auth_token": 123` used to
+/// start with no authentication, `"maxBodySize": 0` refused every body, and
+/// `"allowedOrigins": ["*"]` panicked while the router was built (in
+/// multi-tenant mode taking every tenant down with it). Keys the host does not
+/// read (`url`, and whatever the client uses) are left alone.
+fn validate_server_config(manifest: &ServerManifest) -> Result<(), String> {
+    let Some(server) = manifest.config.as_ref().and_then(|c| c.get("server")) else {
+        return Ok(());
+    };
+    let server = server.as_object().ok_or("config.server must be an object")?;
+    let mut tokens = Vec::new();
+    for key in ["auth_token", "authToken"] {
+        if let Some(value) = server.get(key) {
+            match value.as_str() {
+                Some(token) if !token.is_empty() => tokens.push(token),
+                _ => return Err(format!("config.server.{key} must be a non-empty string")),
+            }
+        }
+    }
+    if tokens.len() == 2 && tokens[0] != tokens[1] {
+        return Err("config.server.auth_token and authToken disagree; set one".into());
+    }
+    if let Some(origins) = server.get("allowedOrigins") {
+        let origins = origins.as_array().ok_or("config.server.allowedOrigins must be an array of origins")?;
+        for origin in origins {
+            let text = origin.as_str().ok_or("config.server.allowedOrigins must be an array of origins")?;
+            if text == "null" {
+                // Every sandboxed iframe and file: page on every site sends
+                // `Origin: null`; honoured as listed, as the PHP host does.
+                tracing::warn!("config.server.allowedOrigins lists \"null\": any sandboxed page on any site may call this app");
+                continue;
+            }
+            let valid = text
+                .split_once("://")
+                .is_some_and(|(scheme, rest)| {
+                    matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https")
+                        && !rest.trim_end_matches('/').is_empty()
+                        && !rest.trim_end_matches('/').contains(['/', '?', '#', '*', ' '])
+                });
+            if !valid {
+                return Err(format!(
+                    "config.server.allowedOrigins entry {text:?} is not an origin like \"https://app.example\" \
+                     (a wildcard is not accepted: list the origins, or run with --dev on a development machine)"
+                ));
+            }
+        }
+    }
+    if let Some(size) = server.get("maxBodySize") {
+        if !size.as_u64().is_some_and(|n| (1..=16 * 1024 * 1024).contains(&n)) {
+            return Err("config.server.maxBodySize must be a whole number of bytes between 1 and 16777216".into());
+        }
+    }
+    for key in ["workers", "readPoolSize", "syncPermits", "maxStorageMB", "maxSyncConnections", "requestsPerMinute"] {
+        if server.get(key).is_some_and(|v| v.as_u64().is_none()) {
+            return Err(format!("config.server.{key} must be a non-negative whole number"));
+        }
+    }
+    if server.get("forceServerTimestamps").is_some_and(|v| !v.is_boolean()) {
+        return Err("config.server.forceServerTimestamps must be true or false".into());
+    }
+    Ok(())
 }
 
 
@@ -217,8 +348,9 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
 
     let content = fs::read_to_string(&manifest_path)
         .map_err(|e| format!("Failed to read manifest: {}", e))?;
-    let manifest: ServerManifest = serde_json::from_str(&content)
+    let mut manifest: ServerManifest = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse manifest: {}", e))?;
+    default_route_transactions(&mut manifest);
 
     // Validate manifest fields. The name is what people read — "Texas
     // Hold'em" — and only becomes a path when there is no `id` to name the
@@ -250,6 +382,7 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
     if manifest.version.is_empty() {
         return Err("Manifest version must not be empty".into());
     }
+    validate_server_config(&manifest)?;
 
     if let Some(server) = &manifest.server {
         if server.requires.is_some() && manifest.id.is_none() {
@@ -292,17 +425,50 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
                     }
                     if route.public { return Err("API v1 routes must use explicit authorization instead of public".into()); }
                     if route.authorization.is_none() { return Err("API v1 routes require explicit authorization".into()); }
-                    if server.database.is_some() && route.transaction == TransactionMode::None {
-                        return Err("Private SQL routes require an explicit read or write transaction".into());
-                    }
-                    if server.database.is_none() && route.transaction != TransactionMode::None {
-                        return Err("Route transactions require a private database declaration".into());
+                }
+                if route.poll == Some(true) && route.method != "GET" {
+                    return Err(format!("Route {} {}: poll is for GET routes", route.method, route.path));
+                }
+                if route.poll == Some(true) && route.transaction == TransactionMode::Write {
+                    return Err(format!("Route {} {}: a polled route must be a read", route.method, route.path));
+                }
+                if let Some(upload) = &route.upload {
+                    let photos = server.requires.as_ref().is_some_and(|r| r.capabilities.iter().any(|c| c == "photos"));
+                    if upload != "photo" || route.method != "POST" || !photos {
+                        return Err(format!(
+                            "Route {} {}: upload must be \"photo\", on a POST route of an API v1 app that requires the photos capability",
+                            route.method, route.path
+                        ));
                     }
                 }
             }
         }
     }
     Ok(manifest)
+}
+
+/// An API v1 route of an app with a private database runs in a transaction:
+/// one that declares none (or `"none"`) gets a read for GET and a write for
+/// anything else, as on the PHP host, where a manifest without `transaction`
+/// loads. An app without a database has no SQL to scope, so a declared
+/// transaction there is ignored, with a warning, rather than refusing the app.
+fn default_route_transactions(manifest: &mut ServerManifest) {
+    let Some(server) = manifest.server.as_mut() else { return };
+    if server.requires.is_none() {
+        return;
+    }
+    let has_database = server.database.is_some();
+    for route in server.routes.iter_mut().flatten() {
+        if has_database && route.transaction == TransactionMode::None {
+            route.transaction = if route.method.eq_ignore_ascii_case("GET") { TransactionMode::Read } else { TransactionMode::Write };
+        } else if !has_database && route.transaction != TransactionMode::None {
+            tracing::warn!(
+                "Route {} {} declares a transaction but the app has no private database; it runs without one",
+                route.method, route.path
+            );
+            route.transaction = TransactionMode::None;
+        }
+    }
 }
 
 /// Validate a script path stays within the bundle directory.
@@ -430,5 +596,95 @@ mod tests {
         assert!(load_manifest(&root).is_err());
         value["id"] = "..".into(); write(&value);
         assert!(load_manifest(&root).is_err());
+    }
+
+    /// A manifest written for the PHP host loads here: `poll` and `upload`
+    /// route fields, and SQL routes that leave `transaction` to the method.
+    #[test]
+    fn php_host_route_declarations_load() {
+        let root = std::env::temp_dir().join(format!("softn-parity-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut value = serde_json::json!({"id":"com.example.parity","name":"Parity","version":"1",
+            "server":{"requires":{"apiVersion":1,"capabilities":["sql","photos"]},
+                "database":{"kind":"private-sqlite","migrations":["server/001.sql"]},
+                "routes":[
+                    {"method":"GET","path":"/api/feed","handler":"feed","authorization":"application","poll":true},
+                    {"method":"POST","path":"/api/photo","handler":"photo","authorization":"application","upload":"photo"},
+                    {"method":"DELETE","path":"/api/item","handler":"remove","authorization":"application","transaction":"none"}
+                ]}});
+        let write = |v: &serde_json::Value| std::fs::write(root.join("manifest.json"), serde_json::to_vec(v).unwrap()).unwrap();
+        write(&value);
+        let manifest = load_manifest(&root).unwrap();
+        let routes = manifest.server.as_ref().unwrap().routes.as_ref().unwrap();
+        assert_eq!(routes[0].transaction, TransactionMode::Read);
+        assert_eq!(routes[1].transaction, TransactionMode::Write);
+        assert_eq!(routes[2].transaction, TransactionMode::Write);
+        assert_eq!(route_body_limit(&routes[1], &manifest), PHOTO_UPLOAD_BODY_LIMIT);
+        assert_eq!(route_body_limit(&routes[0], &manifest), DEFAULT_BODY_LIMIT);
+        assert_eq!(requests_per_minute(&manifest), Some(120));
+        // What the PHP host refuses, this host refuses.
+        for (index, field, bad) in [
+            (0, "poll", serde_json::json!("yes")),
+            (1, "poll", serde_json::json!(true)),
+            (1, "upload", serde_json::json!("video")),
+            (0, "upload", serde_json::json!("photo")),
+        ] {
+            let mut broken = value.clone();
+            broken["server"]["routes"][index][field] = bad.clone();
+            write(&broken);
+            assert!(load_manifest(&root).is_err(), "{field}: {bad} on route {index}");
+        }
+        value["server"]["requires"]["capabilities"] = serde_json::json!(["sql"]);
+        write(&value);
+        assert!(load_manifest(&root).is_err(), "a photo upload needs the photos capability");
+    }
+
+    /// The smaller of the route's and the app's declared limits, as on the
+    /// PHP host; the app's alone used to cap a route that declared more.
+    #[test]
+    fn a_route_body_limit_is_the_smaller_declared_one() {
+        let manifest = |server: serde_json::Value| -> ServerManifest {
+            serde_json::from_value(serde_json::json!({"name":"x","version":"1","config":{"server":server}})).unwrap()
+        };
+        let route = |max: Option<usize>| -> RouteDefinition {
+            serde_json::from_value(serde_json::json!({"method":"POST","path":"/api/x","handler":"h","maxBodySize":max})).unwrap()
+        };
+        assert_eq!(route_body_limit(&route(Some(5_000_000)), &manifest(serde_json::json!({}))), 5_000_000);
+        assert_eq!(route_body_limit(&route(Some(5_000_000)), &manifest(serde_json::json!({"maxBodySize": 1000}))), 1000);
+        assert_eq!(route_body_limit(&route(None), &manifest(serde_json::json!({"maxBodySize": 1000}))), 1000);
+        assert_eq!(route_body_limit(&route(None), &manifest(serde_json::json!({}))), DEFAULT_BODY_LIMIT);
+        assert_eq!(requests_per_minute(&manifest(serde_json::json!({}))), None, "a legacy bundle has no limit unless it sets one");
+        assert_eq!(requests_per_minute(&manifest(serde_json::json!({"requestsPerMinute": 30}))), Some(30));
+    }
+
+    #[test]
+    fn server_config_types_are_checked_and_both_token_spellings_count() {
+        let root = std::env::temp_dir().join(format!("softn-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let load = |server: serde_json::Value| {
+            let manifest = serde_json::json!({"id":"com.example.config","name":"Config","version":"1","config":{"server":server}});
+            std::fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+            load_manifest(&root)
+        };
+        for bad in [
+            serde_json::json!({"auth_token": 123}),
+            serde_json::json!({"auth_token": ""}),
+            serde_json::json!({"auth_token": "a", "authToken": "b"}),
+            serde_json::json!({"allowedOrigins": ["*"]}),
+            serde_json::json!({"allowedOrigins": "https://app.example"}),
+            serde_json::json!({"allowedOrigins": ["app.example"]}),
+            serde_json::json!({"maxBodySize": 0}),
+            serde_json::json!({"maxBodySize": 16 * 1024 * 1024 + 1}),
+            serde_json::json!({"workers": "4"}),
+            serde_json::json!({"forceServerTimestamps": "yes"}),
+        ] {
+            assert!(load(bad.clone()).is_err(), "{bad} was accepted");
+        }
+        let manifest = load(serde_json::json!({"authToken": "camel", "allowedOrigins": ["https://App.example/"],
+            "maxBodySize": 1024, "url": "wss://anything"})).unwrap();
+        assert_eq!(manifest_auth_token(&manifest).as_deref(), Some("camel"));
+        let manifest = load(serde_json::json!({"auth_token": "snake"})).unwrap();
+        assert_eq!(manifest_auth_token(&manifest).as_deref(), Some("snake"));
+        assert!(load(serde_json::json!({"allowedOrigins": ["null"]})).is_ok(), "listed on purpose, as the PHP host allows");
     }
 }

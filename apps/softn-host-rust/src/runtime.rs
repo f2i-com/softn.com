@@ -282,7 +282,12 @@ impl ServerRuntime {
     /// Create a new runtime with a worker pool.
     /// `bridge_factory` is called once per worker thread to create isolated bridges.
     /// `configured_workers` overrides the auto-detected pool size if provided.
-    pub fn new<F>(bridge_factory: F, configured_workers: Option<usize>) -> Arc<Self>
+    ///
+    /// Fails, rather than panicking, when the process-wide worker budget is
+    /// spent: in multi-tenant mode one bundle's `workers` setting could
+    /// otherwise take the whole budget and crash the host while the next
+    /// tenant loads.
+    pub fn new<F>(bridge_factory: F, configured_workers: Option<usize>) -> Result<Arc<Self>, String>
     where
         F: Fn() -> BridgeSet + Send + Sync + 'static,
     {
@@ -303,17 +308,21 @@ impl ServerRuntime {
 
         // Enforce a global cap on worker threads to prevent thread exhaustion
         // from multiple runtimes (e.g. during testing or future multi-tenancy).
-        let current_global = GLOBAL_WORKER_COUNT.load(Ordering::Relaxed);
-        let available = MAX_GLOBAL_WORKER_THREADS.saturating_sub(current_global);
-        if available == 0 {
-            tracing::error!(
-                "Global worker thread limit reached ({}) — cannot create new runtime",
+        // Reserve atomically: two runtimes built at once must not both see the
+        // same headroom.
+        let mut reserved = 0;
+        let _ = GLOBAL_WORKER_COUNT.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            reserved = worker_count.min(MAX_GLOBAL_WORKER_THREADS.saturating_sub(current));
+            (reserved > 0).then_some(current + reserved)
+        });
+        if reserved == 0 {
+            return Err(format!(
+                "Cannot start a script runtime: the process-wide limit of {} worker threads is in use. \
+                 Lower `workers` (or --workers-per-tenant) for the apps on this host.",
                 MAX_GLOBAL_WORKER_THREADS
-            );
-            panic!("Cannot start runtime: global worker thread limit ({}) exhausted", MAX_GLOBAL_WORKER_THREADS);
+            ));
         }
-        let worker_count = worker_count.min(available);
-        GLOBAL_WORKER_COUNT.fetch_add(worker_count, Ordering::Relaxed);
+        let worker_count = reserved;
 
         let factory = Arc::new(bridge_factory);
         // Bounded queue prevents memory exhaustion from request floods.
@@ -330,8 +339,10 @@ impl ServerRuntime {
                     guards.push(guard);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to spawn worker thread {}: {}", i, e);
-                    panic!("Cannot start server: failed to spawn worker thread {}", i);
+                    // Dropping the senders ends the workers already started.
+                    drop(init_txs);
+                    GLOBAL_WORKER_COUNT.fetch_sub(worker_count, Ordering::AcqRel);
+                    return Err(format!("Cannot start a script runtime: failed to spawn worker thread {i}: {e}"));
                 }
             }
         }
@@ -450,7 +461,7 @@ impl ServerRuntime {
 
         tracing::info!("Script worker pool: {} threads (zipp engine)", worker_count);
 
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             work_tx,
             init_txs,
             worker_count,
@@ -458,7 +469,7 @@ impl ServerRuntime {
             watchdog_stop,
             init_source,
             replacements: replacements_count,
-        })
+        }))
     }
 
     /// Spawn one worker: a thread, its dedicated init channel, and the guard the
@@ -1275,7 +1286,7 @@ mod private_sql_tests {
             db: None, http: None, fs: None, env: None,
             sql: Some(NativeSql::new(worker_path.clone())), crypto: None,
             allow_time: false, development: true, allow_photos: false,
-        }, Some(2));
+        }, Some(2)).unwrap();
         runtime.init(r#"
             var forceRebuild = {};
             try { softn.sql.execute('INSERT INTO attempts(count) VALUES(99)',[]); } catch(e) {}

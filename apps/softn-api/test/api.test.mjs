@@ -20,15 +20,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+// The one PHP probe and skip reason every suite shares: a machine without
+// PHP skips these tests with the reason on each, and a warning on stderr.
+import { HAVE_PHP, skip } from './helpers/harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const apiDir = path.resolve(here, '..');
 const repo = path.resolve(apiDir, '../..');
 const require = createRequire(import.meta.url);
 
-const php = spawnSync('php', ['-v'], { encoding: 'utf8' });
-const HAVE_PHP = php.status === 0;
-if (!HAVE_PHP) console.log('# php is not on PATH; the API tests are skipped');
 /** The per-app storage quota the test server runs with; see `before`. */
 const STORAGE_QUOTA_BYTES = 256 * 1024;
 
@@ -172,7 +172,6 @@ after(() => {
   if (root) fs.rmSync(root, { recursive: true, force: true });
 });
 
-const skip = { skip: !HAVE_PHP };
 
 test('health reports a folder catalogue and writable data dir', skip, async () => {
   const { status, json } = await api('GET', '/api/health');

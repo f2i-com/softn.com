@@ -7,9 +7,11 @@ counter=root/'counter/backend/app'
 counter.mkdir()
 manifest={'id':'org.example.counter','name':'Counter','version':'1.0.0','config':{'server':{'allowedOrigins':['https://counter.example']}},'server':{'entry':'main.logic','requires':{'apiVersion':1,'capabilities':['sql','transaction-scope']},'database':{'kind':'private-sqlite','migrations':['schema.sql']},'routes':[{'method':'POST','path':'/api/increment','handler':'increment','authorization':'application','transaction':'write'}]}}
 manifest['server']['routes'].append({'method':'GET','path':'/api/counter','handler':'readCounter','authorization':'application','transaction':'read','poll':True})
+manifest['server']['routes']+=[{'method':m,'path':'/api/echo','handler':'echo','authorization':'anonymous'} for m in ['GET','POST']]+[{'method':'GET','path':'/api/shapes','handler':'shapes','authorization':'anonymous','transaction':'read','poll':True}]
 (counter/'manifest.json').write_text(json.dumps(manifest))
 (counter/'schema.sql').write_text('CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0);')
 (counter/'main.logic').write_text('function increment(req){if(req.headers.authorization!=="Bearer fixture")return {status:401,body:{error:"unauthorized"},rollback:true};softn.sql.execute("UPDATE counter SET value=value+1",[]);return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}')
+with (counter/'main.logic').open('a') as f:f.write('function echo(req){return {status:200,body:{body:req.body,query:req.query,headers:req.headers}};}\nfunction shapes(req){return {status:200,body:{empty:{},list:[],s:"x\\ud83d"}};}\n')
 with (counter/'main.logic').open('a') as f:f.write('function readCounter(req){if(req.headers.authorization!=="Bearer fixture")return {status:401,body:{error:"unauthorized"}};return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}')
 modules=['mpm_prefork','authz_core','authz_host','dir','mime','headers','rewrite','alias','actions','cgi']
 for name in ['counter']:subprocess.run(['php',str(root/name/'backend/setup.php')],check=True)
@@ -50,8 +52,21 @@ with open(root/'apache.log','w') as log:
         assert req('/api/counter',headers={'Authorization':'Bearer fixture','If-None-Match':etag})[0]==304
         assert req('/api/counter',headers={'Authorization':'Bearer wrong','If-None-Match':etag})[0]==401
         print('Conditional polling returns 304 only after the handler authorizes the request.',flush=True)
-        for path in ['/backend/private/config.json','/server/main.logic','/private/config.json','/.htaccess']:
+        # The handler's JSON arrives as written: {} stays an object, a lone surrogate stays an escape.
+        status,body=req('/api/shapes');assert (status,body)==(200,b'{"empty":{},"list":[],"s":"x\\ud83d"}'),(status,body)
+        etag=last_headers['ETag'];assert last_headers.get('Content-Security-Policy','').startswith("default-src 'none'"),last_headers
+        for tag in ['W/'+etag,etag[:-1]+'-gzip"','"other", '+etag]:assert req('/api/shapes',headers={'If-None-Match':tag})[0]==304,tag
+        # No body is {}; the query and headers are the Rust host's: decoded strings, every header but Cookie.
+        status,body=req('/api/echo',method='POST');assert status==200 and json.loads(body)['body']=={},(status,body)
+        status,body=req('/api/echo?b.c=2&a%5B%5D=1&d=x&d=y',headers={'User-Agent':'smoke','Cookie':'session=secret'});seen=json.loads(body)
+        assert seen['query']=={'b.c':'2','a[]':'1','d':'y'},seen;assert seen['headers']['user-agent']=='smoke' and 'cookie' not in seen['headers'],seen
+        # A page on this site may call its own API without listing its origin; another site may not.
+        assert req('/api/echo',method='POST',headers={'Origin':'http://127.0.0.1:8811'})[0]==200
+        assert req('/api/echo',method='POST',headers={'Origin':'http://127.0.0.1:8812'})[0]==403
+        print('Response bodies pass through, the request matches the Rust host, same-origin and conditional tags pass.',flush=True)
+        for path in ['/backend/private/config.json','/server/main.logic','/private/config.json','/.htaccess','/backend/setup.php']:
             assert req(path)[0] in [403,404],path
+        if not args.private:status,_=req('/');assert status==200 and last_headers.get('X-Frame-Options')=='SAMEORIGIN',last_headers
         if args.private:
             # The served application beside the backend: the page renders on
             # the server and sets the viewer cookie; the pack and entries need

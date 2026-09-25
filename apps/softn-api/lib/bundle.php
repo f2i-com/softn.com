@@ -58,10 +58,19 @@ final class Bundle
             if ($count === 0) throw new ApiError(400, 'The bundle is empty.');
             if ($count > self::MAX_ENTRIES) throw new ApiError(400, 'The bundle has more than ' . self::MAX_ENTRIES . ' files.');
             $total = 0;
+            $seen = [];
             for ($i = 0; $i < $count; $i++) {
                 $stat = $zip->statIndex($i);
                 if ($stat === false) throw new ApiError(400, 'The bundle has an unreadable entry.');
                 $name = (string) $stat['name'];
+                // Two entries of one name are two answers to "what is in this
+                // file": this check reads the first manifest.json, another
+                // reader may take the last. The runtime's archive index and
+                // softn-serve refuse such an archive, so it is refused here,
+                // where the publisher is present to fix it, rather than listed
+                // with a manifest the app will never run with.
+                if (isset($seen[$name])) throw new ApiError(400, "The bundle has more than one entry named $name.");
+                $seen[$name] = true;
                 if ($name === '' || str_contains($name, '\\') || str_starts_with($name, '/') || preg_match('#(^|/)\.\.(/|$)#', $name)) {
                     throw new ApiError(400, "The bundle has an entry with an unsafe path: $name");
                 }
@@ -98,7 +107,7 @@ final class Bundle
                     $bytes = $zip->getFromName($iconPath);
                     if (is_string($bytes)) {
                         $mime = Images::sniff($bytes);
-                        if ($mime === null && preg_match('/\.svg$/i', $iconPath) && self::looksLikeSvg($bytes)) $mime = 'image/svg+xml';
+                        if ($mime === null && preg_match('/\.svg$/i', $iconPath) && self::safeSvg($bytes)) $mime = 'image/svg+xml';
                         if ($mime !== null) $icon = [$bytes, $mime];
                     }
                 }
@@ -220,16 +229,106 @@ final class Bundle
         return $policies;
     }
 
+    /** SVG elements an icon may use: shapes, text, paint servers, filters. */
+    private const SVG_ELEMENTS = [
+        'svg', 'g', 'defs', 'title', 'desc', 'metadata', 'symbol', 'use', 'switch', 'style',
+        'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'image', 'marker',
+        'text', 'tspan', 'textpath', 'lineargradient', 'radialgradient', 'stop', 'pattern', 'clippath', 'mask',
+        'filter', 'feblend', 'fecolormatrix', 'fecomponenttransfer', 'fecomposite', 'feconvolvematrix',
+        'fediffuselighting', 'fedisplacementmap', 'fedistantlight', 'fedropshadow', 'feflood', 'fefunca',
+        'fefuncb', 'fefuncg', 'fefuncr', 'fegaussianblur', 'feimage', 'femerge', 'femergenode', 'femorphology',
+        'feoffset', 'fepointlight', 'fespecularlighting', 'fespotlight', 'fetile', 'feturbulence',
+    ];
+
     /**
-     * An SVG is served back as an image, so it has to be one, and one with no
-     * script in it: the icon is shown on the directory's own origin.
+     * An SVG is served back as an image from the directory's own origin, so it
+     * has to be one, and one that can do nothing but be drawn.
+     *
+     * This used to be a list of words to look for, and a list is always one
+     * spelling short: `<x:script xmlns:x="http://www.w3.org/2000/svg">` is a
+     * script element that `<script` never matches, and `&#106;avascript:` is
+     * a `javascript:` link that the pattern never saw. Now the file is parsed
+     * the way a browser parses it and judged by what the parse produced:
+     *
+     * - it must be well-formed XML with an `<svg>` root in the SVG namespace,
+     *   with no DOCTYPE (so no entities of its own) and no processing
+     *   instructions (so no stylesheet or transform pulled in);
+     * - every element in the SVG namespace must be one of SVG_ELEMENTS, and
+     *   none may be in the XHTML or MathML namespace, whatever its prefix;
+     *   elements in other namespaces (an editor's metadata) are inert and kept;
+     * - no attribute may be an event handler (`on…`), and no attribute value,
+     *   entity-decoded as the parser gives it, may name a `javascript:`,
+     *   `vbscript:` or non-image `data:` URL once whitespace is taken out;
+     * - a `<style>` may not import or name a script URL.
+     *
+     * An icon that fails is not an error: the app is published without it and
+     * shows the placeholder. The served response carries a sandboxing CSP as
+     * well (Response::USER_CONTENT), so this is the first of two walls.
      */
-    private static function looksLikeSvg(string $bytes): bool
+    public static function safeSvg(string $bytes): bool
     {
-        $head = substr($bytes, 0, 2048);
-        if (!preg_match('/<svg[\s>]/i', $head)) return false;
-        if (preg_match('/<script|on[a-z]+\s*=|javascript:|<foreignObject|<iframe|<embed|<object/i', $bytes)) return false;
+        if ($bytes === '' || strlen($bytes) > self::MAX_ICON_BYTES) return false;
+        if (!preg_match('/<svg[\s>]/i', substr($bytes, 0, 2048))) return false;
+        if (preg_match('/<!DOCTYPE|<!ENTITY/i', $bytes)) return false;
+        if (!class_exists('DOMDocument')) return false;
+        $previous = libxml_use_internal_errors(true);
+        try {
+            $doc = new DOMDocument();
+            $parsed = $doc->loadXML($bytes, LIBXML_NONET | LIBXML_COMPACT);
+            libxml_clear_errors();
+        } finally {
+            libxml_use_internal_errors($previous);
+        }
+        if (!$parsed || $doc->doctype !== null) return false;
+        $root = $doc->documentElement;
+        if ($root === null || $root->localName !== 'svg' || $root->namespaceURI !== 'http://www.w3.org/2000/svg') return false;
+        $pending = [$doc];
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            foreach ($node->childNodes ?? [] as $child) {
+                if ($child->nodeType === XML_PI_NODE || $child->nodeType === XML_ENTITY_REF_NODE || $child->nodeType === XML_DOCUMENT_TYPE_NODE) return false;
+                if ($child->nodeType !== XML_ELEMENT_NODE) continue;
+                /** @var DOMElement $child */
+                if (!self::safeSvgElement($child)) return false;
+                $pending[] = $child;
+            }
+        }
         return true;
+    }
+
+    private static function safeSvgElement(DOMElement $el): bool
+    {
+        $ns = $el->namespaceURI;
+        $name = strtolower((string) $el->localName);
+        if ($ns === 'http://www.w3.org/1999/xhtml' || $ns === 'http://www.w3.org/1998/Math/MathML') return false;
+        if ($ns === 'http://www.w3.org/2000/svg' && !in_array($name, self::SVG_ELEMENTS, true)) return false;
+        // An element with no namespace inside an SVG document is inert XML, as
+        // is an editor's own vocabulary; neither needs a name check, but their
+        // attributes are read like any other.
+        foreach ($el->attributes ?? [] as $attr) {
+            if (str_starts_with(strtolower((string) $attr->localName), 'on')) return false;
+            if (self::scriptUrl((string) $attr->value)) return false;
+        }
+        if ($name === 'style') {
+            $css = strtolower((string) $el->textContent);
+            if (str_contains($css, '@import') || self::scriptUrl($css)) return false;
+        }
+        return true;
+    }
+
+    /** Whether text names a URL that runs or embeds something other than an image. */
+    private static function scriptUrl(string $value): bool
+    {
+        // The browser ignores whitespace and control characters inside a
+        // scheme (`java\tscript:`), so they are taken out before looking.
+        $flat = strtolower((string) preg_replace('/[\x00-\x20\x7f]+/', '', $value));
+        if (str_contains($flat, 'javascript:') || str_contains($flat, 'vbscript:')) return true;
+        if (preg_match_all('/data:([^,;)\'"]*)/', $flat, $m)) {
+            foreach ($m[1] as $type) {
+                if (!str_starts_with($type, 'image/') || str_starts_with($type, 'image/svg')) return true;
+            }
+        }
+        return false;
     }
 
     /**

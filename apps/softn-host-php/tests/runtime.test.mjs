@@ -8,6 +8,7 @@ const skip=process.env.SOFTN_PHP_TEST_BACKEND?false:'Set SOFTN_PHP_TEST_BACKEND 
 // Without the backend fixture these tests are SKIPPED, visibly, not thrown
 // out of: the suite runs in every checkout and CI, and the fixture-bound
 // cases report why they did not run.
+if(skip)console.warn(`WARNING: tests/runtime.test.mjs skipped: ${skip}. See apps/softn-host-php/README.md, Validation.`);
 const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
 const {createWasmHost}=skip?{}:await import(pathToFileURL(join(root,'wasm-host.mjs')));
 const {applyMigration}=skip?{}:await import(pathToFileURL(join(root,'migrations.mjs')));
@@ -49,7 +50,7 @@ test('migrations cannot escape database or mutate private host tables',()=>{
   const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE _private(value TEXT)');
   try {
     applyMigration(db,'CREATE TABLE items(id INTEGER PRIMARY KEY,name TEXT); CREATE INDEX items_name ON items(name);');
-    for(const sql of ["ATTACH DATABASE '/tmp/escape.sqlite' AS other",'PRAGMA writable_schema=ON','BEGIN','DROP TABLE _private','CREATE TABLE _stolen(value TEXT)',"INSERT INTO _private VALUES('changed')"]){assert.throws(()=>applyMigration(db,sql));}
+    for(const sql of ["ATTACH DATABASE '/tmp/escape.sqlite' AS other",'PRAGMA writable_schema=ON','BEGIN','DROP TABLE _private','CREATE TABLE _stolen(value TEXT)',"INSERT INTO _private VALUES('changed')",'CREATE INDEX stolen ON _private(value)','ALTER TABLE items RENAME TO _items']){assert.throws(()=>applyMigration(db,sql));}
   } finally {db.close();}
 });
 test('time host supports non-Australian zones and rejects ambiguous dates',()=>{
