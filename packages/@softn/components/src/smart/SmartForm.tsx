@@ -467,7 +467,6 @@ export function SmartForm({
     borderRadius: 'var(--radius-md, 0.5rem)',
     border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
     fontSize: '0.875rem',
-    outline: 'none',
     transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
     background: 'var(--color-surface, #16161a)',
     color: 'var(--color-text, #fafafa)',
@@ -527,8 +526,8 @@ export function SmartForm({
 
   const secondaryButtonStyle: React.CSSProperties = {
     ...buttonStyle,
-    background: 'var(--color-gray-700, #1e1e23)',
-    color: 'var(--color-gray-100, #27272a)',
+    background: 'var(--color-surface-hover, #1e1e23)',
+    color: 'var(--color-text, #27272a)',
     border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
   };
 
@@ -602,7 +601,7 @@ export function SmartForm({
                 accentColor: 'var(--color-primary-500, #6366f1)',
               }}
             />
-            <span style={{ fontSize: '0.875rem', color: 'var(--color-gray-300, #d4d4d8)' }}>
+            <span style={{ fontSize: '0.875rem', color: 'var(--color-text, #d4d4d8)' }}>
               {field.label || humanize(field.name)}
             </span>
           </label>

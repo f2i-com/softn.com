@@ -3,9 +3,15 @@
  *
  * Continuously scrolls content in a specified direction.
  * Content is duplicated to create a seamless loop.
+ *
+ * The copy is decorative: hidden from assistive technology and inert, so a
+ * link inside it is not a second, invisible tab stop. Keyboard focus inside
+ * the marquee pauses it like hovering does, and with reduced motion
+ * requested it does not move at all: the content is shown once, in place.
  */
 
 import * as React from 'react';
+import { usePrefersReducedMotion } from '../utils/motion';
 
 export interface MarqueeProps {
   /** Scroll speed in pixels per second */
@@ -34,8 +40,12 @@ export function Marquee({
   style,
 }: MarqueeProps): React.ReactElement {
   const [contentSize, setContentSize] = React.useState(0);
-  const [isPaused, setIsPaused] = React.useState(false);
+  const [isHovered, setIsHovered] = React.useState(false);
+  const [hasFocus, setHasFocus] = React.useState(false);
+  const isPaused = isHovered || hasFocus;
+  const reducedMotion = usePrefersReducedMotion();
   const contentRef = React.useRef<HTMLDivElement>(null);
+  const copyRef = React.useRef<HTMLDivElement>(null);
   const styleIdRef = React.useRef<string>(`marquee-${Math.random().toString(36).slice(2, 9)}`);
 
   const isHorizontal = direction === 'left' || direction === 'right';
@@ -61,8 +71,12 @@ export function Marquee({
   }, [isHorizontal, children]);
 
   // Calculate animation duration from content size and speed
+  // A speed of zero, a negative one or not a number at all stands still,
+  // rather than asking for an `Infinitys` or negative duration.
   const totalDistance = contentSize + gap;
-  const animationDuration = totalDistance > 0 ? totalDistance / speed : 0;
+  const pxPerSecond = typeof speed === 'number' && Number.isFinite(speed) && speed > 0 ? speed : 0;
+  const animationDuration =
+    totalDistance > 0 && pxPerSecond > 0 && !reducedMotion ? totalDistance / pxPerSecond : 0;
 
   // Determine the keyframes animation name and transform
   const animationName = styleIdRef.current;
@@ -106,13 +120,24 @@ export function Marquee({
     };
   }, [animationName, transformFrom, transformTo]);
 
+  // React 18 does not know `inert`, and React 19 reads it as a boolean; the
+  // attribute is set directly so both leave the copy out of the tab order.
+  React.useEffect(() => {
+    copyRef.current?.setAttribute('inert', '');
+  });
+
   const handleMouseEnter = React.useCallback(() => {
-    if (pauseOnHover) setIsPaused(true);
+    if (pauseOnHover) setIsHovered(true);
   }, [pauseOnHover]);
 
   const handleMouseLeave = React.useCallback(() => {
-    if (pauseOnHover) setIsPaused(false);
-  }, [pauseOnHover]);
+    setIsHovered(false);
+  }, []);
+
+  const handleFocus = React.useCallback(() => setHasFocus(true), []);
+  const handleBlur = React.useCallback((e: React.FocusEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHasFocus(false);
+  }, []);
 
   const outerStyle: React.CSSProperties = {
     overflow: 'hidden',
@@ -138,6 +163,8 @@ export function Marquee({
       style={outerStyle}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
     >
       <div style={innerStyle}>
         <div
@@ -150,16 +177,19 @@ export function Marquee({
         >
           {children}
         </div>
-        <div
-          aria-hidden="true"
-          style={{
-            display: 'flex',
-            flexDirection: isHorizontal ? 'row' : 'column',
-            flexShrink: 0,
-          }}
-        >
-          {children}
-        </div>
+        {animationDuration > 0 && (
+          <div
+            ref={copyRef}
+            aria-hidden="true"
+            style={{
+              display: 'flex',
+              flexDirection: isHorizontal ? 'row' : 'column',
+              flexShrink: 0,
+            }}
+          >
+            {children}
+          </div>
+        )}
       </div>
     </div>
   );

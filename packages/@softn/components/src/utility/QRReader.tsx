@@ -7,7 +7,21 @@
 
 import React, { useCallback, useRef } from 'react';
 import { isCapabilityAllowed, useCapability } from '@softn/core';
-import { Scanner, type IDetectedBarcode } from '@yudiel/react-qr-scanner';
+import { prepareZXingModule, Scanner, type IDetectedBarcode } from '@yudiel/react-qr-scanner';
+// The decoder, served by the host's own build rather than a CDN. The scanner
+// decodes with zxing-wasm, whose loader fetched the .wasm from jsDelivr the
+// first time a frame was scanned: a request to a third party that the app's
+// `net` permission never covered — made for an app granted only `qr` or
+// `camera`, or one whose `allowed_hosts` names nothing like it. Resolved as a
+// bundler asset (`?url`), so the file ships with the host and is fetched from
+// its origin. It is the reader build barcode-detector itself imports.
+import zxingReaderWasm from 'zxing-wasm/reader/zxing_reader.wasm?url';
+
+prepareZXingModule({
+  overrides: {
+    locateFile: (path: string, prefix: string) => (path.endsWith('.wasm') ? zxingReaderWasm : prefix + path),
+  },
+});
 
 export interface QRReaderProps {
   /** Callback fired when a QR code is detected */

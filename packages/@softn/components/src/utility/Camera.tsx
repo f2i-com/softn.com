@@ -217,6 +217,13 @@ export function Camera({
       setIsStreaming(true);
     } catch (err) {
       if (attempt.cancelled) return;
+      // A failure after getUserMedia — the viewfinder refusing to play — left
+      // the stream in streamRef with its tracks live: the error box showed
+      // while the camera (and, in video mode, the microphone) stayed on. Stop
+      // what this attempt acquired before reporting. (A cancelled attempt was
+      // already released by the effect's cleanup, and releasing here could
+      // stop a newer attempt's device.)
+      cleanup();
       const message = describeMediaError(err, 'Failed to access camera');
       setError(message);
       onError?.(message);

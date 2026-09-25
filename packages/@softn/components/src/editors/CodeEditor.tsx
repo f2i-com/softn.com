@@ -1,11 +1,37 @@
 /**
  * CodeEditor Component
  *
- * A simple code editor with syntax highlighting using CSS.
+ * A textarea with syntax highlighting: the text is edited in a real
+ * `<textarea>` whose own glyphs are transparent, laid exactly over a `<pre>`
+ * that draws the same text in colour. The browser keeps doing everything a
+ * text field does — caret, selection, IME, spellcheck-off, undo, screen
+ * readers — and the highlighting is only paint.
+ *
+ * The two layers must agree character for character and pixel for pixel, or
+ * the caret the user moves drifts away from the text they see. So:
+ *
+ * - the colours come from `tokenize` (./highlight), whose tokens join back to
+ *   the source exactly, rendered as React text nodes — never HTML;
+ * - both layers share one text style (font, size, line height, padding,
+ *   `white-space: pre`, tab size) and the textarea is sized by the `<pre>`,
+ *   so neither can wrap or scroll where the other does not;
+ * - the gutter sits in the same scroll container, one number per line, and
+ *   lines do not wrap, so a number stays beside its line.
+ *
  * For a more full-featured editor, integrate Monaco or CodeMirror.
  */
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useId,
+} from 'react';
+import { tokenize, type Token } from './highlight';
+import { codeColor } from '../theme/code-palette';
 
 export interface CodeEditorProps {
   /** Current value */
@@ -37,6 +63,10 @@ export interface CodeEditorProps {
   minHeight?: string;
   /** Maximum height */
   maxHeight?: string;
+  /** Accessible name for the text field, when no visible label names it */
+  ariaLabel?: string;
+  /** Accessible name (DOM attribute spelling) */
+  'aria-label'?: string;
   /** Change handler */
   onChange?: (value: string) => void;
   /** Additional CSS class */
@@ -45,170 +75,93 @@ export interface CodeEditorProps {
   style?: React.CSSProperties;
 }
 
-// Basic syntax highlighting patterns
-const highlightPatterns: Record<string, { pattern: RegExp; className: string }[]> = {
-  javascript: [
-    { pattern: /(\/\/.*$)/gm, className: 'comment' },
-    { pattern: /(\/\*[\s\S]*?\*\/)/g, className: 'comment' },
-    { pattern: /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g, className: 'string' },
-    {
-      pattern:
-        /\b(const|let|var|function|return|if|else|for|while|class|import|export|from|async|await|try|catch|throw|new|this)\b/g,
-      className: 'keyword',
-    },
-    { pattern: /\b(true|false|null|undefined|NaN|Infinity)\b/g, className: 'literal' },
-    { pattern: /\b(\d+\.?\d*)\b/g, className: 'number' },
-  ],
-  typescript: [
-    { pattern: /(\/\/.*$)/gm, className: 'comment' },
-    { pattern: /(\/\*[\s\S]*?\*\/)/g, className: 'comment' },
-    { pattern: /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g, className: 'string' },
-    {
-      pattern:
-        /\b(const|let|var|function|return|if|else|for|while|class|import|export|from|async|await|try|catch|throw|new|this|interface|type|enum|implements|extends|public|private|protected|readonly)\b/g,
-      className: 'keyword',
-    },
-    { pattern: /\b(true|false|null|undefined|NaN|Infinity)\b/g, className: 'literal' },
-    { pattern: /\b(\d+\.?\d*)\b/g, className: 'number' },
-    { pattern: /:\s*(string|number|boolean|any|void|never|unknown|object)\b/g, className: 'type' },
-  ],
-  json: [
-    { pattern: /("(?:[^"\\]|\\.)*")\s*:/g, className: 'property' },
-    { pattern: /:\s*("(?:[^"\\]|\\.)*")/g, className: 'string' },
-    { pattern: /\b(true|false|null)\b/g, className: 'literal' },
-    { pattern: /\b(-?\d+\.?\d*)\b/g, className: 'number' },
-  ],
-  html: [
-    { pattern: /(&lt;!--[\s\S]*?--&gt;)/g, className: 'comment' },
-    { pattern: /(&lt;\/?[a-zA-Z][a-zA-Z0-9]*)/g, className: 'tag' },
-    { pattern: /\s([a-zA-Z-]+)=/g, className: 'attribute' },
-    { pattern: /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, className: 'string' },
-  ],
-  css: [
-    { pattern: /(\/\*[\s\S]*?\*\/)/g, className: 'comment' },
-    { pattern: /([.#]?[a-zA-Z_-][a-zA-Z0-9_-]*)\s*\{/g, className: 'selector' },
-    { pattern: /([a-zA-Z-]+)\s*:/g, className: 'property' },
-    { pattern: /:\s*([^;{}]+)/g, className: 'value' },
-  ],
-  python: [
-    { pattern: /(#.*$)/gm, className: 'comment' },
-    { pattern: /("""[\s\S]*?"""|'''[\s\S]*?''')/g, className: 'string' },
-    { pattern: /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, className: 'string' },
-    {
-      pattern:
-        /\b(def|class|if|elif|else|for|while|return|import|from|as|try|except|finally|with|lambda|yield|raise|pass|break|continue|and|or|not|in|is)\b/g,
-      className: 'keyword',
-    },
-    { pattern: /\b(True|False|None)\b/g, className: 'literal' },
-    { pattern: /\b(\d+\.?\d*)\b/g, className: 'number' },
-  ],
-  sql: [
-    { pattern: /(--.*$)/gm, className: 'comment' },
-    { pattern: /('(?:[^'\\]|\\.)*')/g, className: 'string' },
-    {
-      pattern:
-        /\b(SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TABLE|INDEX|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AND|OR|NOT|NULL|AS|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|DISTINCT|COUNT|SUM|AVG|MIN|MAX|INTO|VALUES|SET)\b/gi,
-      className: 'keyword',
-    },
-    { pattern: /\b(\d+\.?\d*)\b/g, className: 'number' },
-  ],
-  markdown: [
-    { pattern: /^(#{1,6}\s.*$)/gm, className: 'heading' },
-    { pattern: /(\*\*[^*]+\*\*|__[^_]+__)/g, className: 'bold' },
-    { pattern: /(\*[^*]+\*|_[^_]+_)/g, className: 'italic' },
-    { pattern: /(`[^`]+`)/g, className: 'code' },
-    { pattern: /(\[.*?\]\(.*?\))/g, className: 'link' },
-  ],
-  plain: [],
-};
+/**
+ * Past this many characters the text is shown uncoloured. Scanning is linear,
+ * but it runs on every keystroke, and a file this size is being pasted into a
+ * textarea, not written in one.
+ */
+export const CODE_EDITOR_HIGHLIGHT_LIMIT = 200_000;
 
-const highlightColors: Record<string, string> = {
-  comment: '#a1a1aa',
-  string: '#34d399',
-  keyword: '#a78bfa',
-  literal: '#f87171',
-  number: '#fb923c',
-  type: '#38bdf8',
-  property: '#22d3ee',
-  tag: '#a1a1aa',
-  attribute: '#fb923c',
-  selector: '#a78bfa',
-  value: '#34d399',
-  heading: '#a78bfa',
-  bold: '#e4e4e7',
-  italic: '#a1a1aa',
-  code: '#f87171',
-  link: '#6366f1',
-};
+/** A layout effect in the browser; nothing (and no warning) on the server. */
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const FONT_STACK =
+  'var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace)';
+const PADDING = '0.75rem';
+
+function renderTokens(tokens: Token[]): React.ReactNode[] {
+  return tokens.map((token, index) =>
+    token.kind === 'plain' ? (
+      <React.Fragment key={index}>{token.text}</React.Fragment>
+    ) : (
+      <span
+        key={index}
+        className={`softn-code-${token.kind}`}
+        style={{ color: codeColor(token.kind) }}
+      >
+        {token.text}
+      </span>
+    )
+  );
 }
 
-/**
- * Highlight in a single left-to-right pass.
- *
- * The previous version applied each pattern in turn over HTML that already
- * contained the spans emitted by earlier patterns — so the string pattern
- * happily matched a colour literal from the comment pass. Highlighting
- * `// total` produced
- *
- *   <span style=<span style="color: #34d399">"color: #a1a1aa"</span>>// total</span>
- *
- * and since this layer sits under a transparent textarea, the text
- * `"color: #a1a1aa">` became visible and every character after the first
- * comment sat offset from the caret the user was moving. A string containing
- * `//` was corrupted the same way.
- *
- * Scanning once and consuming each token means no pattern ever sees another's
- * output. Each pattern is tried sticky at the current offset, in the order
- * they are declared, so comments still win over strings and keywords.
- */
-function highlightCode(code: string, language: string): string {
-  const patterns = highlightPatterns[language] || [];
-  if (patterns.length === 0) return escapeHtml(code);
+/** A value as the editor's text: nothing for null or undefined, a string otherwise. */
+function asText(value: unknown): string {
+  return value == null ? '' : String(value);
+}
 
-  const scanners = patterns.map(({ pattern, className }) => ({
-    // Sticky, so a match must begin exactly at the offset being tested.
-    // `exec` still sees the whole string, so `\b` and `$` behave as written.
-    re: new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '') + 'y'),
-    className,
-  }));
+/** The start of the line `index` is on. */
+function lineStartOf(text: string, index: number): number {
+  return text.lastIndexOf('\n', index - 1) + 1;
+}
 
-  let out = '';
-  let plain = '';
-  let i = 0;
+interface Edit {
+  /** Range of the current text to replace. */
+  from: number;
+  to: number;
+  insert: string;
+  /** Selection afterwards, in the new text. */
+  selectionStart: number;
+  selectionEnd: number;
+}
 
-  const flushPlain = () => {
-    if (plain) {
-      out += escapeHtml(plain);
-      plain = '';
+/** Indent (or with `outdent`, unindent) every line the selection touches. */
+function indentLines(
+  text: string,
+  start: number,
+  end: number,
+  unit: string,
+  outdent: boolean
+): Edit | null {
+  const from = lineStartOf(text, start);
+  // A selection ending at the very start of a line does not include that line.
+  const lastLineEnd = end > start && text[end - 1] === '\n' ? end - 1 : end;
+  let to = text.indexOf('\n', lastLineEnd);
+  if (to < 0) to = text.length;
+  const lines = text.slice(from, to).split('\n');
+  let firstDelta = 0;
+  let total = 0;
+  const changed = lines.map((line, index) => {
+    if (!outdent) {
+      if (index === 0) firstDelta = unit.length;
+      total += unit.length;
+      return unit + line;
     }
+    const leading = /^[ \t]*/.exec(line)![0];
+    const remove = line.startsWith('\t') ? 1 : Math.min(unit.length, leading.length);
+    if (index === 0) firstDelta = -remove;
+    total -= remove;
+    return line.slice(remove);
+  });
+  if (outdent && total === 0) return null;
+  const insert = changed.join('\n');
+  return {
+    from,
+    to,
+    insert,
+    selectionStart: Math.max(from, start + firstDelta),
+    selectionEnd: Math.max(from, end + total),
   };
-
-  while (i < code.length) {
-    let consumed = 0;
-    for (const { re, className } of scanners) {
-      re.lastIndex = i;
-      const match = re.exec(code);
-      if (match && match[0].length > 0) {
-        flushPlain();
-        const color = highlightColors[className] || '#e4e4e7';
-        out += `<span style="color: ${color}">${escapeHtml(match[0])}</span>`;
-        consumed = match[0].length;
-        break;
-      }
-    }
-    if (consumed === 0) {
-      plain += code[i];
-      i += 1;
-    } else {
-      i += consumed;
-    }
-  }
-
-  flushPlain();
-  return out;
 }
 
 export function CodeEditor({
@@ -222,163 +175,309 @@ export function CodeEditor({
   tabSize = 2,
   minHeight = '200px',
   maxHeight = '500px',
+  ariaLabel,
+  'aria-label': ariaLabelAttribute,
   onChange,
   className,
   style,
 }: CodeEditorProps): React.ReactElement {
-  const [code, setCode] = useState(value ?? defaultValue);
+  // With `onChange`, `value` is the text, and a parent that does not accept an
+  // edit keeps it out. A `value` with no handler is a starting point that
+  // follows the prop when it changes but can be typed over, as it always was.
+  // A value bound from app state may arrive as null or a number; it is text here.
+  const isControlled = value !== undefined && onChange !== undefined;
+  const [internal, setInternal] = useState(() => asText(value ?? defaultValue));
+  const [seenValue, setSeenValue] = useState(value);
+  if (value !== seenValue) {
+    setSeenValue(value);
+    if (value !== undefined) setInternal(asText(value));
+  }
+  const code = isControlled ? asText(value) : internal;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const highlightRef = useRef<HTMLDivElement>(null);
+  const [focused, setFocused] = useState(false);
+  /** Escape hands Tab back to the browser, so the field is never a keyboard trap. */
+  const tabReleased = useRef(false);
+  /** Where the caret goes once an edit made from a key handler has rendered. */
+  const pendingSelection = useRef<{ value: string; start: number; end: number } | null>(null);
+  const hintId = useId();
 
-  useEffect(() => {
-    if (value !== undefined) {
-      setCode(value);
-    }
-  }, [value]);
+  const indent = Math.max(1, Math.min(16, Math.floor(Number(tabSize)) || 2));
+  const indentUnit = ' '.repeat(indent);
+
+  useIsomorphicLayoutEffect(() => {
+    const pending = pendingSelection.current;
+    const textarea = textareaRef.current;
+    if (!pending || !textarea || textarea.value !== pending.value) return;
+    textarea.setSelectionRange(pending.start, pending.end);
+    pendingSelection.current = null;
+  });
+
+  const commit = useCallback(
+    (next: string) => {
+      if (!isControlled) setInternal(next);
+      onChange?.(next);
+    },
+    [isControlled, onChange]
+  );
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const newValue = e.target.value;
-      setCode(newValue);
-      onChange?.(newValue);
+      pendingSelection.current = null;
+      commit(e.target.value);
     },
-    [onChange]
+    [commit]
+  );
+
+  /**
+   * Apply an edit made from the keyboard. `insertText` goes through the
+   * browser's own editing, so it lands on the undo stack and raises the input
+   * event the change handler already listens to; where that is unavailable
+   * the value is set and the caret placed after the next render.
+   */
+  const applyEdit = useCallback(
+    (textarea: HTMLTextAreaElement, edit: Edit) => {
+      const current = textarea.value;
+      const next = current.slice(0, edit.from) + edit.insert + current.slice(edit.to);
+      textarea.setSelectionRange(edit.from, edit.to);
+      let native = false;
+      try {
+        native =
+          typeof document.execCommand === 'function' &&
+          document.execCommand('insertText', false, edit.insert);
+      } catch {
+        native = false;
+      }
+      if (native && textarea.value === next) {
+        textarea.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+        return;
+      }
+      pendingSelection.current = {
+        value: next,
+        start: edit.selectionStart,
+        end: edit.selectionEnd,
+      };
+      commit(next);
+    },
+    [commit]
   );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        const textarea = e.currentTarget;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-        const spaces = ' '.repeat(tabSize);
-        const newValue = code.substring(0, start) + spaces + code.substring(end);
-        setCode(newValue);
-        onChange?.(newValue);
+      if (e.key === 'Escape') {
+        tabReleased.current = true;
+        return;
+      }
+      const released = tabReleased.current;
+      tabReleased.current = false;
+      if (readOnly || disabled || e.nativeEvent.isComposing) return;
+      const textarea = e.currentTarget;
+      const { selectionStart: start, selectionEnd: end, value: text } = textarea;
 
-        // Move cursor after the inserted spaces
-        setTimeout(() => {
-          textarea.selectionStart = textarea.selectionEnd = start + tabSize;
-        }, 0);
+      if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (released) return; // Let focus move on.
+        e.preventDefault();
+        const multiline = text.slice(start, end).includes('\n');
+        if (e.shiftKey || multiline) {
+          const edit = indentLines(text, start, end, indentUnit, e.shiftKey);
+          if (edit) applyEdit(textarea, edit);
+          return;
+        }
+        applyEdit(textarea, {
+          from: start,
+          to: end,
+          insert: indentUnit,
+          selectionStart: start + indentUnit.length,
+          selectionEnd: start + indentUnit.length,
+        });
+        return;
+      }
+
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        // Keep the indentation of the line the caret is on.
+        const lineStart = lineStartOf(text, start);
+        const leading = /^[ \t]*/.exec(text.slice(lineStart, start))![0];
+        if (!leading) return;
+        e.preventDefault();
+        const insert = '\n' + leading;
+        applyEdit(textarea, {
+          from: start,
+          to: end,
+          insert,
+          selectionStart: start + insert.length,
+          selectionEnd: start + insert.length,
+        });
       }
     },
-    [code, onChange, tabSize]
+    [applyEdit, disabled, indentUnit, readOnly]
   );
 
-  const handleScroll = useCallback(() => {
-    if (textareaRef.current && highlightRef.current) {
-      highlightRef.current.scrollTop = textareaRef.current.scrollTop;
-      highlightRef.current.scrollLeft = textareaRef.current.scrollLeft;
-    }
-  }, []);
+  const highlighted = useMemo(
+    () =>
+      renderTokens(tokenize(code, code.length > CODE_EDITOR_HIGHLIGHT_LIMIT ? 'plain' : language)),
+    [code, language]
+  );
 
-  const lines = code.split('\n');
-  const highlightedCode = highlightCode(code, language);
+  const lineCount = useMemo(() => {
+    let count = 1;
+    for (let i = code.indexOf('\n'); i >= 0; i = code.indexOf('\n', i + 1)) count++;
+    return count;
+  }, [code]);
+  const gutterNumbers = useMemo(
+    () => (lineNumbers ? Array.from({ length: lineCount }, (_, i) => i + 1).join('\n') : ''),
+    [lineNumbers, lineCount]
+  );
+  const gutterDigits = Math.max(2, String(lineCount).length);
 
   const containerStyle: React.CSSProperties = {
     position: 'relative',
-    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+    fontFamily: FONT_STACK,
     fontSize: '0.875rem',
     lineHeight: '1.5',
-    border: '1px solid var(--color-border, #3f3f46)',
+    border: `1px solid ${focused ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border, #3f3f46)'}`,
+    boxShadow: focused ? '0 0 0 3px var(--color-primary-200, rgba(99, 102, 241, 0.35))' : undefined,
     borderRadius: '0.5rem',
     background: 'var(--color-surface, #16161a)',
     color: 'var(--color-text, #e4e4e7)',
     overflow: 'hidden',
+    opacity: disabled ? 0.6 : undefined,
+    cursor: disabled ? 'not-allowed' : undefined,
     ...style,
   };
 
-  const lineNumbersStyle: React.CSSProperties = {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: '3rem',
-    background: 'var(--color-surface, #16161a)',
-    borderRight: '1px solid var(--color-border, #3f3f46)',
-    padding: '0.75rem 0',
-    textAlign: 'right',
-    color: 'var(--color-text-muted, #a1a1aa)',
-    userSelect: 'none',
-    overflow: 'hidden',
-  };
-
-  const editorAreaStyle: React.CSSProperties = {
-    position: 'relative',
-    marginLeft: lineNumbers ? '3rem' : 0,
+  const scrollerStyle: React.CSSProperties = {
     minHeight,
     maxHeight,
     overflow: 'auto',
   };
 
+  // The row the gutter and the code sit in is as tall as the code (or the
+  // minimum) and as wide as the longest line, never the scroller's clamped
+  // size: the textarea covers the code area exactly, so it never has more
+  // text than room and never scrolls on its own, away from the colours.
+  const rowStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'stretch',
+    minHeight,
+    width: 'max-content',
+    minWidth: '100%',
+  };
+
+  // Everything that decides where a glyph lands, shared by both layers.
   const sharedTextStyle: React.CSSProperties = {
     fontFamily: 'inherit',
     fontSize: 'inherit',
+    fontWeight: 'inherit',
+    fontStyle: 'normal',
     lineHeight: 'inherit',
-    padding: '0.75rem',
+    letterSpacing: 'normal',
+    wordSpacing: 'normal',
+    textTransform: 'none',
+    textIndent: 0,
+    tabSize: indent,
+    padding: PADDING,
     margin: 0,
-    border: 'none',
-    whiteSpace: 'pre-wrap',
-    wordWrap: 'break-word',
-    overflowWrap: 'break-word',
+    border: 0,
+    boxSizing: 'border-box',
+    whiteSpace: 'pre',
+    overflowWrap: 'normal',
+    wordBreak: 'normal',
+    textAlign: 'left',
+    direction: 'ltr',
+  };
+
+  const gutterStyle: React.CSSProperties = {
+    ...sharedTextStyle,
+    position: 'sticky',
+    left: 0,
+    zIndex: 1,
+    flex: 'none',
+    minWidth: `calc(${gutterDigits}ch + 1rem)`,
+    paddingLeft: '0.5rem',
+    paddingRight: '0.5rem',
+    textAlign: 'right',
+    background: 'var(--color-surface, #16161a)',
+    borderRight: '1px solid var(--color-border, #3f3f46)',
+    color: 'var(--color-text-muted, #a1a1aa)',
+    userSelect: 'none',
+  };
+
+  const codeAreaStyle: React.CSSProperties = {
+    position: 'relative',
+    flex: '1 0 auto',
+    minWidth: 0,
   };
 
   const highlightStyle: React.CSSProperties = {
     ...sharedTextStyle,
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
+    position: 'relative',
+    minWidth: '100%',
+    width: 'max-content',
     pointerEvents: 'none',
     color: 'var(--color-text, #e4e4e7)',
+    background: 'transparent',
   };
 
   const textareaStyle: React.CSSProperties = {
     ...sharedTextStyle,
-    position: 'relative',
+    position: 'absolute',
+    inset: 0,
     width: '100%',
-    minHeight: '100%',
+    height: '100%',
     background: 'transparent',
     color: 'transparent',
     caretColor: 'var(--color-text, #e4e4e7)',
     resize: 'none',
     outline: 'none',
     overflow: 'hidden',
+    cursor: disabled ? 'not-allowed' : 'text',
   };
+
+  const label = ariaLabel ?? ariaLabelAttribute ?? 'Code editor';
 
   return (
     <div className={className} style={containerStyle}>
-      {lineNumbers && (
-        <div style={lineNumbersStyle}>
-          {lines.map((_, i) => (
-            <div key={i} style={{ padding: '0 0.5rem' }}>
-              {i + 1}
+      <div style={scrollerStyle} data-softn-code-scroller="">
+        <div style={rowStyle}>
+          {lineNumbers && (
+            <div aria-hidden="true" style={gutterStyle} data-softn-code-gutter="">
+              {gutterNumbers}
             </div>
-          ))}
+          )}
+          <div style={codeAreaStyle}>
+            <pre aria-hidden="true" style={highlightStyle} data-softn-code-highlight="">
+              {highlighted}
+              {'\n'}
+            </pre>
+            <textarea
+              ref={textareaRef}
+              value={code}
+              placeholder={placeholder}
+              disabled={disabled}
+              readOnly={readOnly}
+              onChange={handleChange}
+              onKeyDown={handleKeyDown}
+              onFocus={() => setFocused(true)}
+              onBlur={() => {
+                setFocused(false);
+                tabReleased.current = false;
+              }}
+              style={textareaStyle}
+              aria-label={label}
+              aria-describedby={readOnly || disabled ? undefined : hintId}
+              wrap="off"
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              data-gramm="false"
+            />
+            {!readOnly && !disabled && (
+              <span id={hintId} hidden>
+                Tab indents. Press Escape, then Tab, to move focus out of the editor.
+              </span>
+            )}
+          </div>
         </div>
-      )}
-      <div style={editorAreaStyle}>
-        <div
-          ref={highlightRef}
-          style={highlightStyle}
-          dangerouslySetInnerHTML={{ __html: highlightedCode + '\n' }}
-        />
-        <textarea
-          ref={textareaRef}
-          value={code}
-          placeholder={placeholder}
-          disabled={disabled}
-          readOnly={readOnly}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onScroll={handleScroll}
-          style={textareaStyle}
-          spellCheck={false}
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-        />
       </div>
     </div>
   );

@@ -7,7 +7,7 @@
  * with UUID references for later retrieval.
  */
 
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useId } from 'react';
 import { registerFileRef } from '@softn/core';
 
 // ---- Types ----
@@ -32,8 +32,29 @@ export interface FileChooserProps {
   variant?: 'button' | 'dropzone';
   /** Called when files are selected */
   onSelect?: (files: FileInfo[]) => void;
-  /** Inline styles */
+  /** Additional CSS class, on the component's root */
+  className?: string;
+  /** Inline styles, on the button or the drop zone (as before `className` existed) */
   style?: React.CSSProperties;
+}
+
+/**
+ * Whether `file` is one `accept` admits. The picker enforces `accept` itself;
+ * a drop does not, so a zone that said "Accepted: image/*" took a PDF.
+ */
+function fileMatchesAccept(file: { name: string; type: string }, accept: string | undefined): boolean {
+  if (!accept || !accept.trim()) return true;
+  const name = file.name.toLowerCase();
+  const type = (file.type || '').toLowerCase();
+  return accept
+    .split(',')
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean)
+    .some((token) => {
+      if (token.startsWith('.')) return name.endsWith(token);
+      if (token.endsWith('/*')) return type.startsWith(token.slice(0, -1));
+      return type === token;
+    });
 }
 
 function formatFileSize(bytes: number): string {
@@ -51,11 +72,14 @@ export function FileChooser({
   label = 'Choose File',
   variant = 'button',
   onSelect,
+  className,
   style,
 }: FileChooserProps): React.ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
   const [selectedFiles, setSelectedFiles] = useState<FileInfo[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [rejected, setRejected] = useState(0);
+  const hintId = useId();
 
   const processFiles = useCallback(
     (files: FileList | File[]) => {
@@ -70,6 +94,7 @@ export function FileChooser({
         };
       });
       setSelectedFiles(infos);
+      setRejected(0);
       onSelect?.(infos);
     },
     [onSelect]
@@ -99,6 +124,9 @@ export function FileChooser({
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // Crossing from the zone onto the icon or the text inside it is a
+    // dragleave too; only leaving the zone itself ends the hover.
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
     setIsDragOver(false);
   }, []);
 
@@ -109,13 +137,14 @@ export function FileChooser({
       setIsDragOver(false);
 
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        const files = multiple
-          ? Array.from(e.dataTransfer.files)
-          : [e.dataTransfer.files[0]];
-        processFiles(files);
+        const dropped = Array.from(e.dataTransfer.files);
+        const accepted = dropped.filter((file) => fileMatchesAccept(file, accept));
+        const files = multiple ? accepted : accepted.slice(0, 1);
+        if (files.length > 0) processFiles(files);
+        setRejected(dropped.length - accepted.length);
       }
     },
-    [multiple, processFiles]
+    [accept, multiple, processFiles]
   );
 
   // Additional input attributes for directory mode
@@ -165,11 +194,12 @@ export function FileChooser({
     };
 
     return (
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+      <div className={className} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
         {fileInput}
         <button type="button" style={buttonStyle} onClick={handleClick}>
           {/* Upload icon */}
           <svg
+            aria-hidden="true"
             width="16"
             height="16"
             viewBox="0 0 16 16"
@@ -187,13 +217,13 @@ export function FileChooser({
           </svg>
           {label}
         </button>
-        {selectedFiles.length > 0 && (
-          <span style={fileNameStyle}>
-            {selectedFiles.length === 1
+        <span style={fileNameStyle} aria-live="polite">
+          {selectedFiles.length === 0
+            ? ''
+            : selectedFiles.length === 1
               ? selectedFiles[0].name
               : `${selectedFiles.length} files selected`}
-          </span>
-        )}
+        </span>
       </div>
     );
   }
@@ -247,23 +277,39 @@ export function FileChooser({
     justifyContent: 'space-between',
     padding: '0.375rem 0.625rem',
     borderRadius: '0.25rem',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    backgroundColor: 'var(--color-surface-hover, rgba(255, 255, 255, 0.04))',
     fontSize: '0.8125rem',
     color: 'var(--color-text, #e4e4e7)',
   };
 
+  // The zone takes a click anywhere for the mouse; the label inside it is a
+  // real button, so the keyboard reaches it and a screen reader hears what
+  // it does. (The zone itself was a <div onClick>: no tab stop, no Enter.)
+  const labelButtonStyle: React.CSSProperties = {
+    ...textStyle,
+    padding: 0,
+    border: 'none',
+    background: 'none',
+    font: 'inherit',
+    fontWeight: 500,
+    cursor: 'pointer',
+    borderRadius: '0.25rem',
+  };
+
   return (
-    <div>
+    <div className={className}>
       {fileInput}
       <div
         style={dropzoneStyle}
         onClick={handleClick}
+        onDragEnter={handleDragOver}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {/* Cloud upload icon */}
         <svg
+          aria-hidden="true"
           width="40"
           height="40"
           viewBox="0 0 40 40"
@@ -287,10 +333,18 @@ export function FileChooser({
           />
         </svg>
 
-        <div style={textStyle}>
+        <button
+          type="button"
+          style={labelButtonStyle}
+          aria-describedby={hintId}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleClick();
+          }}
+        >
           {isDragOver ? 'Drop files here' : label}
-        </div>
-        <div style={subtextStyle}>
+        </button>
+        <div id={hintId} style={subtextStyle}>
           {directory
             ? 'Select a folder or drag and drop'
             : multiple
@@ -303,6 +357,12 @@ export function FileChooser({
             Accepted: {accept}
           </div>
         )}
+
+        <div role="status" style={{ ...subtextStyle, color: 'var(--color-error-500, currentColor)' }}>
+          {rejected > 0
+            ? `${rejected} ${rejected === 1 ? 'file was' : 'files were'} not an accepted type`
+            : ''}
+        </div>
 
         {/* Selected files list */}
         {selectedFiles.length > 0 && (

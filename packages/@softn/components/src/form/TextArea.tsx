@@ -109,7 +109,10 @@ export function TextArea({
   const textareaId = id ?? generatedId;
   const helperId = `${textareaId}-helper`;
   const [isFocused, setIsFocused] = useState(false);
-  const [charCount, setCharCount] = useState((value || defaultValue || '').length);
+  // Typed text is counted as it changes; a controlled value is counted from
+  // the value, so a parent that resets the field resets the count with it.
+  const [typedCount, setTypedCount] = useState(String(defaultValue ?? '').length);
+  const charCount = value !== undefined && value !== null ? String(value).length : typedCount;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
@@ -120,13 +123,13 @@ export function TextArea({
     const textarea = textareaRef.current;
     if (!textarea || !autoResize) return;
 
+    // `minHeight` and `maxHeight` are in the element's style, so CSS clamps
+    // the height in whatever unit they were given. Parsing them here read
+    // '10rem' as 10px.
     textarea.style.height = 'auto';
-    const scrollHeight = textarea.scrollHeight;
-    const min = minHeight ? parseInt(minHeight, 10) : 0;
-    const max = maxHeight ? parseInt(maxHeight, 10) : Infinity;
-    const newHeight = Math.min(Math.max(scrollHeight, min), max);
-    textarea.style.height = `${newHeight}px`;
-  }, [autoResize, minHeight, maxHeight]);
+    const borders = textarea.offsetHeight - textarea.clientHeight;
+    textarea.style.height = `${textarea.scrollHeight + Math.max(0, borders)}px`;
+  }, [autoResize]);
 
   // Adjust height on value change
   useEffect(() => {
@@ -151,7 +154,7 @@ export function TextArea({
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setCharCount(e.target.value.length);
+      setTypedCount(e.target.value.length);
       onChange?.(e);
       if (autoResize) {
         adjustHeight();
@@ -256,7 +259,8 @@ export function TextArea({
       ref={textareaRef}
       name={name}
       value={value}
-      defaultValue={defaultValue}
+      // Both at once is a React warning and a field that ignores one of them.
+      defaultValue={value === undefined ? defaultValue : undefined}
       placeholder={placeholder}
       disabled={disabled}
       readOnly={readOnly}
@@ -280,7 +284,11 @@ export function TextArea({
       {label && (
         <label htmlFor={textareaId} style={labelStyle}>
           {label}
-          {required && <span style={requiredStyle}>*</span>}
+          {required && (
+            <span aria-hidden="true" style={requiredStyle}>
+              *
+            </span>
+          )}
         </label>
       )}
       {textareaElement}

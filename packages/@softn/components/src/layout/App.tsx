@@ -44,6 +44,22 @@ const darkThemeVars = `
   --color-error-500: #ef4444;
   --color-error-600: #dc2626;
   --color-warning-500: #f59e0b;
+  --color-primary-200: rgba(99, 102, 241, 0.3);
+  --color-success-50: rgba(34, 197, 94, 0.1);
+  --color-success-200: rgba(34, 197, 94, 0.3);
+  --color-success-700: rgb(134, 239, 172);
+  --color-error-50: rgba(239, 68, 68, 0.1);
+  --color-error-200: rgba(239, 68, 68, 0.3);
+  --color-error-700: rgb(252, 165, 165);
+  --color-warning-50: rgba(245, 158, 11, 0.1);
+  --color-warning-200: rgba(245, 158, 11, 0.3);
+  --color-warning-600: rgb(217, 119, 6);
+  --color-warning-700: rgb(252, 211, 77);
+  --color-info-50: rgba(59, 130, 246, 0.1);
+  --color-info-200: rgba(59, 130, 246, 0.3);
+  --color-info-500: rgb(59, 130, 246);
+  --color-info-600: rgb(37, 99, 235);
+  --color-info-700: rgb(147, 197, 253);
   --color-gray-50: #1e1e23;
   --color-gray-100: #28282f;
   --color-gray-200: #3a3a44;
@@ -108,6 +124,22 @@ const lightThemeVars = `
   --color-error-500: #ef4444;
   --color-error-600: #dc2626;
   --color-warning-500: #f59e0b;
+  --color-primary-200: rgba(99, 102, 241, 0.25);
+  --color-success-50: rgb(240, 253, 244);
+  --color-success-200: rgb(187, 247, 208);
+  --color-success-700: rgb(21, 128, 61);
+  --color-error-50: rgb(254, 242, 242);
+  --color-error-200: rgb(254, 202, 202);
+  --color-error-700: rgb(185, 28, 28);
+  --color-warning-50: rgb(255, 251, 235);
+  --color-warning-200: rgb(253, 230, 138);
+  --color-warning-600: rgb(217, 119, 6);
+  --color-warning-700: rgb(180, 83, 9);
+  --color-info-50: rgb(239, 246, 255);
+  --color-info-200: rgb(191, 219, 254);
+  --color-info-500: rgb(59, 130, 246);
+  --color-info-600: rgb(37, 99, 235);
+  --color-info-700: rgb(29, 78, 216);
   --color-gray-50: #f3f3f6;
   --color-gray-100: #e8e8ee;
   --color-gray-200: #d4d4dd;
@@ -179,7 +211,17 @@ const globalStyles = `
   .softn-app select:focus-visible {
     outline: none;
     border-color: var(--color-primary-500, #6366f1) !important;
-    box-shadow: 0 0 0 3px var(--color-primary-50, rgba(99, 102, 241, 0.08)) !important;
+    box-shadow: 0 0 0 3px var(--color-primary-200, rgba(99, 102, 241, 0.3)) !important;
+  }
+  /* Motion the user asked not to see: transitions and animations finish at
+     once. JavaScript-driven motion asks the same question itself. */
+  @media (prefers-reduced-motion: reduce) {
+    .softn-app *, .softn-app *::before, .softn-app *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 `;
 

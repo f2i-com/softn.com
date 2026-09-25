@@ -160,10 +160,6 @@ export function EmptyState({
     width: finalIconSize + 32,
     height: finalIconSize + 32,
     borderRadius: '50%',
-    backgroundColor:
-      variant === 'minimal'
-        ? 'transparent'
-        : 'linear-gradient(135deg, var(--color-gray-50, #1a1a2e) 0%, var(--color-gray-100, #27272a) 100%)',
     background:
       variant === 'minimal'
         ? 'transparent'
@@ -171,7 +167,7 @@ export function EmptyState({
     boxShadow:
       variant === 'minimal'
         ? 'none'
-        : 'inset 0 1px 2px rgba(255, 255, 255, 0.8), 0 2px 4px rgba(0, 0, 0, 0.04)',
+        : 'inset 0 1px 0 var(--color-border-subtle, rgba(0, 0, 0, 0.04)), 0 2px 4px rgba(0, 0, 0, 0.04)',
     animation: animated ? 'softn-empty-float 3s ease-in-out infinite' : 'none',
     transition: 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
   };
@@ -182,6 +178,7 @@ export function EmptyState({
     color: 'var(--color-text, #111827)',
     margin: 0,
     letterSpacing: '-0.01em',
+    overflowWrap: 'anywhere',
   };
 
   const descriptionStyle: React.CSSProperties = {
@@ -190,6 +187,7 @@ export function EmptyState({
     margin: 0,
     maxWidth: '24rem',
     lineHeight: 1.6,
+    overflowWrap: 'anywhere',
   };
 
   const actionsStyle: React.CSSProperties = {
@@ -226,9 +224,14 @@ export function EmptyState({
             transform: translateY(-8px);
           }
         }
+        @media (prefers-reduced-motion: reduce) {
+          .softn-empty-state, .softn-empty-icon { animation: none !important; }
+        }
       `}</style>
-      <div className={className} style={containerStyle}>
-        <div style={iconContainerStyle}>{renderIcon()}</div>
+      <div className={className ? `softn-empty-state ${className}` : 'softn-empty-state'} style={containerStyle}>
+        <div className="softn-empty-icon" style={iconContainerStyle} aria-hidden="true">
+          {renderIcon()}
+        </div>
         {title && <h3 style={titleStyle}>{title}</h3>}
         {description && <p style={descriptionStyle}>{description}</p>}
         {children}

@@ -17,6 +17,7 @@
 
 import React, { useState, useMemo, useCallback, useId } from 'react';
 import { describeMarkupEgress, isSafeUrl, useEgressConfig } from '@softn/core';
+import { cssColumnCount } from '../utils/egress';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -210,9 +211,10 @@ export function SmartCards<T extends Record<string, unknown>>({
   }, [safeData, searchQuery, title, subtitle]);
 
   // Grid columns - handle responsive object or static number
-  const colCount = typeof columns === 'number' ? columns : columns.lg || 3;
-  const colCountSm = typeof columns === 'object' ? columns.sm || 1 : undefined;
-  const colCountMd = typeof columns === 'object' ? columns.md || 2 : undefined;
+  // These go into <style> text below, not a style object: a count, or the default.
+  const colCount = cssColumnCount(typeof columns === 'object' ? columns.lg : columns, 3);
+  const colCountSm = typeof columns === 'object' ? cssColumnCount(columns.sm, 1) : undefined;
+  const colCountMd = typeof columns === 'object' ? cssColumnCount(columns.md, 2) : undefined;
 
   // Container style
   const containerStyle: React.CSSProperties = {
@@ -235,7 +237,6 @@ export function SmartCards<T extends Record<string, unknown>>({
     background: 'var(--color-surface, #16161a)',
     color: 'var(--color-text, #f5f5f5)',
     fontSize: '0.875rem',
-    outline: 'none',
   };
 
   const searchIconStyle: React.CSSProperties = {
@@ -465,8 +466,8 @@ export function SmartCards<T extends Record<string, unknown>>({
                       if (value === null || value === undefined) return null;
                       const strValue = String(value).toLowerCase();
                       const colors = statusColors[strValue] || {
-                        bg: 'var(--color-gray-700, #3f3f46)',
-                        text: 'var(--color-text-muted, #a1a1aa)',
+                        bg: 'var(--color-gray-100, #3f3f46)',
+                        text: 'var(--color-text, #a1a1aa)',
                       };
                       return (
                         <span

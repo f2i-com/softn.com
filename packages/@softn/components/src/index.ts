@@ -49,6 +49,7 @@ export * from './animation';
 
 // Editor components
 export * from './editors/CodeEditor';
+export * from './editors/highlight';
 export * from './editors/MarkdownEditor';
 export * from './editors/RichTextEditor';
 

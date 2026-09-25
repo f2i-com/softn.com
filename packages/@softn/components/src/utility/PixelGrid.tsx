@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { cssPaint } from '../utils/egress';
 
 export interface PixelGridItem {
   x: number;
@@ -57,7 +58,8 @@ export function PixelGrid({
   const width = cols * cellSize;
   const height = rows * cellSize;
 
-  const resolvedGridColor = gridColor || 'rgba(255,255,255,0.06)';
+  // Interpolated into `backgroundImage`, so only a colour may come through.
+  const resolvedGridColor = cssPaint(gridColor) || 'rgba(255,255,255,0.06)';
 
   const gridBackground = showGrid
     ? `repeating-linear-gradient(0deg, transparent, transparent ${cellSize - 1}px, ${resolvedGridColor} ${cellSize - 1}px, ${resolvedGridColor} ${cellSize}px), repeating-linear-gradient(90deg, transparent, transparent ${cellSize - 1}px, ${resolvedGridColor} ${cellSize - 1}px, ${resolvedGridColor} ${cellSize}px)`

@@ -6,6 +6,7 @@
 
 import * as React from 'react';
 import { chartColor } from '../theme/chart-palette';
+import { usePrefersReducedMotion } from '../utils/motion';
 
 export interface GaugeThreshold {
   value: number;
@@ -23,6 +24,8 @@ export interface GaugeChartProps {
   width?: number;
   height?: number;
   formatValue?: (v: number) => string;
+  /** Accessible name for the meter; `label`, or "Gauge", by default */
+  ariaLabel?: string;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -137,9 +140,12 @@ export function GaugeChart({
   width = 200,
   height,
   formatValue = (v) => String(Math.round(v)),
+  ariaLabel,
   className = '',
   style,
 }: GaugeChartProps) {
+  const reducedMotion = usePrefersReducedMotion();
+  const animate = animated && !reducedMotion;
   // Derive height from variant if not provided
   const computedHeight =
     height ??
@@ -175,11 +181,11 @@ export function GaugeChart({
 
   // Animation state: start at 0 offset (empty), transition to filled
   const [animatedOffset, setAnimatedOffset] = React.useState(
-    animated ? circumference : circumference * (1 - fraction)
+    animate ? circumference : circumference * (1 - fraction)
   );
 
   React.useEffect(() => {
-    if (animated) {
+    if (animate) {
       // Use requestAnimationFrame to ensure the initial render with full offset
       // is painted before we transition to the target offset
       const raf = requestAnimationFrame(() => {
@@ -189,7 +195,7 @@ export function GaugeChart({
     } else {
       setAnimatedOffset(circumference * (1 - fraction));
     }
-  }, [animated, circumference, fraction]);
+  }, [animate, circumference, fraction]);
 
   const fillColor = getColorForValue(clampedValue, thresholds);
 
@@ -203,8 +209,22 @@ export function GaugeChart({
     : undefined;
 
   return (
-    <div className={`softn-gauge-chart ${className}`} style={style}>
-      <svg viewBox={`0 0 ${width} ${computedHeight}`} width="100%" preserveAspectRatio="xMidYMid meet">
+    <div
+      className={`softn-gauge-chart ${className}`}
+      style={style}
+      role="meter"
+      aria-label={ariaLabel ?? label ?? 'Gauge'}
+      aria-valuenow={clampedValue}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuetext={formatValue(clampedValue)}
+    >
+      <svg
+        viewBox={`0 0 ${width} ${computedHeight}`}
+        width="100%"
+        preserveAspectRatio="xMidYMid meet"
+        aria-hidden="true"
+      >
         {isFullCircle ? (
           <>
             {/* Background track */}
@@ -213,9 +233,9 @@ export function GaugeChart({
               cy={cy}
               r={radius}
               fill="none"
-              stroke="#e4e4e7"
+              stroke="var(--color-text-muted, #a1a1aa)"
               strokeWidth={strokeWidth}
-              opacity={0.3}
+              opacity={0.25}
             />
             {/* Foreground value arc */}
             <circle
@@ -229,7 +249,7 @@ export function GaugeChart({
               strokeDasharray={circumference}
               strokeDashoffset={animatedOffset}
               style={{
-                transition: animated
+                transition: animate
                   ? 'stroke-dashoffset 1s cubic-bezier(0.4, 0, 0.2, 1)'
                   : 'none',
                 // Rotate so the arc starts from the top
@@ -244,10 +264,10 @@ export function GaugeChart({
             <path
               d={arcPath}
               fill="none"
-              stroke="#e4e4e7"
+              stroke="var(--color-text-muted, #a1a1aa)"
               strokeWidth={strokeWidth}
               strokeLinecap="round"
-              opacity={0.3}
+              opacity={0.25}
             />
             {/* Foreground value arc */}
             <path
@@ -259,7 +279,7 @@ export function GaugeChart({
               strokeDasharray={circumference}
               strokeDashoffset={animatedOffset}
               style={{
-                transition: animated
+                transition: animate
                   ? 'stroke-dashoffset 1s cubic-bezier(0.4, 0, 0.2, 1)'
                   : 'none',
               }}

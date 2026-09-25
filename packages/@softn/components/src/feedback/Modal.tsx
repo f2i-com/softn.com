@@ -6,8 +6,9 @@
  * Uses CSS variables for theming support.
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useId } from 'react';
 import { lockBodyScroll } from './body-scroll-lock';
+import { useModalLayer } from './layer-stack';
 
 export interface ModalProps {
   /** Whether the modal is open */
@@ -18,6 +19,8 @@ export interface ModalProps {
   onClose: () => void;
   /** Modal title */
   title?: string;
+  /** Accessible name for the dialog when it has no `title` */
+  ariaLabel?: string;
   /** Modal size */
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
   /** Close on overlay click */
@@ -65,6 +68,7 @@ const Spinner = ({ size = 24 }: { size?: number }) => (
     height={size}
     viewBox="0 0 24 24"
     fill="none"
+    aria-hidden="true"
     style={{ animation: 'softn-modal-spin 1s linear infinite' }}
   >
     <circle
@@ -85,6 +89,7 @@ export function Modal({
   open,
   onClose,
   title,
+  ariaLabel,
   size = 'md',
   closeOnOverlayClick = true,
   closeOnEscape = true,
@@ -107,15 +112,22 @@ export function Modal({
   const modalRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [isAnimating, setIsAnimating] = useState(false);
+  const titleId = useId();
 
   // Handle open/close with animation
   useEffect(() => {
     if (isModalOpen) {
       setIsVisible(true);
-      // Small delay to trigger animation
-      requestAnimationFrame(() => {
+      if (disableAnimation) {
+        setIsAnimating(true);
+        return;
+      }
+      // Small delay to trigger animation. Cancelled if the modal closes (or
+      // unmounts) first, so a stale frame cannot mark a closed dialog open.
+      const frame = requestAnimationFrame(() => {
         setIsAnimating(true);
       });
+      return () => cancelAnimationFrame(frame);
     } else {
       setIsAnimating(false);
       if (!disableAnimation) {
@@ -129,24 +141,6 @@ export function Modal({
     }
   }, [isModalOpen, disableAnimation]);
 
-  // Handle escape key
-  useEffect(() => {
-    if (!isVisible) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && closeOnEscape) {
-        if (loading && preventCloseOnLoading) return;
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isVisible, closeOnEscape, onClose, loading, preventCloseOnLoading]);
-
   // Keep the lock for as long as the dialog remains in the DOM, including its
   // closing animation. The release closure is idempotent for StrictMode and
   // unmount cleanup, and the shared count handles either close order.
@@ -155,59 +149,20 @@ export function Modal({
     return lockBodyScroll(document.body);
   }, [isVisible]);
 
-  // Focus trap and restore focus on close.
+  // Focus into the dialog, a Tab trap, Escape for the topmost layer only, and
+  // focus back where it was on close — shared with Drawer (./layer-stack).
   //
-  // Keyed on `isVisible`, not `isModalOpen`: the dialog DOM is gated behind
-  // `isVisible`, which a *different* effect sets in the same commit. Running
-  // on `isModalOpen` meant `modalRef.current` was still null when `.focus()`
-  // was called, and the effect never re-ran to try again. With focus left
-  // outside, the Tab handler below matched neither its first- nor last-element
-  // branch, so Tab walked the page behind the overlay — the exact thing a
-  // focus trap exists to prevent.
-  useEffect(() => {
-    if (!isVisible || !isModalOpen) return;
-
-    const previouslyFocused = document.activeElement as HTMLElement;
-
-    // Focus the modal
-    if (modalRef.current) {
-      modalRef.current.focus();
-    }
-
-    // Focus trap: keep focus within modal
-    const handleTabKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab' || !modalRef.current) return;
-
-      const focusableElements = modalRef.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      );
-
-      if (focusableElements.length === 0) return;
-
-      const firstElement = focusableElements[0];
-      const lastElement = focusableElements[focusableElements.length - 1];
-
-      if (e.shiftKey) {
-        if (document.activeElement === firstElement) {
-          e.preventDefault();
-          lastElement.focus();
+  // Keyed on `isVisible && isModalOpen`, not `isModalOpen` alone: the dialog
+  // DOM is gated behind `isVisible`, which a *different* effect sets in the
+  // same commit, so on `isModalOpen` the ref was still null when focus moved.
+  useModalLayer(isVisible && isModalOpen, modalRef, {
+    onEscape: closeOnEscape
+      ? () => {
+          if (loading && preventCloseOnLoading) return;
+          onClose();
         }
-      } else {
-        if (document.activeElement === lastElement) {
-          e.preventDefault();
-          firstElement.focus();
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleTabKey);
-
-    return () => {
-      document.removeEventListener('keydown', handleTabKey);
-      // Restore focus to previously focused element
-      previouslyFocused?.focus?.();
-    };
-  }, [isVisible, isModalOpen]);
+      : undefined,
+  });
 
   const handleClose = useCallback(() => {
     if (loading && preventCloseOnLoading) return;
@@ -259,7 +214,9 @@ export function Modal({
     outline: 'none',
     transform: isAnimating ? 'scale(1) translateY(0)' : 'scale(0.96) translateY(8px)',
     opacity: isAnimating ? 1 : 0,
-    transition: `transform 250ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms cubic-bezier(0.16, 1, 0.3, 1)`,
+    transition: disableAnimation
+      ? 'none'
+      : `transform 250ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms cubic-bezier(0.16, 1, 0.3, 1)`,
     ...style,
   };
 
@@ -278,6 +235,8 @@ export function Modal({
     fontWeight: 600,
     color: 'var(--color-text, #ececf0)',
     letterSpacing: '-0.02em',
+    overflowWrap: 'anywhere',
+    minWidth: 0,
   };
 
   const headerActionsStyle: React.CSSProperties = {
@@ -349,21 +308,25 @@ export function Modal({
           to { transform: rotate(360deg); }
         }
         .softn-modal-close:hover:not(:disabled) {
-          background-color: var(--color-gray-700, #3f3f46) !important;
-          color: var(--color-gray-200, #e4e4e7) !important;
+          background-color: var(--color-surface-hover, #3f3f46) !important;
+          color: var(--color-text, #e4e4e7) !important;
         }
         .softn-modal-close:active:not(:disabled) {
           transform: scale(0.95);
         }
+        @media (prefers-reduced-motion: reduce) {
+          .softn-modal-overlay, .softn-modal-dialog { transition: none !important; }
+        }
       `}</style>
-      <div style={overlayStyle} onClick={handleOverlayClick}>
+      <div className="softn-modal-overlay" style={overlayStyle} onClick={handleOverlayClick}>
         <div
           ref={modalRef}
-          className={className}
+          className={className ? `softn-modal-dialog ${className}` : 'softn-modal-dialog'}
           style={modalStyle}
           role="dialog"
           aria-modal="true"
-          aria-labelledby={title ? 'modal-title' : undefined}
+          aria-labelledby={title ? titleId : undefined}
+          aria-label={title ? undefined : ariaLabel}
           aria-busy={loading}
           tabIndex={-1}
         >
@@ -379,7 +342,7 @@ export function Modal({
           {(title || showCloseButton || headerExtra) && (
             <div style={headerStyle}>
               {title && (
-                <h2 id="modal-title" style={titleStyle}>
+                <h2 id={titleId} style={titleStyle}>
                   {title}
                 </h2>
               )}
@@ -401,6 +364,8 @@ export function Modal({
                       fill="none"
                       stroke="currentColor"
                       strokeWidth="2"
+                      aria-hidden="true"
+                      focusable="false"
                     >
                       <line x1="18" y1="6" x2="6" y2="18" />
                       <line x1="6" y1="6" x2="18" y2="18" />

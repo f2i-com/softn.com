@@ -48,6 +48,10 @@
       "types": "./dist/editors.d.ts",
       "default": "./dist/editors.js"
     },
+    "./highlight": {
+      "types": "./dist/highlight.d.ts",
+      "default": "./dist/highlight.js"
+    },
     "./smart": {
       "types": "./dist/smart.d.ts",
       "default": "./dist/smart.js"
@@ -75,7 +79,8 @@
     "@rc-component/qrcode": "^1.1.1",
     "@softn/core": "*",
     "@yudiel/react-qr-scanner": "^2.5.1",
-    "three": "^0.170.0"
+    "three": "^0.170.0",
+    "zxing-wasm": "2.2.4"
   },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0",

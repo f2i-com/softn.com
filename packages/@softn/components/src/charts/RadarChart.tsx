@@ -5,7 +5,8 @@
  */
 
 import * as React from 'react';
-import { normaliseArray, normaliseSeries } from './series';
+import { describeChart, finiteNumber, normaliseArray, normaliseSeries } from './series';
+import { chartPalette } from '../theme/chart-palette';
 
 export interface RadarDataPoint {
   axis: string;
@@ -27,11 +28,14 @@ export interface RadarChartProps {
   height?: number;
   showLegend?: boolean;
   interactive?: boolean;
+  /** Text alternative for the chart; a summary of its values by default */
+  ariaLabel?: string;
   className?: string;
   style?: React.CSSProperties;
 }
 
-const defaultColors = ['#6366f1', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
+// The theme's series colours, as the other charts use them.
+const defaultColors = chartPalette();
 
 function getVertex(
   centerX: number,
@@ -70,13 +74,15 @@ export function RadarChart({
   height = 300,
   showLegend = true,
   interactive = false,
+  ariaLabel,
   className = '',
   style,
 }: RadarChartProps) {
   // Data that has not arrived yet is an empty chart, not a throw.
   const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
   const axes = React.useMemo(() => normaliseArray(rawAxes), [rawAxes]);
-  const [hoveredSeries, setHoveredSeries] = React.useState<string | null>(null);
+  // By index: two series may share a name.
+  const [hoveredSeries, setHoveredSeries] = React.useState<number | null>(null);
   const [tooltip, setTooltip] = React.useState<{
     x: number;
     y: number;
@@ -92,11 +98,13 @@ export function RadarChart({
 
   // Auto-compute maxValue from all data points if not provided
   const maxValue = React.useMemo(() => {
-    if (propMaxValue != null) return propMaxValue;
+    const given = finiteNumber(propMaxValue);
+    if (given !== null && given > 0) return given;
     let max = 0;
     for (const s of series) {
       for (const d of s.data) {
-        if (d.value > max) max = d.value;
+        const v = finiteNumber(d?.value);
+        if (v !== null && v > max) max = v;
       }
     }
     return max || 1;
@@ -167,16 +175,20 @@ export function RadarChart({
   // Build data polygons for each series
   const dataPolygons = series.map((s, seriesIndex) => {
     const color = s.color || defaultColors[seriesIndex % defaultColors.length];
-    const isHovered = hoveredSeries === s.name;
+    const isHovered = hoveredSeries === seriesIndex;
     const isDimmed = hoveredSeries != null && !isHovered;
     const opacity = isDimmed ? 0.2 : 1;
 
     // Build polygon points from data values
-    const dataMap = new Map(s.data.map((d) => [d.axis, d.value]));
+    const dataMap = new Map(
+      s.data.filter((d) => d !== null && typeof d === 'object').map((d) => [d.axis, finiteNumber(d.value) ?? 0])
+    );
     const points: { x: number; y: number; axis: string; value: number }[] = axes.map(
       (axis, i) => {
         const value = dataMap.get(axis) ?? 0;
-        const ratio = value / maxValue;
+        // A negative value would put the point through the centre onto the
+        // opposite spoke; the centre is as low as a radar axis goes.
+        const ratio = Math.max(0, value) / maxValue;
         const vertex = getVertex(centerX, centerY, chartRadius * ratio, i, numAxes);
         return { ...vertex, axis, value };
       }
@@ -185,7 +197,7 @@ export function RadarChart({
     const polyStr = points.map((p) => `${p.x},${p.y}`).join(' ');
 
     return (
-      <g key={s.name} opacity={opacity} style={{ transition: 'opacity 0.2s ease' }}>
+      <g key={`${seriesIndex}-${s.name}`} opacity={opacity} style={{ transition: 'opacity 0.2s ease' }}>
         <polygon
           points={polyStr}
           fill={color}
@@ -194,7 +206,7 @@ export function RadarChart({
           strokeWidth={isHovered ? 2.5 : 1.5}
           strokeLinejoin="round"
           style={interactive ? { cursor: 'pointer' } : undefined}
-          onMouseEnter={interactive ? () => setHoveredSeries(s.name) : undefined}
+          onMouseEnter={interactive ? () => setHoveredSeries(seriesIndex) : undefined}
           onMouseLeave={interactive ? () => setHoveredSeries(null) : undefined}
         />
         {points.map((p, idx) => (
@@ -204,13 +216,13 @@ export function RadarChart({
             cy={p.y}
             r={isHovered ? 5 : 3.5}
             fill={color}
-            stroke="#fff"
+            stroke="var(--color-bg, white)"
             strokeWidth={1}
             style={interactive ? { cursor: 'pointer' } : undefined}
             onMouseEnter={
               interactive
                 ? (e) => {
-                    setHoveredSeries(s.name);
+                    setHoveredSeries(seriesIndex);
                     const svgRect = (
                       e.currentTarget.closest('svg') as SVGSVGElement
                     )?.getBoundingClientRect();
@@ -248,7 +260,24 @@ export function RadarChart({
 
   return (
     <div className={`softn-radar-chart ${className}`} style={{ position: 'relative', ...style }}>
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" preserveAspectRatio="xMidYMid meet">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label={
+          ariaLabel ??
+          describeChart(
+            'Radar chart',
+            series.map((s) => ({
+              name: s.name,
+              values: s.data
+                .filter((d) => d !== null && typeof d === 'object')
+                .map((d) => `${d.axis} ${finiteNumber(d.value) ?? 0}`),
+            }))
+          )
+        }
+      >
         {gridLevels}
         {axisLines}
         {axisLabels}
@@ -263,7 +292,7 @@ export function RadarChart({
             left: tooltip.x,
             top: tooltip.y,
             transform: 'translate(-50%, -100%)',
-            backgroundColor: 'var(--color-surface, #27272a)',
+            backgroundColor: 'var(--color-surface, rgba(24, 24, 27, 0.95))',
             color: 'var(--color-text, #e4e4e7)',
             border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
             borderRadius: '8px',
@@ -296,16 +325,16 @@ export function RadarChart({
             const color = s.color || defaultColors[idx % defaultColors.length];
             return (
               <div
-                key={s.name}
+                key={`${idx}-${s.name}`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   gap: '0.25rem',
-                  opacity: hoveredSeries != null && hoveredSeries !== s.name ? 0.4 : 1,
+                  opacity: hoveredSeries != null && hoveredSeries !== idx ? 0.4 : 1,
                   cursor: interactive ? 'pointer' : undefined,
                   transition: 'opacity 0.2s ease',
                 }}
-                onMouseEnter={interactive ? () => setHoveredSeries(s.name) : undefined}
+                onMouseEnter={interactive ? () => setHoveredSeries(idx) : undefined}
                 onMouseLeave={interactive ? () => setHoveredSeries(null) : undefined}
               >
                 <span

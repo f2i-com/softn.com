@@ -5,8 +5,10 @@
  */
 
 import React, { createContext, useContext, useMemo, useEffect, useState, useCallback } from 'react';
-import { Theme, lightTheme, darkTheme, ColorScale } from './tokens';
+import { Theme, lightTheme, darkTheme } from './tokens';
 import { CHART_PALETTE_LIGHT, chartColorVariable } from './chart-palette';
+import { CODE_PALETTE_LIGHT } from './code-palette';
+import { cssThemeKey, cssThemeValue } from '../utils/css-values';
 
 export interface ThemeContextValue {
   theme: Theme;
@@ -32,87 +34,98 @@ export interface ThemeProviderProps {
   children: React.ReactNode;
 }
 
-/**
- * Convert theme to CSS custom properties
- */
-function themeToCssVariables(theme: Theme): Record<string, string> {
-  const vars: Record<string, string> = {};
+/** The entries of a theme section, or none when a partial theme left it out. */
+function entriesOf(section: unknown): Array<[string, unknown]> {
+  return section && typeof section === 'object' ? Object.entries(section as Record<string, unknown>) : [];
+}
 
-  // Helper to add color scale
-  const addColorScale = (prefix: string, scale: ColorScale) => {
-    Object.entries(scale).forEach(([key, value]) => {
-      vars[`--${prefix}-${key}`] = value;
-    });
+/**
+ * Convert a theme to CSS custom properties, unchecked. Only ever called on
+ * a theme this module defines, or through {@link themeToCssVariables}.
+ */
+function rawCssVariables(theme: Theme): Record<string, unknown> {
+  const vars: Record<string, unknown> = {};
+  const colors = (theme?.colors ?? {}) as Partial<Theme['colors']>;
+  const typography = (theme?.typography ?? {}) as Partial<Theme['typography']>;
+  const transitions = (theme?.transitions ?? {}) as Partial<Theme['transitions']>;
+
+  const addScale = (prefix: string, scale: unknown) => {
+    for (const [key, value] of entriesOf(scale)) vars[`--${prefix}-${key}`] = value;
   };
 
   // Colors
-  addColorScale('color-primary', theme.colors.primary);
-  addColorScale('color-secondary', theme.colors.secondary);
-  addColorScale('color-success', theme.colors.success);
-  addColorScale('color-warning', theme.colors.warning);
-  addColorScale('color-error', theme.colors.error);
-  addColorScale('color-info', theme.colors.info);
-  addColorScale('color-gray', theme.colors.gray);
+  addScale('color-primary', colors.primary);
+  addScale('color-secondary', colors.secondary);
+  addScale('color-success', colors.success);
+  addScale('color-warning', colors.warning);
+  addScale('color-error', colors.error);
+  addScale('color-info', colors.info);
+  addScale('color-gray', colors.gray);
 
   // Semantic colors
-  vars['--color-bg'] = theme.colors.background;
-  vars['--color-surface'] = theme.colors.surface;
-  vars['--color-surface-hover'] = theme.colors.surfaceHover;
-  vars['--color-border'] = theme.colors.border;
-  vars['--color-border-hover'] = theme.colors.borderHover;
-  vars['--color-text'] = theme.colors.text;
-  vars['--color-text-muted'] = theme.colors.textMuted;
-  vars['--color-text-disabled'] = theme.colors.textDisabled;
-  vars['--color-white'] = theme.colors.white;
-  vars['--color-black'] = theme.colors.black;
+  vars['--color-bg'] = colors.background;
+  vars['--color-surface'] = colors.surface;
+  vars['--color-surface-hover'] = colors.surfaceHover;
+  vars['--color-border'] = colors.border;
+  vars['--color-border-hover'] = colors.borderHover;
+  vars['--color-text'] = colors.text;
+  vars['--color-text-muted'] = colors.textMuted;
+  vars['--color-text-disabled'] = colors.textDisabled;
+  vars['--color-white'] = colors.white;
+  vars['--color-black'] = colors.black;
 
   // Chart series colours (see chart-palette.ts)
-  (theme.colors.chart ?? CHART_PALETTE_LIGHT).forEach((color, index) => {
+  const chart = Array.isArray(colors.chart) ? colors.chart : CHART_PALETTE_LIGHT;
+  chart.slice(0, 32).forEach((color, index) => {
     vars[chartColorVariable(index + 1)] = color;
   });
 
+  // Code editor syntax colours (see code-palette.ts)
+  for (const [kind, color] of entriesOf({ ...CODE_PALETTE_LIGHT, ...(colors.code ?? {}) })) {
+    vars[`--color-code-${kind}`] = color;
+  }
+
   // Typography
-  vars['--font-sans'] = theme.typography.fontFamily.sans;
-  vars['--font-serif'] = theme.typography.fontFamily.serif;
-  vars['--font-mono'] = theme.typography.fontFamily.mono;
-
-  Object.entries(theme.typography.fontSize).forEach(([key, value]) => {
-    vars[`--text-${key}`] = value;
-  });
-
-  Object.entries(theme.typography.fontWeight).forEach(([key, value]) => {
-    vars[`--font-${key}`] = String(value);
-  });
+  for (const [key, value] of entriesOf(typography.fontFamily)) vars[`--font-${key}`] = value;
+  for (const [key, value] of entriesOf(typography.fontSize)) vars[`--text-${key}`] = value;
+  for (const [key, value] of entriesOf(typography.fontWeight)) vars[`--font-${key}`] = value;
 
   // Spacing
-  Object.entries(theme.spacing).forEach(([key, value]) => {
-    vars[`--space-${key.replace('.', '_')}`] = value;
-  });
+  for (const [key, value] of entriesOf(theme?.spacing)) vars[`--space-${key.replace('.', '_')}`] = value;
+  // Radii, shadows, transitions, breakpoints
+  for (const [key, value] of entriesOf(theme?.radii)) vars[`--radius-${key}`] = value;
+  for (const [key, value] of entriesOf(theme?.shadows)) vars[`--shadow-${key}`] = value;
+  for (const [key, value] of entriesOf(transitions.duration)) vars[`--duration-${key}`] = value;
+  for (const [key, value] of entriesOf(transitions.easing)) vars[`--easing-${key}`] = value;
+  for (const [key, value] of entriesOf(theme?.breakpoints)) vars[`--breakpoint-${key}`] = value;
 
-  // Radii
-  Object.entries(theme.radii).forEach(([key, value]) => {
-    vars[`--radius-${key}`] = value;
-  });
+  return vars;
+}
 
-  // Shadows
-  Object.entries(theme.shadows).forEach(([key, value]) => {
-    vars[`--shadow-${key}`] = value;
-  });
+/** The light theme's own variables: what a refused value falls back to. */
+const DEFAULT_VARIABLES = rawCssVariables(lightTheme) as Record<string, string>;
 
-  // Transitions
-  Object.entries(theme.transitions.duration).forEach(([key, value]) => {
-    vars[`--duration-${key}`] = value;
-  });
-
-  Object.entries(theme.transitions.easing).forEach(([key, value]) => {
-    vars[`--easing-${key}`] = value;
-  });
-
-  // Breakpoints
-  Object.entries(theme.breakpoints).forEach(([key, value]) => {
-    vars[`--breakpoint-${key}`] = value;
-  });
-
+/**
+ * Convert a theme to CSS custom properties that are safe to write into
+ * `<style>` text.
+ *
+ * A theme is data the host — or an app, through `setTheme` — hands over, and
+ * each name and value lands inside a stylesheet, where a value such as
+ * `red; } body { background: url(https://…) } x {` would close the
+ * declaration and add a rule of its own, and `</style>` would close the
+ * element. Every name must be a plain identifier and every value pass
+ * {@link cssThemeValue}; a value that does not is replaced by the light
+ * theme's value for the same variable (or dropped when there is none), so
+ * the stylesheet stays complete. A theme missing whole sections renders with
+ * what it has instead of throwing.
+ */
+export function themeToCssVariables(theme: Theme): Record<string, string> {
+  const vars: Record<string, string> = {};
+  for (const [name, value] of Object.entries(rawCssVariables(theme))) {
+    if (!cssThemeKey(name.slice(2))) continue;
+    const safe = cssThemeValue(value) ?? DEFAULT_VARIABLES[name];
+    if (safe !== undefined) vars[name] = safe;
+  }
   return vars;
 }
 
@@ -170,6 +183,20 @@ const globalStyles = `
   button, input, select, textarea {
     font-family: inherit;
     font-size: inherit;
+  }
+
+  /* Someone who has asked for less motion gets none from a stylesheet:
+     animations and transitions finish at once. Components that animate from
+     JavaScript ask the same question (utils/motion.ts). */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      animation-delay: 0ms !important;
+      transition-duration: 0.01ms !important;
+      transition-delay: 0ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   /* Responsive utility classes */
@@ -256,6 +283,13 @@ export function ThemeProvider({
   const isDark = darkMode ?? preferredDark;
 
   const [customTheme, setCustomTheme] = useState<Theme | null>(initialTheme ?? null);
+  // A new `theme` from the host replaces the one in use; it was only ever read
+  // on mount, so a host switching brand themes saw no change until a remount.
+  const [seenTheme, setSeenTheme] = useState(initialTheme);
+  if (initialTheme !== seenTheme) {
+    setSeenTheme(initialTheme);
+    setCustomTheme(initialTheme ?? null);
+  }
 
   // A host's explicit choice wins over the OS. Observe it instead of remounting
   // the renderer, which would discard app state and unfinished form input.

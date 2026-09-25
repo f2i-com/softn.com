@@ -22,7 +22,10 @@ export interface TooltipProps {
     | 'top-end'
     | 'bottom-start'
     | 'bottom-end';
-  /** Trigger mode */
+  /**
+   * Trigger mode. `hover` also opens on keyboard focus: content a mouse user
+   * can reach by pointing must be reachable from the keyboard too.
+   */
   trigger?: 'hover' | 'click' | 'focus' | 'manual' | ('hover' | 'click' | 'focus')[];
   /** Animation type */
   animation?: 'fade' | 'scale' | 'shift';
@@ -65,9 +68,11 @@ export interface TooltipProps {
 }
 
 const variantStyles: Record<string, { bg: string; text: string; border?: string }> = {
+  // The inverse of the page: the text colour as the background. A fixed
+  // gray step was near-white under App's dark theme, with white text on it.
   dark: {
-    bg: 'var(--color-gray-800, #1f2937)',
-    text: 'var(--color-white, #fafafa)',
+    bg: 'var(--color-text, #1f2937)',
+    text: 'var(--color-bg, #fafafa)',
   },
   light: {
     bg: 'var(--color-surface, #16161a)',
@@ -128,13 +133,14 @@ export function Tooltip({
   const showTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const tooltipRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLSpanElement>(null);
+  const tooltipRef = useRef<HTMLSpanElement>(null);
   const tooltipId = useId();
 
   const requestedOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
   const isOpen = !disabled && requestedOpen;
   const triggers = useMemo(() => (Array.isArray(trigger) ? trigger : [trigger]), [trigger]);
+  const opensOnFocus = triggers.includes('focus') || triggers.includes('hover');
   const variantStyle = variantStyles[variant];
   const sizeStyle = sizeConfig[size];
 
@@ -246,10 +252,10 @@ export function Tooltip({
   );
 
   const handleFocus = useCallback(() => {
-    if (triggers.includes('focus')) {
+    if (opensOnFocus) {
       show();
     }
-  }, [triggers, show]);
+  }, [opensOnFocus, show]);
 
   const handleBlur = useCallback(
     (event: React.FocusEvent) => {
@@ -259,11 +265,11 @@ export function Tooltip({
       ) {
         return;
       }
-      if (triggers.includes('focus')) {
+      if (opensOnFocus) {
         hide();
       }
     },
-    [triggers, hide]
+    [opensOnFocus, hide]
   );
 
   // Close on outside click for click trigger
@@ -285,19 +291,40 @@ export function Tooltip({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [triggers, isOpen, hide]);
 
-  // Close on escape
+  // Escape dismisses. A manual tooltip is its owner's to close, so it is
+  // asked through onOpenChange; `hide` returns early for manual and Escape did
+  // nothing for every TooltipTrigger.
+  const dismiss = useCallback(() => {
+    if (trigger === 'manual') onOpenChange?.(false);
+    else hide();
+  }, [trigger, onOpenChange, hide]);
+
+  // With focus on the trigger (or in the tooltip), the container answers and
+  // marks the key handled, so a Modal the tooltip sits in stays open: the
+  // first Escape closes the tooltip only.
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key !== 'Escape' || !isOpen) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dismiss();
+    },
+    [isOpen, dismiss]
+  );
+
+  // Escape with focus anywhere else (a tooltip the pointer opened).
   useEffect(() => {
     if (!isOpen) return;
 
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        hide();
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        dismiss();
       }
     };
 
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
-  }, [isOpen, hide]);
+  }, [isOpen, dismiss]);
 
   // Cleanup timeouts on unmount
   useEffect(() => {
@@ -430,6 +457,7 @@ export function Tooltip({
   const getArrowStyle = (): React.CSSProperties => {
     const base: React.CSSProperties = {
       position: 'absolute',
+      display: 'block',
       width: 0,
       height: 0,
       border: '6px solid transparent',
@@ -497,6 +525,7 @@ export function Tooltip({
       variant === 'light'
         ? '0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.04)'
         : '0 8px 16px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.1)',
+    display: 'block',
     maxWidth: typeof maxWidth === 'number' ? `${maxWidth}px` : maxWidth,
     whiteSpace: maxWidth ? 'normal' : 'nowrap',
     wordWrap: 'break-word',
@@ -507,6 +536,7 @@ export function Tooltip({
   };
 
   const titleStyle: React.CSSProperties = {
+    display: 'block',
     fontSize: sizeStyle.titleSize,
     fontWeight: 600,
     marginBottom: '0.375rem',
@@ -537,8 +567,11 @@ export function Tooltip({
     });
   }, [children, isOpen, tooltipId]);
 
+  // Spans, not divs: a tooltip goes around inline content — a word in a
+  // sentence, an icon in a label — and a <div> inside a <p> is invalid markup
+  // React warns about.
   return (
-    <div
+    <span
       ref={containerRef}
       className={className}
       style={containerStyle}
@@ -548,9 +581,10 @@ export function Tooltip({
       onClick={handleClick}
       onFocus={handleFocus}
       onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
     >
       {triggerContent}
-      <div
+      <span
         ref={tooltipRef}
         id={tooltipId}
         className={tooltipClassName}
@@ -560,11 +594,11 @@ export function Tooltip({
         onMouseEnter={handleTooltipMouseEnter}
         onMouseLeave={handleTooltipMouseLeave}
       >
-        {title && <div style={titleStyle}>{title}</div>}
+        {title && <span style={titleStyle}>{title}</span>}
         {content}
-        {arrow && <div style={getArrowStyle()} />}
-      </div>
-    </div>
+        {arrow && <span aria-hidden="true" style={getArrowStyle()} />}
+      </span>
+    </span>
   );
 }
 

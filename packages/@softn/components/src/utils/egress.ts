@@ -42,3 +42,9 @@ export function useJudgedBackground(value: string | undefined): string | undefin
   const egress = useEgressConfig();
   return useMemo(() => judgeCssValue(value, egress), [value, egress]);
 }
+
+// Colour, column-count and theme-value checks need no egress policy and no
+// @softn/core; they live in css-values.ts so the theme entry can use them
+// without pulling the runtime in. Re-exported for the components that import
+// them from here.
+export { cssPaint, cssColumnCount, cssThemeValue, cssThemeKey } from './css-values';

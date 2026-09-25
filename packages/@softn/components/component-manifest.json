@@ -64,6 +64,15 @@
             "doc": "Accordion variant"
           },
           {
+            "name": "headingLevel",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "2 | 3 | 4 | 5 | 6"
+            },
+            "doc": "Heading level of the item headers (default 3)"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -163,6 +172,19 @@
               ]
             },
             "doc": "Border radius"
+          },
+          {
+            "name": "role",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "alert",
+                "status",
+                "none"
+              ]
+            },
+            "doc": "Announcement role. By default an error or a warning is an `alert` (read out at once) and info or success a `status` (read when the reader is free); `none` renders no live region, for an alert that is part of the page from the start."
           },
           {
             "name": "className",
@@ -531,6 +553,14 @@
             "type": {
               "kind": "boolean"
             }
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text alternative for the chart; a summary of its values by default"
           },
           {
             "name": "className",
@@ -1208,6 +1238,14 @@
             "type": {
               "kind": "boolean"
             }
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text alternative for the chart; a summary of its values by default"
           },
           {
             "name": "className",
@@ -2292,6 +2330,22 @@
             "doc": "Maximum height"
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the text field, when no visible label names it"
+          },
+          {
+            "name": "aria-label",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name (DOM attribute spelling)"
+          },
+          {
             "name": "onChange",
             "optional": true,
             "type": {
@@ -2777,6 +2831,14 @@
             }
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the grid"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -3037,6 +3099,7 @@
     {
       "name": "DPad",
       "source": "src/utility/DPad.tsx",
+      "doc": "An on-screen directional pad. Each direction is held, not clicked: `onPress` when a pointer or key goes down, `onRelease` when it comes up. A release is sent once per press — and also when the pointer is cancelled, leaves the button while pressed, the button loses focus, or the pad unmounts — so a character is never left walking. Enter and Space hold a focused direction like a pointer does.",
       "props": {
         "interface": "DPadProps",
         "members": [
@@ -3074,6 +3137,14 @@
             "type": {
               "kind": "boolean"
             }
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the pad as a whole"
           },
           {
             "name": "style",
@@ -3241,6 +3312,14 @@
               "kind": "string"
             },
             "doc": "Title shown in header"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the drawer when it has no `title`"
           },
           {
             "name": "showClose",
@@ -3501,13 +3580,21 @@
             "doc": "Called when files are selected"
           },
           {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class, on the component's root"
+          },
+          {
             "name": "style",
             "optional": true,
             "type": {
               "kind": "other",
               "text": "React.CSSProperties"
             },
-            "doc": "Inline styles"
+            "doc": "Inline styles, on the button or the drop zone (as before `className` existed)"
           }
         ]
       }
@@ -3635,6 +3722,14 @@
             "type": {
               "kind": "function"
             }
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the meter; `label`, or \"Gauge\", by default"
           },
           {
             "name": "className",
@@ -4035,6 +4130,14 @@
               "kind": "string"
             },
             "doc": "Icon color (default currentColor)"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "What the icon means, when it is the only thing saying it (an icon-only status, say). Without one the icon is decoration and hidden from assistive technology; the text or button beside it carries the meaning."
           },
           {
             "name": "className",
@@ -4676,6 +4779,14 @@
             }
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text alternative for the chart; a summary of its values by default"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -4937,6 +5048,22 @@
             "doc": "View mode: edit, preview, or split"
           },
           {
+            "name": "onViewModeChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called when the user switches view mode"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the text area (default \"Markdown\")"
+          },
+          {
             "name": "showToolbar",
             "optional": true,
             "type": {
@@ -5105,6 +5232,14 @@
               "text": "string | number"
             },
             "doc": "Menu width"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the trigger, when its content does not give one (an icon)"
           },
           {
             "name": "className",
@@ -5331,6 +5466,14 @@
               "kind": "string"
             },
             "doc": "Modal title"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the dialog when it has no `title`"
           },
           {
             "name": "size",
@@ -5664,6 +5807,14 @@
             }
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the navigation landmark"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -5864,6 +6015,14 @@
             }
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text alternative for the chart; a summary of its values by default"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -5972,6 +6131,14 @@
               "kind": "function"
             },
             "doc": "Called about once a second with the frames actually painted per second."
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name; given one, the canvas is announced as an image"
           },
           {
             "name": "style",
@@ -6190,6 +6357,14 @@
             "doc": "Close when clicking outside"
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the popup"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -6346,6 +6521,14 @@
             "doc": "Border radius"
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the bar (default \"Progress\")"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -6416,6 +6599,14 @@
               ]
             },
             "doc": "Error correction level (default 'M')"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the code (default \"QR code\")"
           },
           {
             "name": "style",
@@ -6562,6 +6753,14 @@
             "type": {
               "kind": "boolean"
             }
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text alternative for the chart; a summary of its values by default"
           },
           {
             "name": "className",
@@ -7239,6 +7438,15 @@
               "kind": "boolean"
             },
             "doc": "Default collapsed state"
+          },
+          {
+            "name": "headingLevel",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "1 | 2 | 3 | 4 | 5 | 6"
+            },
+            "doc": "Heading level of the title (default 2)"
           },
           {
             "name": "className",
@@ -9061,6 +9269,14 @@
             "doc": "Callback with the reordered items array"
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the list"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -9290,6 +9506,14 @@
             "doc": "Callback when size changes"
           },
           {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the divider (default \"Resize panes\")"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -9353,7 +9577,7 @@
             "type": {
               "kind": "number"
             },
-            "doc": "Number of rows in the sprite sheet (direction rows)"
+            "doc": "Number of rows in the sprite sheet (direction rows); `row` is kept within them"
           },
           {
             "name": "row",
@@ -9426,7 +9650,15 @@
             "type": {
               "kind": "function"
             },
-            "doc": "Click handler"
+            "doc": "Click handler; the sprite becomes a button, operable with Enter and Space"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name; a clickable sprite without one is called \"Sprite\""
           }
         ]
       }
@@ -9838,6 +10070,22 @@
             "doc": "Empty state content"
           },
           {
+            "name": "caption",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "Visible caption naming the table"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the table (default: the caption, else \"Data table\")"
+          },
+          {
             "name": "className",
             "optional": true,
             "type": {
@@ -9929,6 +10177,14 @@
               "kind": "boolean"
             },
             "doc": "Full width tabs"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the tab list"
           },
           {
             "name": "className",
@@ -10030,6 +10286,14 @@
               "kind": "function"
             },
             "doc": "Remove handler"
+          },
+          {
+            "name": "removeLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the remove button (default: \"Remove\" plus the tag's text)"
           },
           {
             "name": "onClick",
@@ -10859,7 +11123,7 @@
               "kind": "other",
               "text": "'hover' | 'click' | 'focus' | 'manual' | ('hover' | 'click' | 'focus')[]"
             },
-            "doc": "Trigger mode"
+            "doc": "Trigger mode. `hover` also opens on keyboard focus: content a mouse user can reach by pointing must be reachable from the keyboard too."
           },
           {
             "name": "animation",
@@ -11134,6 +11398,14 @@
             "type": {
               "kind": "number"
             }
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the tree"
           },
           {
             "name": "className",

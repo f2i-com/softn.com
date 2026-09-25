@@ -1174,7 +1174,7 @@ export function AudioStream({
     alignItems: 'center',
     gap: '0.5rem',
     fontSize: '0.75rem',
-    color: '#94a3b8',
+    color: 'var(--color-text-muted, #94a3b8)',
     fontVariantNumeric: 'tabular-nums',
   };
 
@@ -1197,9 +1197,12 @@ export function AudioStream({
             alignSelf: 'flex-start',
             padding: '0.375rem 0.75rem',
             borderRadius: '0.5rem',
-            border: '1px solid rgba(148, 163, 184, 0.35)',
+            // Theme colours: a light grey label on a transparent button was
+            // all but invisible on a light page, and this is the one control
+            // that lets the audio play.
+            border: '1px solid var(--color-border-hover, rgba(148, 163, 184, 0.35))',
             background: 'transparent',
-            color: '#e2e8f0',
+            color: 'var(--color-text, #e2e8f0)',
             fontSize: '0.8125rem',
             cursor: 'pointer',
           }}

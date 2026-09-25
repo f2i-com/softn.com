@@ -407,6 +407,8 @@ export interface PixelCanvasProps {
   smooth?: boolean;
   /** Called about once a second with the frames actually painted per second. */
   onFps?: (fps: number) => void;
+  /** Accessible name; given one, the canvas is announced as an image */
+  ariaLabel?: string;
   /** Styles for the element the canvas sits in. */
   style?: React.CSSProperties;
   /** Class for the element the canvas sits in. */
@@ -439,6 +441,7 @@ export function PixelCanvas({
   running = true,
   smooth = false,
   onFps,
+  ariaLabel,
   style,
   className,
 }: PixelCanvasProps): React.ReactElement {
@@ -995,6 +998,8 @@ export function PixelCanvas({
     >
       <canvas
         ref={canvasRef}
+        role={ariaLabel ? 'img' : undefined}
+        aria-label={ariaLabel}
         style={{
           display: 'block',
           // Nearest-neighbour, so one source pixel stays a solid square rather

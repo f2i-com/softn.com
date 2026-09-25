@@ -7,6 +7,7 @@
 
 import * as React from 'react';
 import { isSafeUrl } from '@softn/core';
+import { usePrefersReducedMotion } from '../utils/motion';
 
 export interface SpriteProps {
   /** URL of the sprite sheet image */
@@ -17,7 +18,7 @@ export interface SpriteProps {
   frameHeight?: number;
   /** Number of columns in the sprite sheet (frames per row) */
   columns?: number;
-  /** Number of rows in the sprite sheet (direction rows) */
+  /** Number of rows in the sprite sheet (direction rows); `row` is kept within them */
   rows?: number;
   /**
    * Row index into the sheet. Which direction each row faces is the sheet's
@@ -39,16 +40,19 @@ export interface SpriteProps {
   style?: React.CSSProperties;
   /** Additional CSS class */
   className?: string;
-  /** Click handler */
+  /** Click handler; the sprite becomes a button, operable with Enter and Space */
   onClick?: () => void;
+  /** Accessible name; a clickable sprite without one is called "Sprite" */
+  ariaLabel?: string;
 }
 
 export function Sprite({
   src,
   frameWidth = 32,
   frameHeight = 32,
-  columns = 8,
-  row = 0,
+  columns: rawColumns = 8,
+  rows,
+  row: rawRow = 0,
   colOffset = 0,
   playing = true,
   fps = 8,
@@ -57,7 +61,16 @@ export function Sprite({
   style,
   className,
   onClick,
+  ariaLabel,
 }: SpriteProps) {
+  // Bound values arrive as anything: a column count of zero made every frame
+  // NaN, and a row past the sheet showed an empty frame.
+  const columns = Number.isFinite(rawColumns) && rawColumns >= 1 ? Math.floor(rawColumns) : 1;
+  const lastRow = typeof rows === 'number' && Number.isFinite(rows) && rows >= 1 ? Math.floor(rows) - 1 : Infinity;
+  const row = Math.min(lastRow, Math.max(0, Number.isFinite(rawRow) ? Math.floor(rawRow) : 0));
+  // Reduced motion holds the idle frame, as a paused sprite does.
+  const reducedMotion = usePrefersReducedMotion();
+  const animating = playing && !reducedMotion && Number.isFinite(fps) && fps > 0;
   const divRef = React.useRef<HTMLDivElement>(null);
   const frameRef = React.useRef(0);
   const rafRef = React.useRef<number>(0);
@@ -87,7 +100,7 @@ export function Sprite({
   // Uses global time to compute frame index so ALL sprites with the same fps
   // stay perfectly in sync (body, eyes, clothes, hair move together).
   React.useEffect(() => {
-    if (!playing) {
+    if (!animating) {
       // Show idle frame when paused
       if (divRef.current) {
         const x = (colOffsetRef.current) * frameWidth;
@@ -120,7 +133,7 @@ export function Sprite({
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [playing, frameWidth, frameHeight]);
+  }, [animating, frameWidth, frameHeight]);
 
   const initialX = colOffset * frameWidth;
   const initialY = row * frameHeight;
@@ -143,12 +156,25 @@ export function Sprite({
     ...style,
   };
 
+  const handleKeyDown = onClick
+    ? (e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }
+    : undefined;
+
   return (
     <div
       ref={divRef}
       className={className}
       style={computedStyle}
       onClick={onClick}
+      onKeyDown={handleKeyDown}
+      role={onClick ? 'button' : ariaLabel ? 'img' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      aria-label={onClick ? (ariaLabel ?? 'Sprite') : ariaLabel}
     />
   );
 }

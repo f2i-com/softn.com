@@ -20,6 +20,10 @@ export interface MarkdownEditorProps {
   readOnly?: boolean;
   /** View mode: edit, preview, or split */
   viewMode?: 'edit' | 'preview' | 'split';
+  /** Called when the user switches view mode */
+  onViewModeChange?: (mode: 'edit' | 'preview' | 'split') => void;
+  /** Accessible name for the text area (default "Markdown") */
+  ariaLabel?: string;
   /** Show toolbar */
   showToolbar?: boolean;
   /** Minimum height */
@@ -209,7 +213,9 @@ export function MarkdownEditor({
   placeholder = 'Write your markdown here...',
   disabled = false,
   readOnly = false,
-  viewMode: initialViewMode = 'split',
+  viewMode: viewModeProp = 'split',
+  onViewModeChange,
+  ariaLabel = 'Markdown',
   showToolbar = true,
   minHeight = '300px',
   maxHeight = '600px',
@@ -218,7 +224,19 @@ export function MarkdownEditor({
   style,
 }: MarkdownEditorProps): React.ReactElement {
   const [content, setContent] = useState(value ?? defaultValue);
-  const [viewMode, setViewMode] = useState(initialViewMode);
+  // The view mode follows the prop when it changes, and the toolbar switches
+  // it in between: it used to take the prop once, at mount.
+  const [viewMode, setViewModeState] = useState(viewModeProp);
+  const [seenViewMode, setSeenViewMode] = useState(viewModeProp);
+  if (viewModeProp !== seenViewMode) {
+    setSeenViewMode(viewModeProp);
+    setViewModeState(viewModeProp);
+  }
+  const setViewMode = (mode: 'edit' | 'preview' | 'split') => {
+    setViewModeState(mode);
+    onViewModeChange?.(mode);
+  };
+  const [focused, setFocused] = useState(false);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -274,7 +292,12 @@ export function MarkdownEditor({
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
-    border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+    // The textarea has no border or outline of its own; while it has focus the
+    // container's border is the focus ring.
+    border: focused
+      ? '1px solid var(--color-primary-500, rgba(99, 102, 241, 0.9))'
+      : '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+    boxShadow: focused ? '0 0 0 3px var(--color-primary-100, rgba(99, 102, 241, 0.25))' : undefined,
     borderRadius: '0.5rem',
     background: 'var(--color-surface, #16161a)',
     overflow: 'hidden',
@@ -287,7 +310,7 @@ export function MarkdownEditor({
     gap: '0.25rem',
     padding: '0.5rem',
     borderBottom: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
-    background: 'var(--color-gray-800, #1e1e23)',
+    background: 'var(--color-surface-hover, rgba(255, 255, 255, 0.04))',
     flexWrap: 'wrap',
   };
 
@@ -296,6 +319,7 @@ export function MarkdownEditor({
     border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
     borderRadius: '0.25rem',
     background: 'var(--color-surface, #16161a)',
+    color: 'var(--color-text, #ececf0)',
     cursor: 'pointer',
     fontSize: '0.875rem',
     fontWeight: 500,
@@ -306,7 +330,7 @@ export function MarkdownEditor({
   const viewModeButtonStyle = (active: boolean): React.CSSProperties => ({
     ...toolbarButtonStyle,
     background: active ? 'var(--color-primary-500, #6366f1)' : 'var(--color-surface, #16161a)',
-    color: active ? '#ffffff' : 'var(--color-text, #ececf0)',
+    color: active ? 'var(--color-primary-text, #ffffff)' : 'var(--color-text, #ececf0)',
     borderColor: active ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border, rgba(255, 255, 255, 0.08))',
   });
 
@@ -353,7 +377,7 @@ export function MarkdownEditor({
   return (
     <div className={className} style={containerStyle}>
       {showToolbar && (
-        <div style={toolbarStyle}>
+        <div style={toolbarStyle} role="toolbar" aria-label="Markdown formatting">
           {!disabled &&
             !readOnly &&
             toolbarButtons.map((button) => (
@@ -361,6 +385,7 @@ export function MarkdownEditor({
                 key={button.label}
                 type="button"
                 title={button.label}
+                aria-label={button.label}
                 style={toolbarButtonStyle}
                 onClick={() => handleToolbarClick(button)}
               >
@@ -371,6 +396,7 @@ export function MarkdownEditor({
           <button
             type="button"
             style={viewModeButtonStyle(viewMode === 'edit')}
+            aria-pressed={viewMode === 'edit'}
             onClick={() => setViewMode('edit')}
           >
             Edit
@@ -378,6 +404,7 @@ export function MarkdownEditor({
           <button
             type="button"
             style={viewModeButtonStyle(viewMode === 'split')}
+            aria-pressed={viewMode === 'split'}
             onClick={() => setViewMode('split')}
           >
             Split
@@ -385,6 +412,7 @@ export function MarkdownEditor({
           <button
             type="button"
             style={viewModeButtonStyle(viewMode === 'preview')}
+            aria-pressed={viewMode === 'preview'}
             onClick={() => setViewMode('preview')}
           >
             Preview
@@ -399,10 +427,13 @@ export function MarkdownEditor({
           disabled={disabled}
           readOnly={readOnly}
           onChange={handleChange}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          aria-label={ariaLabel}
           style={textareaStyle}
           spellCheck={true}
         />
-        <div style={previewStyle}>
+        <div style={previewStyle} role="region" aria-label="Preview">
           <div
             style={previewContentStyle}
             dangerouslySetInnerHTML={{

@@ -62,6 +62,17 @@ const toolbarButtons: ToolbarButton[] = [
   { label: 'Clear Format', icon: '⌫', command: 'removeFormat' },
 ];
 
+/** Commands that are on or off for the selection, reported as `aria-pressed`. */
+const TOGGLE_COMMANDS = new Set(['bold', 'italic', 'underline', 'strikeThrough', 'insertUnorderedList', 'insertOrderedList']);
+
+function queryState(command: string): boolean {
+  try {
+    return typeof document.queryCommandState === 'function' && document.queryCommandState(command);
+  } catch {
+    return false;
+  }
+}
+
 export function RichTextEditor({
   value,
   defaultValue = '',
@@ -77,8 +88,34 @@ export function RichTextEditor({
   style,
 }: RichTextEditorProps): React.ReactElement {
   const editorRef = useRef<HTMLDivElement>(null);
+  const editorId = React.useId();
   const initialContentRef = useRef(value ?? defaultValue);
   const [isEmpty, setIsEmpty] = useState(true);
+  const [focused, setFocused] = useState(false);
+  const [pressed, setPressed] = useState<Record<string, boolean>>({});
+  /** The toolbar is one tab stop; arrow keys move between its buttons. */
+  const [toolbarIndex, setToolbarIndex] = useState(0);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+
+  const refreshPressed = useCallback(() => {
+    const next: Record<string, boolean> = {};
+    for (const command of TOGGLE_COMMANDS) next[command] = queryState(command);
+    setPressed((prev) =>
+      Object.keys(next).some((key) => prev[key] !== next[key]) ? next : prev
+    );
+  }, []);
+
+  // Bold, italic and the rest follow the caret while the editor has focus.
+  useEffect(() => {
+    if (!focused) return;
+    const onSelection = () => {
+      const editor = editorRef.current;
+      const selection = document.getSelection?.();
+      if (editor && selection && selection.anchorNode && editor.contains(selection.anchorNode)) refreshPressed();
+    };
+    document.addEventListener('selectionchange', onSelection);
+    return () => document.removeEventListener('selectionchange', onSelection);
+  }, [focused, refreshPressed]);
 
   // Initialize content.
   //
@@ -152,8 +189,9 @@ export function RichTextEditor({
       }
 
       handleInput();
+      refreshPressed();
     },
-    [disabled, readOnly, handleInput]
+    [disabled, readOnly, handleInput, refreshPressed]
   );
 
   const handleKeyDown = useCallback(
@@ -179,10 +217,28 @@ export function RichTextEditor({
     [execCommand]
   );
 
+  const handleToolbarKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const count = toolbarButtons.length;
+    let next: number | null = null;
+    if (e.key === 'ArrowRight') next = (toolbarIndex + 1) % count;
+    else if (e.key === 'ArrowLeft') next = (toolbarIndex - 1 + count) % count;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = count - 1;
+    if (next === null) return;
+    e.preventDefault();
+    setToolbarIndex(next);
+    toolbarRef.current?.querySelectorAll<HTMLButtonElement>('button')[next]?.focus();
+  };
+
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
-    border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+    // The editable area has no outline of its own, so the focus ring is the
+    // container's border.
+    border: focused
+      ? '1px solid var(--color-primary-500, rgba(99, 102, 241, 0.9))'
+      : '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+    boxShadow: focused ? '0 0 0 3px var(--color-primary-100, rgba(99, 102, 241, 0.25))' : undefined,
     borderRadius: '0.5rem',
     background: 'var(--color-surface, #16161a)',
     overflow: 'hidden',
@@ -195,7 +251,10 @@ export function RichTextEditor({
     gap: '0.125rem',
     padding: '0.5rem',
     borderBottom: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
-    background: 'var(--color-gray-800, #1e1e23)',
+    // A step off the surface, in either theme: `gray-800` was a dark strip
+    // behind dark text in the light theme and a light one behind light text
+    // in the dark.
+    background: 'var(--color-surface-hover, rgba(255, 255, 255, 0.04))',
     flexWrap: 'wrap',
   };
 
@@ -214,7 +273,7 @@ export function RichTextEditor({
   };
 
   const toolbarButtonHoverStyle = {
-    background: 'var(--color-gray-700, #3f3f46)',
+    background: 'var(--color-gray-100, rgba(255, 255, 255, 0.08))',
     borderColor: 'var(--color-border, rgba(255, 255, 255, 0.08))',
   };
 
@@ -245,8 +304,15 @@ export function RichTextEditor({
   return (
     <div className={className} style={containerStyle}>
       {showToolbar && (
-        <div style={toolbarStyle} role="toolbar" aria-label="Text formatting">
-          {toolbarButtons.map((button) => (
+        <div
+          ref={toolbarRef}
+          style={toolbarStyle}
+          role="toolbar"
+          aria-label="Text formatting"
+          aria-controls={editorId}
+          onKeyDown={handleToolbarKeyDown}
+        >
+          {toolbarButtons.map((button, index) => (
             <React.Fragment key={button.label}>
               {/* Add separator before alignment buttons and after list buttons */}
               {(button.command === 'justifyLeft' || button.command === 'createLink') && (
@@ -264,7 +330,14 @@ export function RichTextEditor({
                 type="button"
                 title={button.label}
                 aria-label={button.label}
-                style={toolbarButtonStyle}
+                aria-pressed={TOGGLE_COMMANDS.has(button.command) ? !!pressed[button.command] : undefined}
+                tabIndex={index === toolbarIndex ? 0 : -1}
+                onFocus={() => setToolbarIndex(index)}
+                style={
+                  pressed[button.command]
+                    ? { ...toolbarButtonStyle, background: 'var(--color-primary-100, rgba(99, 102, 241, 0.2))' }
+                    : toolbarButtonStyle
+                }
                 onClick={() => execCommand(button.command, button.value)}
                 onMouseEnter={(e) => {
                   if (!disabled && !readOnly) {
@@ -273,7 +346,9 @@ export function RichTextEditor({
                 }}
                 onMouseLeave={(e) => {
                   Object.assign(e.currentTarget.style, {
-                    background: 'transparent',
+                    background: pressed[button.command]
+                      ? 'var(--color-primary-100, rgba(99, 102, 241, 0.2))'
+                      : 'transparent',
                     borderColor: 'transparent',
                   });
                 }}
@@ -286,11 +361,22 @@ export function RichTextEditor({
         </div>
       )}
       <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {isEmpty && !disabled && <div style={placeholderStyle}>{placeholder}</div>}
+        {isEmpty && !disabled && (
+          <div style={placeholderStyle} aria-hidden="true">
+            {placeholder}
+          </div>
+        )}
         <div
           ref={editorRef}
+          id={editorId}
           role="textbox"
           aria-label={ariaLabel}
+          aria-placeholder={isEmpty ? placeholder : undefined}
+          onFocus={() => {
+            setFocused(true);
+            refreshPressed();
+          }}
+          onBlur={() => setFocused(false)}
           aria-multiline="true"
           aria-disabled={disabled || undefined}
           aria-readonly={readOnly || undefined}

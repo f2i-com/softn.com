@@ -6,7 +6,8 @@
  */
 
 import * as React from 'react';
-import { normaliseArray } from './series';
+import { describeChart, finiteNumber, normaliseArray } from './series';
+import { chartPalette } from '../theme/chart-palette';
 
 export interface PieDataPoint {
   label: string;
@@ -26,20 +27,15 @@ export interface PieChartProps {
   formatValue?: (value: number) => string;
   formatPercent?: (value: number) => string;
   interactive?: boolean;
+  /** Text alternative for the chart; a summary of its values by default */
+  ariaLabel?: string;
   className?: string;
   style?: React.CSSProperties;
 }
 
-const defaultColors = [
-  '#6366f1',
-  '#ef4444',
-  '#10b981',
-  '#f59e0b',
-  '#8b5cf6',
-  '#ec4899',
-  '#14b8a6',
-  '#f97316',
-];
+// The theme's series colours, as the other charts use them, so a dark theme
+// is not drawn in the light palette.
+const defaultColors = chartPalette();
 
 interface Arc {
   data: PieDataPoint;
@@ -70,6 +66,15 @@ function describeArc(
   startAngle: number,
   endAngle: number
 ): string {
+  // A slice that is the whole pie starts and ends at the same point, and SVG
+  // draws nothing for an arc whose ends coincide: a one-category pie was
+  // blank. Draw the full disc (or ring, with the hole cut out by the
+  // even-odd fill rule) as two half circles instead.
+  if (endAngle - startAngle >= 359.999) {
+    const circle = (r: number) =>
+      r > 0 ? `M ${x - r} ${y} A ${r} ${r} 0 1 0 ${x + r} ${y} A ${r} ${r} 0 1 0 ${x - r} ${y} Z` : '';
+    return `${circle(outerRadius)} ${circle(innerRadius)}`.trim();
+  }
   const outerStart = polarToCartesian(x, y, outerRadius, endAngle);
   const outerEnd = polarToCartesian(x, y, outerRadius, startAngle);
   const innerStart = polarToCartesian(x, y, innerRadius, endAngle);
@@ -136,11 +141,20 @@ export function PieChart({
   formatValue = (v) => String(v),
   formatPercent = (v) => `${v.toFixed(1)}%`,
   interactive = false,
+  ariaLabel,
   className = '',
   style,
 }: PieChartProps) {
   // Data that has not arrived yet is an empty chart, not a throw.
-  const data = React.useMemo(() => normaliseArray(rawData), [rawData]);
+  // A value that is not a number counts as nothing: a NaN would carry into
+  // every later slice's angle.
+  const data = React.useMemo(
+    () =>
+      normaliseArray(rawData)
+        .filter((d): d is PieDataPoint => d !== null && typeof d === 'object')
+        .map((d) => ({ ...d, label: String(d.label ?? ''), value: finiteNumber(d.value) ?? 0 })),
+    [rawData]
+  );
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
   const [tooltip, setTooltip] = React.useState<{ x: number; y: number; label: string; value: number; percent: number; color: string } | null>(null);
 
@@ -172,7 +186,21 @@ export function PieChart({
 
   return (
     <div className={`softn-pie-chart ${className}`} style={{ position: 'relative', ...style }}>
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" preserveAspectRatio="xMidYMid meet">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label={
+          ariaLabel ??
+          describeChart(innerRadius > 0 ? 'Donut chart' : 'Pie chart', [
+            {
+              name: centerLabel,
+              values: arcs.map((arc) => `${arc.data.label} ${formatValue(arc.data.value)} (${formatPercent(arc.percent)})`),
+            },
+          ])
+        }
+      >
         {arcs.map((arc, arcIndex) => {
           const midAngle = (arc.startAngle + arc.endAngle) / 2;
           const labelRadius = innerRadius > 0 ? (radius + innerRadius) / 2 : radius * 0.65;
@@ -184,13 +212,14 @@ export function PieChart({
           const pullOffset = isHovered
             ? polarToCartesian(0, 0, pullOutDistance, midAngle)
             : { x: 0, y: 0 };
+          // CSS transforms need units; `translate(3, 4)` is invalid and ignored.
           const translateStr = isHovered
-            ? `translate(${pullOffset.x}, ${pullOffset.y})`
-            : 'translate(0, 0)';
+            ? `translate(${pullOffset.x}px, ${pullOffset.y}px)`
+            : 'translate(0px, 0px)';
 
           return (
             <g
-              key={arc.data.label}
+              key={`${arcIndex}-${arc.data.label}`}
               opacity={isDimmed ? 0.4 : 1}
               style={{
                 transition: 'opacity 0.2s ease, transform 0.2s ease',
@@ -200,6 +229,7 @@ export function PieChart({
               <path
                 d={describeArc(centerX, centerY, radius, innerRadius, arc.startAngle, arc.endAngle)}
                 fill={arc.color}
+                fillRule="evenodd"
                 stroke="var(--color-bg, #18181b)"
                 strokeWidth={2}
                 style={{
@@ -251,7 +281,7 @@ export function PieChart({
                   y={labelPos.y}
                   textAnchor="middle"
                   dominantBaseline="middle"
-                  fill="#fff"
+                  fill="white"
                   fontSize="11"
                   fontWeight="600"
                   style={{ pointerEvents: 'none' }}
@@ -361,7 +391,7 @@ export function PieChart({
             const isActive = hoveredIndex === null || hoveredIndex === idx;
             return (
               <div
-                key={arc.data.label}
+                key={`${idx}-${arc.data.label}`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',

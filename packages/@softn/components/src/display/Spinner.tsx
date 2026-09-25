@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { cssPaint } from '../utils/egress';
 
 export interface SpinnerProps {
   /** Spinner variant */
@@ -244,13 +245,22 @@ export function Spinner({
   style,
 }: SpinnerProps): React.ReactElement {
   const sizeValue = sizeValues[size] ?? size;
-  const colorConfig = colorConfigs[color] ?? {
-    color: color,
-    gradient: `conic-gradient(from 0deg, transparent 0deg, ${color} 180deg, transparent 360deg)`,
-    glowColor: color,
-  };
+  // A custom colour is painted into `background`, so it has to be a colour:
+  // anything else (a `url()` the browser would fetch) gets the default.
+  const custom = cssPaint(color);
+  const colorConfig = colorConfigs[color] ??
+    (custom
+      ? {
+          color: custom,
+          gradient: `conic-gradient(from 0deg, transparent 0deg, ${custom} 180deg, transparent 360deg)`,
+          glowColor: custom,
+        }
+      : colorConfigs.primary);
 
   const containerStyle: React.CSSProperties = {
+    // The visually hidden label is absolutely positioned; without a
+    // positioned root it was placed against some ancestor instead.
+    position: 'relative',
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -291,7 +301,12 @@ export function Spinner({
   };
 
   return (
-    <div className={className} style={containerStyle} role="status" aria-label={label}>
+    <div
+      className={className ? `softn-spinner ${className}` : 'softn-spinner'}
+      style={containerStyle}
+      role="status"
+      aria-label={label}
+    >
       <style>
         {`
           @keyframes softn-spinner-rotate {
@@ -311,7 +326,7 @@ export function Spinner({
             100% { transform: scale(1.2); opacity: 0; }
           }
           @media (prefers-reduced-motion: reduce) {
-            .softn-spinner-animated { animation: none !important; }
+            .softn-spinner, .softn-spinner * { animation: none !important; }
           }
         `}
       </style>

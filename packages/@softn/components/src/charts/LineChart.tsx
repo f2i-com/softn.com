@@ -6,7 +6,7 @@
  */
 
 import * as React from 'react';
-import { normaliseSeries } from './series';
+import { describeChart, layoutX, normaliseSeries, numericPoints } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface DataPoint {
@@ -43,6 +43,8 @@ export interface LineChartProps {
   formatXLabel?: (value: number | string) => string;
   formatYLabel?: (value: number) => string;
   interactive?: boolean;
+  /** Text alternative for the chart; a summary of its values by default */
+  ariaLabel?: string;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -71,11 +73,17 @@ export function LineChart({
     return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
   },
   interactive = false,
+  ariaLabel,
   className = '',
   style,
 }: LineChartProps) {
   // Data that has not arrived yet is an empty chart, not a throw.
-  const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
+  // A point whose y is not a number is left out rather than drawn at NaN.
+  const series = React.useMemo(
+    () => normaliseSeries(rawSeries).map((s) => ({ ...s, data: numericPoints(s.data, 'y') })),
+    [rawSeries]
+  );
+  const xLayout = React.useMemo(() => layoutX(series), [series]);
   const [hoveredSeries, setHoveredSeries] = React.useState<number | null>(null);
   const [hoveredPointIndex, setHoveredPointIndex] = React.useState<number | null>(null);
   const svgRef = React.useRef<SVGSVGElement>(null);
@@ -84,15 +92,13 @@ export function LineChart({
   const chartHeight = height - padding.top - padding.bottom;
 
   const allPoints = series.flatMap((s) => s.data);
-  const xValues = allPoints.map((p, idx) => (typeof p.x === 'number' ? p.x : idx));
   const yValues = allPoints.map((p) => p.y);
 
   // A chart is routinely bound to data that has not arrived yet. `Math.max()`
   // of nothing is -Infinity, which is truthy, so the `|| 1` guards below never
   // fired and the axis rendered "-Infinityk" above five NaN ticks.
   const hasPoints = allPoints.length > 0;
-  const xMin = hasPoints ? Math.min(...xValues) : 0;
-  const xMax = hasPoints ? Math.max(...xValues) : 1;
+  const { min: xMin, max: xMax } = xLayout;
 
   // Pad away from zero at each end, rather than scaling both ends by 1.1.
   //
@@ -114,19 +120,19 @@ export function LineChart({
   const yMin = propYMin ?? Math.floor(rawYMin / tickStep) * tickStep;
   const yMax = propYMax ?? (Math.ceil(rawYMax / tickStep) * tickStep || 1);
 
-  const scaleX = (x: number | string, index: number = 0): number => {
-    const numX = typeof x === 'number' ? x : index;
-    return padding.left + ((numX - xMin) / (xMax - xMin || 1)) * chartWidth;
+  const scaleX = (position: number): number => {
+    return padding.left + ((position - xMin) / (xMax - xMin || 1)) * chartWidth;
   };
+  const pointX = (seriesIndex: number, index: number): number => scaleX(xLayout.position(seriesIndex, index));
 
   const scaleY = (y: number): number => {
     return padding.top + chartHeight - ((y - yMin) / (yMax - yMin || 1)) * chartHeight;
   };
 
-  const generatePath = (data: DataPoint[], smooth = false): string => {
+  const generatePath = (data: DataPoint[], seriesIndex: number, smooth = false): string => {
     if (data.length === 0) return '';
     const points = data.map((point, idx) => ({
-      x: scaleX(point.x, idx),
+      x: pointX(seriesIndex, idx),
       y: scaleY(point.y),
     }));
 
@@ -151,11 +157,11 @@ export function LineChart({
     return path;
   };
 
-  const generateFillPath = (data: DataPoint[], smooth = false): string => {
+  const generateFillPath = (data: DataPoint[], seriesIndex: number, smooth = false): string => {
     if (data.length === 0) return '';
-    const linePath = generatePath(data, smooth);
-    const lastX = scaleX(data[data.length - 1].x, data.length - 1);
-    const firstX = scaleX(data[0].x, 0);
+    const linePath = generatePath(data, seriesIndex, smooth);
+    const lastX = pointX(seriesIndex, data.length - 1);
+    const firstX = pointX(seriesIndex, 0);
     const baseline = scaleY(yMin);
     return `${linePath} L ${lastX} ${baseline} L ${firstX} ${baseline} Z`;
   };
@@ -168,7 +174,7 @@ export function LineChart({
       let closestIdx = 0;
       let closestDist = Infinity;
       for (let i = 0; i < refSeries.data.length; i++) {
-        const px = scaleX(refSeries.data[i].x, i);
+        const px = pointX(0, i);
         const dist = Math.abs(px - mouseX);
         if (dist < closestDist) {
           closestDist = dist;
@@ -178,7 +184,7 @@ export function LineChart({
       return closestIdx;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [series, padding, chartWidth, xMin, xMax]
+    [series, xLayout, padding, chartWidth, xMin, xMax]
   );
 
   const handleMouseMove = React.useCallback(
@@ -238,12 +244,11 @@ export function LineChart({
   }
 
   const xAxisLabels: React.ReactNode[] = [];
-  const uniqueXValues = [...new Set(allPoints.map((p) => p.x))];
   const maxLabels = Math.max(1, Math.floor(chartWidth / 60));
-  const step = Math.max(1, Math.ceil(uniqueXValues.length / maxLabels));
-  uniqueXValues.forEach((x, idx) => {
+  const step = Math.max(1, Math.ceil(xLayout.ticks.length / maxLabels));
+  xLayout.ticks.forEach(({ value: x, position }, idx) => {
     if (idx % step === 0) {
-      const xPos = scaleX(x, idx);
+      const xPos = scaleX(position);
       xAxisLabels.push(
         <text
           key={`x-label-${idx}`}
@@ -259,9 +264,16 @@ export function LineChart({
     }
   });
 
+  const label =
+    ariaLabel ??
+    describeChart(
+      'Line chart',
+      series.map((s) => ({ name: s.name, values: s.data.map((p) => `${formatXLabel(p.x)} ${formatYLabel(p.y)}`) }))
+    );
+
   // Crosshair vertical line at hovered point
   const crosshairX = hoveredPointIndex !== null && series[0]?.data[hoveredPointIndex]
-    ? scaleX(series[0].data[hoveredPointIndex].x, hoveredPointIndex)
+    ? pointX(0, hoveredPointIndex)
     : null;
 
   return (
@@ -273,6 +285,8 @@ export function LineChart({
         preserveAspectRatio="xMidYMid meet"
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
+        role="img"
+        aria-label={label}
       >
         {showGrid && gridLines}
 
@@ -340,19 +354,19 @@ export function LineChart({
           const isDimmed = interactive && hoveredSeries !== null && hoveredSeries !== seriesIndex;
           return (
             <g
-              key={s.name}
+              key={`${seriesIndex}-${s.name}`}
               opacity={isDimmed ? 0.25 : 1}
               style={{ transition: 'opacity 0.2s ease' }}
             >
               {s.fill && (
                 <path
-                  d={generateFillPath(s.data, s.smooth)}
+                  d={generateFillPath(s.data, seriesIndex, s.smooth)}
                   fill={color}
                   fillOpacity={s.fillOpacity ?? 0.1}
                 />
               )}
               <path
-                d={generatePath(s.data, s.smooth)}
+                d={generatePath(s.data, seriesIndex, s.smooth)}
                 fill="none"
                 stroke={color}
                 strokeWidth={s.strokeWidth ?? 2}
@@ -367,7 +381,7 @@ export function LineChart({
                   return (
                     <circle
                       key={idx}
-                      cx={scaleX(point.x, idx)}
+                      cx={pointX(seriesIndex, idx)}
                       cy={scaleY(point.y)}
                       r={r}
                       fill={isHoveredPoint ? color : color}
@@ -420,7 +434,7 @@ export function LineChart({
             const point = s.data[hoveredPointIndex];
             if (!point) return null;
             return (
-              <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <div key={`${seriesIndex}-${s.name}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span
                   style={{
                     width: '8px',
@@ -453,7 +467,7 @@ export function LineChart({
             const isActive = hoveredSeries === null || hoveredSeries === idx;
             return (
               <div
-                key={s.name}
+                key={`${idx}-${s.name}`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',

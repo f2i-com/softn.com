@@ -114,10 +114,11 @@ function LegacyTileMap({
     };
   }, [src, render]);
 
-  // Re-render when layers change
+  // Re-render when layers change, and when the map is resized: setting a
+  // canvas's width or height clears it, and nothing else would repaint it.
   React.useEffect(() => {
     render();
-  }, [render]);
+  }, [render, mapWidth, mapHeight]);
 
   const canvasW = mapWidth * tileSize;
   const canvasH = mapHeight * tileSize;

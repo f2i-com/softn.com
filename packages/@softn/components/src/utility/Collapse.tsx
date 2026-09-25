@@ -28,8 +28,14 @@ export function Collapse({
 }: CollapseProps): React.ReactElement {
   const contentRef = React.useRef<HTMLDivElement>(null);
   const [height, setHeight] = React.useState<number | 'auto'>(isOpen ? 'auto' : 0);
+  // The effect animates *changes* of `isOpen`. Run on mount it animated a
+  // panel that started closed from its full height down to 0: a visible
+  // open-and-shut bounce on every page load.
+  const shownOpen = React.useRef<boolean | null>(isOpen);
 
   React.useEffect(() => {
+    if (shownOpen.current === isOpen) return;
+    shownOpen.current = isOpen;
     if (isOpen) {
       const contentHeight = contentRef.current?.scrollHeight ?? 0;
       setHeight(contentHeight);
@@ -38,7 +44,12 @@ export function Collapse({
         setHeight('auto');
       }, duration);
 
-      return () => clearTimeout(timer);
+      return () => {
+        clearTimeout(timer);
+        // Interrupted (a StrictMode re-run, a changed duration): let the next
+        // run finish the job rather than skip it as already shown.
+        shownOpen.current = null;
+      };
     } else {
       const contentHeight = contentRef.current?.scrollHeight ?? 0;
       setHeight(contentHeight);
@@ -55,6 +66,7 @@ export function Collapse({
       return () => {
         cancelAnimationFrame(outer);
         if (inner !== undefined) cancelAnimationFrame(inner);
+        shownOpen.current = null;
       };
     }
   }, [isOpen, duration]);
@@ -62,12 +74,17 @@ export function Collapse({
   const containerStyle: React.CSSProperties = {
     overflow: 'hidden',
     height: typeof height === 'number' ? `${height}px` : height,
-    transition: `height ${duration}ms cubic-bezier(0.16, 1, 0.3, 1)`,
+    // Closed content is height 0 but still there: its links and fields stayed
+    // in the tab order and a screen reader read it. `visibility: hidden` takes
+    // it out of both; transitioning visibility keeps it visible until the
+    // collapse has finished, and makes it visible at once on the way open.
+    visibility: isOpen ? 'visible' : 'hidden',
+    transition: `height ${duration}ms cubic-bezier(0.16, 1, 0.3, 1), visibility ${duration}ms`,
     ...style,
   };
 
   return (
-    <div className={className} style={containerStyle}>
+    <div className={className} style={containerStyle} aria-hidden={isOpen ? undefined : true}>
       <div ref={contentRef}>{children}</div>
     </div>
   );

@@ -114,6 +114,22 @@ describe('Camera when play() is interrupted', () => {
     expect(onError).toHaveBeenCalledWith('Permission denied');
   });
 
+  it('turns the camera off when the viewfinder fails after the device opened', async () => {
+    // The stream is live once getUserMedia answers. A play() that fails for a
+    // real reason used to show the error with the tracks still running — the
+    // recording light stayed on until the component went away.
+    (HTMLMediaElement.prototype.play as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      Promise.reject(new DOMException('The element has no supported sources.', 'NotSupportedError'))
+    );
+    const onError = vi.fn();
+    mount(<Camera onError={onError} />);
+    await grant();
+
+    expect(onError).toHaveBeenCalledWith('The element has no supported sources.');
+    expect(handedOut).toHaveLength(1);
+    expect(handedOut[0].tracks.every((t) => t.readyState === 'ended')).toBe(true);
+  });
+
   it('clears a previous failure when it starts again', async () => {
     const gum = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
     gum.mockImplementationOnce(() => Promise.reject(new DOMException('Permission denied', 'NotAllowedError')));

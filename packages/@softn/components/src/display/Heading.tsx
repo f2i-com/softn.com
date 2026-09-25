@@ -110,8 +110,11 @@ export function Heading({
   style,
   children,
 }: HeadingProps): React.ReactElement {
-  const Tag = `h${level}` as keyof JSX.IntrinsicElements;
-  const levelStyle = levelStyles[level];
+  // `level` often comes from a `.ui` expression, so it may be 0, 7, "2" or
+  // NaN; anything outside 1-6 used to crash on the missing style.
+  const safeLevel = Math.min(6, Math.max(1, Math.round(Number(level)) || 1)) as 1 | 2 | 3 | 4 | 5 | 6;
+  const Tag = `h${safeLevel}` as keyof JSX.IntrinsicElements;
+  const levelStyle = levelStyles[safeLevel];
 
   const isGradient = variant === 'gradient' && !color;
 

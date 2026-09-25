@@ -22,6 +22,13 @@ export interface AlertProps {
   showIcon?: boolean;
   /** Border radius */
   borderRadius?: 'none' | 'sm' | 'md' | 'lg' | 'xl';
+  /**
+   * Announcement role. By default an error or a warning is an `alert` (read
+   * out at once) and info or success a `status` (read when the reader is
+   * free); `none` renders no live region, for an alert that is part of the
+   * page from the start.
+   */
+  role?: 'alert' | 'status' | 'none';
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -39,39 +46,33 @@ interface VariantColors {
   icon: string;
 }
 
+/**
+ * The colours for each status.
+ *
+ * The tinted styles (light, subtle, outline) mix their background and border
+ * from the status colour itself and draw text in the page's text colour. They
+ * used the -50/-200/-700 steps, which App's variables never define, so under
+ * a dark theme -700 text sat dark on a dark surface and warning's -50
+ * fallback painted a near-white box. A mix of the -500 step with transparent
+ * reads on either surface.
+ */
+function statusColors(status: string, fallback: string): VariantColors {
+  const base = `var(--color-${status}-500, ${fallback})`;
+  return {
+    bg: base,
+    bgLight: `color-mix(in srgb, ${base} 12%, transparent)`,
+    border: `color-mix(in srgb, ${base} 35%, transparent)`,
+    text: 'var(--color-text, currentColor)',
+    textDark: 'var(--color-white, white)',
+    icon: base,
+  };
+}
+
 const variantColors: Record<string, VariantColors> = {
-  info: {
-    bg: 'var(--color-info-500, #3b82f6)',
-    bgLight: 'var(--color-info-50, rgba(59, 130, 246, 0.1))',
-    border: 'var(--color-info-200, rgba(59, 130, 246, 0.25))',
-    text: 'var(--color-info-700, #1d4ed8)',
-    textDark: 'var(--color-white, #ffffff)',
-    icon: 'var(--color-info-500, #3b82f6)',
-  },
-  success: {
-    bg: 'var(--color-success-500, #22c55e)',
-    bgLight: 'var(--color-success-50, rgba(34, 197, 94, 0.1))',
-    border: 'var(--color-success-200, rgba(34, 197, 94, 0.25))',
-    text: 'var(--color-success-700, #15803d)',
-    textDark: 'var(--color-white, #ffffff)',
-    icon: 'var(--color-success-500, #22c55e)',
-  },
-  warning: {
-    bg: 'var(--color-warning-500, #f59e0b)',
-    bgLight: 'var(--color-warning-50, #fffbeb)',
-    border: 'var(--color-warning-200, #fde68a)',
-    text: 'var(--color-warning-700, #b45309)',
-    textDark: 'var(--color-white, #ffffff)',
-    icon: 'var(--color-warning-500, #f59e0b)',
-  },
-  error: {
-    bg: 'var(--color-error-500, #ef4444)',
-    bgLight: 'var(--color-error-50, rgba(239, 68, 68, 0.1))',
-    border: 'var(--color-error-200, rgba(239, 68, 68, 0.25))',
-    text: 'var(--color-error-700, #b91c1c)',
-    textDark: 'var(--color-white, #ffffff)',
-    icon: 'var(--color-error-500, #ef4444)',
-  },
+  info: statusColors('info', '#3b82f6'),
+  success: statusColors('success', '#22c55e'),
+  warning: statusColors('warning', '#f59e0b'),
+  error: statusColors('error', '#ef4444'),
 };
 
 const radiusValues: Record<string, string> = {
@@ -192,6 +193,7 @@ export function Alert({
   onDismiss,
   showIcon = true,
   borderRadius = 'md',
+  role,
   className,
   style,
   children,
@@ -210,6 +212,9 @@ export function Alert({
   }
 
   const alertStyles = getAlertStyles(variant, alertStyle, colors);
+  // Every Alert used to be `role="alert"`, so an info note on a page was read
+  // out assertively the moment the page loaded.
+  const liveRole = role ?? (variant === 'error' || variant === 'warning' ? 'alert' : 'status');
   const isDark = alertStyle === 'filled';
 
   const getShadow = () => {
@@ -239,6 +244,7 @@ export function Alert({
   const contentStyle: React.CSSProperties = {
     flex: 1,
     minWidth: 0,
+    overflowWrap: 'anywhere',
   };
 
   const titleStyle: React.CSSProperties = {
@@ -270,8 +276,16 @@ export function Alert({
   };
 
   return (
-    <div className={className} style={containerStyle} role="alert">
-      {showIcon && <span style={iconStyle}>{icons[variant]}</span>}
+    <div
+      className={className}
+      style={containerStyle}
+      role={liveRole === 'none' ? undefined : liveRole}
+    >
+      {showIcon && (
+        <span style={iconStyle} aria-hidden="true">
+          {icons[variant]}
+        </span>
+      )}
       <div style={contentStyle}>
         {title && <div style={titleStyle}>{title}</div>}
         {children && <div style={messageStyle}>{children}</div>}

@@ -7,7 +7,7 @@
 
 import * as React from 'react';
 import type { DataPoint } from './LineChart';
-import { normaliseSeries } from './series';
+import { describeChart, layoutX, normaliseSeries, numericPoints } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface AreaChartSeries {
@@ -37,6 +37,8 @@ export interface AreaChartProps {
   stacked?: boolean;
   gradient?: boolean;
   interactive?: boolean;
+  /** Text alternative for the chart; a summary of its values by default */
+  ariaLabel?: string;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -67,11 +69,17 @@ export function AreaChart({
   stacked = false,
   gradient = false,
   interactive = false,
+  ariaLabel,
   className = '',
   style,
 }: AreaChartProps) {
   // Data that has not arrived yet is an empty chart, not a throw.
-  const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
+  // A point whose y is not a number is left out rather than drawn at NaN.
+  const series = React.useMemo(
+    () => normaliseSeries(rawSeries).map((s) => ({ ...s, data: numericPoints(s.data, 'y') })),
+    [rawSeries]
+  );
+  const xLayout = React.useMemo(() => layoutX(series), [series]);
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
   const [hoveredPointIndex, setHoveredPointIndex] = React.useState<number | null>(null);
   const chartId = React.useId();
@@ -113,14 +121,12 @@ export function AreaChart({
   }, [series, stacked, stackedData]);
 
   const allPoints = series.flatMap((s) => s.data);
-  const xValues = allPoints.map((p, idx) => (typeof p.x === 'number' ? p.x : idx));
 
   // Same reasoning as LineChart: `Math.max()` of nothing is -Infinity, and
   // scaling a negative maximum by 1.1 moves it below the minimum, inverting
   // the domain so every point maps off the canvas.
   const hasPoints = allPoints.length > 0;
-  const xMin = hasPoints ? Math.min(...xValues) : 0;
-  const xMax = hasPoints ? Math.max(...xValues) : 1;
+  const { min: xMin, max: xMax } = xLayout;
 
   const dataMin = hasPoints ? Math.min(...allYValues) : 0;
   const dataMax = hasPoints ? Math.max(...allYValues) : 0;
@@ -135,9 +141,14 @@ export function AreaChart({
   const yMin = propYMin ?? Math.floor(rawYMin / tickStep) * tickStep;
   const yMax = propYMax ?? (Math.ceil(rawYMax / tickStep) * tickStep || 1);
 
-  const scaleX = (x: number | string, index: number = 0): number => {
-    const numX = typeof x === 'number' ? x : index;
-    return padding.left + ((numX - xMin) / (xMax - xMin || 1)) * chartWidth;
+  const scaleX = (position: number): number => {
+    return padding.left + ((position - xMin) / (xMax - xMin || 1)) * chartWidth;
+  };
+  const pointX = (seriesIndex: number, index: number): number => scaleX(xLayout.position(seriesIndex, index));
+  /** A stacked column's x: from the first series that has a point there. */
+  const stackX = (index: number): number => {
+    const owner = series.findIndex((s) => index < s.data.length);
+    return pointX(owner < 0 ? 0 : owner, index);
   };
 
   const scaleY = (y: number): number => {
@@ -200,7 +211,7 @@ export function AreaChart({
       let closestIdx = 0;
       let closestDist = Infinity;
       for (let i = 0; i < refSeries.data.length; i++) {
-        const px = scaleX(refSeries.data[i].x, i);
+        const px = pointX(0, i);
         const dist = Math.abs(px - mouseX);
         if (dist < closestDist) {
           closestDist = dist;
@@ -210,7 +221,7 @@ export function AreaChart({
       return closestIdx;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [series, padding, chartWidth, xMin, xMax]
+    [series, xLayout, padding, chartWidth, xMin, xMax]
   );
 
   const handleMouseMove = React.useCallback(
@@ -273,12 +284,11 @@ export function AreaChart({
 
   // X-axis labels
   const xAxisLabels: React.ReactNode[] = [];
-  const uniqueXValues = [...new Set(allPoints.map((p) => p.x))];
   const maxLabels = Math.max(1, Math.floor(chartWidth / 60));
-  const step = Math.max(1, Math.ceil(uniqueXValues.length / maxLabels));
-  uniqueXValues.forEach((x, idx) => {
+  const step = Math.max(1, Math.ceil(xLayout.ticks.length / maxLabels));
+  xLayout.ticks.forEach(({ value: x, position }, idx) => {
     if (idx % step === 0) {
-      const xPos = scaleX(x, idx);
+      const xPos = scaleX(position);
       xAxisLabels.push(
         <text
           key={`x-label-${idx}`}
@@ -316,7 +326,7 @@ export function AreaChart({
 
   // Crosshair x position
   const crosshairX = hoveredPointIndex !== null && series[0]?.data[hoveredPointIndex]
-    ? scaleX(series[0].data[hoveredPointIndex].x, hoveredPointIndex)
+    ? pointX(0, hoveredPointIndex)
     : null;
 
   // Render series
@@ -332,18 +342,18 @@ export function AreaChart({
 
     if (stacked && stackedData) {
       topPoints = stackedData[seriesIndex].map((p, idx) => ({
-        x: scaleX(p.x, idx),
+        x: stackX(idx),
         y: scaleY(p.y),
       }));
       if (seriesIndex > 0) {
         bottomPoints = stackedData[seriesIndex - 1].map((p, idx) => ({
-          x: scaleX(p.x, idx),
+          x: stackX(idx),
           y: scaleY(p.y),
         }));
       }
     } else {
       topPoints = s.data.map((point, idx) => ({
-        x: scaleX(point.x, idx),
+        x: pointX(seriesIndex, idx),
         y: scaleY(point.y),
       }));
     }
@@ -353,7 +363,7 @@ export function AreaChart({
     const fillColor = gradient ? `url(#area-grad-${chartId}-${seriesIndex})` : color;
 
     return (
-      <g key={s.name} opacity={seriesOpacity} style={{ transition: 'opacity 0.2s ease' }}>
+      <g key={`${seriesIndex}-${s.name}`} opacity={seriesOpacity} style={{ transition: 'opacity 0.2s ease' }}>
         <path
           d={fillPath}
           fill={fillColor}
@@ -368,7 +378,7 @@ export function AreaChart({
           strokeLinejoin="round"
         />
         {s.data.map((point, idx) => {
-          const cx = scaleX(point.x, idx);
+          const cx = stacked && stackedData ? stackX(idx) : pointX(seriesIndex, idx);
           const cy = stacked && stackedData ? scaleY(stackedData[seriesIndex][idx].y) : scaleY(point.y);
           const isHoveredPoint = interactive && hoveredPointIndex === idx;
           return (
@@ -404,6 +414,14 @@ export function AreaChart({
         preserveAspectRatio="xMidYMid meet"
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
+        role="img"
+        aria-label={
+          ariaLabel ??
+          describeChart(
+            stacked ? 'Stacked area chart' : 'Area chart',
+            series.map((s) => ({ name: s.name, values: s.data.map((p) => `${formatXLabel(p.x)} ${formatYLabel(p.y)}`) }))
+          )
+        }
       >
         {gradient && <defs>{gradientDefs}</defs>}
 
@@ -502,7 +520,7 @@ export function AreaChart({
             const point = s.data[hoveredPointIndex];
             if (!point) return null;
             return (
-              <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <div key={`${seriesIndex}-${s.name}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span
                   style={{
                     width: '8px',
@@ -535,7 +553,7 @@ export function AreaChart({
             const isActive = hoveredIndex === null || hoveredIndex === idx;
             return (
               <div
-                key={s.name}
+                key={`${idx}-${s.name}`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',

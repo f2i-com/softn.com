@@ -7,6 +7,8 @@
 
 import React from 'react';
 import { isSafeUrl } from '@softn/core';
+import { cssPaint } from '../utils/egress';
+import { usePrefersReducedMotion } from '../utils/motion';
 
 export interface AvatarProps {
   /** Image source */
@@ -148,21 +150,7 @@ function getSizeValue(size: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | number): number {
   return typeof size === 'number' ? size : sizeValues[size];
 }
 
-// Check for reduced motion preference
-function usePrefersReducedMotion(): boolean {
-  const [prefersReducedMotion, setPrefersReducedMotion] = React.useState(false);
-
-  React.useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-    setPrefersReducedMotion(mediaQuery.matches);
-
-    const handler = (e: MediaQueryListEvent) => setPrefersReducedMotion(e.matches);
-    mediaQuery.addEventListener('change', handler);
-    return () => mediaQuery.removeEventListener('change', handler);
-  }, []);
-
-  return prefersReducedMotion;
-}
+const DEFAULT_BADGE_COLOR = 'var(--color-error-500, #ef4444)';
 
 export function Avatar({
   src,
@@ -171,13 +159,13 @@ export function Avatar({
   size = 'md',
   shape = 'circle',
   border = false,
-  borderColor = 'var(--color-white, #ffffff)',
+  borderColor = 'var(--color-bg, #ffffff)',
   backgroundColor,
   textColor = '#ffffff',
   status = 'none',
   statusPosition = 'bottom-right',
   badge,
-  badgeColor = 'var(--color-error-500, #ef4444)',
+  badgeColor = DEFAULT_BADGE_COLOR,
   ring = false,
   ringColor = 'var(--color-primary-500, #6366f1)',
   onClick,
@@ -275,6 +263,7 @@ export function Avatar({
 
   // Badge positioning (always top-right)
   const badgeSize = Math.max(sizeValue * 0.4, 16);
+  const badgePaint = cssPaint(badgeColor) ?? DEFAULT_BADGE_COLOR;
   const badgeStyle: React.CSSProperties = {
     position: 'absolute',
     top: -badgeSize / 4,
@@ -282,7 +271,9 @@ export function Avatar({
     minWidth: badgeSize,
     height: badgeSize,
     borderRadius: badgeSize / 2,
-    background: `linear-gradient(135deg, ${badgeColor}, ${badgeColor})`,
+    // Interpolated into `background`, where a `url()` — or a value that
+    // closes this gradient and opens an image layer — would be fetched.
+    background: `linear-gradient(135deg, ${badgePaint}, ${badgePaint})`,
     color: '#ffffff',
     fontSize: Math.max(badgeSize * 0.6, 10),
     fontWeight: 600,
@@ -308,6 +299,16 @@ export function Avatar({
     }
   };
 
+  const badgeText =
+    badge === undefined || badge === null || badge === ''
+      ? ''
+      : typeof badge === 'number'
+        ? `${badge > 99 ? '99+' : badge} ${badge === 1 ? 'notification' : 'notifications'}`
+        : String(badge);
+  const spokenName = [ariaLabel ?? name ?? alt ?? 'Avatar', status !== 'none' ? status : '', badgeText]
+    .filter(Boolean)
+    .join(', ');
+
   const showPulseAnimation = status !== 'none' && statusConfig?.pulse && !prefersReducedMotion;
 
   return (
@@ -327,9 +328,12 @@ export function Avatar({
         onKeyDown={onClick ? handleKeyDown : undefined}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
-        role={onClick ? 'button' : undefined}
+        // The status dot and the badge are colour and a number in a corner;
+        // the name says them in words. An avatar with custom children leaves
+        // them to speak for themselves.
+        role={onClick ? 'button' : children ? undefined : 'img'}
         tabIndex={onClick ? 0 : undefined}
-        aria-label={ariaLabel ?? (onClick ? (name ?? alt ?? 'Avatar') : undefined)}
+        aria-label={onClick || !children ? spokenName : ariaLabel}
       >
         <div style={imgContainerStyle}>
           {children ? (
@@ -349,9 +353,11 @@ export function Avatar({
             />
           )}
         </div>
-        {status !== 'none' && <span style={statusStyle} />}
+        {status !== 'none' && <span style={statusStyle} aria-hidden="true" />}
         {badge !== undefined && (
-          <span style={badgeStyle}>{typeof badge === 'number' && badge > 99 ? '99+' : badge}</span>
+          <span style={badgeStyle} aria-hidden={onClick || !children ? true : undefined}>
+            {typeof badge === 'number' && badge > 99 ? '99+' : badge}
+          </span>
         )}
       </div>
     </>
@@ -365,7 +371,7 @@ export function AvatarGroup({
   max = 4,
   size = 'md',
   spacing = -8,
-  borderColor = 'var(--color-white, #ffffff)',
+  borderColor = 'var(--color-bg, #ffffff)',
   className,
   style,
   children,
@@ -404,7 +410,11 @@ export function AvatarGroup({
 
   return (
     <div className={className} style={containerStyle}>
-      {remainingCount > 0 && <span style={remainingStyle}>+{remainingCount}</span>}
+      {remainingCount > 0 && (
+        <span style={remainingStyle} role="img" aria-label={`${remainingCount} more`}>
+          +{remainingCount}
+        </span>
+      )}
       {visibleChildren.reverse().map((child, index) => (
         <div key={index} style={index > 0 ? itemStyle : undefined}>
           {React.isValidElement(child)

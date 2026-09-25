@@ -5,6 +5,7 @@
  */
 
 import { CHART_PALETTE_DARK, CHART_PALETTE_LIGHT } from './chart-palette';
+import { CODE_PALETTE_DARK, CODE_PALETTE_LIGHT, type CodePalette } from './code-palette';
 
 export interface ColorScale {
   50: string;
@@ -43,6 +44,12 @@ export interface ThemeColors {
    * before it existed still type-checks; the light palette is used then.
    */
   chart?: readonly string[];
+
+  /**
+   * CodeEditor's syntax colours, published as `--color-code-<kind>`.
+   * Optional like `chart`; a kind left out keeps the editor's fallback.
+   */
+  code?: Partial<CodePalette>;
 
   // Semantic aliases
   background: string;
@@ -292,6 +299,7 @@ export const lightTheme: Theme = {
   colors: {
     primary: primaryScale,
     chart: CHART_PALETTE_LIGHT,
+    code: CODE_PALETTE_LIGHT,
     secondary: secondaryScale,
     success: successScale,
     warning: warningScale,
@@ -434,11 +442,33 @@ export const lightTheme: Theme = {
   },
 };
 
+/**
+ * The dark theme's grays run the other way: gray-50 is the subtle surface just
+ * off the background and gray-900 the ink, as they are on a light page. That is
+ * what App's own dark variables have always meant by the numbers, so a
+ * component that paints a zebra stripe in gray-50 or a label in gray-700 reads
+ * the same under either provider. With the light scale kept here, the dark
+ * theme drew those stripes and headers near-white behind near-white text.
+ */
+const darkGrayScale: ColorScale = {
+  50: '#1e293b',
+  100: '#334155',
+  200: '#475569',
+  300: '#64748b',
+  400: '#94a3b8',
+  500: '#94a3b8',
+  600: '#cbd5e1',
+  700: '#e2e8f0',
+  800: '#f1f5f9',
+  900: '#f8fafc',
+};
+
 export const darkTheme: Theme = {
   ...lightTheme,
   name: 'dark',
   colors: {
     ...lightTheme.colors,
+    gray: darkGrayScale,
     background: '#0f172a',
     surface: '#1e293b',
     surfaceHover: '#334155',
@@ -448,5 +478,6 @@ export const darkTheme: Theme = {
     textMuted: '#94a3b8',
     textDisabled: '#64748b',
     chart: CHART_PALETTE_DARK,
+    code: CODE_PALETTE_DARK,
   },
 };

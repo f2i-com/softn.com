@@ -133,12 +133,19 @@ export function Slider({
     [min, max, step, value]
   );
 
-  /** Commit a value through the same clamp/step path the pointer uses. */
+  /**
+   * Commit a value from the keyboard, through the same clamp/step path the
+   * pointer uses. Each key press is a whole change — there is no release to
+   * wait for — so it ends as well: an app that saves on `onChangeEnd` saved
+   * nothing a keyboard user did.
+   */
   const commit = (next: number) => {
     const settled = settleValue(next, min, max, step);
     if (settled === value) return;
     if (controlledValue === undefined) setInternalValue(settled);
+    dragValueRef.current = settled;
     onChange?.(settled);
+    onChangeEnd?.(settled);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -338,8 +345,10 @@ export function Slider({
     transform: 'translateX(-50%)',
     marginBottom: 8,
     padding: '4px 8px',
-    backgroundColor: 'var(--color-gray-800, #1f2937)',
-    color: 'white',
+    // The page's own colours, inverted: dark on a light page, light on a
+    // dark one. `gray-800` is near-white in a dark theme, under white text.
+    backgroundColor: 'var(--color-text, #1f2937)',
+    color: 'var(--color-bg, white)',
     fontSize: '0.75rem',
     fontWeight: 500,
     borderRadius: 4,
@@ -356,7 +365,7 @@ export function Slider({
     transform: 'translateX(-50%)',
     borderLeft: '4px solid transparent',
     borderRight: '4px solid transparent',
-    borderTop: '4px solid var(--color-gray-800, #1f2937)',
+    borderTop: '4px solid var(--color-text, #1f2937)',
   };
 
   const formatValue = formatTooltip ?? ((v) => String(v));
