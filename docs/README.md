@@ -4,7 +4,7 @@ Two kinds of writing live here, and they are kept apart on purpose.
 
 | Path | What it is | Who it is for |
 | --- | --- | --- |
-| `content/softn-docs.json` | **The guides softn.com publishes at `/docs/`**: thirty pages, from "What is SoftN?" to hosting, authored in one structured JSON file. The generator below turns it into static HTML. | People using SoftN |
+| `content/softn-docs.json` | **The guides softn.com publishes at `/docs/`**: thirty-one pages, from "What is SoftN?" to hosting, authored in one structured JSON file. The generator below turns it into static HTML. | People using SoftN |
 | `engineering/` | Design notes, hosting recipes and audit responses for people working on this repository. Plain Markdown, linked from the root README. | Contributors |
 | `rfcs/` | Proposals not yet implemented. | Contributors |
 | `readme-assets/` | The screenshots the root README shows. | — |
@@ -62,11 +62,11 @@ When adding a page, add it to exactly one navigation group; the validator
 rejects missing references, duplicate routes, duplicate titles and unknown
 fields.
 
-`VALIDATION_REPORT.md` records the checks made when this edition was
-prepared (15 September 2026) and what was not checked: the guides were
-written from the public README and ZIPP documentation, not from a compiled
-checkout, so a maintainer comparing them against the deployed revision
-should update the `review` and `sources` entries as that is done.
+`VALIDATION_REPORT.md` records how the current edition (25 September 2026)
+was checked against the repository source, what passed and what was not
+checked. The content's `review` block names the commit it was compared with;
+when you revise a guide against newer source, update that block, the page's
+`updatedAt` and its `sources` entries together.
 
 ## The engineering notes
 

@@ -101,12 +101,20 @@ export function Pipeline(): React.ReactElement {
 
           <div className="pipe">
             <div className="pipe-head">
-              <span className="pipe-file">logic/main.logic</span>
-              <span className="pipe-what">real JavaScript — classes, async, closures, regex</span>
+              <span className="pipe-file">logic/main.logic · main.py</span>
+              <span className="pipe-what">real JavaScript, or Python — one engine, either language</span>
             </div>
             <Flow stages={LOGIC_PIPE} />
           </div>
         </div>
+
+        <p className="band-sub pipe-note">
+          An app picks its language by file name: a <code>.py</code> file linked with <code>&lt;logic src&gt;</code> is
+          Python, and its top-level names are the app&rsquo;s state just as a JavaScript app&rsquo;s are. A Python app
+          that declares <code>torch</code> in its manifest can build and train small models — tensors, autograd,{' '}
+          <code>torch.nn</code> and optimizers, on the CPU inside the same sandbox.{' '}
+          <a href="/docs/language-support/">What each language can do</a>.
+        </p>
 
         <div className="guards">
           {GUARDS.map((g) => (

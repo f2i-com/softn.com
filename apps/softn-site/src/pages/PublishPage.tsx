@@ -21,7 +21,7 @@ import {
   type Published,
 } from '../lib/api';
 import { copyText } from '../lib/share';
-import { formatBytes, formatDate } from '../lib/format';
+import { formatBytes, formatDate, runsLabel } from '../lib/format';
 import { navigate, type Route } from '../lib/router';
 import { Thumb } from '../components/directory/AppCard';
 import { CategoriesNotice } from '../components/directory/Controls';
@@ -506,7 +506,7 @@ export function YourApps({ lookup }: { lookup?: typeof getApp } = {}): React.Rea
                         {a.name}
                       </a>
                       <span className="muted">
-                        v{a.version} · {a.runs} runs · updated {formatDate(a.updatedAt)}
+                        v{a.version} · {runsLabel(a.runs)} · updated {formatDate(a.updatedAt)}
                       </span>
                     </div>
                     <a className="cta" href={`/publish?update=${encodeURIComponent(a.slug)}`}>
@@ -1199,7 +1199,9 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
           <p className="muted">
             The same thing, over HTTP. A build step, a bot, or a model with a tool can put an app in the directory with one request:
           </p>
-          <pre className="source-code source-plain">
+          {/* It scrolls sideways on every width (the route list's URL is longer
+              than the column), so it has to take focus to be scrolled by key. */}
+          <pre className="source-code source-plain" tabIndex={0} role="region" aria-label="Publishing with curl">
             <code>{`curl -X POST ${typeof window !== 'undefined' ? window.location.origin : ''}/api/apps \\
   -F bundle=@my-app.softn \\
   -F category=games -F author="A robot" -F "tags=arcade,ai-made"
@@ -1357,7 +1359,7 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
         <p className="eyebrow">Update</p>
         <h1 className="page-title">{app.name}</h1>
         <p className="band-sub">
-          v{app.version} · published {formatDate(app.createdAt)} · {app.runs} runs. Everything here needs the edit key publishing handed out.
+          v{app.version} · published {formatDate(app.createdAt)} · {runsLabel(app.runs)}. Everything here needs the edit key publishing handed out.
         </p>
         <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} what="so the listing cannot be moved to another yet" />
 

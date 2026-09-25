@@ -38,7 +38,7 @@ export function WorkspacePreview(): React.ReactElement {
       </div>
       <div id="workspace-panel-data" role="tabpanel" aria-labelledby="workspace-tab-data" hidden={selected !== 1}>
         <a className="workspace-preview-image" href={VIEWS[1].image} target="_blank" rel="noreferrer" aria-label="View full-size screenshot: Data collections">
-          <img src={VIEWS[1].image} alt={VIEWS[1].alt} width="2160" height="1650" />
+          <img src={VIEWS[1].image} alt={VIEWS[1].alt} width="2160" height="1650" loading="lazy" decoding="async" />
           <span className="workspace-preview-expand">View full size ↗</span>
         </a>
       </div>

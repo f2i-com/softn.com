@@ -9,6 +9,7 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { DropAnywhere } from './components/DropAnywhere';
 import { selectPage, useLinkInterception, useRoute } from './lib/router';
 import { getCategories, type Category } from './lib/api';
+import { applyMeta, HOME_TITLE, metaFor } from './lib/meta';
 
 /**
  * Four pages on one bundle, and a fifth for paths that are none of them.
@@ -44,9 +45,20 @@ export default function App(): React.ReactElement {
     return () => ac.abort();
   }, [categoriesAttempt]);
 
+  const selected = selectPage(route.path);
+
   useEffect(() => {
-    if (route.path === '/') document.title = 'Softn — create, refine and run your own apps';
+    if (route.path === '/') document.title = HOME_TITLE;
   }, [route.path]);
+
+  // The canonical URL, description and robots line for the route (lib/meta).
+  // Only a change of page reapplies them, so the description an app's page
+  // sets once its app has loaded is not reset by a search or a filter.
+  const metaKey = selected.kind === 'app' ? `app:${selected.slug}` : selected.kind;
+  useEffect(() => {
+    applyMeta(metaFor(selectPage(route.path)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- metaKey is the page; route.path within one page changes nothing here
+  }, [metaKey]);
 
   // pushState does not perform native fragment scrolling. Wait until the
   // destination page is mounted, then resolve the ID without a CSS selector.
@@ -80,7 +92,6 @@ export default function App(): React.ReactElement {
     main.focus({ preventScroll: true });
   }, [route.path]);
 
-  const selected = selectPage(route.path);
   let page: React.ReactElement;
   switch (selected.kind) {
     case 'directory':

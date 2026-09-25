@@ -19,18 +19,18 @@
     },
     {
       "label": "SoftN Builder",
-      "description": "Shape the interface, inspect source, model data and preview a portable app in one editable workspace.",
+      "description": "Design the interface, write logic in JavaScript or Python, model data and preview a portable app in one editable workspace.",
       "href": "/docs/builder/"
     },
     {
-      "label": "The .softn app format",
-      "description": "What a bundle contains, what an export leaves behind, and how to think about source, seeds and permissions.",
-      "href": "/docs/softn-app-format/"
+      "label": "App logic in JavaScript or Python",
+      "description": "Write an app’s behaviour in JavaScript or Python: state, handlers, host capabilities, and machine learning with torch in Python.",
+      "href": "/docs/logic-zipp/"
     },
     {
-      "label": "How SoftN, ZIPP and XDB fit together",
-      "description": "A readable map of the interface, guest logic, data and hosting responsibilities.",
-      "href": "/docs/architecture/"
+      "label": "The .softn app format",
+      "description": "What a bundle contains, how its manifest configures logic and packages, and how to think about source, seeds and permissions.",
+      "href": "/docs/softn-app-format/"
     },
     {
       "label": "Hosting and deploying SoftN apps",

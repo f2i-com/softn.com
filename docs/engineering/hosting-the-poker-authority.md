@@ -11,7 +11,7 @@ runtime can reach it. This page is the recipe.
 The bundle's sources are in [softn-Examples](https://github.com/f2i-com/softn-Examples); point the server at its `bundles/TexasHoldem/` directory.
 
 ```
-softn-server run path/to/softn-Examples/bundles/TexasHoldem --port 9877 --host 127.0.0.1 --data-dir /var/lib/softn/poker
+softn-server run path/to/softn-Examples/bundles/TexasHoldem --port 9877 --host 127.0.0.1 --data-dir /var/lib/softn/poker --trusted-proxy
 ```
 
 - The bundle can be the directory or the packed `TexasHoldem.softn`.
@@ -22,10 +22,14 @@ softn-server run path/to/softn-Examples/bundles/TexasHoldem --port 9877 --host 1
   workers only add throughput.
 - `--dev` allows every origin and is for a laptop, not a host.
 - `--trusted-proxy` when nginx sits in front, so rate limits see the visitor's
-  address and not the proxy's.
+  address and not the proxy's. It is also what lets requests for your DNS name
+  through: the server refuses a `Host` it was not told about, which stops a
+  DNS-rebinding page from reaching the rooms. Without a proxy in front, name
+  the host instead with `--allowed-hosts poker.example.com`.
 
-Build the binary with `cargo build --release` in `apps/softn-host-rust` (the
-engine crate is the sibling `zipp.org` checkout).
+Build the binary with `cargo build --release` in `apps/softn-host-rust`. The
+engine comes from ZIPP's release tag named in its `Cargo.toml`; XDB is a path
+dependency, so clone `xdb.org` beside this repository first.
 
 ## Where to put it
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getSource, type SourceFile } from '../../lib/api';
 import { formatBytes } from '../../lib/format';
-import { Code } from '../../lib/highlight';
+import { Code, languageOf } from '../../lib/highlight';
 import { copyText } from '../../lib/share';
 
 /**
@@ -95,6 +95,8 @@ function SourceContent({ file, wrap, onWrap }: { file: SourceFile; wrap: boolean
   const active = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const isMarkup = /\.(ui|html|svg|xml)$/i.test(file.path);
+  // Python logic is highlighted as Python; a .logic file stays plain text.
+  const isPython = languageOf(file.path) === 'python';
   return <>
     <div className="source-toolbar">
       <div className="source-current"><strong>{file.path}</strong><span>{formatBytes(file.size)}</span></div>
@@ -110,7 +112,7 @@ function SourceContent({ file, wrap, onWrap }: { file: SourceFile; wrap: boolean
     <div className={`source-pane ${wrap ? 'source-wrap' : ''}`} tabIndex={0} role="region" aria-label={`Source of ${file.path}`}>
       {file.text === null ? <p className="source-message">Preview unavailable for this file. It may be binary or too large to display; download the bundle to read it.</p>
         : file.text.length === 0 ? <p className="source-message">This file is empty.</p>
-        : isMarkup ? <Code source={file.text} className="source-code" />
+        : isMarkup || isPython ? <Code source={file.text} className="source-code" language={languageOf(file.path)} />
         : <pre className="source-code source-plain"><code>{file.text}</code></pre>}
     </div>
   </>;

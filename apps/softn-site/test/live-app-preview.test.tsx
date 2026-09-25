@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { LiveAppPreview } from '../src/components/LiveAppPreview';
+import { LiveAppPreview, prefersManualStart } from '../src/components/LiveAppPreview';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -80,4 +80,33 @@ it('keeps the runtime link useful on failure and recovers from a slow start', ()
   expect(host.querySelector('[data-state]')?.getAttribute('data-state')).toBe('ready');
   act(() => root.render(null));
   expect(disconnect).toHaveBeenCalledOnce();
+});
+
+it('waits for a visitor who asked to save data to start the preview', () => {
+  expect(prefersManualStart({ connection: { saveData: true } } as unknown as Navigator)).toBe(true);
+  expect(prefersManualStart({ connection: { effectiveType: '3g' } } as unknown as Navigator)).toBe(true);
+  expect(prefersManualStart({ connection: { effectiveType: '4g', saveData: false } } as unknown as Navigator)).toBe(false);
+  expect(prefersManualStart({} as Navigator)).toBe(false);
+
+  act(() => root.unmount());
+  vi.stubGlobal('navigator', { ...navigator, connection: { saveData: true } });
+  root = createRoot(host);
+  act(() => root.render(<LiveAppPreview />));
+  expect(host.querySelector('iframe')).toBeNull();
+  expect(host.textContent).toContain('Paused to save data');
+  expect(host.querySelector('a')?.href).toContain('open=');
+  act(() => host.querySelector<HTMLButtonElement>('button.workspace-live-start')!.click());
+  expect(host.querySelector('iframe')).not.toBeNull();
+  expect(host.querySelector('button.workspace-live-start')).toBeNull();
+});
+
+it('does not start the runtime before the page itself has loaded', () => {
+  act(() => root.unmount());
+  const readyState = vi.spyOn(document, 'readyState', 'get').mockReturnValue('interactive');
+  root = createRoot(host);
+  act(() => root.render(<LiveAppPreview />));
+  expect(host.querySelector('iframe')).toBeNull();
+  readyState.mockRestore();
+  act(() => window.dispatchEvent(new Event('load')));
+  expect(host.querySelector('iframe')).not.toBeNull();
 });

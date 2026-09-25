@@ -95,6 +95,34 @@ async function share(room) {
 }`,
   },
   {
+    id: 'python',
+    name: 'Python',
+    hint: '.py logic, and torch',
+    file: 'logic/main.py',
+    source: `# The same contract in Python: every top-level name is
+# state the markup reads, every def a handler it calls.
+# <logic src="../logic/main.py" /> links it; .py is the
+# whole declaration. torch is declared in manifest.json:
+#   "config": { "python": { "packages": ["torch"] } }
+import torch
+import torch.nn as nn
+
+xs = torch.tensor([[0.0], [1.0], [2.0], [3.0]])
+ys = xs * 2.0 + 1.0
+model = nn.Linear(1, 1)
+optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
+loss = 0.0
+
+def train(steps):
+    global loss
+    for _ in range(steps):
+        optimizer.zero_grad()
+        current = ((model(xs) - ys) ** 2).mean()
+        current.backward()
+        optimizer.step()
+        loss = float(current)`,
+  },
+  {
     id: 'smart',
     name: 'Smart components',
     hint: 'a table from one line',

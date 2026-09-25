@@ -13,8 +13,8 @@ const schema=JSON.parse(await readFile(join(KIT_ROOT,'content/softn-docs.schema.
 const modified=fn=>{const d=structuredClone(doc);fn(d);return d;};
 async function temporary(fn){const root=await mkdtemp(join(tmpdir(),'softn-docs-'));try{return await fn(root);}finally{await rm(root,{recursive:true,force:true});}}
 
-test('all 30 pages validate with one index and six navigation groups',()=>{
-  assert.equal(doc.pages.length,30);assert.equal(doc.navigation.length,6);assert.equal(doc.pages.filter(p=>!p.slug).length,1);
+test('all 31 pages validate with one index and six navigation groups',()=>{
+  assert.equal(doc.pages.length,31);assert.equal(doc.navigation.length,6);assert.equal(doc.pages.filter(p=>!p.slug).length,1);
 });
 test('duplicate routes are rejected',()=>assert.throws(()=>validateDocument(modified(d=>d.pages[1].slug=d.pages[2].slug),schema),/duplicate slug/));
 test('missing related-page references are rejected',()=>assert.throws(()=>validateDocument(modified(d=>d.pages[0].relatedPageIds.push('does-not-exist')),schema),/unknown page/));
@@ -70,9 +70,9 @@ test('homepage cards are a compact derivative of the same content',()=>{
 test('build preserves an existing homepage and site sitemap',()=>temporary(async root=>{
   await writeFile(join(root,'index.html'),'original homepage');await writeFile(join(root,'sitemap.xml'),'original sitemap');
   const result=await buildSite({outDir:root,writeIntegration:false});
-  assert.equal(result.pages,30);assert.equal(await readFile(join(root,'index.html'),'utf8'),'original homepage');
+  assert.equal(result.pages,31);assert.equal(await readFile(join(root,'index.html'),'utf8'),'original homepage');
   assert.equal(await readFile(join(root,'sitemap.xml'),'utf8'),'original sitemap');
-  const map=await readFile(join(root,'sitemap-docs.xml'),'utf8');assert.equal((map.match(/<url>/g)||[]).length,30);
+  const map=await readFile(join(root,'sitemap-docs.xml'),'utf8');assert.equal((map.match(/<url>/g)||[]).length,31);
 }));
 test('two builds are deterministic',()=>temporary(async root=>{
   await buildSite({outDir:root,writeIntegration:false});

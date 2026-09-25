@@ -2,7 +2,7 @@ import React from 'react';
 import type { AppCard as AppCardData, Category } from '../../lib/api';
 import { recordRun } from '../../lib/api';
 import { runtimeAppUrl } from '../../lib/appUrls';
-import { formatCount } from '../../lib/format';
+import { formatCount, runsLabel } from '../../lib/format';
 import { Stars } from './Stars';
 
 /**
@@ -129,7 +129,7 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
               {app.rating.average.toFixed(1)}
             </span>
           )}
-          <span className="app-card-stat" title={`${app.runs} runs`}>
+          <span className="app-card-stat" title={runsLabel(app.runs)}>
             <PlayGlyph />
             {formatCount(app.runs)}
           </span>
@@ -250,7 +250,7 @@ export function Featured({ apps, categories, heading = 'Featured' }: { apps: App
             </a>
             <span className="featured-byline">
               {lead.author}
-              {lead.runs > 0 && <> · {formatCount(lead.runs)} runs</>}
+              {lead.runs > 0 && <> · {runsLabel(lead.runs)}</>}
               {lead.rating.count > 0 && <> · {lead.rating.average.toFixed(1)} ★</>}
             </span>
             {lead.description && <p className="featured-desc">{lead.description}</p>}
@@ -279,7 +279,7 @@ export function Featured({ apps, categories, heading = 'Featured' }: { apps: App
               </a>
               <span className="featured-byline">
                 {app.author}
-                {app.runs > 0 && <> · {formatCount(app.runs)} runs</>}
+                {app.runs > 0 && <> · {runsLabel(app.runs)}</>}
               </span>
             </div>
           </article>

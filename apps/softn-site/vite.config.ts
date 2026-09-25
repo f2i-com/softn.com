@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
+import { docsDevPlugin } from '../../scripts/dev-docs.mjs';
 
 const appDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -34,7 +35,7 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
-    plugins: [retireServiceWorkersPlugin(), react()],
+    plugins: [retireServiceWorkersPlugin(), docsDevPlugin(), react()],
     server: {
       port: env.VITE_PORT ? Number(env.VITE_PORT) : 1421,
       strictPort: true,

@@ -67,9 +67,11 @@ function Arrow(): React.ReactElement {
  * Start with the creation workflow and real product screenshots. The live
  * directory follows the tools, independently of whether it has any apps yet.
  *
- * Nothing on this page runs an app. An app's bundle is only fetched when someone presses
- * Play, which opens it in the runtime — so a visit here downloads the site,
- * not the apps.
+ * The directory's apps do not run here: an app's bundle is only fetched when
+ * someone presses Play, which opens it in the runtime. The one exception is
+ * the hero's Fieldnotes preview, which embeds the real runtime — engine and
+ * all — so LiveAppPreview mounts it only after the page has loaded, and not
+ * at all until asked for a visitor saving data or on a slow connection.
  *
  * Three requests feed the page — categories, the featured shelf, the list —
  * and each has its own status. None gates another: the categories are labels
@@ -153,8 +155,9 @@ export function HomePage({
               <em>Yours to change.</em>
             </h1>
             <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
-              Describe what you need with your own AI, or build it by hand. Edit the interface, connect your data and
-              run it in your browser. Take the source with you in one <code>.softn</code> file.
+              Describe what you need with your own AI, or build it by hand. Edit the interface, write the logic in
+              JavaScript or Python, connect your data and run it in your browser. Take the source with you in one{' '}
+              <code>.softn</code> file.
             </p>
             <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
               <a className="cta cta-primary" href={STUDIO_HREF}>
@@ -263,8 +266,8 @@ export function HomePage({
               <span className="how-n">01</span>
               <h3 className="how-name">Run it, in a sandbox</h3>
               <p className="how-copy">
-                App logic runs on <a href="https://github.com/f2i-com/zipp.org">zipp</a>, a JavaScript engine compiled to
-                WebAssembly with nothing of the browser inside it. The network, your camera, its own server storage — an app
+                App logic, in JavaScript or Python, runs on <a href="https://github.com/f2i-com/zipp.org">zipp</a>, an engine
+                compiled to WebAssembly with nothing of the browser inside it. The network, your camera, its own server storage — an app
                 gets those from the host, only if its manifest asks, and only after the page has told you and you have
                 allowed it. That is a boundary, not a promise that an app is harmless.
               </p>
@@ -273,8 +276,8 @@ export function HomePage({
               <span className="how-n">02</span>
               <h3 className="how-name">Read it, remix it</h3>
               <p className="how-copy">
-                Every app&rsquo;s source is on its page. Open it in <a href="/studio/">Studio</a> to have a model change it, or in{' '}
-                <a href="/builder/">Builder</a> to change it by hand, then publish the result as a remix that credits where it came
+                Every app&rsquo;s source is on its page. Open it in <a href={STUDIO_HREF}>Studio</a> to have a model change it, or in{' '}
+                <a href={BUILDER_HREF}>Builder</a> to change it by hand, then publish the result as a remix that credits where it came
                 from.
               </p>
             </div>

@@ -90,6 +90,29 @@ main:focus-visible {
   display: none;
 }
 
+/*
+ * On a phone the product links scroll sideways in a row of their own
+ * (bar.css). docs.js scrolls the current page, Docs, into view and marks
+ * which ends have more links; those ends fade, so the row says it scrolls
+ * even when no label happens to be cut in half.
+ */
+@media (max-width: 720px) {
+  .softn-bar-links[data-more='end'] {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 3rem), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 3rem), transparent);
+  }
+
+  .softn-bar-links[data-more='start'] {
+    -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 3rem), transparent);
+    mask-image: linear-gradient(to left, #000 calc(100% - 3rem), transparent);
+  }
+
+  .softn-bar-links[data-more='start end'] {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+  }
+}
+
 
 /* ---------------------------------------------------------------------------
  * Layout: guide list, article, "on this page".
@@ -256,10 +279,9 @@ main:focus-visible {
   box-shadow: 0 0 0 3px var(--mint-glow);
 }
 
-.search-hint {
-  margin: 0.5rem 0 0;
-  font-size: 0.8125rem;
-  color: var(--dimmer);
+/* The hint is only the text shown if the index cannot load (docs.js). */
+.search-hint[hidden] {
+  display: none;
 }
 
 #search-results {
@@ -533,6 +555,85 @@ th {
 
 tbody tr:last-child td {
   border-bottom: none;
+}
+
+@media (max-width: 640px) {
+  /* Two columns wrap to the width of a phone rather than scrolling. */
+  table {
+    min-width: 0;
+  }
+
+  th,
+  td {
+    padding: 0.6rem 0.875rem;
+  }
+
+  /*
+   * Three or more columns read as one card per row: the first cell heads
+   * the row, and every other cell carries its column name.
+   */
+  .table-wide table {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .table-wide thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .table-wide tbody,
+  .table-wide tr,
+  .table-wide td {
+    display: block;
+  }
+
+  .table-wide caption {
+    display: block;
+    order: 1;
+  }
+
+  .table-wide tr {
+    padding: 0.75rem 1rem 0.875rem;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .table-wide tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  .table-wide td {
+    padding: 0;
+    border: none;
+  }
+
+  .table-wide td + td {
+    margin-top: 0.5rem;
+  }
+
+  .table-wide td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 0.1rem;
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--dimmer);
+  }
+
+  .table-wide td:first-child {
+    font-weight: 600;
+    color: var(--paper);
+  }
+
+  .table-wide td:first-child::before {
+    content: none;
+  }
 }
 
 .callout {
