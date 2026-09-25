@@ -36,7 +36,9 @@ interface FrameBarProps {
  * playing from its directory page, so an app looks the same wherever it was
  * opened from. It names the app, offers the way home and the way out, and
  * folds to a corner tab when the app wants every pixel. Drawn from the shared
- * tokens; nothing in it is coloured except the one button that stops the app.
+ * tokens, and uncoloured: coral means the language and mint the machine, and
+ * a Close button is neither. Its buttons are the product bar's outlined chip
+ * (its GitHub link), so the two bars read as one family.
  */
 const frameBarStyles = `
   .softn-frame-bar {
@@ -138,8 +140,10 @@ const frameBarStyles = `
   }
   .softn-frame-btn:hover { color: var(--paper); border-color: var(--dimmer); }
   .softn-frame-btn:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
-  .softn-frame-close { border-color: var(--coral); color: var(--coral); }
-  .softn-frame-close:hover { color: var(--paper); border-color: var(--coral); background: var(--coral-glow); }
+  /* Close stops the app, so it is set apart by weight and edge rather than by
+     an accent: it was coral, the colour that means "the SoftN language". */
+  .softn-frame-close { color: var(--paper); border-color: var(--line-strong); }
+  .softn-frame-close:hover { border-color: var(--paper); background: var(--ink-3); }
   .softn-frame-menu { position: relative; display: flex; align-items: center; }
   .softn-frame-menu-btn {
     width: 32px; height: 30px;

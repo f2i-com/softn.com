@@ -33,6 +33,8 @@ export interface BundleInspection {
   capabilities: string[];
   storagePolicies: Record<string, string>;
   execution: string;
+  /** The Python packages `config.python.packages` asks the runtime for, e.g. `['torch']`. */
+  pythonPackages: string[];
   iconDataUrl: string | null;
   /** The first error, for the one line a drop zone shows and a submit button reads. */
   problem: string | null;
@@ -48,6 +50,49 @@ const LARGE_FILE_BYTES = 8 * 1024 * 1024;
 const LARGE_BUNDLE_BYTES = 48 * 1024 * 1024;
 
 const FILE_GROUPS = ['ui', 'logic', 'server', 'xdb', 'assets'] as const;
+
+/**
+ * The Python packages a bundle can ask the runtime for, by the name it imports.
+ *
+ * A package is opt-in because it is large and most apps never import it:
+ * torch is a machine-learning library, and an app that trains or runs a model
+ * says so in its manifest rather than every app paying for it. The engine the
+ * runtime loads today carries torch built in; a declaration is what lets the
+ * runtime choose an engine or load the package for the apps that need it, and
+ * it is refused by name when the loaded engine cannot provide it.
+ */
+export const PYTHON_PACKAGES: readonly string[] = ['torch'];
+
+/**
+ * Read `config.python.packages` out of a parsed manifest: the packages it
+ * declares, and what is wrong with the declaration. Anything but a list of
+ * names this runtime offers is a problem, because a misspelt `"pytorch"` that
+ * was quietly ignored would surface only when the app's first `import torch`
+ * was refused.
+ */
+export function readPythonPackages(manifest: unknown): { packages: string[]; problems: string[] } {
+  const config = manifest && typeof manifest === 'object' ? (manifest as { config?: unknown }).config : undefined;
+  const python = config && typeof config === 'object' ? (config as { python?: unknown }).python : undefined;
+  if (python === undefined) return { packages: [], problems: [] };
+  if (!python || typeof python !== 'object' || Array.isArray(python)) {
+    return { packages: [], problems: ['manifest.json config.python must be an object, such as { "packages": ["torch"] }.'] };
+  }
+  const declared = (python as { packages?: unknown }).packages;
+  if (declared === undefined) return { packages: [], problems: [] };
+  if (!Array.isArray(declared)) {
+    return { packages: [], problems: ['manifest.json config.python.packages must be a list of package names, such as ["torch"].'] };
+  }
+  const packages: string[] = [];
+  const problems: string[] = [];
+  for (const name of declared) {
+    if (typeof name !== 'string' || !PYTHON_PACKAGES.includes(name)) {
+      problems.push(`manifest.json config.python.packages names ${JSON.stringify(name)}; the runtime offers ${PYTHON_PACKAGES.join(', ')}.`);
+    } else if (!packages.includes(name)) {
+      packages.push(name);
+    }
+  }
+  return { packages, problems };
+}
 
 function fmt(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -102,6 +147,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     capabilities: [],
     storagePolicies: {},
     execution: 'main',
+    pythonPackages: [],
     iconDataUrl: null,
     ...partial,
     report,
@@ -133,7 +179,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     description?: unknown;
     main?: unknown;
     icon?: unknown;
-    config?: { execution?: unknown };
+    config?: { execution?: unknown; python?: unknown };
     files?: Record<string, unknown>;
   };
   try {
@@ -186,6 +232,8 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   else if (declaredExecution !== undefined && declaredExecution !== 'main') {
     warn(`config.execution is "${String(declaredExecution)}"; the runtime knows "main" and "worker" and will use main.`);
   }
+  const { packages: pythonPackages, problems: pythonPackageProblems } = readPythonPackages(manifest);
+  for (const problem of pythonPackageProblems) error(problem);
 
   // The declaration, read the way the directory reads it: a name the runtime
   // does not have, or an entry it cannot read, is refused at publication.
@@ -266,6 +314,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     capabilities,
     storagePolicies,
     execution,
+    pythonPackages,
     iconDataUrl,
   });
 }

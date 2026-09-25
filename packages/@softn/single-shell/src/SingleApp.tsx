@@ -1,10 +1,14 @@
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
-import { SoftNWithXDB, inspectDeclaration, type Capability, type PermissionConfig } from '@softn/core';
+import { SoftNWithXDB, inspectDeclaration, type PermissionConfig, type PythonProject } from '@softn/core';
 // The theme entry, not the root barrel: the barrel is the eager path, and
 // keeping Scene3D out of this shell would then rest on the bundler
 // tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
 import { ThemeProvider } from '@softn/components/theme';
-import { createImportResolver, withheldPermissions } from '@softn/runtime-shell/bundleProcessor';
+import { createImportResolver } from '@softn/runtime-shell/bundleProcessor';
+// The consent rule, bar and dialog the web runtime and the desktop loader
+// use too, so a bundle is asked in the same words on a single-app page.
+import { hasSavedGrant, saveGrant, withheldPermissions } from '@softn/runtime-shell/consent';
+import { PermissionBar } from '@softn/runtime-shell/PermissionBar';
 import type { AssetResolver } from '@softn/runtime-shell/bundleProcessor';
 import { loadApplication, type ConfigSource, type LoadedApplication } from './load';
 import type { DirectoryConfig } from './config';
@@ -42,20 +46,10 @@ export interface RunnableApplication {
   source: string;
   logicBasePath?: string;
   preIncludedLogicPaths: string[];
+  /** The app's Python project, when its logic is Python. */
+  python?: PythonProject;
   assets: AssetResolver;
 }
-const labels: Record<Capability, string> = {
-  net: 'Internet access',
-  camera: 'Camera',
-  mic: 'Microphone',
-  files: 'Files you choose',
-  qr: 'QR scanning',
-  ai: 'Local AI model downloads',
-  gpu: 'Graphics hardware',
-  sync: 'Device synchronization',
-  storage: 'Server storage',
-  accel: 'Accelerated code execution',
-};
 export function Loading({ text = 'Loading…' }: { text?: string }) {
   return (
     <div className="loading" role="status" aria-live="polite">
@@ -64,29 +58,50 @@ export function Loading({ text = 'Loading…' }: { text?: string }) {
     </div>
   );
 }
-export function Failure() {
+/**
+ * What a visitor sees when the app cannot open. The sentence stays plain, but
+ * the runtime's own reason is kept: logged to the console and shown behind a
+ * details toggle. Every failure used to become the same sentence with nothing
+ * in the console, so "uses the Python package torch, and the engine this page
+ * loaded does not provide it" or a host module that failed to load could only
+ * be found by attaching a debugger to the page.
+ */
+export function Failure({ error }: { error?: unknown }) {
+  const reason = describeFailure(error);
   return (
     <div className="loading" role="alert">
       <h1>Unable to open this application</h1>
       <p>Please try again. If the problem continues, contact the site owner.</p>
+      {reason && (
+        <details>
+          <summary>Technical details</summary>
+          <p>{reason}</p>
+        </details>
+      )}
       <button onClick={() => location.reload()}>Try again</button>
     </div>
   );
 }
-class Boundary extends Component<{ children: React.ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
+/** The message a failure carries, if it carries one worth showing. */
+export function describeFailure(error: unknown): string | null {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  return null;
+}
+/** Record a failure where a site owner will look for it, once. */
+function reportFailure(error: unknown): void {
+  console.error('[SoftN] The application could not open:', error);
+}
+class Boundary extends Component<{ children: React.ReactNode }, { error: unknown; failed: boolean }> {
+  state: { error: unknown; failed: boolean } = { error: undefined, failed: false };
+  static getDerivedStateFromError(error: unknown) {
+    return { error, failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    reportFailure(error);
   }
   render() {
-    return this.state.failed ? <Failure /> : this.props.children;
-  }
-}
-function savedGrant(key: string) {
-  try {
-    return localStorage.getItem(key) === 'allowed';
-  } catch {
-    return false;
+    return this.state.failed ? <Failure error={this.state.error} /> : this.props.children;
   }
 }
 /** The bar over a directory's play page folds away; remembered per browser, as the runtime remembers its own. */
@@ -117,8 +132,10 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   const requested = inspectDeclaration(app.declared).requested;
   // Preapproved by the operator: granted from the start, with no bar and
   // nothing written to storage — the host's setting, not a consent.
-  const [answer, setAnswer] = useState<'pending' | 'allow' | 'deny'>(() =>
-    app.config.permissionMode === 'preapproved' || !requested.length || savedGrant(app.grantKey) ? 'allow' : 'pending'
+  // "Not now" is the bar's own state (it folds to a strip with Review
+  // permissions), so the shell only knows whether access was granted.
+  const [answer, setAnswer] = useState<'pending' | 'allow'>(() =>
+    app.config.permissionMode === 'preapproved' || !requested.length || hasSavedGrant(app.grantKey) ? 'allow' : 'pending'
   );
   const granted = answer === 'allow';
   const permissions = useMemo(
@@ -182,13 +199,12 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     [runsUrl]
   );
   function allow() {
-    try {
-      localStorage.setItem(app.grantKey, 'allowed');
-    } catch {
-      /* Consent still applies for this session. */
-    }
+    // A failed write does not undo it: consent still applies for this session.
+    saveGrant(app.grantKey);
     setAnswer('allow');
   }
+  // Where focus goes back to after Allow; see PermissionBar's appRootRef.
+  const content = useRef<HTMLDivElement>(null);
   return (
     <ThemeProvider defaultDarkMode={app.config.theme === 'dark'}>
       <div
@@ -236,27 +252,18 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
             />
           )}
           {answer === 'pending' && (
-            <section className="permission-bar" aria-labelledby="permission-title">
-              <div className="permission-message">
-                <strong id="permission-title">{app.config.title} requests access</strong>
-                <span>{requested.map((c) => labels[c]).join(' · ')}</span>
-                <details>
-                  <summary>Permission details</summary>
-                  <p>
-                    Access is disabled until you allow it. Your browser may ask separately for
-                    camera or microphone access.
-                  </p>
-                  <pre>{JSON.stringify(app.declared.permissions, null, 2)}</pre>
-                </details>
-              </div>
-              <div className="actions">
-                <button onClick={() => setAnswer('deny')}>Not now</button>
-                <button onClick={allow}>Allow</button>
-              </div>
-            </section>
+            <PermissionBar
+              className="permission-bar"
+              appName={app.config.title}
+              appIcon={app.icon}
+              config={app.declared}
+              capabilities={requested}
+              appRootRef={content}
+              onAllow={allow}
+            />
           )}
         </div>
-        <div className="application-content">
+        <div className="application-content" ref={content} tabIndex={-1}>
           <Boundary>
             <SoftNWithXDB
               source={app.source}
@@ -267,19 +274,18 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               assetResolver={app.assets}
               logicBasePath={app.logicBasePath}
               preIncludedLogicPaths={app.preIncludedLogicPaths}
+              python={app.python}
               executionPreference={app.execution}
               permissionConfig={permissions}
               storageEndpoint={app.config.directory?.storage}
               onLoad={onLoad}
               loading={<Loading text={app.config.loadingText} />}
-              error={() => <Failure />}
+              error={(error: Error) => {
+                reportFailure(error);
+                return <Failure error={error} />;
+              }}
             />
           </Boundary>
-          {answer === 'deny' && requested.length > 0 && (
-            <button className="review" onClick={() => setAnswer('pending')}>
-              Review permissions
-            </button>
-          )}
         </div>
       </div>
     </ThemeProvider>
@@ -292,7 +298,8 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
 export function SingleApp({ source, backendCall }: { source: ConfigSource; backendCall?: HostBackendCall }) {
   const [app, setApp] = useState<LoadedApplication | null>(null);
   const [hosted, setHosted] = useState<HostBackendCall | undefined>(undefined);
-  const [failed, setFailed] = useState(false);
+  // The reason the app could not load, or null while it has not failed.
+  const [failure, setFailure] = useState<{ error: unknown } | null>(null);
   // Read when the app loads rather than listed as a dependency: a parent that
   // passes a fresh function on each render would otherwise reload the app.
   const passed = useRef(backendCall);
@@ -319,8 +326,10 @@ export function SingleApp({ source, backendCall }: { source: ConfigSource; backe
         setHosted(() => host);
         setApp(result);
       })
-      .catch(() => {
-        if (active) setFailed(true);
+      .catch((error: unknown) => {
+        if (!active) return;
+        reportFailure(error);
+        setFailure({ error });
       })
       .finally(() => clearTimeout(timeout));
     return () => {
@@ -341,8 +350,8 @@ export function SingleApp({ source, backendCall }: { source: ConfigSource; backe
   }, [page]);
   return (
     <main className={page ? 'single-app layout-page' : 'single-app'}>
-      {failed ? (
-        <Failure />
+      {failure ? (
+        <Failure error={failure.error} />
       ) : app ? (
         <Application app={app} backendCall={backendCall ?? hosted} />
       ) : (

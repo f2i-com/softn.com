@@ -52,46 +52,9 @@ body {
 .application-content .loading {
   min-height: 100%;
 }
-.permission-bar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  max-height: 45dvh;
-  overflow: auto;
-  text-align: left;
-  padding: 12px 20px;
-  border-bottom: 1px solid #ffffff30;
-  background: #20212c;
-}
-.permission-message {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-  font-size: 14px;
-}
-.permission-message summary {
-  cursor: pointer;
-}
-.permission-message pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 12px;
-}
-.actions {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  flex-shrink: 0;
-}
-@media (max-width: 540px) {
-  .permission-bar {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 8px;
-  }
-}
+/* The permission bar is the shared one from @softn/runtime-shell, which
+   carries its own styles; it sits in .application-chrome and is measured
+   with it. */
 button {
   font: inherit;
   cursor: pointer;
@@ -104,12 +67,6 @@ button {
 button:focus-visible {
   outline: 3px solid #acb8ff;
   outline-offset: 3px;
-}
-.review {
-  position: fixed;
-  right: 12px;
-  bottom: 12px;
-  z-index: 100;
 }
 .wheel {
   flex-shrink: 0;
@@ -194,4 +151,8 @@ html.softn-layout-page #root,
   height: auto !important;
   min-height: calc(100dvh - var(--softn-tab-bar-height, 0px));
   overflow: visible !important;
+}
+/* Focused only to put focus back into the app after Allow; it draws no ring. */
+.application-content:focus {
+  outline: none;
 }

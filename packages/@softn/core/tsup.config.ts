@@ -56,7 +56,15 @@ export default defineConfig({
     // .wasm file must sit next to the chunk.
     cpSync('wasm-zipp/zipp_wasm_bg.wasm', 'dist/zipp_wasm_bg.wasm');
     if (existsSync('wasm-zipp/THIRD_PARTY_LICENSES.txt')) cpSync('wasm-zipp/THIRD_PARTY_LICENSES.txt', 'dist/zipp-licenses.txt');
-    console.log('[tsup] Copied the zipp engine to dist/');
+    // The torch package, which the runtime adds only for an app that declares
+    // torch. Its loader (zipp_torch.js) is bundled into a chunk of its own by
+    // the dynamic import in zipp-wasm-loader.ts; the .wasm is fetched from
+    // `./core-runtime/zipp_torch.wasm` beside that chunk, which the mirror
+    // below puts at dist/core-runtime/zipp_torch.wasm and every app's
+    // coreWorkerAssetPlugin copies to assets/core-runtime/ — outside every
+    // PWA's precache, since most apps never import torch.
+    cpSync('wasm-zipp-torch/zipp_torch.wasm', 'dist/zipp_torch.wasm');
+    console.log('[tsup] Copied the zipp engine and its torch package to dist/');
     execFileSync(process.execPath,['scripts/build-speech-worker.mjs'],{stdio:'inherit'});
     // Mirror dist/ into dist/core-runtime/ so static worker URL resolution (./core-runtime/runtime/script-worker.js) succeeds on disk
     copyDirRecursive('dist', 'dist/core-runtime');

@@ -76,6 +76,13 @@ describe('sanitizeRichText', () => {
     expect(out).toContain('/a.png');
   });
 
+  it('removes the attributes that reach the top layer, above the consent bar', () => {
+    // `<a interestfor>` opens a popover on hover with no script at all.
+    const out = sanitizeRichText('<a href="#" interestfor="p">hover</a><div id="p" popover="manual">Allow</div>');
+    expect(out).not.toMatch(/interestfor|popover/i);
+    expect(out).toContain('Allow');
+  });
+
   it('removes scripts and handlers', () => {
     const out = sanitizeRichText('<p onclick="alert(1)">hi</p><script>alert(2)</script>');
     expect(out).not.toMatch(/onclick/i);

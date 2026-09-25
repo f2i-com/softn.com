@@ -14,9 +14,11 @@
  *       `composeBundleSource`, which apps/softn-web's bundleProcessor
  *       wraps (its own copy of this check is apps/softn-web/test/
  *       parity-run-paths.test.ts, against the built package);
- *   (b) Studio's preview assembly: `assemblePreviewSource` and
- *       `buildPreviewXDBState` from apps/softn-studio/src/lib/
- *       previewProject.ts, over the VFS the import would produce, and
+ *   (b) Studio's preview composition: `composePreviewProject` (core's
+ *       composer over the project, as VisualCanvas calls it, then its
+ *       `stripTemplateComments`) and `buildPreviewXDBState` from
+ *       apps/softn-studio/src/lib/previewProject.ts, over the VFS the
+ *       import would produce, and
  *       `planBundle` from exportBundle.ts for what Studio would export back;
  *   (c) Builder's preview pipeline: `loadBundle` from apps/softn-builder/
  *       src/utils/bundleLoader.ts, then the same steps LivePreview.tsx
@@ -62,7 +64,7 @@ import type { PermissionConfig } from '../src/runtime/script-runtime';
 import type { SoftNProps } from '../src/types';
 // Studio's preview assembly and export plan, by relative path: these are
 // the modules VisualCanvas and the export button call.
-import { assemblePreviewSource, buildPreviewXDBState } from '../../../../apps/softn-studio/src/lib/previewProject';
+import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } from '../../../../apps/softn-studio/src/lib/previewProject';
 import { planBundle } from '../../../../apps/softn-studio/src/lib/exportBundle';
 import type { VFSFile } from '../../../../apps/softn-studio/src/types/studio';
 // Builder's open path and source generator: what LivePreview composes from.
@@ -314,14 +316,8 @@ async function runtimePath(): Promise<RunPath> {
 
 async function studioPath(): Promise<RunPath> {
   const files = studioVFS();
-  const uiFiles = new Map<string, string>();
-  const logicFiles = new Map<string, string>();
-  for (const [path, file] of files) {
-    if (typeof file.content !== 'string') continue;
-    if (/\.ui$/i.test(path)) uiFiles.set(path, file.content);
-    if (/\.logic$/i.test(path)) logicFiles.set(path, file.content);
-  }
-  const assembled = assemblePreviewSource('ui/main.ui', MAIN_UI, uiFiles, logicFiles);
+  const composed = composePreviewProject(files, 'ui/main.ui');
+  if (!composed.ok) throw new Error(`Studio refused the bundle: ${composed.error}`);
   const xdbState = buildPreviewXDBState(files);
   // VisualCanvas hands SoftNRenderer `source`, `functions`, `initialData`,
   // `importResolver`, `preIncludedLogicPaths`, `appId` — and no
@@ -330,7 +326,7 @@ async function studioPath(): Promise<RunPath> {
   const report = inspectDeclaration(permissionConfig);
   return {
     name: 'studio',
-    source: assembled.source,
+    source: stripTemplateComments(composed.composition.source),
     requested: report.requested,
     storagePolicies: report.storagePolicies,
     permissionConfig,

@@ -288,6 +288,7 @@ export function createBundleRuntime(
 
     for (const [, data] of bundle.xdbData) {
       if (disposed || signal?.aborted) return;
+      if (data.warning) console.warn(`[SoftN] Bundled database ${data.warning}`);
       seedXDBBundleData(xdb, data);
     }
   }

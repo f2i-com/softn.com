@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { XDBService } from '../src/runtime/xdb';
-import { XDBServerSync } from '../src/runtime/xdb-server-sync';
+import { XDBServerSync, backoffDelay, syncTicketUrl } from '../src/runtime/xdb-server-sync';
 
 class FakeSocket {
   static OPEN = 1;
@@ -174,6 +174,13 @@ describe('XDBServerSync', () => {
     xdb.create('notes', { text: 'one' });
     xdb.create('notes', { text: 'two' });
     expect(first.ofType('sync_push')).toHaveLength(2);
+    // The host stored both.
+    for (const push of first.ofType('sync_push')) {
+      first.receive({
+        type: 'sync_ack',
+        opIds: (push.ops as Array<{ id: string }>).map((op) => op.id),
+      });
+    }
 
     // Written while down: this one, and only this one, goes out after.
     first.drop();
@@ -190,6 +197,80 @@ describe('XDBServerSync', () => {
     const ops = pushes[0].ops as Array<Record<string, unknown>>;
     expect(ops.map((op) => (op.data as { text: string }).text)).toEqual(['offline']);
 
+    sync.disconnect();
+  });
+
+  it('sends an op the host never answered again after a reconnect', () => {
+    vi.useFakeTimers();
+    const sync = new XDBServerSync(xdb, {
+      wsUrl: 'wss://sync.example.test/sync',
+      appVersion: '1',
+      reconnectDelay: 10,
+    });
+    sync.connect();
+    const first = FakeSocket.made[0];
+    first.open();
+    authOk(first);
+    xdb.create('notes', { text: 'stored' });
+    xdb.create('notes', { text: 'lost with the connection' });
+    const [stored] = first.ofType('sync_push')[0].ops as Array<{ id: string }>;
+    first.receive({ type: 'sync_ack', opIds: [stored.id] });
+    first.drop();
+
+    vi.advanceTimersByTime(20);
+    const second = FakeSocket.made[1];
+    second.open();
+    authOk(second);
+    second.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    const ops = second
+      .ofType('sync_push')
+      .flatMap((p) => p.ops as Array<{ data: { text: string } }>);
+    expect(ops.map((op) => op.data.text)).toEqual(['lost with the connection']);
+    sync.disconnect();
+  });
+
+  it('keeps an op the host asked to retry and pushes it again after a backoff', () => {
+    vi.useFakeTimers();
+    const sync = new XDBServerSync(xdb, {
+      wsUrl: 'wss://sync.example.test/sync',
+      appVersion: '1',
+      reconnectDelay: 100,
+    });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    socket.open();
+    authOk(socket);
+    xdb.create('notes', { text: 'quota full' });
+    const [op] = socket.ofType('sync_push')[0].ops as Array<{ id: string }>;
+    socket.receive({ type: 'sync_retry', opIds: [op.id], reason: 'Storage quota exceeded' });
+    // Not straight back into the same refusal.
+    expect(socket.ofType('sync_push')).toHaveLength(1);
+    vi.advanceTimersByTime(100);
+    const pushes = socket.ofType('sync_push');
+    expect(pushes).toHaveLength(2);
+    expect((pushes[1].ops as Array<{ id: string }>).map((o) => o.id)).toEqual([op.id]);
+    // Acknowledged, it is done: nothing more goes out.
+    socket.receive({ type: 'sync_ack', opIds: [op.id] });
+    vi.advanceTimersByTime(60_000);
+    expect(socket.ofType('sync_push')).toHaveLength(2);
+    sync.disconnect();
+  });
+
+  it('sends a long offline queue in pushes the host accepts', () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    for (let i = 0; i < 1200; i++) xdb.create('notes', { text: `offline ${i}` });
+    socket.open();
+    authOk(socket);
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    const pushes = socket.ofType('sync_push');
+    expect(pushes.length).toBeGreaterThan(2);
+    for (const push of pushes) {
+      expect((push.ops as unknown[]).length).toBeLessThanOrEqual(500);
+      expect(JSON.stringify(push).length).toBeLessThan(4 * 1024 * 1024);
+    }
+    expect(pushes.reduce((n, p) => n + (p.ops as unknown[]).length, 0)).toBe(1200);
     sync.disconnect();
   });
 
@@ -225,5 +306,174 @@ describe('XDBServerSync', () => {
     expect(first.ofType('sync_push')).toHaveLength(0);
 
     sync.disconnect();
+  });
+});
+
+describe('XDBServerSync with a token', () => {
+  function ticketFetch(answer: () => Response) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchStub = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return answer();
+    });
+    vi.stubGlobal('fetch', fetchStub);
+    return calls;
+  }
+
+  it('trades the token for a ticket and never puts the token on the socket', async () => {
+    const calls = ticketFetch(
+      () => new Response(JSON.stringify({ ticket: 'tkt-1' }), { status: 200 })
+    );
+    const sync = new XDBServerSync(xdb, {
+      wsUrl: 'wss://sync.example.test/sync',
+      appVersion: '1',
+      token: 'long-lived-secret',
+    });
+    sync.connect();
+    // The socket waits for the ticket: the host authenticates the handshake,
+    // and a bare upgrade is refused before any message could carry a token.
+    expect(FakeSocket.made).toHaveLength(0);
+    await vi.waitFor(() => expect(FakeSocket.made).toHaveLength(1));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://sync.example.test/sync/ticket');
+    expect(calls[0].init.method).toBe('POST');
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe(
+      'Bearer long-lived-secret'
+    );
+
+    const socket = FakeSocket.made[0];
+    const url = new URL(socket.url);
+    expect(url.searchParams.get('ticket')).toBe('tkt-1');
+    expect(socket.url).not.toContain('long-lived-secret');
+
+    socket.open();
+    authOk(socket);
+    xdb.create('notes', { text: 'hello' });
+    expect(sync.status.connected).toBe(true);
+    expect(JSON.stringify(socket.sent)).not.toContain('long-lived-secret');
+    sync.disconnect();
+  });
+
+  it('reports a refused token once and does not hammer the host', async () => {
+    vi.useFakeTimers();
+    const calls = ticketFetch(() => new Response('Authentication failed', { status: 401 }));
+    const sync = new XDBServerSync(xdb, {
+      wsUrl: 'wss://sync.example.test/sync',
+      appVersion: '1',
+      token: 'wrong',
+      reconnectDelay: 10,
+    });
+    const errors: string[] = [];
+    sync.on('error', (err) => errors.push(String(err)));
+    sync.connect();
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toMatch(/401/);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(calls).toHaveLength(1);
+    expect(FakeSocket.made).toHaveLength(0);
+    sync.disconnect();
+  });
+
+  it('retries a ticket request that failed in transit', async () => {
+    vi.useFakeTimers();
+    let fail = true;
+    const calls = ticketFetch(() => {
+      if (fail) throw new TypeError('network down');
+      return new Response(JSON.stringify({ ticket: 'tkt-2' }), { status: 200 });
+    });
+    const sync = new XDBServerSync(xdb, {
+      wsUrl: 'wss://sync.example.test/sync',
+      appVersion: '1',
+      token: 'secret',
+      reconnectDelay: 10,
+    });
+    sync.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeSocket.made).toHaveLength(0);
+    fail = false;
+    await vi.advanceTimersByTimeAsync(20);
+    expect(calls).toHaveLength(2);
+    expect(FakeSocket.made).toHaveLength(1);
+    expect(new URL(FakeSocket.made[0].url).searchParams.get('ticket')).toBe('tkt-2');
+    sync.disconnect();
+  });
+
+  it('waits as long as a throttled host asks before asking again', async () => {
+    vi.useFakeTimers();
+    let throttled = true;
+    const calls = ticketFetch(() =>
+      throttled
+        ? new Response(JSON.stringify({ error: 'Too many ticket requests' }), {
+            status: 429,
+            headers: { 'Retry-After': '30' },
+          })
+        : new Response(JSON.stringify({ ticket: 'tkt-3' }), { status: 200 })
+    );
+    const sync = new XDBServerSync(xdb, {
+      wsUrl: 'wss://sync.example.test/sync',
+      appVersion: '1',
+      token: 'secret',
+      reconnectDelay: 10,
+    });
+    sync.connect();
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(calls).toHaveLength(1);
+    throttled = false;
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(calls).toHaveLength(2);
+    expect(FakeSocket.made).toHaveLength(1);
+    sync.disconnect();
+  });
+
+  it('backs off between failed attempts instead of retrying at a fixed pace', async () => {
+    vi.useFakeTimers();
+    const calls = ticketFetch(() => {
+      throw new TypeError('network down');
+    });
+    const sync = new XDBServerSync(xdb, {
+      wsUrl: 'wss://sync.example.test/sync',
+      appVersion: '1',
+      token: 'secret',
+      reconnectDelay: 1_000,
+    });
+    sync.connect();
+    // A fixed 1 s delay would have asked 60 times in this minute.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls.length).toBeGreaterThan(2);
+    expect(calls.length).toBeLessThanOrEqual(7);
+    sync.disconnect();
+  });
+
+  it('opens nothing when disconnected while the ticket is on its way', async () => {
+    let release: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>((resolve) => (release = resolve)))
+    );
+    const sync = new XDBServerSync(xdb, {
+      wsUrl: 'wss://sync.example.test/sync',
+      appVersion: '1',
+      token: 't',
+    });
+    sync.connect();
+    sync.disconnect();
+    release(new Response(JSON.stringify({ ticket: 'late' }), { status: 200 }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(FakeSocket.made).toHaveLength(0);
+  });
+
+  it('spreads the backoff between half and all of a doubling ceiling', () => {
+    expect(backoffDelay(1000, 0, () => 0)).toBe(500);
+    expect(backoffDelay(1000, 0, () => 1)).toBe(1000);
+    expect(backoffDelay(1000, 3, () => 1)).toBe(8000);
+    expect(backoffDelay(1000, 50, () => 1)).toBe(60_000);
+  });
+
+  it('derives the ticket address from the sync address', () => {
+    expect(syncTicketUrl('wss://h.example/sync')).toBe('https://h.example/sync/ticket');
+    expect(syncTicketUrl('ws://localhost:3000/tenant-a/sync/?x=1')).toBe(
+      'http://localhost:3000/tenant-a/sync/ticket'
+    );
   });
 });

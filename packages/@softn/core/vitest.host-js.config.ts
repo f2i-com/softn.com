@@ -55,6 +55,11 @@ export default defineWorkspaceTest({
       // sources, the error rewriting — are in `python-contract.test.ts`, which
       // does run here.
       'test/python-formlogic-dialect.test.ts',
+      // A Python app training a torch model. Same reason: there is no Python,
+      // and so no torch, on the host engine. What a torch declaration means to
+      // the composer and the inspector needs no engine and runs here, in
+      // `python-packages.test.ts`.
+      'test/python-torch.test.tsx',
     ],
   },
 });

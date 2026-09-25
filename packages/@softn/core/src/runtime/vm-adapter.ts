@@ -121,6 +121,12 @@ export interface LogicEngine {
 export interface PythonProject {
   readonly files: Readonly<Record<string, string>>;
   readonly modules: readonly string[];
+  /**
+   * The Python packages the app declared in `manifest.json`
+   * (`config.python.packages`), e.g. `['torch']`. The engine must provide each
+   * before the project compiles; absent means none.
+   */
+  readonly packages?: readonly string[];
 }
 
 /**

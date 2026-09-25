@@ -14,9 +14,8 @@ import {
   parseXDBFile,
   seedXDBBundleData,
   composeBundleSource,
-  inspectDeclaration,
 } from '@softn/core';
-import type { BundleArchive, PermissionConfig } from '@softn/core';
+import type { BundleArchive, ComposedBundleSource, PermissionConfig } from '@softn/core';
 import { debug } from '@softn/core';
 
 // The permission read is core's now (audit-core 2.2), so the desktop loader,
@@ -321,7 +320,11 @@ export async function loadXDBData(
 export function processBundle(
   textFiles: Map<string, string>,
   manifest: BundleManifest
-): { source: string; logicBasePath?: string; preIncludedLogicPaths: string[] } {
+): ComposedBundleSource {
+  // The whole composition, `python` included. This used to be declared as
+  // three of its fields, and every host passed on exactly those three — so a
+  // Python app reached the renderer with its project dropped and ran as a
+  // page with no logic at all.
   const result = composeBundleSource(textFiles, manifest.main, manifest.files?.logic);
   debug('[SoftN Web] Final source prepared with inlined components');
   return result;
@@ -490,47 +493,20 @@ export function createImportResolver(
 }
 
 /**
- * The same bundle, with everything it declared withheld.
+ * What a declaration asks for, and the same bundle with all of it withheld,
+ * live in ./consent with the rest of the consent rule every host shares;
+ * re-exported here because this module is where the hosts have always
+ * imported them from.
  *
- * This is what the runtime is handed while the consent bar is up, so the app
- * renders and runs but every softn.* capability fails closed. Two details are
- * load-bearing:
- *
- * `permissions` is an empty object, never null. Both sync gates now refuse a
- * null config outright — that hole was closed in the same change that added
- * this — but an empty object is still what the state means, and it selects the
- * right refusal: a null config makes the runtime say "this bundle ships no
- * permission.json", which is false here and is advice for an author rather
- * than for the person looking at the bar.
- *
- * `consentPending` only changes what a refusal says: "you have not allowed this
- * yet" rather than an instruction to edit a file the author already wrote.
+ * The capability list itself is the schema in `@softn/core` — one list for the
+ * runtime's enforcement, the hosts' consent, the directory's inspection and
+ * its pages. PermissionBar keys its phrasing off `Capability`, so a name added
+ * to the schema without words there fails the build instead of shipping a bar
+ * that says "a capability called \"webusb\"".
  */
-export function withheldPermissions(declared: PermissionConfig): PermissionConfig {
-  return Object.freeze({
-    app: declared.app,
-    permissions: Object.freeze({}),
-    consentPending: true,
-  }) as PermissionConfig;
-}
-
-/**
- * Every capability a permission config asks for.
- *
- * The list itself is the schema in `@softn/core` — one list for the runtime's
- * enforcement, this launcher's consent, the directory's inspection and its
- * pages — re-exported here because the consent check, the grant record and
- * the bar's wording all read it from this module. PermissionBar keys its
- * phrasing off `Capability`, so a name added to the schema without words here
- * fails the build instead of shipping a bar that says "a capability called
- * \"webusb\"".
- */
+export { requestedCapabilities, withheldPermissions } from './consent';
 export { CAPABILITIES } from '@softn/core';
 export type { Capability } from '@softn/core';
-
-export function requestedCapabilities(config: PermissionConfig): string[] {
-  return inspectDeclaration(config).requested;
-}
 
 /** Extract icon as a data URL from bundle binary files */
 /**
