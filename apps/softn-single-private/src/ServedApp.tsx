@@ -5,7 +5,8 @@ import { loadServedApplication } from './load';
 
 export function ServedApp({ boot }: { boot: BootConfig }) {
   const [app, setApp] = useState<RunnableApplication | null>(null);
-  const [failed, setFailed] = useState(false);
+  // Why the app could not load, kept so the failure page can say it.
+  const [failure, setFailure] = useState<{ error: unknown } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     let owned: RunnableApplication | null = null;
@@ -23,8 +24,10 @@ export function ServedApp({ boot }: { boot: BootConfig }) {
         document.title = result.config.title;
         setApp(result);
       })
-      .catch(() => {
-        if (active) setFailed(true);
+      .catch((error: unknown) => {
+        if (!active) return;
+        console.error('[SoftN] The application could not open:', error);
+        setFailure({ error });
       })
       .finally(() => clearTimeout(timeout));
     return () => {
@@ -36,7 +39,7 @@ export function ServedApp({ boot }: { boot: BootConfig }) {
   }, [boot.endpoint]);
   return (
     <main className="single-app">
-      {failed ? <Failure /> : app ? <Application app={app} /> : <Loading text={boot.loadingText} />}
+      {failure ? <Failure error={failure.error} /> : app ? <Application app={app} /> : <Loading text={boot.loadingText} />}
     </main>
   );
 }

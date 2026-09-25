@@ -13,8 +13,6 @@
     "core:event:allow-listen",
     "core:event:allow-emit",
     "cli:default",
-    "dialog:default",
-    "fs:default",
-    "fs:allow-read-file"
+    "dialog:default"
   ]
 }

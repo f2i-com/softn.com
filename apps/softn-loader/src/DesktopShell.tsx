@@ -1,15 +1,22 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { Mark, ThemeToggle } from '@softn/brand';
 import './desktop.css';
 
-export function DesktopShell({ children, appName, onHome, onOpen, canOpen }: {
+export function DesktopShell({ children, chrome, appName, onHome, onOpen, canOpen, contentRef }: {
   children: ReactNode;
+  /** The element the app renders in; focusable, so focus can be put back into the app. */
+  contentRef?: RefObject<HTMLElement>;
+  /**
+   * Runtime chrome drawn under the header and above the app — the permission
+   * bar. Measured with the header, since an app root is sized under both.
+   */
+  chrome?: ReactNode;
   appName?: string;
   onHome: () => void;
   onOpen: () => void;
   canOpen: boolean;
 }) {
-  const header = useRef<HTMLElement>(null);
+  const header = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(58);
   useEffect(() => {
     const element = header.current;
@@ -21,15 +28,18 @@ export function DesktopShell({ children, appName, onHome, onOpen, canOpen }: {
     return () => observer.disconnect();
   }, []);
   return <div className="desktop-shell" style={{ '--softn-tab-bar-height': `${height}px` } as CSSProperties}>
-    <header className="desktop-header" ref={header}>
-      <button className="desktop-brand" onClick={onHome} aria-label="Runtime home"><Mark size={24} /> softn</button>
-      <span className="desktop-title">{appName || 'Desktop runtime'}</span>
-      <span className="desktop-header-actions">
-        {canOpen && <button className="desktop-button" onClick={onOpen}>Open app</button>}
-        <ThemeToggle />
-      </span>
-    </header>
-    <main className="desktop-content">{children}</main>
+    <div className="desktop-chrome" ref={header}>
+      <header className="desktop-header">
+        <button className="desktop-brand" onClick={onHome} aria-label="Runtime home"><Mark size={24} /> softn</button>
+        <span className="desktop-title">{appName || 'Desktop runtime'}</span>
+        <span className="desktop-header-actions">
+          {canOpen && <button className="desktop-button" onClick={onOpen}>Open app</button>}
+          <ThemeToggle />
+        </span>
+      </header>
+      {chrome}
+    </div>
+    <main className="desktop-content" ref={contentRef} tabIndex={-1}>{children}</main>
   </div>;
 }
 

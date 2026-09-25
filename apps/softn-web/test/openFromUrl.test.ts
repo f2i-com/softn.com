@@ -169,7 +169,7 @@ describe('?open= pointing at bytes that are not a bundle', () => {
     await settle();
 
     expect(tabNames()).toEqual([]);
-    expect(container.textContent).not.toContain('Loading Broken');
+    expect(container.textContent).not.toContain('Opening Broken');
   });
 
   it('says so instead of failing silently', async () => {
@@ -177,7 +177,8 @@ describe('?open= pointing at bytes that are not a bundle', () => {
 
     const card = container.querySelector('.softn-shell-error');
     expect(card).not.toBeNull();
-    expect(card?.textContent).toContain('Unable to complete this action');
+    // What went wrong, in words, rather than "Unable to complete this action".
+    expect(card?.querySelector('h2')?.textContent).toMatch(/isn’t a (readable )?\.softn file/);
   });
 
   it('goes back to a URL a reload can act on', async () => {
@@ -279,7 +280,7 @@ describe('?open= pointing at a bundle that does open', () => {
     await settle();
 
     expect(tabNames()).toEqual(['PromptlyUnemployed']);
-    expect(container.textContent).not.toContain('Loading PromptlyUnemployed');
+    expect(container.textContent).not.toContain('Opening PromptlyUnemployed');
     expect(container.querySelector('.softn-shell-error')).toBeNull();
   });
 });

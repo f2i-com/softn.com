@@ -19,7 +19,8 @@ const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animat
 // `ai-transformers-manager-*` and `ai-gpu-compute-manager-*` are the AI
 // managers; `transformers.web-*` and `ort.bundle.min-*` the runtimes behind
 // them; `xdb-sync-*` the peer sync runtime (yjs) and `xdb-server-sync-*` the
-// directory's server sync. Each is a dynamic import in core, so each is a
+// directory's server sync; `zipp_torch-*` the loader for the torch Python
+// package (its zipp_torch.wasm is a worker asset). Each is a dynamic import in core, so each is a
 // chunk of its own, and none is fetched until an app asks. `xdb-*` alone —
 // the XDB module every app opens — is not in this list and stays precached.
 // The build-graph test checks both halves against the emitted names.
@@ -32,6 +33,7 @@ const onDemandRuntimeChunks = [
   'ort.bundle.min',
   'xdb-sync',
   'xdb-server-sync',
+  'zipp_torch',
 ];
 
 // The Three addons Scene3D reaches through its own import() — the model
@@ -151,6 +153,10 @@ export default defineConfig({
         // test holds the precache to it.
         globIgnores: [
           '**/ort-*.wasm',
+          // The QR decoder (<QRReader>), ~0.9 MB, emitted from the host's
+          // build now rather than fetched from jsDelivr. Only a scanning app
+          // needs it, so it is kept by the runtime rule below, not precached.
+          '**/assets/zxing_reader-*.wasm',
           '**/core-runtime/**',
           '**/demos/**',
           '**/assets/vendor-three-*.js',
@@ -174,6 +180,17 @@ export default defineConfig({
             options: {
               cacheName: 'softn-feature-chunks',
               expiration: { maxEntries: 80, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
+            // The QR decoder, hashed like the chunks above and fetched the
+            // first time an app scans; kept so scanning works offline after.
+            urlPattern: /\/assets\/zxing_reader-[^/?#]+\.wasm$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'softn-qr-decoder',
+              expiration: { maxEntries: 2, maxAgeSeconds: 60 * 60 * 24 * 30 },
               cacheableResponse: { statuses: [0, 200] },
             },
           },

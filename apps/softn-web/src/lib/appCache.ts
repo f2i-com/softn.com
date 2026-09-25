@@ -59,6 +59,8 @@ export interface OfflineState {
   /** The shell build the install was made against; see currentBuildId. */
   build: string;
   at: number;
+  /** Why an install that ran did not finish, in words Home can show. */
+  reason?: string;
 }
 
 interface SoftNAppDB {

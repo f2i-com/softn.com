@@ -77,7 +77,8 @@ const ADDON_FILE = new RegExp(
 // the runtimes behind them, the peer and server sync runtimes — by the name
 // each chunk starts with. vite.config.ts keeps these out of the precache
 // (`onDemandRuntimeChunks`); the per-app install fetches the sync one for an
-// app that asked for `sync`, and the AI ones stay online by design.
+// app that asked for `sync` and the torch loader for an app that declares the
+// torch Python package, and the AI ones stay online by design.
 const ON_DEMAND_RUNTIME = [
   'ai-manager',
   'ai-onnx-manager',
@@ -87,6 +88,7 @@ const ON_DEMAND_RUNTIME = [
   'ort.bundle.min',
   'xdb-sync',
   'xdb-server-sync',
+  'zipp_torch',
 ];
 // The inflate worker imports the archive reader from `@softn/core/bundle`,
 // core's own entry for it; through the barrel it measured 1.35 MB. Well

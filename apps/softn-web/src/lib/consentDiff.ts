@@ -4,30 +4,16 @@
  * Grants belong to a bundle's digest, so a new build always asks again. That
  * is right, and it is also where a capability can slip past: someone who
  * approved "the internet" for v1 reads the v2 bar, sees "the internet and
- * your files", and presses Allow the way they did last time. The bar now
- * says what changed, and this is where the change is worked out.
+ * your files", and presses Allow the way they did last time. The bar says
+ * what changed; the diff itself is @softn/runtime-shell's, and finding the
+ * build to compare against is this runtime's, because only it keeps a
+ * library of builds.
  */
 
 import type { CachedApp } from './appCache';
 
-export interface PreviousBuild {
-  version: string;
-  capabilities: string[];
-}
-
-export interface CapabilityChange {
-  /** Asked for now, not before. */
-  added: string[];
-  /** Asked for before, not now. */
-  removed: string[];
-}
-
-export function diffCapabilities(current: readonly string[], previous: readonly string[]): CapabilityChange {
-  return {
-    added: current.filter((c) => !previous.includes(c)),
-    removed: previous.filter((c) => !current.includes(c)),
-  };
-}
+export { diffCapabilities } from '@softn/runtime-shell/consent';
+export type { CapabilityChange, PreviousBuild } from '@softn/runtime-shell/consent';
 
 /**
  * The build of this app the user opened most recently before this one: same

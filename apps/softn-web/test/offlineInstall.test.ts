@@ -19,6 +19,7 @@ import {
   moduleReferences,
   requiredFeatures,
   SYNC_RUNTIME,
+  TORCH_PACKAGE,
   type OfflineInstallOptions,
 } from '../src/lib/offlineInstall';
 import { buildIdFromEntry, isOfflineReady } from '../src/lib/appCache';
@@ -214,6 +215,54 @@ describe('installAppOffline', () => {
     );
     expect(preloadSync).not.toHaveBeenCalled();
     expect(result.features).toEqual(['LineChart', 'Scene3D']);
+  });
+
+  it('fetches the torch package for an app that declares it, and misses it when that fails', async () => {
+    const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
+    const preloadTorch = vi.fn(async (_init: RequestInit) => undefined);
+    const ok = await installAppOffline(
+      app({ pythonPackages: ['numpy', 'torch'] }),
+      host(registry, { preloadTorch })
+    );
+    expect(preloadTorch).toHaveBeenCalledTimes(1);
+    expect(ok.ready).toBe(true);
+    expect(ok.missing).toEqual([]);
+
+    const failing = vi.fn(async (_init: RequestInit) => {
+      throw new Error('zipp_torch.wasm answered 404');
+    });
+    const bad = await installAppOffline(
+      app({ pythonPackages: ['torch'] }),
+      host(registry, { preloadTorch: failing })
+    );
+    expect(bad.ready).toBe(false);
+    expect(bad.missing).toEqual([TORCH_PACKAGE]);
+  });
+
+  it('does not fetch torch for an app that does not declare it', async () => {
+    const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
+    const preloadTorch = vi.fn(async (_init: RequestInit) => undefined);
+    const result = await installAppOffline(app({ pythonPackages: ['numpy'] }), host(registry, { preloadTorch }));
+    expect(preloadTorch).not.toHaveBeenCalled();
+    expect(result.ready).toBe(true);
+  });
+
+  it('stops waiting on the torch fetch when the tab closes', async () => {
+    const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
+    const pending = deferred<void>();
+    const controller = new AbortController();
+    const preloadTorch = vi.fn((_init: RequestInit) => pending.promise);
+    const run = installAppOffline(
+      app({ pythonPackages: ['torch'] }),
+      { ...host(registry, { preloadTorch }), signal: controller.signal }
+    );
+    await vi.waitFor(() => expect(preloadTorch).toHaveBeenCalled());
+    expect(preloadTorch.mock.calls[0][0].signal).toBe(controller.signal);
+    controller.abort();
+    const result = await run;
+    expect(result.ready).toBe(false);
+    expect(result.error).toMatch(/cancelled/);
+    pending.resolve();
   });
 
   it('leaves AI online by design and says so', async () => {

@@ -5,7 +5,7 @@
  * Double-click any .softn file to open it with this app.
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { registerAllBuiltins, ThemeProvider } from '@softn/components';
 import {
   SoftNWithXDB,
@@ -14,6 +14,7 @@ import {
   classifyAsset,
   extractPermissions,
   readManifest,
+  type ComposedBundleSource,
   type PermissionConfig,
   type AppAssetResolver,
 } from '@softn/core';
@@ -23,6 +24,13 @@ import { createBundleAssetResolver } from './bundleAssets';
 import { isSoftnPath, resolveServerConfig, type BundleServerConfig } from './runtimeConfig';
 import { createBundleImportResolver } from './remoteImport';
 import { computeBundleAppId, loadBundleXDBData, processBundleSource } from './bundleRuntime';
+// The consent rule, bar and dialog every host that runs one bundle shares
+// (@softn/runtime-shell), so a bundle is asked in the same words here as in
+// the browser. Grants stay under this loader's own prefix, where earlier
+// versions wrote them.
+import { grantKey, hasSavedGrant, requestedCapabilities, saveGrant, withheldPermissions } from '@softn/runtime-shell/consent';
+import { PermissionBar, DESKTOP_WORDING, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
+import { createNativeFetch, createNativeNetFetch } from './nativeNetFetch';
 import { shortIdentity, type PendingUpgrade } from './installations';
 import {
   UpgradeBlockedError,
@@ -110,6 +118,8 @@ interface BundleManifest {
       orientation?: 'portrait' | 'landscape' | 'auto';
     };
     server?: BundleServerConfig;
+    /** Where the bundle asked its script to run; only the literal 'worker' asks for a worker. */
+    execution?: string;
   };
   permissions?: import('@softn/core').AppPermissions;
 }
@@ -186,6 +196,13 @@ async function setWindowIconFromBundle(
   }
 }
 
+/**
+ * Where an Allow is remembered. The loader's own prefix, the one earlier
+ * versions wrote under, so a package allowed before still opens allowed. (The
+ * bar needs no height report: the shell measures it with its header.)
+ */
+const GRANT_KEY_PREFIX = 'softn-loader:grant:';
+
 function App(): React.ReactElement {
   const [bundlePath, setBundlePath] = useState<string | null>(null);
   const [openRevision, setOpenRevision] = useState(0);
@@ -206,12 +223,27 @@ function App(): React.ReactElement {
   >();
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
   const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
+  // A Python app's project. Without it the renderer has only the empty logic
+  // block the composer leaves in the markup, and the app runs no logic.
+  const [python, setPython] = useState<ComposedBundleSource['python']>();
+  // What the app runs with: its declaration once allowed, everything withheld
+  // until then. `consent` is the request the bar shows while it is withheld.
   const [permissionConfig, setPermissionConfig] = useState<PermissionConfig | null>(null);
+  const [consent, setConsent] = useState<ConsentRequest | null>(null);
+  // The element the app renders in: where focus goes back to after Allow.
+  const contentRef = useRef<HTMLElement>(null);
   const [installationChoice, setInstallationChoice] = useState<LoaderChoice | null>(null);
   const upgradeInProgress = useRef<UpgradeInProgress | null>(null);
   const [upgradeNotice, setUpgradeNotice] = useState<string | null>(null);
   const [assetResolver, setAssetResolver] = useState<AppAssetResolver>();
   const [serverConfig, setServerConfig] = useState(() => resolveServerConfig());
+  // `softn.net.fetch` goes through the native side, under the config the app
+  // is running with (see nativeNetFetch.ts). A new one on Allow is what makes
+  // the renderer rebuild the runtime with the granted config.
+  const netFetchHandler = useMemo(() => {
+    const invoke = tauriInvoke();
+    return invoke && permissionConfig ? createNativeNetFetch(permissionConfig, invoke) : undefined;
+  }, [permissionConfig]);
 
   // Open a file picker to choose a .softn file. On the desktop the native
   // side opens the picker and records the choice, so only files the person
@@ -380,6 +412,7 @@ function App(): React.ReactElement {
     // side effect (R4-SN-01), and the dialog disappears.
     let pendingQuestion: ((decision: LoaderDecision) => void) | null = null;
     const cleanup = () => {
+      setConsent(null);
       for (const controller of remoteControllers) controller.abort();
       remoteControllers.clear();
       if (pendingQuestion) {
@@ -444,8 +477,23 @@ function App(): React.ReactElement {
         // `manifest.permissions` block, which this loader used to ignore, so
         // a bundle published before permission.json existed ran with the
         // network in the browser and was refused it here (audit-core 2.2).
-        const bundlePermissionConfig: PermissionConfig | null = extractPermissions(textFiles, parsedManifest);
-        setPermissionConfig(bundlePermissionConfig);
+        //
+        // A bundle that ships neither declared nothing, and runs as exactly
+        // that: an empty declaration, as it does in the web runtime and the
+        // single-app shell. Handed no config at all, the renderer and the
+        // device components read "no host is enforcing" (the reading a
+        // preview outside any bundle needs), and the least-trusted bundles got
+        // the camera, the microphone and remote images unasked.
+        const declaredConfig: PermissionConfig = extractPermissions(textFiles, parsedManifest) ?? { permissions: {} };
+
+        // Withheld until the person allows it, and remembered per package and
+        // per declaration (grantKey in @softn/runtime-shell/consent), so a
+        // package that changes what it asks for asks again. A bundle that asks
+        // for nothing has nothing to consent to and raises no bar.
+        const requested = requestedCapabilities(declaredConfig);
+        const consentKey = grantKey(resolvedAppId, declaredConfig, GRANT_KEY_PREFIX);
+        const alreadyGranted = requested.length === 0 || hasSavedGrant(consentKey);
+        const runningConfig = alreadyGranted ? declaredConfig : withheldPermissions(declaredConfig);
 
         const resolvedServerConfig = resolveServerConfig(parsedManifest.config?.server);
         setManifest(parsedManifest);
@@ -504,20 +552,36 @@ function App(): React.ReactElement {
         }
         if (!active) return;
 
-        const { source, logicBasePath, preIncludedLogicPaths } = processBundleSource(
+        const { source, logicBasePath, preIncludedLogicPaths, python } = processBundleSource(
           textFiles,
           parsedManifest
         );
         debug('[SoftN Loader] Final source prepared with inlined components');
 
-        const resolver = createBundleImportResolver(textFiles, {
-          permissionConfig: bundlePermissionConfig,
+        // A remote `import` is network access as surely as fetch() in the
+        // app's logic, so it is withheld with the rest, and made through the
+        // native side for the same reason fetch() is.
+        const invoke = tauriInvoke();
+        const importResolverFor = (config: PermissionConfig) => createBundleImportResolver(textFiles, {
+          permissionConfig: config,
           isActive: () => active,
           trackController: (controller) => {
             remoteControllers.add(controller);
             return () => remoteControllers.delete(controller);
           },
+          ...(invoke ? { fetchImpl: createNativeFetch(config, invoke) } : {}),
         });
+        const resolver = importResolverFor(runningConfig);
+        // Allow upgrades the running app in place: a new config and import
+        // resolver make the renderer rebuild the script runtime and keep the
+        // state the person already has, as the web runtime's grant does.
+        const onAllow = () => {
+          if (!active) return;
+          saveGrant(consentKey);
+          setPermissionConfig(declaredConfig);
+          setImportResolver(() => importResolverFor(declaredConfig));
+          setConsent(null);
+        };
 
         loadedAssets = createBundleAssetResolver(binaryFiles, textFiles);
         if (!active) { cleanup(); return; }
@@ -533,12 +597,20 @@ function App(): React.ReactElement {
           }
         }
         if (!active) return;
+        setPermissionConfig(runningConfig);
+        setConsent(alreadyGranted ? null : {
+          config: declaredConfig,
+          capabilities: requested,
+          appName: parsedManifest.name,
+          onAllow,
+        });
         setImportResolver(() => resolver);
         setAssetResolver(() => loadedAssets);
         setServerConfig(resolvedServerConfig);
         setRuntimeAppId(dataId);
         setLogicBasePath(logicBasePath);
         setPreIncludedLogicPaths(preIncludedLogicPaths);
+        setPython(python);
         setMainSource(source);
         setLoading(false);
 
@@ -572,12 +644,20 @@ function App(): React.ReactElement {
     setRuntimeAppId(null);
     setAssetResolver(undefined);
     setImportResolver(undefined);
+    setConsent(null);
     if (isTauri && !isMobile) {
       void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle('Softn — Desktop runtime')).catch(() => {});
     }
   };
 
-  return <DesktopShell appName={bundlePath ? _manifest?.name : undefined} onHome={goHome} onOpen={openFilePicker} canOpen={isTauri || isMobile}>
+  const running = Boolean(bundlePath) && !loading && !error;
+  // Runtime chrome, above the app and outside its theme, so the bundle cannot
+  // paint it as its own UI.
+  const consentBar = running && consent
+    ? <PermissionBar {...consent} wording={DESKTOP_WORDING} appRootRef={contentRef} />
+    : null;
+
+  return <DesktopShell contentRef={contentRef} appName={bundlePath ? _manifest?.name : undefined} chrome={consentBar} onHome={goHome} onOpen={openFilePicker} canOpen={isTauri || isMobile}>
     {installationChoice?.kind === 'upgrade' && <InstallationChoiceDialog choice={installationChoice} />}
     {installationChoice?.kind === 'registry-damaged' && <RegistryDamagedDialog choice={installationChoice} />}
     {installationChoice?.kind === 'upgrade-unresolved' && <UnresolvedUpgradeDialog choice={installationChoice} />}
@@ -590,7 +670,7 @@ function App(): React.ReactElement {
         <SoftNWithXDB
           key={runtimeAppId ?? undefined}
           source={mainSource}
-          scriptExecutionMode="main"
+          executionPreference={_manifest?.config?.execution === 'worker' ? 'worker' : 'main'}
           resumeSavedSyncRoom={false}
           appId={runtimeAppId ?? undefined}
           permissions={_manifest?.permissions}
@@ -598,7 +678,9 @@ function App(): React.ReactElement {
           assetResolver={assetResolver}
           logicBasePath={logicBasePath}
           preIncludedLogicPaths={preIncludedLogicPaths}
+          python={python}
           permissionConfig={permissionConfig ?? undefined}
+          netFetchHandler={netFetchHandler}
           {...serverConfig}
           onLoad={() => {
             // A staged upgrade is complete only now that the new package started (R2-SN-03).
