@@ -35,6 +35,12 @@ const MAX_LIMITER_KEYS: usize = 10_000;
 
 /// Default ceiling on open sync sockets per app (`config.server.maxSyncConnections`).
 pub const DEFAULT_MAX_SYNC_CONNECTIONS: usize = 1024;
+/// Default ceiling on one visitor's open sync sockets per app
+/// (`config.server.maxSyncConnectionsPerVisitor`). The client opens one
+/// socket per app per tab, so this is sixteen tabs of one app from one
+/// address (or IPv6 /64): room for a household or a small office behind one
+/// NAT, while one visitor can hold no more than 1/64 of the default 1024.
+pub const DEFAULT_MAX_SYNC_CONNECTIONS_PER_VISITOR: usize = 16;
 
 /// Why `/sync/ticket` said no.
 #[derive(Debug, PartialEq, Eq)]
@@ -115,13 +121,41 @@ impl AddressLimiter {
     }
 }
 
-/// An open sync socket's claim on the app's connection budget, returned when
-/// the socket is dropped.
-pub struct ConnectionSlot(Arc<std::sync::atomic::AtomicUsize>);
+/// Open sync sockets: in all, and per visitor (keyed as [`limiter_key`] keys
+/// an address, so an IPv6 /64 is one visitor). The map holds at most
+/// `max_connections` keys, since a key is removed when its count reaches 0.
+#[derive(Default)]
+struct OpenConnections {
+    total: usize,
+    per_visitor: std::collections::HashMap<std::net::IpAddr, usize>,
+}
+
+/// Why a sync socket was refused a place.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConnectionRefused {
+    /// The app is at `maxSyncConnections`.
+    Full,
+    /// This visitor is at `maxSyncConnectionsPerVisitor`.
+    VisitorFull,
+}
+
+/// An open sync socket's claim on the app's connection budget and on its
+/// visitor's, both returned when the socket is dropped.
+pub struct ConnectionSlot {
+    open: Arc<std::sync::Mutex<OpenConnections>>,
+    visitor: std::net::IpAddr,
+}
 
 impl Drop for ConnectionSlot {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        let mut open = self.open.lock().unwrap_or_else(|p| p.into_inner());
+        open.total = open.total.saturating_sub(1);
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = open.per_visitor.entry(self.visitor) {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
     }
 }
 
@@ -135,6 +169,8 @@ pub struct SyncSettings {
     pub force_server_timestamps: bool,
     /// Open sync sockets at once.
     pub max_connections: usize,
+    /// Open sync sockets at once from one visitor.
+    pub max_connections_per_visitor: usize,
 }
 
 impl SyncSettings {
@@ -156,11 +192,15 @@ impl SyncSettings {
         let max_connections = number("maxSyncConnections")
             .map(|n| (n as usize).clamp(1, 65_536))
             .unwrap_or(DEFAULT_MAX_SYNC_CONNECTIONS);
+        let max_connections_per_visitor = number("maxSyncConnectionsPerVisitor")
+            .map(|n| n.min(65_536) as usize)
+            .unwrap_or(DEFAULT_MAX_SYNC_CONNECTIONS_PER_VISITOR)
+            .clamp(1, max_connections);
         let force_server_timestamps = server
             .and_then(|s| s.get("forceServerTimestamps"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        Self { max_storage_bytes, sync_permits, force_server_timestamps, max_connections }
+        Self { max_storage_bytes, sync_permits, force_server_timestamps, max_connections, max_connections_per_visitor }
     }
 }
 
@@ -296,9 +336,11 @@ pub struct SyncManager {
     force_server_timestamps: bool,
     /// Per-address allowance for `/sync/ticket`.
     ticket_limiter: AddressLimiter,
-    /// Open sync sockets, and how many may be open at once.
-    connections: Arc<std::sync::atomic::AtomicUsize>,
+    /// Open sync sockets, and how many may be open at once, in all and
+    /// per visitor.
+    connections: Arc<std::sync::Mutex<OpenConnections>>,
     max_connections: usize,
+    max_connections_per_visitor: usize,
 }
 
 impl SyncManager {
@@ -309,7 +351,7 @@ impl SyncManager {
         db_path: PathBuf,
         settings: SyncSettings,
     ) -> Arc<Self> {
-        let SyncSettings { max_storage_bytes, sync_permits: max_sync_permits, force_server_timestamps, max_connections } = settings;
+        let SyncSettings { max_storage_bytes, sync_permits: max_sync_permits, force_server_timestamps, max_connections, max_connections_per_visitor } = settings;
         let (broadcast_tx, _) = broadcast::channel(256);
 
         let has_before_sync_batch = runtime
@@ -372,27 +414,37 @@ impl SyncManager {
             tickets: std::sync::Mutex::new(std::collections::HashMap::new()),
             force_server_timestamps,
             ticket_limiter: AddressLimiter::new(TICKET_BURST, TICKET_REFILL_PER_SEC),
-            connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            connections: Arc::new(std::sync::Mutex::new(OpenConnections::default())),
             max_connections,
+            max_connections_per_visitor,
         })
     }
 
-    /// Claim a place for one more sync socket, or `None` when the app is at
-    /// `maxSyncConnections`. Each socket holds a broadcast receiver, a 512-slot
-    /// outbound queue and two tasks; without a ceiling a token-less host could
-    /// be walked into file-descriptor and memory exhaustion.
-    pub fn try_open_connection(&self) -> Option<ConnectionSlot> {
-        use std::sync::atomic::Ordering;
-        let mut current = self.connections.load(Ordering::Acquire);
-        loop {
-            if current >= self.max_connections {
-                return None;
-            }
-            match self.connections.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return Some(ConnectionSlot(self.connections.clone())),
-                Err(actual) => current = actual,
-            }
+    /// Claim a place for one more sync socket from `client_ip`, or say why
+    /// not: the app is at `maxSyncConnections`, or this visitor (an address,
+    /// an IPv6 /64 counting as one) is at `maxSyncConnectionsPerVisitor`, so
+    /// that one visitor cannot take every place. Each socket holds a
+    /// broadcast receiver, a 512-slot outbound queue and two tasks; without a
+    /// ceiling a token-less host could be walked into file-descriptor and
+    /// memory exhaustion.
+    pub fn try_open_connection(&self, client_ip: std::net::IpAddr) -> Result<ConnectionSlot, ConnectionRefused> {
+        let visitor = limiter_key(client_ip);
+        let mut open = self.connections.lock().unwrap_or_else(|p| p.into_inner());
+        if open.total >= self.max_connections {
+            return Err(ConnectionRefused::Full);
         }
+        let mine = open.per_visitor.entry(visitor).or_insert(0);
+        if *mine >= self.max_connections_per_visitor {
+            return Err(ConnectionRefused::VisitorFull);
+        }
+        *mine += 1;
+        open.total += 1;
+        Ok(ConnectionSlot { open: self.connections.clone(), visitor })
+    }
+
+    /// The per-visitor ceiling, for the startup line.
+    pub fn max_connections_per_visitor(&self) -> usize {
+        self.max_connections_per_visitor
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<(String, ServerMessage)> {
@@ -1136,7 +1188,7 @@ mod tests {
             rt.init(source.to_string()).unwrap();
             rt
         });
-        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2 };
+        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2, max_connections_per_visitor: 2 };
         (SyncManager::new(db.clone(), runtime, None, path, settings), db)
     }
 
@@ -1173,7 +1225,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("xdb.sqlite");
         let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
-        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2 };
+        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2, max_connections_per_visitor: 2 };
         let guarded = SyncManager::new(db, None, Some("s3cret".into()), path, settings);
         let ip: std::net::IpAddr = "198.51.100.2".parse().unwrap();
         assert_eq!(guarded.issue_ticket(Some("wrong"), ip), Err(TicketError::Unauthorized));
@@ -1183,11 +1235,48 @@ mod tests {
     #[test]
     fn connection_slots_are_bounded_and_returned() {
         let (sync, _) = manager(None);
-        let first = sync.try_open_connection().unwrap();
-        let _second = sync.try_open_connection().unwrap();
-        assert!(sync.try_open_connection().is_none());
+        let a: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let b: std::net::IpAddr = "203.0.113.8".parse().unwrap();
+        let first = sync.try_open_connection(a).unwrap();
+        let _second = sync.try_open_connection(b).unwrap();
+        assert_eq!(sync.try_open_connection("203.0.113.9".parse().unwrap()).err(), Some(ConnectionRefused::Full));
         drop(first);
-        assert!(sync.try_open_connection().is_some());
+        assert!(sync.try_open_connection(a).is_ok());
+    }
+
+    /// One visitor cannot take every place: an address, or an IPv6 /64, is
+    /// held to `maxSyncConnectionsPerVisitor`, and its places come back.
+    #[test]
+    fn one_visitor_cannot_take_every_connection() {
+        let dir = std::env::temp_dir().join(format!("softn-sync-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xdb.sqlite");
+        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
+        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 10, max_connections_per_visitor: 2 };
+        let sync = SyncManager::new(db, None, None, path, settings);
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let first = sync.try_open_connection(ip("2001:db8:0:1::1")).unwrap();
+        let _second = sync.try_open_connection(ip("2001:db8:0:1::2")).unwrap();
+        // Another address in the same /64 is the same visitor.
+        assert_eq!(sync.try_open_connection(ip("2001:db8:0:1:ffff::9")).err(), Some(ConnectionRefused::VisitorFull));
+        // The next /64, and an IPv4 visitor, are others.
+        assert!(sync.try_open_connection(ip("2001:db8:0:2::1")).is_ok());
+        assert!(sync.try_open_connection(ip("198.51.100.1")).is_ok());
+        drop(first);
+        assert!(sync.try_open_connection(ip("2001:db8:0:1::3")).is_ok());
+    }
+
+    #[test]
+    fn the_per_visitor_cap_defaults_small_and_never_exceeds_the_total() {
+        let settings = |server: serde_json::Value| {
+            let manifest: crate::bundle::ServerManifest = serde_json::from_value(serde_json::json!({
+                "name": "x", "version": "1", "config": {"server": server}})).unwrap();
+            SyncSettings::from_manifest(&manifest, false)
+        };
+        assert_eq!(settings(serde_json::json!({})).max_connections_per_visitor, DEFAULT_MAX_SYNC_CONNECTIONS_PER_VISITOR);
+        assert_eq!(settings(serde_json::json!({"maxSyncConnectionsPerVisitor": 3})).max_connections_per_visitor, 3);
+        assert_eq!(settings(serde_json::json!({"maxSyncConnectionsPerVisitor": 0})).max_connections_per_visitor, 1);
+        assert_eq!(settings(serde_json::json!({"maxSyncConnections": 4})).max_connections_per_visitor, 4);
     }
 
     fn op(id: &str, collection: &str, operation: &str, record: &str, data: serde_json::Value) -> SyncOp {
