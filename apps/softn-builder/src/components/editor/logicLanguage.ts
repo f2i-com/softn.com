@@ -15,9 +15,8 @@
 export const PYTHON_LOGIC_SUFFIX = '.py';
 
 /**
- * The editor language for a logic file path. `undefined` is the dock beneath
- * the canvas, which has no file of its own and is always the project's
- * `.logic`.
+ * The editor language for a logic file path. With no path there is no file
+ * to say otherwise, and the answer is JavaScript.
  */
 export function editorLanguageFor(path: string | undefined): 'javascript' | 'python' {
   return path !== undefined && path.toLowerCase().endsWith(PYTHON_LOGIC_SUFFIX)

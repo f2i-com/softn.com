@@ -23,6 +23,8 @@ import {
   type StoragePolicy,
 } from '@softn/core';
 import { useProjectStore } from '../../stores/projectStore';
+import { useFilesStore } from '../../stores/filesStore';
+import { isPythonLogicPath } from '@softn/core';
 import { toast } from '../../stores/notificationStore';
 import { buildProjectBundle, bundleFileName, gatherCollections } from '../../utils/buildProjectBundle';
 import type { PermissionDeclaration } from '../../utils/permissions';
@@ -47,55 +49,24 @@ function focusableIn(root: HTMLElement): HTMLElement[] {
   );
 }
 
+// The overlay, frame, title, close button and buttons are classes in
+// styles/builder.css; these are the form's own layout.
 const styles: Record<string, React.CSSProperties> = {
-  overlay: {
-    position: 'fixed' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  },
   dialog: {
-    background: 'var(--ink-2)',
-    borderRadius: 12,
-    width: 560,
-    maxWidth: '94vw',
-    maxHeight: '92vh',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
-    overflow: 'hidden',
+    width: 580,
   },
   header: {
-    padding: '16px 24px',
+    padding: '14px 12px 14px 24px',
     borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  title: {
-    fontSize: 18,
-    fontWeight: 600,
-    color: 'var(--paper)',
-  },
-  closeButton: {
-    background: 'transparent',
-    border: 'none',
-    fontSize: 24,
-    color: 'var(--dimmer)',
-    cursor: 'pointer',
-    padding: 4,
-    lineHeight: 1,
-  },
   content: {
     padding: 24,
     overflowY: 'auto' as const,
     flex: 1,
+    minHeight: 0,
   },
   field: {
     marginBottom: 16,
@@ -103,36 +74,31 @@ const styles: Record<string, React.CSSProperties> = {
   label: {
     display: 'block',
     fontSize: 13,
-    fontWeight: 500,
-    color: 'var(--dim)',
+    fontWeight: 600,
+    color: 'var(--paper)',
     marginBottom: 6,
   },
   input: {
     width: '100%',
-    padding: '10px 12px',
-    border: '1px solid var(--line-soft)',
+    padding: '9px 12px',
     borderRadius: 8,
     fontSize: 14,
-    outline: 'none',
   },
   textarea: {
     width: '100%',
-    padding: '10px 12px',
-    border: '1px solid var(--line-soft)',
+    padding: '9px 12px',
     borderRadius: 8,
     fontSize: 14,
-    outline: 'none',
+    lineHeight: 1.5,
     minHeight: 64,
     resize: 'vertical' as const,
   },
   select: {
     padding: '6px 8px',
-    border: '1px solid var(--line-soft)',
     borderRadius: 6,
     fontSize: 13,
-    outline: 'none',
-    background: 'var(--ink-2)',
-    color: 'var(--paper)',
+    minWidth: 0,
+    flex: 1,
   },
   section: {
     borderTop: '1px solid var(--line-soft)',
@@ -141,8 +107,10 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 16,
   },
   sectionTitle: {
-    fontSize: 13,
-    fontWeight: 600,
+    fontFamily: 'var(--display)',
+    fontSize: 15,
+    fontWeight: 700,
+    letterSpacing: '-0.01em',
     color: 'var(--paper)',
     marginBottom: 4,
   },
@@ -189,7 +157,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: 48,
     borderRadius: 10,
     border: '1px solid var(--line-soft)',
-    background: 'var(--ink-3, rgba(255,255,255,0.04))',
+    background: 'var(--ink-3)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -197,15 +165,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 20,
     color: 'var(--dim)',
     flexShrink: 0,
-  },
-  smallButton: {
-    padding: '6px 12px',
-    borderRadius: 6,
-    fontSize: 13,
-    cursor: 'pointer',
-    background: 'transparent',
-    border: '1px solid var(--line-soft)',
-    color: 'var(--dim)',
   },
   report: {
     borderRadius: 8,
@@ -217,61 +176,54 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     gap: 4,
   },
-  reportError: { color: '#ef4444' },
-  reportWarn: { color: '#d97706' },
-  reportOk: { color: '#10b981' },
+  reportError: { color: 'var(--danger)' },
+  reportWarn: { color: 'var(--warn)' },
+  reportOk: { color: 'var(--paper)' },
   footer: {
-    padding: '16px 24px',
+    padding: '12px 24px',
     borderTop: '1px solid var(--line-soft)',
+    background: 'var(--ink)',
     display: 'flex',
+    alignItems: 'center',
     justifyContent: 'flex-end',
     flexWrap: 'wrap' as const,
-    gap: 12,
+    gap: 8,
   },
-  button: {
-    padding: '10px 20px',
-    borderRadius: 8,
-    fontSize: 14,
-    fontWeight: 500,
-    cursor: 'pointer',
-    transition: 'all 0.15s',
-  },
-  cancelButton: {
-    background: 'transparent',
-    border: '1px solid var(--line-soft)',
-    color: 'var(--dim)',
-  },
-  secondaryButton: {
-    background: 'transparent',
-    border: '1px solid var(--coral)',
-    color: 'var(--coral)',
-  },
-  exportButton: {
-    background: 'var(--coral)',
-    border: '1px solid var(--coral)',
-    color: '#fff',
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-    cursor: 'not-allowed',
+  footerNote: {
+    marginRight: 'auto',
+    fontSize: 12,
+    color: 'var(--danger)',
   },
   progress: {
     textAlign: 'center' as const,
-    padding: 24,
+    padding: '32px 24px',
     color: 'var(--dim)',
   },
   success: {
     textAlign: 'center' as const,
-    padding: 24,
-    color: '#10b981',
+    padding: '24px 16px',
+    color: 'var(--paper)',
+  },
+  successMark: {
+    width: 44,
+    height: 44,
+    margin: '0 auto 14px',
+    borderRadius: '50%',
+    border: '1px solid var(--line-strong)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 20,
+    color: 'var(--paper)',
   },
   error: {
-    padding: 12,
-    background: '#fef2f2',
-    border: '1px solid #fecaca',
+    padding: '10px 12px',
+    background: 'var(--bl-danger-soft)',
+    border: '1px solid var(--danger)',
     borderRadius: 8,
-    color: '#ef4444',
+    color: 'var(--paper)',
     fontSize: 13,
+    lineHeight: 1.5,
     marginBottom: 16,
   },
 };
@@ -297,12 +249,18 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     description,
     icon,
     permissions,
+    pythonPackages,
     setName,
     setVersion,
     setDescription,
     setIcon,
     setPermissions,
+    setPythonPackages,
   } = useProjectStore();
+  // The Python settings are offered to an app with Python logic, and to one
+  // that already declares a package, so a declaration is never out of reach.
+  const hasPython = useFilesStore((state) => [...state.logicFiles.values()].some((file) => isPythonLogicPath(file.path)));
+  const usesTorch = pythonPackages.includes('torch');
 
   const [busy, setBusy] = useState<null | 'export' | 'run' | 'publish'>(null);
   const [error, setError] = useState<string | null>(null);
@@ -440,7 +398,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [isOpen, name, version, description, icon, permissions, collections.error]);
+  }, [isOpen, name, version, description, icon, permissions, pythonPackages, collections.error]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -516,22 +474,23 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const warns = inspection?.report.filter((l) => l.level === 'warn') ?? [];
 
   return (
-    <div style={styles.overlay} onClick={onClose} role="presentation">
+    <div className="bl-overlay" style={{ zIndex: 1000 }} onClick={onClose} role="presentation">
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="export-dialog-title"
         tabIndex={-1}
+        className="bl-dialog"
         style={styles.dialog}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={trapTab}
       >
         <div style={styles.header}>
-          <span id="export-dialog-title" style={styles.title}>
-            Export Bundle
-          </span>
-          <button style={styles.closeButton} onClick={onClose} aria-label="Close">
+          <h2 id="export-dialog-title" className="bl-dialog-title">
+            Export, run or publish
+          </h2>
+          <button type="button" className="bl-close" onClick={onClose} aria-label="Close">
             ×
           </button>
         </div>
@@ -539,8 +498,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         <div style={styles.content}>
           {ready ? (
             <div style={styles.success} role="status" aria-live="polite">
-              <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
-              <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--paper)' }}>
+              <div style={styles.successMark} aria-hidden="true">✓</div>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>
                 {ready.name} is ready for {destinationLabel(ready.to)}.
               </div>
               <div style={{ ...styles.capSummary, marginTop: 8 }}>Builder stays open. The link is good for ten minutes and can be taken once.</div>
@@ -549,7 +508,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                   href={ready.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ ...styles.button, ...styles.exportButton, textDecoration: 'none' }}
+                  className="bl-btn bl-btn-primary bl-btn-lg"
                   onClick={() => {
                     setTimeout(() => {
                       setReady(null);
@@ -559,27 +518,26 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 >
                   {ready.to === 'runtime' ? 'Open in the runtime' : 'Open the publish page'} ↗
                 </a>
-                <a href={ready.url} style={{ ...styles.button, ...styles.secondaryButton, textDecoration: 'none' }} title="Leave Builder and open it in this tab">
+                <a href={ready.url} className="bl-btn bl-btn-lg" title="Leave Builder and open it in this tab">
                   Open here instead
                 </a>
               </div>
             </div>
           ) : done ? (
             <div style={styles.success}>
-              <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
-              <div style={{ fontSize: 16, fontWeight: 500 }}>{done}</div>
+              <div style={styles.successMark} aria-hidden="true">✓</div>
+              <div style={{ fontSize: 16, fontWeight: 600 }} role="status">{done}</div>
             </div>
           ) : busy ? (
-            <div style={styles.progress}>
-              <div style={{ fontSize: 24, marginBottom: 16 }}>⏳</div>
-              <div>{busy === 'export' ? 'Creating bundle...' : `Staging the bundle for ${busy === 'run' ? 'the runtime' : 'the publish page'}...`}</div>
+            <div style={styles.progress} role="status" aria-live="polite">
+              <div>{busy === 'export' ? 'Creating the bundle…' : `Staging the bundle for ${busy === 'run' ? 'the runtime' : 'the publish page'}…`}</div>
             </div>
           ) : (
             <>
-              {error && <div style={styles.error}>{error}</div>}
+              {error && <div style={styles.error} role="alert">{error}</div>}
 
               <div style={styles.field}>
-                <label style={styles.label} htmlFor="export-app-name">App Name</label>
+                <label style={styles.label} htmlFor="export-app-name">Name</label>
                 <input id="export-app-name" type="text" style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="My App" />
               </div>
 
@@ -600,16 +558,16 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
               </div>
 
               <div style={styles.field}>
-                <label style={styles.label}>Icon</label>
+                <span style={styles.label} id="export-app-icon">Icon</span>
                 <div style={styles.iconRow}>
                   <div style={styles.iconBox}>
                     {icon ? <img src={icon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : (name.trim()[0] || '?').toUpperCase()}
                   </div>
-                  <button type="button" style={styles.smallButton} onClick={() => iconInput.current?.click()}>
+                  <button type="button" className="bl-btn bl-btn-sm" aria-describedby="export-app-icon" onClick={() => iconInput.current?.click()}>
                     {icon ? 'Change…' : 'Choose…'}
                   </button>
                   {icon && (
-                    <button type="button" style={styles.smallButton} onClick={() => setIcon(null)}>
+                    <button type="button" className="bl-btn bl-btn-sm" onClick={() => setIcon(null)}>
                       Remove
                     </button>
                   )}
@@ -690,6 +648,32 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 })}
               </div>
 
+              {(hasPython || pythonPackages.length > 0) && (
+                <div style={styles.section}>
+                  <div style={styles.sectionTitle}>Python</div>
+                  <div style={styles.sectionNote}>
+                    Written to manifest.json as config.python.packages. An app that imports torch has to declare it, or it is refused before it runs.
+                  </div>
+                  <label style={styles.capRow}>
+                    <input
+                      type="checkbox"
+                      checked={usesTorch}
+                      onChange={(e) =>
+                        setPythonPackages(e.target.checked ? [...pythonPackages, 'torch'] : pythonPackages.filter((p) => p !== 'torch'))
+                      }
+                      style={{ marginTop: 2 }}
+                      data-setting="python-torch"
+                    />
+                    <span>
+                      <span style={{ fontWeight: 500 }}>Machine learning (torch)</span>
+                      <span style={{ ...styles.capSummary, display: 'block' }}>
+                        Tensors, autograd, torch.nn, losses and optimizers, run on the CPU inside the engine.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              )}
+
               {quarantine && (
                 <div style={styles.section}>
                   <div style={styles.sectionTitle}>Recovery</div>
@@ -698,7 +682,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                     restored ({quarantine.error}). It was kept as it was, not deleted; download it to keep a copy.
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button type="button" style={styles.smallButton} onClick={() => {
+                    <button type="button" className="bl-btn bl-btn-sm" onClick={() => {
                       void exportQuarantinedSession().catch((err: unknown) => {
                         if (!(err instanceof Error && err.name === 'AbortError')) toast.error('Could not save the recovery file. It is still stored here.');
                       });
@@ -707,7 +691,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                     </button>
                     <button
                       type="button"
-                      style={styles.smallButton}
+                      className="bl-btn bl-btn-sm"
                       onClick={() => {
                         discardQuarantinedSession();
                         setQuarantine(null);
@@ -754,18 +738,24 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
         {ready && (
           <div style={styles.footer}>
-            <button style={{ ...styles.button, ...styles.cancelButton }} onClick={() => setReady(null)}>
+            <button type="button" className="bl-btn" onClick={() => setReady(null)}>
               Back
             </button>
           </div>
         )}
         {!done && !busy && !ready && (
           <div style={styles.footer}>
-            <button style={{ ...styles.button, ...styles.cancelButton }} onClick={onClose}>
+            {refused && (
+              <span style={styles.footerNote}>
+                {bundleProblem ? 'This bundle cannot be built yet — see the check above.' : 'The directory would refuse this bundle — see the check above.'}
+              </span>
+            )}
+            <button type="button" className="bl-btn bl-btn-ghost" onClick={onClose}>
               Cancel
             </button>
             <button
-              style={{ ...styles.button, ...styles.secondaryButton, ...(refused ? styles.buttonDisabled : {}) }}
+              type="button"
+              className="bl-btn"
               onClick={() => void run('run')}
               disabled={refused}
               title={refused ? 'Fix what the check found first' : 'Stage the bundle for the SoftN runtime'}
@@ -773,7 +763,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
               Open in runtime…
             </button>
             <button
-              style={{ ...styles.button, ...styles.secondaryButton, ...(refused ? styles.buttonDisabled : {}) }}
+              type="button"
+              className="bl-btn"
               onClick={() => void run('publish')}
               disabled={refused}
               title={refused ? 'Fix what the check found first' : 'Stage the bundle for the directory’s publish page'}
@@ -781,7 +772,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
               Publish…
             </button>
             <button
-              style={{ ...styles.button, ...styles.exportButton, ...(bundleProblem ? styles.buttonDisabled : {}) }}
+              type="button"
+              className="bl-btn bl-btn-primary"
               onClick={() => void run('export')}
               disabled={bundleProblem != null}
               title={bundleProblem ? 'Fix what the check found first' : undefined}

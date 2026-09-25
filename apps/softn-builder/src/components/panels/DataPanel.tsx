@@ -1,5 +1,5 @@
 /**
- * DataPanel - Simplified data panel pointing to Schema Designer
+ * DataPanel - A summary of the app's collections, pointing to the Data view
  */
 
 import React from 'react';
@@ -15,9 +15,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     fontSize: 12,
     color: 'var(--dim)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.05em',
-    marginBottom: 12,
+    marginBottom: 10,
   },
   content: {
     fontSize: 13,
@@ -36,10 +34,12 @@ const styles: Record<string, React.CSSProperties> = {
   statValue: {
     fontWeight: 600,
     color: 'var(--paper)',
+    fontVariantNumeric: 'tabular-nums',
   },
   hint: {
     fontSize: 12,
-    color: 'var(--dimmer)',
+    lineHeight: 1.5,
+    color: 'var(--dim)',
     marginTop: 8,
   },
   entityList: {
@@ -75,16 +75,16 @@ export function DataPanel() {
 
   return (
     <div style={styles.container}>
-      <div style={styles.header}>Data Overview</div>
+      <div style={styles.header}>Data</div>
 
       <div style={styles.stats}>
         <div style={styles.stat}>
           <span style={styles.statValue}>{entities.length}</span>
-          <span>entities</span>
+          <span>{entities.length === 1 ? 'collection' : 'collections'}</span>
         </div>
         <div style={styles.stat}>
           <span style={styles.statValue}>{totalRecords}</span>
-          <span>records</span>
+          <span>{totalRecords === 1 ? 'record' : 'records'}</span>
         </div>
       </div>
 
@@ -104,7 +104,7 @@ export function DataPanel() {
         </div>
       ) : (
         <div style={styles.hint}>
-          Use the &quot;Data&quot; view to design your database schema and add seed data.
+          No collections yet. Design them and add sample records in the Data view.
         </div>
       )}
     </div>

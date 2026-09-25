@@ -111,7 +111,6 @@ const LOSSLESS_UI = `<import Header from="./components/Header.ui" />
 
 beforeEach(() => {
   store().reset();
-  store().initializeProject();
 });
 
 describe('what parseSource reports', () => {

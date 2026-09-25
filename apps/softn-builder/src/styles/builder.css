@@ -1,0 +1,590 @@
+/*
+ * Builder's look, on top of @softn/brand's tokens — the same rules Studio
+ * follows (apps/softn-studio/src/styles/studio.css), so moving between the two
+ * does not feel like changing products.
+ *
+ *   coral  the language: syntax, file types, the code you are writing.
+ *   mint   the machine: something actually running, and the focus ring.
+ *   ink    everything else. A selected or pressed control, and the one
+ *          primary action on a screen, is the ink itself, inverted.
+ *
+ * Builder's chrome is still mostly inline styles. Those read the tokens
+ * directly; this file holds what inline styles cannot do (focus, hover,
+ * selection, reduced motion, form-control defaults) and the handful of
+ * classes the repeated controls share.
+ *
+ * The preview runs the person's app in an iframe, out of reach of all of
+ * this. The canvas draws it in this document, on `[data-builder-canvas]`:
+ * the form-control defaults below stay out of it, and it is always paper, in
+ * either theme, so it re-declares the light tokens for what Builder draws on
+ * it. Every element-level default is wrapped in :where() to carry no
+ * specificity: a component's own class or inline style always wins over it.
+ */
+
+:root,
+:root[data-theme='dark'] {
+  /* index.html declares these before the bundle loads; they are the brand's. */
+  --b-display: var(--display);
+  --b-body: var(--body);
+  --b-mono: var(--mono);
+
+  /* Selected rows and pressed toggles: the ink, faintly. */
+  --bl-select: rgba(242, 240, 236, 0.08);
+  --bl-hover: rgba(242, 240, 236, 0.05);
+  --bl-overlay: rgba(10, 12, 15, 0.72);
+  --bl-danger-soft: rgba(255, 107, 107, 0.1);
+  --bl-warn-soft: rgba(232, 163, 61, 0.1);
+  --bl-field: var(--ink);
+  --bl-radius-sm: 6px;
+  --bl-radius: 8px;
+  --bl-radius-lg: 12px;
+  --bl-shadow-pop: 0 18px 44px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--line);
+}
+
+:root[data-theme='light'] {
+  --bl-select: rgba(20, 24, 29, 0.07);
+  --bl-hover: rgba(20, 24, 29, 0.04);
+  --bl-overlay: rgba(20, 24, 29, 0.4);
+  --bl-danger-soft: rgba(185, 28, 28, 0.07);
+  --bl-warn-soft: rgba(161, 98, 7, 0.08);
+  --bl-field: var(--ink-2);
+  --bl-shadow-pop: 0 18px 44px rgba(20, 24, 29, 0.14), 0 0 0 1px var(--line);
+}
+
+/* ── Base ──────────────────────────────────────────────────────── */
+
+body {
+  font-family: var(--body);
+  background: var(--ink);
+  color: var(--paper);
+}
+
+::selection {
+  background: var(--select);
+}
+
+/*
+ * Form controls take the page's face and the theme's field colours unless a
+ * control says otherwise. Without this the browser drew them: a monospace
+ * textarea, and a mid-grey field in the dark theme that matched nothing.
+ */
+:where(#root :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file']), textarea, select):not([data-builder-canvas] *)) {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--paper);
+  background-color: var(--bl-field);
+  border: 1px solid var(--line);
+  border-radius: var(--bl-radius-sm);
+}
+
+:where(#root :is(input, textarea, select)::placeholder) {
+  color: var(--dimmer);
+  opacity: 1;
+}
+
+:where(#root button:not([data-builder-canvas] *)) {
+  font-family: inherit;
+  color: inherit;
+}
+
+:where(#root :is(input[type='checkbox'], input[type='radio']):not([data-builder-canvas] *)) {
+  accent-color: var(--paper);
+}
+
+/*
+ * One focus ring for Builder's chrome — the product bar's, so focus looks the
+ * same across the four apps. Many controls carry an inline `outline: none`
+ * from when focus was drawn in JavaScript; the !important is what lets this
+ * rule replace those.
+ */
+#root :focus-visible:not(.monaco-editor *) {
+  outline: 2px solid var(--mint) !important;
+  outline-offset: 2px;
+}
+
+#root :is(input, textarea, select):focus-visible:not(.monaco-editor *, [data-builder-canvas] *) {
+  outline-offset: 0;
+  border-color: var(--line-strong) !important;
+}
+
+#root * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #root *,
+  #root *::before,
+  #root *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * The canvas artboard is paper in both themes, as the app's page is. What
+ * Builder draws on it — element cards, block headers, drop hints, labels —
+ * reads the tokens, so here they are the light theme's (tokens.css), or
+ * that ink would be near-white on white in the dark theme.
+ */
+[data-builder-canvas] {
+  color-scheme: light;
+  --ink: #f4f6f9;
+  --ink-2: #ffffff;
+  --ink-3: #eef1f6;
+  --line: #d5dce5;
+  --line-soft: #e4e9f0;
+  --line-strong: #bcc6d2;
+  --paper: #14181d;
+  --dim: #5a6472;
+  --dimmer: #656e7c;
+  --coral: #c2410c;
+  --mint: #0f766e;
+  --sand: #8a5a17;
+  --danger: #b91c1c;
+  --warn: #a16207;
+  --coral-glow: rgba(194, 65, 12, 0.1);
+  --mint-glow: rgba(15, 118, 110, 0.16);
+  --mint-glow-soft: rgba(15, 118, 110, 0.06);
+  --mint-edge: rgba(15, 118, 110, 0.4);
+  --select: rgba(194, 65, 12, 0.2);
+  --bl-select: rgba(20, 24, 29, 0.07);
+  --bl-hover: rgba(20, 24, 29, 0.04);
+  --bl-field: #ffffff;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────── */
+
+.bl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2.25rem;
+  padding: 0 0.875rem;
+  border-radius: var(--bl-radius);
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+  color: var(--paper);
+  font-family: var(--body);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background 160ms var(--ease),
+    border-color 160ms var(--ease),
+    color 160ms var(--ease);
+}
+
+.bl-btn:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--ink-3);
+  border-color: var(--dimmer);
+}
+
+.bl-btn:disabled,
+.bl-btn[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The one primary action on a screen: the ink, inverted, as on the site. */
+.bl-btn-primary {
+  background: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.bl-btn-primary:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--invert-hover);
+  border-color: var(--invert-hover);
+}
+
+.bl-btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--dim);
+}
+
+.bl-btn-ghost:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--bl-hover);
+  border-color: transparent;
+  color: var(--paper);
+}
+
+.bl-btn-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.bl-btn-danger:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--danger);
+  border-color: var(--danger);
+  filter: brightness(1.08);
+}
+
+.bl-btn-sm {
+  min-height: 1.75rem;
+  padding: 0 0.625rem;
+  font-size: 0.75rem;
+  border-radius: var(--bl-radius-sm);
+}
+
+.bl-btn-lg {
+  min-height: 2.5rem;
+  padding: 0 1.125rem;
+  font-size: 0.875rem;
+}
+
+/* ── Segmented toggles (workspace view, preview device, tabs) ──── */
+
+.bl-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--bl-radius);
+  background: var(--ink-3);
+  border: 1px solid var(--line-soft);
+}
+
+.bl-seg > button {
+  min-height: 1.75rem;
+  padding: 0 0.75rem;
+  border: none;
+  border-radius: var(--bl-radius-sm);
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--body);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 160ms var(--ease),
+    color 160ms var(--ease);
+}
+
+.bl-seg > button:hover:not([aria-pressed='true'], [aria-selected='true']) {
+  color: var(--paper);
+}
+
+.bl-seg > button[aria-pressed='true'],
+.bl-seg > button[aria-selected='true'] {
+  background: var(--ink-2);
+  color: var(--paper);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────── */
+
+.bl-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 2rem;
+  padding: 0 0.625rem;
+  border: 1px solid transparent;
+  border-radius: var(--bl-radius-sm);
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--body);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition:
+    background 160ms var(--ease),
+    color 160ms var(--ease);
+}
+
+.bl-tool:hover:not(:disabled) {
+  background: var(--bl-hover);
+  color: var(--paper);
+}
+
+.bl-tool:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bl-kbd {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--dimmer);
+}
+
+/* ── Panels ────────────────────────────────────────────────────── */
+
+/* A panel's section heading: small, sentence case, never tracked capitals. */
+.bl-eyebrow {
+  font-family: var(--body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--dim);
+}
+
+/* Small quiet button in a panel header (Hide, Collapse). */
+.bl-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: 1.5rem;
+  min-width: 1.5rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--bl-radius-sm);
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--body);
+  font-size: 0.6875rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 160ms var(--ease),
+    color 160ms var(--ease),
+    border-color 160ms var(--ease);
+}
+
+.bl-mini:hover:not(:disabled) {
+  color: var(--paper);
+  border-color: var(--dimmer);
+  background: var(--bl-hover);
+}
+
+/* Rows in the file and hierarchy trees and the palette. */
+.bl-row:hover:not([aria-selected='true']) {
+  background: var(--bl-hover);
+}
+
+/* Collapsed dock rails. */
+.bl-rail-btn {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  border: 1px solid var(--line);
+  background: var(--ink);
+  color: var(--dim);
+  border-radius: var(--bl-radius);
+  padding: 10px 5px;
+  font-family: var(--body);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 160ms var(--ease),
+    border-color 160ms var(--ease);
+}
+
+.bl-rail-btn:hover {
+  color: var(--paper);
+  border-color: var(--dimmer);
+}
+
+/* ── Badges and notices ────────────────────────────────────────── */
+
+.bl-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-family: var(--body);
+  font-size: 0.65625rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* The language a file is written in: the one badge allowed coral. */
+.bl-badge[data-tone='code'] {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--coral);
+  border-color: var(--coral-glow);
+  background: var(--coral-glow);
+}
+
+.bl-badge[data-tone='warn'] {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--bl-warn-soft);
+}
+
+.bl-notice {
+  padding: 7px 16px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--paper);
+  background: var(--bl-warn-soft);
+  border-bottom: 1px solid var(--line-soft);
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+
+.bl-notice[data-tone='danger'] {
+  background: var(--bl-danger-soft);
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+/* A small unsaved-changes dot, uncoloured: dirt is not an accent. */
+.bl-dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex-shrink: 0;
+}
+
+/* ── Dialogs ───────────────────────────────────────────────────── */
+
+.bl-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bl-overlay);
+  backdrop-filter: blur(3px);
+}
+
+.bl-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 32px);
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: var(--bl-radius-lg);
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+  color: var(--paper);
+  box-shadow: var(--bl-shadow-pop);
+}
+
+.bl-dialog-title {
+  font-family: var(--display);
+  font-size: 1.125rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--paper);
+}
+
+.bl-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: none;
+  border-radius: var(--bl-radius-sm);
+  background: transparent;
+  color: var(--dim);
+  font-size: 1.375rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bl-close:hover {
+  background: var(--bl-hover);
+  color: var(--paper);
+}
+
+/* A choice card (starter template): selected is the ink, not an accent. */
+.bl-choice {
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--bl-radius);
+  padding: 12px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+  transition: border-color 160ms var(--ease);
+}
+
+.bl-choice:hover {
+  border-color: var(--dimmer);
+}
+
+.bl-choice[aria-pressed='true'],
+.bl-choice[data-checked='true'] {
+  border-color: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--paper);
+  background: var(--bl-select);
+}
+
+/* A card that wraps a visually hidden radio shows that radio's focus. */
+.bl-choice:has(input:focus-visible) {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+}
+
+/* ── React Flow (Data view) ────────────────────────────────────── */
+
+/* Its controls and minimap ship light-only; drawn from the tokens instead. */
+#root .react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--line);
+  border-radius: var(--bl-radius);
+  overflow: hidden;
+}
+
+#root .react-flow__controls-button {
+  background: var(--ink-2);
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--dim);
+  fill: var(--dim);
+}
+
+#root .react-flow__controls-button:hover {
+  background: var(--ink-3);
+  color: var(--paper);
+  fill: var(--paper);
+}
+
+#root .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+#root .react-flow__minimap {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--bl-radius);
+  overflow: hidden;
+}
+
+#root .react-flow__attribution {
+  background: transparent;
+  color: var(--dimmer);
+}
+
+#root .react-flow__attribution a {
+  color: var(--dimmer);
+}
+
+@media (pointer: coarse) {
+  .bl-btn,
+  .bl-tool {
+    min-height: 2.75rem;
+  }
+}
+
+/* ── Toasts ────────────────────────────────────────────────────── */
+
+@keyframes bl-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

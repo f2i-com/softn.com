@@ -74,7 +74,7 @@ function emptyUi(path: string): UIFileState {
   };
 }
 
-const LOGIC: LogicFileState = { id: 'l', path: 'logic/main.logic', content: 'let a = 1\n', imports: [], exports: ['a'] };
+const LOGIC: LogicFileState = { id: 'l', path: 'logic/main.logic', content: 'let a = 1\n' };
 
 const shared = {
   name: 'X',

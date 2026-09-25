@@ -264,9 +264,7 @@ export interface UIFileState {
 export interface LogicFileState {
   id: string;
   path: string;
-  content: string; // Raw .logic source
-  imports: LogicImport[]; // Parsed imports
-  exports: string[]; // Detected exports
+  content: string; // Raw source, in the language its name says
 }
 
 // Import from another UI file
@@ -275,8 +273,3 @@ export interface UIImport {
   source: string; // "./components/Header.ui"
 }
 
-// Import from another logic file
-export interface LogicImport {
-  names: string[]; // ["validateEmail", "formatPhone"]
-  source: string; // "./utils/validation.logic"
-}

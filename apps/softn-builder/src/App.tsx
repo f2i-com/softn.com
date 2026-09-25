@@ -22,7 +22,6 @@ import { FileNavigator, FileTabs } from './components/files';
 import { useCanvasStore } from './stores/canvasStore';
 import { useProjectStore } from './stores/projectStore';
 import { useHistoryStore } from './stores/historyStore';
-import { useSchemaStore } from './stores/schemaStore';
 import { useFilesStore } from './stores/filesStore';
 import { openBundleFile, loadBundle } from './utils/bundleLoader';
 import {
@@ -47,6 +46,8 @@ import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
 import { connectHostedEditor, isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
+import { viewsFor } from './utils/workspaceViews';
+import { startNewProject } from './utils/newProject';
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -74,12 +75,6 @@ const styles: Record<string, React.CSSProperties> = {
     width: 260,
     minWidth: 260,
     background: 'var(--ink-2)',
-  },
-  center: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
   },
   centerWithTabs: {
     flex: 1,
@@ -121,11 +116,9 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: '45%',
     overflow: 'auto',
   },
-  fullHeight: {
-    height: '100%',
-  },
   statusBar: {
-    height: 30,
+    height: 28,
+    flexShrink: 0,
     borderTop: '1px solid var(--line-soft)',
     background: 'var(--ink-2)',
     display: 'flex',
@@ -138,6 +131,33 @@ const styles: Record<string, React.CSSProperties> = {
   statusStrong: {
     color: 'var(--paper)',
     fontWeight: 600,
+    fontVariantNumeric: 'tabular-nums',
+  },
+  statusPath: {
+    fontFamily: 'var(--mono)',
+    fontSize: 11,
+    color: 'var(--dim)',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    minWidth: 0,
+  },
+  statusLink: {
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--dim)',
+    fontSize: 11,
+    cursor: 'pointer',
+    padding: '2px 4px',
+    borderRadius: 4,
+    whiteSpace: 'nowrap',
+  },
+  assetName: {
+    fontFamily: 'var(--mono)',
+    fontSize: 13,
+    fontWeight: 600,
+    marginBottom: 4,
+    overflowWrap: 'anywhere',
   },
   designShell: {
     flex: 1,
@@ -171,20 +191,6 @@ const styles: Record<string, React.CSSProperties> = {
     paddingTop: 10,
     gap: 8,
   },
-  collapsedRailBtn: {
-    writingMode: 'vertical-rl',
-    transform: 'rotate(180deg)',
-    border: '1px solid var(--line)',
-    background: 'var(--ink)',
-    color: 'var(--dim)',
-    borderRadius: 8,
-    padding: '8px 4px',
-    fontSize: 11,
-    fontWeight: 600,
-    lineHeight: 1,
-    cursor: 'pointer',
-    letterSpacing: '0.03em',
-  },
   collapsedLogicBar: {
     height: 34,
     borderTop: '1px solid var(--line-soft)',
@@ -193,16 +199,6 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'flex-end',
     padding: '0 8px',
     background: 'var(--ink)',
-  },
-  collapsedLogicBtn: {
-    border: '1px solid var(--line)',
-    background: 'var(--ink-2)',
-    color: 'var(--dim)',
-    borderRadius: 7,
-    padding: '4px 9px',
-    fontSize: 11,
-    cursor: 'pointer',
-    lineHeight: 1,
   },
   logicDockHeader: {
     height: 34,
@@ -215,21 +211,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   // Peer of Files, Components and Properties, so it is set like them.
   logicDockTitle: {
-    fontFamily: 'var(--b-display)',
+    fontFamily: 'var(--display)',
     fontSize: 14,
     color: 'var(--paper)',
     letterSpacing: '-0.01em',
     fontWeight: 600,
-  },
-  logicDockHideBtn: {
-    border: '1px solid var(--line)',
-    background: 'var(--ink-2)',
-    color: 'var(--dim)',
-    borderRadius: 6,
-    fontSize: 11,
-    padding: '3px 7px',
-    cursor: 'pointer',
-    lineHeight: 1,
   },
   emptyFileState: {
     height: '100%',
@@ -241,8 +227,10 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--dim)',
   },
   emptyFileTitle: {
-    fontSize: 16,
-    fontWeight: 600,
+    fontFamily: 'var(--display)',
+    fontSize: 17,
+    fontWeight: 700,
+    letterSpacing: '-0.02em',
     color: 'var(--paper)',
     marginBottom: 6,
   },
@@ -343,125 +331,21 @@ function App() {
   /** The part of the page that goes inert behind the export dialog. */
   const shellRef = useRef<HTMLDivElement | null>(null);
 
-  const resetCanvas = useCanvasStore((state) => state.reset);
   const loadCanvasState = useCanvasStore((state) => state.loadState);
-  const resetProject = useProjectStore((state) => state.reset);
-  const setProjectName = useProjectStore((state) => state.setName);
-  const setProjectVersion = useProjectStore((state) => state.setVersion);
-  const setProjectDescription = useProjectStore((state) => state.setDescription);
-  const setThemeMode = useProjectStore((state) => state.setThemeMode);
   const clearHistory = useHistoryStore((state) => state.clear);
-  const resetSchema = useSchemaStore((state) => state.reset);
-  const resetFiles = useFilesStore((state) => state.reset);
   const updateUIFile = useFilesStore((state) => state.updateUIFile);
   const selectedCount = useCanvasStore((state) => state.selectedIds.length);
   const elementCount = useCanvasStore((state) => state.elements.size);
   const canvasElements = useCanvasStore((state) => state.elements);
   const canvasRootId = useCanvasStore((state) => state.rootId);
-  const applyStarterTemplate = useCallback((template: NewProjectConfig['template']) => {
-    const canvas = useCanvasStore.getState();
-    const rootId = canvas.rootId;
-
-    if (template === 'blank') {
-      const stack = canvas.addElement('Stack', rootId);
-      canvas.updateElementProps(stack, { direction: 'vertical', gap: 'md', padding: 'lg' });
-
-      const heading = canvas.addElement('Heading', stack);
-      canvas.updateElementProps(heading, {
-        level: 2,
-        children: 'Welcome to your new app',
-      });
-
-      const text = canvas.addElement('Text', stack);
-      canvas.updateElementProps(text, {
-        children: 'Start building by dragging components from the palette.',
-      });
-      return;
-    }
-
-    if (template === 'landing') {
-      const stack = canvas.addElement('Stack', rootId);
-      canvas.updateElementProps(stack, { direction: 'vertical', gap: 'lg', align: 'center', padding: 'xl' });
-
-      const heading = canvas.addElement('Heading', stack);
-      canvas.updateElementProps(heading, {
-        level: 1,
-        children: 'Build apps faster with SoftN',
-      });
-
-      const subText = canvas.addElement('Text', stack);
-      canvas.updateElementProps(subText, {
-        children: 'Compose UI visually, wire logic quickly, and ship instantly.',
-      });
-
-      const cta = canvas.addElement('Button', stack);
-      canvas.updateElementProps(cta, {
-        variant: 'primary',
-        children: 'Get Started',
-      });
-      return;
-    }
-
-    if (template === 'dashboard') {
-      const page = canvas.addElement('Stack', rootId);
-      canvas.updateElementProps(page, { direction: 'vertical', gap: 'md', padding: 'lg' });
-
-      const heading = canvas.addElement('Heading', page);
-      canvas.updateElementProps(heading, {
-        level: 1,
-        children: 'Dashboard',
-      });
-
-      const stats = canvas.addElement('SmartStats', page);
-      canvas.updateElementProps(stats, { columns: 3 });
-
-      const cards = canvas.addElement('SmartCards', page);
-      canvas.updateElementProps(cards, { columns: 3, titleField: 'title', descriptionField: 'description' });
-
-      const list = canvas.addElement('SmartList', page);
-      canvas.updateElementProps(list, { titleField: 'title', subtitleField: 'status' });
-    }
-  }, []);
-
   const handleCreateNewProject = useCallback((config: NewProjectConfig) => {
     fileHandleRef.current = null;
     remoteOpenRef.current?.abort();
-    resetCanvas();
-    resetProject();
-    clearHistory();
-    resetSchema();
-    resetFiles();
-
-    setProjectName(config.name);
-    setProjectDescription(config.description);
-    setThemeMode(config.theme);
-    setProjectVersion('1.0.0');
+    startNewProject(config);
     setView('design');
-
-    const root = useCanvasStore.getState().getElement(useCanvasStore.getState().rootId);
-    if (root) {
-      useCanvasStore.getState().updateElementProps(root.id, { theme: config.theme });
-    }
-
-    applyStarterTemplate(config.template);
-
-    // The new project has not been saved anywhere yet, including its name,
-    // chosen template and theme. Keep navigation/New/Open guards active.
-    useProjectStore.getState().markDirty();
     setShowNewProjectDialog(false);
-    toast.success(`Created new app: ${config.name}`);
-  }, [
-    resetCanvas,
-    resetProject,
-    clearHistory,
-    resetSchema,
-    resetFiles,
-    setProjectName,
-    setProjectDescription,
-    setThemeMode,
-    setProjectVersion,
-    applyStarterTemplate,
-  ]);
+    toast.success(`Created ${config.name}`);
+  }, []);
 
   const handleNew = useCallback(() => {
     const isDirty = useProjectStore.getState().isDirty;
@@ -679,10 +563,8 @@ function App() {
 
   // Auto-switch view to 'design' when the active file type doesn't support the current view
   useEffect(() => {
-    if (activeFileType === 'logic' || activeFileType === 'asset') {
-      if (view !== 'design') {
-        setView('design');
-      }
+    if (!viewsFor(activeFileType).includes(view)) {
+      setView('design');
     }
   }, [activeFileType, view]);
 
@@ -733,7 +615,7 @@ function App() {
                 <FileNavigator onToggleDock={() => setDockFiles(false)} />
               ) : (
                 <div style={styles.collapsedRailLeft}>
-                  <button style={styles.collapsedRailBtn} onClick={() => setDockFiles(true)}>
+                  <button className="bl-rail-btn" onClick={() => setDockFiles(true)} aria-label="Show files panel">
                     Files
                   </button>
                 </div>
@@ -746,7 +628,7 @@ function App() {
               )}
               {!dockComponents && (
                 <div style={styles.collapsedRailLeft}>
-                  <button style={styles.collapsedRailBtn} onClick={() => setDockComponents(true)}>
+                  <button className="bl-rail-btn" onClick={() => setDockComponents(true)} aria-label="Show components panel">
                     Components
                   </button>
                 </div>
@@ -760,7 +642,7 @@ function App() {
                       <div>
                         <div style={styles.emptyFileTitle}>No file selected</div>
                         <div style={styles.emptyFileHint}>
-                          Select a file from the Files panel to start editing.
+                          Choose a file in the Files panel to start editing.
                         </div>
                       </div>
                     </div>
@@ -768,9 +650,9 @@ function App() {
                     activeAsset ? (
                       <div style={styles.assetPreview}>
                         <div style={styles.assetPreviewCard}>
-                          <div style={{ fontWeight: 700, marginBottom: 4 }}>{activeAsset.name}</div>
+                          <div style={styles.assetName}>{activeAsset.name}</div>
                           <div style={styles.assetPreviewMeta}>
-                            {activeAsset.type || mimeTypeFromPath(activeAsset.name)} | {(activeAsset.data.byteLength / 1024).toFixed(1)} KB
+                            {activeAsset.type || mimeTypeFromPath(activeAsset.name)} · {(activeAsset.data.byteLength / 1024).toFixed(1)} KB
                           </div>
                           {activeAssetPreviewUrl ? (
                             <div style={styles.assetImageWrap}>
@@ -778,7 +660,7 @@ function App() {
                             </div>
                           ) : (
                             <div style={styles.assetUnsupported}>
-                              Preview is available for images (`png`, `jpg`, `jpeg`, `gif`, `webp`, `svg`, `bmp`).
+                              Only images (PNG, JPEG, GIF, WebP, SVG and BMP) can be previewed here.
                             </div>
                           )}
                         </div>
@@ -801,7 +683,7 @@ function App() {
                   <div style={styles.centerBottom}>
                     <div style={styles.logicDockHeader}>
                       <span style={styles.logicDockTitle}>Logic</span>
-                      <button style={styles.logicDockHideBtn} onClick={() => setDockLogic(false)}>
+                      <button className="bl-mini" onClick={() => setDockLogic(false)} aria-label="Hide logic panel">
                         Hide
                       </button>
                     </div>
@@ -810,8 +692,8 @@ function App() {
                 )}
                 {hasActiveFile && !isLogicFileActive && !isAssetFileActive && !dockLogic && (
                   <div style={styles.collapsedLogicBar}>
-                    <button style={styles.collapsedLogicBtn} onClick={() => setDockLogic(true)}>
-                      Show Logic Panel
+                    <button className="bl-mini" onClick={() => setDockLogic(true)}>
+                      Show logic
                     </button>
                   </div>
                 )}
@@ -830,8 +712,8 @@ function App() {
               )}
               {!dockInspector && (
                 <div style={styles.collapsedRailRight}>
-                  <button style={styles.collapsedRailBtn} onClick={() => setDockInspector(true)}>
-                    Inspector
+                  <button className="bl-rail-btn" onClick={() => setDockInspector(true)} aria-label="Show properties panel">
+                    Properties
                   </button>
                 </div>
               )}
@@ -860,10 +742,10 @@ function App() {
       case 'data':
         if (isHostedEditor()) return (
           <section style={{ padding: 'clamp(24px, 5vw, 56px)', maxWidth: 760, margin: '0 auto', lineHeight: 1.7 }} aria-label="FormLogic app data">
-            <h1 style={{ fontSize: 24, marginBottom: 12 }}>Your app data lives in FormLogic</h1>
+            <h1 style={{ fontFamily: 'var(--display)', fontSize: 24, letterSpacing: '-0.02em', marginBottom: 12 }}>Your app data lives in FormLogic</h1>
             <p>Use the app’s Data &amp; forms section to browse records. For native apps, open Native app hosting → Backend to change SQLite tables with a numbered migration.</p>
             <p style={{ marginTop: 12 }}>Builder’s standalone database designer creates local XDB collections. Those are separate from your hosted database, so edit the hosted schema in FormLogic.</p>
-            <button type="button" onClick={() => void saveCurrentProject()} style={{ ...styles.collapsedLogicBtn, minHeight: 44, marginTop: 24 }}>Review draft in FormLogic</button>
+            <button type="button" className="bl-btn bl-btn-primary bl-btn-lg" onClick={() => void saveCurrentProject()} style={{ marginTop: 24 }}>Review draft in FormLogic</button>
           </section>
         );
         return (
@@ -884,15 +766,24 @@ function App() {
   if (isNarrow) {
     return <>
       {narrowPreview ? <div style={{ ...styles.app, height: '100dvh' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, gap: 12, borderBottom: '1px solid var(--line-soft)' }}>
-          <button style={{ ...styles.collapsedLogicBtn, minHeight: 44 }} onClick={() => setNarrowPreview(false)}>Back to workspace</button>
-          <span style={{ fontSize: 13, overflowWrap: 'anywhere' }}>{projectName}{projectDirty ? ' *' : ''}</span>
-          <button style={{ ...styles.collapsedLogicBtn, minHeight: 44 }} onClick={handleSave} disabled={isSaving} aria-busy={isSaving}>{isSaving ? 'Saving...' : 'Save app'}</button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, gap: 12, borderBottom: '1px solid var(--line-soft)', background: 'var(--ink-2)' }}>
+          <button className="bl-btn" style={{ minHeight: 44 }} onClick={() => setNarrowPreview(false)}>Back</button>
+          <span style={{ fontFamily: 'var(--display)', fontWeight: 700, fontSize: 15, letterSpacing: '-0.02em', overflowWrap: 'anywhere', textAlign: 'center' }}>
+            {projectName}
+            {projectDirty && <span style={{ display: 'block', fontFamily: 'var(--body)', fontWeight: 500, fontSize: 11, letterSpacing: 0, color: 'var(--dim)' }}>Unsaved changes</span>}
+          </span>
+          <button className="bl-btn" style={{ minHeight: 44 }} onClick={handleSave} disabled={isSaving} aria-busy={isSaving}>{isSaving ? 'Saving…' : 'Save'}</button>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}><LivePreview initialDevice="mobile" /></div>
-      </div> : <NarrowScreenNotice studioUrl={STUDIO_URL} runtimeUrl={RUNTIME_URL}
-        projectName={projectName} isDirty={projectDirty} isSaving={isSaving} onOpen={handleOpen} onSave={handleSave}
-        onPreview={() => { flushCanvasToActiveFile(); setNarrowPreview(true); }} />}
+      </div> : <div style={{ ...styles.app, height: '100dvh' }}>
+        {/* The way to the other products stays, as it does on every SoftN page. */}
+        {!isHostedEditor() && <ProductBar current="builder" urls={PRODUCT_URLS} onNavigate={isDesktop() ? (href) => {
+          void openCompanionUrl(href).catch(() => toast.error('Could not open the Softn website.'));
+        } : undefined} />}
+        <NarrowScreenNotice studioUrl={STUDIO_URL} runtimeUrl={RUNTIME_URL}
+          projectName={projectName} isDirty={projectDirty} isSaving={isSaving} onOpen={handleOpen} onSave={handleSave}
+          onPreview={() => { flushCanvasToActiveFile(); setNarrowPreview(true); }} />
+      </div>}
       <ToastContainer />
       <PwaUpdater />
     </>;
@@ -923,14 +814,18 @@ function App() {
 
         <div style={styles.statusBar}>
           <span>
-            View: <span style={styles.statusStrong}>{view}</span>
+            <span style={styles.statusStrong}>{elementCount}</span> {elementCount === 1 ? 'element' : 'elements'}
           </span>
           <span>
-            Elements: <span style={styles.statusStrong}>{elementCount}</span>
+            <span style={styles.statusStrong}>{selectedCount}</span> selected
           </span>
-          <span>
-            Selected: <span style={styles.statusStrong}>{selectedCount}</span>
-          </span>
+          {activeNode && (
+            <span style={styles.statusPath} title={activeNode.path}>{activeNode.path}</span>
+          )}
+          <span style={{ flex: 1 }} />
+          <button type="button" style={styles.statusLink} onClick={() => setShowShortcuts(true)}>
+            Press <kbd className="bl-kbd">?</kbd> for keyboard shortcuts
+          </button>
         </div>
       </div>
 

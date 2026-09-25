@@ -32,7 +32,7 @@ function key(name: string, shiftKey = false) {
 it('labels the new app form, selects its name, and exposes template selection', () => {
   mount(); const dialog = host.querySelector('[role=dialog]')!;
   expect(dialog.getAttribute('aria-modal')).toBe('true');
-  expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)?.textContent).toBe('Create New App');
+  expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)?.textContent).toBe('Create a new app');
   const input = dialog.querySelector('input')!;
   expect(document.activeElement).toBe(input); expect(input.selectionEnd).toBe(input.value.length);
   for (const label of dialog.querySelectorAll('label')) expect(label.control).not.toBeNull();
@@ -49,4 +49,39 @@ it.each([false, true])('traps Tab and restores the opener after Escape (shortcut
   controls.at(-1)!.focus(); key('Tab'); expect(document.activeElement).toBe(controls[0]);
   key('Tab', true); expect(document.activeElement).toBe(controls.at(-1));
   key('Escape'); expect(host.querySelector('[role=dialog]')).toBeNull(); expect(document.activeElement).toBe(opener);
+});
+
+it('asks which language the logic is in, JavaScript unless changed', () => {
+  // An app has one logic language — the runtime refuses a bundle that mixes
+  // them — so it is chosen with the app, not converted afterwards.
+  mount(); const dialog = host.querySelector('[role=dialog]')!;
+  const submit = () => act(() => dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  submit();
+  expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'javascript' }));
+  const python = dialog.querySelector<HTMLInputElement>('input[type=radio][value=python]')!;
+  expect(python.closest('fieldset')?.querySelector('legend')?.textContent).toBe('Logic language');
+  act(() => python.click());
+  submit();
+  expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'python' }));
+});
+
+it('offers torch only for a Python app, and asks for it only when ticked', () => {
+  mount(); const dialog = host.querySelector('[role=dialog]')!;
+  const submit = () => act(() => dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  expect(dialog.querySelector('[data-setting="python-torch"]')).toBeNull();
+  const python = dialog.querySelector<HTMLInputElement>('input[type=radio][value=python]')!;
+  expect(python.closest('fieldset')?.querySelector('legend')?.textContent).toBe('Logic language');
+  act(() => python.click());
+  submit();
+  expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'python', pythonPackages: [] }));
+  act(() => dialog.querySelector<HTMLInputElement>('[data-setting="python-torch"]')!.click());
+  submit();
+  expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'python', pythonPackages: ['torch'] }));
+});
+
+it('lists the shortcuts that exist, including the hierarchy keys and Ctrl+Y', () => {
+  mount(true); const dialog = host.querySelector('[role=dialog]')!;
+  expect(dialog.textContent).toContain('Hierarchy');
+  expect(dialog.textContent).toContain('Ctrl+Y');
+  expect(dialog.textContent).not.toContain('logic tab');
 });

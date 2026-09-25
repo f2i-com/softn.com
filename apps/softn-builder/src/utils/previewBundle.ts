@@ -1,21 +1,23 @@
 import { classifyAsset, composeBundleSource, rewriteBundleLogicImports, type AppAssetResolver } from '@softn/core';
 import type { AssetFile } from '../types/builder';
 
-/** Use the runtime's helper/component/entry order and its import deduplication. */
-export function composePreviewBundle(files: Map<string, string>, main: string, manifest: Record<string, unknown> | null) {
-  const groups = manifest?.files as Record<string, unknown> | undefined;
-  const declared = Array.isArray(groups?.logic) ? groups.logic.filter((path): path is string => typeof path === 'string') : [];
-  // `.py` counts as logic here for the same reason it does in the runtime: a
-  // logic file's name is what says which language it is in. A preview that
-  // collected only `.logic` would compose a Python app as if it had no logic
-  // at all and show a page with nothing behind it.
-  const logicPaths = [
-    ...new Set([
-      ...declared,
-      ...[...files.keys()].filter((path) => path.endsWith('.logic') || path.toLowerCase().endsWith('.py')),
-    ]),
-  ];
-  const composition = composeBundleSource(files, main, logicPaths);
+/**
+ * Compose the preview the way the runtime composes the exported bundle: with
+ * the manifest export would write (see `previewManifest`), its logic list as
+ * the helpers, and the manifest itself among the files, where the composer
+ * reads the Python packages the app declares.
+ *
+ * The helpers used to be every `.logic` and `.py` file the preview was given,
+ * besides the declared ones, in whatever order the files came — so a helper
+ * ran in a different order than in the exported app, and a path the manifest
+ * still named after the file was renamed was offered as well.
+ */
+export function composePreviewBundle(files: Map<string, string>, main: string, manifest: Record<string, unknown>) {
+  const groups = manifest.files as Record<string, unknown> | undefined;
+  const logicPaths = Array.isArray(groups?.logic) ? groups.logic.filter((path): path is string => typeof path === 'string') : [];
+  const textFiles = new Map(files);
+  textFiles.set('manifest.json', JSON.stringify(manifest));
+  const composition = composeBundleSource(textFiles, main, logicPaths);
   return {
     ...composition,
     importResolver: async (path: string): Promise<string | null> => {

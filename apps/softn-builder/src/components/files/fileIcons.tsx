@@ -27,7 +27,7 @@ export function FileGlyph({ kind, size = 14, color = 'var(--dim)' }: FileGlyphPr
             d="M1.5 4.5C1.5 3.67 2.17 3 3 3h2.5l1.2 1.4H13c.83 0 1.5.67 1.5 1.5v6.6c0 .83-.67 1.5-1.5 1.5H3c-.83 0-1.5-.67-1.5-1.5V4.5Z"
             stroke={color}
             strokeWidth="1.2"
-            fill={kind === 'folder-open' ? 'var(--mint-glow-soft)' : 'transparent'}
+            fill={kind === 'folder-open' ? 'var(--bl-hover)' : 'transparent'}
           />
           {kind === 'folder-open' && (
             <path d="M2.3 6.5h11.4" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
@@ -56,7 +56,7 @@ export function FileGlyph({ kind, size = 14, color = 'var(--dim)' }: FileGlyphPr
         <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
           <path
             d="M8.8 1.8 4.4 8h3l-.3 6.2L11.6 8H8.6l.2-6.2Z"
-            fill="var(--mint-glow)"
+            fill="var(--coral-glow)"
             stroke={color}
             strokeWidth="1.1"
             strokeLinejoin="round"

@@ -39,7 +39,7 @@ export function RelationshipList({ entities, relationships, selectedId, onSelect
         {relationships.map(relationship => {
           const name = relationshipName(relationship, entities);
           return (
-            <li key={relationship.id} style={{ border: `1px solid ${selectedId === relationship.id ? 'var(--coral)' : 'var(--line)'}`, borderRadius: 7, background: 'var(--ink)', padding: 10 }}>
+            <li key={relationship.id} style={{ border: `1px solid ${selectedId === relationship.id ? 'var(--paper)' : 'var(--line)'}`, borderRadius: 7, background: 'var(--ink)', padding: 10 }}>
               <button
                 type="button" aria-pressed={selectedId === relationship.id} onClick={() => onSelect(relationship.id)}
                 aria-label={`Select relationship ${name}`}
@@ -52,13 +52,13 @@ export function RelationshipList({ entities, relationships, selectedId, onSelect
               </button>
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <button type="button" style={button} onClick={() => onEdit(relationship.id)} aria-label={`Edit relationship ${name}`}>Edit</button>
-                <button type="button" style={{ ...button, color: 'var(--coral)' }} onClick={() => onRemove(relationship.id)} aria-label={`Remove relationship ${name}`}>Remove</button>
+                <button type="button" style={{ ...button, color: 'var(--danger)' }} onClick={() => onRemove(relationship.id)} aria-label={`Remove relationship ${name}`}>Remove</button>
               </div>
             </li>
           );
         })}
       </ul>
-      {!!relationships.length && <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--dimmer)', margin: '12px 0 0' }}>Removing a relationship keeps its field and existing values.</p>}
+      {!!relationships.length && <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--dim)', margin: '12px 0 0' }}>Removing a relationship keeps its field and existing values.</p>}
     </div>
   );
 }

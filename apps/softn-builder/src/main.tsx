@@ -10,6 +10,8 @@ import { registerAllBuiltins } from '@softn/components';
 import '@softn/brand/fonts';
 import '@softn/brand/tokens.css';
 import '@softn/brand/bar.css';
+// Builder's own chrome on those tokens: focus, form controls, shared controls.
+import './styles/builder.css';
 import App from './App';
 
 // Register all SoftN components

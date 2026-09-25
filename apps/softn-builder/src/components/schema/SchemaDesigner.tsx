@@ -68,9 +68,9 @@ const styles: Record<string, React.CSSProperties> = {
     pointerEvents: 'none' as const,
   },
   emptyTitle: {
-    fontFamily: 'var(--b-display)',
+    fontFamily: 'var(--display)',
     fontSize: 19,
-    fontWeight: 600,
+    fontWeight: 700,
     letterSpacing: '-0.02em',
     color: 'var(--paper)',
   },
@@ -82,32 +82,24 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--dim)',
   },
   emptyCode: {
-    fontFamily: 'var(--b-mono)',
+    fontFamily: 'var(--mono)',
     fontSize: '0.92em',
     color: 'var(--coral)',
   },
   emptyBtn: {
     pointerEvents: 'auto' as const,
     marginTop: 4,
-    padding: '9px 18px',
-    background: 'var(--coral)',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 8,
-    fontFamily: 'inherit',
-    fontSize: 13.5,
-    fontWeight: 600,
-    cursor: 'pointer',
   },
   emptyHint: {
     margin: 0,
     maxWidth: 400,
     fontSize: 12.5,
     lineHeight: 1.5,
-    color: 'var(--dimmer)',
+    color: 'var(--dim)',
   },
   toolbar: {
-    padding: '8px 16px',
+    minHeight: 44,
+    padding: '6px 16px',
     borderBottom: '1px solid var(--line-soft)',
     background: 'var(--ink-2)',
     display: 'flex',
@@ -116,32 +108,17 @@ const styles: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
   },
   toolbarTitle: {
-    fontWeight: 600,
+    fontFamily: 'var(--display)',
+    fontWeight: 700,
     fontSize: 14,
+    letterSpacing: '-0.01em',
     color: 'var(--paper)',
-    marginRight: 16,
-  },
-  btn: {
-    padding: '6px 12px',
-    background: 'var(--coral)',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 4,
-    fontSize: 12,
-    fontWeight: 500,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-  },
-  btnSecondary: {
-    background: 'var(--ink-3)',
-    color: 'var(--dim)',
+    marginRight: 8,
   },
   hint: {
     marginLeft: 'auto',
-    fontSize: 11,
-    color: 'var(--dimmer)',
+    fontSize: 11.5,
+    color: 'var(--dim)',
   },
 };
 
@@ -225,7 +202,7 @@ export function SchemaDesigner() {
       relationships.map((rel) => {
         const field = entities.find(entity => entity.id === rel.sourceEntityId)?.fields.find(candidate => candidate.id === rel.sourceFieldId);
         const selected = rel.id === selectedRelationshipId;
-        const color = selected ? 'var(--coral)' : 'var(--dim)';
+        const color = selected ? 'var(--paper)' : 'var(--dim)';
         return {
           id: rel.id,
           source: rel.sourceEntityId,
@@ -409,15 +386,15 @@ export function SchemaDesigner() {
   return (
     <div style={styles.container}>
       <div style={styles.toolbar}>
-        <span style={styles.toolbarTitle}>Schema Designer</span>
-        <button style={styles.btn} onClick={handleAddEntity}>
-          + Add Entity
+        <span style={styles.toolbarTitle}>Collections</span>
+        <button type="button" className="bl-btn bl-btn-sm" onClick={handleAddEntity}>
+          + Add collection
         </button>
-        <button style={{ ...styles.btn, ...styles.btnSecondary, opacity: entities.length ? 1 : 0.5 }} disabled={!entities.length} onClick={addRelationshipFromToolbar}>
+        <button type="button" className="bl-btn bl-btn-sm" disabled={!entities.length} onClick={addRelationshipFromToolbar}>
           + Add relationship
         </button>
         <span style={styles.hint}>
-          Drag a right connector to a left connector to create a relationship
+          To relate two collections, drag from a field’s right-hand dot to the other collection
         </span>
       </div>
 
@@ -473,8 +450,9 @@ export function SchemaDesigner() {
                 canvas for no reason. It appears once there is something to map. */}
             {entities.length > 0 && (
               <MiniMap
-                nodeColor={(node) => (node.selected ? 'var(--coral)' : 'var(--dimmer)')}
-                style={{ background: 'var(--ink)' }}
+                nodeColor={(node) => (node.selected ? 'var(--paper)' : 'var(--dimmer)')}
+                maskColor="var(--bl-hover)"
+                style={{ background: 'var(--ink-2)' }}
               />
             )}
           </ReactFlow>
@@ -497,7 +475,7 @@ export function SchemaDesigner() {
                 it keeps. Add one, give it fields, and it ships inside the bundle as an{' '}
                 <code style={styles.emptyCode}>.xdb</code> file.
               </p>
-              <button style={styles.emptyBtn} onClick={handleAddEntity}>
+              <button type="button" className="bl-btn bl-btn-primary bl-btn-lg" style={styles.emptyBtn} onClick={handleAddEntity}>
                 + Add your first collection
               </button>
               <p style={styles.emptyHint}>
@@ -518,8 +496,8 @@ export function SchemaDesigner() {
                   setPanel(next);
                   event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`#schema-${next}-tab`)?.focus();
                 }}
-                style={{ flex: 1, padding: '10px 8px', background: 'transparent', border: 0, borderBottom: `2px solid ${panel === tab ? 'var(--coral)' : 'transparent'}`, color: panel === tab ? 'var(--paper)' : 'var(--dim)', cursor: 'pointer', fontSize: 12 }}>
-                {tab === 'collection' ? 'Collection' : `Relationships (${relationships.length})`}
+                style={{ flex: 1, padding: '10px 8px', background: 'transparent', border: 0, borderBottom: `2px solid ${panel === tab ? 'var(--paper)' : 'transparent'}`, color: panel === tab ? 'var(--paper)' : 'var(--dim)', fontWeight: panel === tab ? 600 : 400, cursor: 'pointer', fontSize: 12.5 }}>
+                {tab === 'collection' ? 'Collection' : `Relationships · ${relationships.length}`}
               </button>
             ))}
           </div>

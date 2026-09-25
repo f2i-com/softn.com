@@ -18,7 +18,7 @@ export type { BundleManifest, BundleOptions } from './bundleExporter';
 export { loadBundle, openBundleFile, selectBundleFile } from './bundleLoader';
 export type { LoadedBundle } from './bundleLoader';
 
-export { parseSource, parseLogicFile } from './sourceParser';
+export { parseSource } from './sourceParser';
 
 export { validateBundle } from './bundleValidator';
 export type { ValidationResult } from './bundleValidator';

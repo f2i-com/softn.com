@@ -127,7 +127,7 @@ describe('the property panel for a block', () => {
     const condition = host.querySelector<HTMLInputElement>('[data-block-field="condition"]');
     expect(condition?.value).toBe('outer');
     // A block has no inline directives of its own.
-    expect(host.textContent).not.toContain('Event Handlers');
+    expect(host.textContent).not.toContain('Event handlers');
 
     setValue(condition!, 'outer && ready');
     expect(canvas().elements.get(ifId)?.block?.condition).toBe('outer && ready');

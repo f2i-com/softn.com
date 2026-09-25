@@ -28,10 +28,11 @@ const styles: Record<string, React.CSSProperties> = {
     height: 36,
     border: 'none',
     borderRight: '1px solid var(--line-soft)',
-    background: 'var(--ink-3)',
+    background: 'var(--ink)',
     color: 'var(--dim)',
     fontSize: 14,
     cursor: 'pointer',
+    flexShrink: 0,
   },
   navButtonRight: {
     borderRight: 'none',
@@ -51,22 +52,23 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     color: 'var(--dim)',
     borderRight: '1px solid var(--line-soft)',
-    background: 'var(--ink-3)',
+    background: 'var(--ink)',
     whiteSpace: 'nowrap',
     userSelect: 'none',
+    flexShrink: 0,
   },
+  // The open tab is the ink, raised, with a rule in the ink: coral is kept
+  // for the language, and a tab is not code.
   tabActive: {
     background: 'var(--ink-2)',
     color: 'var(--paper)',
-    borderBottom: '2px solid var(--coral)',
-    marginBottom: -1,
+    boxShadow: 'inset 0 -2px 0 var(--paper)',
   },
   tabHover: {
-    background: 'var(--line-soft)',
+    background: 'var(--bl-hover)',
+    color: 'var(--paper)',
   },
-  tabDirty: {
-    fontStyle: 'italic',
-  },
+  tabDirty: {},
   icon: {
     minWidth: 18,
     height: 18,
@@ -76,7 +78,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
   },
   name: {
-    maxWidth: 120,
+    maxWidth: 160,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
@@ -84,9 +86,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: 16,
-    height: 16,
-    borderRadius: 3,
+    width: 18,
+    height: 18,
+    borderRadius: 4,
     background: 'transparent',
     border: 'none',
     cursor: 'pointer',
@@ -97,14 +99,8 @@ const styles: Record<string, React.CSSProperties> = {
     marginLeft: 4,
   },
   closeBtnHover: {
-    background: 'var(--line-soft)',
-    color: 'var(--dim)',
-  },
-  dirtyDot: {
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    background: '#f59e0b',
+    background: 'var(--bl-hover)',
+    color: 'var(--paper)',
   },
   emptyState: {
     flex: 1,
@@ -120,7 +116,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--ink-2)',
     border: '1px solid var(--line)',
     borderRadius: 8,
-    boxShadow: '0 12px 24px rgba(15, 23, 42, 0.18)',
+    boxShadow: 'var(--bl-shadow-pop)',
     zIndex: 2000,
     padding: 4,
   },
@@ -197,7 +193,29 @@ function Tab({ fileId, isActive, onSelect, onClose, onContextMenu }: TabProps) {
   return (
     <div
       style={tabStyle}
+      role="tab"
+      tabIndex={isActive ? 0 : -1}
+      aria-selected={isActive}
+      data-tab-file={fileId}
+      title={node.path}
       onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          // Tabs are one stop in the Tab order; the arrows move between them.
+          e.preventDefault();
+          const tabs = [...(e.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])];
+          const next = tabs[tabs.indexOf(e.currentTarget) + (e.key === 'ArrowRight' ? 1 : -1)];
+          next?.focus();
+          next?.click();
+        } else if (e.key === 'Delete') {
+          e.preventDefault();
+          onClose();
+        }
+      }}
       onMouseDown={handleMiddleClick}
       onContextMenu={onContextMenu}
       onMouseEnter={() => setIsHovered(true)}
@@ -207,22 +225,25 @@ function Tab({ fileId, isActive, onSelect, onClose, onContextMenu }: TabProps) {
         <FileGlyph kind={getIcon()} />
       </span>
       <span style={styles.name}>{node.name}</span>
-      {node.isDirty ? (
-        <span style={styles.dirtyDot} title="Unsaved changes" />
-      ) : (
-        <button
-          style={{
-            ...styles.closeBtn,
-            ...(isCloseHovered ? styles.closeBtnHover : {}),
-          }}
-          onClick={handleClose}
-          onMouseEnter={() => setIsCloseHovered(true)}
-          onMouseLeave={() => setIsCloseHovered(false)}
-          title="Close"
-        >
-          x
-        </button>
-      )}
+      {/* An unsaved file shows a dot where its close button is, and the
+          button on hover, as editors do: it used to have no close button at
+          all, so the only way to close it was the context menu. Closing
+          loses nothing — closeFile only drops the tab; the file's content
+          stays in the store, and App flushes the canvas into it first. */}
+      <button
+        style={{
+          ...styles.closeBtn,
+          ...(isCloseHovered ? styles.closeBtnHover : {}),
+        }}
+        onClick={handleClose}
+        onMouseEnter={() => setIsCloseHovered(true)}
+        onMouseLeave={() => setIsCloseHovered(false)}
+        tabIndex={-1}
+        aria-label={node.isDirty ? `Close ${node.name} (unsaved changes)` : `Close ${node.name}`}
+        title={node.isDirty ? 'Unsaved changes — close' : 'Close'}
+      >
+        {node.isDirty && !isHovered ? <span className="bl-dirty-dot" aria-hidden="true" /> : '×'}
+      </button>
     </div>
   );
 }
@@ -299,26 +320,30 @@ export function FileTabs() {
   if (openTabs.length === 0) {
     return (
       <div style={styles.container}>
-        <div style={styles.emptyState}>No files open</div>
+        <div style={styles.emptyState}>No files open — choose one in Files</div>
       </div>
     );
   }
 
   return (
     <div style={styles.container}>
-      <button
-        style={{
-          ...styles.navButton,
-          ...(canScrollLeft ? {} : styles.navButtonDisabled),
-        }}
-        disabled={!canScrollLeft}
-        onClick={() => scrollTabs('left')}
-        title="Scroll tabs left"
-      >
-        {'<'}
-      </button>
+      {(canScrollLeft || canScrollRight) && (
+        <button
+          style={{
+            ...styles.navButton,
+            ...(canScrollLeft ? {} : styles.navButtonDisabled),
+          }}
+          disabled={!canScrollLeft}
+          onClick={() => scrollTabs('left')}
+          aria-label="Scroll tabs left"
+        >
+          ‹
+        </button>
+      )}
       <div
         ref={tabsRef}
+        role="tablist"
+        aria-label="Open files"
         style={styles.tabsWrapper}
         onScroll={updateScrollState}
         onWheel={(e) => {
@@ -348,18 +373,20 @@ export function FileTabs() {
           />
         ))}
       </div>
-      <button
-        style={{
-          ...styles.navButton,
-          ...styles.navButtonRight,
-          ...(canScrollRight ? {} : styles.navButtonDisabled),
-        }}
-        disabled={!canScrollRight}
-        onClick={() => scrollTabs('right')}
-        title="Scroll tabs right"
-      >
-        {'>'}
-      </button>
+      {(canScrollLeft || canScrollRight) && (
+        <button
+          style={{
+            ...styles.navButton,
+            ...styles.navButtonRight,
+            ...(canScrollRight ? {} : styles.navButtonDisabled),
+          }}
+          disabled={!canScrollRight}
+          onClick={() => scrollTabs('right')}
+          aria-label="Scroll tabs right"
+        >
+          ›
+        </button>
+      )}
       {contextMenu && (
         <div
           style={{
@@ -390,7 +417,7 @@ export function FileTabs() {
               setContextMenu(null);
             }}
           >
-            Close Other Tabs
+            Close other tabs
           </button>
           <div style={styles.contextMenuDivider} />
           <button
@@ -405,7 +432,7 @@ export function FileTabs() {
               setContextMenu(null);
             }}
           >
-            Close Tabs To The Left
+            Close tabs to the left
           </button>
           <button
             style={{
@@ -421,7 +448,7 @@ export function FileTabs() {
               setContextMenu(null);
             }}
           >
-            Close Tabs To The Right
+            Close tabs to the right
           </button>
           <div style={styles.contextMenuDivider} />
           <button
@@ -435,7 +462,7 @@ export function FileTabs() {
               setContextMenu(null);
             }}
           >
-            Close All Tabs
+            Close all tabs
           </button>
         </div>
       )}

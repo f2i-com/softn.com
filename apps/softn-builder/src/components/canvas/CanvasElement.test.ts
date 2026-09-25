@@ -179,6 +179,29 @@ describe('a string constant in an opened bundle', () => {
   });
 });
 
+describe('a string constant in a Python module', () => {
+  it('previews an image whose src is bound to a module-level name', async () => {
+    const data = zipSync(
+      {
+        'manifest.json': encode(manifest().replace('logic/main.logic', 'logic/main.py')),
+        'ui/main.ui': encode('<logic src="../logic/main.py" />\n<Stack>\n  <Image src={LOGO} />\n</Stack>'),
+        'logic/main.py': encode('BASE = "https://example.com"\nLOGO = BASE + "/logo.png"  # the header image\n'),
+      },
+      { level: 6 }
+    );
+    const bundle = await loadBundle(data);
+    useFilesStore.getState().loadFromBundle(bundle.uiFiles, bundle.logicFiles, new Map());
+    const [id, mainUI] = Array.from(bundle.uiFiles.entries()).find(([, file]) => file.path === 'ui/main.ui')!;
+    useFilesStore.getState().setActiveFile(id);
+    useCanvasStore.setState({ elements: mainUI.elements, rootId: mainUI.rootId });
+
+    const image = Array.from(mainUI.elements.values()).find((element) => element.componentType === 'Image')!;
+    const host = render(image.id);
+
+    expect(host.querySelector('img')?.getAttribute('src')).toBe('https://example.com/logo.png');
+  });
+});
+
 describe('keyboard canvas selection', () => {
   it('selects a component with Enter and keeps its visual preview out of the tab order', async () => {
     const mainUI = await openBundle('<Stack>\n  <Button>Save</Button>\n</Stack>', '');

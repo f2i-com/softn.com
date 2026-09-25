@@ -63,7 +63,6 @@ beforeEach(() => {
   vi.useFakeTimers();
   const store = useFilesStore.getState();
   store.reset();
-  store.initializeProject();
   otherId = store.createFile('ui', 'Other.ui', 'ui');
   open('main_ui', LOSSY_UI);
   open(otherId, LOSSLESS_UI);

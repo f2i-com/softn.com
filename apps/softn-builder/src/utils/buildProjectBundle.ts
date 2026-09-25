@@ -177,6 +177,7 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
       ? [...filesState.assetFiles.entries()].map(([id, asset]) => ({ ...asset, bundlePath: filesState.nodes.get(id)?.path ?? asset.bundlePath }))
       : projectState.assets,
     permissions: projectState.permissions,
+    pythonPackages: projectState.pythonPackages,
     icon: icon?.bytes,
     iconPath,
     source,

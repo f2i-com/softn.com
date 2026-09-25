@@ -38,3 +38,31 @@ describe('an entry file the manifest names but does not list', () => {
     expect(loaded.uiFiles.get(loaded.mainFileId!)?.path).toBe('ui/main.ui');
   });
 });
+
+describe('a logic file a UI file links but the manifest does not list', () => {
+  const bundle = () => zipSync({
+    'manifest.json': manifest({ ui: ['ui/main.ui'], logic: [], xdb: [], assets: [], server: ['server/api.py'] }),
+    'ui/main.ui': strToU8('<logic src="../logic/app.py" />\n<App><Text>{count}</Text></App>\n'),
+    'logic/app.py': strToU8('count = 0\n'),
+    'server/api.py': strToU8('x = 1\n'),
+  });
+
+  it('is loaded as logic, so it can be opened and edited, and not kept as an opaque entry', async () => {
+    const loaded = await loadBundle(bundle());
+    expect([...loaded.logicFiles.values()].map((f) => [f.path, f.content])).toEqual([['logic/app.py', 'count = 0\n']]);
+    expect(loaded.extraEntries.has('logic/app.py')).toBe(false);
+    expect(loaded.warnings.join('\n')).toContain('logic/app.py');
+    // A server file stays the server group's.
+    expect(loaded.extraEntries.has('server/api.py')).toBe(true);
+  });
+
+  it('is listed, once, by the export', async () => {
+    const { commitProjectSnapshot, prepareProjectSnapshot } = await import('./openProject');
+    const { buildProjectBundle } = await import('./buildProjectBundle');
+    const { parseBundle } = await import('./bundleExporter');
+    commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(bundle())));
+    const written = parseBundle(await buildProjectBundle());
+    expect(written.manifest.files.logic).toEqual(['logic/app.py']);
+    expect(new TextDecoder().decode(written.files.get('logic/app.py'))).toBe('count = 0\n');
+  });
+});

@@ -25,6 +25,7 @@
 import { create } from 'zustand';
 import type { CollectionDef, AssetFile } from '../types/builder';
 import { emptyDeclaration, type PermissionDeclaration } from '../utils/permissions';
+import { logicStarter, type LogicLanguage } from '../utils/logicFiles';
 
 /** Everything an opened bundle carried that the Builder keeps opaque. */
 export interface RetainedSource {
@@ -70,6 +71,14 @@ interface ProjectStore {
    */
   permissions: PermissionDeclaration;
 
+  /**
+   * The Python packages a Python app asks the runtime for, written to
+   * `config.python.packages` in manifest.json and read back from it: today
+   * only `torch`. The composer refuses an `import torch` the manifest does
+   * not declare, so an app that uses it has to say so.
+   */
+  pythonPackages: string[];
+
   // Logic source (.logic — JavaScript)
   logicSource: string;
 
@@ -104,6 +113,7 @@ interface ProjectStore {
   setIcon: (icon: string | null) => void;
   setThemeMode: (mode: 'light' | 'dark' | 'system') => void;
   setPermissions: (permissions: PermissionDeclaration) => void;
+  setPythonPackages: (packages: string[]) => void;
 
   // Actions - Logic
   setLogicSource: (source: string) => void;
@@ -131,7 +141,8 @@ interface ProjectStore {
   setSource: (source: RetainedSource) => void;
   /** A new workspace: new id, revision 0, generation advanced. Not an edit. */
   newWorkspace: () => void;
-  reset: () => void;
+  /** A new, empty project whose logic is in `language` (JavaScript unless said). */
+  reset: (language?: LogicLanguage) => void;
 
   // Serialization
   toJSON: () => SerializedProject;
@@ -145,23 +156,20 @@ export interface SerializedProject {
   icon: string | null;
   themeMode: 'light' | 'dark' | 'system';
   permissions?: PermissionDeclaration;
+  /** Absent in sessions written before the setting existed: none. */
+  pythonPackages?: string[];
   logicSource: string;
   collections: CollectionDef[];
 }
 
-const DEFAULT_LOGIC = `// SoftN logic — JavaScript, run in a sandboxed VM
-// Define your state, computed values, and functions
-
-let count = 0
-
-function increment() {
-  count++
+/**
+ * The project's own copy of its logic, which only the single-file export and
+ * a preview with no UI file at all still read. A Python project has no
+ * JavaScript logic, so its copy is empty; its logic is its `.py` file.
+ */
+function defaultLogicSource(language: LogicLanguage): string {
+  return language === 'javascript' ? logicStarter('javascript') : '';
 }
-
-function decrement() {
-  count--
-}
-`;
 
 /** The part of every edit that marks the project dirty and advances its revision. */
 function touch(state: { revision: number }): { isDirty: true; revision: number } {
@@ -175,7 +183,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   icon: null,
   themeMode: 'light',
   permissions: emptyDeclaration(),
-  logicSource: DEFAULT_LOGIC,
+  pythonPackages: [],
+  logicSource: defaultLogicSource('javascript'),
   collections: [],
   assets: [],
   isDirty: false,
@@ -203,6 +212,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   setPermissions: (permissions) => {
     set((state) => ({ permissions, ...touch(state) }));
+  },
+
+  setPythonPackages: (packages) => {
+    set((state) => ({ pythonPackages: [...new Set(packages)], ...touch(state) }));
   },
 
   setThemeMode: (mode) => {
@@ -306,7 +319,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     }));
   },
 
-  reset: () => {
+  reset: (language = 'javascript') => {
     set((state) => ({
       name: 'Untitled App',
       version: '1.0.0',
@@ -314,7 +327,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       icon: null,
       themeMode: 'light',
       permissions: emptyDeclaration(),
-      logicSource: DEFAULT_LOGIC,
+      pythonPackages: [],
+      logicSource: defaultLogicSource(language),
       collections: [],
       assets: [],
       isDirty: false,
@@ -335,6 +349,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       icon: state.icon,
       themeMode: state.themeMode,
       permissions: state.permissions,
+      pythonPackages: state.pythonPackages,
       logicSource: state.logicSource,
       collections: state.collections,
     };
@@ -348,6 +363,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       icon: data.icon || null,
       themeMode: data.themeMode || 'light',
       permissions: data.permissions ? { ...emptyDeclaration(), ...data.permissions } : emptyDeclaration(),
+      pythonPackages: Array.isArray(data.pythonPackages) ? data.pythonPackages.filter((name) => typeof name === 'string') : [],
       logicSource: data.logicSource || '',
       collections: data.collections || [],
       isDirty: false,

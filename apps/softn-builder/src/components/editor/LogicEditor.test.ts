@@ -11,6 +11,17 @@
 import { describe, expect, it } from 'vitest';
 import { editorLanguageFor } from './logicLanguage';
 import { composePreviewBundle } from '../../utils/previewBundle';
+import { previewManifest } from '../../utils/bundleExporter';
+
+/**
+ * The preview's composition of a project made here: the manifest export
+ * would write lists every logic file, which is how a helper no markup names
+ * is found at all.
+ */
+function composeProject(files: Map<string, string>) {
+  const logic = [...files.keys()].filter((path) => path.startsWith('logic/'));
+  return composePreviewBundle(files, 'ui/main.ui', previewManifest(null, logic, undefined));
+}
 
 describe('the logic editor follows the file name', () => {
   it('highlights a .py logic file as Python', () => {
@@ -18,10 +29,8 @@ describe('the logic editor follows the file name', () => {
     expect(editorLanguageFor('app.PY')).toBe('python');
   });
 
-  it('highlights everything else as JavaScript, including the dock', () => {
+  it('highlights everything else as JavaScript', () => {
     expect(editorLanguageFor('logic/main.logic')).toBe('javascript');
-    // The dock beneath the canvas has no file of its own; it is always the
-    // project's `.logic`.
     expect(editorLanguageFor(undefined)).toBe('javascript');
     expect(editorLanguageFor('notes.py.logic')).toBe('javascript');
   });
@@ -37,7 +46,7 @@ describe('the preview composes a Python project', () => {
       ['ui/main.ui', ui('main.py')],
       ['logic/main.py', 'count = 0\n'],
     ]);
-    const composed = composePreviewBundle(files, 'ui/main.ui', null);
+    const composed = composeProject(files);
     expect(composed.languages).toEqual(['javascript', 'python']);
     expect(composed.python?.modules).toEqual(['main']);
     expect(composed.python?.files.main).toBe('count = 0\n');
@@ -52,7 +61,7 @@ describe('the preview composes a Python project', () => {
       ['logic/main.py', MAIN_PY],
       ['logic/helpers.py', HELPERS_PY],
     ]);
-    const composed = composePreviewBundle(files, 'ui/main.ui', null);
+    const composed = composeProject(files);
     expect(composed.python?.modules).toEqual(['helpers', 'main']);
     expect(composed.python?.files.helpers).toBe(HELPERS_PY);
   });
@@ -62,7 +71,7 @@ describe('the preview composes a Python project', () => {
       ['ui/main.ui', ui('main.logic')],
       ['logic/main.logic', 'let count = 0;'],
     ]);
-    const composed = composePreviewBundle(files, 'ui/main.ui', null);
+    const composed = composeProject(files);
     expect(composed.languages).toEqual(['javascript']);
     expect(composed.python).toBeUndefined();
     expect(composed.source).toContain('let count = 0;');

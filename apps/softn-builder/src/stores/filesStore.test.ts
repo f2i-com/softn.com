@@ -33,7 +33,6 @@ function resolvedLogicRef(): string | undefined {
 
 beforeEach(() => {
   store().reset();
-  store().initializeProject();
   // A bundle loaded from disk carries the tag explicitly, and export writes it
   // back out from `originalSource`.
   store().updateUIFileLogicSrc(UI_ID, '../logic/main.logic');

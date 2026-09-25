@@ -7,12 +7,11 @@ import { createPortal } from 'react-dom';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
-import { generateSource } from '../../utils/sourceGenerator';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { debug } from '../../utils/debug';
 import { buildPermissionJson } from '../../utils/permissions';
-import type { CollectionDef, UIFileState } from '../../types/builder';
-import { composePreviewBundle } from '../../utils/previewBundle';
+import type { CollectionDef } from '../../types/builder';
+import { previewSourceFor, undeclaredPythonPackage } from '../../utils/previewSource';
 import type { PermissionConfig } from '@softn/core';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
@@ -58,7 +57,8 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--ink)',
   },
   header: {
-    padding: '8px 16px',
+    minHeight: 44,
+    padding: '6px 16px',
     borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
@@ -68,29 +68,46 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   title: {
-    fontWeight: 600,
-    fontSize: 13,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    fontFamily: 'var(--display)',
+    fontWeight: 700,
+    fontSize: 14,
+    letterSpacing: '-0.01em',
     color: 'var(--paper)',
+  },
+  // The one place in Builder where something is running, so the one place
+  // the brand's mint belongs: the live mark, as on the runtime's player.
+  live: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '1px 8px',
+    borderRadius: 999,
+    border: '1px solid var(--mint-edge)',
+    background: 'var(--mint-glow-soft)',
+    fontFamily: 'var(--body)',
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: 0,
+    color: 'var(--mint)',
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: '50%',
+    background: 'var(--mint)',
+  },
+  size: {
+    fontFamily: 'var(--mono)',
+    fontSize: 11,
+    color: 'var(--dim)',
   },
   controls: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-  },
-  deviceButton: {
-    padding: '6px 10px',
-    minHeight: 36,
-    background: 'transparent',
-    border: '1px solid var(--line-soft)',
-    borderRadius: 4,
-    fontSize: 11,
-    cursor: 'pointer',
-    color: 'var(--dim)',
-  },
-  deviceButtonActive: {
-    background: 'var(--coral)',
-    border: '1px solid var(--coral)',
-    color: '#fff',
   },
   previewWrapper: {
     flex: 1,
@@ -100,10 +117,12 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'stretch',
     justifyContent: 'center',
   },
+  // The stage the device sits on: the workspace's ground, not a white sheet
+  // that lit up the whole window in the dark theme.
   previewFrame: {
-    background: '#fff',
+    background: 'var(--ink-3)',
     borderRadius: 8,
-    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+    border: '1px solid var(--line-soft)',
     overflow: 'hidden',
     transition: 'width 0.3s ease',
     display: 'flex',
@@ -114,27 +133,34 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'auto',
   },
   error: {
-    padding: 24,
-    color: '#ef4444',
-    background: '#fef2f2',
+    padding: '16px 18px',
+    color: 'var(--paper)',
+    background: 'var(--bl-danger-soft)',
+    border: '1px solid var(--danger)',
     borderRadius: 8,
     margin: 16,
+    fontSize: 13,
+    lineHeight: 1.55,
+    overflowWrap: 'anywhere',
+    whiteSpace: 'pre-wrap',
   },
   loading: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
-    color: 'var(--dimmer)',
+    color: 'var(--dim)',
+    fontSize: 13,
   },
   infoBanner: {
-    margin: '10px 10px 0',
-    padding: '8px 10px',
+    margin: '8px 8px 0',
+    padding: '7px 12px',
     borderRadius: 8,
-    border: '1px solid var(--mint-edge)',
-    background: 'var(--mint-glow-soft)',
-    color: 'var(--coral)',
+    border: '1px solid var(--line-soft)',
+    background: 'var(--ink-2)',
+    color: 'var(--dim)',
     fontSize: 12,
+    lineHeight: 1.45,
   },
   emptyState: {
     height: '100%',
@@ -150,6 +176,8 @@ const styles: Record<string, React.CSSProperties> = {
 
 type DevicePreset = 'desktop' | 'tablet' | 'mobile';
 
+const DEVICE_LABELS: Record<DevicePreset, string> = { desktop: 'Desktop', tablet: 'Tablet', mobile: 'Phone' };
+
 const deviceDimensions: Record<DevicePreset, { width: number; height: number }> = {
   desktop: { width: 1440, height: 900 },
   tablet: { width: 768, height: 1024 },
@@ -159,91 +187,6 @@ const deviceDimensions: Record<DevicePreset, { width: number; height: number }> 
 // Threshold for warning (very large UIs)
 const WARN_ELEMENTS_THRESHOLD = 500;
 const WARN_SOURCE_LENGTH_THRESHOLD = 100000;
-
-function extractFirstBlock(source: string, regex: RegExp): string | null {
-  const m = source.match(regex);
-  return m ? m[0].trim() : null;
-}
-
-function extractAllBlocks(source: string, regex: RegExp): string[] {
-  return Array.from(source.matchAll(regex)).map((m) => m[0].trim()).filter(Boolean);
-}
-
-function mergeGeneratedTemplateIntoSource(
-  originalSource: string | undefined,
-  generatedSource: string
-): string {
-  const generatedDataBlock = extractFirstBlock(generatedSource, /<data>[\s\S]*?<\/data>/i);
-  const generatedLogicBlock = extractFirstBlock(generatedSource, /<logic>[\s\S]*?<\/logic>/i);
-  const templateOnly = generatedSource
-    .replace(/<data>[\s\S]*?<\/data>/gi, '')
-    .replace(/<logic>[\s\S]*?<\/logic>/gi, '')
-    .trim();
-
-  if (!originalSource) {
-    return generatedSource;
-  }
-
-  const preservedLogicSrc = extractFirstBlock(
-    originalSource,
-    /<logic\s+src=["'][^"']+["']\s*\/>/i
-  );
-  const preservedInlineLogic = extractFirstBlock(
-    originalSource,
-    /<logic>[\s\S]*?<\/logic>/i
-  );
-  const preservedImports = extractAllBlocks(
-    originalSource,
-    /<import\s+(?:\{\s*[^}]+\s*\}|\w+)\s+from=["'][^"']+["']\s*\/>/gi
-  );
-  const preservedData = extractFirstBlock(
-    originalSource,
-    /<data>[\s\S]*?<\/data>/i
-  );
-  const preservedStyles = extractAllBlocks(
-    originalSource,
-    /<style>[\s\S]*?<\/style>/gi
-  );
-
-  // Prefer original logic blocks over generated; fallback to generated so
-  // logic isn't silently lost for files without explicit logic references.
-  const logicBlock = preservedLogicSrc || preservedInlineLogic || generatedLogicBlock;
-
-  // Prefer original <data> block (preserves sort/limit/collection format)
-  // over the generated one which may use a simplified format.
-  const dataBlock = preservedData || generatedDataBlock;
-
-  const headerBlocks = [
-    logicBlock,
-    preservedImports.length > 0 ? preservedImports.join('\n') : null,
-    dataBlock,
-    ...preservedStyles,
-  ].filter((block): block is string => Boolean(block && block.trim()));
-
-  return [headerBlocks.join('\n\n'), templateOnly].filter(Boolean).join('\n\n').trim();
-}
-
-/**
- * Resolve a relative path from a source file path
- */
-function resolveRelativePath(fromPath: string, relativePath: string): string {
-  // Get directory of the source file
-  const parts = fromPath.split('/');
-  parts.pop(); // Remove filename
-  const dir = parts;
-
-  // Handle relative path
-  const relParts = relativePath.split('/');
-  for (const part of relParts) {
-    if (part === '..') {
-      dir.pop();
-    } else if (part !== '.') {
-      dir.push(part);
-    }
-  }
-
-  return dir.join('/');
-}
 
 interface DeviceViewportProps {
   width: number;
@@ -355,7 +298,7 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
 
 export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: DevicePreset }) {
   const { elements, rootId } = useCanvasStore();
-  const { projectId, logicSource, collections: projectCollections, themeMode, permissions, source: retainedSource, assets: projectAssets } = useProjectStore();
+  const { projectId, logicSource, collections: projectCollections, themeMode, permissions, pythonPackages, setPythonPackages, source: retainedSource, assets: projectAssets } = useProjectStore();
   // The preview runs under the project's own declaration, as the runtime
   // will: a call the app has not declared fails here too, not first in the
   // runtime after export.
@@ -431,160 +374,10 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   // Get source - prioritize ui/main.ui for stable preview behavior.
   // IMPORTANT: useMemo must be a pure computation — no setState calls.
   // Errors and info are returned as part of the result and synced via useEffect.
-  const previewState = useMemo<{
-    source: string; activeFilePath: string; info: string | null; error: string | null;
-    composition?: ReturnType<typeof composePreviewBundle>;
-  }>(() => {
-    let rawSource = '';
-    let activeFilePath = '';
-    let info: string | null = null;
-    let errorMsg: string | null = null;
-    const mainUIFile = (retainedSource.mainFileId ? uiFiles.get(retainedSource.mainFileId) : undefined)
-      ?? Array.from(uiFiles.values()).find((file) => file.path === retainedSource.manifest?.main || file.path === 'ui/main.ui');
-    const activeNode = activeFileId ? nodes.get(activeFileId) : null;
-    const activeUIFile =
-      activeFileId && activeNode?.type === 'file' && activeNode.fileType === 'ui'
-        ? uiFiles.get(activeFileId)
-        : undefined;
-
-    // Prefer active UI file for immediate feedback; fallback to main.ui for stability.
-    const primaryUIFile = activeUIFile || mainUIFile;
-    const isMainFallback = !activeUIFile && !!mainUIFile;
-
-    // Resolve file-specific logic source for the active UI file when possible.
-    const resolveLinkedLogicSource = () => {
-      if (!activeUIFile?.logicSrc) {
-        return logicSource;
-      }
-
-      const sourcePath = activeUIFile.logicSrc;
-      const resolvedPath = resolveRelativePath(activeUIFile.path, sourcePath);
-      const pathsToTry = [
-        resolvedPath,
-        resolvedPath.replace(/^\//, ''),
-        sourcePath.replace(/^\.\//, ''),
-        sourcePath,
-      ];
-
-      if (activeUIFile.path.startsWith('ui/') && sourcePath.startsWith('./')) {
-        pathsToTry.push(`logic/${sourcePath.slice(2)}`);
-      }
-
-      for (const [, logicFile] of logicFiles) {
-        if (pathsToTry.includes(logicFile.path)) {
-          return logicFile.content;
-        }
-      }
-
-      return logicSource;
-    };
-
-    const resolveImportedFileSource = (file: UIFileState): string => {
-      if (file.originalSource !== undefined) {
-        return file.originalSource;
-      }
-      // For files without originalSource, generate from canvas elements.
-      // Use skipRootAppWrapper so we don't inject <App> into components
-      // that had a different root element (Header.ui, Dashboard.ui, etc.).
-      const generated = generateSource(file.elements, file.rootId, '', [], {
-        skipRootAppWrapper: true,
-      });
-      return mergeGeneratedTemplateIntoSource(file.originalSource, generated);
-    };
-
-    // Authored source is authoritative, including constructs the canvas cannot
-    // represent. The view switch flushes accepted canvas edits before preview.
-    // Rebuilding a source-only file here loses mixed text and can show stale code.
-    if (primaryUIFile?.originalSource !== undefined) {
-      rawSource = primaryUIFile.originalSource;
-      activeFilePath = primaryUIFile.path;
-      if (!rawSource.trim()) return { source: '', activeFilePath, info: 'This UI file is empty. Add source in Code view to preview it.', error: null };
-    }
-    if (primaryUIFile && activeUIFile && primaryUIFile.id === activeUIFile.id && primaryUIFile.originalSource === undefined) {
-      try {
-        const fileLogicSource = resolveLinkedLogicSource();
-        const generatedSource = generateSource(elements, rootId, fileLogicSource, collections);
-        rawSource = mergeGeneratedTemplateIntoSource(activeUIFile.originalSource, generatedSource);
-        activeFilePath = activeUIFile.path;
-      } catch (err) {
-        console.error('[LivePreview] Error generating live source from canvas:', err);
-        errorMsg = err instanceof Error ? err.message : 'Failed to generate source';
-        return { source: '', activeFilePath: '', info, error: errorMsg };
-      }
-    }
-
-    if (!rawSource && primaryUIFile?.originalSource) {
-      debug('[LivePreview] Using originalSource for preview:', {
-        path: primaryUIFile.path,
-        sourceLength: primaryUIFile.originalSource.length,
-      });
-      rawSource = primaryUIFile.originalSource;
-      activeFilePath = primaryUIFile.path;
-      if (isMainFallback) {
-        info = 'Preview is showing ui/main.ui because no active UI file is selected.';
-      }
-    }
-
-    // If UI file exists but no raw source, generate from that file's canvas snapshot.
-    if (!rawSource) {
-      const fileToGenerate = primaryUIFile;
-      if (fileToGenerate) {
-        debug('[LivePreview] Generating source from UI file state:', {
-          path: fileToGenerate.path,
-          elementsSize: fileToGenerate.elements.size,
-          rootId: fileToGenerate.rootId,
-        });
-        try {
-          rawSource = generateSource(
-            fileToGenerate.elements,
-            fileToGenerate.rootId,
-            logicSource,
-            collections
-          );
-          activeFilePath = fileToGenerate.path;
-          if (isMainFallback && fileToGenerate.path === 'ui/main.ui') {
-            info = 'Preview is showing ui/main.ui because no active UI file is selected.';
-          }
-        } catch (err) {
-          console.error('[LivePreview] Error generating source from UI file state:', err);
-          errorMsg = err instanceof Error ? err.message : 'Failed to generate source';
-          return { source: '', activeFilePath: '', info, error: errorMsg };
-        }
-      }
-    }
-
-    // Final fallback: generate source from currently loaded canvas state
-    if (!rawSource) {
-      debug('[LivePreview] Generating source from canvas:', {
-        elementsSize: elements.size,
-        rootId,
-        hasLogic: !!logicSource,
-        collectionsCount: collections.length,
-      });
-      try {
-        rawSource = generateSource(elements, rootId, logicSource, collections);
-        debug('[LivePreview] Generated source length:', rawSource.length);
-        if (activeFileId && !uiFiles.has(activeFileId)) {
-          info = 'Preview is showing canvas-generated source because no UI file source is available.';
-        }
-      } catch (err) {
-        console.error('[LivePreview] Error generating source:', err);
-        errorMsg = err instanceof Error ? err.message : 'Failed to generate source';
-        return { source: '', activeFilePath: '', info, error: errorMsg };
-      }
-    }
-
-    try {
-      const mainPath = activeFilePath || 'ui/main.ui';
-      const files = new Map([...uiFiles.values()].map((file) => [file.path, resolveImportedFileSource(file)]));
-      for (const file of logicFiles.values()) files.set(file.path, file.content);
-      files.set(mainPath, rawSource);
-      const composition = composePreviewBundle(files, mainPath, retainedSource.manifest);
-      return { source: composition.source, activeFilePath, info, error: null, composition };
-    } catch (err) {
-      return { source: '', activeFilePath, info, error: err instanceof Error ? err.message : 'Could not prepare the preview.' };
-    }
-  }, [elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource]);
+  const previewState = useMemo(
+    () => previewSourceFor({ elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages }),
+    [elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages]
+  );
   const source = previewState.source;
 
   // Sync error and info from the pure useMemo result into component state.
@@ -668,23 +461,45 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       return (
         <div style={styles.loading}>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ marginBottom: 8 }}>Loading preview...</div>
-            <div style={{ fontSize: 11, color: 'var(--dimmer)' }}>Initializing renderer</div>
+            <div style={{ marginBottom: 6, color: 'var(--paper)' }}>Starting the preview…</div>
+            <div style={{ fontSize: 11.5 }}>Loading the SoftN runtime</div>
           </div>
         </div>
       );
     }
 
     if (error) {
-      return <div style={styles.error}>{error}</div>;
+      // The composer refuses a package the app imports but does not declare,
+      // naming the manifest line to add. The Builder writes that line from a
+      // project setting, so the fix is one click here rather than a trip to
+      // the export dialog.
+      const missing = undeclaredPythonPackage(error);
+      return (
+        <div style={styles.error} role="alert">
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>The preview could not start</div>
+          {error}
+          {missing && (
+            <div style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                className="bl-btn bl-btn-sm bl-btn-primary"
+                onClick={() => setPythonPackages([...pythonPackages, missing])}
+                data-action="enable-python-package"
+              >
+                Enable {missing}
+              </button>
+            </div>
+          )}
+        </div>
+      );
     }
 
     if (!source.trim()) {
       return (
         <div style={styles.emptyState}>
           <div>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>No previewable UI source</div>
-            <div>Create or open `ui/main.ui` to preview this project.</div>
+            <div style={{ fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--paper)', marginBottom: 6 }}>Nothing to preview yet</div>
+            <div>This app has no UI file to run. Add <code style={{ fontFamily: 'var(--mono)', color: 'var(--coral)' }}>ui/main.ui</code> in Files.</div>
           </div>
         </div>
       );
@@ -694,27 +509,14 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
     if (isVeryLarge && !forceRender) {
       return (
         <div style={{ padding: 24, textAlign: 'center' }}>
-          <div style={{ fontSize: 20, marginBottom: 16, color: '#f59e0b' }}>Warning</div>
-          <div style={{ fontWeight: 600, marginBottom: 8, color: 'var(--paper)' }}>Large Preview</div>
+          <div style={{ fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.02em', marginBottom: 8, color: 'var(--paper)' }}>A large page</div>
           <div style={{ color: 'var(--dim)', marginBottom: 16, fontSize: 13 }}>
             This UI has {elements.size} elements ({source.length.toLocaleString()} characters).
             <br />
             Rendering may be slow or cause memory issues.
           </div>
-          <button
-            onClick={() => setForceRender(true)}
-            style={{
-              padding: '8px 16px',
-              background: 'var(--coral)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              cursor: 'pointer',
-              fontSize: 13,
-              marginRight: 8,
-            }}
-          >
-            Render Anyway
+          <button type="button" className="bl-btn bl-btn-primary" onClick={() => setForceRender(true)} style={{ marginRight: 8 }}>
+            Preview anyway
           </button>
           <button
             onClick={() => {
@@ -726,17 +528,10 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
                 );
               }
             }}
-            style={{
-              padding: '8px 16px',
-              background: 'var(--line-soft)',
-              color: 'var(--dim)',
-              border: 'none',
-              borderRadius: 6,
-              cursor: 'pointer',
-              fontSize: 13,
-            }}
+            type="button"
+            className="bl-btn"
           >
-            View Source
+            View source
           </button>
         </div>
       );
@@ -753,15 +548,15 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
 
       const loadingFallback = (
         <div style={{ padding: 24, textAlign: 'center', color: 'var(--dim)' }}>
-          <div style={{ marginBottom: 8 }}>Rendering preview...</div>
+          <div style={{ marginBottom: 8 }}>Rendering the preview…</div>
           <div style={{ fontSize: 11 }}>Parsing {source.length.toLocaleString()} characters</div>
         </div>
       );
 
       const errorFallback = (err: Error) => (
-        <div style={styles.error}>
-          <div style={{ fontWeight: 600, marginBottom: 8 }}>Render Error</div>
-          <div style={{ fontFamily: 'monospace', fontSize: 12 }}>{err.message}</div>
+        <div style={styles.error} role="alert">
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>The app stopped with an error</div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{err.message}</div>
         </div>
       );
 
@@ -777,6 +572,10 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
             importResolver={previewState.composition?.importResolver}
             logicBasePath={previewState.composition?.logicBasePath}
             preIncludedLogicPaths={previewState.composition?.preIncludedLogicPaths}
+            // A Python app's logic is its modules, not the markup's <logic>
+            // block, which the composer leaves empty; without them the preview
+            // of a Python app ran nothing at all.
+            python={previewState.composition?.python}
             permissionConfig={previewPermissionConfig}
             onLoad={(doc: unknown) => {
               debug('[LivePreview] SoftNRenderer onLoad - document parsed:', doc);
@@ -821,7 +620,7 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
         </div>
         <div
           style={{
-            fontFamily: 'monospace',
+            fontFamily: 'var(--mono)',
             fontSize: 11,
             whiteSpace: 'pre-wrap',
             background: 'var(--ink)',
@@ -840,26 +639,36 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span style={styles.title}>Live Preview</span>
-        <div style={styles.controls} role="group" aria-label="Preview device">
-          {(['desktop', 'tablet', 'mobile'] as DevicePreset[]).map((d) => (
-            <button
-              key={d}
-              type="button"
-              aria-pressed={device === d}
-              style={{
-                ...styles.deviceButton,
-                ...(device === d ? styles.deviceButtonActive : {}),
-              }}
-              onClick={() => setDevice(d)}
-            >
-              {d.charAt(0).toUpperCase() + d.slice(1)}
-            </button>
-          ))}
+        <span style={styles.title}>
+          Preview
+          {!error && !isLoading && source.trim() && (
+            <span style={styles.live} data-preview-live="true">
+              <span style={styles.liveDot} aria-hidden="true" />
+              Running
+            </span>
+          )}
+        </span>
+        <div style={styles.controls}>
+          <span style={styles.size} aria-hidden="true">
+            {deviceDimensions[device].width} × {deviceDimensions[device].height}
+          </span>
+          <div className="bl-seg" role="group" aria-label="Preview device">
+            {(['desktop', 'tablet', 'mobile'] as DevicePreset[]).map((d) => (
+              <button
+                key={d}
+                type="button"
+                aria-pressed={device === d}
+                title={`${DEVICE_LABELS[d]}, ${deviceDimensions[d].width} × ${deviceDimensions[d].height}`}
+                onClick={() => setDevice(d)}
+              >
+                {DEVICE_LABELS[d]}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {sourceInfo && <div style={styles.infoBanner}>{sourceInfo}</div>}
-      {collections.length > 0 && <div style={{ ...styles.infoBanner, color: 'var(--dim)' }}>Try your app here. Preview data resets when you leave; edit saved records in Data.</div>}
+      {collections.length > 0 && <div style={styles.infoBanner}>Try your app here. Records you add in the preview are thrown away when you leave it; the app’s saved records are edited in Data.</div>}
 
       <div style={styles.previewWrapper}>
         <div

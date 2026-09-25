@@ -10,22 +10,31 @@ import type {
   LogicFileState,
   AssetFile,
   CanvasElement,
-  UIImport,
-  LogicImport,
 } from '../types/builder';
 import { debug } from '../utils/debug';
 import { generateSource } from '../utils/sourceGenerator';
 import { elementsEqual } from '../utils/elementsEqual';
 import { assessSourceFidelity, parseSource } from '../utils/sourceParser';
 import { hasSingleAppRoot } from '../utils/sourceFidelity';
-import { parse as parseSoftN } from '@softn/core';
+import {
+  MAIN_LOGIC_PATHS,
+  blankLogicFile,
+  entryFileId,
+  linkedLogicFile,
+  logicStarter,
+  relativeImportPath,
+  resolveImportPath,
+  type LogicLanguage,
+} from '../utils/logicFiles';
+import { applyInlineLogicMove, planInlineLogicMove, takenPaths, type InlineLogicMove } from '../utils/inlineLogic';
+import { isPythonLogicPath, parse as parseSoftN, pythonModuleName } from '@softn/core';
 
 function generateId(): string {
   return `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
 // Default initial state for a new UI file
-function createEmptyUIFile(id: string, path: string): UIFileState {
+function createEmptyUIFile(id: string, path: string, logicSrc?: string): UIFileState {
   const rootId = `root_${id}`;
   const elements = new Map<string, CanvasElement>([
     [
@@ -46,6 +55,7 @@ function createEmptyUIFile(id: string, path: string): UIFileState {
     elements,
     rootId,
     imports: [],
+    ...(logicSrc ? { logicSrc } : {}),
   };
 }
 
@@ -54,9 +64,7 @@ function createEmptyLogicFile(id: string, path: string): LogicFileState {
   return {
     id,
     path,
-    content: `// ${path.split('/').pop()}\n// SoftN logic — JavaScript, run in a sandboxed VM\n\n`,
-    imports: [],
-    exports: [],
+    content: blankLogicFile(path),
   };
 }
 
@@ -73,51 +81,20 @@ function normalizePath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
 }
 
-// Resolve relative import path from a source file
-function resolveImportPath(fromPath: string, importPath: string): string {
-  if (importPath.startsWith('@')) {
-    // Package import, return as-is
-    return importPath;
-  }
-
-  const { parent } = parsePath(fromPath);
-  const parts = parent ? parent.split('/') : [];
-
-  const importParts = importPath.split('/');
-  for (const part of importParts) {
-    if (part === '..') {
-      parts.pop();
-    } else if (part !== '.') {
-      parts.push(part);
-    }
-  }
-
-  return parts.join('/');
+/** A path mapped through a move of `from` (a file or a folder) to `to`. */
+function movedPath(path: string, from: string, to: string): string {
+  if (path === from) return to;
+  if (path.startsWith(`${from}/`)) return `${to}${path.slice(from.length)}`;
+  return path;
 }
 
-/**
- * Express `targetPath` relative to the file at `fromPath`.
- *
- * The inverse of `resolveImportPath`, so a rewritten `<logic src>` keeps the
- * same relative style the author wrote.
- */
-function relativeImportPath(fromPath: string, targetPath: string): string {
-  const fromParts = (parsePath(fromPath).parent || '').split('/').filter(Boolean);
-  const toParts = targetPath.split('/').filter(Boolean);
-
-  let shared = 0;
-  while (shared < fromParts.length && shared < toParts.length && fromParts[shared] === toParts[shared]) {
-    shared += 1;
-  }
-
-  const up = fromParts.length - shared;
-  const down = toParts.slice(shared);
-  const prefix = up > 0 ? Array(up).fill('..') : ['.'];
-  return [...prefix, ...down].join('/');
-}
+/** Every `<logic src="…">` in a source, with either quote. */
+const LOGIC_SRC_ATTRIBUTE = /(<logic\b[^>]*?\bsrc\s*=\s*)(["'])([^"']*)\2/gi;
 
 /**
- * Repoint every `<logic src>` that referred to a file which has just moved.
+ * Keep every `<logic src>` pointing at the file it meant, after a rename or
+ * a move changed where the logic file is, where the UI file holding the tag
+ * is, or both.
  *
  * Renaming a logic file used to rewrite only the file's own path, leaving each
  * UI file's `logicSrc` pointing at a name that no longer existed. Nothing
@@ -127,36 +104,152 @@ function relativeImportPath(fromPath: string, targetPath: string): string {
  * replaces every handler that is not a function with a no-op whose warning is
  * gated on `scriptLoaded` — which is false in exactly this case. The result
  * was an app that rendered completely and did nothing at all, with a single
- * console.warn to show for it.
+ * console.warn to show for it. Moving the UI file itself, or renaming a
+ * folder, broke the reference the same way, because the reference is
+ * relative to the file that holds it and only the other end was followed.
+ *
+ * `before` holds each UI file as it was, so every reference is resolved
+ * from where it was written; `move` maps a path from before to after. A
+ * reference that still resolves to the right file is left as the author
+ * wrote it.
  */
-function repointLogicReferences(
-  uiFiles: Map<string, UIFileState>,
-  oldPath: string,
-  newPath: string
+function relinkLogicReferences(
+  before: Map<string, UIFileState>,
+  after: Map<string, UIFileState>,
+  move: (path: string) => string
 ): Map<string, UIFileState> {
-  const updated = new Map(uiFiles);
+  const updated = new Map(after);
 
-  for (const [id, file] of uiFiles) {
-    if (!file.logicSrc) continue;
-    if (resolveImportPath(file.path, file.logicSrc) !== oldPath) continue;
+  // The value to write in place of `src`, or null when `src` still resolves.
+  const relinked = (src: string, oldFilePath: string, newFilePath: string): string | null => {
+    const target = move(resolveImportPath(oldFilePath, src));
+    return resolveImportPath(newFilePath, src) === target ? null : relativeImportPath(newFilePath, target);
+  };
 
-    const nextSrc = relativeImportPath(file.path, newPath);
-    const next: UIFileState = { ...file, logicSrc: nextSrc };
+  for (const [id, file] of after) {
+    const oldFilePath = before.get(id)?.path ?? file.path;
+    const next: UIFileState = { ...file };
+    let changed = false;
 
-    // Multi-file bundles keep the original text and re-emit the header from
-    // it, so the tag in that copy has to be repointed too or export would
-    // write the stale path back out.
-    if (file.originalSource) {
-      next.originalSource = file.originalSource.replace(
-        /(<logic\s+src=")([^"]*)(")/,
-        `$1${nextSrc}$3`
-      );
+    if (file.logicSrc) {
+      const src = relinked(file.logicSrc, oldFilePath, file.path);
+      if (src !== null) {
+        next.logicSrc = src;
+        changed = true;
+      }
     }
 
-    updated.set(id, next);
+    // Multi-file bundles keep the original text and re-emit the header from
+    // it, so every tag in that copy has to be repointed too or export would
+    // write the stale path back out.
+    if (file.originalSource) {
+      const source = file.originalSource.replace(
+        LOGIC_SRC_ATTRIBUTE,
+        (tag: string, head: string, quote: string, src: string) => {
+          const replacement = relinked(src, oldFilePath, file.path);
+          return replacement === null ? tag : `${head}${quote}${replacement}${quote}`;
+        }
+      );
+      if (source !== file.originalSource) {
+        next.originalSource = source;
+        changed = true;
+      }
+    }
+
+    if (changed) updated.set(id, next);
   }
 
   return updated;
+}
+
+/** Why nothing new can be put at `path`: a file or folder is already there. */
+function pathTakenReason(
+  nodes: Map<string, ProjectFileNode>,
+  path: string,
+  exceptId?: string
+): string | null {
+  for (const node of nodes.values()) {
+    if (node.id !== exceptId && node.path === path) {
+      return `${path} already exists. Choose another name.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Why a logic file cannot have this path as a Python module, or null.
+ *
+ * A `.py` file's name is its module name — Python imports by name, not by
+ * path — so the runtime refuses a name Python cannot import (`my-helpers`),
+ * one the runtime itself uses (`softn`, or a standard-library module its own
+ * `softn.py` imports, such as `json`), and two files with the same name in
+ * different folders. The composer's refusal came at preview or export, as an
+ * error about the whole app; here it comes when the name is typed.
+ */
+function pythonNameReason(
+  logicFiles: Map<string, LogicFileState>,
+  path: string,
+  exceptId?: string
+): string | null {
+  if (!isPythonLogicPath(path)) return null;
+  let module: string;
+  try {
+    module = pythonModuleName(path);
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+  for (const other of logicFiles.values()) {
+    if (other.id === exceptId || !isPythonLogicPath(other.path)) continue;
+    if (parsePath(other.path).name.slice(0, -'.py'.length) === module) {
+      return `${other.path} is already the Python module ${module}; Python imports by module name, so each .py file needs its own name.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Why a node cannot be deleted, or null.
+ *
+ * The protected files are the entry file and the logic it links. Both used to
+ * be protected by id — `main_ui` and `main_logic`, the ids a new project gets
+ * — but an opened bundle's files get generated ids, so an opened app's entry
+ * file could be deleted, and export then refused to write the app at all.
+ * The entry is found the way export finds it.
+ */
+function deletionRefusedReason(
+  nodes: Map<string, ProjectFileNode>,
+  uiFiles: Map<string, UIFileState>,
+  logicFiles: Map<string, LogicFileState>,
+  id: string
+): string | null {
+  const node = nodes.get(id);
+  if (!node) return null;
+  const entryId = entryFileId(uiFiles, useProjectStore.getState().source);
+  const entryLogic = linkedLogicFile(entryId ? uiFiles.get(entryId) : undefined, logicFiles);
+
+  const refused = (fileId: string): string | null => {
+    if (fileId === entryId) {
+      return `${nodes.get(fileId)?.path ?? 'This file'} is the app's entry file; the app cannot start without it.`;
+    }
+    if (entryLogic && fileId === entryLogic.id) {
+      return `${entryLogic.path} is the logic the entry file links with <logic src>. Link another logic file first.`;
+    }
+    return null;
+  };
+
+  if (node.type === 'file') return refused(id);
+
+  const walk = (folderId: string): string | null => {
+    for (const childId of nodes.get(folderId)?.children ?? []) {
+      const child = nodes.get(childId);
+      if (!child) continue;
+      const reason = child.type === 'folder' ? walk(childId) : refused(childId);
+      if (reason) return reason;
+    }
+    return null;
+  };
+  const reason = walk(id);
+  return reason ? `The folder ${node.path} cannot be deleted: ${reason}` : null;
 }
 
 /**
@@ -198,16 +291,21 @@ interface FilesStore {
   activeFileId: string | null;
   openTabs: string[];
 
-  // Folder actions
+  // Folder and file actions. Each one that would put two nodes at one path,
+  // give a .py file a name Python cannot import, or delete the entry file or
+  // the logic it links throws an Error saying so, and changes nothing. Two
+  // files at one path used to be accepted, and export kept one of them.
   createFolder: (parentPath: string, name: string) => string;
   deleteFolder: (id: string) => void;
   renameFolder: (id: string, newName: string) => void;
 
-  // File actions
   createFile: (parentPath: string, name: string, type: 'ui' | 'logic') => string;
   deleteFile: (id: string) => void;
   renameFile: (id: string, newName: string) => void;
-  moveFile: (id: string, newParentPath: string) => void;
+  /** Move a file into `newParentPath`, renaming it too when `newName` is given. */
+  moveFile: (id: string, newParentPath: string, newName?: string) => void;
+  /** Why this file or folder cannot be deleted, or null when it can. */
+  deletionRefusedReason: (id: string) => string | null;
 
   // Tab actions
   openFile: (id: string) => void;
@@ -230,11 +328,16 @@ interface FilesStore {
    * compares equal to it and the file's original source is left alone.
    */
   syncUIFileElements: (id: string, elements: Map<string, CanvasElement>, rootId: string) => void;
-  updateUIFileImports: (id: string, imports: UIImport[]) => void;
   updateUIFileLogicSrc: (id: string, logicSrc: string | undefined) => void;
   updateUIFileSource: (id: string, source: string) => void;
   updateLogicFile: (id: string, content: string) => void;
-  updateLogicFileImports: (id: string, imports: LogicImport[]) => void;
+  /**
+   * Move a UI file's inline `<logic>` block into a logic file and link it
+   * with `<logic src>`. A file that holds other logic is never overwritten:
+   * the block goes to a fresh name beside it (`sparedPath` names the file
+   * left alone). Throws when the file has no single inline block to move.
+   */
+  moveInlineLogicToFile: (uiFileId: string) => InlineLogicMove;
   markFileDirty: (id: string, dirty: boolean) => void;
 
   // Path resolution
@@ -243,8 +346,8 @@ interface FilesStore {
   getNodeByPath: (path: string) => ProjectFileNode | undefined;
 
   // Bulk operations
-  reset: () => void;
-  initializeProject: () => void;
+  /** A new project's files, with its logic in `language` (JavaScript unless said). */
+  reset: (language?: LogicLanguage) => void;
   loadFromBundle: (
     uiFiles: Map<string, UIFileState>,
     logicFiles: Map<string, LogicFileState>,
@@ -257,7 +360,8 @@ const mainUIId = 'main_ui';
 const mainLogicId = 'main_logic';
 
 // Build initial file tree
-function createInitialNodes(): Map<string, ProjectFileNode> {
+function createInitialNodes(language: LogicLanguage): Map<string, ProjectFileNode> {
+  const logicPath = MAIN_LOGIC_PATHS[language];
   const nodes = new Map<string, ProjectFileNode>();
 
   // Root folders
@@ -302,8 +406,8 @@ function createInitialNodes(): Map<string, ProjectFileNode> {
   // Main logic file
   nodes.set(mainLogicId, {
     id: mainLogicId,
-    name: 'main.logic',
-    path: 'logic/main.logic',
+    name: parsePath(logicPath).name,
+    path: logicPath,
     type: 'file',
     fileType: 'logic',
     parentId: 'folder_logic',
@@ -313,6 +417,37 @@ function createInitialNodes(): Map<string, ProjectFileNode> {
   return nodes;
 }
 
+/**
+ * A new project's files: `ui/main.ui` linked to its logic, and the logic in
+ * the language chosen. The link is recorded rather than implied, so the
+ * Code view, the dock, the preview and export all name the same file — and
+ * so a Python project, whose logic cannot be anywhere but a linked file, is
+ * the same shape as a JavaScript one.
+ */
+function initialFiles(language: LogicLanguage) {
+  const logicPath = MAIN_LOGIC_PATHS[language];
+  return {
+    nodes: createInitialNodes(language),
+    rootFolders: ['folder_ui', 'folder_logic', 'folder_assets'],
+    uiFiles: new Map([
+      [mainUIId, createEmptyUIFile(mainUIId, 'ui/main.ui', relativeImportPath('ui/main.ui', logicPath))],
+    ]),
+    logicFiles: new Map<string, LogicFileState>([
+      [
+        mainLogicId,
+        {
+          id: mainLogicId,
+          path: logicPath,
+          content: logicStarter(language),
+        },
+      ],
+    ]),
+    assetFiles: new Map<string, AssetFile>(),
+    activeFileId: mainUIId as string | null,
+    openTabs: [mainUIId],
+  };
+}
+
 export const useFilesStore = create<FilesStore>((set, get) => {
   const edit: typeof set = (...args) => {
     const before = get();
@@ -320,42 +455,13 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     if (get() !== before) useProjectStore.getState().markDirty();
   };
   return ({
-  nodes: createInitialNodes(),
-  rootFolders: ['folder_ui', 'folder_logic', 'folder_assets'],
-
-  uiFiles: new Map([[mainUIId, createEmptyUIFile(mainUIId, 'ui/main.ui')]]),
-  logicFiles: new Map([
-    [
-      mainLogicId,
-      {
-        id: mainLogicId,
-        path: 'logic/main.logic',
-        content: `// SoftN logic — JavaScript, run in a sandboxed VM
-// Define your state, computed values, and functions
-
-let count = 0
-
-function increment() {
-  count++
-}
-
-function decrement() {
-  count--
-}
-`,
-        imports: [],
-        exports: ['count', 'increment', 'decrement'],
-      },
-    ],
-  ]),
-  assetFiles: new Map(),
-
-  activeFileId: mainUIId,
-  openTabs: [mainUIId],
+  ...initialFiles('javascript'),
 
   createFolder: (parentPath, name) => {
     const id = generateId();
     const fullPath = parentPath ? `${parentPath}/${name}` : name;
+    const taken = pathTakenReason(get().nodes, fullPath);
+    if (taken) throw new Error(taken);
 
     edit((state) => {
       const newNodes = new Map(state.nodes);
@@ -397,6 +503,9 @@ function decrement() {
   },
 
   deleteFolder: (id) => {
+    const refused = get().deletionRefusedReason(id);
+    if (refused) throw new Error(refused);
+
     edit((state) => {
       const node = state.nodes.get(id);
       if (!node || node.type !== 'folder') return state;
@@ -461,42 +570,42 @@ function decrement() {
   },
 
   renameFolder: (id, newName) => {
-    edit((state) => {
-      const node = state.nodes.get(id);
-      if (!node || node.type !== 'folder') return state;
+    const current = get();
+    const folder = current.nodes.get(id);
+    if (!folder || folder.type !== 'folder') return;
+    const oldPath = folder.path;
+    const { parent } = parsePath(oldPath);
+    const newPath = parent ? `${parent}/${newName}` : newName;
+    if (newPath === oldPath) return;
+    const taken = pathTakenReason(current.nodes, newPath, id);
+    if (taken) throw new Error(taken);
 
+    // Every path under the folder, and every path a reference resolves to.
+    const move = (path: string) => movedPath(path, oldPath, newPath);
+
+    edit((state) => {
       const newNodes = new Map(state.nodes);
-      const oldPath = node.path;
-      const { parent } = parsePath(oldPath);
-      const newPath = parent ? `${parent}/${newName}` : newName;
 
       // Update this folder
       newNodes.set(id, {
-        ...node,
+        ...folder,
         name: newName,
         path: newPath,
       });
 
       // Update all descendant paths
-      const updateChildPaths = (nodeId: string, oldBase: string, newBase: string) => {
+      const updateChildPaths = (nodeId: string) => {
         const n = newNodes.get(nodeId);
-        if (!n) return;
-
-        if (n.type === 'folder' && n.children) {
-          for (const childId of n.children) {
-            const child = newNodes.get(childId);
-            if (child) {
-              const childNewPath = child.path.replace(oldBase, newBase);
-              newNodes.set(childId, { ...child, path: childNewPath });
-              if (child.type === 'folder') {
-                updateChildPaths(childId, oldBase, newBase);
-              }
-            }
-          }
+        if (!n || n.type !== 'folder' || !n.children) return;
+        for (const childId of n.children) {
+          const child = newNodes.get(childId);
+          if (!child) continue;
+          newNodes.set(childId, { ...child, path: move(child.path) });
+          if (child.type === 'folder') updateChildPaths(childId);
         }
       };
 
-      updateChildPaths(id, oldPath, newPath);
+      updateChildPaths(id);
 
       // Update file content paths
       const newUIFiles = new Map(state.uiFiles);
@@ -504,35 +613,22 @@ function decrement() {
       const newAssetFiles = new Map(state.assetFiles);
 
       for (const [fileId, file] of newUIFiles) {
-        if (file.path.startsWith(oldPath + '/')) {
-          newUIFiles.set(fileId, {
-            ...file,
-            path: file.path.replace(oldPath, newPath),
-          });
-        }
+        newUIFiles.set(fileId, { ...file, path: move(file.path) });
       }
 
       for (const [fileId, file] of newLogicFiles) {
-        if (file.path.startsWith(oldPath + '/')) {
-          newLogicFiles.set(fileId, {
-            ...file,
-            path: file.path.replace(oldPath, newPath),
-          });
-        }
+        newLogicFiles.set(fileId, { ...file, path: move(file.path) });
       }
 
       for (const [fileId, file] of newAssetFiles) {
-        if (file.name.startsWith(oldPath + '/')) {
-          newAssetFiles.set(fileId, {
-            ...file,
-            name: file.name.replace(oldPath, newPath),
-          });
-        }
+        newAssetFiles.set(fileId, { ...file, name: move(file.name) });
       }
 
       return {
         nodes: newNodes,
-        uiFiles: newUIFiles,
+        // A folder holds UI files, logic files or both, so a reference can
+        // have either end move, or both.
+        uiFiles: relinkLogicReferences(state.uiFiles, newUIFiles, move),
         logicFiles: newLogicFiles,
         assetFiles: newAssetFiles,
       };
@@ -542,6 +638,11 @@ function decrement() {
   createFile: (parentPath, name, type) => {
     const id = generateId();
     const fullPath = parentPath ? `${parentPath}/${name}` : name;
+    const current = get();
+    const refused =
+      pathTakenReason(current.nodes, fullPath) ??
+      (type === 'logic' ? pythonNameReason(current.logicFiles, fullPath) : null);
+    if (refused) throw new Error(refused);
 
     edit((state) => {
       const newNodes = new Map(state.nodes);
@@ -599,15 +700,12 @@ function decrement() {
   },
 
   deleteFile: (id) => {
+    const refused = get().deletionRefusedReason(id);
+    if (refused) throw new Error(refused);
+
     edit((state) => {
       const node = state.nodes.get(id);
       if (!node || node.type !== 'file') return state;
-
-      // Prevent deleting main files
-      if (id === mainUIId || id === mainLogicId) {
-        console.warn('Cannot delete main.ui or main.logic');
-        return state;
-      }
 
       const newNodes = new Map(state.nodes);
       const newUIFiles = new Map(state.uiFiles);
@@ -654,61 +752,26 @@ function decrement() {
   },
 
   renameFile: (id, newName) => {
-    edit((state) => {
-      const node = state.nodes.get(id);
-      if (!node || node.type !== 'file') return state;
-
-      const { parent } = parsePath(node.path);
-      const newPath = parent ? `${parent}/${newName}` : newName;
-
-      const newNodes = new Map(state.nodes);
-      newNodes.set(id, {
-        ...node,
-        name: newName,
-        path: newPath,
-      });
-
-      // Update file content path
-      let newUIFiles = new Map(state.uiFiles);
-      const newLogicFiles = new Map(state.logicFiles);
-      const newAssetFiles = new Map(state.assetFiles);
-
-      if (node.fileType === 'ui') {
-        const file = newUIFiles.get(id);
-        if (file) {
-          newUIFiles.set(id, { ...file, path: newPath });
-        }
-      } else if (node.fileType === 'logic') {
-        const file = newLogicFiles.get(id);
-        if (file) {
-          newLogicFiles.set(id, { ...file, path: newPath });
-        }
-        // Every `<logic src>` that pointed at the old path has to follow it,
-        // or the app renders perfectly and every button is inert.
-        newUIFiles = repointLogicReferences(newUIFiles, node.path, newPath);
-      } else if (node.fileType === 'asset') {
-        const file = newAssetFiles.get(id);
-        if (file) {
-          newAssetFiles.set(id, { ...file, name: newPath });
-        }
-      }
-
-      return {
-        nodes: newNodes,
-        uiFiles: newUIFiles,
-        logicFiles: newLogicFiles,
-        assetFiles: newAssetFiles,
-      };
-    });
+    const node = get().nodes.get(id);
+    if (!node || node.type !== 'file') return;
+    const { parent } = parsePath(node.path);
+    get().moveFile(id, parent, newName);
   },
 
-  moveFile: (id, newParentPath) => {
-    edit((state) => {
-      const node = state.nodes.get(id);
-      if (!node || node.type !== 'file') return state;
+  moveFile: (id, newParentPath, newName) => {
+    const current = get();
+    const node = current.nodes.get(id);
+    if (!node || node.type !== 'file') return;
+    const name = newName ?? node.name;
+    const newPath = newParentPath ? `${newParentPath}/${name}` : name;
+    if (newPath === node.path) return;
+    const refused =
+      pathTakenReason(current.nodes, newPath, id) ??
+      (node.fileType === 'logic' ? pythonNameReason(current.logicFiles, newPath, id) : null);
+    if (refused) throw new Error(refused);
 
+    edit((state) => {
       const newNodes = new Map(state.nodes);
-      const newPath = `${newParentPath}/${node.name}`;
 
       // Find new parent folder
       let newParentId: string | null = null;
@@ -719,37 +782,40 @@ function decrement() {
         }
       }
 
-      // Remove from old parent
-      if (node.parentId) {
-        const oldParent = newNodes.get(node.parentId);
-        if (oldParent && oldParent.children) {
-          newNodes.set(node.parentId, {
-            ...oldParent,
-            children: oldParent.children.filter((c) => c !== id),
-          });
+      if (newParentId !== node.parentId) {
+        // Remove from old parent
+        if (node.parentId) {
+          const oldParent = newNodes.get(node.parentId);
+          if (oldParent && oldParent.children) {
+            newNodes.set(node.parentId, {
+              ...oldParent,
+              children: oldParent.children.filter((c) => c !== id),
+            });
+          }
         }
-      }
 
-      // Add to new parent
-      if (newParentId) {
-        const newParent = newNodes.get(newParentId);
-        if (newParent && newParent.children) {
-          newNodes.set(newParentId, {
-            ...newParent,
-            children: [...newParent.children, id],
-          });
+        // Add to new parent
+        if (newParentId) {
+          const newParent = newNodes.get(newParentId);
+          if (newParent && newParent.children) {
+            newNodes.set(newParentId, {
+              ...newParent,
+              children: [...newParent.children, id],
+            });
+          }
         }
       }
 
       // Update node
       newNodes.set(id, {
         ...node,
+        name,
         path: newPath,
         parentId: newParentId,
       });
 
       // Update file content path
-      let newUIFiles = new Map(state.uiFiles);
+      const newUIFiles = new Map(state.uiFiles);
       const newLogicFiles = new Map(state.logicFiles);
       const newAssetFiles = new Map(state.assetFiles);
 
@@ -763,9 +829,6 @@ function decrement() {
         if (file) {
           newLogicFiles.set(id, { ...file, path: newPath });
         }
-        // Every `<logic src>` that pointed at the old path has to follow it,
-        // or the app renders perfectly and every button is inert.
-        newUIFiles = repointLogicReferences(newUIFiles, node.path, newPath);
       } else if (node.fileType === 'asset') {
         const file = newAssetFiles.get(id);
         if (file) {
@@ -775,11 +838,19 @@ function decrement() {
 
       return {
         nodes: newNodes,
-        uiFiles: newUIFiles,
+        // Every `<logic src>` that pointed at a moved logic file has to follow
+        // it, and a moved UI file's own reference is relative to where it now
+        // is — or the app renders perfectly and every button is inert.
+        uiFiles: relinkLogicReferences(state.uiFiles, newUIFiles, (path) => movedPath(path, node.path, newPath)),
         logicFiles: newLogicFiles,
         assetFiles: newAssetFiles,
       };
     });
+  },
+
+  deletionRefusedReason: (id) => {
+    const state = get();
+    return deletionRefusedReason(state.nodes, state.uiFiles, state.logicFiles, id);
   },
 
   openFile: (id) => {
@@ -981,18 +1052,6 @@ function decrement() {
     });
   },
 
-  updateUIFileImports: (id, imports) => {
-    edit((state) => {
-      const file = state.uiFiles.get(id);
-      if (!file) return state;
-
-      const newUIFiles = new Map(state.uiFiles);
-      newUIFiles.set(id, { ...file, imports });
-
-      return { uiFiles: newUIFiles };
-    });
-  },
-
   updateUIFileLogicSrc: (id, logicSrc) => {
     edit((state) => {
       const file = state.uiFiles.get(id);
@@ -1042,13 +1101,7 @@ function decrement() {
       if (!file) return state;
 
       const newLogicFiles = new Map(state.logicFiles);
-      newLogicFiles.set(id, {
-        ...file,
-        content,
-        // Re-parse imports and exports
-        imports: parseLogicImports(content),
-        exports: parseLogicExports(content),
-      });
+      newLogicFiles.set(id, { ...file, content });
 
       // Mark as dirty
       const newNodes = new Map(state.nodes);
@@ -1061,16 +1114,18 @@ function decrement() {
     });
   },
 
-  updateLogicFileImports: (id, imports) => {
-    edit((state) => {
-      const file = state.logicFiles.get(id);
-      if (!file) return state;
-
-      const newLogicFiles = new Map(state.logicFiles);
-      newLogicFiles.set(id, { ...file, imports });
-
-      return { logicFiles: newLogicFiles };
+  moveInlineLogicToFile: (uiFileId) => {
+    const state = get();
+    const file = state.uiFiles.get(uiFileId);
+    if (!file) throw new Error('That UI file is no longer in the project.');
+    const move = planInlineLogicMove(file, state.logicFiles, {
+      isEntry: entryFileId(state.uiFiles, useProjectStore.getState().source) === uiFileId,
+      lossless: false,
+      takenPaths: takenPaths(state.nodes, state.logicFiles),
     });
+    if (!move) throw new Error(`${file.path} has no single inline <logic> block to move.`);
+    edit((current) => applyInlineLogicMove(current, move, generateId));
+    return move;
   },
 
   markFileDirty: (id, dirty) => {
@@ -1108,65 +1163,8 @@ function decrement() {
     return undefined;
   },
 
-  reset: () => {
-    set({
-      nodes: createInitialNodes(),
-      rootFolders: ['folder_ui', 'folder_logic', 'folder_assets'],
-      uiFiles: new Map([[mainUIId, createEmptyUIFile(mainUIId, 'ui/main.ui')]]),
-      logicFiles: new Map([
-        [
-          mainLogicId,
-          {
-            id: mainLogicId,
-            path: 'logic/main.logic',
-            content: `// SoftN logic — JavaScript, run in a sandboxed VM
-// Define your state, computed values, and functions
-
-let count = 0
-
-function increment() {
-  count++
-}
-
-function decrement() {
-  count--
-}
-`,
-            imports: [],
-            exports: ['count', 'increment', 'decrement'],
-          },
-        ],
-      ]),
-      assetFiles: new Map(),
-      activeFileId: mainUIId,
-      openTabs: [mainUIId],
-    });
-  },
-
-  initializeProject: () => {
-    // Create default folder structure
-    const state = get();
-
-    // Check if components folder exists
-    let hasComponentsFolder = false;
-    let hasPagesFolder = false;
-    let hasUtilsFolder = false;
-
-    for (const [, node] of state.nodes) {
-      if (node.path === 'ui/components') hasComponentsFolder = true;
-      if (node.path === 'ui/pages') hasPagesFolder = true;
-      if (node.path === 'logic/utils') hasUtilsFolder = true;
-    }
-
-    if (!hasComponentsFolder) {
-      get().createFolder('ui', 'components');
-    }
-    if (!hasPagesFolder) {
-      get().createFolder('ui', 'pages');
-    }
-    if (!hasUtilsFolder) {
-      get().createFolder('logic', 'utils');
-    }
+  reset: (language = 'javascript') => {
+    set(initialFiles(language));
   },
 
   loadFromBundle: (uiFiles, logicFiles, assetFiles = new Map()) => {
@@ -1323,41 +1321,3 @@ function decrement() {
   },
 });
 });
-
-// Helper function to parse imports from logic code
-function parseLogicImports(content: string): LogicImport[] {
-  const imports: LogicImport[] = [];
-  const importRegex = /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g;
-
-  let match;
-  while ((match = importRegex.exec(content)) !== null) {
-    const names = match[1]
-      .split(',')
-      .map((n) => n.trim())
-      .filter(Boolean);
-    const source = match[2];
-    imports.push({ names, source });
-  }
-
-  return imports;
-}
-
-// Helper function to parse exports from logic code
-function parseLogicExports(content: string): string[] {
-  const exports: string[] = [];
-
-  // Match: export function name
-  const funcRegex = /export\s+function\s+(\w+)/g;
-  let match;
-  while ((match = funcRegex.exec(content)) !== null) {
-    exports.push(match[1]);
-  }
-
-  // Match: export const/let/var name
-  const varRegex = /export\s+(?:const|let|var)\s+(\w+)/g;
-  while ((match = varRegex.exec(content)) !== null) {
-    exports.push(match[1]);
-  }
-
-  return exports;
-}

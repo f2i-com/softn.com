@@ -13,6 +13,7 @@ import { parseSource } from '../../utils/sourceParser';
 import { generateSource } from '../../utils/sourceGenerator';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useFilesStore } from '../../stores/filesStore';
+import { useHistoryStore } from '../../stores/historyStore';
 import { PropertyPanel } from './PropertyPanel';
 
 let root: Root | undefined;
@@ -76,4 +77,89 @@ it('shows the handler a file already carries as @remove', () => {
   act(() => root!.render(React.createElement(PropertyPanel)));
   const label = [...host.querySelectorAll('label')].find((element) => element.textContent === '@remove')!;
   expect((document.getElementById(label.htmlFor) as HTMLInputElement).value).toBe('drop(item)');
+});
+
+// ---------------------------------------------------------------------------
+// Handler help, one field per event, and one undo step per field edit.
+// ---------------------------------------------------------------------------
+
+function mountButton(language: 'javascript' | 'python'): HTMLButtonElement['id'] {
+  useFilesStore.getState().reset(language);
+  const parsed = parseSource('<App><Button>Go</Button></App>');
+  const button = [...parsed.elements.values()].find((element) => element.componentType === 'Button')!;
+  useCanvasStore.getState().loadState(parsed.elements, parsed.rootId);
+  useCanvasStore.getState().selectElement(button.id);
+  useHistoryStore.getState().clear();
+  root = createRoot(host);
+  act(() => root!.render(React.createElement(PropertyPanel)));
+  return button.id;
+}
+
+function field(label: string): HTMLInputElement {
+  const found = [...host.querySelectorAll('label')].filter((element) => element.textContent === label);
+  expect(found, `one ${label} field`).toHaveLength(1);
+  return document.getElementById(found[0].htmlFor) as HTMLInputElement;
+}
+
+function suggestions(input: HTMLInputElement): string[] {
+  const list = input.getAttribute('list');
+  return list ? [...document.getElementById(list)!.querySelectorAll('option')].map((option) => option.value) : [];
+}
+
+it('offers a Button its click handler once, not as a component event and a generic @click', () => {
+  mountButton('javascript');
+  field('@click');
+});
+
+it('suggests the linked JavaScript file\'s functions by name', () => {
+  mountButton('javascript');
+  expect(suggestions(field('@click'))).toEqual(['increment', 'decrement']);
+  expect(host.textContent).toContain('logic/main.logic');
+  expect(host.textContent).not.toContain('Logic tab');
+});
+
+it('suggests a Python function without parameters as an arrow, since a handler is passed the event', () => {
+  mountButton('python');
+  expect(suggestions(field('@click'))).toEqual(['() => increment()', '() => decrement()']);
+  expect(host.textContent).toContain('logic/main.py');
+});
+
+it('warns, without refusing, when a handler names a function the logic does not define', () => {
+  const id = mountButton('python');
+  const input = field('@click');
+  type(input, 'incremnt()');
+  expect(host.querySelector('[data-handler-warning]')?.textContent).toBe('No function named incremnt in logic/main.py.');
+  expect(useCanvasStore.getState().elements.get(id)!.events).toEqual({ click: 'incremnt()' });
+  type(input, '() => increment()');
+  expect(host.querySelector('[data-handler-warning]')).toBeNull();
+});
+
+it('makes typing into a field one undo step, and leaving the field ends it', () => {
+  const id = mountButton('javascript');
+  const input = field('@click');
+  for (const text of ['s', 'sa', 'sav', 'save']) type(input, text);
+  expect(useHistoryStore.getState().past).toHaveLength(1);
+
+  act(() => { input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+  type(input, 'save()');
+  expect(useHistoryStore.getState().past).toHaveLength(2);
+
+  // Undo steps back over the whole run, to before `save` was typed.
+  const canvas = useCanvasStore.getState();
+  const previous = useHistoryStore.getState().undo({ elements: canvas.elements, rootId: canvas.rootId, timestamp: Date.now() })!;
+  expect(previous.elements.get(id)!.events).toEqual({ click: 'save' });
+  const first = useHistoryStore.getState().undo({ elements: previous.elements, rootId: previous.rootId, timestamp: Date.now() })!;
+  expect(first.elements.get(id)!.events ?? {}).toEqual({});
+});
+
+it('says how many are selected, rather than that nothing is', () => {
+  const parsed = parseSource('<App><Button>A</Button><Button>B</Button></App>');
+  const [a, b] = [...parsed.elements.values()].filter((element) => element.componentType === 'Button');
+  useCanvasStore.getState().loadState(parsed.elements, parsed.rootId);
+  useCanvasStore.getState().selectElement(a.id);
+  useCanvasStore.getState().selectElement(b.id, true);
+  root = createRoot(host);
+  act(() => root!.render(React.createElement(PropertyPanel)));
+  expect(host.textContent).toContain('2 elements selected');
+  expect(host.textContent).not.toContain('Nothing selected');
 });

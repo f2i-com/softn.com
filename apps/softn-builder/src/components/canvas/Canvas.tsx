@@ -9,13 +9,20 @@ import { useFilesStore } from '../../stores/filesStore';
 import { useSourceFidelity, summariseReasons } from '../../utils/useSourceFidelity';
 import { CanvasElement } from './CanvasElement';
 import { DragLayer } from './DragLayer';
+import { isDesktop } from '../../utils/desktop';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+
+/** The finished example the site links into Builder, served beside it. */
+export const EXAMPLE_BUNDLE_PATH = '/examples/Fieldnotes.softn';
 
 const styles: Record<string, React.CSSProperties> = {
+  // The chrome's ground around the artboard, so the canvas sits in the
+  // workspace the way the preview's device frame does.
   container: {
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
-    background: '#f8f9fa',
+    background: 'var(--ink-3)',
     overflow: 'hidden',
   },
   canvasWrapper: {
@@ -24,11 +31,14 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 20,
     minHeight: 0, // Important for flex scroll
   },
+  // The artboard: always paper, in either theme, and marked so builder.css
+  // gives everything drawn on it the light tokens (see [data-builder-canvas]).
   canvas: {
     minHeight: 'fit-content',
-    background: '#fff',
+    background: 'var(--ink-2)',
+    color: 'var(--paper)',
     borderRadius: 8,
-    boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+    boxShadow: '0 1px 2px rgba(20, 24, 29, 0.08), 0 0 0 1px var(--line)',
     position: 'relative' as const,
   },
   canvasInner: {
@@ -37,31 +47,44 @@ const styles: Record<string, React.CSSProperties> = {
   },
   empty: {
     display: 'flex',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
     minHeight: 300,
-    border: '2px dashed #ddd',
+    padding: 24,
+    border: '1.5px dashed var(--line-strong)',
     borderRadius: 8,
-    color: '#999',
-    fontSize: 14,
+    color: 'var(--dim)',
+    fontSize: 13,
+    lineHeight: 1.55,
+    textAlign: 'center',
     margin: 16,
-    transition: 'all 0.2s',
+    transition: 'border-color 0.2s, background 0.2s',
   },
+  emptyTitle: {
+    fontFamily: 'var(--display)',
+    fontSize: 17,
+    fontWeight: 700,
+    letterSpacing: '-0.02em',
+    color: 'var(--paper)',
+  },
+  emptyLink: {
+    marginTop: 6,
+    fontSize: 12.5,
+    color: 'var(--paper)',
+    textDecoration: 'underline',
+    textUnderlineOffset: 3,
+    textDecorationColor: 'var(--line-strong)',
+  },
+  // A drop target: the ink, not an accent.
   emptyDragOver: {
-    borderColor: 'var(--coral)',
-    background: 'var(--mint-glow-soft)',
-    color: 'var(--coral)',
+    borderColor: 'var(--paper)',
+    background: 'var(--bl-select)',
+    color: 'var(--paper)',
   },
   dropActive: {
-    background: '#e8f4ff',
-  },
-  sourceOnlyNotice: {
-    padding: '6px 16px',
-    fontSize: 12,
-    lineHeight: 1.4,
-    background: '#fffbeb',
-    color: '#92400e',
-    borderBottom: '1px solid #fde68a',
+    boxShadow: '0 0 0 2px var(--line-strong)',
   },
 };
 
@@ -302,7 +325,7 @@ export function Canvas() {
   return (
     <div style={styles.container}>
       {(sourceOnly || blocked) && (
-        <div style={styles.sourceOnlyNotice} role="status" data-fidelity="source-only">
+        <div className="bl-notice" role="status" data-fidelity="source-only">
           {blocked
             ? `Not written back: this file has constructs the visual editor cannot write (${summariseReasons(blocked)}). Edit its source instead.`
             : `Source-only file: it has constructs the visual editor cannot write back (${summariseReasons(fidelity!.reasons)}). Canvas edits will not be saved; edit its source instead.`}
@@ -323,6 +346,7 @@ export function Canvas() {
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
           tabIndex={hasChildren ? undefined : 0}
+          data-builder-canvas=""
           role="tree"
           aria-label="Component canvas"
           aria-multiselectable="true"
@@ -357,9 +381,22 @@ export function Canvas() {
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
               >
-                {isDragOver
-                  ? 'Drop here to add component'
-                  : 'Drag components here to start building'}
+                {isDragOver ? (
+                  'Drop to add it here'
+                ) : (
+                  <>
+                    <span style={styles.emptyTitle}>Start with a component</span>
+                    <span style={{ maxWidth: 360 }}>
+                      Drag one from Components onto this page, or double-click it to add it here. Pick anything
+                      you add to change its properties on the right.
+                    </span>
+                    {!isDesktop() && !isHostedEditor() && (
+                      <a href={`?open=${encodeURIComponent(EXAMPLE_BUNDLE_PATH)}`} style={styles.emptyLink} data-action="open-example">
+                        Or open a finished example to see how one is built
+                      </a>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </div>

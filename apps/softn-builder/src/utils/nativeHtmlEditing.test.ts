@@ -41,7 +41,7 @@ it('shows and edits a native heading through its labeled text property', () => {
   act(() => root!.render(React.createElement(React.Fragment, null,
     React.createElement(CanvasElement, { elementId: heading.id }), React.createElement(PropertyPanel))));
   expect(host.querySelector('[data-canvas-leaf-text]')?.textContent).toBe('Plan the day');
-  const label = [...host.querySelectorAll('label')].find(element => element.textContent === 'Text Content')!;
+  const label = [...host.querySelectorAll('label')].find(element => element.textContent === 'Text')!;
   const input = document.getElementById(label.htmlFor) as HTMLInputElement;
   expect(input.value).toBe('Plan the day');
   act(() => {

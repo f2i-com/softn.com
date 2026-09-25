@@ -107,3 +107,49 @@ describe('declarations it refuses to evaluate', () => {
     expect(parseStringLiteralVariables(`const x = decodeURIComponent("%E0%A4%A")`).x).toBeUndefined();
   });
 });
+
+describe('a Python logic file', () => {
+  // A Python module's top-level names are its state, as `let`/`const` are a
+  // JavaScript file's, so an image bound to one should show on the canvas too.
+  it('reads top-level NAME = "literal" assignments, either quote', () => {
+    const values = parseStringLiteralVariables(`LOGO = "assets/logo.png"\nbanner = 'assets/banner.jpg'\n`, 'python');
+    expect(values).toEqual({ LOGO: 'assets/logo.png', banner: 'assets/banner.jpg' });
+  });
+
+  it('concatenates literals and names already resolved', () => {
+    const values = parseStringLiteralVariables(`BASE = "assets"\nLOGO = BASE + "/logo.png"\n`, 'python');
+    expect(values.LOGO).toBe('assets/logo.png');
+  });
+
+  it('reads only module-level assignments, not a function body or a comparison', () => {
+    const values = parseStringLiteralVariables(
+      [
+        'def pick():',
+        '    inner = "no"',
+        '    return inner',
+        'flag = "a" == "b"',
+        'same == "x"',
+      ].join('\n'),
+      'python'
+    );
+    expect(values).toEqual({});
+  });
+
+  it('reads escapes the way Python does, keeping an unknown one', () => {
+    const values = parseStringLiteralVariables(String.raw`PATH = "a\tb\d"`, 'python');
+    expect(values.PATH).toBe('a\tb\\d');
+  });
+
+  it('runs nothing: no calls, no f-strings, no JavaScript templates', () => {
+    const values = parseStringLiteralVariables(
+      ['a = str("x")', 'b = f"{a}"', 'c = `x`', 'd = "x".upper()', 'e = encodeURIComponent("x y")'].join('\n'),
+      'python'
+    );
+    expect(values).toEqual({});
+  });
+
+  it('is not read as Python unless it is Python', () => {
+    // JavaScript has no bare `NAME = …` declaration worth trusting.
+    expect(parseStringLiteralVariables(`LOGO = "assets/logo.png"`)).toEqual({});
+  });
+});

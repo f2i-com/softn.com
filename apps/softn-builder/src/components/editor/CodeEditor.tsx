@@ -2,10 +2,11 @@
  * CodeEditor - Monaco editor wrapper for code editing
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Editor, { OnMount, OnChange } from '@monaco-editor/react';
 import { currentTheme, subscribeTheme, type Theme } from '@softn/brand';
 import './monacoSetup';
+import { MONACO_FONT_FAMILY, monacoThemeFor } from './monacoThemes';
 
 interface Props {
   value: string;
@@ -28,15 +29,26 @@ export function CodeEditor({
   // a light page does not carry a dark editor or the other way round.
   const [shared, setShared] = useState<Theme>(currentTheme);
   useEffect(() => subscribeTheme(setShared), []);
-  const effectiveTheme = theme ?? (shared === 'dark' ? 'vs-dark' : 'light');
+  const monacoTheme = monacoThemeFor(shared === 'dark' ? 'dark' : 'light', theme);
+
+  // The value as of this render. Monaco loads asynchronously, and a value
+  // that changed while it loaded — opening a project replaces the logic the
+  // dock was created with — was lost: the editor mounted with the first
+  // value, showed the previous project's logic, and the first keystroke
+  // wrote that back over the opened file. Mounting checks against this.
+  const latestValue = useRef(value);
+  latestValue.current = value;
 
   const handleEditorMount: OnMount = (editor, monaco) => {
+    if (editor.getValue() !== latestValue.current) editor.setValue(latestValue.current);
+
     // Configure editor settings
     editor.updateOptions({
       minimap: { enabled: false },
       lineNumbers: 'on',
       fontSize: 13,
-      fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
+      fontFamily: MONACO_FONT_FAMILY,
+      lineHeight: 20,
       tabSize: 2,
       insertSpaces: true,
       wordWrap: 'on',
@@ -87,7 +99,7 @@ export function CodeEditor({
       value={value}
       onChange={handleChange}
       onMount={handleEditorMount}
-      theme={effectiveTheme === 'vs-dark' ? 'vs-dark' : 'light'}
+      theme={monacoTheme}
       options={{
         readOnly,
         domReadOnly: readOnly,
@@ -104,10 +116,13 @@ export function CodeEditor({
             alignItems: 'center',
             justifyContent: 'center',
             height: '100%',
-            color: 'var(--dimmer)',
+            fontSize: 12,
+            color: 'var(--dim)',
+            background: 'var(--ink-2)',
           }}
+          role="status"
         >
-          Loading editor...
+          Loading editor…
         </div>
       }
     />

@@ -17,11 +17,11 @@
  */
 
 import { debug } from './debug';
-import { MAX_ZIP_INPUT_BYTES } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, resolveBundlePath } from '@softn/core';
 import { ensureFieldIds } from './schemaFields';
 import { readBuilderSchema } from './builderSchemaMetadata';
 import { parseBundle, type BundleManifest } from './bundleExporter';
-import { parseSource, parseLogicFile } from './sourceParser';
+import { parseSource } from './sourceParser';
 import { describeMigrations, migrateElements } from './propMigrations';
 import { validateBundle as validateBundleIntegrity, resolveEntry, FILE_GROUPS, type FileGroup } from './bundleValidator';
 import { emptyDeclaration, readPermissionJson, type PermissionDeclaration } from './permissions';
@@ -81,6 +81,9 @@ function readIcon(bytes: Uint8Array, path: string): string | null {
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   return `data:${mime};base64,${btoa(bin)}`;
 }
+
+/** Every `<logic src="…">` in a UI file, with either quote. */
+const LOGIC_SRC = /<logic\b[^>]*?\bsrc\s*=\s*(["'])([^"']+)\1/gi;
 
 let fileIdCounter = 0;
 
@@ -204,18 +207,34 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     consumed.add(found.path);
     if (found.migrated) warnings.push(`Logic file "${logicPath}" was found at "${found.path}"; the export will name it there.`);
 
-    const source = decoder.decode(found.bytes);
-    const { imports, exports } = parseLogicFile(source);
-
     const fileId = generateFileId();
+    logicFiles.set(fileId, { id: fileId, path: found.path, content: decoder.decode(found.bytes) });
+  }
 
-    logicFiles.set(fileId, {
-      id: fileId,
-      path: found.path,
-      content: source,
-      imports,
-      exports,
-    });
+  // A logic file a UI file links with `<logic src>` is the app's logic
+  // whether or not `files.logic` lists it: the composer reads it by that
+  // reference alone. It used to pass through as an opaque entry — the app
+  // ran, and its logic could not be opened or edited in the Builder. It is
+  // loaded as logic now, and export lists it. A file another group declares
+  // (a server file, say) is that group's and is left to it.
+  const otherGroups = new Set(
+    FILE_GROUPS.filter((group) => group !== 'logic').flatMap((group) => declaredPaths(manifest, group))
+  );
+  for (const uiFile of uiFiles.values()) {
+    for (const match of (uiFile.originalSource ?? '').matchAll(LOGIC_SRC)) {
+      let path: string;
+      try {
+        path = resolveBundlePath(uiFile.path, match[2]);
+      } catch {
+        continue; // An unsafe path; the composer refuses it when the app runs.
+      }
+      const bytes = files.get(path);
+      if (!bytes || consumed.has(path) || otherGroups.has(path)) continue;
+      consumed.add(path);
+      warnings.push(`Logic file "${path}" is linked by ${uiFile.path} but not listed in manifest.json; the export will list it.`);
+      const fileId = generateFileId();
+      logicFiles.set(fileId, { id: fileId, path, content: decoder.decode(bytes) });
+    }
   }
 
   // Load XDB files
