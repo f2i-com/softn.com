@@ -1,8 +1,10 @@
 # Browser gates
 
-Run these browser journeys manually before a release or after changing the
-editors, app hand-off or site. They cover the built deployment in Chromium,
-Firefox and WebKit, with additional phone and zoom checks.
+Run these browser journeys after changing the editors, app hand-off or site.
+They cover the built deployment in Chromium, Firefox and WebKit, with additional
+phone and zoom checks. Every release tag runs the Chromium gate
+(`.github/workflows/release.yml`) before anything is packaged; the matrix is run
+by hand.
 
 ```sh
 npm run build:packages
@@ -17,6 +19,19 @@ npm run e2e:matrix           # every engine, mobile widths, 200 % zoom
 runtime, Studio, Builder and the directory API on a disposable data dir —
 and the specs run against it. Traces and per-page console output land in
 `e2e/test-results/` on failure.
+
+To point the specs at a server that is already running, set `SOFTN_E2E_URL`;
+nothing is started then. The quick smoke specs — Python logic in the runtime,
+the undeclared-torch refusal, `/docs/` and its 404, Studio's first visit and the
+product bar at 390 px — also pass against `npm run dev`:
+
+```sh
+SOFTN_E2E_URL=http://localhost:1420 npx playwright test -c e2e/playwright.config.ts --project=chromium   e2e/tests/python-runtime.spec.ts e2e/tests/docs-and-bar.spec.ts e2e/tests/studio-onboarding.spec.ts
+```
+
+The other journeys expect the built site's seeded directory. A new spec file
+runs only once its name is added to `desktopSpecs` (or a mobile/zoom pattern)
+in `playwright.config.ts`.
 
 If the development API already uses port 1425, set `SOFTN_E2E_PORT=1430` for the
 test run. In PowerShell, use `$env:SOFTN_E2E_PORT='1430'` before

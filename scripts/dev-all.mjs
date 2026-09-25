@@ -2,13 +2,15 @@
 /**
  * Bring up the four web apps behind one local origin.
  *
- * The site is the public gateway. It serves `/` itself and proxies `/web/`,
- * `/builder/`, `/studio/` and `/demos/` to three private Vite servers. The
+ * The site is the public gateway. It serves `/` and the generated guides at
+ * `/docs/` itself (scripts/dev-docs.mjs) and proxies `/web/`, `/builder/`,
+ * `/studio/` and `/demos/` to three private Vite servers. The
  * browser therefore sees the production path layout during development too.
  * Each process still pins an internal port with `strictPort`; this launcher
  * probes first and moves an occupied preferred port before starting the set.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import path from 'node:path';
@@ -16,6 +18,43 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+const RESET = '\x1b[0m';
+const DIM = '\x1b[2m';
+const YELLOW = '\x1b[33m';
+const RED = '\x1b[31m';
+
+// The apps import @softn/core, @softn/components and @softn/vite-plugin from
+// their dist/ folders, and core's dist carries the ZIPP engine it was built
+// with. Without them every Vite server starts and then fails on its first
+// import, with a resolution error that names a file rather than the fix — so
+// the fix is said before anything starts.
+const REQUIRED_BUILDS = [
+  'packages/@softn/core/dist/index.js',
+  'packages/@softn/core/dist/zipp_wasm_bg.wasm',
+  'packages/@softn/components/dist/index.js',
+  'packages/@softn/vite-plugin/dist/index.js',
+];
+const missingBuilds = REQUIRED_BUILDS.filter((file) => !fs.existsSync(path.join(root, file)));
+if (missingBuilds.length > 0) {
+  console.error(`\n  ${RED}The shared packages are not built yet.${RESET} Missing:`);
+  for (const file of missingBuilds) console.error(`    ${file}`);
+  console.error(`\n  Run ${YELLOW}npm run build:packages${RESET} once (on a fresh checkout it downloads the ZIPP`);
+  console.error(`  engine, so it needs network access), then ${YELLOW}npm run dev${RESET} again. Run it again`);
+  console.error(`  after changing packages/@softn/core or packages/@softn/components.\n`);
+  process.exit(1);
+}
+
+// The demo bundles come from the softn-Examples release they are pinned to;
+// bundles already on disk that match their digests are kept without a
+// download. Offline on a machine that has never fetched them, the servers can
+// still start: /demos/ and the directory's examples are then missing, which is
+// said here rather than blocking the rest of the product.
+const demos = spawnSync(process.execPath, [path.join(root, 'scripts/fetch-demos.mjs')], { cwd: root, stdio: 'inherit' });
+if (demos.status !== 0) {
+  console.warn(`\n  ${YELLOW}The demo bundles could not be fetched${RESET} (see above). Starting anyway:`);
+  console.warn(`  /demos/ and the directory's examples are missing until ${YELLOW}npm run fetch:demos${RESET} succeeds.\n`);
+}
 
 // Vite is run directly rather than through `npm run dev -w …`. Going through npm
 // puts a shell and a shim between this process and the server, and on Windows
@@ -39,8 +78,6 @@ const APPS = [
 ];
 
 const COLOURS = { web: '\x1b[36m', site: '\x1b[33m', builder: '\x1b[35m', studio: '\x1b[32m', api: '\x1b[34m' };
-const RESET = '\x1b[0m';
-const DIM = '\x1b[2m';
 
 /** True if nothing answers on `host:port` within a moment. */
 function nothingAnswers(port, host) {
@@ -80,14 +117,23 @@ async function claimPort(preferred, taken) {
       return port;
     }
   }
-  throw new Error(`No free port near ${preferred}.`);
+  const holder =
+    process.platform === 'win32'
+      ? `\`netstat -ano | findstr :${preferred}\` names the process; \`taskkill /pid <pid> /T /F\` ends it`
+      : `\`lsof -i :${preferred}\` names the process`;
+  throw new Error(`No free port in ${preferred}-${preferred + 39}. Is another \`npm run dev\` still running? ${holder}.`);
 }
 
 const taken = new Set();
 const resolved = [];
 for (const app of APPS) {
-  const port = await claimPort(app.port, taken);
-  resolved.push({ ...app, port, preferred: app.port });
+  try {
+    const port = await claimPort(app.port, taken);
+    resolved.push({ ...app, port, preferred: app.port });
+  } catch (error) {
+    console.error(`\n  ${RED}Cannot start ${app.label}.${RESET} ${error.message}\n`);
+    process.exit(1);
+  }
 }
 
 const urlFor = (label) => `http://localhost:${resolved.find((a) => a.label === label).port}`;
@@ -95,14 +141,22 @@ const publicUrl = urlFor('site');
 
 console.log('');
 const site = resolved.find((app) => app.label === 'site');
-const siteNote = site.port !== site.preferred ? `${DIM}  1420 was taken${RESET}` : '';
+const siteNote =
+  site.port !== site.preferred
+    ? `${YELLOW}  (${site.preferred} is in use: is another \`npm run dev\` still running?)${RESET}`
+    : '';
 console.log(`  ${COLOURS.site}softn.com${RESET} ${publicUrl}${siteNote}`);
-console.log(`  ${DIM}/web/     runtime`);
+console.log(`  ${DIM}/web/      runtime`);
 console.log(`  /builder/  visual builder`);
 console.log(`  /studio/   AI studio`);
+console.log(`  /docs/     documentation, rebuilt as it is edited`);
 console.log(`  /demos/    app bundles`);
 if (havePhp) console.log(`  /api/      directory API${RESET}`);
-else console.log(`${RESET}`);
+else {
+  console.log(`${RESET}  ${YELLOW}/api/      not started: php is not on PATH${RESET}`);
+  console.log(`  ${DIM}           The directory, publishing and server storage need it; the editors and the`);
+  console.log(`             runtime do not. Install PHP 8 with pdo_sqlite and zip, then restart.${RESET}`);
+}
 console.log(`${DIM}  Internal servers: ${resolved
   .filter((app) => app.label !== 'site')
   .map((app) => `${app.label} ${app.port}`)
@@ -155,9 +209,18 @@ for (const app of resolved) {
   forward(child.stdout, process.stdout);
   forward(child.stderr, process.stderr);
 
-  child.on('exit', (code) => {
+  // A process that cannot be started at all (php gone from PATH between the
+  // probe and the spawn, say) reports here rather than through 'exit'; left
+  // unhandled it would crash the launcher and orphan the servers already up.
+  child.on('error', (error) => {
     if (shuttingDown) return;
-    console.error(`${prefix} exited with code ${code}. Stopping the rest.`);
+    console.error(`${prefix} could not start: ${error.message}. Stopping the rest.`);
+    shutdown(1);
+  });
+
+  child.on('exit', (code, signal) => {
+    if (shuttingDown) return;
+    console.error(`${prefix} exited with ${code === null ? `signal ${signal}` : `code ${code}`}. Stopping the rest.`);
     shutdown(code ?? 1);
   });
 
@@ -183,3 +246,7 @@ function shutdown(code) {
 
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
+// Closing the terminal window: SIGHUP on Unix, and on Windows the signal Node
+// raises when the console window is closed. Without it the servers outlive the
+// window and hold the ports the next `npm run dev` wants.
+process.on('SIGHUP', () => shutdown(0));

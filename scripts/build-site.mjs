@@ -832,7 +832,8 @@ function copyDirectoryApi() {
   const apiDest = path.join(outDir, 'api');
   fs.mkdirSync(apiDest, { recursive: true });
   for (const entry of fs.readdirSync(apiSrc, { withFileTypes: true })) {
-    if (['test', 'node_modules', 'package.json', 'data'].includes(entry.name)) continue;
+    // bench/ holds development benchmarks and their results, not the API.
+    if (['test', 'node_modules', 'package.json', 'data', 'bench'].includes(entry.name)) continue;
     const src = path.join(apiSrc, entry.name);
     const dest = path.join(apiDest, entry.name);
     if (entry.isDirectory()) copyDir(src, dest);

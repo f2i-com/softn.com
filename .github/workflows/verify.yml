@@ -1,14 +1,15 @@
 name: Verify
 
 # The one verification job, shared by every workflow that needs to know a
-# commit is good: the push/PR checks (build.yml) and the tag release
-# (release.yml) both call this rather than carrying their own copy of the
-# steps. A release used to run its own shorter list — install, audit,
-# licences, build the site — so a tag could package a commit that had never
-# been typechecked, linted or tested as that exact commit; the checks on main
-# had run on whatever main was when it was pushed, which is not always the
-# tagged commit. Factoring the steps here means "verified" means the same
-# thing on both paths, and the release job cannot start until it holds.
+# commit is good: the push/PR checks (ci.yml), the hand-dispatched full build
+# (build.yml) and the tag release (release.yml) all call this rather than
+# carrying their own copy of the steps. A release used to run its own shorter
+# list — install, audit, licences, build the site — so a tag could package a
+# commit that had never been typechecked, linted or tested as that exact
+# commit; the checks on main had run on whatever main was when it was pushed,
+# which is not always the tagged commit. Factoring the steps here means
+# "verified" means the same thing on every path, and the release job cannot
+# start until it holds.
 #
 # `ref` is what to verify. Empty means the ref that triggered the caller,
 # which is what a push or pull request wants; a release passes its tag so the
@@ -53,7 +54,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
 
       # `npm ci` installs exactly what package-lock.json pins and fails loudly if
@@ -103,12 +104,17 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # A ratchet: `lint` allows exactly the warnings the tree carries today
-      # (see the root package.json), so a change can remove them but never add
-      # one. Tests and the CLI are exempt from the two rules that made up most
-      # of the count (.eslintrc.cjs overrides); the rest are real.
+      # `lint` runs with --max-warnings 0 (the root package.json): the tree has
+      # no warnings, so a change that adds one fails here. Tests and the CLI
+      # are exempt from no-console and no-explicit-any (.eslintrc.cjs overrides).
       - name: Lint
         run: npm run lint
+
+      # scripts/dev-service-worker.test.mjs drives a real Chromium through a
+      # stale service worker; it skips itself when no browser is installed,
+      # so this is what makes it run here rather than pass by skipping.
+      - name: Install Chromium for the browser-driven script tests
+        run: npx playwright install --with-deps chromium
 
       # Every workspace's suite, the directory API's among them: the runner
       # image ships PHP, so those run here rather than being skipped.

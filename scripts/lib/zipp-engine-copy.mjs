@@ -14,6 +14,13 @@ import { createHash } from 'node:crypto';
 /** Exports the engine has and no other module in a SoftN build does (gpu-lab kernels, the WASI guest). */
 export const ZIPP_ENGINE_EXPORTS = ['zippProfile', 'zipp_start', 'engine_evalInContext'];
 
+/**
+ * Exports ZIPP's torch package module (`zipp_torch.wasm`) has, which its loader
+ * `zipp_torch.js` reads, and which neither the engine nor anything else in a
+ * SoftN build has: the package archive and the kernel entry point.
+ */
+export const ZIPP_TORCH_EXPORTS = ['memory', 'zipp_package_ptr', 'zipp_package_len', 'zipp_kernel', 'zipp_alloc', 'zipp_free'];
+
 /** The kinds an import or export description names, in the binary's numbering, spelt as `WebAssembly.Module.imports` spells them. */
 const KINDS = ['function', 'table', 'memory', 'global', 'tag'];
 
@@ -124,6 +131,25 @@ export function isZippEngineWasm(bytes) {
   return names !== null && ZIPP_ENGINE_EXPORTS.every((name) => names.includes(name));
 }
 
+/** Is this file a copy of ZIPP's torch package module? Decided by its exports, like the engine. */
+export function isZippTorchPackageWasm(bytes) {
+  const names = wasmExportNames(bytes);
+  return names !== null && ZIPP_TORCH_EXPORTS.every((name) => names.includes(name));
+}
+
+/**
+ * Where softn-formlogic-runtime-<tag>.zip carries the torch package the
+ * install records (`packages.torch`), each of which must hold one: its own
+ * tree at the top level, beside zipp/ like zipp-web/, and the core-runtime
+ * copy of @softn/core's dist in each built app, which is where the runtime
+ * fetches it from for an app that declares torch.
+ */
+export const PACKAGE_TREES = { torch: 'zipp-torch' };
+export const KNOWN_TORCH_COPIES = [
+  new RegExp(`^${PACKAGE_TREES.torch}/zipp_torch\\.wasm$`),
+  ...['hosted-runtime', 'app-editors/builder', 'app-editors/studio'].map((prefix) => new RegExp(`^${prefix}/assets/core-runtime/zipp_torch\\.wasm$`)),
+];
+
 /** Where FormLogic takes a copy of the engine from in softn-formlogic-runtime-<tag>.zip; each must hold one. */
 export const KNOWN_ENGINE_COPIES = [
   /^zipp\/zipp_wasm_bg\.wasm$/,
@@ -153,10 +179,13 @@ export const VARIANT_ENGINE_COPIES = {
  * (its SOURCE.json), every known place holds one, and the native runtime's
  * glue is zipp/'s. A variant the install records may be at its one place and
  * nowhere else, and must be there; a copy anywhere else has to be the primary
- * engine, whatever it is called. Returns the copies and what is wrong, as
- * sentences.
+ * engine, whatever it is called. The torch package, found by its exports the
+ * same way, must be the one the install records (`packages.torch`) wherever
+ * it is, and at every place it is known to be; an archive of an install that
+ * records none may carry none. Returns the engine copies, the package copies
+ * and what is wrong, as sentences.
  */
-export function archiveEngineProblems(entries, source, { known = KNOWN_ENGINE_COPIES, variantPlaces = VARIANT_ENGINE_COPIES } = {}) {
+export function archiveEngineProblems(entries, source, { known = KNOWN_ENGINE_COPIES, variantPlaces = VARIANT_ENGINE_COPIES, knownTorch = KNOWN_TORCH_COPIES } = {}) {
   const bytesOf = (name) => {
     const value = entries.get(name);
     return value === undefined || value instanceof Uint8Array ? value : value.data;
@@ -182,5 +211,17 @@ export function archiveEngineProblems(entries, source, { known = KNOWN_ENGINE_CO
   for (const [name, { id }] of variantAt) if (!copies.includes(name)) problems.push(`no ZIPP engine at ${name}; SOURCE.json records the ${id} variant there`);
   const [nativeGlue, zippGlue] = [bytesOf('native-runtime/wasm/zipp_wasm.mjs'), bytesOf('zipp/zipp_wasm.js')];
   if (!nativeGlue || !zippGlue || !Buffer.from(nativeGlue).equals(Buffer.from(zippGlue))) problems.push('native-runtime/wasm/zipp_wasm.mjs is not zipp/zipp_wasm.js');
-  return { copies, problems };
+
+  const torch = source.packages?.torch;
+  const packageCopies = [...entries.keys()].filter((name) => isZippTorchPackageWasm(bytesOf(name)));
+  if (torch !== undefined && !/^[0-9a-f]{64}$/.test(torch?.sha256 ?? '')) problems.push('SOURCE.json records the torch package without a sha256');
+  else {
+    for (const name of packageCopies) {
+      const digest = createHash('sha256').update(bytesOf(name)).digest('hex');
+      if (!torch) problems.push(`${name} is ZIPP's torch package, and SOURCE.json records none (packages.torch)`);
+      else if (digest !== torch.sha256) problems.push(`${name} is ZIPP's torch package, but not ZIPP ${source.release}'s (${torch.sha256.slice(0, 12)})`);
+    }
+    if (torch) for (const pattern of knownTorch) if (!packageCopies.some((name) => pattern.test(name))) problems.push(`no torch package matches ${pattern}; SOURCE.json records one, and the runtime takes it from there`);
+  }
+  return { copies, packageCopies, problems };
 }

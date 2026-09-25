@@ -90,7 +90,7 @@ _A direct screenshot of the running app. Its colours and responsive layout live 
 
 ## Get started
 
-Use **Node.js 24.19 or newer** (see `engines` in `package.json`), and npm. The browser apps use the checked-in WASM runtime; Rust is only needed for native hosts or rebuilding that engine.
+Use **Node.js 24.19 or newer** (see `engines` in `package.json`), and npm. The browser apps run on ZIPP's prebuilt WebAssembly engine, which is not committed: the first build, test or typecheck downloads the release `apps/softn-host-rust/Cargo.toml` names and verifies it (`npm run fetch:zipp`), so a fresh checkout needs network access once. Rust is only needed for native hosts.
 
 ```bash
 git clone https://github.com/f2i-com/softn.com.git
@@ -109,6 +109,9 @@ Open the origin printed by the launcher, normally `http://localhost:1420`:
 | `/builder/` | Create or reopen an app, edit its schema and preview it. |
 | `/studio/`  | Configure your AI provider and turn a brief into an app. |
 | `/web/`     | Open bundles, explore directory apps and return to your saved library. |
+| `/docs/`    | Read the guides; they rebuild as `docs/content/softn-docs.json` is edited. |
+| `/demos/`   | The example bundles the directory and Runtime link to.  |
+| `/api/`     | The directory API, when PHP is on `PATH`.               |
 
 The launcher proxies the browser apps through one origin and picks alternate ports when needed. It also starts the directory API when PHP is available on `PATH`; install PHP to exercise directory browsing, publishing and server storage locally. Fetched examples appear in both the directory and Runtime when demo seeding is enabled. Demo fetching needs network access. To work on Builder alone, use `npm run dev:builder` after the package build.
 
@@ -365,8 +368,11 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 
 The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
 release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
-unchanged from that ZIPP release's official `zipp-wasm-<version>-web-python.zip` bundle:
-JavaScript and experimental Python in one module. The install's `SOURCE.json` records the
+unchanged from that ZIPP release's official `zipp-wasm-<version>-web-python-base.zip` bundle:
+JavaScript and experimental Python in one module, 7.46 MB, without torch. Torch is ZIPP's separate
+package (`zipp-wasm-<version>-web-torch.zip`: `zipp_torch.wasm`, 2.05 MB, and its loader), installed
+beside the engine and loaded by the runtime only for an app whose manifest declares torch, once per
+page. The install's `SOURCE.json` records the
 release, its source commit, toolchain, the SHA-256 of the bundle and of the release's `SHA256SUMS`,
 and where the third-party notices came from. Existing `.logic` screens continue to use JavaScript.
 See [language support](docs/engineering/ZIPP_LANGUAGES.md) for the Python host API and its current
@@ -377,7 +383,8 @@ builds against the same ZIPP today and next year, and the Rust host and the brow
 `npm run build`, `npm test`, `npm run typecheck` and `npm run licenses:check` install it when it is
 missing or not that release (`fetch-zipp-release.mjs --ensure`), so a fresh clone needs network
 access the first time, or `ZIPP_RELEASE_DIR=<folder>` holding the release's `SHA256SUMS`,
-`zipp-wasm-<version>-web-python.zip` and `zipp-wasm-<version>-web.zip`. To install it by hand:
+`zipp-wasm-<version>-web-python-base.zip`, `zipp-wasm-<version>-web-torch.zip` and
+`zipp-wasm-<version>-web.zip`. To install it by hand:
 
 ```bash
 npm run fetch:zipp                      # the release Cargo.toml declares
@@ -385,24 +392,31 @@ npm run fetch:zipp -- --check           # re-verify the install offline (digests
 ```
 
 `fetch:zipp` checks the bundle against the release's `SHA256SUMS`, every file against the bundle's
-own `SHA256SUMS`, and that `BUILD-INFO.txt` and the module itself describe the web-python build of
-that release; it refuses anything else as the engine. The same release's JavaScript-only
+own `SHA256SUMS`, and that `BUILD-INFO.txt` and the module itself describe the web-python-base
+build of that release (no torch built in); it refuses anything else as the engine. The release's
+`web-torch` bundle is installed beside it, into `packages/@softn/core/wasm-zipp-torch/`, as the
+engine's torch *package*: checked against the same `SHA256SUMS` and its own, its `BUILD-INFO.txt`
+naming exactly the installed engine bundle (`pairs-with`) and commit, and, at install, really added
+to the engine by ZIPP's own loader, after which the engine lists torch and an `import torch` project
+runs. `wasm-zipp/SOURCE.json` names it under `packages.torch`. The same release's JavaScript-only
 `zipp-wasm-<version>-web.zip` (which `ZIPP_RELEASE_DIR` must also hold) is installed beside it, into
 `packages/@softn/core/wasm-zipp-web/`, as a verified *variant*: checked against the same
-`SHA256SUMS`, built from the same commit, importing exactly what the engine imports and exporting
+`SHA256SUMS`, built from the same commit, importing nothing the engine does not and exporting
 nothing it lacks, and, loaded under the engine's glue, reporting `["javascript"]` alone with its
 Python entry points refusing. Softn's own apps never use it; `wasm-zipp/SOURCE.json` names it under
 `variants.web` so the FormLogic runtime archive can carry it as `zipp-web/` for a FormLogic that
-offers the smaller engine. An install without it is refused.
-The load-under-the-glue probe runs at install; `--check` (offline) re-verifies the installed
-bytes — every digest, the recorded fields, and that the variant's imports and exports are a subset
-of the engine's — and loads nothing. `--check --online` compares an install with the published release, and
+offers the smaller engine. An install without the variant or the package is refused: one release,
+all three bundles, or nothing.
+The load probes run at install; `--check` (offline) re-verifies the installed
+bytes — every digest, the recorded fields, that the variant's imports and exports are a subset
+of the engine's, and that the package module imports nothing and exports what its loader reads —
+and loads nothing. `--check --online` compares an install with the published release, and
 `ZIPP_RELEASE`/`ZIPP_SUMS_SHA256` name the release and the `SHA256SUMS` digest an install must have.
 `-- v0.0.19` or `-- --latest` installs another release once, but the next build, test, typecheck or
 licence script puts the declared release back (with a warning). To build and test against another
 release, set it for every command, for example `ZIPP_RELEASE=v0.0.19 npm test`; the engine-pin
 tests then fail until the Cargo tag and `Cargo.lock` agree.
-The release bundle carries no RustPython or Unicode notices, so SoftN ships a curated copy from
+The release bundle carries no Unicode notice, so SoftN ships a curated copy from
 [zipp-notices/](packages/@softn/core/zipp-notices/README.md).
 
 To move to a new ZIPP release, bump the `zipp-vm` tag and `Cargo.lock` together; the next build
@@ -861,7 +875,7 @@ its own 35 fps cap. The host side is `packages/@softn/core/src/runtime/accel-hos
 
 ### Prerequisites
 
-- Node.js 24.19 or newer (see `package.json` engines; the PHP host's bundled runtime needs the same)
+- Node.js 24.19 or newer (see `package.json` engines; the PHP host's bundled runtime needs the same). CI runs the version in `.nvmrc`, which `nvm use` and `fnm use` read
 - npm
 - Rust + Cargo (for Tauri apps and WASM compilation)
 
@@ -915,28 +929,37 @@ The desktop runtime and Builder use ports 1431 and 1432, separately from the
 unified website. See [desktop apps and the shared bundle workflow](docs/engineering/DESKTOP_APPS.md)
 for native file dialogs, app transfers, saved-data behavior and manual checks.
 
-The native loader and server use local path dependencies so they can be developed
-alongside zipp and XDB. Clone those repositories as siblings of this checkout
-before running their Cargo commands:
+The native loader and server take the ZIPP engine from its release tag (the
+`zipp-vm` entry in `apps/softn-host-rust/Cargo.toml`) and XDB as a local path
+dependency. Clone XDB as a sibling of this checkout before running their Cargo
+commands:
 
 ```bash
-git clone https://github.com/f2i-com/zipp.org.git ../zipp.org
 git clone https://github.com/f2i-com/xdb.org.git ../xdb.org
 cargo test --manifest-path apps/softn-host-rust/Cargo.toml
 ```
 
 ### Testing
 
-Automatic push/PR CI is temporarily paused. Run the relevant checks locally, or start the [Build SoftN workflow](.github/workflows/build.yml) manually. Tagged releases still use the shared verification workflow.
+Every push to `main` and every pull request runs the [CI workflow](.github/workflows/ci.yml):
+install, audit, build, typecheck, lint, every test suite and the Rust hosts, the steps
+[verify.yml](.github/workflows/verify.yml) holds. A commit whose message carries `[skip ci]` is
+not checked by GitHub, so run the same checks locally before pushing one. The
+[Build SoftN workflow](.github/workflows/build.yml) is started by hand for the hosting archives
+and the desktop matrix, and a version tag runs [the release](.github/workflows/release.yml), which
+verifies the tagged commit and runs the browser gate before anything is packaged.
 
 ```bash
-npm test                      # every workspace: core, components, web, api (the demo bundles are fetched first)
+npm test                      # the script tests, then every workspace (demo bundles and the ZIPP engine are fetched first)
 npm test -w @softn/core       # one of them
 npm run lint && npm run typecheck
+npm run e2e:install           # Chromium for Playwright, once
+npm run e2e                   # the browser gate, against a built site (see e2e/README.md)
 ```
 
 The API suite starts its own `php -S` on a temporary root and seeds it from
-the fetched demo bundles; `npm test` fetches them first.
+the fetched demo bundles; `npm test` fetches them first. One script test drives a real
+Chromium and skips itself until `npm run e2e:install` has put one on the machine.
 
 ### Key File Paths
 

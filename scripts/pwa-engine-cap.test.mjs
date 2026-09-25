@@ -2,9 +2,13 @@
  * The PWAs precache the ZIPP engine so a bundle runs offline, and Workbox
  * skips any file over maximumFileSizeToCacheInBytes without failing the build
  * (apps/softn-web/vite.config.ts says so beside its glob). ZIPP's release
- * engine is not run through wasm-opt and sits under 180 KB below today's
- * 8 MiB caps, so a larger release has to raise the caps first, or every PWA
- * silently loses its engine offline.
+ * engine is not run through wasm-opt; 0.0.21's web-python-base build is about
+ * 7.1 MiB under today's 8 MiB caps, so a larger release has to raise the caps
+ * first, or every PWA silently loses its engine offline.
+ *
+ * The torch package (zipp_torch.wasm, about 2 MiB) is deliberately NOT in the
+ * precache: the runtime fetches it from assets/core-runtime/ — which every
+ * PWA's globIgnores leaves out — only for an app that declares torch.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,4 +42,18 @@ test('the ZIPP engine fits under the smallest Workbox precache cap of every PWA'
     `${ENGINE} is ${size} bytes, not under the ${smallest.cap}-byte precache cap in ${smallest.file}. ` +
       `Raise maximumFileSizeToCacheInBytes in ${CONFIGS.join(', ')}; Workbox would otherwise leave the engine out of the offline cache without an error.`
   );
+});
+
+test('the torch package stays out of every PWA\'s startup precache', () => {
+  // The runtime resolves it as ./core-runtime/zipp_torch.wasm from core's chunk
+  // (packages/@softn/core/src/runtime/zipp-wasm-loader.ts), through a variable
+  // so Vite does not emit a hashed copy under assets/ for the glob to sweep.
+  const loader = fs.readFileSync(path.join(root, 'packages/@softn/core/src/runtime/zipp-wasm-loader.ts'), 'utf8');
+  assert.match(loader, /const TORCH_WASM_PATH = '\.\/core-runtime\/zipp_torch\.wasm';/);
+  assert.match(loader, /new URL\(TORCH_WASM_PATH, import\.meta\.url\)/);
+  assert.doesNotMatch(loader, /new URL\(\s*['"`][^'"`]*zipp_torch\.wasm['"`]/, 'a literal URL would be emitted into assets/ and precached');
+  for (const file of CONFIGS) {
+    const text = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.match(text, /globIgnores:[^\]]*'\*\*\/core-runtime\/\*\*'/s, `${file} leaves assets/core-runtime/ out of the precache`);
+  }
 });

@@ -12,7 +12,8 @@
  * the newest ZIPP and the same one. allow-older-zipp (ALLOW_OLDER_ZIPP=true)
  * ships the declared release anyway when it is not the latest (usually older;
  * newer when the tag is a pre-release, which `latest` never names), provided
- * it is published with its web-python bundle; the release notes say so.
+ * it is published with the bundles an install takes (web-python-base, web and
+ * web-torch); the release notes say so.
  *
  * Writes to GITHUB_OUTPUT: zipp-release (the declared tag), zipp-sums-sha256
  * (the digest of that release's SHA256SUMS, which every later install must
@@ -39,7 +40,7 @@ export async function zippReleaseGate({ cargoToml = CARGO_TOML, allowOlder = fal
           : `apps/softn-host-rust/Cargo.toml declares ZIPP ${declared}, but ZIPP's latest release is ${latest.release}; release once ${declared} is the latest, or release with allow-older-zipp`,
       );
     }
-    // Not the latest: that tag's own SHA256SUMS, which must list its web-python bundle.
+    // Not the latest: that tag's own SHA256SUMS, which must list the bundles an install takes.
     sums = (await resolveRelease({ tag: declared, fetch: fetchImpl })).sums;
   }
   return {
