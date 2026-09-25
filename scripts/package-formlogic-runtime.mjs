@@ -140,7 +140,21 @@ const manifestZipp = { ...zipp, release: zippSource.release, revision: zippSourc
 
 const runtimeDir = path.join(root, 'apps/softn-host-php/runtime');
 const hostProtocol = readJson(path.join(runtimeDir, 'host-protocol.json'));
-const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs'];
+const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'sql.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs'];
+// The files the native runtime's own modules import, beside the ones this
+// archive writes itself (the engine under wasm/). A module added to the runtime
+// and imported by one listed here but left off the list shipped a runtime that
+// could not start — v0.0.16's archive lacked sql.mjs, and every native app
+// request in FormLogic failed. So the list is checked against the imports.
+const PROVIDED_NATIVE_PATHS = ['wasm/zipp_wasm.mjs'];
+for (const name of NATIVE_MODULES.filter((n) => n.endsWith('.mjs'))) {
+  const source = fs.readFileSync(path.join(runtimeDir, name), 'utf8');
+  for (const [, target] of source.matchAll(/(?:from|import)\s*\(?\s*['"]\.\/([^'"]+)['"]/g)) {
+    if (!NATIVE_MODULES.includes(target) && !PROVIDED_NATIVE_PATHS.includes(target)) {
+      fail(`native-runtime/${name} imports ./${target}, which the archive does not carry; add it to NATIVE_MODULES`);
+    }
+  }
+}
 
 // The editor bridge protocol is the `protocol: 1` the hosted editors send in
 // `formlogic-editor-ready` (packages/@softn/editor-shared/src/hostedEditor.ts).

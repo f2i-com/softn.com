@@ -30,7 +30,19 @@ const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
 const HOST_JS_ENGINE_MARK = fs
   .readFileSync(path.join(root, 'packages/@softn/core/src/runtime/host-js/host-js-adapter.ts'), 'utf8')
   .match(/export const HOST_JS_ENGINE_MARK = '([^']+)'/)?.[1];
-const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs'];
+const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'sql.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs'];
+
+test('every module the native runtime ships imports only files the archive carries', () => {
+  // v0.0.16 shipped migrations.mjs and wasm-host.mjs importing ./sql.mjs without
+  // sql.mjs itself, and FormLogic's native runtime could not start.
+  const runtimeDir = path.join(root, 'apps/softn-host-php/runtime');
+  for (const name of NATIVE_MODULES.filter((n) => n.endsWith('.mjs'))) {
+    const source = fs.readFileSync(path.join(runtimeDir, name), 'utf8');
+    for (const [, target] of source.matchAll(/(?:from|import)\s*\(?\s*['"]\.\/([^'"]+)['"]/g)) {
+      assert.ok(NATIVE_MODULES.includes(target) || target === 'wasm/zipp_wasm.mjs', `native-runtime/${name} imports ./${target}, which the archive does not carry`);
+    }
+  }
+});
 
 test('the FormLogic runtime package is described like the others and named for FormLogic', () => {
   const pkg = packageById('formlogic-runtime');
