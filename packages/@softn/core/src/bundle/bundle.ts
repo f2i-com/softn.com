@@ -472,12 +472,27 @@ const XDB_FALLBACK_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
 export function parseXDBFile(path: string, content: string): XDBBundleData {
   const fallbackCollection = path.replace('.xdb', '');
+  // A malformed file used to open as an empty collection, silently: the app
+  // ran with none of its seed rows and nothing said why. The records are
+  // still empty — a half-read file is not seed data — but the reason travels
+  // with them, for the runtime to log and a host to show.
+  const unreadable = (why: string, collection = fallbackCollection): XDBBundleData => ({
+    collection,
+    records: [],
+    warning: `${path}: ${why}; its records were not loaded`,
+  });
   try {
     const parsed = JSON.parse(content) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { collection: fallbackCollection, records: [] };
+      return unreadable('not a JSON object');
     }
     const data = parsed as Record<string, unknown>;
+    if (data.records !== undefined && !Array.isArray(data.records)) {
+      return unreadable(
+        '"records" is not a list',
+        typeof data.collection === 'string' && data.collection ? data.collection : fallbackCollection
+      );
+    }
     const records = Array.isArray(data.records)
       ? data.records.flatMap((record): XDBBundleData['records'] => {
           if (!record || typeof record !== 'object' || Array.isArray(record)) return [];
@@ -531,11 +546,8 @@ export function parseXDBFile(path: string, content: string): XDBBundleData {
           : fallbackCollection,
       records,
     };
-  } catch {
-    return {
-      collection: fallbackCollection,
-      records: [],
-    };
+  } catch (err) {
+    return unreadable(`not valid JSON (${err instanceof Error ? err.message : String(err)})`);
   }
 }
 

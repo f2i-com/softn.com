@@ -88,6 +88,23 @@ export interface WorkerRuntimeOptions {
 /** Host calls resolved per chain before it is judged a runaway. */
 const MAX_HOST_CALL_ROUNDS = 256;
 
+/** What a lost db mutation is reported as: the record or collection it named. */
+function mutationKey(m: DBMutation): string {
+  switch (m.type) {
+    case 'update':
+    case 'delete':
+      return m.id;
+    case 'hardDelete':
+      return `${m.collection}/${m.id}`;
+    case 'startSync':
+      return m.room;
+    case 'stopSync':
+      return m.room ?? '';
+    default:
+      return m.collection;
+  }
+}
+
 type WorkerResponse = {
   id: number;
   ok: boolean;
@@ -424,61 +441,87 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // Worker mutations change DB state — track which collections are dirty
     // so the next call can send a delta instead of a full snapshot.
     this.dbDirty = true;
+    // `prune` and `clearCollection` go through the script's db namespace,
+    // whose store loads lazily and throws "still initializing" until it has.
+    // Nothing here waited for it, so the first worker batch carrying either
+    // threw, and one try round the whole loop dropped every mutation after it
+    // without a word: the worker's snapshot had the change, the store did not.
+    let xdb: import('./xdb').XDBService;
     try {
       const { getXDB } = await import('./xdb');
-      const xdb = getXDB(this.appId);
-      for (const m of mutations) {
-        switch (m.type) {
-          case 'create': {
-            // The worker's own id is kept when it is a real one (the store
-            // verifies it is unused); a `_wk_` placeholder gets a stored id
-            // and is mapped so later worker mutations naming it resolve.
-            const record = xdb.create(m.collection, m.data, isWorkerPlaceholderId(m.tempId) ? {} : { id: m.tempId });
-            if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
-            if (m.tempId && record.id !== m.tempId) {
-              this.tempIdMap.set(m.tempId, record.id);
-            }
-            break;
-          }
-          case 'update':
-            xdb.update(this.resolveId(m.id), m.data);
-            // update doesn't carry collection name, so mark all dirty
-            this.dbDirtyCollections = null;
-            break;
-          case 'delete':
-            xdb.delete(this.resolveId(m.id));
-            this.dbDirtyCollections = null;
-            break;
-          case 'hardDelete': {
-            const realId = this.resolveId(m.id);
-            xdb.hardDelete(m.collection, realId);
-            if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
-            // Clean up the mapping once the record is gone
-            if (realId !== m.id) this.tempIdMap.delete(m.id);
-            break;
-          }
-          case 'prune':
-            // The namespace's own rule, on the real records: what the worker
-            // removed from its snapshot is what goes here.
-            this.dbNamespace.prune(m.collection, m.maxRecords);
-            if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
-            break;
-          case 'clearCollection':
-            this.dbNamespace.clearCollection(m.collection);
-            if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
-            break;
-          case 'startSync':
-            // Same gate, same key derivation and same host-bound identity as
-            // a script running on the main thread — see the constructor.
-            this.dbNamespace.startSync(m.room, m.options);
-            break;
-          case 'stopSync':
-            this.dbNamespace.stopSync(m.room);
-            break;
-        }
-      }
+      xdb = getXDB(this.appId);
+      await this.dbNamespace.ready();
     } catch (err) {
-      console.error('[Worker Bridge] applyDBMutations error:', err);
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error('[Worker Bridge] the database is unavailable; no worker writes were kept:', error);
+      for (const m of mutations) this.onPersistenceFailure?.({ operation: m.type, key: mutationKey(m), error });
+      this.dbDirtyCollections = null;
+      return;
+    }
+    // One failed mutation does not stop the ones after it, and each is
+    // reported, as a lost localStorage write is: the script was told its
+    // write happened. The next snapshot is a full one, taken from the store,
+    // so the worker reads back what was actually kept.
+    for (const m of mutations) {
+      try {
+        this.applyDBMutation(xdb, m);
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        console.error(`[Worker Bridge] db.${m.type}("${mutationKey(m)}") was not kept:`, error);
+        this.onPersistenceFailure?.({ operation: m.type, key: mutationKey(m), error });
+        this.dbDirtyCollections = null;
+      }
+    }
+  }
+
+  private applyDBMutation(xdb: import('./xdb').XDBService, m: DBMutation): void {
+    switch (m.type) {
+      case 'create': {
+        // The worker's own id is kept when it is a real one (the store
+        // verifies it is unused); a `_wk_` placeholder gets a stored id
+        // and is mapped so later worker mutations naming it resolve.
+        const record = xdb.create(m.collection, m.data, isWorkerPlaceholderId(m.tempId) ? {} : { id: m.tempId });
+        if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
+        if (m.tempId && record.id !== m.tempId) {
+          this.tempIdMap.set(m.tempId, record.id);
+        }
+        break;
+      }
+      case 'update':
+        xdb.update(this.resolveId(m.id), m.data);
+        // update doesn't carry collection name, so mark all dirty
+        this.dbDirtyCollections = null;
+        break;
+      case 'delete':
+        xdb.delete(this.resolveId(m.id));
+        this.dbDirtyCollections = null;
+        break;
+      case 'hardDelete': {
+        const realId = this.resolveId(m.id);
+        xdb.hardDelete(m.collection, realId);
+        if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
+        // Clean up the mapping once the record is gone
+        if (realId !== m.id) this.tempIdMap.delete(m.id);
+        break;
+      }
+      case 'prune':
+        // The namespace's own rule, on the real records: what the worker
+        // removed from its snapshot is what goes here.
+        this.dbNamespace.prune(m.collection, m.maxRecords);
+        if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
+        break;
+      case 'clearCollection':
+        this.dbNamespace.clearCollection(m.collection);
+        if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
+        break;
+      case 'startSync':
+        // Same gate, same key derivation and same host-bound identity as
+        // a script running on the main thread — see the constructor.
+        this.dbNamespace.startSync(m.room, m.options);
+        break;
+      case 'stopSync':
+        this.dbNamespace.stopSync(m.room);
+        break;
     }
   }
 

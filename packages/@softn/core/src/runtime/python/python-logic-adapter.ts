@@ -28,7 +28,7 @@
  */
 
 import { Engine } from '../../../wasm-zipp/zipp_wasm.js';
-import { ensureZippWasm, zippLanguages } from '../zipp-wasm-loader';
+import { ensureZippTorch, ensureZippWasm, zippLanguages, zippPythonPackages } from '../zipp-wasm-loader';
 import { sanitizeArgs } from '../vm-args';
 import { flushEngineOutput } from '../engine-output';
 import type { DBNamespace } from '../script-runtime';
@@ -211,6 +211,33 @@ export class PythonLogicAdapter implements LogicEngine {
    */
   async initializePythonProject(project: PythonProject): Promise<Map<string, SymbolInfo>> {
     await ensureZippWasm();
+    // A declared package the engine does not carry is added now, before a
+    // line compiles: the engine Softn ships (ZIPP's web-python-base) has no
+    // torch built in, and ZIPP publishes it as a package the runtime loads
+    // once per page, only for apps that declare it. One that still cannot be
+    // provided is refused by name here. Otherwise the app's first
+    // `import torch` would fail as a ModuleNotFoundError from inside its own
+    // code, which reads as the author's mistake rather than the page's.
+    if (project.packages?.length) {
+      let available = await zippPythonPackages();
+      let missing = project.packages.filter((name) => !available.includes(name));
+      let reason = '';
+      if (missing.includes('torch')) {
+        try {
+          await ensureZippTorch();
+        } catch (error) {
+          reason = error instanceof Error ? error.message : String(error);
+        }
+        available = await zippPythonPackages();
+        missing = project.packages.filter((name) => !available.includes(name));
+      }
+      if (missing.length > 0) {
+        this._terminated = true;
+        throw new Error(
+          `This app uses the Python package${missing.length > 1 ? 's' : ''} ${missing.join(' and ')}, and the engine this page loaded does not provide ${missing.length > 1 ? 'them' : 'it'}${reason ? `: ${reason}` : ''}`
+        );
+      }
+    }
     const files: Record<string, string> = {
       [`${ENTRY}.py`]: mainSource(project.modules),
       'softn.py': SOFTN_PY,

@@ -290,6 +290,28 @@ export const URL_ATTRIBUTES = new Set([
   'xlink:href',
 ]);
 
+/**
+ * Attributes that put an element in the browser's top layer without a script.
+ *
+ * The host contains an app's paint to its own box (AppRunner in softn-web),
+ * so a `position: fixed` overlay stops at the app's edge and cannot cover the
+ * consent bar. The top layer is the one thing no containment clips — it is
+ * drawn above the whole document — and markup alone reaches it:
+ * `<button popovertarget="x">` shows `<div id="x" popover>` there,
+ * `<a interestfor="x">` does on hover, and `<button commandfor="d"
+ * command="show-modal">` opens a `<dialog>` modally. A bundle has no use
+ * for them that its components do not already serve, so they never reach the
+ * DOM, from markup or from sanitized HTML.
+ */
+export const TOP_LAYER_ATTRIBUTES = new Set([
+  'popover',
+  'popovertarget',
+  'popovertargetaction',
+  'interestfor',
+  'commandfor',
+  'command',
+]);
+
 /** SVG elements that only describe shapes — no scripting, no external loads. */
 const SVG_TAGS = new Set([
   'svg',
@@ -428,6 +450,10 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
 
       // Event handlers, in any spelling the parser accepts.
       if (name.startsWith('on')) {
+        node.removeAttribute(attr.name);
+        continue;
+      }
+      if (TOP_LAYER_ATTRIBUTES.has(name)) {
         node.removeAttribute(attr.name);
         continue;
       }

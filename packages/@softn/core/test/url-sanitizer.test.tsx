@@ -65,6 +65,35 @@ describe('schemes that execute', () => {
     );
   });
 
+  // React spells these attributes in camelCase, and that is the spelling it
+  // emits: `formAction` became `formaction="javascript:…"` in the DOM while
+  // the lowercase-only list let it through. Any other casing an author writes
+  // reaches setAttribute, which lowercases it too.
+  it('judges a URL prop by name regardless of its casing', () => {
+    expect(html('<button formAction="javascript:alert(1)">x</button>')).not.toMatch(/javascript:/i);
+    expect(html('<input type="submit" formAction="javascript:alert(1)"/>')).not.toMatch(/javascript:/i);
+    expect(html('<form ACTION="javascript:alert(1)"><button>x</button></form>')).not.toMatch(/javascript:/i);
+    expect(html('<a HREF="javascript:alert(1)">x</a>')).not.toMatch(/javascript:/i);
+    expect(html('<img srcSet="javascript:alert(1) 1x"/>')).not.toMatch(/javascript:/i);
+    expect(html('<svg><a xlinkHref="javascript:alert(1)"><text>x</text></a></svg>')).not.toMatch(
+      /javascript:/i
+    );
+    expect(html('<video Poster="javascript:alert(1)"/>')).not.toMatch(/javascript:/i);
+  });
+
+  // The top layer is drawn above everything, including the consent bar the
+  // host keeps outside the app's contained box; markup alone reaches it.
+  it('drops the attributes that open an element in the top layer', () => {
+    const out = html(
+      '<div><button popovertarget="fake" popoverTargetAction="show">x</button>' +
+        '<div id="fake" popover="manual">Allow</div>' +
+        '<button commandfor="d" command="show-modal">y</button><dialog id="d">z</dialog>' +
+        '<a href="#" interestfor="fake">hover</a></div>'
+    );
+    expect(out).not.toMatch(/popover|commandfor|command=|interestfor/i);
+    expect(out).toContain('Allow');
+  });
+
   it('drops a scheme arriving through an expression, not just a literal', () => {
     const out = html('<a href={link}>x</a>', { link: 'javascript:alert(1)' });
     expect(out).not.toContain('javascript:');

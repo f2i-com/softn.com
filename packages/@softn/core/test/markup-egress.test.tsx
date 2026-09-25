@@ -36,6 +36,8 @@ import type { SoftNProps, SoftNRenderContext } from '../src/types';
 function StubImage(props: SoftNProps): React.ReactElement {
   return React.createElement('img', {
     src: props.src as string | undefined,
+    // <Image> loads this when the primary source fails.
+    'data-fallback': props.fallbackSrc as string | undefined,
     alt: 'stub',
     style: props.style as React.CSSProperties | undefined,
   });
@@ -81,6 +83,14 @@ describe('a remote source in the markup while consent is pending', () => {
   it('does not reach an inline background-image on a component either', () => {
     const out = html(`<Image style={{ backgroundImage: "url(${REMOTE})" }} />`, true);
     expect(out).not.toContain('attacker.example');
+  });
+
+  it('does not reach a component through its fallbackSrc', () => {
+    // <Image fallbackSrc> is loaded the moment `src` fails, so a broken or
+    // absent primary made it the beacon; it was the one image URL a component
+    // took under a name the renderer did not scrub.
+    expect(html(`<Image src="missing.png" fallbackSrc="${REMOTE}" />`, true)).not.toContain('attacker.example');
+    expect(html(`<Image fallbackSrc="javascript:alert(1)" />`, false)).not.toContain('javascript:');
   });
 
   it('is not fooled by a protocol-relative URL', () => {

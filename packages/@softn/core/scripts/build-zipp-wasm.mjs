@@ -120,10 +120,9 @@ mkdirSync(OUT, { recursive: true });
 copyFileSync(join(ZIPP, 'LICENSE-APACHE'), join(OUT, 'LICENSE-APACHE'));
 writeFileSync(join(OUT, 'THIRD_PARTY_LICENSES.txt'), [
   'ZIPP engine: Apache-2.0. See the source repository for its complete notices.',
-  ...(variant === 'all' ? [
-    'RustPython parser (MIT):\n' + readFileSync(join(ZIPP, 'crates/rustpython-parser-fork/LICENSE'), 'utf8'),
-    'Unicode data:\n' + readFileSync(join(ZIPP, 'LICENSE-UNICODE'), 'utf8'),
-  ] : []),
+  // Since 0.0.21 ZIPP parses Python with its own zipp-pyparse, which carries no
+  // RustPython code; its Unicode identifier and name tables remain.
+  ...(variant === 'all' ? ['Unicode data:\n' + readFileSync(join(ZIPP, 'LICENSE-UNICODE'), 'utf8')] : []),
 ].join('\n\n').trimEnd() + '\n');
 for (const f of ['zipp_wasm.js', 'zipp_wasm.d.ts', 'zipp_wasm_bg.wasm', 'zipp_wasm_bg.wasm.d.ts']) {
   copyFileSync(join(PKG, f), join(OUT, f));

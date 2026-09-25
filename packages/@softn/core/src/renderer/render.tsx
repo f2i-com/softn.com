@@ -19,7 +19,14 @@ import type {
 } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent } from './registry';
-import { cssResourceReferences, isRemoteUrl, isSafeUrl, URL_ATTRIBUTES } from './sanitize-html';
+import {
+  cssResourceReferences,
+  isRemoteUrl,
+  isSafeUrl,
+  TOP_LAYER_ATTRIBUTES,
+  URL_ATTRIBUTES,
+} from './sanitize-html';
+import { inlineStyleObject } from './inline-style';
 import {
   describeMarkupEgress,
   describeSrcSetEgress,
@@ -421,12 +428,22 @@ const VOID_ELEMENTS = new Set([
  */
 const URL_PROPS = new Set([
   ...URL_ATTRIBUTES,
-  'xlinkHref', // React's camelCase spelling of xlink:href
-  // React's spelling of srcset, and the one an author is likelier to write.
-  // URL_ATTRIBUTES is the HTML list, so it only carries the lowercase form —
-  // `<img srcSet={…}>` reached the DOM with neither check in front of it.
-  'srcSet',
+  // React's camelCase spelling of xlink:href, as it reads once lowercased.
+  'xlinkhref',
 ]);
+
+/**
+ * The name a URL prop is judged by: lowercased, because that is how the
+ * browser reads it. `URL_ATTRIBUTES` is the HTML list and carries only
+ * lowercase names, while React spells the same attributes `formAction`,
+ * `srcSet` and `xlinkHref` — and passes any other casing an author writes
+ * straight to `setAttribute`, which lowercases it on an HTML element. An
+ * exact-case lookup let `<button formAction="javascript:…">` reach the DOM
+ * with no check in front of it, and `srcSet` had to be listed by hand.
+ */
+function urlPropName(name: string): string {
+  return name.toLowerCase();
+}
 
 /**
  * What the render may let the browser fetch: the bundle's permission config
@@ -463,9 +480,10 @@ function egressPolicyFor(context: SoftNRenderContext): EgressPolicy {
  */
 function isWithheldUrl(name: string, value: string, policy: EgressPolicy): boolean {
   if (policy === null) return false;
-  if (name === 'href') return policy.consentPending === true && isRemoteUrl(value);
+  const canonical = urlPropName(name);
+  if (canonical === 'href') return policy.consentPending === true && isRemoteUrl(value);
   const verdict =
-    name === 'srcSet' || name === 'srcset'
+    canonical === 'srcset'
       ? describeSrcSetEgress(value, policy)
       : describeMarkupEgress(value, policy);
   return !verdict.allowed;
@@ -479,7 +497,7 @@ function isWithheldUrl(name: string, value: string, policy: EgressPolicy): boole
  */
 function sanitizeUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy): void {
   for (const name of Object.keys(props)) {
-    if (!URL_PROPS.has(name)) continue;
+    if (!URL_PROPS.has(urlPropName(name))) continue;
     const value = props[name];
     const safe =
       typeof value === 'string'
@@ -495,6 +513,18 @@ function sanitizeUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy):
       }
       delete props[name];
     }
+  }
+}
+
+/**
+ * Drop the attributes that open an element in the top layer, which no
+ * containment clips; see {@link TOP_LAYER_ATTRIBUTES}. On a raw element only:
+ * a registered component's props are named by its author and none of the
+ * built-ins passes unknown props to the DOM.
+ */
+function dropTopLayerProps(props: SoftNProps): void {
+  for (const name of Object.keys(props)) {
+    if (TOP_LAYER_ATTRIBUTES.has(name.toLowerCase())) delete props[name];
   }
 }
 
@@ -558,13 +588,16 @@ function withholdRemoteStyleUrls(props: SoftNProps, policy: EgressPolicy): void 
 const COMPONENT_URL_PROPS = new Set([
   'href',
   'src',
-  'srcSet',
   'srcset',
   'poster',
-  'formAction',
   'formaction',
-  'xlinkHref',
+  'xlinkhref',
   'xlink:href',
+  // <Image fallbackSrc> is loaded the moment the primary source fails, and
+  // was the one image URL a component took under a name this list did not
+  // know: a remote fallback beaconed while consent was pending, and with no
+  // `net` grant at all after it. Judged here it is withheld like `src`.
+  'fallbacksrc',
 ]);
 
 /**
@@ -636,7 +669,7 @@ function scrubUrlProp(
   blocked: string[],
   policy: EgressPolicy
 ): unknown {
-  if (COMPONENT_URL_PROPS.has(name) && typeof value === 'string') {
+  if (COMPONENT_URL_PROPS.has(urlPropName(name)) && typeof value === 'string') {
     if (isSafeUrl(value) && !isWithheldUrl(name, value, policy)) return value;
     blocked.push(value);
     return undefined;
@@ -1070,9 +1103,13 @@ function renderElement(
   const egressPolicy = egressPolicyFor(context);
   if (typeof FinalComponent === 'string') {
     sanitizeUrlProps(props, node.tag, egressPolicy);
+    dropTopLayerProps(props);
   } else {
     sanitizeComponentUrlProps(props, node.tag, egressPolicy);
   }
+  // CSS text becomes an object first, so it is checked the way an object is
+  // (see inline-style.ts for why a string reached React at all).
+  if (typeof props.style === 'string') props.style = inlineStyleObject(props.style);
   // Applies to both: a registered component that spreads `style` onto its root
   // element reaches the network by exactly the same route a raw <div> does.
   withholdRemoteStyleUrls(props, egressPolicy);

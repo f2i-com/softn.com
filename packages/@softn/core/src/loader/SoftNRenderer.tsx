@@ -2327,8 +2327,12 @@ export function SoftNWithXDB({
         });
         sync.connect();
       })
-      .catch(() => {
-        // Server sync module not available
+      .catch((err: unknown) => {
+        // The module failed to load (a stale deployment's chunk, a network
+        // drop) or the client refused its options. Either way the app runs
+        // unsynced, and the one line that says so is this one: it used to be
+        // swallowed, and the app looked normal and never synced.
+        console.warn('[SoftN] Server sync could not start:', err);
       });
     return () => {
       stale = true;

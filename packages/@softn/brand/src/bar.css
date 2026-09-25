@@ -170,12 +170,15 @@
 /* ── Narrow ────────────────────────────────────────────────────── */
 
 /*
- * The five product links do not fit beside the mark and the controls on a
- * phone. They take a row of their own under the bar, bled to the viewport
- * edges and scrolling sideways, so the last label is cut off by the screen
- * rather than stopping short — a word cut in half reads as "there is more this
- * way". The bar is then two rows tall, and --bar-height says so, because the
- * tool apps lay their own chrome out beneath it.
+ * The product links do not fit beside the mark and the controls on a phone.
+ * They take a row of their own under the bar, bled to the viewport edges, and
+ * share that row: tighter padding, spread across the width, so all six labels
+ * are whole from about 320px up. They used to keep their desktop padding and
+ * scroll, which cut "Docs" in half on every common phone — a link a reader
+ * could not read and, focused from the keyboard, could not see. Scrolling
+ * sideways stays as the fallback for anything narrower. The bar is two rows
+ * tall, and --bar-height says so, because the tool apps lay their own chrome
+ * out beneath it.
  */
 @media (max-width: 720px) {
   :root {
@@ -198,8 +201,11 @@
     order: 1;
     width: calc(100% + var(--gutter) * 2);
     margin-inline: calc(var(--gutter) * -1);
-    padding-inline: var(--gutter);
+    padding-inline: max(0.5rem, calc(var(--gutter) - 0.5rem));
+    justify-content: space-between;
+    gap: 0;
     overflow-x: auto;
+    scroll-padding-inline: var(--gutter);
     overscroll-behavior-x: contain;
     scrollbar-width: none;
     border-top: 1px solid var(--line-soft);
@@ -213,6 +219,7 @@
   .softn-bar-links a {
     flex: none;
     padding-block: 0.6875rem;
+    padding-inline: 0.25rem;
     border-top: 0;
   }
 

@@ -28,6 +28,7 @@ const dialled: string[] = [];
 vi.mock('../src/runtime/xdb-server-sync', () => ({
   XDBServerSync: class {
     constructor(_xdb: unknown, options: { wsUrl: string }) {
+      if (options.wsUrl.includes('refused')) throw new Error('refused by the client');
       dialled.push(options.wsUrl);
     }
     on(): void {}
@@ -106,6 +107,30 @@ describe('a bundle whose manifest names a sync server', () => {
   it('opens it immediately when there is nothing to consent to', async () => {
     await render(granted);
     expect(dialled).toEqual([SERVER]);
+  });
+
+  it('says so when the sync client cannot start, rather than running silently unsynced', async () => {
+    // The failure used to land in an empty `.catch`: the app looked normal
+    // and simply never synced.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(
+        <SoftNWithXDB
+          source="<div>probe</div>"
+          serverUrl="wss://refused.example.com/sync"
+          permissionConfig={granted}
+        />
+      );
+    });
+    await settle();
+    expect(warn).toHaveBeenCalledWith(
+      '[SoftN] Server sync could not start:',
+      expect.objectContaining({ message: 'refused by the client' })
+    );
+    warn.mockRestore();
   });
 });
 

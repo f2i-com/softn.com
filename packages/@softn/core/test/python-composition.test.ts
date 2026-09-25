@@ -95,6 +95,7 @@ describe('composing a Python bundle', () => {
     expect(composed.python).toEqual({
       files: { helpers: 'def double(x):\n    return x * 2\n', app: 'count = 0\n' },
       modules: ['helpers', 'app'],
+      packages: [],
     });
     // The document still has a logic block, so the renderer still builds a
     // runtime and the template still calls named functions through it. What it
@@ -216,5 +217,15 @@ describe('a JavaScript bundle is composed exactly as it always was', () => {
     expect(composed.python).toBeUndefined();
     expect(composed.source).toBe('<p>hi</p>');
     expect(composed.preIncludedLogicPaths).toEqual([]);
+  });
+});
+
+describe('an empty main file', () => {
+  it('is refused with the file named, rather than composing to nothing a host waits on forever', () => {
+    for (const text of ['', '   \n\t']) {
+      expect(() => composeBundleSource(new Map([['ui/main.ui', text]]), 'ui/main.ui')).toThrow(
+        "ui/main.ui is empty: the app's main file needs markup for the app to show"
+      );
+    }
   });
 });

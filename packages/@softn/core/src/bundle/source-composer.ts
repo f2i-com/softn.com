@@ -8,6 +8,8 @@
  * while each fragment's real source path is still known.
  */
 
+import { PYTHON_PACKAGES, readPythonPackages } from './inspect';
+
 export interface ComposedBundleSource {
   source: string;
   logicBasePath?: string;
@@ -22,7 +24,7 @@ export interface ComposedBundleSource {
    * The Python modules, when the logic is Python. Absent for every bundle that
    * has ever shipped, which keeps the JavaScript path exactly what it was.
    */
-  python?: { files: Record<string, string>; modules: string[] };
+  python?: { files: Record<string, string>; modules: string[]; packages: string[] };
 }
 
 /** A logic file ending in this is Python; everything else is JavaScript. */
@@ -52,6 +54,7 @@ export const SOFTN_PY_STDLIB_IMPORTS: readonly string[] = ['json', 'math'];
  */
 export function reservedPythonModuleReason(name: string): string | null {
   if (name === 'softn') return 'it is the module an app imports';
+  if (PYTHON_PACKAGES.includes(name)) return `it is the ${name} package the runtime provides`;
   if (name.startsWith('__softn')) return 'the runtime generates it';
   if (SOFTN_PY_STDLIB_IMPORTS.includes(name)) {
     return `the runtime's own softn.py imports the standard library's ${name}, and a project file of that name would replace it`;
@@ -90,6 +93,42 @@ export function pythonModuleName(path: string): string {
     );
   }
   return base;
+}
+
+/**
+ * The Python packages a bundle's manifest declares. A declaration the
+ * inspector would refuse is refused here too, so an app with a misspelt
+ * package stops before it runs rather than at its first import. A manifest
+ * that is missing or is not JSON declares nothing: the composer is not where
+ * a malformed manifest is reported, and a bundle without one still composes.
+ */
+function declaredPythonPackages(manifestText: string | undefined): string[] {
+  if (manifestText === undefined) return [];
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(manifestText);
+  } catch {
+    return [];
+  }
+  const { packages, problems } = readPythonPackages(manifest);
+  if (problems.length > 0) throw new Error(problems[0]);
+  return packages;
+}
+
+/**
+ * Whether Python source imports a package: `import torch`, `import torch.nn
+ * as nn`, `from torch import nn`, or the package among other names on one
+ * `import` line. Read from the source rather than from the engine, so an
+ * undeclared package is named before anything compiles; a line that merely
+ * mentions the name (`import torchvision`, a comment) does not count.
+ */
+function importsPackage(code: string, name: string): boolean {
+  const escaped = escapeRegex(name);
+  const statement = new RegExp(
+    `^[ \\t]*(?:from[ \\t]+${escaped}(?:\\.|[ \\t])|import[ \\t][^\\n#]*\\b${escaped}(?![\\w]))`,
+    'm'
+  );
+  return statement.test(code);
 }
 
 interface LogicFragment {
@@ -186,6 +225,12 @@ export function composeBundleSource(
   const mainPath = normalizeRootPath(mainFilePath);
   const mainUI = textFiles.get(mainPath);
   if (mainUI === undefined) throw new Error(`Main file not found: ${mainFilePath}`);
+  // An empty document parses to nothing, and nothing never finishes loading:
+  // the renderer only starts on a non-empty source, so a host waiting for the
+  // app to load waited forever on a blank tab with nothing in the console.
+  if (mainUI.trim() === '') {
+    throw new Error(`${mainPath} is empty: the app's main file needs markup for the app to show`);
+  }
 
   const mainFragments: LogicFragment[] = [];
   const supplementalFragments: LogicFragment[] = [];
@@ -393,12 +438,21 @@ export function composeBundleSource(
       files[module] = fragment.code;
       modules.push(module);
     }
+    const packages = declaredPythonPackages(textFiles.get('manifest.json'));
+    for (const fragment of pythonFragments) {
+      for (const name of PYTHON_PACKAGES) {
+        if (packages.includes(name) || !importsPackage(fragment.code, name)) continue;
+        throw new Error(
+          `${fragment.externalPath ?? fragment.basePath} imports ${name}, which an app asks for in manifest.json: "config": { "python": { "packages": ["${name}"] } }`
+        );
+      }
+    }
     return {
       source: `${source}\n<logic>\n</logic>`,
       logicBasePath,
       preIncludedLogicPaths: [],
       languages: ['javascript', 'python'],
-      python: { files, modules },
+      python: { files, modules, packages },
     };
   }
 

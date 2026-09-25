@@ -190,7 +190,11 @@ describe('Bundle Module', () => {
       );
 
       const bundle = await readBundle(bundleData);
-      expect(bundle.xdbData.get('broken.xdb')).toEqual({ collection: 'items', records: [] });
+      expect(bundle.xdbData.get('broken.xdb')).toEqual({
+        collection: 'items',
+        records: [],
+        warning: 'broken.xdb: "records" is not a list; its records were not loaded',
+      });
     });
 
     it('normalizes the camelCase timestamps used by checked-in demo XDB records', async () => {

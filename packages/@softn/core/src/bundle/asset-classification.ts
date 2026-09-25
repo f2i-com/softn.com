@@ -87,6 +87,10 @@ export const ASSET_CLASSIFICATIONS: Record<string, AssetClassification> = {
   md: { kind: 'text', mime: 'text/markdown', binary: false },
   ui: { kind: 'text', mime: 'text/plain', binary: false },
   logic: { kind: 'text', mime: 'text/plain', binary: false },
+  // Python app logic. Without this entry a .py fell to the opaque default, so
+  // every loader kept it out of the text files the composer reads and a
+  // Python app failed at Run with its own main.py "not in the bundle".
+  py: { kind: 'text', mime: 'text/x-python', binary: false },
   // Inside a bundle, .softn names a source document, not a nested archive —
   // manifests point main at e.g. ui/main.softn. This registry only ever sees
   // paths from within a bundle, so the on-disk zip meaning does not apply.

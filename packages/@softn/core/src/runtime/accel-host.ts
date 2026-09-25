@@ -15,13 +15,15 @@
  *
  * What keeps this safe:
  *
- * - The source is validated against a closed language before it reaches
- *   `new Function`: identifiers must be parameters, keywords, names the body
- *   declares with `let`, or labels; the only member access is `Math.imul`;
- *   there are no string, template or regular-expression literals, no `new`,
- *   `this`, `arguments`, `typeof`, `in` or `instanceof`, no `.` anywhere else.
- *   A function that passes can name nothing outside its parameters and
- *   locals, so it cannot reach the worker's globals.
+ * - The source is parsed against a closed language (accel-source.ts), and
+ *   what `new Function` compiles is text re-emitted from that parse, never
+ *   the script's own: names must resolve to parameters or locals in scope,
+ *   the only member access is `Math.<pure>(…)`, there are no string,
+ *   template, regular-expression, array or object literals, no `new`, `this`,
+ *   `arguments`, `typeof`, `in` or `instanceof`, and every computed key is
+ *   forced to a number. A function that passes can name nothing outside its
+ *   parameters and locals and can read no named property of anything, so it
+ *   cannot reach the worker's globals.
  * - The views are bounded by the arrays the engine resolved: the engine
  *   answers a region only for a global holding a typed array, pins its buffer
  *   (never freed, resized or detached while the VM lives), and the view's
@@ -36,70 +38,9 @@
  * The bridge is granted per app through its permission manifest.
  */
 
-const KEYWORDS = new Set([
-  'let',
-  'var',
-  'const',
-  'if',
-  'else',
-  'for',
-  'while',
-  'do',
-  'break',
-  'continue',
-  'return',
-  'function',
-  'true',
-  'false',
-  'undefined',
-  'null',
-]);
+import { AccelValidationError, compileAccelSource, validateAccelSource } from './accel-source';
 
-/**
- * Words that may appear nowhere: neither as an identifier (the whitelist
- * already refuses them there) nor as a name a `let` or a parameter list
- * would otherwise admit.
- */
-const RESERVED = new Set([
-  'this',
-  'new',
-  'typeof',
-  'instanceof',
-  'in',
-  'of',
-  'delete',
-  'void',
-  'class',
-  'extends',
-  'super',
-  'import',
-  'export',
-  'with',
-  'yield',
-  'await',
-  'async',
-  'try',
-  'catch',
-  'finally',
-  'throw',
-  'switch',
-  'case',
-  'default',
-  'debugger',
-  'enum',
-  'arguments',
-  'eval',
-  'Math',
-  'globalThis',
-  'self',
-  'window',
-]);
-
-/** The `Math` functions a body may call: pure, and numbers in and out. */
-const MATH_PURE = new Set(['imul', 'floor', 'ceil', 'trunc', 'round', 'abs', 'min', 'max', 'clz32', 'sqrt', 'fround']);
-
-/** The characters a token may be made of, beyond identifiers and numbers. */
-const PUNCT = new Set('{}()[];,:?.+-*/%&|^~!<>='.split(''));
+export { AccelValidationError, compileAccelSource, validateAccelSource };
 
 const VIEW_CTORS: Array<
   | Int8ArrayConstructor
@@ -139,166 +80,6 @@ type Compiled = {
   /** Set on a made function: what it was made from, to remake it after growth. */
   madeFrom?: { outer: number; bindings: Binding[] };
 };
-
-export class AccelValidationError extends Error {}
-
-/**
- * Validate a function's parameter names and body against the closed language.
- * Throws {@link AccelValidationError} with the reason on the first violation.
- */
-export function validateAccelSource(params: string[], body: string): void {
-  const ident = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-  const allowed = new Set<string>(KEYWORDS);
-  for (const p of params) {
-    if (!ident.test(p)) throw new AccelValidationError(`parameter ${JSON.stringify(p)} is not an identifier`);
-    if (KEYWORDS.has(p) || RESERVED.has(p)) throw new AccelValidationError(`parameter ${p} shadows a keyword`);
-    allowed.add(p);
-  }
-  if (body.length > 4 * 1024 * 1024) throw new AccelValidationError('body too long');
-  // Only printable ASCII and ordinary whitespace: no quotes, backticks,
-  // backslashes, comments or anything that could open another lexical world.
-  for (let i = 0; i < body.length; i++) {
-    const c = body.charCodeAt(i);
-    if (c === 34 || c === 39 || c === 96 || c === 92 || c === 35 || c === 64) {
-      throw new AccelValidationError(`character ${JSON.stringify(body[i])} at ${i}`);
-    }
-    if (!(c === 9 || c === 10 || c === 13 || (c >= 32 && c <= 126))) {
-      throw new AccelValidationError(`character code ${c} at ${i}`);
-    }
-  }
-  // Tokenize.
-  type Tok = { t: 'id' | 'num' | 'p'; v: string; i: number };
-  const toks: Tok[] = [];
-  let i = 0;
-  const n = body.length;
-  while (i < n) {
-    const c = body.charCodeAt(i);
-    if (c === 32 || c === 9 || c === 10 || c === 13) {
-      i++;
-      continue;
-    }
-    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 36) {
-      let j = i + 1;
-      while (j < n) {
-        const d = body.charCodeAt(j);
-        if ((d >= 65 && d <= 90) || (d >= 97 && d <= 122) || (d >= 48 && d <= 57) || d === 95 || d === 36) j++;
-        else break;
-      }
-      toks.push({ t: 'id', v: body.slice(i, j), i });
-      i = j;
-      continue;
-    }
-    if (c >= 48 && c <= 57) {
-      let j = i + 1;
-      if (c === 48 && j < n && (body[j] === 'x' || body[j] === 'X')) {
-        j++;
-        while (j < n && /[0-9A-Fa-f]/.test(body[j])) j++;
-      } else {
-        while (j < n && /[0-9.]/.test(body[j])) j++;
-        if (j < n && (body[j] === 'e' || body[j] === 'E')) {
-          j++;
-          if (j < n && (body[j] === '+' || body[j] === '-')) j++;
-          while (j < n && /[0-9]/.test(body[j])) j++;
-        }
-      }
-      if (j < n && /[A-Za-z_$]/.test(body[j])) throw new AccelValidationError(`bad number at ${i}`);
-      toks.push({ t: 'num', v: body.slice(i, j), i });
-      i = j;
-      continue;
-    }
-    const ch = body[i];
-    if (!PUNCT.has(ch)) throw new AccelValidationError(`character ${JSON.stringify(ch)} at ${i}`);
-    toks.push({ t: 'p', v: ch, i });
-    i++;
-  }
-  // Comments would have been rejected by `/` followed by `/` or `*` only as
-  // division; make sure no `//` or `/*` sequence survives.
-  for (let k = 0; k + 1 < toks.length; k++) {
-    if (toks[k].v === '/' && (toks[k + 1].v === '/' || toks[k + 1].v === '*') && toks[k + 1].i === toks[k].i + 1) {
-      throw new AccelValidationError(`comment at ${toks[k].i}`);
-    }
-  }
-  // Declarations and labels extend the allowed set; every other identifier
-  // must already be in it.
-  const labels = new Set<string>();
-  for (let k = 0; k < toks.length; k++) {
-    const tok = toks[k];
-    if (tok.t !== 'id') continue;
-    const prev = k > 0 ? toks[k - 1] : null;
-    const next = k + 1 < toks.length ? toks[k + 1] : null;
-    if (tok.v === 'Math') {
-      if (
-        !(
-          next &&
-          next.v === '.' &&
-          toks[k + 2] &&
-          MATH_PURE.has(toks[k + 2].v) &&
-          toks[k + 3] &&
-          toks[k + 3].v === '('
-        )
-      ) {
-        throw new AccelValidationError(`Math member other than a pure function call at ${tok.i}`);
-      }
-      k += 2; // skip `.name`
-      continue;
-    }
-    if (prev && prev.v === '.') throw new AccelValidationError(`member access at ${tok.i}`);
-    if (next && next.v === '.') throw new AccelValidationError(`member access at ${tok.i}`);
-    if (tok.v === 'let' || tok.v === 'var' || tok.v === 'const') {
-      // Declarator list: name [= initializer] {, name [= initializer]} ;
-      let m = k + 1;
-      for (;;) {
-        const name = toks[m];
-        if (!name || name.t !== 'id' || KEYWORDS.has(name.v) || RESERVED.has(name.v)) {
-          throw new AccelValidationError(`bad declaration at ${tok.i}${name ? ` (${name.v})` : ''}`);
-        }
-        allowed.add(name.v);
-        m++;
-        if (toks[m] && toks[m].v === '=') {
-          // Skip the initializer to the next top-level `,` or `;`.
-          let depth = 0;
-          m++;
-          while (m < toks.length) {
-            const v = toks[m].v;
-            if (v === '(' || v === '[' || v === '{') depth++;
-            else if (v === ')' || v === ']' || v === '}') depth--;
-            else if (depth === 0 && (v === ',' || v === ';')) break;
-            m++;
-          }
-        }
-        if (toks[m] && toks[m].v === ',') {
-          m++;
-          continue;
-        }
-        break;
-      }
-      continue;
-    }
-    if (tok.v === 'function') {
-      // Only an anonymous function expression: `function ( params ) {`.
-      let m = k + 1;
-      if (!toks[m] || toks[m].v !== '(') throw new AccelValidationError(`named function at ${tok.i}`);
-      m++;
-      while (toks[m] && toks[m].v !== ')') {
-        if (toks[m].t === 'id' && !KEYWORDS.has(toks[m].v) && !RESERVED.has(toks[m].v)) allowed.add(toks[m].v);
-        else if (toks[m].v !== ',') throw new AccelValidationError(`bad function parameter at ${toks[m].i}`);
-        m++;
-      }
-      continue;
-    }
-    if (KEYWORDS.has(tok.v)) continue;
-    // A label: `name :` at a statement start, or after break/continue.
-    if (next && next.v === ':' && (!prev || prev.v === '{' || prev.v === ';' || prev.v === '}')) {
-      labels.add(tok.v);
-      continue;
-    }
-    if (prev && (prev.v === 'break' || prev.v === 'continue')) {
-      if (!labels.has(tok.v)) throw new AccelValidationError(`unknown label ${tok.v} at ${tok.i}`);
-      continue;
-    }
-    if (!allowed.has(tok.v)) throw new AccelValidationError(`identifier ${tok.v} at ${tok.i}`);
-  }
-}
 
 /**
  * Create the bridge object for `Engine.setAccelBridge`.
@@ -414,10 +195,12 @@ export function createAccelHost(opts: {
       if (!Array.isArray(params) || !params.every((p) => typeof p === 'string')) {
         throw new Error('accel: parameters must be an array of names');
       }
-      validateAccelSource(params as string[], body);
+      // What compiles is the validator's re-emission of the body, not the
+      // body: nothing the parse did not accept can reach the engine.
+      const source = compileAccelSource(params as string[], body);
       // Strict mode: an assignment the validator somehow let through cannot
       // create a global, and `this` is undefined.
-      const fn = new Function(...(params as string[]), '"use strict";' + body) as Compiled['fn'];
+      const fn = new Function(...(params as string[]), '"use strict";' + source) as Compiled['fn'];
       fns.push({ fn, params: params as string[] });
       return fns.length - 1;
     },

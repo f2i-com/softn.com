@@ -271,6 +271,14 @@ export interface XDBBundleData {
     created_at: string;
     updated_at: string;
   }>;
+  /**
+   * Why the file did not open as the collection it claims to be, when it did
+   * not: it is not JSON, not an object, or its `records` is not a list. The
+   * records are then empty, as before — but a host can now tell the author
+   * their seed data was never read instead of showing an empty collection
+   * that looks like a working one.
+   */
+  warning?: string;
 }
 
 // ============================================================================

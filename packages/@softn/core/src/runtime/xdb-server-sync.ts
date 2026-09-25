@@ -16,11 +16,19 @@ export interface ServerSyncConfig {
   wsUrl: string;
   /** App version (sent during auth handshake) */
   appVersion: string;
-  /** Optional auth token */
+  /**
+   * Optional auth token (the host's SOFTN_AUTH_TOKEN). It is never put on
+   * the socket or in its URL: the client trades it at `<wsUrl>/ticket` for a
+   * short-lived single-use ticket and connects with `?ticket=`.
+   */
   token?: string;
   /** Collections to subscribe to (default: all known collections) */
   collections?: string[];
-  /** Reconnection delay in ms (default: 2000) */
+  /**
+   * First reconnection delay in ms (default: 2000). Each failed attempt
+   * doubles it, with jitter, up to a minute; a successful connection starts
+   * over. A host's `Retry-After` is honoured when it asks for longer.
+   */
   reconnectDelay?: number;
   /** Allow insecure ws:// connections (default: false, only for local development) */
   allowInsecureWs?: boolean;
@@ -47,7 +55,7 @@ export interface ServerSyncStatus {
 // ── Client → Server messages ─────────────────────────────
 
 type ClientMessage =
-  | { type: 'auth'; token?: string; appVersion: string }
+  | { type: 'auth'; appVersion: string }
   | { type: 'sync_pull'; collections: string[] }
   | { type: 'sync_push'; ops: SyncOp[] }
   | { type: 'subscribe'; collections: string[] };
@@ -59,8 +67,42 @@ type ServerMessage =
   | { type: 'auth_error'; reason: string }
   | { type: 'sync_state'; collection: string; records: ServerRecord[] }
   | { type: 'sync_delta'; ops: SyncOp[] }
+  | { type: 'sync_ack'; opIds: string[] }
   | { type: 'sync_reject'; opId: string; reason: string }
+  | { type: 'sync_retry'; opIds: string[]; reason: string }
   | { type: 'error'; message: string };
+
+/** The longest wait between reconnection attempts or push retries. */
+const MAX_RETRY_DELAY = 60_000;
+/**
+ * Ops and serialized bytes per `sync_push`. The host refuses a push of more
+ * than 1,000 ops and closes the socket on a message over 4 MiB, so a queue
+ * that grew while offline has to go out in pieces or never go out at all.
+ */
+const MAX_OPS_PER_PUSH = 500;
+const MAX_PUSH_BYTES = 1024 * 1024;
+
+/**
+ * Exponential backoff with "equal jitter": between half and all of
+ * `base * 2^attempt`, capped. Many clients cut off at once (a host restart)
+ * then come back spread out instead of in one wave.
+ */
+export function backoffDelay(
+  base: number,
+  attempt: number,
+  random: () => number = Math.random
+): number {
+  const ceiling = Math.min(MAX_RETRY_DELAY, base * 2 ** Math.min(attempt, 16));
+  return Math.round(ceiling / 2 + random() * (ceiling / 2));
+}
+
+/** `Retry-After` in milliseconds, when it is a number of seconds. */
+function retryAfterMs(response: Response): number {
+  const seconds = Number(response.headers?.get?.('Retry-After'));
+  return Number.isFinite(seconds) && seconds > 0
+    ? Math.min(seconds * 1000, 10 * MAX_RETRY_DELAY)
+    : 0;
+}
 
 interface ServerRecord {
   id: string;
@@ -68,6 +110,24 @@ interface ServerRecord {
   data: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+}
+
+// ── Tickets ──────────────────────────────────────────────
+
+/**
+ * Where a host issues sync tickets: the sync URL's own path plus `/ticket`,
+ * over HTTP(S), with no query. `wss://h/sync` is `https://h/sync/ticket`, and
+ * a multi-tenant host's `wss://h/app/sync` is `https://h/app/sync/ticket`.
+ */
+export function syncTicketUrl(wsUrl: string): string {
+  const base = typeof location === 'undefined' ? undefined : location.href;
+  const url = new URL(wsUrl, base);
+  if (url.protocol === 'wss:') url.protocol = 'https:';
+  else if (url.protocol === 'ws:') url.protocol = 'http:';
+  url.pathname = url.pathname.replace(/\/+$/, '') + '/ticket';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
 }
 
 // ── XDB Server Sync ──────────────────────────────────────
@@ -79,12 +139,30 @@ export class XDBServerSync {
   private clientId: string | null = null;
   private serverTime: string | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Failed connection attempts since the last successful one. */
+  private reconnectAttempts = 0;
+  /** Ops not yet sent. */
   private pendingOps = new Map<string, SyncOp>();
+  /**
+   * Ops sent and not yet answered. The host answers every op: `sync_ack`
+   * (stored), `sync_reject` (refused for good) or `sync_retry` (not stored
+   * this time — a full disk, a failing hook, a busy database). Until then an
+   * op is not done; dropping it on send lost every retried op.
+   */
+  private inflightOps = new Map<string, SyncOp>();
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempts = 0;
   private opCounter = 0;
   private connected = false;
   private destroyed = false;
   private xdbUnsubscribe: (() => void) | null = null;
   private initialPullDone = false;
+  /**
+   * The ticket request in flight, by number. A disconnect() moves the number
+   * on, so a ticket that arrives after it opens nothing.
+   */
+  private ticketAttempt = 0;
+  private ticketPending = false;
 
   /** Event listeners */
   private listeners = {
@@ -101,7 +179,7 @@ export class XDBServerSync {
 
   /** Start the sync connection. */
   connect(): void {
-    if (this.ws) return;
+    if (this.ws || this.ticketPending) return;
     this.destroyed = false;
     // Queue local mutations from now on, not from the first auth_ok: what the
     // app writes before the socket is up is exactly what "accumulated while
@@ -117,11 +195,18 @@ export class XDBServerSync {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.requeueInflight();
     if (this.xdbUnsubscribe) {
       this.xdbUnsubscribe();
       this.xdbUnsubscribe = null;
     }
     const wasConnected = this.connected;
+    this.ticketAttempt++;
+    this.ticketPending = false;
     if (this.ws) {
       // Cleared before close(): the socket's own onclose sees it is no longer
       // the current socket and leaves the state alone, so a connect() that
@@ -164,11 +249,76 @@ export class XDBServerSync {
     if (/^ws:\/\//i.test(url) && !this.config.allowInsecureWs) {
       const host = new URL(url.replace(/^ws:\/\//i, 'http://')).hostname;
       if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1' && host !== '[::1]') {
-        this.listeners.error.forEach((fn) => fn('Insecure ws:// connections are blocked outside localhost. Use wss:// or set allowInsecureWs for development.'));
+        this.listeners.error.forEach((fn) =>
+          fn(
+            'Insecure ws:// connections are blocked outside localhost. Use wss:// or set allowInsecureWs for development.'
+          )
+        );
         return;
       }
     }
 
+    // A host with a token authenticates the handshake itself, before any
+    // message: the socket used to open bare and send the token in a first
+    // `auth` message, which the host never reads, so every client with a
+    // token was refused. The token buys a ticket; the ticket opens the socket.
+    if (this.config.token) {
+      void this.connectWithTicket(url, this.config.token);
+      return;
+    }
+    this.openSocket(url);
+  }
+
+  /** Trade the token for a ticket, then open the socket with it. */
+  private async connectWithTicket(url: string, token: string): Promise<void> {
+    const attempt = ++this.ticketAttempt;
+    this.ticketPending = true;
+    const stale = () => this.destroyed || attempt !== this.ticketAttempt;
+    let ticket: unknown;
+    try {
+      const response = await fetch(syncTicketUrl(url), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'omit',
+        cache: 'no-store',
+      });
+      if (stale()) return;
+      if (!response.ok) {
+        this.ticketPending = false;
+        this.listeners.error.forEach((fn) =>
+          fn(`The sync host refused a ticket (HTTP ${response.status}).`)
+        );
+        // A refused token stays refused; anything else may be passing — a
+        // 429 or 503 says how long to wait, and waiting less only earns
+        // another one.
+        if (response.status !== 401 && response.status !== 403) {
+          this.scheduleReconnect(retryAfterMs(response));
+        }
+        return;
+      }
+      ticket = ((await response.json()) as { ticket?: unknown } | null)?.ticket;
+    } catch {
+      if (stale()) return;
+      this.ticketPending = false;
+      this.listeners.error.forEach((fn) => fn('The sync host could not be reached for a ticket.'));
+      this.scheduleReconnect();
+      return;
+    }
+    if (stale()) return;
+    this.ticketPending = false;
+    if (typeof ticket !== 'string' || ticket === '') {
+      this.listeners.error.forEach((fn) =>
+        fn('The sync host answered the ticket request without a ticket.')
+      );
+      this.scheduleReconnect();
+      return;
+    }
+    const target = new URL(url, typeof location === 'undefined' ? undefined : location.href);
+    target.searchParams.set('ticket', ticket);
+    this.openSocket(target.toString());
+  }
+
+  private openSocket(url: string): void {
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
@@ -184,11 +334,9 @@ export class XDBServerSync {
     // reconnect, leaving two live sockets behind.
     ws.onopen = () => {
       if (this.ws !== ws) return;
-      this.send({
-        type: 'auth',
-        token: this.config.token,
-        appVersion: this.config.appVersion,
-      });
+      // The handshake was authenticated before the upgrade; this names the
+      // app's version and nothing else. The token is never sent on the socket.
+      this.send({ type: 'auth', appVersion: this.config.appVersion });
     };
 
     ws.onmessage = (event) => {
@@ -214,6 +362,8 @@ export class XDBServerSync {
       if (this.ws !== ws) return;
       this.connected = false;
       this.ws = null;
+      // Whatever was unanswered goes again on the next connection.
+      this.requeueInflight();
       this.listeners.disconnect.forEach((fn) => fn());
       if (!this.destroyed) {
         this.scheduleReconnect();
@@ -231,6 +381,7 @@ export class XDBServerSync {
         this.clientId = msg.clientId;
         this.serverTime = msg.serverTime;
         this.connected = true;
+        this.reconnectAttempts = 0;
         this.listeners.connect.forEach((fn) => fn());
         this.onAuthenticated();
         break;
@@ -248,14 +399,63 @@ export class XDBServerSync {
         this.handleSyncDelta(msg.ops);
         break;
 
+      case 'sync_ack':
+        for (const id of Array.isArray(msg.opIds) ? msg.opIds : []) this.inflightOps.delete(id);
+        this.retryAttempts = 0;
+        break;
+
       case 'sync_reject':
         this.handleSyncReject(msg.opId, msg.reason);
         break;
 
+      case 'sync_retry':
+        this.handleSyncRetry(Array.isArray(msg.opIds) ? msg.opIds : []);
+        break;
+
       case 'error':
         this.listeners.error.forEach((fn) => fn(msg.message));
+        // A push the host could not take at all ("server busy", "timed
+        // out") names no ops. Anything sent and unanswered is tried again
+        // later; replaying one that did land is harmless (create and update
+        // merge by record id, delete is a delete).
+        if (this.inflightOps.size > 0) {
+          this.requeueInflight();
+          this.scheduleRetry();
+        }
         break;
     }
+  }
+
+  /** Put unanswered ops back at the front of the queue, in the order sent. */
+  private requeueInflight(): void {
+    if (this.inflightOps.size === 0) return;
+    this.pendingOps = new Map([...this.inflightOps, ...this.pendingOps]);
+    this.inflightOps.clear();
+  }
+
+  /** The host did not store these ops this time: queue them and try later. */
+  private handleSyncRetry(opIds: string[]): void {
+    const retry = new Map<string, SyncOp>();
+    for (const id of opIds) {
+      const op = this.inflightOps.get(id);
+      if (op) {
+        this.inflightOps.delete(id);
+        retry.set(id, op);
+      }
+    }
+    if (retry.size === 0) return;
+    this.pendingOps = new Map([...retry, ...this.pendingOps]);
+    this.scheduleRetry();
+  }
+
+  /** Flush again after a backoff, rather than straight into the same refusal. */
+  private scheduleRetry(): void {
+    if (this.destroyed || this.retryTimer) return;
+    const delay = backoffDelay(this.config.reconnectDelay ?? 2000, this.retryAttempts++);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.flushPendingOps();
+    }, delay);
   }
 
   /** Called after successful auth — subscribe, pull state, flush offline ops. */
@@ -284,19 +484,38 @@ export class XDBServerSync {
   }
 
   /**
-   * Push every queued op and forget the ones that went out. The protocol has
-   * no ack — a `sync_reject` is the only answer an op ever gets — so an op
-   * is done once the socket has taken it. Keeping it made every reconnect
-   * replay the whole history of the session.
+   * Push every queued op, in pieces the host accepts, and hold each until
+   * the host answers it (see `inflightOps`). An acknowledged op is done, so a
+   * reconnect replays only what was never answered, not the session.
    */
   private flushPendingOps(): void {
     if (!this.connected || !this.initialPullDone || this.pendingOps.size === 0) return;
-    const ops = Array.from(this.pendingOps.values());
-    // Stamped now: an op queued before auth knew no client id.
-    for (const op of ops) op.clientId = this.clientId ?? op.clientId;
-    if (this.send({ type: 'sync_push', ops })) {
-      for (const op of ops) this.pendingOps.delete(op.id);
+    // A retry is waiting out a backoff; new ops go with it.
+    if (this.retryTimer) return;
+    let batch: SyncOp[] = [];
+    let bytes = 0;
+    const sendBatch = (): boolean => {
+      if (batch.length === 0) return true;
+      if (!this.send({ type: 'sync_push', ops: batch })) return false;
+      for (const op of batch) {
+        this.pendingOps.delete(op.id);
+        this.inflightOps.set(op.id, op);
+      }
+      batch = [];
+      bytes = 0;
+      return true;
+    };
+    for (const op of Array.from(this.pendingOps.values())) {
+      // Stamped now: an op queued before auth knew no client id.
+      op.clientId = this.clientId ?? op.clientId;
+      const size = JSON.stringify(op).length + 1;
+      if (batch.length > 0 && (batch.length >= MAX_OPS_PER_PUSH || bytes + size > MAX_PUSH_BYTES)) {
+        if (!sendBatch()) return;
+      }
+      batch.push(op);
+      bytes += size;
     }
+    sendBatch();
   }
 
   /** Replace local collection data with the server's authoritative state. */
@@ -353,6 +572,7 @@ export class XDBServerSync {
   /** Handle a rejected sync operation — remove from pending and notify. */
   private handleSyncReject(opId: string, reason: string): void {
     this.pendingOps.delete(opId);
+    this.inflightOps.delete(opId);
     this.listeners.reject.forEach((fn) => fn(opId, reason));
     // TODO: rollback optimistic update
   }
@@ -408,9 +628,16 @@ export class XDBServerSync {
     return false;
   }
 
-  private scheduleReconnect(): void {
+  /**
+   * Try again after a backoff: `reconnectDelay` doubling per failed attempt,
+   * with jitter, up to a minute — and never sooner than a host's
+   * `Retry-After`. A fixed delay kept a flapping client at 30 ticket
+   * requests a minute, past the host's limit, into an endless run of 429s.
+   */
+  private scheduleReconnect(atLeastMs = 0): void {
     if (this.destroyed || this.reconnectTimer) return;
-    const delay = this.config.reconnectDelay ?? 2000;
+    const backoff = backoffDelay(this.config.reconnectDelay ?? 2000, this.reconnectAttempts++);
+    const delay = Math.max(backoff, atLeastMs);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.destroyed) {

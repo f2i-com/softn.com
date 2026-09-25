@@ -22,17 +22,43 @@
  * ZIPP_SUMS_SHA256 is the digest the release's SHA256SUMS must have; ZIPP_OUT
  * installs somewhere other than wasm-zipp/.
  *
- * The web-python bundle is the engine: JavaScript and Python in one module,
- * with a 16 MiB stack. It must match ZIPP's top-level SHA256SUMS, every file
- * taken from it the bundle's own SHA256SUMS, BUILD-INFO.txt must describe that
- * variant, and the module itself must report the release's commit. Nothing is
- * post-processed: a changed byte breaks that chain.
+ * The web-python-base bundle is the engine: JavaScript and Python in one
+ * module, with a 16 MiB stack, and no torch built in (BUILD-INFO.txt
+ * `variant=javascript-python-base`). It must match ZIPP's top-level
+ * SHA256SUMS, every file taken from it the bundle's own SHA256SUMS,
+ * BUILD-INFO.txt must describe that variant, and the module itself must
+ * report the release's commit and, through pythonPackages(), that torch is not
+ * built in. Nothing is post-processed: a changed byte breaks that chain.
+ * (ZIPP's complete web-python bundle, torch built in, is not taken: the same
+ * engine plus torch, which every app would download whether it imports torch
+ * or not.)
+ *
+ * The same release's web-torch bundle is installed beside it, into
+ * `wasm-zipp-torch/`, as the engine's torch PACKAGE: `zipp_torch.wasm` (the
+ * package archive and its tensor kernels, a module with no imports of its
+ * own) and `zipp_torch.js`, ZIPP's loader, whose addTorch/addTorchSync hand
+ * the archive to the engine's addPythonPackage. Softn's runtime adds it, once
+ * per page, only for an app whose manifest declares torch. It is held to the
+ * same top-level SHA256SUMS and its own inner one; BUILD-INFO.txt must say
+ * `variant=torch`, `pairs-with=` exactly the engine bundle installed (the
+ * engine's ABI check refuses a package built against another engine, so a
+ * mispaired one would install and then fail in every browser) and the
+ * engine's commit; and at install (verifyPackage) the engine is loaded under
+ * its glue, the loader is run over the package with addTorchSync, the engine
+ * must then list torch in pythonPackages().installed, and a two-line
+ * `import torch` project must run and answer. --check re-verifies digests,
+ * recorded fields and the package module's shape (no imports, the package
+ * exports) and loads nothing. Installed: the module, the loader, BUILD-INFO.txt,
+ * the bundle's SHA256SUMS, a SOURCE.json of its own and `zipp_torch.d.ts`,
+ * the loader's TypeScript declarations, which ZIPP does not ship: generated
+ * here (TORCH_DECLARATIONS), recorded by digest and held to that exact text.
+ * The primary SOURCE.json gains `packages.torch` naming it.
  *
  * The same release's JavaScript-only web bundle is installed beside it, into
- * `wasm-zipp-web/`, as a VARIANT of that engine: a third smaller, no Python, a
+ * `wasm-zipp-web/`, as a VARIANT of that engine: much smaller, no Python, a
  * 1 MiB stack, otherwise the same VM. It is held to the same top-level
  * SHA256SUMS and its own inner one, and then to the primary: built from the
- * same commit, asking the host for exactly the same imports, exporting nothing
+ * same commit, asking the host for nothing the primary does not, exporting nothing
  * the primary does not — so it can run under the primary's glue, which is the
  * only glue Softn ships — and, loaded under that glue, reporting exactly
  * ['javascript'] with its Python entry points refusing. That load happens at
@@ -40,18 +66,20 @@
  * the import/export subset over the installed bytes and loads nothing. Only its module,
  * BUILD-INFO.txt, PROFILE.json and SHA256SUMS are installed, with a SOURCE.json
  * of its own; its glue is recorded by digest for provenance and not shipped.
- * The primary SOURCE.json gains `variants.web` naming it. An install without
- * the variant is refused: one release, both builds, or nothing.
+ * The primary SOURCE.json gains `variants.web` naming it.
+ *
+ * An install without the variant or the torch package is refused: one
+ * release, all three bundles, or nothing.
  *
  * SOURCE.json records the release, both SHA256SUMS digests and where the
- * third-party notices came from. The bundle ships none, so the RustPython and
- * Unicode notices come from zipp-notices/ ('softn-curated') until it does.
+ * third-party notices came from. The bundle ships none, so the Unicode
+ * notice comes from zipp-notices/ ('softn-curated') until it does.
  *
  * Installs into one folder take turns under `.wasm-zipp.lock` beside it (a
  * dead install's lock is taken over by one waiter at a time, under
  * `.wasm-zipp.lock.break`), and are staged there and swapped in whole; the
- * variant folder is written under the same lock, before the primary, so the
- * SOURCE.json that names it lands last.
+ * variant and package folders are written under the same lock, before the
+ * primary, so the SOURCE.json that names them lands last.
  *
  * Node built-ins only at the top, plus the repository's own WebAssembly
  * section reader: fflate is imported where a bundle is unzipped, so --check
@@ -62,7 +90,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { isZippEngineWasm, wasmExportNames, wasmImportNames } from '../../../../scripts/lib/zipp-engine-copy.mjs';
+import { ZIPP_TORCH_EXPORTS, isZippEngineWasm, wasmExportNames, wasmImportNames } from '../../../../scripts/lib/zipp-engine-copy.mjs';
 
 export const REPOSITORY = 'https://github.com/f2i-com/zipp.org';
 const CORE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -72,7 +100,7 @@ export const CURATED_NOTICES = path.join(CORE, 'zipp-notices', 'THIRD_PARTY_LICE
 export const CACHE_DIR = path.join(ROOT, '.zipp-release');
 export const CARGO_TOML = path.join(ROOT, 'apps/softn-host-rust/Cargo.toml');
 
-export const VARIANT = 'javascript-python';
+export const VARIANT = 'javascript-python-base';
 export const LANGUAGES = ['javascript', 'python'];
 export const STACK_BYTES = 16777216;
 export const NOTICES = 'THIRD_PARTY_LICENSES.txt';
@@ -95,6 +123,50 @@ export const VARIANT_INSTALLED_FILES = [...VARIANT_BUNDLE_FILES, 'SOURCE.json'];
 export const variantDir = (dir, id = WEB_VARIANT.id) => path.join(path.dirname(dir), `${path.basename(dir)}-${id}`);
 export const WEB_ENGINE_DIR = variantDir(ENGINE_DIR);
 
+/**
+ * The torch package: what its BUILD-INFO.txt must say, and its files. `id` is
+ * its key in the primary SOURCE.json's `packages`, the suffix of its folder
+ * (`wasm-zipp-torch`) and of its bundle (`zipp-wasm-<v>-web-torch.zip`), and
+ * the Python package name the engine reports once it is added.
+ */
+export const TORCH_PACKAGE = Object.freeze({ id: 'torch', variant: 'torch', artifact: 'zipp_torch.wasm', loader: 'zipp_torch.js', declarations: 'zipp_torch.d.ts' });
+/** Taken from the web-torch bundle byte for byte. */
+export const PACKAGE_BUNDLE_FILES = [TORCH_PACKAGE.artifact, TORCH_PACKAGE.loader, 'BUILD-INFO.txt', 'SHA256SUMS'];
+/** A package install is exactly these: the bundle files, the generated declarations and SOURCE.json. */
+export const PACKAGE_INSTALLED_FILES = [...PACKAGE_BUNDLE_FILES, TORCH_PACKAGE.declarations, 'SOURCE.json'];
+export const packageDir = (dir, id = TORCH_PACKAGE.id) => variantDir(dir, id);
+export const TORCH_ENGINE_DIR = packageDir(ENGINE_DIR);
+/**
+ * The loader's declarations. ZIPP ships `zipp_torch.js` without any, and
+ * @softn/core imports it from TypeScript; written here, so the install is
+ * still exactly what this script produces, and --check holds the file to this
+ * text. What the types say is what the loader does (read it: `install`,
+ * `addTorchSync`, `addTorch`); verifyPackage runs it.
+ */
+export const TORCH_DECLARATIONS = `// Generated by packages/@softn/core/scripts/fetch-zipp-release.mjs (TORCH_DECLARATIONS):
+// the types of ZIPP's zipp_torch.js loader, which ships none. Not part of the
+// ZIPP release; --check holds this file to that text.
+
+/** What the loader needs of the engine's glue: its addPythonPackage. */
+export interface ZippPythonPackageHost {
+  addPythonPackage(archive: Uint8Array, kernels: unknown): string;
+}
+
+/** The engine's report of the package it added, e.g. {"name":"torch","version":"0.0.21","modules":108,"kernels":true}. */
+export interface ZippPythonPackageReport {
+  name: string;
+  version: string;
+  modules?: number;
+  kernels?: boolean;
+}
+
+/** Add the torch package from its module's bytes or compiled module, synchronously. */
+export function addTorchSync(zipp: ZippPythonPackageHost, wasm: BufferSource | WebAssembly.Module): ZippPythonPackageReport;
+
+/** Add the torch package from a URL, a Response, bytes or a compiled module. */
+export function addTorch(zipp: ZippPythonPackageHost, source: string | URL | Response | BufferSource | WebAssembly.Module): Promise<ZippPythonPackageReport>;
+`;
+
 /** A refusal: the release, the bundle or the install is not what it has to be. */
 export class ZippReleaseError extends Error {}
 const refuse = (message) => {
@@ -103,10 +175,11 @@ const refuse = (message) => {
 
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export const isReleaseTag = (tag) => /^v\d+\.\d+\.\d+$/.test(tag ?? '');
-export const bundleName = (version) => `zipp-wasm-${version}-web-python`;
+export const bundleName = (version) => `zipp-wasm-${version}-web-python-base`;
 export const variantBundleName = (version, id = WEB_VARIANT.id) => `zipp-wasm-${version}-${id}`;
-/** Both zips a release must publish, the primary first. */
-const releaseBundles = (version) => [`${bundleName(version)}.zip`, `${variantBundleName(version)}.zip`];
+export const packageBundleName = (version, id = TORCH_PACKAGE.id) => `zipp-wasm-${version}-web-${id}`;
+/** The three zips a release must publish: the engine first, then its web variant and its torch package. */
+const releaseBundles = (version) => [`${bundleName(version)}.zip`, `${variantBundleName(version)}.zip`, `${packageBundleName(version)}.zip`];
 /** Negative, zero or positive as release tag `a` is older than, the same as or newer than `b`. */
 export const compareReleases = (a, b) => {
   const [x, y] = [a, b].map((t) => t.slice(1).split('.').map(Number));
@@ -149,11 +222,46 @@ function buildInfoProblems(info, expected) {
   if (info.version !== expected.version) problems.push(`BUILD-INFO.txt says version ${info.version}, not ${expected.version}`);
   if (!/^[0-9a-f]{40}$/.test(info.commit ?? '')) problems.push(`BUILD-INFO.txt commit "${info.commit}" is not a full 40-hex commit`);
   else if (expected.revision !== undefined && info.commit !== expected.revision) problems.push(`BUILD-INFO.txt commit ${info.commit} is not the recorded revision ${expected.revision}`);
-  if (info.variant !== expected.variant) problems.push(`BUILD-INFO.txt variant is ${info.variant}, not ${expected.variant}${expected.variant === VARIANT ? ' (only the web-python bundle carries Python and the 16 MiB stack)' : ''}`);
+  if (info.variant !== expected.variant) problems.push(`BUILD-INFO.txt variant is ${info.variant}, not ${expected.variant}${expected.variant === VARIANT ? ' (the engine is the web-python-base bundle: Python and the 16 MiB stack, torch as a package)' : ''}`);
   if (!isDeepStrictEqual(buildInfoLanguages(info), expected.languages)) problems.push(`BUILD-INFO.txt languages are ${info.languages}, not ${JSON.stringify(expected.languages)}`);
   if (Number(info['stack-bytes']) !== expected.stackBytes) problems.push(`BUILD-INFO.txt stack-bytes is ${info['stack-bytes']}, not ${expected.stackBytes}`);
   return problems;
 }
+
+/**
+ * What the torch package's BUILD-INFO.txt must say, as problems: the release,
+ * a full commit (the engine's, when `revision` is given), `variant=torch`, and
+ * `pairs-with=` exactly the engine bundle it is added to. It names no
+ * languages or stack: it is not an engine.
+ */
+function packageBuildInfoProblems(info, { version, revision, pairsWith }) {
+  const problems = [];
+  if (info.version !== version) problems.push(`BUILD-INFO.txt says version ${info.version}, not ${version}`);
+  if (!/^[0-9a-f]{40}$/.test(info.commit ?? '')) problems.push(`BUILD-INFO.txt commit "${info.commit}" is not a full 40-hex commit`);
+  else if (revision !== undefined && info.commit !== revision) problems.push(`BUILD-INFO.txt commit ${info.commit} is not the engine's commit ${revision}; a package ships only from the release's own commit`);
+  if (info.variant !== TORCH_PACKAGE.variant) problems.push(`BUILD-INFO.txt variant is ${info.variant}, not ${TORCH_PACKAGE.variant}`);
+  if (info['pairs-with'] !== pairsWith) problems.push(`BUILD-INFO.txt pairs-with is ${info['pairs-with']}, not ${pairsWith}, the engine it is added to`);
+  return problems;
+}
+
+/**
+ * Problems with the torch package's module read from its binary: it imports
+ * nothing (it runs beside the engine with its own memory; anything it asked
+ * the host for, the loader does not give) and exports what the loader reads.
+ */
+export function packageModuleProblems(bytes, { bundle = 'the torch package' } = {}) {
+  const exports = wasmExportNames(bytes);
+  if (exports === null) return [`${bundle} ${TORCH_PACKAGE.artifact} is not a WebAssembly module`];
+  const problems = [];
+  const missing = ZIPP_TORCH_EXPORTS.filter((name) => !exports.includes(name));
+  if (missing.length) problems.push(`${bundle} ${TORCH_PACKAGE.artifact} does not export ${missing.join(', ')}, which its loader reads`);
+  const imports = wasmImportNames(bytes) ?? [];
+  if (imports.length) problems.push(`${bundle} ${TORCH_PACKAGE.artifact} imports ${imports.join(', ')}; the package module imports nothing, and its loader provides nothing`);
+  return problems;
+}
+
+/** The names a pythonPackages() report lists as installed. */
+const installedPackages = (report) => (Array.isArray(report?.installed) ? report.installed.map((entry) => (typeof entry === 'string' ? entry : entry?.name)).filter((name) => typeof name === 'string') : []);
 
 const fail = (what, problems) => {
   if (problems.length) refuse(`${what}:\n  - ${problems.join('\n  - ')}`);
@@ -185,10 +293,10 @@ function readReleaseFile(releaseDir, name) {
   return fs.readFileSync(file);
 }
 
-/** The one web-python version a SHA256SUMS lists. */
+/** The one web-python-base version a SHA256SUMS lists. */
 export function versionFromSums(sums) {
-  const versions = [...parseSums(sums).keys()].map((n) => /^zipp-wasm-(\d+\.\d+\.\d+)-web-python\.zip$/.exec(n)?.[1]).filter(Boolean);
-  if (versions.length !== 1) refuse(`SHA256SUMS lists ${versions.length} web-python bundles; expected exactly one`);
+  const versions = [...parseSums(sums).keys()].map((n) => /^zipp-wasm-(\d+\.\d+\.\d+)-web-python-base\.zip$/.exec(n)?.[1]).filter(Boolean);
+  if (versions.length !== 1) refuse(`SHA256SUMS lists ${versions.length} web-python-base bundles; expected exactly one`);
   return versions[0];
 }
 
@@ -225,7 +333,7 @@ async function downloadSums(tag, { cacheDir, fetchImpl }) {
   }
 }
 
-/** A release's SHA256SUMS must list both of its wasm bundles: the engine and its web variant. */
+/** A release's SHA256SUMS must list the three wasm bundles taken: the engine, its web variant and its torch package. */
 function requireBundlesListed(sums, release, where) {
   const listed = parseSums(sums);
   for (const bundle of releaseBundles(release.slice(1))) {
@@ -235,7 +343,7 @@ function requireBundlesListed(sums, release, where) {
 
 /**
  * The release to take and its top-level SHA256SUMS bytes, which must list the
- * release's web-python bundle and its web bundle. A tag is taken as named; no
+ * release's web-python-base, web and web-torch bundles. A tag is taken as named; no
  * tag means the declared release; `latest` means GitHub's latest release,
  * whose SHA256SUMS must be byte for byte the one under its own tag, so the tag
  * recorded is the release really read.
@@ -314,9 +422,10 @@ async function loadEngine(glue, wasm) {
   return module;
 }
 
-/** What the module reports about itself, from its own glue. */
+/** What the module reports about itself and its Python packages, from its own glue. */
 async function engineProfile(glue, wasm) {
-  return JSON.parse((await loadEngine(glue, wasm)).zippProfile());
+  const module = await loadEngine(glue, wasm);
+  return { profile: JSON.parse(module.zippProfile()), packages: JSON.parse(module.pythonPackages()) };
 }
 
 /** What a loaded module must say to be the release's engine of `languages`, as problems. */
@@ -380,18 +489,24 @@ export async function verifyRelease({ release, sums, zip, expectSumsSha256, cura
   for (const name of BUNDLE_FILES) files.set(name, entries.get(name));
 
   const info = parseBuildInfo(entries.get('BUILD-INFO.txt'));
-  fail(`${bundle} is not the ZIPP ${release} web-python build`, buildInfoProblems(info, { version, variant: VARIANT, languages: LANGUAGES, stackBytes: STACK_BYTES }));
+  fail(`${bundle} is not the ZIPP ${release} web-python-base build`, buildInfoProblems(info, { version, variant: VARIANT, languages: LANGUAGES, stackBytes: STACK_BYTES }));
   bundleProfileFile(entries, bundle, version);
 
   const glue = entries.get('zipp_wasm.js');
   const wasm = entries.get('zipp_wasm_bg.wasm');
   let profile;
+  let packages;
   try {
-    profile = await engineProfile(glue, wasm);
+    ({ profile, packages } = await engineProfile(glue, wasm));
   } catch (error) {
     refuse(`the ${bundle} engine does not load: ${error.message}`);
   }
-  fail(`the ${bundle} engine does not describe itself as ZIPP ${release}`, profileProblems(profile, { version, languages: LANGUAGES, commit: info.commit }));
+  // The base build: torch comes as the release's package, never built in, and nothing is added yet.
+  const packageProblems = [
+    ...(packages?.torchBuiltIn !== false ? [`pythonPackages() torchBuiltIn is ${JSON.stringify(packages?.torchBuiltIn)}, not false; the engine is the build without torch, which comes as the ${packageBundleName(version)} package`] : []),
+    ...(installedPackages(packages).length ? [`pythonPackages() already lists ${installedPackages(packages).join(', ')} as installed in a fresh engine`] : []),
+  ];
+  fail(`the ${bundle} engine does not describe itself as ZIPP ${release}`, [...profileProblems(profile, { version, languages: LANGUAGES, commit: info.commit }), ...packageProblems]);
 
   let noticesSource;
   if (entries.has(NOTICES)) {
@@ -434,21 +549,20 @@ const variantRecord = (source) => ({ bundle: source.bundle, bundleSha256: source
 
 /**
  * Problems with a variant module set beside the primary's: it must ask the host
- * for exactly the same imports and export nothing the primary does not, so the
- * primary's glue — the only glue Softn ships — binds it exactly as it binds
- * the primary. Read from the binaries; nothing is compiled.
+ * for nothing the primary's glue — the only glue Softn ships — does not provide,
+ * and export nothing the primary does not. Instantiation reads only the imports
+ * a module declares, so a variant may import less than the primary (0.0.21's
+ * web build has no torch, so it does not import the torch kernel hook), never
+ * more. Read from the binaries; nothing is compiled.
  */
-export function variantModuleProblems(variantWasm, primaryWasm, { bundle = 'the variant', primary = 'the web-python engine' } = {}) {
+export function variantModuleProblems(variantWasm, primaryWasm, { bundle = 'the variant', primary = 'the engine' } = {}) {
   const problems = [];
   if (!isZippEngineWasm(variantWasm)) return [`${bundle} zipp_wasm_bg.wasm does not export what a ZIPP engine exports (${wasmExportNames(variantWasm) === null ? 'not a WebAssembly module' : 'a module, but not the engine'})`];
   const [imports, primaryImports] = [wasmImportNames(variantWasm), wasmImportNames(primaryWasm)];
-  if (!isDeepStrictEqual(imports, primaryImports)) {
-    const extra = imports.filter((name) => !primaryImports.includes(name));
-    const missing = primaryImports.filter((name) => !imports.includes(name));
-    problems.push(`${bundle} does not import what ${primary} imports${extra.length ? `; it also imports ${extra.join(', ')}` : ''}${missing.length ? `; it lacks ${missing.join(', ')}` : ''}${!extra.length && !missing.length ? ' (the same names in another order)' : ''}, so the web-python glue cannot be known to bind it`);
-  }
+  const extra = imports.filter((name) => !primaryImports.includes(name));
+  if (extra.length) problems.push(`${bundle} imports ${extra.join(', ')}, which ${primary} does not, so the engine's glue cannot be known to bind it`);
   const foreign = wasmExportNames(variantWasm).filter((name) => !wasmExportNames(primaryWasm).includes(name));
-  if (foreign.length) problems.push(`${bundle} exports ${foreign.join(', ')}, which ${primary} does not; a variant runs under the web-python glue and may export nothing that engine lacks`);
+  if (foreign.length) problems.push(`${bundle} exports ${foreign.join(', ')}, which ${primary} does not; a variant runs under the engine's glue and may export nothing that engine lacks`);
   return problems;
 }
 
@@ -481,7 +595,7 @@ export async function verifyVariant({ release, sums, zip, primary, id = WEB_VARI
   const primaryGlue = primary.files.get('zipp_wasm.js');
   // Another build of the same source, not the same build under another name.
   if (sha256(wasm) === primary.source.sha256) refuse(`${bundle} carries the ${primary.source.bundle} module itself (${primary.source.sha256.slice(0, 12)}), not a variant of it`);
-  fail(`${bundle} cannot run under the web-python glue`, variantModuleProblems(wasm, primary.files.get('zipp_wasm_bg.wasm'), { bundle, primary: primary.source.bundle }));
+  fail(`${bundle} cannot run under the engine's glue`, variantModuleProblems(wasm, primary.files.get('zipp_wasm_bg.wasm'), { bundle, primary: primary.source.bundle }));
 
   // Loaded under the glue it will really run under, it must say it is this
   // release's JavaScript-only engine, and every Python entry point must refuse.
@@ -508,7 +622,7 @@ export async function verifyVariant({ release, sums, zip, primary, id = WEB_VARI
       if (!refused) pythonRefusals.push(`${entry} runs on the ${bundle} engine, so it is not the JavaScript-only build`);
     }
   } catch (error) {
-    refuse(`the ${bundle} engine does not load under the web-python glue: ${error.message}`);
+    refuse(`the ${bundle} engine does not load under the engine's glue: ${error.message}`);
   }
   fail(`the ${bundle} engine does not describe itself as the ZIPP ${release} web build`, [...profileProblems(profile, { version, languages: [...expected.languages], commit: info.commit }), ...pythonRefusals]);
 
@@ -539,18 +653,125 @@ export async function verifyVariant({ release, sums, zip, primary, id = WEB_VARI
   return { files, source, record: variantRecord(source) };
 }
 
+/** The `packages.<id>` record the primary SOURCE.json carries for a package: the fields both sides must agree on. */
+const packageRecord = (source) => ({ bundle: source.bundle, bundleSha256: source.bundleSha256, sha256: source.sha256, loaderSha256: source.loaderSha256, variant: source.variant, pairsWith: source.pairsWith, commit: source.commit, engineAbi: source.engineAbi });
+
+/** A small program only an engine with torch can run, and what it answers. */
+const TORCH_PROBE = { files: { 'probe.py': 'import torch\n\ndef answer():\n    return float((torch.tensor([1.0, 2.0]) * 3.0).sum())\n' }, entry: 'probe', call: 'answer', expect: 9 };
+
+/**
+ * Verify the release's web-torch bundle as the torch package of the verified
+ * primary (`verifyRelease`'s result) and return the files of its install with
+ * its SOURCE.json, and the record the primary SOURCE.json carries for it.
+ * Refuses with ZippReleaseError.
+ */
+export async function verifyPackage({ release, sums, zip, primary, id = TORCH_PACKAGE.id }) {
+  const version = release.slice(1);
+  const name = packageBundleName(version, id);
+  const bundle = `${name}.zip`;
+  const bundleSha256 = parseSums(sums).get(bundle);
+  if (!bundleSha256) refuse(`the ${release} SHA256SUMS does not list ${bundle}`);
+  if (sha256(zip) !== bundleSha256) refuse(`${bundle} does not match the ${release} SHA256SUMS`);
+
+  const { entries } = await openBundle({ zip, bundle, version, name, taken: PACKAGE_BUNDLE_FILES });
+  const files = new Map();
+  for (const file of PACKAGE_BUNDLE_FILES) files.set(file, entries.get(file));
+
+  const info = parseBuildInfo(entries.get('BUILD-INFO.txt'));
+  const pairsWith = primary.source.bundle.replace(/\.zip$/, '');
+  // Refused for its own facts first, and for its commit before the module is asked anything.
+  fail(`${bundle} is not the ZIPP ${release} torch package of ${primary.source.bundle}`, packageBuildInfoProblems(info, { version, pairsWith }));
+  if (info.commit !== primary.source.revision) refuse(`${bundle} is built from commit ${info.commit}, not ${primary.source.revision} like ${primary.source.bundle}; a package ships only from the release's own commit`);
+
+  const wasm = entries.get(TORCH_PACKAGE.artifact);
+  const loader = entries.get(TORCH_PACKAGE.loader);
+  fail(`${bundle} is not a torch package module`, packageModuleProblems(wasm, { bundle }));
+
+  // The pairing proven, not just declared: the engine loaded under its glue,
+  // the package added by ZIPP's own loader, and torch then really imported.
+  const problems = [];
+  let engineAbi;
+  try {
+    const engine = await loadEngine(primary.files.get('zipp_wasm.js'), primary.files.get('zipp_wasm_bg.wasm'));
+    const loaderModule = await import(`data:text/javascript;base64,${Buffer.concat([loader, Buffer.from(`\n// ${randomBytes(8).toString('hex')}\n`)]).toString('base64')}`);
+    if (typeof loaderModule.addTorchSync !== 'function' || typeof loaderModule.addTorch !== 'function') refuse(`${bundle} ${TORCH_PACKAGE.loader} does not export addTorch and addTorchSync`);
+    let report;
+    try {
+      report = loaderModule.addTorchSync(engine, wasm);
+    } catch (error) {
+      refuse(`the ${primary.source.bundle} engine refuses the ${bundle} package: ${error.message}`);
+    }
+    if (report?.name !== id) problems.push(`addTorchSync() reports the package ${JSON.stringify(report?.name)}, not ${id}`);
+    if (report?.version !== version) problems.push(`addTorchSync() reports version ${JSON.stringify(report?.version)}, not ${version}`);
+    const after = JSON.parse(engine.pythonPackages());
+    engineAbi = after.engineAbi;
+    if (!installedPackages(after).includes(id)) problems.push(`pythonPackages() does not list ${id} as installed after addTorchSync()`);
+    if (typeof engineAbi !== 'string' || !/^[0-9a-f]+$/.test(engineAbi)) problems.push(`pythonPackages() engineAbi ${JSON.stringify(engineAbi)} is not a hex digest`);
+    const probe = new engine.Engine();
+    try {
+      probe.initPythonProject(TORCH_PROBE.files, TORCH_PROBE.entry, []);
+      const answer = probe.pythonCall(TORCH_PROBE.call, []);
+      if (answer !== TORCH_PROBE.expect) problems.push(`an \`import torch\` project answers ${JSON.stringify(answer)}, not ${TORCH_PROBE.expect}`);
+    } catch (error) {
+      problems.push(`an \`import torch\` project does not run on the engine with the package added: ${error.message}`);
+    } finally {
+      try {
+        probe.dispose?.();
+        probe.free?.();
+      } catch {}
+    }
+  } catch (error) {
+    if (error instanceof ZippReleaseError) throw error;
+    refuse(`the ${bundle} package does not load into the ${primary.source.bundle} engine: ${error.message}`);
+  }
+  fail(`the ${bundle} package does not give the ${primary.source.bundle} engine torch`, problems);
+
+  const declarations = Buffer.from(TORCH_DECLARATIONS);
+  files.set(TORCH_PACKAGE.declarations, declarations);
+  const source = {
+    repository: REPOSITORY,
+    release,
+    version,
+    revision: info.commit,
+    build: 'release',
+    bundle,
+    bundleSha256,
+    sumsSha256: sha256(sums),
+    variant: info.variant,
+    pairsWith: info['pairs-with'],
+    rustc: info.rustc,
+    license: 'Apache-2.0',
+    artifact: TORCH_PACKAGE.artifact,
+    sha256: sha256(wasm),
+    loader: TORCH_PACKAGE.loader,
+    loaderSha256: sha256(loader),
+    // Softn's, not the release's: the loader's types, generated here.
+    declarations: { file: TORCH_PACKAGE.declarations, source: 'softn-generated', sha256: sha256(declarations) },
+    commit: info.commit,
+    // The engine ABI the package was accepted under (pythonPackages().engineAbi).
+    engineAbi,
+    // The engine this package is added to.
+    primary: { bundle: primary.source.bundle, sha256: primary.source.sha256, glueSha256: primary.source.glueSha256 },
+  };
+  files.set('SOURCE.json', Buffer.from(`${JSON.stringify(source, null, 2)}\n`));
+  return { files, source, record: packageRecord(source) };
+}
+
 /**
  * Verify a release's bundles all the way down: the primary engine, then its
- * web variant against it. Returns both installs' files, with the primary
- * SOURCE.json carrying `variants.web`. Refuses with ZippReleaseError.
+ * web variant and its torch package against it. Returns the three installs'
+ * files, with the primary SOURCE.json carrying `variants.web` and
+ * `packages.torch`. Refuses with ZippReleaseError.
  */
-export async function verifyReleaseBundles({ release, sums, zip, variantZip, expectSumsSha256, curatedNotices }) {
+export async function verifyReleaseBundles({ release, sums, zip, variantZip, packageZip, expectSumsSha256, curatedNotices }) {
   const primary = await verifyRelease({ release, sums, zip, expectSumsSha256, curatedNotices });
   const variant = await verifyVariant({ release, sums, zip: variantZip, primary });
-  // Additive, and last: every key before it is byte for byte what it was.
+  const torch = await verifyPackage({ release, sums, zip: packageZip, primary });
+  // Additive, and last: every key before them is byte for byte what it was.
   primary.source.variants = { [WEB_VARIANT.id]: variant.record };
+  primary.source.packages = { [TORCH_PACKAGE.id]: torch.record };
   primary.files.set('SOURCE.json', Buffer.from(`${JSON.stringify(primary.source, null, 2)}\n`));
-  return { primary, variant };
+  return { primary, variant, torch };
 }
 
 // Windows refuses a rename now and then while a scanner holds a handle.
@@ -766,18 +987,20 @@ export function writeInstall(dir, files) {
 async function installReleaseLocked({ dir, tag, latest, releaseDir, cargoToml, cacheDir, expectSumsSha256, fetch: fetchImpl = globalThis.fetch, curatedNotices, log = console.log, assertHeld = () => {} }) {
   const { release, sums } = await resolveRelease({ tag, latest, releaseDir, cargoToml, cacheDir, fetch: fetchImpl });
   if (expectSumsSha256 && sha256(sums) !== expectSumsSha256.toLowerCase()) refuse(`the ${release} SHA256SUMS has sha256 ${sha256(sums)}; ZIPP_SUMS_SHA256 says ${expectSumsSha256}`);
-  const [bundle, variantBundle] = releaseBundles(release.slice(1));
-  log(`Taking ${bundle} and ${variantBundle} from ZIPP ${release}${releaseDir ? ` in ${releaseDir}` : ''} ...`);
+  const [bundle, variantBundle, packageBundle] = releaseBundles(release.slice(1));
+  log(`Taking ${bundle}, ${variantBundle} and ${packageBundle} from ZIPP ${release}${releaseDir ? ` in ${releaseDir}` : ''} ...`);
   const zip = await loadBundle({ release, sums, name: bundle, releaseDir, cacheDir, fetch: fetchImpl });
   const variantZip = await loadBundle({ release, sums, name: variantBundle, releaseDir, cacheDir, fetch: fetchImpl });
-  const { primary, variant } = await verifyReleaseBundles({ release, sums, zip, variantZip, expectSumsSha256, curatedNotices });
+  const packageZip = await loadBundle({ release, sums, name: packageBundle, releaseDir, cacheDir, fetch: fetchImpl });
+  const { primary, variant, torch } = await verifyReleaseBundles({ release, sums, zip, variantZip, packageZip, expectSumsSha256, curatedNotices });
   assertHeld();
-  // The variant first: the primary's SOURCE.json is what says the variant is there.
+  // The variant and the package first: the primary's SOURCE.json is what says they are there.
   writeInstall(variantDir(dir), variant.files);
+  writeInstall(packageDir(dir), torch.files);
   writeInstall(dir, primary.files);
   // What landed on disk, not what was meant to.
   const source = checkEngine(dir, { curatedNotices });
-  log(`Installed ZIPP ${release} (${source.revision.slice(0, 8)}) into ${rel(dir)}; engine sha256 ${source.sha256}; web variant sha256 ${variant.source.sha256} into ${rel(variantDir(dir))}${source.notices.source === 'softn-curated' ? `; notices: the curated copy (${release} ships none)` : ''}`);
+  log(`Installed ZIPP ${release} (${source.revision.slice(0, 8)}) into ${rel(dir)}; engine sha256 ${source.sha256}; web variant sha256 ${variant.source.sha256} into ${rel(variantDir(dir))}; torch package sha256 ${torch.source.sha256} into ${rel(packageDir(dir))}${source.notices.source === 'softn-curated' ? `; notices: the curated copy (${release} ships none)` : ''}`);
   return source;
 }
 
@@ -795,7 +1018,9 @@ export async function installRelease({ dir = ENGINE_DIR, warn, ...options } = {}
  * but SOURCE.json, RELEASE-SHA256SUMS and curated notices must be listed in
  * and match the bundle's SHA256SUMS (that list also names files an install
  * does not take, which is fine); RELEASE-SHA256SUMS must be the digest
- * recorded and list the bundle; BUILD-INFO.txt must agree with SOURCE.json.
+ * recorded and list the bundle; BUILD-INFO.txt must agree with SOURCE.json;
+ * and the web variant and torch package beside it must check (checkVariant,
+ * checkPackage).
  */
 export function checkEngine(dir = ENGINE_DIR, { curatedNotices = CURATED_NOTICES } = {}) {
   const where = rel(dir);
@@ -822,9 +1047,9 @@ export function checkEngine(dir = ENGINE_DIR, { curatedNotices = CURATED_NOTICES
   if (source.repository !== REPOSITORY) problems.push(`SOURCE.json repository is ${source.repository}, not ${REPOSITORY}`);
   if (!isReleaseTag(source.release) || source.release !== `v${version}`) problems.push(`SOURCE.json release ${source.release} and version ${version} do not agree`);
   if (!/^[0-9a-f]{40}$/.test(source.revision ?? '')) problems.push('SOURCE.json revision is not a full commit');
-  if (source.bundle !== `${bundleName(version)}.zip`) problems.push(`SOURCE.json bundle ${source.bundle} is not the web-python bundle`);
+  if (source.bundle !== `${bundleName(version)}.zip`) problems.push(`SOURCE.json bundle ${source.bundle} is not the web-python-base bundle`);
   for (const field of ['bundleSha256', 'sumsSha256', 'sha256', 'glueSha256']) if (!HEX64.test(source[field] ?? '')) problems.push(`SOURCE.json ${field} is not a sha256`);
-  if (source.variant !== VARIANT || !isDeepStrictEqual(source.languages, LANGUAGES) || source.stackBytes !== STACK_BYTES) problems.push(`SOURCE.json records ${source.variant} ${JSON.stringify(source.languages)} with a ${source.stackBytes}-byte stack, not the web-python build`);
+  if (source.variant !== VARIANT || !isDeepStrictEqual(source.languages, LANGUAGES) || source.stackBytes !== STACK_BYTES) problems.push(`SOURCE.json records ${source.variant} ${JSON.stringify(source.languages)} with a ${source.stackBytes}-byte stack, not the web-python-base build`);
   if (source.artifact !== 'zipp_wasm_bg.wasm') problems.push(`SOURCE.json artifact is ${source.artifact}`);
   const notices = source.notices ?? {};
   if (notices.file !== NOTICES || !['zipp-release', 'softn-curated'].includes(notices.source) || !HEX64.test(notices.sha256 ?? '')) problems.push(`SOURCE.json notices ${JSON.stringify(source.notices)} are not recorded`);
@@ -857,8 +1082,78 @@ export function checkEngine(dir = ENGINE_DIR, { curatedNotices = CURATED_NOTICES
     else if (notices.source === 'softn-curated' && !(fs.existsSync(curatedNotices) && fs.readFileSync(curatedNotices).equals(present.get(NOTICES)))) problems.push(`${NOTICES} is not the curated copy in ${rel(curatedNotices)}`);
   }
   if (!source.variants?.[WEB_VARIANT.id]) problems.push(`SOURCE.json records no ${WEB_VARIANT.id} variant of the engine (variants.${WEB_VARIANT.id}); the release's web bundle is installed beside it as one`);
+  if (!source.packages?.[TORCH_PACKAGE.id]) problems.push(`SOURCE.json records no ${TORCH_PACKAGE.id} package of the engine (packages.${TORCH_PACKAGE.id}); the release's web-torch bundle is installed beside it as one`);
   fail(`the ZIPP install in ${where} does not check (run npm run fetch:zipp)`, problems);
   checkVariant(variantDir(dir), source, present);
+  checkPackage(packageDir(dir), source, present);
+  return source;
+}
+
+/**
+ * Check the torch package install beside a checked primary, offline. It is
+ * exactly its files; its SOURCE.json is the record the primary's
+ * `packages.torch` names, field for field; every file the bundle ships
+ * matches the bundle's SHA256SUMS; BUILD-INFO.txt says the torch package of
+ * the primary's bundle and commit; the primary's RELEASE-SHA256SUMS lists its
+ * bundle with the recorded digest; the declarations are the generated text;
+ * and its module still has the package's shape. Nothing is loaded: the
+ * addTorchSync probe ran at install over these bytes.
+ */
+export function checkPackage(dir, primarySource, primaryFiles, id = TORCH_PACKAGE.id) {
+  const where = rel(dir);
+  const record = primarySource.packages[id];
+  const sourceFile = path.join(dir, 'SOURCE.json');
+  if (!fs.existsSync(sourceFile)) refuse(`${where} holds no ZIPP ${id} package install (no SOURCE.json); run npm run fetch:zipp`);
+  let source;
+  try {
+    source = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
+  } catch (error) {
+    refuse(`${where}/SOURCE.json is not JSON: ${error.message}`);
+  }
+  const problems = [];
+  const present = new Map();
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile()) problems.push(`${entry.name} is not a plain file`);
+    else if (!PACKAGE_INSTALLED_FILES.includes(entry.name)) problems.push(`${entry.name} is not part of a package install`);
+    else present.set(entry.name, fs.readFileSync(path.join(dir, entry.name)));
+  }
+  for (const name of PACKAGE_INSTALLED_FILES) if (!present.has(name)) problems.push(`${name} is missing`);
+
+  const version = primarySource.version;
+  const pairsWith = String(primarySource.bundle).replace(/\.zip$/, '');
+  for (const [field, value] of Object.entries(packageRecord(source))) {
+    if (!isDeepStrictEqual(record[field], value)) problems.push(`SOURCE.json ${field} is ${JSON.stringify(value)}; the primary install's packages.${id} records ${JSON.stringify(record[field])}`);
+  }
+  if (source.build !== 'release') problems.push(`SOURCE.json build is '${source.build}', not a verified release install`);
+  if (source.repository !== REPOSITORY) problems.push(`SOURCE.json repository is ${source.repository}, not ${REPOSITORY}`);
+  if (source.release !== primarySource.release || source.version !== version) problems.push(`SOURCE.json names ZIPP ${source.release} (${source.version}), not the primary install's ${primarySource.release}`);
+  if (source.bundle !== `${packageBundleName(version, id)}.zip`) problems.push(`SOURCE.json bundle ${source.bundle} is not the web-${id} bundle`);
+  for (const field of ['bundleSha256', 'sumsSha256', 'sha256', 'loaderSha256']) if (!HEX64.test(source[field] ?? '')) problems.push(`SOURCE.json ${field} is not a sha256`);
+  if (source.variant !== TORCH_PACKAGE.variant || source.artifact !== TORCH_PACKAGE.artifact || source.loader !== TORCH_PACKAGE.loader) problems.push(`SOURCE.json records ${source.variant} ${source.artifact} ${source.loader}, not the torch package`);
+  if (source.pairsWith !== pairsWith) problems.push(`SOURCE.json pairsWith ${source.pairsWith} is not the primary install's bundle ${pairsWith}`);
+  if (source.revision !== primarySource.revision || source.commit !== primarySource.revision) problems.push(`SOURCE.json commit ${source.commit} is not the primary install's revision ${primarySource.revision}; a package is built from the engine's own source`);
+  if (source.sumsSha256 !== primarySource.sumsSha256) problems.push(`SOURCE.json sumsSha256 ${source.sumsSha256} is not the primary install's ${primarySource.sumsSha256}; every bundle comes from one SHA256SUMS`);
+  if (typeof source.engineAbi !== 'string' || !/^[0-9a-f]+$/.test(source.engineAbi)) problems.push(`SOURCE.json engineAbi ${JSON.stringify(source.engineAbi)} is not recorded`);
+  if (!isDeepStrictEqual(source.primary, { bundle: primarySource.bundle, sha256: primarySource.sha256, glueSha256: primarySource.glueSha256 })) problems.push(`SOURCE.json primary ${JSON.stringify(source.primary)} is not the primary install`);
+  const declarations = source.declarations ?? {};
+  if (declarations.file !== TORCH_PACKAGE.declarations || declarations.source !== 'softn-generated' || declarations.sha256 !== sha256(Buffer.from(TORCH_DECLARATIONS))) problems.push(`SOURCE.json declarations ${JSON.stringify(source.declarations)} are not the generated ${TORCH_PACKAGE.declarations}`);
+
+  const inner = present.has('SHA256SUMS') ? parseSums(present.get('SHA256SUMS')) : new Map();
+  for (const [name, bytes] of present) {
+    if (['SOURCE.json', 'SHA256SUMS', TORCH_PACKAGE.declarations].includes(name)) continue;
+    if (!inner.has(name)) problems.push(`${name} is not listed in the bundle's SHA256SUMS`);
+    else if (sha256(bytes) !== inner.get(name)) problems.push(`${name} does not match the bundle's SHA256SUMS`);
+  }
+  if (primaryFiles.has('RELEASE-SHA256SUMS') && parseSums(primaryFiles.get('RELEASE-SHA256SUMS')).get(source.bundle) !== source.bundleSha256) problems.push(`RELEASE-SHA256SUMS does not list ${source.bundle} with the recorded ${source.bundleSha256}`);
+  if (present.has('BUILD-INFO.txt')) problems.push(...packageBuildInfoProblems(parseBuildInfo(present.get('BUILD-INFO.txt')), { version, revision: primarySource.revision, pairsWith }));
+  if (present.has(TORCH_PACKAGE.artifact)) {
+    const bytes = present.get(TORCH_PACKAGE.artifact);
+    if (sha256(bytes) !== source.sha256) problems.push(`${TORCH_PACKAGE.artifact} is not the recorded ${source.sha256}`);
+    problems.push(...packageModuleProblems(bytes, { bundle: source.bundle }));
+  }
+  if (present.has(TORCH_PACKAGE.loader) && sha256(present.get(TORCH_PACKAGE.loader)) !== source.loaderSha256) problems.push(`${TORCH_PACKAGE.loader} is not the recorded ${source.loaderSha256}`);
+  if (present.has(TORCH_PACKAGE.declarations) && present.get(TORCH_PACKAGE.declarations).toString('utf8') !== TORCH_DECLARATIONS) problems.push(`${TORCH_PACKAGE.declarations} is not the text this script generates`);
+  fail(`the ZIPP ${id} package install in ${where} does not check (run npm run fetch:zipp)`, problems);
   return source;
 }
 
@@ -931,7 +1226,7 @@ export function checkVariant(dir, primarySource, primaryFiles, id = WEB_VARIANT.
   return source;
 }
 
-/** --check, then the install against the release as published now: ZIPP's SHA256SUMS and every file taken from either bundle. */
+/** --check, then the install against the release as published now: ZIPP's SHA256SUMS and every file taken from any of the three bundles. */
 export async function checkEngineOnline(dir = ENGINE_DIR, { fetch: fetchImpl = globalThis.fetch, curatedNotices } = {}) {
   const source = checkEngine(dir, { curatedNotices });
   const problems = [];
@@ -954,6 +1249,15 @@ export async function checkEngineOnline(dir = ENGINE_DIR, { fetch: fetchImpl = g
       if (!entries.get(name)?.equals(fs.readFileSync(path.join(variantDir(dir), name)))) problems.push(`${rel(variantDir(dir))}/${name} is not the file in the published ${variant.bundle}`);
     }
     if (sha256(entries.get('zipp_wasm.js') ?? '') !== variant.glueSha256) problems.push(`the published ${variant.bundle} glue is not the recorded ${variant.glueSha256}`);
+  }
+  const torch = source.packages[TORCH_PACKAGE.id];
+  const packageZip = await download(releaseUrl(source.release, torch.bundle), fetchImpl);
+  if (sha256(packageZip) !== torch.bundleSha256) problems.push(`the published ${torch.bundle} is not the recorded ${torch.bundleSha256}`);
+  else {
+    const entries = await unzipBundle(packageZip, source.version, packageBundleName(source.version));
+    for (const name of PACKAGE_BUNDLE_FILES) {
+      if (!entries.get(name)?.equals(fs.readFileSync(path.join(packageDir(dir), name)))) problems.push(`${rel(packageDir(dir))}/${name} is not the file in the published ${torch.bundle}`);
+    }
   }
   fail(`the ZIPP install in ${rel(dir)} is not what ${source.release} publishes`, problems);
   return source;
@@ -1036,11 +1340,13 @@ function installLocalLocked(from, dir, log, assertHeld) {
   if (sha256(files.get('zipp_wasm_bg.wasm')) !== source.sha256) refuse(`${from}/SOURCE.json does not describe the zipp_wasm_bg.wasm beside it`);
   assertHeld();
   writeInstall(dir, files);
-  // A local build has no variant; a release's must not survive beside it as if it were this build's.
-  try {
-    fs.rmSync(variantDir(dir), { recursive: true, force: true });
-  } catch (error) {
-    refuse(`could not remove the release's web variant in ${rel(variantDir(dir))} beside the local build: ${error.message}`);
+  // A local build has no variant or package; a release's must not survive beside it as if it were this build's.
+  for (const [what, folder] of [['web variant', variantDir(dir)], ['torch package', packageDir(dir)]]) {
+    try {
+      fs.rmSync(folder, { recursive: true, force: true });
+    } catch (error) {
+      refuse(`could not remove the release's ${what} in ${rel(folder)} beside the local build: ${error.message}`);
+    }
   }
   log(`Installed the local ZIPP build ${String(source.revision).slice(0, 8)} into ${rel(dir)} (build 'local': not releasable; npm run fetch:zipp goes back to a release)`);
   return source;
@@ -1070,7 +1376,7 @@ async function main(args) {
 
   if (has('--check')) {
     const source = has('--online') ? await checkEngineOnline(dir) : checkEngine(dir);
-    console.log(`ZIPP ${source.release} (${source.revision.slice(0, 8)}) in ${rel(dir)} checks, with its web variant (${source.variants[WEB_VARIANT.id].sha256.slice(0, 12)}) in ${rel(variantDir(dir))}${has('--online') ? ', against the published release' : ''}.`);
+    console.log(`ZIPP ${source.release} (${source.revision.slice(0, 8)}) in ${rel(dir)} checks, with its web variant (${source.variants[WEB_VARIANT.id].sha256.slice(0, 12)}) in ${rel(variantDir(dir))} and its torch package (${source.packages[TORCH_PACKAGE.id].sha256.slice(0, 12)}) in ${rel(packageDir(dir))}${has('--online') ? ', against the published release' : ''}.`);
   } else if (has('--resolve-only')) {
     const { release, sums } = await resolveRelease({ tag, latest, releaseDir });
     console.log(JSON.stringify({ release, sumsSha256: sha256(sums) }));

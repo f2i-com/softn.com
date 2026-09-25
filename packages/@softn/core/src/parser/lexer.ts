@@ -26,6 +26,14 @@ export class Lexer {
   private ch: string = '';
   /** Where the last token began, for the no-progress check in nextToken(). */
   private lastTokenStart: number = -1;
+  /**
+   * Whether the last token closed an expression in element content (not in an
+   * attribute). Whitespace right after one is part of the text that follows:
+   * `{n} days` is "12 days", and `{a} {b}` keeps its space. Skipping it the
+   * way whitespace before a token is skipped everywhere else made them
+   * "12days" and "xy".
+   */
+  private afterContentExpression: boolean = false;
 
   // Context tracking for different parsing modes
   private inTag: boolean = false;
@@ -89,6 +97,8 @@ export class Lexer {
       );
     }
     this.lastTokenStart = token.start;
+    this.afterContentExpression =
+      token.type === TokenType.EXPR_END && !this.inTag && this.inExpression === 0 && this.inControlFlow === 0;
     return token;
   }
 
@@ -108,6 +118,10 @@ export class Lexer {
       return this.readTemplateContent();
     }
 
+    if (this.afterContentExpression && /\s/.test(this.ch)) {
+      const inline = this.inlineWhitespaceAfterExpression();
+      if (inline) return inline;
+    }
     this.skipWhitespace();
 
     const startLine = this.line;
@@ -959,6 +973,37 @@ export class Lexer {
     }
 
     return createToken(TokenType.NUMBER, num, startLine, startColumn, startPos, this.position);
+  }
+
+  /**
+   * Whitespace after an expression in element content, read the way HTML reads
+   * inline text: before more text it belongs to that text (read as text, so its
+   * leading space survives the collapse to one space); between two expressions
+   * on one line it is a single space. Anything else — a line break before a
+   * tag, a comment, a control-flow block, the end — is layout, skipped as
+   * before, so no whitespace node appears between elements that did not have
+   * one. Returns null to let the caller skip it.
+   */
+  private inlineWhitespaceAfterExpression(): Token | null {
+    let i = this.position;
+    let sawNewline = false;
+    while (i < this.source.length && /\s/.test(this.source[i])) {
+      if (this.source[i] === '\n') sawNewline = true;
+      i++;
+    }
+    const next = this.source[i] ?? '';
+    const after = this.source[i + 1] ?? '';
+    const startsText =
+      next !== '' && next !== '<' && next !== '{' && next !== '#' && !(next === '/' && after === '/');
+    if (startsText) return this.readTextContent();
+    if (next === '{' && !sawNewline) {
+      const startLine = this.line;
+      const startColumn = this.column;
+      const startPos = this.position;
+      while (this.position < i) this.readChar();
+      return createToken(TokenType.TEXT, ' ', startLine, startColumn, startPos, this.position);
+    }
+    return null;
   }
 
   /**
