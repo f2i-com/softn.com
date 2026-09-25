@@ -1,308 +1,280 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAIStore } from '../../stores';
-import { MAX_ITERATIONS_BOUNDS, TOKEN_BUDGET_BOUNDS, MAX_OUTPUT_TOKENS_BOUNDS, REQUEST_TIMEOUT_BOUNDS_MS } from '../../stores/aiStore';
+import { MAX_ITERATIONS_BOUNDS, TOKEN_BUDGET_BOUNDS, MAX_OUTPUT_TOKENS_BOUNDS, REQUEST_TIMEOUT_BOUNDS_MS, MAX_STEPS_BOUNDS, RUN_TOKEN_BUDGET_BOUNDS } from '../../stores/aiStore';
+import { testProvider } from '../../lib/aiProvider';
 import { Icon } from '../common/Icon';
 import { IntegerLimitInput } from '../common/IntegerLimitInput';
-import type { ProviderType } from '../../types/studio';
+import { ModelPicker } from '../ai/ModelPicker';
+import { useProviderModels } from '../ai/useProviderModels';
+import type { ProviderConfig } from '../../types/studio';
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/** What a provider row says under its name: how it is reached. */
+function providerMeta(provider: ProviderConfig): string {
+  const where = provider.type === 'local' || provider.type === 'custom'
+    ? hostOf(provider.baseUrl || 'http://localhost:11434')
+    : provider.type === 'openai' ? 'OpenAI API' : 'Anthropic API';
+  const key = provider.apiKey ? 'key saved' : provider.type === 'local' || provider.type === 'custom' ? 'no key' : 'no key saved';
+  return `${where} · ${key}`;
+}
+
+/**
+ * The generation model, chosen from the active provider's own list. Empty
+ * means the model saved with the provider, which is what the first choice
+ * says — by its name, since it is a real model and not a Studio default.
+ */
+const GenerationModel: React.FC<{ provider: ProviderConfig }> = ({ provider }) => {
+  const builder = useAIStore((s) => s.modelProfile.builder);
+  const updateModelProfile = useAIStore((s) => s.updateModelProfile);
+  const list = useProviderModels(provider);
+  return (
+    <section className="st-settings-section" aria-labelledby="studio-generation-model">
+      <h3 id="studio-generation-model" className="st-settings-heading">Generation model</h3>
+      <p className="st-settings-note">
+        Which of {provider.name}’s models writes the app. Leave it on the provider’s model unless you want a different one for generation only.
+      </p>
+      {list.state === 'loading' && <p className="st-settings-note" role="status">Loading {provider.name}’s models…</p>}
+      {list.state === 'error' && <p className="st-setup-error" role="alert">{list.message}</p>}
+      <ModelPicker
+        key={list.state}
+        label="Model for generation"
+        models={list.state === 'ok' ? list.models : null}
+        value={builder}
+        onChange={(next) => updateModelProfile({ builder: next.trim() })}
+        emptyChoice={provider.modelId ? `Same as the provider: ${provider.modelId}` : 'Same as the provider'}
+        manualByDefault={list.state === 'error'}
+      />
+    </section>
+  );
+};
+
+type TestState = { state: 'running' } | { state: 'ok'; text: string } | { state: 'error'; text: string };
+
+/**
+ * Test one saved provider the way generation uses it, from its row. The
+ * result stays on the row, in words, until the provider changes.
+ */
+const ProviderTest: React.FC<{ provider: ProviderConfig; label: string }> = ({ provider, label }) => {
+  const [test, setTest] = useState<TestState | null>(null);
+  const controller = useRef<AbortController | null>(null);
+  useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => setTest(null), [provider]);
+  const run = async () => {
+    controller.current?.abort();
+    const current = new AbortController();
+    controller.current = current;
+    setTest({ state: 'running' });
+    const result = await testProvider(provider, { signal: current.signal });
+    if (current.signal.aborted) return;
+    setTest(result.ok
+      ? { state: 'ok', text: result.replied ? 'Connected: the model replied.' : 'Connected. Choose a model to test a reply.' }
+      : { state: 'error', text: result.message });
+  };
+  return (
+    <>
+      <button type="button" className="st-btn st-btn-ghost st-btn-xs" onClick={() => void run()} disabled={test?.state === 'running'} aria-label={`Test ${label}`}>
+        {test?.state === 'running' ? 'Testing…' : 'Test'}
+      </button>
+      {test && test.state !== 'running' && (
+        <p className={`st-provider-test${test.state === 'error' ? ' is-error' : ''}`} role="status">{test.text}</p>
+      )}
+    </>
+  );
+};
 
 export const SettingsPanel: React.FC = () => {
   const {
-    providers, addProvider, removeProvider,
+    providers, removeProvider,
     activeProviderId, setActiveProvider,
-    modelProfile, updateModelProfile,
     maxIterations, tokenBudget, setMaxIterations, setTokenBudget,
     requestTimeoutMs, setRequestTimeoutMs, maxOutputTokens, setMaxOutputTokens,
     iterationsUsed, tokensUsed, resetBudget,
+    agentSettings, updateAgentSettings, openProviderSetup,
   } = useAIStore();
-  const [showAddProvider, setShowAddProvider] = useState(false);
-  const [newProviderType, setNewProviderType] = useState<ProviderType>('anthropic');
-  const [newApiKey, setNewApiKey] = useState('');
-  const [newBaseUrl, setNewBaseUrl] = useState('');
-  const [newModelId, setNewModelId] = useState('');
-  const [providerError, setProviderError] = useState('');
   const [settingsTab, setSettingsTab] = useState<'ai' | 'general'>('ai');
-
-  const defaultModels: Record<ProviderType, string> = {
-    anthropic: 'claude-sonnet-4-6',
-    openai: 'gpt-5.4',
-    custom: '',
-  };
-  const defaultEndpoints: Record<ProviderType, string> = {
-    anthropic: 'https://api.anthropic.com/v1/messages',
-    openai: 'https://api.openai.com/v1/chat/completions',
-    custom: 'http://localhost:11434/v1/chat/completions',
-  };
-
-  const handleAddProvider = () => {
-    const apiKey = newApiKey.trim();
-    const baseUrl = newBaseUrl.trim();
-    const modelId = newModelId.trim();
-    if (!apiKey && newProviderType !== 'custom') {
-      setProviderError('Enter an API key, or choose Custom / Local AI for a server without a key.');
-      return;
-    }
-    if (newProviderType === 'custom' && !modelId) {
-      setProviderError('Enter the model name loaded by your local server or custom provider.');
-      return;
-    }
-    if (baseUrl) {
-      try {
-        const endpoint = new URL(baseUrl);
-        if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.hash) throw new Error();
-      } catch {
-        setProviderError('Enter a full HTTP or HTTPS endpoint without a username, password, or fragment.');
-        return;
-      }
-    }
-    setProviderError('');
-    const id = crypto.randomUUID();
-    const names: Record<ProviderType, string> = {
-      anthropic: 'Anthropic',
-      openai: 'OpenAI',
-      custom: baseUrl ? new URL(baseUrl).hostname : 'Local AI',
-    };
-    addProvider({
-      id,
-      type: newProviderType,
-      name: names[newProviderType],
-      apiKey,
-      baseUrl: baseUrl || undefined,
-      modelId: modelId || undefined,
-    });
-    setActiveProvider(id);
-    setNewApiKey('');
-    setNewBaseUrl('');
-    setNewModelId('');
-    setShowAddProvider(false);
-  };
+  const active = providers.find((p) => p.id === activeProviderId) ?? null;
 
   return (
-    <div className="studio-settings" style={styles.container}>
-      <style>{`.studio-settings :is(input, select, button):focus-visible { outline: 2px solid var(--studio-accent) !important; outline-offset: 3px; }
-        .studio-settings :is(input, select) { box-sizing: border-box; }
-        @media (max-width: 767px) { .studio-settings :is(input, select) { font-size: 16px !important; } }`}</style>
-      {/* Tab header */}
-      <div style={styles.tabs}>
-        <button
-          onClick={() => setSettingsTab('ai')}
-          aria-pressed={settingsTab === 'ai'}
-          style={{ ...styles.tab, ...(settingsTab === 'ai' ? styles.tabActive : {}) }}
-        >
-          <Icon name="ai" size={14} />
-          AI
-        </button>
-        <button
-          onClick={() => setSettingsTab('general')}
-          aria-pressed={settingsTab === 'general'}
-          style={{ ...styles.tab, ...(settingsTab === 'general' ? styles.tabActive : {}) }}
-        >
-          <Icon name="settings" size={14} />
-          General
-        </button>
+    <div className="st-settings">
+      <div className="st-tabs" role="tablist" aria-label="Settings">
+        {(['ai', 'general'] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            role="tab"
+            aria-selected={settingsTab === tab}
+            className="st-tab"
+            onClick={() => setSettingsTab(tab)}
+          >
+            <Icon name={tab === 'ai' ? 'ai' : 'settings'} size={14} />
+            {tab === 'ai' ? 'AI' : 'General'}
+          </button>
+        ))}
       </div>
 
-      <div style={styles.content}>
+      <div className="st-settings-body" role="tabpanel">
         {settingsTab === 'ai' && (
           <>
-            <div style={styles.setupIntro}>
-              <Icon name="ai" size={22} color="var(--studio-accent)" />
-              <div>
-                <h2 style={styles.setupTitle}>Your AI, your workspace</h2>
-                <p style={styles.emptyHint}>Choose a provider, set its model, then return to AI Chat. Projects and API keys stay in this browser; generation sends your project context to your chosen provider.</p>
-              </div>
-            </div>
-            {/* API Providers */}
-              <div style={styles.fieldGroup}>
-                <label style={styles.label}>API Providers</label>
+            <section className="st-settings-section" aria-labelledby="studio-providers-heading">
+              <h3 id="studio-providers-heading" className="st-settings-heading">Providers</h3>
+              <p className="st-settings-note">
+                The AI runs on the provider you choose. Keys stay in this browser and go only to their provider.
+              </p>
 
-                {providers.length === 0 && !showAddProvider && (
-                  <div style={styles.emptyProviders}>
-                    <Icon name="key" size={20} color="var(--studio-text-dim)" />
-                    <p style={styles.emptyText}>No providers configured</p>
-                    <p style={styles.emptyHint}>Connect a provider or a local model to start generating</p>
-                  </div>
-                )}
-
-                {providers.map((p) => (
-                  <div
-                    key={p.id}
-                    style={{
-                      ...styles.providerRow,
-                      ...(activeProviderId === p.id ? styles.providerRowActive : {}),
-                    }}
-                  >
-                    <button
-                      onClick={() => setActiveProvider(p.id)}
-                      aria-label={`Use ${p.name}${p.modelId ? ` (${p.modelId})` : ''}`}
-                      aria-pressed={activeProviderId === p.id}
-                      style={styles.providerInfo}
-                    >
-                      <div style={{
-                        ...styles.providerDot,
-                        background: activeProviderId === p.id ? 'var(--studio-success)' : 'var(--studio-text-dim)',
-                      }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={styles.providerName}>
-                          {p.name}
-                          {p.modelId && <span style={styles.providerModel}> · {p.modelId}</span>}
+              {providers.length > 0 && (
+                <ul className="st-provider-list">
+                  {providers.map((p) => {
+                    const isActive = activeProviderId === p.id;
+                    const label = `${p.name}${p.modelId ? ` (${p.modelId})` : ''}`;
+                    return (
+                      <li key={p.id} className="st-provider-row" data-active={isActive || undefined}>
+                        <button
+                          type="button"
+                          className="st-provider-main"
+                          onClick={() => setActiveProvider(p.id)}
+                          aria-label={`Use ${label}`}
+                          aria-pressed={isActive}
+                        >
+                          <span className="st-provider-radio" aria-hidden="true" />
+                          <span className="st-provider-text">
+                            <span className="st-provider-name">{p.name}</span>
+                            {p.modelId
+                              ? <span className="st-provider-model">{p.modelId}</span>
+                              : <span className="st-provider-missing">No model chosen</span>}
+                            <span className="st-provider-meta">{providerMeta(p)}</span>
+                          </span>
+                        </button>
+                        <div className="st-provider-actions">
+                          {!p.modelId ? (
+                            <button type="button" className="st-btn st-btn-sm st-btn-primary" onClick={() => openProviderSetup(p.id)}>
+                              Choose a model
+                            </button>
+                          ) : (
+                            <>
+                              <ProviderTest provider={p} label={label} />
+                              <button type="button" className="st-icon-btn" onClick={() => openProviderSetup(p.id)} aria-label={`Edit ${label}`} title="Edit">
+                                <Icon name="edit" size={14} />
+                              </button>
+                            </>
+                          )}
+                          <button type="button" className="st-icon-btn" onClick={() => removeProvider(p.id)} aria-label={`Remove ${label}`} title="Remove">
+                            <Icon name="trash" size={14} />
+                          </button>
                         </div>
-                        <div style={styles.providerKey}>
-                          {p.apiKey ? 'API key saved' : 'No key required'}
-                          {p.baseUrl && <span> · {p.baseUrl.replace(/^https?:\/\//, '').split('/')[0]}</span>}
-                        </div>
-                      </div>
-                    </button>
-                    <button
-                      onClick={() => removeProvider(p.id)}
-                      aria-label={`Remove ${p.name}${p.modelId ? ` (${p.modelId})` : ''}`}
-                      style={styles.removeBtn}
-                    >
-                      <Icon name="trash" size={14} color="var(--studio-text-dim)" />
-                    </button>
-                  </div>
-                ))}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
 
-                {showAddProvider ? (
-                  <form style={styles.addForm} noValidate onSubmit={(e) => { e.preventDefault(); handleAddProvider(); }}>
-                    <div style={styles.addFormField}>
-                      <label htmlFor="studio-provider-preset" style={styles.fieldLabel}>Provider preset</label>
-                      <select
-                        id="studio-provider-preset"
-                        style={styles.select}
-                        value={newProviderType}
-                        onChange={(e) => {
-                          const t = e.target.value as ProviderType;
-                          setNewProviderType(t);
-                          setNewApiKey('');
-                          setProviderError('');
-                          setNewModelId('');
-                          setNewBaseUrl('');
-                        }}
-                      >
-                        <option value="anthropic">Anthropic (Claude)</option>
-                        <option value="openai">OpenAI-compatible</option>
-                        <option value="custom">Custom / Local AI</option>
-                      </select>
-                    </div>
-
-                    <div style={styles.addFormField}>
-                      <label htmlFor="studio-provider-key" style={styles.fieldLabel}>
-                        API Key {newProviderType === 'custom' && <span style={{ fontWeight: 400, color: 'var(--studio-text-dim)' }}>(optional for local)</span>}
-                      </label>
-                      <input
-                        id="studio-provider-key"
-                        autoComplete="off"
-                        style={styles.input}
-                        type="password"
-                        value={newApiKey}
-                        onChange={(e) => setNewApiKey(e.target.value)}
-                        placeholder={newProviderType === 'anthropic' ? 'sk-ant-...' : newProviderType === 'openai' ? 'sk-...' : 'API key (if needed)'}
-                      />
-                    </div>
-
-                    <div style={styles.addFormField}>
-                      <label htmlFor="studio-provider-model" style={styles.fieldLabel}>Model name</label>
-                      <input
-                        id="studio-provider-model"
-                        style={styles.input}
-                        value={newModelId}
-                        onChange={(e) => setNewModelId(e.target.value)}
-                        placeholder={defaultModels[newProviderType] || 'e.g. llama3, mistral, gemma2...'}
-                      />
-                      <span style={styles.fieldHint}>
-                        {newProviderType === 'anthropic'
-                          ? `Default: ${defaultModels.anthropic}`
-                          : newProviderType === 'openai'
-                          ? `Default: ${defaultModels.openai}`
-                          : 'Required for custom endpoints'}
-                      </span>
-                    </div>
-
-                    <div style={styles.addFormField}>
-                      <label htmlFor="studio-provider-endpoint" style={styles.fieldLabel}>
-                        Endpoint URL <span style={{ fontWeight: 400, color: 'var(--studio-text-dim)' }}>(optional override)</span>
-                      </label>
-                      <input
-                        id="studio-provider-endpoint"
-                        type="url"
-                        style={styles.input}
-                        value={newBaseUrl}
-                        onChange={(e) => setNewBaseUrl(e.target.value)}
-                        placeholder={defaultEndpoints[newProviderType]}
-                      />
-                      <span style={styles.fieldHint}>
-                        Use the full completion endpoint, including /v1/chat/completions for compatible servers. Leave blank for the preset above. The server must allow requests from this browser.
-                      </span>
-                    </div>
-
-                    <p style={styles.keyNotice}>
-                      <Icon name="info" size={12} color="var(--studio-text-dim)" />
-                      Keys are stored in your browser only. Never sent to SoftN servers.
-                    </p>
-
-                    {providerError && <p role="alert" style={{ ...styles.fieldHint, color: 'var(--studio-error)', marginBottom: 10 }}>{providerError}</p>}
-
-                    <div style={styles.addFormActions}>
-                      <button type="button" onClick={() => { setShowAddProvider(false); setNewApiKey(''); setProviderError(''); }} style={styles.cancelBtn}>
-                        Cancel
-                      </button>
-                      <button type="submit" style={styles.saveBtn}>
-                        Save Provider
-                      </button>
-                    </div>
-                  </form>
-                ) : (
-                  <button
-                    onClick={() => setShowAddProvider(true)}
-                    style={styles.addProviderBtn}
-                  >
+              {/* Adding and editing open the same AI setup dialog the chat and the
+                  bar use: the panel is too narrow for the setup's choices, and a
+                  second copy of it here drifted from the first. */}
+              {providers.length === 0 ? (
+                <div className="st-ai-cta">
+                  <h4 className="st-ai-cta-title">No provider yet</h4>
+                  <p>Connect a model on this computer, or your own OpenAI or Anthropic key, to start generating.</p>
+                  <button type="button" className="st-btn st-btn-primary st-btn-sm" onClick={() => openProviderSetup(null)}>
                     <Icon name="plus" size={14} />
-                    Add Provider
+                    Connect a provider
                   </button>
-                )}
-              </div>
+                </div>
+              ) : (
+                <button type="button" className="st-btn st-btn-sm st-settings-add" onClick={() => openProviderSetup(null)}>
+                  <Icon name="plus" size={14} />
+                  Add a provider
+                </button>
+              )}
+            </section>
 
-            {/* Model profile */}
-            {providers.length > 0 && (
-              <div style={styles.fieldGroup}>
-                <label htmlFor="studio-generation-model" style={styles.label}>Generation model override</label>
-                <input
-                  id="studio-generation-model"
-                  style={styles.input}
-                  value={modelProfile.builder}
-                  onChange={(e) => updateModelProfile({ builder: e.target.value.trim() })}
-                  placeholder={providers.find((p) => p.id === activeProviderId)?.modelId || 'Use the provider’s default model'}
-                />
-                <p style={styles.fieldHint}>Optional. All generation requests use this model on the selected provider. Leave blank to use the model saved with that provider. Update or clear this override when switching providers.</p>
-              </div>
-            )}
+            {active && <GenerationModel provider={active} />}
 
-            {/* Budget limits */}
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Budget Limits</label>
-              <div style={styles.modelGrid}>
-                <div style={styles.modelRow}>
-                  <div style={styles.modelInfo}>
-                    <label htmlFor="studio-max-iterations" style={styles.modelRoleName}>Max iterations</label>
-                    <span style={styles.modelRoleHint}>Generation turns per session</span>
+            <section className="st-settings-section" aria-labelledby="studio-agent-heading">
+              <h3 id="studio-agent-heading" className="st-settings-heading">Agent runs</h3>
+              <p className="st-settings-note">
+                The AI builds by calling tools in a loop — reading, editing, checking — until your request is done. These bound one run.
+              </p>
+              <div className="st-limits">
+                <div className="st-limit-row">
+                  <div className="st-limit-text">
+                    <label htmlFor="studio-agent-steps" className="st-limit-label">Max steps</label>
+                    <span className="st-limit-hint">Tool calls before a run stops and asks to continue</span>
+                  </div>
+                  <IntegerLimitInput
+                    id="studio-agent-steps"
+                    className="st-input st-input-mono st-limit-input"
+                    min={MAX_STEPS_BOUNDS.min}
+                    max={MAX_STEPS_BOUNDS.max}
+                    value={agentSettings.maxSteps}
+                    onCommit={(maxSteps) => updateAgentSettings({ maxSteps })}
+                  />
+                </div>
+                <div className="st-limit-row">
+                  <div className="st-limit-text">
+                    <label htmlFor="studio-agent-budget" className="st-limit-label">Tokens per run</label>
+                    <span className="st-limit-hint">
+                      A run stops and asks to continue past this. Counted in effective tokens: prompt tokens the provider serves from its cache count at a tenth on Anthropic and half on OpenAI-compatible providers, and tokens written to Anthropic&apos;s cache at 1.25×
+                    </span>
+                  </div>
+                  <IntegerLimitInput
+                    id="studio-agent-budget"
+                    className="st-input st-input-mono st-limit-input"
+                    min={RUN_TOKEN_BUDGET_BOUNDS.min}
+                    max={RUN_TOKEN_BUDGET_BOUNDS.max}
+                    step={50000}
+                    value={agentSettings.runTokenBudget}
+                    onCommit={(runTokenBudget) => updateAgentSettings({ runTokenBudget })}
+                  />
+                </div>
+                <div className="st-limit-row">
+                  <label className="st-limit-text" htmlFor="studio-agent-autocheck">
+                    <span className="st-limit-label">Check after each change</span>
+                    <span className="st-limit-hint">Compose and render the app after every step that writes, and show the agent what broke</span>
+                  </label>
+                  <input id="studio-agent-autocheck" className="st-limit-check" type="checkbox" checked={agentSettings.autoCheck} onChange={(e) => updateAgentSettings({ autoCheck: e.target.checked })} />
+                </div>
+                <div className="st-limit-row">
+                  <label className="st-limit-text" htmlFor="studio-agent-deletes">
+                    <span className="st-limit-label">Ask before deleting</span>
+                    <span className="st-limit-hint">Ask you when a run deletes more than three files</span>
+                  </label>
+                  <input id="studio-agent-deletes" className="st-limit-check" type="checkbox" checked={agentSettings.confirmDeletes} onChange={(e) => updateAgentSettings({ confirmDeletes: e.target.checked })} />
+                </div>
+              </div>
+            </section>
+
+            <section className="st-settings-section" aria-labelledby="studio-budget-heading">
+              <h3 id="studio-budget-heading" className="st-settings-heading">Budget limits</h3>
+              <div className="st-limits">
+                <div className="st-limit-row">
+                  <div className="st-limit-text">
+                    <label htmlFor="studio-max-iterations" className="st-limit-label">Max runs</label>
+                    <span className="st-limit-hint">Agent runs per session</span>
                   </div>
                   <IntegerLimitInput
                     id="studio-max-iterations"
-                    style={styles.modelInput}
+                    className="st-input st-input-mono st-limit-input"
                     min={MAX_ITERATIONS_BOUNDS.min}
                     max={MAX_ITERATIONS_BOUNDS.max}
                     value={maxIterations}
                     onCommit={setMaxIterations}
                   />
                 </div>
-                <div style={styles.modelRow}>
-                  <div style={styles.modelInfo}>
-                    <label htmlFor="studio-token-budget" style={styles.modelRoleName}>Token budget</label>
-                    <span style={styles.modelRoleHint}>Max tokens per session</span>
+                <div className="st-limit-row">
+                  <div className="st-limit-text">
+                    <label htmlFor="studio-token-budget" className="st-limit-label">Token budget</label>
+                    <span className="st-limit-hint">Tokens per session</span>
                   </div>
                   <IntegerLimitInput
                     id="studio-token-budget"
-                    style={styles.modelInput}
+                    className="st-input st-input-mono st-limit-input"
                     min={TOKEN_BUDGET_BOUNDS.min}
                     max={TOKEN_BUDGET_BOUNDS.max}
                     step={10000}
@@ -310,40 +282,36 @@ export const SettingsPanel: React.FC = () => {
                     onCommit={setTokenBudget}
                   />
                 </div>
-                <div style={styles.modelRow}>
-                  <div style={styles.modelInfo}>
-                    <span style={styles.modelRoleName}>Used</span>
-                    <span style={styles.modelRoleHint}>{iterationsUsed} iterations, {tokensUsed.toLocaleString()} tokens</span>
+                <div className="st-limit-row">
+                  <div className="st-limit-text">
+                    <span className="st-limit-label">Used</span>
+                    <span className="st-limit-hint">{iterationsUsed} {iterationsUsed === 1 ? 'run' : 'runs'}, {tokensUsed.toLocaleString()} tokens</span>
                   </div>
-                  <button
-                    onClick={() => resetBudget()}
-                    style={styles.cancelBtn}
-                  >
+                  <button type="button" className="st-btn st-btn-sm" onClick={() => resetBudget()}>
                     Reset
                   </button>
                 </div>
               </div>
-              <p style={styles.fieldHint}>
-                Changes apply when you leave a limit field or press Enter. Escape cancels an unfinished edit.{' '}
+              <p className="st-settings-note">
+                Changes apply when you leave a field or press Enter; Escape cancels an unfinished edit.
                 The token budget is a guardrail, not a billing cap: Studio counts what the provider reports and refuses a request the remainder cannot cover. The provider bills what it bills.
               </p>
-            </div>
+            </section>
 
-            {/* Per-request limits. These existed in the store (STU-05) with no
-                way to set them; the timeout is shown in seconds because that is
-                how a person thinks about waiting. Both are kept in the settings
-                key with the providers, never in a project. */}
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Per-request limits</label>
-              <div style={styles.modelGrid}>
-                <div style={styles.modelRow}>
-                  <div style={styles.modelInfo}>
-                    <label htmlFor="studio-request-timeout" style={styles.modelRoleName}>Request timeout</label>
-                    <span style={styles.modelRoleHint}>Seconds to wait for one reply ({REQUEST_TIMEOUT_BOUNDS_MS.min / 1000}–{REQUEST_TIMEOUT_BOUNDS_MS.max / 1000})</span>
+            {/* Per-request limits. The timeout is in seconds because that is
+                how a person thinks about waiting. Both are kept with the
+                providers, never in a project. */}
+            <section className="st-settings-section" aria-labelledby="studio-request-heading">
+              <h3 id="studio-request-heading" className="st-settings-heading">Per-request limits</h3>
+              <div className="st-limits">
+                <div className="st-limit-row">
+                  <div className="st-limit-text">
+                    <label htmlFor="studio-request-timeout" className="st-limit-label">Request timeout</label>
+                    <span className="st-limit-hint">Seconds to wait for one reply ({REQUEST_TIMEOUT_BOUNDS_MS.min / 1000}–{REQUEST_TIMEOUT_BOUNDS_MS.max / 1000})</span>
                   </div>
                   <IntegerLimitInput
                     id="studio-request-timeout"
-                    style={styles.modelInput}
+                    className="st-input st-input-mono st-limit-input"
                     min={REQUEST_TIMEOUT_BOUNDS_MS.min / 1000}
                     max={REQUEST_TIMEOUT_BOUNDS_MS.max / 1000}
                     step={5}
@@ -351,14 +319,14 @@ export const SettingsPanel: React.FC = () => {
                     onCommit={(seconds) => setRequestTimeoutMs(seconds * 1000)}
                   />
                 </div>
-                <div style={styles.modelRow}>
-                  <div style={styles.modelInfo}>
-                    <label htmlFor="studio-max-output-tokens" style={styles.modelRoleName}>Max output tokens</label>
-                    <span style={styles.modelRoleHint}>Per reply ({MAX_OUTPUT_TOKENS_BOUNDS.min.toLocaleString()}–{MAX_OUTPUT_TOKENS_BOUNDS.max.toLocaleString()})</span>
+                <div className="st-limit-row">
+                  <div className="st-limit-text">
+                    <label htmlFor="studio-max-output-tokens" className="st-limit-label">Max output tokens</label>
+                    <span className="st-limit-hint">Per reply ({MAX_OUTPUT_TOKENS_BOUNDS.min.toLocaleString()}–{MAX_OUTPUT_TOKENS_BOUNDS.max.toLocaleString()})</span>
                   </div>
                   <IntegerLimitInput
                     id="studio-max-output-tokens"
-                    style={styles.modelInput}
+                    className="st-input st-input-mono st-limit-input"
                     min={MAX_OUTPUT_TOKENS_BOUNDS.min}
                     max={MAX_OUTPUT_TOKENS_BOUNDS.max}
                     step={1024}
@@ -367,343 +335,41 @@ export const SettingsPanel: React.FC = () => {
                   />
                 </div>
               </div>
-              <p style={styles.fieldHint}>
-                Max output tokens is sent to the provider as its output cap and is reserved from the session budget before each request: a request is refused when the remaining budget is below this number, and a reply that hits the cap is reported as truncated and not applied. Set it above what a whole file needs, and no higher than the model allows.
+              <p className="st-settings-note">
+                Max output tokens is the provider’s output cap, and it is reserved from the session budget before each request: a request is refused when the remaining budget is below it, and a reply that hits the cap is reported as cut off and not applied. Set it above what a whole file needs, and no higher than the model allows.
               </p>
-            </div>
-
+            </section>
           </>
         )}
 
-        {/* The General tab said "coming soon" twice and offered nothing. What
-            it says now is what is true today: where the theme is set, what the
-            words in the bar mean, and what the keyboard does. */}
+        {/* What is true today: where the theme is set, what the words in the
+            bar mean, and what the keyboard does. */}
         {settingsTab === 'general' && (
           <>
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Theme</label>
-              <p style={styles.emptyHint}>
-                Studio follows the light/dark switch in the bar at the top of the page, shared with the rest of SoftN. There is no separate Studio theme.
+            <section className="st-settings-section">
+              <h3 className="st-settings-heading">Theme</h3>
+              <p className="st-settings-note">
+                Studio follows the light and dark switch in the bar at the top of the page, shared with the rest of SoftN. There is no separate Studio theme.
               </p>
-            </div>
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Saving and the bar</label>
-              <p style={styles.emptyHint}>
+            </section>
+            <section className="st-settings-section">
+              <h3 className="st-settings-heading">Saving and the bar</h3>
+              <p className="st-settings-note">
                 <strong>Save project</strong> happens on its own after each change, to this browser only; the bar shows Saved, Saving or Not saved. Browser storage is not a backup.
-                <br />
+              </p>
+              <p className="st-settings-note">
                 <strong>Preview</strong> is the canvas. <strong>Run</strong> opens the bundle in the SoftN runtime. <strong>Export bundle</strong> downloads a .softn file. <strong>Publish</strong> sends the bundle to the directory’s publish page.
               </p>
-            </div>
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Keyboard</label>
-              <p style={styles.emptyHint}>
-                Shortcuts are fixed: Escape closes the expanded preview and the project menu; Tab, Enter and Space work on every control. There is nothing to configure here.
+            </section>
+            <section className="st-settings-section">
+              <h3 className="st-settings-heading">Keyboard</h3>
+              <p className="st-settings-note">
+                Escape closes the expanded preview, the project menu and the AI setup; Tab, Enter and Space work on every control. There is nothing to configure here.
               </p>
-            </div>
+            </section>
           </>
         )}
       </div>
     </div>
   );
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: 1,
-    minHeight: 0,
-    minWidth: 0,
-  },
-  setupIntro: {
-    display: 'flex',
-    gap: 10,
-    padding: '16px 12px',
-    marginBottom: 20,
-    border: '1px solid var(--studio-border)',
-    borderRadius: 10,
-    background: 'var(--studio-accent-soft)',
-  },
-  setupTitle: {
-    margin: '0 0 6px',
-    fontSize: 15,
-    fontWeight: 600,
-    color: 'var(--studio-text)',
-  },
-  tabs: {
-    display: 'flex',
-    borderBottom: '1px solid var(--studio-border)',
-    flexShrink: 0,
-  },
-  tab: {
-    flex: 1,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    padding: '10px 0',
-    border: 'none',
-    borderBottomWidth: 2,
-    borderBottomStyle: 'solid',
-    borderBottomColor: 'transparent',
-    background: 'transparent',
-    color: 'var(--studio-text-dim)',
-    fontSize: 12,
-    fontWeight: 500,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    transition: 'all 0.15s',
-  },
-  tabActive: {
-    color: 'var(--studio-text)',
-    borderBottomColor: 'var(--studio-accent)',
-  },
-  content: {
-    flex: 1,
-    overflow: 'auto',
-    minHeight: 0,
-    padding: 14,
-  },
-  fieldGroup: {
-    marginBottom: 20,
-  },
-  label: {
-    display: 'block',
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 11,
-    fontWeight: 600,
-    color: 'var(--studio-text-dim)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.5px',
-    marginBottom: 8,
-  },
-  fieldLabel: {
-    display: 'block',
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 12,
-    fontWeight: 500,
-    color: 'var(--studio-text-muted)',
-    marginBottom: 4,
-  },
-  emptyProviders: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    padding: '16px 12px',
-    gap: 4,
-    textAlign: 'center',
-  },
-  emptyText: {
-    fontSize: 12,
-    color: 'var(--studio-text-dim)',
-    margin: 0,
-  },
-  emptyHint: {
-    fontSize: 11,
-    color: 'var(--studio-text-dim)',
-    margin: 0,
-    lineHeight: 1.4,
-  },
-  providerRow: {
-    display: 'flex',
-    alignItems: 'center',
-    padding: '8px 10px',
-    borderRadius: 7,
-    border: '1px solid var(--studio-border-subtle)',
-    marginBottom: 4,
-    transition: 'all 0.15s',
-  },
-  providerRowActive: {
-    background: 'var(--studio-accent-soft)',
-    borderColor: 'var(--studio-accent-soft)',
-  },
-  providerInfo: {
-    flex: 1,
-    minWidth: 0,
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    border: 'none',
-    background: 'transparent',
-    cursor: 'pointer',
-    textAlign: 'left' as const,
-    fontFamily: 'inherit',
-    padding: 0,
-  },
-  providerDot: {
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    flexShrink: 0,
-  },
-  providerName: {
-    overflowWrap: 'anywhere',
-    fontSize: 12,
-    fontWeight: 600,
-    color: 'var(--studio-text)',
-  },
-  providerModel: {
-    fontSize: 10,
-    fontWeight: 400,
-    color: 'var(--studio-text-muted)',
-    fontFamily: 'var(--studio-mono)',
-  },
-  providerKey: {
-    overflowWrap: 'anywhere',
-    fontSize: 10,
-    color: 'var(--studio-text-dim)',
-    fontFamily: 'var(--studio-mono)',
-  },
-  removeBtn: {
-    width: 40,
-    height: 40,
-    flexShrink: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    border: 'none',
-    background: 'transparent',
-    borderRadius: 5,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    opacity: 0.6,
-  },
-  addProviderBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    width: '100%',
-    padding: '8px 10px',
-    border: '1px dashed var(--studio-border-strong)',
-    borderRadius: 7,
-    background: 'transparent',
-    color: 'var(--studio-text-dim)',
-    fontSize: 12,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    justifyContent: 'center',
-    marginTop: 4,
-  },
-  addForm: {
-    padding: '12px',
-    background: 'var(--studio-surface)',
-    borderRadius: 8,
-    border: '1px solid var(--studio-border)',
-    marginTop: 6,
-  },
-  addFormField: {
-    marginBottom: 10,
-  },
-  input: {
-    width: '100%',
-    minHeight: 40,
-    padding: '8px 10px',
-    background: 'var(--studio-surface)',
-    border: '1px solid var(--studio-border)',
-    borderRadius: 6,
-    color: 'var(--studio-text)',
-    fontSize: 13,
-    outline: 'none',
-    fontFamily: 'inherit',
-  },
-  select: {
-    width: '100%',
-    minHeight: 40,
-    padding: '8px 10px',
-    background: 'var(--studio-bg-elevated)',
-    border: '1px solid var(--studio-border)',
-    borderRadius: 6,
-    color: 'var(--studio-text)',
-    fontSize: 13,
-    outline: 'none',
-    fontFamily: 'inherit',
-  },
-  fieldHint: {
-    display: 'block',
-    fontSize: 10,
-    color: 'var(--studio-text-dim)',
-    marginTop: 4,
-    lineHeight: 1.4,
-  },
-  keyNotice: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    fontSize: 10,
-    color: 'var(--studio-text-dim)',
-    margin: '8px 0 10px',
-    lineHeight: 1.4,
-  },
-  addFormActions: {
-    display: 'flex',
-    gap: 6,
-    justifyContent: 'flex-end',
-  },
-  cancelBtn: {
-    minHeight: 40,
-    padding: '6px 12px',
-    border: '1px solid var(--studio-border)',
-    borderRadius: 6,
-    background: 'transparent',
-    color: 'var(--studio-text-muted)',
-    fontSize: 12,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-  },
-  saveBtn: {
-    minHeight: 40,
-    padding: '6px 12px',
-    border: 'none',
-    borderRadius: 6,
-    background: 'var(--studio-accent)',
-    color: 'var(--studio-bg)',
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-  },
-  modelGrid: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    marginTop: 8,
-  },
-  modelRow: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    padding: '8px 10px',
-    background: 'var(--studio-surface)',
-    border: '1px solid var(--studio-border)',
-    borderRadius: 7,
-  },
-  modelInfo: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 1,
-    minWidth: 0,
-    flex: 1,
-  },
-  modelRoleName: {
-    fontSize: 12,
-    fontWeight: 600,
-    color: 'var(--studio-text)',
-  },
-  modelRoleHint: {
-    fontSize: 10,
-    color: 'var(--studio-text-dim)',
-  },
-  modelInput: {
-    width: 120,
-    padding: '5px 8px',
-    background: 'var(--studio-surface)',
-    border: '1px solid var(--studio-border)',
-    borderRadius: 5,
-    color: 'var(--studio-text)',
-    fontSize: 11,
-    outline: 'none',
-    fontFamily: 'var(--studio-mono)',
-    flexShrink: 0,
-  },
 };

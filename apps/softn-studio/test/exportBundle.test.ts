@@ -16,6 +16,7 @@ import { composeBundleSource } from '@softn/core';
 import { buildBundle, normalizeManifest, normalizeManifestForBundle, planBundle } from '../src/lib/exportBundle';
 import { validateProject } from '../src/lib/validator';
 import type { VFSFile } from '../src/types/studio';
+import { READING_LIST_PYTHON } from '../src/examples/readingListPython';
 
 const toVfs = (files: Array<{ path: string; content: string | Uint8Array }>) =>
   new Map<string, VFSFile>(
@@ -164,5 +165,43 @@ describe('the manifest and a server group', () => {
     expect(warnings[0].message).toContain('assets/gone.woff2');
     // The validator carries the same warning.
     expect(validateProject(vfs, null).some((e) => e.type === 'manifest-stale-entry')).toBe(true);
+  });
+});
+
+/**
+ * A `.py` file is logic. The groups matched `.logic` only, so a Python app's
+ * modules were filed under assets and the runtime never loaded the helper the
+ * entry imports by name.
+ */
+describe('the export and Python logic', () => {
+  it('files the Python example under logic, helpers first as declared, and not under assets', () => {
+    const vfs = toVfs(READING_LIST_PYTHON.files);
+    const manifest = JSON.parse(normalizeManifestForBundle(vfs)!) as { files: Record<string, string[]> };
+    expect(manifest.files.logic).toEqual(['logic/shelf.py', 'logic/main.py']);
+    expect(manifest.files.assets).toEqual([]);
+  });
+
+  it('does not file server-side Python under server, since no backend host runs it', () => {
+    const vfs = toVfs([
+      { path: 'manifest.json', content: manifestWith({}) },
+      { path: 'ui/main.ui', content: '<App></App>' },
+      { path: 'server/api.py', content: 'def handle(request):\n    return {}\n' },
+    ]);
+    const manifest = JSON.parse(normalizeManifestForBundle(vfs)!) as { files: Record<string, string[]> };
+    expect(manifest.files.server ?? []).toEqual([]);
+    expect(manifest.files.logic).toEqual([]);
+  });
+
+  it('exports the Python example as a bundle the runtime composes as Python', () => {
+    const entries = unzipSync(buildBundle(toVfs(READING_LIST_PYTHON.files)));
+    const manifest = JSON.parse(new TextDecoder().decode(entries['manifest.json'])) as { main: string; files: { logic: string[] } };
+    const text = new Map(
+      Object.entries(entries)
+        .filter(([path]) => /\.(ui|py)$/.test(path))
+        .map(([path, bytes]) => [path, new TextDecoder().decode(bytes)]),
+    );
+    const composed = composeBundleSource(text, manifest.main, manifest.files.logic);
+    expect(composed.languages).toContain('python');
+    expect(composed.python?.modules).toEqual(['shelf', 'main']);
   });
 });

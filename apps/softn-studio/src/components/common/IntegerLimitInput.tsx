@@ -7,6 +7,7 @@ interface IntegerLimitInputProps {
   max: number;
   step?: number;
   style?: React.CSSProperties;
+  className?: string;
   onCommit(value: number): void;
 }
 

@@ -2,32 +2,15 @@ import React, { useMemo, useState } from 'react';
 import { useWorkspaceStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
+import { useAIReadiness } from '../ai/AIStatusPill';
 
 interface BlueprintReviewProps {
   onApprove: () => void;
   onReviseBrief?: () => void;
 }
 
-// Same focus contract as the brief wizard, for the same reason: inline style
-// objects cannot express :focus, so the ring is written onto the node and taken
-// off again on blur. Two stacked --studio-accent-soft layers compound their
-// alpha so the halo still reads on the light theme's 10% coral.
-const FOCUS_SHADOW = '0 0 0 1px var(--studio-accent), 0 0 0 4px var(--studio-accent-soft), 0 0 0 7px var(--studio-accent-soft)';
-
-// A coral halo disappears on a coral button, so the approve action gets a ring
-// gapped off the sheet instead.
-const FOCUS_SHADOW_ON_ACCENT = '0 0 0 2px var(--studio-bg-elevated), 0 0 0 4px var(--studio-accent)';
-
-const ring = (restBorder: string, restShadow = 'none', focusShadow = FOCUS_SHADOW) => ({
-  onFocus: (event: React.FocusEvent<HTMLElement>) => {
-    event.currentTarget.style.borderColor = 'var(--studio-accent)';
-    event.currentTarget.style.boxShadow = focusShadow;
-  },
-  onBlur: (event: React.FocusEvent<HTMLElement>) => {
-    event.currentTarget.style.borderColor = restBorder;
-    event.currentTarget.style.boxShadow = restShadow;
-  },
-});
+// Focus is drawn by the one rule in styles/studio.css, the same ring as the
+// rest of Studio and the product bar; nothing here paints it.
 
 const hover = (rest: string, over: string) => ({
   onMouseEnter: (event: React.MouseEvent<HTMLElement>) => { event.currentTarget.style.background = over; },
@@ -46,6 +29,8 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
     addConsoleOutput,
   } = useWorkspaceStore();
   const [revisionInput, setRevisionInput] = useState('');
+  // With the AI ready, approving hands the plan to the agent to build.
+  const aiReady = useAIReadiness().state === 'ready';
   // A modal over the editor: keyboard stays inside; Escape is "Revise brief"
   // where that is offered (the only way out that is not approval).
   const dialogRef = useModalFocus(true, onReviseBrief ?? noop);
@@ -88,11 +73,10 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="blueprint-review-title" tabIndex={-1} style={styles.modal}>
         <div style={styles.header}>
           <div>
-            <span style={styles.eyebrow}>Blueprint Review</span>
+            <span style={styles.eyebrow}>Review the plan</span>
             <h2 id="blueprint-review-title" style={styles.title}>{blueprint.appName}</h2>
             <p style={styles.subtitle}>Approve the AI plan before you continue deeper into the editor.</p>
           </div>
-          <div style={styles.badge}>AI</div>
         </div>
 
         <div style={styles.statGrid}>
@@ -113,7 +97,7 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
                   <div style={styles.rowTitle}>{page.name}</div>
                   <div style={styles.rowSub}>{page.route || 'No route'} / {page.layout}</div>
                 </div>
-                <span style={styles.rowBadge}>{page.components.length} comps</span>
+                <span style={styles.rowBadge}>{page.components.length} component{page.components.length === 1 ? '' : 's'}</span>
               </div>
             ))}
           </section>
@@ -162,12 +146,10 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               placeholder="Add another page, tighten auth, or note a revision for the next pass..."
               aria-labelledby="blueprint-revision-title"
               style={styles.revisionInput}
-              {...ring('var(--studio-border)')}
             />
             <button
               onClick={applyRevisionHint}
               style={styles.secondaryButton}
-              {...ring('var(--studio-border)')}
               {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
             >
               Apply note
@@ -189,7 +171,6 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               }
             }}
             style={styles.secondaryButton}
-            {...ring('var(--studio-border)')}
             {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
           >
             Revise brief
@@ -201,9 +182,8 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               onApprove();
             }}
             style={styles.primaryButton}
-            {...ring('var(--studio-accent)', 'none', FOCUS_SHADOW_ON_ACCENT)}
           >
-            Approve blueprint
+            {aiReady ? 'Approve and build' : 'Approve blueprint'}
           </button>
         </div>
       </div>
@@ -211,14 +191,14 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
   );
 };
 
-// Shared with the brief wizard: mono, small, tracked, uppercase — softn.com's
-// eyebrow, used here for every kicker, stat label and count.
+// Shared with the brief wizard: labels in the sans, sentence case. The
+// tracked capitals every kicker, stat label and count used to wear made the
+// sheet shout each heading at the same volume as its title.
 const eyebrow: React.CSSProperties = {
-  fontFamily: 'var(--studio-mono)',
-  fontSize: 10.5,
+  fontFamily: 'var(--studio-body)',
+  fontSize: 13,
   fontWeight: 500,
-  letterSpacing: '0.12em',
-  textTransform: 'uppercase',
+  letterSpacing: 0,
 };
 
 const styles: Record<string, React.CSSProperties> = {
@@ -238,7 +218,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 'min(1100px, 100%)',
     maxHeight: '100%',
     overflow: 'auto',
-    borderRadius: 18,
+    borderRadius: 14,
     background: 'var(--studio-bg-elevated)',
     borderWidth: 1,
     borderStyle: 'solid',
@@ -259,9 +239,8 @@ const styles: Record<string, React.CSSProperties> = {
   eyebrow: {
     ...eyebrow,
     display: 'block',
-    fontWeight: 600,
-    color: 'var(--studio-accent)',
-    marginBottom: 10,
+    color: 'var(--studio-text-dim)',
+    marginBottom: 8,
   },
   title: {
     margin: 0,
@@ -277,19 +256,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text-muted)',
     fontSize: 14,
     lineHeight: 1.5,
-  },
-  badge: {
-    ...eyebrow,
-    padding: '6px 12px',
-    borderRadius: 999,
-    background: 'var(--studio-accent-soft)',
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: 'var(--studio-accent)',
-    color: 'var(--studio-accent)',
-    fontWeight: 600,
-    whiteSpace: 'nowrap',
-    flexShrink: 0,
   },
   statGrid: {
     display: 'grid',
@@ -370,13 +336,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   rowBadge: {
     ...eyebrow,
-    padding: '4px 8px',
-    borderRadius: 999,
-    background: 'var(--studio-bg-elevated)',
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: 'var(--studio-border)',
-    color: 'var(--studio-text-muted)',
+    fontSize: 12,
+    color: 'var(--studio-text-dim)',
     whiteSpace: 'nowrap',
     flexShrink: 0,
   },

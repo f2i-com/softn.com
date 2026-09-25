@@ -4,13 +4,14 @@ import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
 import { TopBar } from './components/toolbar/TopBar';
 import { LeftRail } from './components/layout/LeftRail';
 import { VisualCanvas } from './components/canvas/VisualCanvas';
-import { Inspector } from './components/inspector/Inspector';
 import { BottomDrawer } from './components/layout/BottomDrawer';
 import { StatusBar } from './components/layout/StatusBar';
 import { Icon } from './components/common/Icon';
 import { Dashboard, type DashboardOutcome, type RecentEntry } from './components/layout/Dashboard';
 import { BriefWizard } from './components/brief/BriefWizard';
 import { AIChat } from './components/ai/AIChat';
+import { ProviderSetupDialog } from './components/ai/ProviderSetupDialog';
+import { needsProviderSetup } from './components/ai/AIStatusPill';
 import { PagesPanel } from './components/panels/PagesPanel';
 import { HistoryPanel } from './components/panels/HistoryPanel';
 import { SettingsPanel } from './components/panels/SettingsPanel';
@@ -22,10 +23,12 @@ import {
   inferBlueprintFromFiles,
   inferBriefFromBlueprint,
   generateTaskGraph,
+  projectLogicLanguage,
 } from './lib/studioProject';
 import { validateProject } from './lib/validator';
-import { openExampleInStores } from './examples';
+import { openExampleInStores, type ExampleProject } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
+import { buildFromBrief } from './lib/agent/buildFromBrief';
 import { exportAsBundle, buildBundle } from './lib/exportBundle';
 import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import {
@@ -61,103 +64,20 @@ import {
 
 type View = 'dashboard' | 'brief' | 'editor';
 
-/**
- * Studio wears softn.com's identity rather than one of its own.
- *
- * The ground is the same cool graphite the landing page uses, the type is the
- * same Bricolage/Plex pairing, and the accent is coral — the colour of the mark
- * on softn.com, so the tool reads as part of the product instead of a generic
- * AI app that happens to export .softn files. The slate-and-sky palette this
- * replaces belonged to nothing in particular.
- *
- * `--studio-live` is separate from `--studio-accent` on purpose and carries the
- * same meaning it does on the landing page: mint marks something that is
- * actually executing — a generation in flight, a preview that has booted — and
- * nothing else is allowed to use it. Coral marks SoftN; mint marks the machine.
- *
- * The dim tones are set from the least forgiving surface they appear on rather
- * than from the page ground, because that is where they fail WCAG AA first.
- */
-function getStudioThemeVars(theme: 'light' | 'dark'): React.CSSProperties {
-  const type = {
-    '--studio-display':
-      "'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif",
-    '--studio-body': "'IBM Plex Sans', system-ui, -apple-system, sans-serif",
-    '--studio-mono': "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
-  };
-
-  if (theme === 'light') {
-    return {
-      ...type,
-      '--studio-bg': '#f4f6f9',
-      '--studio-bg-elevated': '#ffffff',
-      '--studio-bg-muted': '#eef1f6',
-      '--studio-panel': 'rgba(255,255,255,0.9)',
-      '--studio-panel-strong': '#ffffff',
-      '--studio-border': '#d5dce5',
-      '--studio-border-strong': '#bcc6d2',
-      '--studio-border-subtle': '#e4e9f0',
-      '--studio-text': '#14181d',
-      '--studio-text-muted': '#5a6472',
-      '--studio-text-dim': '#656e7c',
-      '--studio-accent': '#c2410c',
-      '--studio-accent-soft': 'rgba(194,65,12,0.10)',
-      '--studio-live': '#0f766e',
-      '--studio-live-soft': 'rgba(15,118,110,0.12)',
-      '--studio-shadow': '0 20px 40px rgba(20,24,29,0.07)',
-      '--studio-surface': 'rgba(20,24,29,0.03)',
-      '--studio-surface-hover': 'rgba(20,24,29,0.06)',
-      '--studio-inset': 'rgba(20,24,29,0.04)',
-      '--studio-overlay': 'rgba(20,24,29,0.4)',
-      '--studio-success': '#0f766e',
-      '--studio-error': '#b91c1c',
-      '--studio-warning': '#a16207',
-    } as React.CSSProperties;
-  }
-
-  return {
-    ...type,
-    '--studio-bg': '#101317',
-    '--studio-bg-elevated': '#161a20',
-    '--studio-bg-muted': '#1d222a',
-    '--studio-panel': 'rgba(22,26,32,0.84)',
-    '--studio-panel-strong': '#161a20',
-    '--studio-border': '#262c36',
-    '--studio-border-strong': '#333b47',
-    '--studio-border-subtle': '#1c212a',
-    '--studio-text': '#f2f0ec',
-    '--studio-text-muted': '#8b94a2',
-    '--studio-text-dim': '#838c9a',
-    '--studio-accent': '#ff8a4c',
-    '--studio-accent-soft': 'rgba(255,138,76,0.14)',
-    '--studio-live': '#35e0c0',
-    '--studio-live-soft': 'rgba(53,224,192,0.14)',
-    '--studio-shadow': '0 18px 40px rgba(0,0,0,0.35)',
-    '--studio-surface': 'rgba(255,255,255,0.04)',
-    '--studio-surface-hover': 'rgba(255,255,255,0.07)',
-    '--studio-inset': 'rgba(16,19,23,0.72)',
-    '--studio-overlay': 'rgba(10,12,15,0.76)',
-    '--studio-success': '#35e0c0',
-    '--studio-error': '#ff6b6b',
-    '--studio-warning': '#e8a33d',
-  } as React.CSSProperties;
-}
-
 const App: React.FC = () => {
   const [view, setView] = useState<View>('dashboard');
   const [isHydrated, setIsHydrated] = useState(false);
   const {
     leftPanel,
-    rightSidebarOpen,
-    advancedMode,
     projectName,
     blueprint,
     blueprintApproved,
-    themePreview,
   } = useWorkspaceStore();
   const { files } = useVFSStore();
+  const providerCount = useAIStore((s) => s.providers.length);
+  const setupSkipped = useAIStore((s) => s.setupSkipped);
   const [isMobile, setIsMobile] = useState(false);
-  const [mobilePanel, setMobilePanel] = useState<'chat' | 'canvas' | 'inspector'>('canvas');
+  const [mobilePanel, setMobilePanel] = useState<'chat' | 'canvas' | 'settings'>('canvas');
   const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
   const autosaveRef = useRef<AutosaveController | null>(null);
   /** The `?open=` link read once on first mount; `undefined` until read. */
@@ -179,21 +99,6 @@ const App: React.FC = () => {
     useWorkspaceStore.getState().setThemePreview(currentTheme());
     return subscribeTheme((next) => useWorkspaceStore.getState().setThemePreview(next));
   }, []);
-
-  // Each view applies the theme tokens to its own wrapper, so anything mounted
-  // outside App — the install prompt, the dashboard, any future portal —
-  // resolves every var() to the fallback baked into its stylesheet and stops
-  // following the theme. Mirroring the tokens onto the document element makes
-  // them mean the same thing everywhere.
-  useEffect(() => {
-    const root = document.documentElement;
-    const vars = getStudioThemeVars(themePreview) as Record<string, string>;
-    const applied = Object.keys(vars).filter((name) => name.startsWith('--'));
-    for (const name of applied) root.style.setProperty(name, vars[name]);
-    return () => {
-      for (const name of applied) root.style.removeProperty(name);
-    };
-  }, [themePreview]);
 
   /**
    * The dashboard's list: the recent entries, each marked with whether a
@@ -255,16 +160,16 @@ const App: React.FC = () => {
   }, [checkpointBeforeReplace]);
 
   /**
-   * Open the bundled example as a new project: the same ownership and
+   * Open a bundled example as a new project: the same ownership and
    * checkpoint steps as an import, without the decode, since the files
    * are already here.
    */
-  const handleOpenExample = useCallback(async () => {
+  const handleOpenExample = useCallback(async (example?: ExampleProject) => {
     const claim = claimWorkspace();
     abortAgentTurn();
     if (!(await checkpointBeforeReplace())) return;
     if (!ownsWorkspace(claim.generation)) return;
-    openExampleInStores();
+    openExampleInStores(example);
     setView('editor');
     void refreshRecent();
   }, [checkpointBeforeReplace, refreshRecent]);
@@ -345,11 +250,9 @@ const App: React.FC = () => {
       const importedWorkspace = useWorkspaceStore.getState();
       const importedVFS = useVFSStore.getState();
       importedWorkspace.setProjectName(importedProjectName);
-      const inferredBlueprint = inferBlueprintFromFiles(
-        importedProjectName,
-        importedVFS.getSnapshot()
-      );
-      const inferredBrief = inferBriefFromBlueprint(inferredBlueprint);
+      const importedSnapshot = importedVFS.getSnapshot();
+      const inferredBlueprint = inferBlueprintFromFiles(importedProjectName, importedSnapshot);
+      const inferredBrief = inferBriefFromBlueprint(inferredBlueprint, projectLogicLanguage(importedSnapshot));
       importedWorkspace.setBrief(inferredBrief);
       importedWorkspace.setBlueprint(inferredBlueprint);
       importedWorkspace.setBlueprintApproved(true);
@@ -551,13 +454,15 @@ const App: React.FC = () => {
   // The same bar as the site, the runtime and Builder, over every view: the
   // way between them.
   const bar = isHostedEditor() ? null : <ProductBar current="studio" />;
+  // The AI setup, over any view: every prompt to connect a provider opens it.
+  const setupDialog = isHostedEditor() ? null : <ProviderSetupDialog />;
 
   // Nothing is decided until the stored project has been read: showing the
   // dashboard for a moment and then the editor would be a flash of the
   // wrong page.
   if (!isHydrated) {
     return (
-      <div style={{ ...styles.root, ...getStudioThemeVars(themePreview) }}>
+      <div style={styles.root}>
         {bar}
         <div style={styles.fill} role="status" aria-live="polite">
           <span style={styles.booting}>Opening your project…</span>
@@ -569,7 +474,7 @@ const App: React.FC = () => {
   // Dashboard
   if (view === 'dashboard') {
     return (
-      <div style={{ ...styles.root, ...getStudioThemeVars(themePreview) }}>
+      <div style={styles.root}>
         {bar}
         <div style={styles.fill}>
           <Dashboard
@@ -579,10 +484,15 @@ const App: React.FC = () => {
             onRemoveRecent={handleRemoveRecent}
             onDeleteProject={handleDeleteProject}
             onExportProject={handleExportProject}
-            onOpenExample={() => void handleOpenExample()}
+            onOpenExample={(example) => void handleOpenExample(example)}
             recentProjects={recentProjects}
+            ai={isHostedEditor() ? undefined : {
+              gate: needsProviderSetup({ hosted: false, providerCount, setupSkipped }),
+              onSkip: () => useAIStore.getState().setSetupSkipped(true),
+            }}
           />
         </div>
+        {setupDialog}
       </div>
     );
   }
@@ -590,11 +500,12 @@ const App: React.FC = () => {
   // Brief wizard (inline, full-page) — wrapped in theme vars
   if (view === 'brief') {
     return (
-      <div style={{ ...styles.root, ...getStudioThemeVars(themePreview) }}>
+      <div style={styles.root}>
         {bar}
         <div style={styles.fill}>
           <BriefWizard onBack={handleBackToDashboard} onSubmit={() => setView('editor')} />
         </div>
+        {setupDialog}
       </div>
     );
   }
@@ -613,7 +524,7 @@ const App: React.FC = () => {
   // could not leave the device.
   if (isMobile) {
     return (
-      <div style={{ ...styles.mobileRoot, ...getStudioThemeVars(themePreview) }}>
+      <div style={styles.mobileRoot}>
         {bar}
         {/* Compact mobile top bar */}
         <div style={styles.mobileTopBar}>
@@ -637,7 +548,7 @@ const App: React.FC = () => {
         <div style={styles.mobileContent}>
           {mobilePanel === 'chat' && (
             <div style={styles.mobilePanel}>
-              <AIChat onOpenSettings={() => setMobilePanel('inspector')} />
+              <AIChat />
             </div>
           )}
           {mobilePanel === 'canvas' && (
@@ -645,7 +556,7 @@ const App: React.FC = () => {
               <VisualCanvas onStartBrief={handleNewProject} />
             </div>
           )}
-          {mobilePanel === 'inspector' && (
+          {mobilePanel === 'settings' && (
             <div style={styles.mobilePanel}>
               <SettingsPanel />
             </div>
@@ -655,7 +566,7 @@ const App: React.FC = () => {
           {[
             { id: 'chat' as const, label: 'AI Chat', icon: 'ai' as const },
             { id: 'canvas' as const, label: 'Preview', icon: 'eye' as const },
-            { id: 'inspector' as const, label: 'Settings', icon: 'settings' as const },
+            { id: 'settings' as const, label: 'Settings', icon: 'settings' as const },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -678,17 +589,22 @@ const App: React.FC = () => {
 
         {!blueprintApproved && blueprint && view === 'editor' && (
           <BlueprintReview
-            onApprove={() => useWorkspaceStore.getState().setMode('design')}
+            onApprove={() => {
+              useWorkspaceStore.getState().setMode('design');
+              // The agent builds the app to the brief; the chat is where that shows.
+              if (buildFromBrief()) setMobilePanel('chat');
+            }}
             onReviseBrief={() => setView('brief')}
           />
         )}
+        {setupDialog}
       </div>
     );
   }
 
   // Desktop editor
   return (
-    <div style={{ ...styles.root, ...getStudioThemeVars(themePreview) }}>
+    <div style={styles.root}>
       {bar}
       <TopBar onBackToDashboard={handleBackToDashboard} />
       <div style={styles.main}>
@@ -697,15 +613,18 @@ const App: React.FC = () => {
           <VisualCanvas onStartBrief={handleNewProject} />
           <BottomDrawer />
         </div>
-        {advancedMode && rightSidebarOpen && leftPanel !== 'ai' && <Inspector />}
       </div>
       <StatusBar />
       {!blueprintApproved && blueprint && view === 'editor' && (
         <BlueprintReview
-          onApprove={() => useWorkspaceStore.getState().setMode('design')}
+          onApprove={() => {
+            useWorkspaceStore.getState().setMode('design');
+            buildFromBrief();
+          }}
           onReviseBrief={() => setView('brief')}
         />
       )}
+      {setupDialog}
     </div>
   );
 };

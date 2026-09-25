@@ -2,13 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import type { XDBRecord } from '@softn/core';
 import type { VFSFile } from '../src/types/studio';
 import {
-  assemblePreviewSource,
   buildPreviewXDBState,
   clearPreviewXDBCollections,
+  composePreviewProject,
   previewDataKey,
   replacePreviewXDBCollections,
   shouldReseedPreviewData,
+  stripTemplateComments,
+  type PreviewComposition,
 } from '../src/lib/previewProject';
+import { READING_LIST } from '../src/examples/readingList';
+import { READING_LIST_PYTHON } from '../src/examples/readingListPython';
 
 function textFile(path: string, content: string): VFSFile {
   return {
@@ -21,103 +25,143 @@ function textFile(path: string, content: string): VFSFile {
   };
 }
 
-describe('Studio preview project assembly', () => {
-  it('preloads declared helpers once before components and entry code, as the runtime does', () => {
-    const main = '<logic src="../logic/main.logic" /><import Card from="./Card.ui" /><Card />';
-    const uiFiles = new Map([
-      ['ui/main.ui', main],
-      ['ui/Card.ui', '<logic src="../logic/card.logic" /><Text>{heading}</Text>'],
-    ]);
-    const logicFiles = new Map([
-      ['logic/main.logic', 'let heading = helperLabel + cardLabel;'],
-      ['logic/helpers.logic', 'import "./shared.logic";\nlet helperLabel = "From helper";'],
-      ['logic/card.logic', 'let cardLabel = helperLabel + " card";'],
-      ['logic/shared.logic', 'let shared = true;'],
-      ['server/api.logic', 'let serverOnly = true;'],
-    ]);
-    const result = assemblePreviewSource('ui/main.ui', main, uiFiles, logicFiles,
-      ['logic/helpers.logic', 'logic/card.logic', 'logic/main.logic', 'logic/helpers.logic']);
-    expect(result.source.indexOf('let helperLabel')).toBeLessThan(result.source.indexOf('let cardLabel'));
-    expect(result.source.indexOf('let cardLabel')).toBeLessThan(result.source.indexOf('let heading'));
-    expect(result.source.match(/let helperLabel/g)).toHaveLength(1);
-    expect(result.source.match(/let cardLabel/g)).toHaveLength(1);
-    expect(result.source).toContain('import "logic/shared.logic";');
-    expect(result.source).not.toContain('serverOnly');
-    expect(new Set(result.preIncludedLogicPaths)).toEqual(new Set(['logic/main.logic', 'logic/card.logic', 'logic/helpers.logic']));
+/** A project's files as the VFS holds them. */
+function project(entries: Array<{ path: string; content: string }>): Map<string, VFSFile> {
+  return new Map(entries.map((entry) => [entry.path, textFile(entry.path, entry.content)]));
+}
+
+/** The composition, or the test fails naming the composer's refusal. */
+function composed(files: Map<string, VFSFile>, main = 'ui/main.ui'): PreviewComposition {
+  const result = composePreviewProject(files, main);
+  if (!result.ok) throw new Error(`expected the preview to compose, but: ${result.error}`);
+  return result.composition;
+}
+
+/**
+ * The preview composes through core's composer, as Run does. Studio used to
+ * assemble it itself: .logic only, bare paths from the bundle root, a missing
+ * logic file skipped. Each of those made the preview disagree with the runtime.
+ */
+describe('Studio preview composition', () => {
+  it('previews a Python app with its modules, in the language the runtime will run it in', () => {
+    const composition = composed(project(READING_LIST_PYTHON.files));
+    expect(composition.languages).toContain('python');
+    expect(composition.python?.modules).toEqual(['shelf', 'main']);
+    expect(composition.python?.files.main).toContain('def go(page_id):');
+    expect(composition.logicBasePath).toBe('logic/main.py');
+    // The markup keeps an empty logic block: the Python project is the code.
+    expect(composition.source).toMatch(/<logic>\n<\/logic>$/);
   });
 
-  it('does not execute manifest helpers for an inline-only app or absent paths', () => {
-    const inline = '<logic>let heading = "Inline";</logic><Text>{heading}</Text>';
-    const result = assemblePreviewSource('ui/main.ui', inline, new Map(),
-      new Map([['logic/helpers.logic', 'let unused = true;']]), ['logic/helpers.logic', '../missing.logic']);
-    expect(result.source).not.toContain('unused');
-    expect(result.source).toContain('let heading = "Inline";');
+  it('previews a JavaScript app as before: its logic inlined, no Python project', () => {
+    const composition = composed(project(READING_LIST.files));
+    expect(composition.languages).toEqual(['javascript']);
+    expect(composition.python).toBeUndefined();
+    expect(composition.logicBasePath).toBe('logic/main.logic');
+    expect(composition.source).toContain('let appName = "Reading list"');
+    expect(composition.source).toContain('<Heading level={2}>Home</Heading>');
+    expect(composition.source.match(/<logic>/g)).toHaveLength(1);
   });
 
-  it('runs the component entry after helpers when the main UI has no logic', () => {
-    const main = '<import Card from="./Card.ui" /><Card />';
-    const result = assemblePreviewSource('ui/main.ui', main,
-      new Map([['ui/Card.ui', '<logic src="../logic/card.logic" /><Text>{cardLabel}</Text>']]),
-      new Map([['logic/card.logic', 'let cardLabel = helperLabel;'], ['logic/helpers.logic', 'let helperLabel = "Ready";']]),
-      ['logic/card.logic', 'logic/helpers.logic']);
-    expect(result.source.indexOf('let helperLabel')).toBeLessThan(result.source.indexOf('let cardLabel'));
-    expect(result.source.match(/let cardLabel/g)).toHaveLength(1);
-  });
-
-  it("keeps imported components' inline and external logic with safe owner-relative paths", () => {
-    const uiFiles = new Map([
-      [
-        'ui/main.ui',
-        '<logic>let fromMain = cardTitle;</logic>\n<import Card from="./components/Card.ui" />\n<Stack><Card /></Stack>',
-      ],
-      [
-        'ui/components/Card.ui',
-        '<logic src="../../logic/card.logic" />\n<logic>let inlineCard = true;</logic>\n<Text>{cardTitle}</Text>',
-      ],
+  it('runs the manifest helpers once, before component and entry logic, and never a server file', () => {
+    const files = project([
+      {
+        path: 'manifest.json',
+        content: JSON.stringify({
+          name: 'Helpers',
+          main: 'ui/main.ui',
+          files: { logic: ['logic/helpers.logic', 'logic/card.logic', 'logic/main.logic', 'logic/helpers.logic'] },
+        }),
+      },
+      { path: 'ui/main.ui', content: '<logic src="../logic/main.logic" /><import Card from="./Card.ui" /><Card />' },
+      { path: 'ui/Card.ui', content: '<logic src="../logic/card.logic" /><Text>{heading}</Text>' },
+      { path: 'logic/main.logic', content: 'let heading = helperLabel + cardLabel;' },
+      { path: 'logic/helpers.logic', content: 'import "./shared.logic";\nlet helperLabel = "From helper";' },
+      { path: 'logic/card.logic', content: 'let cardLabel = helperLabel + " card";' },
+      { path: 'logic/shared.logic', content: 'let shared = true;' },
+      { path: 'server/api.logic', content: 'let serverOnly = true;' },
     ]);
-    const logicFiles = new Map([
-      ['logic/card.logic', 'import "./shared.logic";\nlet cardTitle = "Card";'],
-      ['logic/shared.logic', 'let shared = true;'],
-    ]);
-
-    const result = assemblePreviewSource(
-      'ui/main.ui',
-      uiFiles.get('ui/main.ui')!,
-      uiFiles,
-      logicFiles
-    );
-
-    expect(result.source).toContain('let cardTitle = "Card";');
-    expect(result.source).toContain('let inlineCard = true;');
-    expect(result.source).toContain('import "logic/shared.logic";');
-    expect(result.source).toContain('<Text>{cardTitle}</Text>');
-    expect(result.source.match(/<logic>/g)).toHaveLength(1);
-    expect(result.preIncludedLogicPaths).toEqual(['logic/card.logic']);
-    expect(result.source.indexOf('let cardTitle')).toBeLessThan(
-      result.source.indexOf('let fromMain')
-    );
+    const { source } = composed(files);
+    expect(source.indexOf('let helperLabel')).toBeLessThan(source.indexOf('let cardLabel'));
+    expect(source.indexOf('let cardLabel')).toBeLessThan(source.indexOf('let heading'));
+    expect(source.match(/let helperLabel/g)).toHaveLength(1);
+    expect(source).toContain('import "logic/shared.logic";');
+    expect(source).not.toContain('serverOnly');
   });
 
-  it('does not resolve component or logic references that traverse above the project root', () => {
-    const uiFiles = new Map([
-      [
-        'main.ui',
-        '<logic src="../outside.logic" />\n<import Escape from="../outside.ui" />\n<Stack><Escape /></Stack>',
-      ],
-      ['outside.ui', '<Text>Escaped</Text>'],
-    ]);
-    const result = assemblePreviewSource(
-      'main.ui',
-      uiFiles.get('main.ui')!,
-      uiFiles,
-      new Map([['outside.logic', 'let escaped = true;']])
-    );
-
-    expect(result.source).not.toContain('let escaped');
-    expect(result.source).not.toContain('<Text>Escaped</Text>');
-    expect(result.preIncludedLogicPaths).toEqual([]);
+  it('refuses a <logic src> whose file is missing, as Run does, instead of previewing without it', () => {
+    const files = project([{ path: 'ui/main.ui', content: '<logic src="../logic/missing.logic" />\n<Text>Hi</Text>' }]);
+    const result = composePreviewProject(files, 'ui/main.ui');
+    expect(result).toEqual({ ok: false, error: expect.stringContaining('logic/missing.logic is referenced by ui/main.ui but is not in the bundle') });
   });
 
+  it('resolves a bare logic path from the importing file, as the runtime does, not from the bundle root', () => {
+    const files = project([
+      { path: 'ui/main.ui', content: '<logic src="logic/app.logic" />\n<Text>{label}</Text>' },
+      { path: 'logic/app.logic', content: 'let label = "root";' },
+    ]);
+    const result = composePreviewProject(files, 'ui/main.ui');
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain('ui/logic/app.logic');
+  });
+
+  it('refuses references that traverse above the project root', () => {
+    const files = project([
+      { path: 'main.ui', content: '<logic src="../outside.logic" />\n<Stack />' },
+      { path: 'outside.logic', content: 'let escaped = true;' },
+    ]);
+    const result = composePreviewProject(files, 'main.ui');
+    expect(result.ok).toBe(false);
+  });
+
+  it('refuses an app that mixes JavaScript and Python logic', () => {
+    const files = project([
+      { path: 'ui/main.ui', content: '<logic src="../logic/main.py" />\n<logic>let js = 1</logic>\n<Text>x</Text>' },
+      { path: 'logic/main.py', content: 'count = 0\n' },
+    ]);
+    const result = composePreviewProject(files, 'ui/main.ui');
+    expect(!result.ok && result.error).toMatch(/mixes Python and JavaScript/);
+  });
+
+  it("rewrites an imported logic file's own imports relative to that file", async () => {
+    const files = project([
+      { path: 'ui/main.ui', content: '<logic src="../logic/main.logic" />\n<Text>x</Text>' },
+      { path: 'logic/main.logic', content: 'import "./lib/util.logic";\nlet x = 1;' },
+      { path: 'logic/lib/util.logic', content: 'import "./deeper.logic";\nlet util = 1;' },
+      { path: 'logic/lib/deeper.logic', content: 'let deeper = 1;' },
+    ]);
+    const { importResolver } = composed(files);
+    expect(await importResolver('logic/lib/util.logic')).toBe('import "logic/lib/deeper.logic";\nlet util = 1;');
+    expect(await importResolver('logic/nope.logic')).toBeNull();
+  });
+
+  it('never resolves private editor state as a logic import', async () => {
+    const files = project([
+      { path: 'ui/main.ui', content: '<Text>x</Text>' },
+      { path: 'builder/notes.logic', content: 'let secret = 1;' },
+    ]);
+    expect(await composed(files).importResolver('builder/notes.logic')).toBeNull();
+  });
+});
+
+describe('template comment stripping in the preview', () => {
+  it('keeps markup between a MIME wildcard and a later */ in the template', () => {
+    const source = '<FileChooser accept="image/*" />\n<Text>Keep me</Text>\n<Text>{a */ b}</Text>';
+    const out = stripTemplateComments(source);
+    expect(out).toContain('<Text>Keep me</Text>');
+    expect(out).toContain('accept="image/*"');
+  });
+
+  it("removes a template's // line comments and leaves logic and style alone", () => {
+    const source = '// a note\n<Text>Shown</Text>\n<logic>\n// kept\nlet x = "/*"\n</logic>';
+    const out = stripTemplateComments(source);
+    expect(out).not.toContain('a note');
+    expect(out).toContain('<Text>Shown</Text>');
+    expect(out).toContain('// kept\nlet x = "/*"');
+  });
+});
+
+describe('Studio preview data', () => {
   it('uses the shared XDB record shape and batches replacement and disposal notifications', () => {
     const files = new Map([
       [

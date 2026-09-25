@@ -74,6 +74,9 @@ function collectEntries(files: Map<string, VFSFile>): Collected {
 
 const MANAGED_GROUPS = new Set(['ui', 'logic', 'server', 'xdb', 'assets']);
 
+/** A logic file in either language the runtime runs: `.logic` is JavaScript, `.py` is Python. */
+const LOGIC_FILE = /\.(logic|py)$/i;
+
 /**
  * The manifest a bundle needs, from whatever the project has, with the
  * warnings the rebuild raised.
@@ -139,7 +142,14 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
     return [...ordered, ...remaining.values()];
   };
   const ui = group('ui', (p) => /\.ui$/i.test(p));
-  const logic = group('logic', (p) => /\.logic$/i.test(p) && !p.startsWith('server/'));
+  // A `.py` file is logic exactly as a `.logic` file is: its name is what
+  // says it is Python. Matching `.logic` alone filed a Python app's modules
+  // under assets, so the runtime never offered them to the composer as
+  // helpers and a module the entry imports by name was not there.
+  const logic = group('logic', (p) => LOGIC_FILE.test(p) && !p.startsWith('server/'));
+  // Server logic stays `.logic`: the PHP and Rust hosts run it as JavaScript
+  // only, so a `server/*.py` is not server logic any host can run (the
+  // validator says so rather than exporting it as if it were).
   const server = group('server', (p) => p.startsWith('server/') && /\.logic$/i.test(p));
   const xdb = group('xdb', (p) => /\.xdb$/i.test(p));
   const known = new Set([...ui, ...logic, ...server, ...xdb]);

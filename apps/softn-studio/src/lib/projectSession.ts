@@ -1,10 +1,12 @@
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
+import { DEFAULT_TOKEN_BUDGET } from '../stores/aiStore';
 import { bundleNameFromUrl, resolveBundleUrl } from '@softn/bundle-format/url';
 import { fetchSameOriginBundle } from '@softn/editor-shared/remoteOpen';
 import {
   clearLegacySnapshots,
   deleteProjectRecord,
   loadActiveProjectId,
+  normalizeMode,
   loadGlobalSettings,
   loadProjectRecord,
   migrateLegacyProject,
@@ -208,13 +210,15 @@ export function collectProjectRecord(rev: number, now = Date.now()): ProjectReco
       mode: ws.mode,
       leftPanel: ws.leftPanel,
       leftPanelExpanded: ws.leftPanelExpanded,
-      rightSidebarOpen: ws.rightSidebarOpen,
+      // Kept for an older Studio (a cached service worker, say) opening
+      // this record: its reader requires them. This one ignores them.
+      rightSidebarOpen: true,
       bottomDrawerOpen: ws.bottomDrawerOpen,
       bottomTab: ws.bottomTab,
-      advancedMode: ws.advancedMode,
+      advancedMode: false,
       activePageId: ws.activePageId,
       activeFilePath: ws.activeFilePath,
-      selectedComponentId: ws.selectedComponentId,
+      selectedComponentId: null,
       devicePreset: ws.devicePreset,
       zoom: ws.zoom,
       themePreview: ws.themePreview,
@@ -248,16 +252,13 @@ export function applyProjectRecord(record: ProjectRecord): void {
       blueprint: ws.blueprint,
       taskGraph: ws.taskGraph,
       blueprintApproved: ws.blueprintApproved,
-      mode: ws.mode as never,
+      mode: normalizeMode(ws.mode),
       leftPanel: ws.leftPanel as never,
       leftPanelExpanded: ws.leftPanelExpanded,
-      rightSidebarOpen: ws.rightSidebarOpen,
       bottomDrawerOpen: ws.bottomDrawerOpen,
       bottomTab: ws.bottomTab as never,
-      advancedMode: ws.advancedMode,
       activePageId: ws.activePageId,
       activeFilePath: ws.activeFilePath,
-      selectedComponentId: ws.selectedComponentId,
       devicePreset: ws.devicePreset as never,
       zoom: ws.zoom,
       themePreview: theme,
@@ -292,14 +293,22 @@ function applyGlobalSettings(): void {
     providers: settings.providers,
     activeProviderId: settings.activeProviderId,
     modelProfile: settings.modelProfile,
+    setupSkipped: settings.setupSkipped ?? false,
   });
   // Through the setters, so a value written by an older Studio with wider
   // bounds lands clamped rather than as written. Absent means the default.
   const ai = useAIStore.getState();
   ai.setMaxIterations(settings.maxIterations);
-  ai.setTokenBudget(settings.tokenBudget);
+  // Settings saved before the agent loop (no agentSettings) carry the
+  // single-shot budget of 50,000 tokens, which an agent run spends in a few
+  // steps. They are raised to the agent default once; a budget chosen since
+  // is kept as chosen.
+  ai.setTokenBudget(settings.agentSettings === undefined ? Math.max(settings.tokenBudget, DEFAULT_TOKEN_BUDGET) : settings.tokenBudget);
   if (settings.requestTimeoutMs !== undefined) ai.setRequestTimeoutMs(settings.requestTimeoutMs);
   if (settings.maxOutputTokens !== undefined) ai.setMaxOutputTokens(settings.maxOutputTokens);
+  if (settings.agentSettings !== undefined) ai.updateAgentSettings(settings.agentSettings);
+  if (settings.toolProtocols !== undefined) useAIStore.setState({ toolProtocols: settings.toolProtocols });
+  if (settings.streamModes !== undefined) useAIStore.setState({ streamModes: settings.streamModes });
 }
 
 /** The AI store's settings part to its own key. Returns the write's result. */
@@ -313,6 +322,10 @@ export function persistGlobalSettings(): SaveResult {
     tokenBudget: ai.tokenBudget,
     requestTimeoutMs: ai.requestTimeoutMs,
     maxOutputTokens: ai.maxOutputTokens,
+    setupSkipped: ai.setupSkipped,
+    agentSettings: ai.agentSettings,
+    toolProtocols: ai.toolProtocols,
+    streamModes: ai.streamModes,
   });
 }
 
@@ -460,7 +473,11 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
         state.maxIterations !== previous.maxIterations ||
         state.tokenBudget !== previous.tokenBudget ||
         state.requestTimeoutMs !== previous.requestTimeoutMs ||
-        state.maxOutputTokens !== previous.maxOutputTokens
+        state.maxOutputTokens !== previous.maxOutputTokens ||
+        state.setupSkipped !== previous.setupSkipped ||
+        state.agentSettings !== previous.agentSettings ||
+        state.toolProtocols !== previous.toolProtocols ||
+        state.streamModes !== previous.streamModes
       ) {
         const written = persistGlobalSettings();
         if (!written.ok) {

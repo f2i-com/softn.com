@@ -13,7 +13,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   collectionKey,
+  findPageFile,
   generateBlueprintFromBrief,
+  pageFileCandidates,
+  pageSlugs,
   resolveActivePreviewPath,
   scaffoldProjectFiles,
 } from '../src/lib/studioProject';
@@ -237,5 +240,37 @@ describe('preview selection after replacing an imported project', () => {
     expect(resolveActivePreviewPath(importedFiles, 'ui/main.ui', 'ui/missing.ui')).toBe(
       'ui/main.ui'
     );
+  });
+});
+
+/**
+ * One page-path rule. The scaffold writes `ui/pages/<slug>.ui`; the pages
+ * panel looked in `pages/` and `ui/` only, so a page of a project Studio had
+ * just made could not be opened from the panel, and its slug rule differed
+ * from the scaffold's and the validator's.
+ */
+describe('where a blueprint page lives', () => {
+  it('finds every scaffolded page, including two whose names collapse to one slug', () => {
+    const brief = { appName: 'A', description: 'B', target: 'web', style: 'clean', pages: ['Home', 'Home!', 'Team Settings'], collections: [], authNeeded: false } as unknown as ProjectBrief;
+    const blueprint = generateBlueprintFromBrief(brief);
+    const vfs = toVfs(scaffoldProjectFiles(brief, blueprint));
+    expect(blueprint.pages.map((_page, index) => findPageFile(vfs, blueprint.pages, index))).toEqual([
+      'ui/pages/home.ui',
+      'ui/pages/home-2.ui',
+      'ui/pages/team-settings.ui',
+    ]);
+    expect(validateProject(vfs, blueprint).filter((e) => e.type === 'missing-page-file')).toEqual([]);
+  });
+
+  it('still finds a page in the older and imported shapes, and nothing when there is no file', () => {
+    const pages = [{ name: 'About' }, { name: 'Contact' }, { name: 'Missing' }];
+    const vfs = toVfs([
+      { path: 'ui/about.ui', content: '<Text>About</Text>' },
+      { path: 'pages/contact.html', content: '<p>Contact</p>' },
+    ]);
+    expect(findPageFile(vfs, pages, 0)).toBe('ui/about.ui');
+    expect(findPageFile(vfs, pages, 1)).toBe('pages/contact.html');
+    expect(findPageFile(vfs, pages, 2)).toBeNull();
+    expect(pageFileCandidates(pageSlugs(pages)[2])[0]).toBe('ui/pages/missing.ui');
   });
 });

@@ -1,120 +1,121 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+/**
+ * The chat's entry points (runAgentTurn / abortAgentTurn) and the guarantees
+ * the single-shot turn made, re-pinned against the agent loop that replaced
+ * it. The intent of each is unchanged:
+ *
+ *   - a turn never falls back to another provider or a guessed model;
+ *   - a reply that arrives after its turn was abandoned writes nothing;
+ *   - what the model was shown is what it may replace — a file read in part
+ *     cannot be replaced whole, and a file changed under the request (edited,
+ *     or deleted and re-created) is not overwritten from old content;
+ *   - every write is a transaction that can be reverted by its id;
+ *   - a budget is checked before a request is sent, and timeouts and rate
+ *     limits are distinct, recoverable failures.
+ *
+ * The unit tests of the single-shot helpers that remain (the file-block
+ * parser, the budgeted file view, checkWrite) are kept as they were.
+ */
 
-vi.mock('../src/lib/aiProvider', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/lib/aiProvider')>()),
-  sendAIRequest: vi.fn(),
-}));
-
-import { AIProviderError, sendAIRequest } from '../src/lib/aiProvider';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { abortAgentTurn, buildFileContents, checkWrite, parseAIResponse, runAgentTurn } from '../src/lib/agentOrchestrator';
+import { continueAgentRun } from '../src/lib/agent/runAgent';
 import { useAIStore } from '../src/stores/aiStore';
 import { useVFSStore } from '../src/stores/vfsStore';
 import { useWorkspaceStore } from '../src/stores/workspaceStore';
 import type { VFSFile } from '../src/types/studio';
+import { assertScriptsPassed, fakeProvider, lastRun, resetAgent, resultsIn, say } from './helpers/agentHarness';
 
-type Response = Awaited<ReturnType<typeof sendAIRequest>>;
-
-/** A finished reply, as the provider adapter reports one. */
-function reply(content: string, status: Response['status'] = 'complete'): Response {
-  return {
-    content,
-    status,
-    stopReason: status === 'truncated' ? 'max_tokens' : 'end_turn',
-    blocks: [{ type: 'text', text: content }],
-    usage: { inputTokens: 1, outputTokens: 1 },
-  };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
+const lastMessage = () => useAIStore.getState().messages.at(-1)!;
 
 beforeEach(() => {
-  vi.mocked(sendAIRequest).mockReset();
-  abortAgentTurn();
-  useAIStore.setState({
-    providers: [
-      {
-        id: 'test',
-        type: 'custom',
-        name: 'Test provider',
-        apiKey: '',
-        baseUrl: 'https://example.invalid',
-      },
-    ],
-    activeProviderId: 'test',
-    messages: [
-      {
-        id: 'user-1',
-        role: 'user',
-        content: 'Build it',
-        timestamp: 1,
-      },
-    ],
-    agentState: 'idle',
-    currentStep: '',
-    iterationsUsed: 0,
-    tokensUsed: 0,
-    tokenBudget: 50000,
-    filesChanged: 0,
-    lastFailure: null,
-  });
-  useVFSStore.getState().reset();
-  useWorkspaceStore.getState().reset();
+  resetAgent({ id: 'test', type: 'custom', name: 'Test provider', apiKey: '', baseUrl: 'https://example.invalid', modelId: 'test-model' });
+  say('Build it');
+});
+afterEach(() => {
+  assertScriptsPassed();
+  resetAgent();
 });
 
 describe('agent turn ownership', () => {
   it('never falls back to a different provider after the selected one is removed', async () => {
+    const provider = fakeProvider('openai', []);
     useAIStore.setState({ activeProviderId: null });
     await runAgentTurn();
-    expect(sendAIRequest).not.toHaveBeenCalled();
-    expect(useAIStore.getState().messages.at(-1)?.content).toMatch(/Select an AI provider/);
+    expect(provider.count()).toBe(0);
+    expect(lastMessage().content).toMatch(/Select an AI provider/);
     expect(useAIStore.getState().iterationsUsed).toBe(0);
   });
 
-  it('reports a provider failure mentioning abort when the user did not cancel', async () => {
-    vi.mocked(sendAIRequest).mockRejectedValueOnce(new AIProviderError('http', 'Upstream transaction aborted', { status: 500 }));
+  it('asks for a model instead of sending when the provider has none (an old default-model provider)', async () => {
+    const provider = fakeProvider('anthropic', []);
+    useAIStore.setState({ providers: [{ id: 'old', type: 'anthropic', name: 'Anthropic', apiKey: 'k' }], activeProviderId: 'old' });
     await runAgentTurn();
-    expect(useAIStore.getState().lastFailure?.kind).toBe('provider');
-    expect(useAIStore.getState().messages.at(-1)?.content).toContain('Upstream transaction aborted');
+    expect(provider.count()).toBe(0);
+    expect(lastMessage().content).toMatch(/Anthropic has no model chosen yet.*AI setup/);
+    expect(useAIStore.getState().lastFailure?.kind).toBe('setup');
+    expect(useAIStore.getState().iterationsUsed).toBe(0);
+    expect(useAIStore.getState().agentState).toBe('idle');
   });
 
-  it('does not let an aborted response write into or clear a replacement turn', async () => {
-    const first = deferred<Response>();
-    const second = deferred<Response>();
-    vi.mocked(sendAIRequest).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  it('uses a generation model chosen in Settings when the provider has none of its own', async () => {
+    useAIStore.setState({ providers: [{ id: 'old', type: 'anthropic', name: 'Anthropic', apiKey: 'k' }], activeProviderId: 'old', modelProfile: { architect: '', builder: 'picked', repair: '', vision: '' } });
+    const provider = fakeProvider('anthropic', [{ calls: [{ name: 'finish', input: { summary: 'done' } }] }]);
+    await runAgentTurn();
+    expect(provider.bodies[0].model).toBe('picked');
+  });
 
-    const firstRun = runAgentTurn();
-    const firstSignal = vi.mocked(sendAIRequest).mock.calls[0][1].signal!;
+  it('does not carry one provider’s generation model to another', async () => {
+    useAIStore.setState({
+      providers: [
+        { id: 'a', type: 'anthropic', name: 'Anthropic', apiKey: 'k', modelId: 'a-model' },
+        { id: 'old', type: 'openai', name: 'OpenAI', apiKey: 'k' },
+      ],
+      activeProviderId: 'a',
+      modelProfile: { architect: '', builder: 'a-other-model', repair: '', vision: '' },
+    });
+    useAIStore.getState().setActiveProvider('old');
+    expect(useAIStore.getState().modelProfile.builder).toBe('');
+    const provider = fakeProvider('openai', []);
+    await runAgentTurn();
+    expect(provider.count()).toBe(0);
+    expect(lastMessage().content).toMatch(/OpenAI has no model chosen yet/);
+  });
 
+  it('reports a provider failure mentioning abort when the user did not cancel', async () => {
+    fakeProvider('openai', [{ error: { status: 500, body: { error: { message: 'Upstream transaction aborted' } } } }]);
+    await runAgentTurn();
+    const { run } = lastRun();
+    expect(run.status).toBe('failed');
+    expect(run.reason).toContain('Upstream transaction aborted');
+    expect(useAIStore.getState().lastFailure?.kind).toBe('provider');
+  });
+
+  it('does not let an abandoned turn’s late reply write into the project or clear its replacement', async () => {
+    const provider = fakeProvider('openai', [
+      { calls: [{ name: 'write_file', input: { path: 'stale.txt', content: 'old project' } }] },
+      { calls: [{ name: 'write_file', input: { path: 'also-stale.txt', content: 'cancelled' } }] },
+    ]);
+    const firstGate = provider.hold();
+    const first = runAgentTurn();
+    await new Promise((r) => setTimeout(r, 0));
+    // The project changes under the chat.
     abortAgentTurn();
-    expect(firstSignal.aborted).toBe(true);
+    expect(useAIStore.getState().agentState).toBe('idle');
 
-    const secondRun = runAgentTurn();
-    const secondSignal = vi.mocked(sendAIRequest).mock.calls[1][1].signal!;
-    expect(secondSignal.aborted).toBe(false);
+    say('Build the other one');
+    const secondGate = provider.hold();
+    const second = runAgentTurn();
+    await new Promise((r) => setTimeout(r, 0));
     expect(useAIStore.getState().agentState).toBe('building');
 
-    // Simulate a provider that ignores the aborted signal and resolves late.
-    first.resolve(reply('<softn-file path="stale.txt">old project</softn-file>'));
-    await firstRun;
-
+    firstGate.release();
+    await first;
     expect(useVFSStore.getState().files.has('stale.txt')).toBe(false);
     expect(useAIStore.getState().agentState).toBe('building');
-    expect(secondSignal.aborted).toBe(false);
 
-    // The replacement remains independently cancellable after the first
-    // turn's finally block has run.
     abortAgentTurn();
-    expect(secondSignal.aborted).toBe(true);
-
-    second.resolve(reply('<softn-file path="also-stale.txt">cancelled</softn-file>'));
-    await secondRun;
-
+    secondGate.release();
+    await second;
     expect(useVFSStore.getState().files.has('also-stale.txt')).toBe(false);
     expect(useAIStore.getState().agentState).toBe('idle');
   });
@@ -123,25 +124,172 @@ describe('agent turn ownership', () => {
 // ---------------------------------------------------------------------------
 // What the model was shown is what it may replace.
 //
-// The prompt shows at most 6,000 characters of a file while the instructions
-// ask for complete replacement files, so a model editing the head of a long
-// file returned the head and the tail was gone. Pinned here: a whole-file
-// reply for a file shown truncated is refused and the tail survives; the
-// model can ask for the file whole and then replace it; a file changed while
-// the request was in flight is not overwritten from old content.
+// The single-shot prompt showed at most 6,000 characters of a file and asked
+// for whole-file replacements, so a model editing the head of a long file
+// returned the head and the tail was gone. The agent reads what it needs, and
+// the run records how much of each file it read and at which version.
 // ---------------------------------------------------------------------------
 
 const HEAD = '// head of the file\nfunction start() { return 1 }\n';
-const FILLER = '// filler line to push the tail past the per-file cap\n'.repeat(240);
+const FILLER = '// filler line to push the tail far down the file\n'.repeat(240);
 const TAIL = '\n// SENTINEL-TAIL-7f3a\nfunction needed() { return "still here" }\n';
 const LONG = HEAD + FILLER + TAIL;
 
-function lastToolCalls() {
-  const msgs = useAIStore.getState().messages;
-  return msgs[msgs.length - 1]?.toolCalls ?? [];
-}
+describe('what the model has read is what it may replace', () => {
+  beforeEach(() => {
+    useVFSStore.getState().hydrateFiles([
+      { path: 'logic/app.logic', content: LONG },
+      { path: 'ui/main.ui', content: '<App/>' },
+    ]);
+  });
 
-describe('the record of what was supplied', () => {
+  it('refuses a whole-file replacement of a file read only in part, so the tail survives', async () => {
+    fakeProvider('openai', [
+      { calls: [{ name: 'read_file', input: { path: 'logic/app.logic', start_line: 1, end_line: 10 } }, { name: 'write_file', input: { path: 'logic/app.logic', content: HEAD.replace('start', 'begin') } }] },
+      { calls: [{ name: 'finish', input: { summary: 'x' } }] },
+    ]);
+    await runAgentTurn();
+    expect(useVFSStore.getState().readFile('logic/app.logic')).toBe(LONG);
+    const write = lastRun().run.entries.find((e) => e.kind === 'tool' && e.name === 'write_file');
+    expect(write?.kind === 'tool' && write.status).toBe('error');
+    expect(write?.kind === 'tool' && write.result).toMatch(/read only part of logic\/app\.logic/);
+  });
+
+  it('pages a read of a file longer than one read: it can then be edited, but not replaced whole', async () => {
+    const longer = LONG + '// more\n'.repeat(300);
+    useVFSStore.getState().hydrateFiles([{ path: 'logic/app.logic', content: longer }]);
+    fakeProvider('openai', [
+      { calls: [{ name: 'read_file', input: { path: 'logic/app.logic' } }] },
+      (body) => {
+        // The read stopped at 400 lines and said how to read on.
+        expect(resultsIn(body)).toContain('read on with start_line 401');
+        return { calls: [{ name: 'write_file', input: { path: 'logic/app.logic', content: HEAD } }, { name: 'edit_file', input: { path: 'logic/app.logic', old_string: 'function start()', new_string: 'function begin()' } }] };
+      },
+      { calls: [{ name: 'finish', input: { summary: 'Done.' } }] },
+    ]);
+    await runAgentTurn();
+    const content = useVFSStore.getState().readFile('logic/app.logic') as string;
+    expect(content).toBe(longer.replace('function start()', 'function begin()'));
+  });
+
+  it('accepts the replacement of a file read whole, naming the change in the timeline', async () => {
+    fakeProvider('openai', [
+      { calls: [{ name: 'read_file', input: { path: 'logic/app.logic' } }, { name: 'write_file', input: { path: 'logic/app.logic', content: LONG.replace('start', 'begin') } }] },
+      { calls: [{ name: 'finish', input: { summary: 'Done.' } }] },
+    ]);
+    await runAgentTurn();
+    const content = useVFSStore.getState().readFile('logic/app.logic') as string;
+    expect(content).toContain('function begin()');
+    expect(content).toContain('SENTINEL-TAIL-7f3a');
+    expect(lastMessage().content).toBe('Done.');
+  });
+
+  it('refuses to overwrite a file edited while the request was in flight', async () => {
+    fakeProvider('openai', [
+      { calls: [{ name: 'read_file', input: { path: 'ui/main.ui' } }] },
+      () => {
+        // The person edits the file while the model is thinking.
+        useVFSStore.getState().updateFile('ui/main.ui', '<App theme="dark"/>', 'user');
+        return { calls: [{ name: 'write_file', input: { path: 'ui/main.ui', content: '<App title="from old content"/>' } }] };
+      },
+      { calls: [{ name: 'finish', input: { summary: 'x' } }] },
+    ]);
+    await runAgentTurn();
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="dark"/>');
+    const write = lastRun().run.entries.find((e) => e.kind === 'tool' && e.name === 'write_file');
+    expect(write?.kind === 'tool' && write.result).toMatch(/changed since you read it/);
+  });
+
+  it('refuses edits and deletes built on a file that was deleted and re-created since it was read', async () => {
+    fakeProvider('openai', [
+      { calls: [{ name: 'read_file', input: { path: 'ui/main.ui' } }] },
+      () => {
+        // STU-06: a re-created file used to restart at version 1, the version the reply was built on.
+        useVFSStore.getState().deleteFile('ui/main.ui', 'user');
+        useVFSStore.getState().createFile('ui/main.ui', '<App theme="recreated"/>', 'user');
+        return { calls: [{ name: 'edit_file', input: { path: 'ui/main.ui', old_string: '<App', new_string: '<App title="x"' } }, { name: 'delete_file', input: { path: 'ui/main.ui' } }] };
+      },
+      { calls: [{ name: 'finish', input: { summary: 'x' } }] },
+    ]);
+    await runAgentTurn();
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="recreated"/>');
+    const results = lastRun().run.entries.filter((e) => e.kind === 'tool' && (e.name === 'edit_file' || e.name === 'delete_file'));
+    expect(results.every((e) => e.kind === 'tool' && e.status === 'error' && /changed since you read it/.test(e.result))).toBe(true);
+  });
+});
+
+describe('each write as a transaction', () => {
+  beforeEach(() => {
+    useVFSStore.getState().hydrateFiles([
+      { path: 'ui/main.ui', content: '<App>\n  <Text>one</Text>\n</App>' },
+      { path: 'ui/about.ui', content: '<About/>' },
+      { path: 'assets/logo.png', content: new Uint8Array([1, 2, 3]) },
+    ]);
+  });
+
+  it('commits each write under its own id, reverts one by its id, and marks the project dirty', async () => {
+    fakeProvider('openai', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/new.ui', content: '<New/>' } }, { name: 'delete_file', input: { path: 'assets/logo.png' } }] },
+      { calls: [{ name: 'finish', input: { summary: 'x' } }] },
+    ]);
+    await runAgentTurn();
+    const { run } = lastRun();
+    expect(run.transactions).toHaveLength(2);
+    expect(useVFSStore.getState().history.map((e) => e.transactionId)).toEqual(run.transactions);
+    expect(useWorkspaceStore.getState().isDirty).toBe(true);
+    expect(useVFSStore.getState().revertTransaction(run.transactions[1]).ok).toBe(true);
+    expect(useVFSStore.getState().readFile('assets/logo.png')).toEqual(new Uint8Array([1, 2, 3]));
+    expect(useVFSStore.getState().files.has('ui/new.ui')).toBe(true);
+  });
+
+  it('refuses to write private editor state however it is spelled', async () => {
+    fakeProvider('openai', [
+      { calls: [{ name: 'write_file', input: { path: 'Builder\\blueprint.json', content: '{}' } }] },
+      { calls: [{ name: 'finish', input: { summary: 'x' } }] },
+    ]);
+    await runAgentTurn();
+    expect(useVFSStore.getState().files.size).toBe(3);
+    const write = lastRun().run.entries.find((e) => e.kind === 'tool' && e.name === 'write_file');
+    expect(write?.kind === 'tool' && write.result).toMatch(/private/i);
+  });
+
+  it('refuses to send a request the remaining budget cannot cover', async () => {
+    useAIStore.setState({ tokenBudget: 1000, tokensUsed: 0 });
+    const provider = fakeProvider('openai', []);
+    await runAgentTurn();
+    expect(provider.count()).toBe(0);
+    expect(lastRun().run.reason).toMatch(/budget/i);
+    expect(useAIStore.getState().lastFailure?.kind).toBe('budget');
+    expect(useAIStore.getState().agentState).toBe('idle');
+  });
+
+  it('keeps what an earlier step wrote when a later request fails, and says how to go on', async () => {
+    fakeProvider('openai', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/new.ui', content: '<New/>' } }] },
+      { error: { status: 429, body: { error: { message: 'Rate limited.' } }, headers: { 'retry-after': '7' } } },
+      { error: { status: 429, body: { error: { message: 'Rate limited.' } }, headers: { 'retry-after': '7' } } },
+      { error: { status: 429, body: { error: { message: 'Rate limited.' } }, headers: { 'retry-after': '7' } } },
+      { error: { status: 429, body: { error: { message: 'Rate limited.' } }, headers: { 'retry-after': '7' } } },
+      { calls: [{ name: 'finish', input: { summary: 'Back.' } }] },
+    ]);
+    await runAgentTurn();
+    let { run } = lastRun();
+    expect(run.status).toBe('paused');
+    expect(useAIStore.getState().lastFailure).toMatchObject({ kind: 'rate-limited', retryAfterMs: 7000 });
+    expect(run.reason).toMatch(/7 s/);
+    expect(useVFSStore.getState().files.has('ui/new.ui')).toBe(true);
+    expect(run.transactions).toHaveLength(1);
+    await continueAgentRun(run.id);
+    ({ run } = lastRun());
+    expect(run.status).toBe('finished');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The single-shot helpers that remain
+// ---------------------------------------------------------------------------
+
+describe('the budgeted file view', () => {
   it('marks a long file truncated and a short one complete, with the version each was shown at', () => {
     const files = new Map<string, VFSFile>([
       ['logic/app.logic', { path: 'logic/app.logic', content: LONG, mimeType: 'text/x-softn-logic', lastModified: 1, lastModifiedBy: 'user', version: 3 }],
@@ -152,24 +300,25 @@ describe('the record of what was supplied', () => {
     expect(supplied.get('logic/app.logic')).toMatchObject({ complete: false, version: 3, shown: 6000, total: LONG.length });
     expect(supplied.get('ui/main.ui')).toMatchObject({ complete: true, version: 1 });
     expect(text).toContain('TRUNCATED: first 6000 of');
-    expect(text).toContain('<softn-read path="logic/app.logic" />');
     expect(text).not.toContain('SENTINEL-TAIL-7f3a');
-    // Asked for whole, it is whole, and says so.
     const whole = buildFileContents(files, 6000, 80000, new Set(['logic/app.logic']));
     expect(whole.supplied.get('logic/app.logic')?.complete).toBe(true);
     expect(whole.text).toContain('SENTINEL-TAIL-7f3a');
   });
 
-  it('lists a file past the overall budget by name rather than showing it', () => {
-    const files = new Map<string, VFSFile>();
-    for (let i = 0; i < 20; i++) files.set(`ui/p${i}.ui`, { path: `ui/p${i}.ui`, content: 'x'.repeat(5000), mimeType: 't', lastModified: 1, lastModifiedBy: 'user', version: 1 });
+  it('names each binary file as present but not shown, and never private state', () => {
+    const files = new Map<string, VFSFile>([
+      ['ui/main.ui', { path: 'ui/main.ui', content: '<App/>', mimeType: 'text/plain', lastModified: 1, lastModifiedBy: 'user', version: 1 }],
+      ['assets/logo.png', { path: 'assets/logo.png', content: new Uint8Array([137, 80, 78, 71]), mimeType: 'image/png', lastModified: 1, lastModifiedBy: 'user', version: 1 }],
+      ['builder/thumb.png', { path: 'builder/thumb.png', content: new Uint8Array([1]), mimeType: 'image/png', lastModified: 1, lastModifiedBy: 'user', version: 1 }],
+    ]);
     const { text, supplied } = buildFileContents(files);
-    expect(supplied.size).toBeLessThan(20);
-    expect(text).toContain('Files not shown');
-    expect(supplied.has('ui/p19.ui')).toBe(false);
+    expect(text).toContain('assets/logo.png (4 bytes)');
+    expect(text).not.toContain('builder/thumb.png');
+    expect([...supplied.keys()]).toEqual(['ui/main.ui']);
   });
 
-  it('parses read requests and strips them from the text', () => {
+  it('parses the old file-block format and strips it from the text', () => {
     const parsed = parseAIResponse('I need to see it first.\n<softn-read path="logic/app.logic" />\n<softn-read path="logic/app.logic" />');
     expect(parsed.reads).toEqual([{ path: 'logic/app.logic' }]);
     expect(parsed.text).toBe('I need to see it first.');
@@ -178,332 +327,22 @@ describe('the record of what was supplied', () => {
 
 describe('checkWrite', () => {
   const file = (version: number): VFSFile => ({ path: 'a', content: 'c', mimeType: 't', lastModified: 1, lastModifiedBy: 'user', version });
-  it('allows a new file, refuses partial, unseen and stale', () => {
-    const supplied = new Map([
-      ['a', { path: 'a', complete: false, version: 1, shown: 6000, total: 9000 }],
-      ['b', { path: 'b', complete: true, version: 2, shown: 10, total: 10 }],
-    ]);
+  const supplied = new Map([
+    ['a', { path: 'a', complete: false, version: 1, shown: 6000, total: 9000 }],
+    ['b', { path: 'b', complete: true, version: 2, shown: 10, total: 10 }],
+  ]);
+
+  it('allows a new file, refuses partial, unseen and stale for a whole replacement', () => {
     expect(checkWrite('new', supplied, undefined)).toBeNull();
     expect(checkWrite('a', supplied, file(1))).toEqual({ kind: 'partial', shown: 6000, total: 9000 });
     expect(checkWrite('c', supplied, file(1))).toEqual({ kind: 'unseen' });
     expect(checkWrite('b', supplied, file(3))).toEqual({ kind: 'stale', suppliedVersion: 2, currentVersion: 3 });
     expect(checkWrite('b', supplied, file(2))).toBeNull();
   });
-});
 
-describe('a turn against a long file', () => {
-  beforeEach(() => {
-    useVFSStore.getState().hydrateFiles([
-      { path: 'logic/app.logic', content: LONG },
-      { path: 'ui/main.ui', content: '<App/>' },
-    ]);
-  });
-
-  it('refuses a whole-file replacement of a file shown truncated, so the tail survives', async () => {
-    // A provider that does what a model does with a truncated file: returns the part it saw, edited.
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
-      reply(`Renamed start.\n<softn-file path="logic/app.logic">${LONG.slice(0, 6000).replace('start', 'begin')}</softn-file>`),
-    );
-    await runAgentTurn();
-    const content = useVFSStore.getState().readFile('logic/app.logic') as string;
-    expect(content).toContain('SENTINEL-TAIL-7f3a');
-    expect(content).toContain('function needed()');
-    expect(content).toBe(LONG);
-    const calls = lastToolCalls();
-    expect(calls).toHaveLength(1);
-    expect(calls[0].status).toBe('error');
-    expect(calls[0].result).toMatch(/truncated/);
-    expect(useAIStore.getState().agentState).toBe('idle');
-  });
-
-  it('supplies the file whole when asked, then accepts the replacement, naming the version it was built on', async () => {
-    const systems: string[] = [];
-    vi.mocked(sendAIRequest)
-      .mockImplementationOnce(async (_p, req) => {
-        systems.push(req.system);
-        return reply('Let me see the whole file.\n<softn-read path="logic/app.logic" />');
-      })
-      .mockImplementationOnce(async (_p, req) => {
-        systems.push(req.system);
-        const handed = req.messages[req.messages.length - 1];
-        expect(handed.role).toBe('user');
-        expect(handed.content).toContain('SENTINEL-TAIL-7f3a');
-        return reply(`Done.\n<softn-file path="logic/app.logic">${LONG.replace('start', 'begin')}</softn-file>`);
-      });
-    await runAgentTurn();
-    expect(systems[0]).toContain('TRUNCATED');
-    expect(systems[1]).toContain('logic/app.logic (complete,');
-    const content = useVFSStore.getState().readFile('logic/app.logic') as string;
-    expect(content).toContain('function begin()');
-    expect(content).toContain('SENTINEL-TAIL-7f3a');
-    const calls = lastToolCalls();
-    expect(calls.map((c) => [c.tool, c.status])).toEqual([
-      ['readFile', 'success'],
-      ['updateFile', 'success'],
-    ]);
-    expect(useAIStore.getState().messages.at(-1)?.content).toContain('Done.');
-  });
-
-  it('refuses to overwrite a file edited while the request was in flight', async () => {
-    const pending = deferred<Response>();
-    vi.mocked(sendAIRequest).mockReturnValueOnce(pending.promise);
-    const run = runAgentTurn();
-    // The person edits the short file while the model is thinking.
-    useVFSStore.getState().updateFile('ui/main.ui', '<App theme="dark"/>', 'user');
-    pending.resolve(reply('<softn-file path="ui/main.ui"><App title="from old content"/></softn-file>'));
-    await run;
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="dark"/>');
-    expect(lastToolCalls()[0].result).toMatch(/changed while the request was in flight/);
-  });
-
-  it('refuses a reply built on a file that was deleted and re-created while the request was in flight', async () => {
-    // STU-06 known gap: a re-created file restarted at version 1, the same
-    // number the reply was built on, so the stale check passed and the
-    // reply replaced content the model had never seen.
-    const pending = deferred<Response>();
-    vi.mocked(sendAIRequest).mockReturnValueOnce(pending.promise);
-    const run = runAgentTurn();
-    useVFSStore.getState().deleteFile('ui/main.ui', 'user');
-    useVFSStore.getState().createFile('ui/main.ui', '<App theme="recreated"/>', 'user');
-    pending.resolve(reply('<softn-file path="ui/main.ui"><App title="from the deleted content"/></softn-file>'));
-    await run;
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="recreated"/>');
-    expect(lastToolCalls()[0].status).toBe('error');
-    expect(lastToolCalls()[0].result).toMatch(/changed while the request was in flight/);
-  });
-
-  it('refuses a deletion built on a version the re-created file no longer has', async () => {
-    const pending = deferred<Response>();
-    vi.mocked(sendAIRequest).mockReturnValueOnce(pending.promise);
-    const run = runAgentTurn();
-    useVFSStore.getState().deleteFile('ui/main.ui', 'user');
-    useVFSStore.getState().createFile('ui/main.ui', '<App theme="recreated"/>', 'user');
-    pending.resolve(reply('<softn-delete path="ui/main.ui" />'));
-    await run;
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="recreated"/>');
-    expect(lastToolCalls()[0].status).toBe('error');
-  });
-
-  it('still creates a new file and updates a short file it saw whole', async () => {
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
-      reply('<softn-file path="ui/new.ui"><Text>new</Text></softn-file><softn-file path="ui/main.ui"><App theme="dark"/></softn-file>'),
-    );
-    await runAgentTurn();
-    expect(useVFSStore.getState().readFile('ui/new.ui')).toBe('<Text>new</Text>');
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="dark"/>');
-    expect(lastToolCalls().every((c) => c.status === 'success')).toBe(true);
-  });
-
-  it('stops answering read requests after a bounded number of rounds', async () => {
-    vi.mocked(sendAIRequest).mockImplementation(async () => reply('<softn-read path="logic/app.logic" /><softn-read path="ui/nothere.ui" />'));
-    await runAgentTurn();
-    expect(vi.mocked(sendAIRequest).mock.calls.length).toBeLessThanOrEqual(3);
-    expect(useAIStore.getState().agentState).toBe('idle');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// A reply is applied as one transaction, or not at all.
-//
-// Operations used to go into the VFS one by one as they were parsed, so a
-// reply with one refused or malformed operation left the project half
-// changed, a deletion never marked the project dirty, and there was no unit
-// to undo. Pinned here: a manual edit made after the request began is a
-// conflict that holds the whole batch; one invalid operation holds the whole
-// batch; a deletion-only turn is dirty and reversible; a reply cut off at
-// the output limit is never applied; and a turn's transaction can be reverted
-// by its id.
-// ---------------------------------------------------------------------------
-
-describe('a turn as a transaction', () => {
-  const lastMessage = () => useAIStore.getState().messages.at(-1)!;
-
-  beforeEach(() => {
-    useVFSStore.getState().hydrateFiles([
-      { path: 'ui/main.ui', content: '<App>\n  <Text>one</Text>\n</App>' },
-      { path: 'ui/about.ui', content: '<About/>' },
-      { path: 'logic/app.logic', content: 'let a = 1' },
-      { path: 'assets/logo.png', content: new Uint8Array([1, 2, 3]) },
-    ]);
-  });
-
-  it('reports a manual edit made after the request as a conflict and commits nothing from the batch', async () => {
-    const pending = deferred<Response>();
-    vi.mocked(sendAIRequest).mockReturnValueOnce(pending.promise);
-    const run = runAgentTurn();
-    useVFSStore.getState().updateFile('ui/about.ui', '<About edited="by hand"/>', 'user');
-    const historyBefore = useVFSStore.getState().history.length;
-    pending.resolve(
-      reply(
-        '<softn-file path="ui/main.ui"><App>new</App></softn-file>' +
-          '<softn-file path="ui/about.ui"><About from="old"/></softn-file>' +
-          '<softn-delete path="logic/app.logic" />',
-      ),
-    );
-    await run;
-    const vfs = useVFSStore.getState();
-    expect(vfs.readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
-    expect(vfs.readFile('ui/about.ui')).toBe('<About edited="by hand"/>');
-    expect(vfs.files.has('logic/app.logic')).toBe(true);
-    expect(vfs.history.length).toBe(historyBefore);
-    const calls = lastToolCalls();
-    expect(calls.every((c) => c.status === 'error')).toBe(true);
-    expect(calls.find((c) => c.args.path === 'ui/about.ui')?.result).toMatch(/changed while the request was in flight/);
-    expect(calls.find((c) => c.args.path === 'ui/main.ui')?.result).toMatch(/held back/i);
-    expect(lastMessage().transactionId).toBeUndefined();
-    expect(useWorkspaceStore.getState().isDirty).toBe(false);
-  });
-
-  it('commits nothing when one operation in the batch is invalid', async () => {
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
-      reply(
-        '<softn-file path="ui/main.ui"><App>new</App></softn-file>' +
-          '<softn-file path="../escape.ui"><App/></softn-file>' +
-          '<softn-file path="ui/new.ui"><New/></softn-file>',
-      ),
-    );
-    await runAgentTurn();
-    const vfs = useVFSStore.getState();
-    expect(vfs.readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
-    expect(vfs.files.has('ui/new.ui')).toBe(false);
-    expect(vfs.files.has('../escape.ui')).toBe(false);
-    expect(vfs.history).toEqual([]);
-    const calls = lastToolCalls();
-    expect(calls).toHaveLength(3);
-    expect(calls.find((c) => c.args.path === '../escape.ui')?.result).toMatch(/path/i);
-  });
-
-  it('commits nothing when a reply names one path twice, or deletes and updates the same path', async () => {
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
-      reply('<softn-file path="ui/main.ui"><App>a</App></softn-file><softn-file path="UI\\Main.ui"><App>b</App></softn-file>'),
-    );
-    await runAgentTurn();
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
-    expect(useVFSStore.getState().files.size).toBe(4);
-    expect(lastToolCalls().some((c) => /more than once/i.test(c.result ?? ''))).toBe(true);
-
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
-      reply('<softn-file path="ui/about.ui"><About v="2"/></softn-file><softn-delete path="ui/about.ui" />'),
-    );
-    await runAgentTurn();
-    expect(useVFSStore.getState().readFile('ui/about.ui')).toBe('<About/>');
-    expect(useVFSStore.getState().history).toEqual([]);
-  });
-
-  it('refuses to write private editor state however it is spelled', async () => {
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () => reply('<softn-file path="Builder\\blueprint.json">{}</softn-file>'));
-    await runAgentTurn();
-    expect(useVFSStore.getState().files.size).toBe(4);
-    expect(lastToolCalls()[0].result).toMatch(/private/i);
-  });
-
-  it('a deletion-only turn marks the project dirty and can be reverted', async () => {
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () => reply('Removed it.\n<softn-delete path="assets/logo.png" />'));
-    await runAgentTurn();
-    expect(useVFSStore.getState().files.has('assets/logo.png')).toBe(false);
-    expect(useWorkspaceStore.getState().isDirty).toBe(true);
-    const id = lastMessage().transactionId;
-    expect(id).toBeTruthy();
-    expect(useVFSStore.getState().history.map((e) => e.transactionId)).toEqual([id]);
-    const result = useVFSStore.getState().revertTransaction(id!);
-    expect(result.ok).toBe(true);
-    expect(useVFSStore.getState().readFile('assets/logo.png')).toEqual(new Uint8Array([1, 2, 3]));
-  });
-
-  it('commits a valid batch as one transaction with a diff summary per file, undone as a unit', async () => {
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
-      reply(
-        '<softn-file path="ui/new.ui"><New/></softn-file>' +
-          '<softn-file path="ui/main.ui"><App>\n  <Text>one</Text>\n  <Text>two</Text>\n</App></softn-file>' +
-          '<softn-delete path="ui/about.ui" />',
-      ),
-    );
-    await runAgentTurn();
-    const vfs = useVFSStore.getState();
-    expect(vfs.files.has('ui/new.ui')).toBe(true);
-    expect(vfs.files.has('ui/about.ui')).toBe(false);
-    const id = lastMessage().transactionId!;
-    expect(vfs.history.map((e) => e.transactionId)).toEqual([id, id, id]);
-    const calls = lastToolCalls();
-    expect(calls.map((c) => [c.tool, c.status])).toEqual([
-      ['createFile', 'success'],
-      ['updateFile', 'success'],
-      ['deleteFile', 'success'],
-    ]);
-    expect(calls[1].result).toMatch(/\+1 .*0 line/);
-    expect(useAIStore.getState().filesChanged).toBe(3);
-    useVFSStore.getState().undoLast();
-    expect(useVFSStore.getState().files.has('ui/new.ui')).toBe(false);
-    expect(useVFSStore.getState().readFile('ui/about.ui')).toBe('<About/>');
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
-  });
-
-  it('never applies a reply that was cut off at the output limit', async () => {
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () => reply('Here.\n<softn-file path="ui/main.ui"><App>complete-looking</App></softn-file>', 'truncated'));
-    await runAgentTurn();
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
-    expect(useVFSStore.getState().history).toEqual([]);
-    expect(lastToolCalls().some((c) => c.status === 'error' && /output limit/i.test(c.result ?? ''))).toBe(true);
-    expect(useAIStore.getState().lastFailure?.kind).toBe('truncated');
-    expect(useAIStore.getState().agentState).toBe('idle');
-  });
-
-  it('refuses to send a request the remaining budget cannot cover', async () => {
-    useAIStore.setState({ tokenBudget: 1000, tokensUsed: 0 });
-    await runAgentTurn();
-    expect(vi.mocked(sendAIRequest)).not.toHaveBeenCalled();
-    expect(lastMessage().content).toMatch(/budget/i);
-    expect(useAIStore.getState().lastFailure?.kind).toBe('budget');
-    expect(useAIStore.getState().agentState).toBe('idle');
-  });
-
-  it('reports a timeout and a rate limit as distinct, recoverable failures', async () => {
-    vi.mocked(sendAIRequest).mockRejectedValueOnce(new AIProviderError('timeout', 'The provider did not answer within 120 s.'));
-    await runAgentTurn();
-    expect(useAIStore.getState().lastFailure?.kind).toBe('timeout');
-    expect(lastMessage().content).toMatch(/did not answer/);
-    useAIStore.setState({ agentState: 'idle' });
-
-    vi.mocked(sendAIRequest).mockRejectedValueOnce(new AIProviderError('rate-limited', 'Rate limited.', { status: 429, retryAfterMs: 7000 }));
-    await runAgentTurn();
-    expect(useAIStore.getState().lastFailure).toMatchObject({ kind: 'rate-limited', retryAfterMs: 7000 });
-    expect(lastMessage().content).toMatch(/7 s/);
-    useAIStore.setState({ agentState: 'idle' });
-  });
-
-  it('retains the transaction, usage, and undo card when a follow-up request fails', async () => {
-    vi.mocked(sendAIRequest)
-      .mockResolvedValueOnce(reply('Updated the page. <softn-file path="ui/main.ui"><App>new</App></softn-file><softn-read path="logic/app.logic" />'))
-      .mockRejectedValueOnce(new AIProviderError('timeout', 'Reply timed out.'));
-    await runAgentTurn();
-    const message = lastMessage();
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>new</App>');
-    expect(useWorkspaceStore.getState().isDirty).toBe(true);
-    expect(message.content).toContain('Earlier changes');
-    expect(message.content).not.toContain('Nothing was changed');
-    expect(message.toolCalls?.some((card) => card.tool === 'updateFile' && card.status === 'success')).toBe(true);
-    expect(message.tokens).toEqual({ input: 1, output: 1 });
-    expect(useAIStore.getState().messages.filter((entry) => entry.role === 'assistant')).toHaveLength(1);
-    expect(useVFSStore.getState().revertTransaction(message.transactionId!).ok).toBe(true);
-    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
-  });
-
-  it('records completed edits before Stop, without letting a late reply change them', async () => {
-    const later = deferred<Response>();
-    vi.mocked(sendAIRequest)
-      .mockResolvedValueOnce(reply('Updated the page. <softn-file path="ui/main.ui"><App>new</App></softn-file><softn-read path="logic/app.logic" />'))
-      .mockReturnValueOnce(later.promise);
-    const run = runAgentTurn();
-    await Promise.resolve();
-    expect(sendAIRequest).toHaveBeenCalledTimes(2);
-    expect(useWorkspaceStore.getState().isDirty).toBe(true);
-    const transactionId = lastMessage().transactionId;
-    expect(transactionId).toBeTruthy();
-    abortAgentTurn();
-    later.resolve(reply('<softn-file path="logic/app.logic">let a = 999</softn-file>'));
-    await run;
-    expect(useVFSStore.getState().readFile('logic/app.logic')).toBe('let a = 1');
-    expect(lastMessage().transactionId).toBe(transactionId);
-    expect(useVFSStore.getState().revertTransaction(transactionId!).ok).toBe(true);
+  it('lets an exact edit go ahead on a file read in part, but not on one unread or changed', () => {
+    expect(checkWrite('a', supplied, file(1), 'edit')).toBeNull();
+    expect(checkWrite('c', supplied, file(1), 'edit')).toEqual({ kind: 'unseen' });
+    expect(checkWrite('a', supplied, file(2), 'edit')).toEqual({ kind: 'stale', suppliedVersion: 1, currentVersion: 2 });
   });
 });

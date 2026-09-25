@@ -52,7 +52,7 @@ describe('BriefWizard', () => {
     const onBack = vi.fn();
     act(() => root.render(<BriefWizard onBack={onBack} onSubmit={() => {}} />));
     const dialog = expectDialog();
-    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)?.textContent).toBe('New App');
+    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)?.textContent).toBe('New app');
     escape();
     expect(onBack).toHaveBeenCalledTimes(1);
   });

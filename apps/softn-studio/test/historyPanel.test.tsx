@@ -77,7 +77,7 @@ describe('HistoryPanel', () => {
       'turn-1',
     );
     mount();
-    const undo = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('Undo Last'))!;
+    const undo = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('Undo last'))!;
     act(() => undo.click());
     expect(store().readFile('ui/main.ui')).toBe('<App/>');
     expect(store().files.has('ui/pages/home.ui')).toBe(false);

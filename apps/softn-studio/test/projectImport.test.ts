@@ -127,3 +127,46 @@ describe('project import', () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * Text or bytes is core's decision. Studio's own extension list had no `.py`,
+ * so a Python app imported with its logic as bytes: not shown to the model,
+ * not composable in the preview, not readable by the validator.
+ */
+describe('which imported entries are text', () => {
+  it('decodes Python logic as text and keeps images and fonts as bytes, as classifyAsset says', () => {
+    const png = new Uint8Array([137, 80, 78, 71]);
+    const font = new Uint8Array([0, 1, 0, 0]);
+    // Core carries SVG as bytes, but Studio decodes it so the model can edit
+    // an icon as it always could.
+    const svg = strToU8('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const archive = zipSync({
+      'assets/logo.svg': svg,
+      'logic/main.py': strToU8('count = 0\n'),
+      'shaders/glow.wgsl': strToU8('@fragment fn main() {}'),
+      'models/cube.gltf': strToU8('{"asset":{"version":"2.0"}}'),
+      'assets/pixel.png': png,
+      'assets/face.woff2': font,
+    });
+
+    const entries = new Map(readProjectArchive(archive).map((entry) => [entry.path, entry.content]));
+    expect(entries.get('logic/main.py')).toBe('count = 0\n');
+    expect(entries.get('shaders/glow.wgsl')).toBe('@fragment fn main() {}');
+    expect(entries.get('models/cube.gltf')).toBe('{"asset":{"version":"2.0"}}');
+    expect(entries.get('assets/pixel.png')).toEqual(png);
+    expect(entries.get('assets/face.woff2')).toEqual(font);
+    expect(entries.get('assets/logo.svg')).toBe('<svg xmlns="http://www.w3.org/2000/svg"/>');
+  });
+
+  it('keeps decoding the source formats Studio always read as text, which core has no entry for', () => {
+    const archive = zipSync({
+      'src/helper.ts': strToU8('export const a = 1;\n'),
+      'config/app.yaml': strToU8('name: app\n'),
+      'config/app.toml': strToU8('name = "app"\n'),
+    });
+    const entries = new Map(readProjectArchive(archive).map((entry) => [entry.path, entry.content]));
+    expect(entries.get('src/helper.ts')).toBe('export const a = 1;\n');
+    expect(entries.get('config/app.yaml')).toBe('name: app\n');
+    expect(entries.get('config/app.toml')).toBe('name = "app"\n');
+  });
+});

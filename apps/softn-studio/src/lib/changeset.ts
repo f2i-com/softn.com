@@ -71,7 +71,18 @@ export type WriteRefusal =
  * was supplied and what the VFS holds now. A new file is always allowed:
  * there is nothing to erase.
  */
-export function checkWrite(path: string, supplied: SuppliedFiles, current: VFSFile | undefined): WriteRefusal | null {
+export function checkWrite(
+  path: string,
+  supplied: SuppliedFiles,
+  current: VFSFile | undefined,
+  /**
+   * `replace` writes the whole file, so the whole file must have been seen.
+   * `edit` (the agent's edit_file) replaces one exact span that is matched
+   * against the file as it is now, so part of it having been seen is enough —
+   * but it must have been seen, and must not have changed since.
+   */
+  mode: 'replace' | 'edit' = 'replace',
+): WriteRefusal | null {
   if (!current) return null;
   const record = supplied.get(path);
   if (!record) {
@@ -79,7 +90,7 @@ export function checkWrite(path: string, supplied: SuppliedFiles, current: VFSFi
     // budget, or one created since the prompt was built.
     return { kind: 'unseen' };
   }
-  if (!record.complete) return { kind: 'partial', shown: record.shown, total: record.total };
+  if (!record.complete && mode === 'replace') return { kind: 'partial', shown: record.shown, total: record.total };
   if (current.version !== record.version) return { kind: 'stale', suppliedVersion: record.version, currentVersion: current.version };
   return null;
 }

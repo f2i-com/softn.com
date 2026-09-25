@@ -294,3 +294,14 @@ describe('versions never repeat within a session', () => {
     expect(store().files.get('ui/a.ui')!.version).toBeGreaterThan(first);
   });
 });
+
+describe('the MIME type a file is stored with', () => {
+  it("is core's classification, so Python, WebP and fonts are not served as opaque bytes", () => {
+    store().createFile('logic/main.py', 'count = 0\n');
+    store().createFile('assets/photo.webp', new Uint8Array([1]));
+    store().createFile('assets/face.woff2', new Uint8Array([2]));
+    expect(store().files.get('logic/main.py')?.mimeType).toBe('text/x-python');
+    expect(store().files.get('assets/photo.webp')?.mimeType).toBe('image/webp');
+    expect(store().files.get('assets/face.woff2')?.mimeType).toBe('font/woff2');
+  });
+});

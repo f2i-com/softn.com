@@ -31,6 +31,15 @@ function buildTree(paths: string[]): TreeNode[] {
   return root;
 }
 
+/** SoftN's own file types, whose extension is set in the language colour. */
+const LANGUAGE_EXT = /\.(ui|logic|py|xdb)$/i;
+
+function splitName(name: string): { base: string; ext: string } {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return { base: name, ext: '' };
+  return { base: name.slice(0, dot), ext: name.slice(dot) };
+}
+
 const FileTreeItem: React.FC<{
   node: TreeNode;
   depth: number;
@@ -42,10 +51,13 @@ const FileTreeItem: React.FC<{
 }> = ({ node, depth, selectedPath, activeFilePath, onSelect, expanded, onToggle }) => {
   const isOpen = expanded.has(node.path);
   const isSelected = selectedPath === node.path || activeFilePath === node.path;
+  const { base, ext } = splitName(node.name);
 
   return (
     <>
       <button
+        type="button"
+        className="st-tree-item"
         onClick={() => {
           if (node.isDir) {
             onToggle(node.path);
@@ -53,23 +65,25 @@ const FileTreeItem: React.FC<{
             onSelect(node.path);
           }
         }}
-        style={{
-          ...styles.treeItem,
-          paddingLeft: 8 + depth * 16,
-          ...(isSelected && !node.isDir ? styles.treeItemSelected : {}),
-        }}
+        aria-expanded={node.isDir ? isOpen : undefined}
+        aria-current={!node.isDir && isSelected ? 'true' : undefined}
+        title={node.path}
+        style={{ paddingLeft: 10 + depth * 14 }}
       >
         {node.isDir ? (
-          <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={12} color="var(--studio-text-dim)" />
+          <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={12} />
         ) : (
-          <span style={{ width: 12 }} />
+          <span style={{ width: 12, flexShrink: 0 }} />
         )}
-        <Icon
-          name={node.isDir ? 'folder' : 'file'}
-          size={14}
-          color={node.isDir ? 'var(--studio-warning)' : 'var(--studio-text-dim)'}
-        />
-        <span style={styles.treeName}>{node.name}</span>
+        <Icon name={node.isDir ? 'folder' : 'file'} size={14} />
+        <span className="st-tree-name">
+          {node.isDir ? node.name : (
+            <>
+              {base}
+              {ext && <span className={LANGUAGE_EXT.test(ext) ? 'ext lang' : 'ext'}>{ext}</span>}
+            </>
+          )}
+        </span>
       </button>
       {node.isDir && isOpen && node.children.map((child) => (
         <FileTreeItem
@@ -150,14 +164,10 @@ export const FilesPanel: React.FC = () => {
 
   return (
     <div style={styles.container}>
-      <div style={styles.header}>
-        <span style={styles.fileCount}>{paths.length} file{paths.length !== 1 ? 's' : ''}</span>
-      </div>
-      <div style={styles.importHint}>
-        <Icon name="folder" size={14} color="var(--studio-accent)" />
-        <span style={styles.importHintText}>Bundle contents are shown below. Root folders auto-expand after import.</span>
-      </div>
-      <div style={styles.tree}>
+      <p className="st-panel-note">
+        {paths.length} file{paths.length !== 1 ? 's' : ''} in the bundle. Choose one to preview it.
+      </p>
+      <div className="st-tree" role="group" aria-label="Project files">
         {tree.map((node) => (
           <FileTreeItem
             key={node.path}
@@ -202,60 +212,5 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text-dim)',
     lineHeight: 1.4,
     margin: '4px 0 12px',
-  },
-  header: {
-    padding: '8px 12px',
-    borderBottom: '1px solid var(--studio-border)',
-    flexShrink: 0,
-  },
-  importHint: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '10px 12px',
-    borderBottom: '1px solid var(--studio-border)',
-    background: 'var(--studio-accent-soft)',
-  },
-  importHintText: {
-    fontSize: 11,
-    color: 'var(--studio-text-muted)',
-    lineHeight: 1.4,
-  },
-  fileCount: {
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 11,
-    color: 'var(--studio-text-muted)',
-  },
-  tree: {
-    flex: 1,
-    overflow: 'auto',
-    minHeight: 0,
-    padding: '4px 0',
-  },
-  treeItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    width: '100%',
-    padding: '5px 8px',
-    background: 'transparent',
-    border: 'none',
-    color: 'var(--studio-text-muted)',
-    fontSize: 12,
-    cursor: 'pointer',
-    textAlign: 'left',
-    transition: 'background 0.1s',
-    fontFamily: 'inherit',
-  },
-  treeItemSelected: {
-    background: 'var(--studio-accent-soft)',
-    color: 'var(--studio-text)',
-  },
-  treeName: {
-    flex: 1,
-    fontFamily: 'var(--studio-mono)',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
   },
 };

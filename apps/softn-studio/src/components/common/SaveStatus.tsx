@@ -99,7 +99,8 @@ function dotColour(tone: 'idle' | 'live' | 'ok' | 'error'): string {
     case 'live':
       return 'var(--studio-live)';
     case 'ok':
-      return 'var(--studio-success)';
+      // Saved is a state of storage, not something running: no mint.
+      return 'var(--studio-text-dim)';
     case 'error':
       return 'var(--studio-error)';
   }
@@ -109,15 +110,12 @@ const styles: Record<string, React.CSSProperties> = {
   box: {
     display: 'inline-flex',
     alignItems: 'center',
-    gap: 8,
+    gap: 7,
     minWidth: 0,
-    padding: '4px 10px',
-    borderRadius: 999,
-    border: '1px solid var(--studio-border)',
-    background: 'var(--studio-panel)',
+    padding: '4px 8px',
+    borderRadius: 6,
     color: 'var(--studio-text-muted)',
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 11,
+    fontSize: 12.5,
     maxWidth: 'min(420px, 100%)',
   },
   boxCompact: {
@@ -135,8 +133,8 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    color: 'var(--studio-text)',
-    fontWeight: 600,
+    color: 'var(--studio-text-muted)',
+    fontWeight: 500,
   },
   detail: {
     fontWeight: 400,
@@ -148,12 +146,12 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 4,
     padding: '3px 8px',
     borderRadius: 999,
-    border: '1px solid var(--studio-accent)',
-    background: 'var(--studio-accent-soft)',
+    border: '1px solid var(--studio-border-strong)',
+    background: 'var(--studio-bg-elevated)',
     color: 'var(--studio-text)',
     fontFamily: 'inherit',
-    fontSize: 11,
-    fontWeight: 700,
+    fontSize: 12,
+    fontWeight: 600,
     cursor: 'pointer',
     flexShrink: 0,
   },

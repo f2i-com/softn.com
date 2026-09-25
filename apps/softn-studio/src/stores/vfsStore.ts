@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { classifyAsset } from '@softn/core';
 import type { VFSFile, VFSEvent } from '../types/studio';
 import { findAlias, resolveProjectPath } from '../lib/paths';
 
@@ -64,19 +65,14 @@ interface VFSState {
   reset(): void;
 }
 
+/**
+ * The MIME type a file is served under, from core's one registry. Studio had
+ * its own short table, which served a JPEG, a WebP, a font or a Python module
+ * as application/octet-stream in the preview; the runtime asks classifyAsset,
+ * so Studio does too.
+ */
 function mimeFor(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, string> = {
-    ui: 'text/x-softn-ui',
-    logic: 'text/x-softn-logic',
-    xdb: 'application/json',
-    json: 'application/json',
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    svg: 'image/svg+xml',
-    md: 'text/markdown',
-  };
-  return map[ext] ?? 'application/octet-stream';
+  return classifyAsset(path).mime;
 }
 
 export const MAX_HISTORY = 200;

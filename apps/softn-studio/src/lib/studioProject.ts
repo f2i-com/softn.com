@@ -3,9 +3,98 @@ import type {
   Blueprint,
   BlueprintCollection,
   BlueprintPage,
+  LogicLanguage,
   ProjectBrief,
   VFSFile,
 } from '../types/studio';
+import { PYTHON_PACKAGES, readPythonPackages } from '@softn/core';
+import { isPrivatePath } from './paths';
+
+/**
+ * The Python packages a project asks the runtime for (today only `torch`).
+ *
+ * manifest.json decides, because it is what the composer and the runtime
+ * read: `"config": { "python": { "packages": ["torch"] } }`. Only while there
+ * is no manifest yet does the brief's choice stand. A manifest that is not
+ * JSON, or whose declaration is malformed, declares nothing — the validator
+ * and the preview are where that is reported.
+ */
+export function projectPythonPackages(
+  files: ReadonlyMap<string, { content: string | Uint8Array }>,
+  brief?: Pick<ProjectBrief, 'pythonPackages'> | null,
+): string[] {
+  const manifest = files.get('manifest.json');
+  if (!manifest) return (brief?.pythonPackages ?? []).filter((name) => PYTHON_PACKAGES.includes(name));
+  if (typeof manifest.content !== 'string') return [];
+  try {
+    return readPythonPackages(JSON.parse(manifest.content)).packages;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * manifest.json's text with `name` added to `config.python.packages`, keeping
+ * everything else it says; `null` when the text is not a JSON object or the
+ * name is not a package the runtime offers. Already declared: the text back
+ * unchanged.
+ */
+export function declarePythonPackage(manifestText: string, name: string): string | null {
+  if (!PYTHON_PACKAGES.includes(name)) return null;
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(manifestText);
+  } catch {
+    return null;
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return null;
+  const record = manifest as Record<string, unknown>;
+  const config = record.config && typeof record.config === 'object' && !Array.isArray(record.config)
+    ? (record.config as Record<string, unknown>)
+    : {};
+  const python = config.python && typeof config.python === 'object' && !Array.isArray(config.python)
+    ? (config.python as Record<string, unknown>)
+    : {};
+  const packages = Array.isArray(python.packages) ? python.packages.filter((p): p is string => typeof p === 'string') : [];
+  if (packages.includes(name)) return manifestText;
+  return JSON.stringify({ ...record, config: { ...config, python: { ...python, packages: [...packages, name] } } }, null, 2);
+}
+
+/**
+ * The package a composer refusal is about, when the refusal is the one for a
+ * Python file importing a package manifest.json does not declare — the one
+ * refusal a single edit to the manifest fixes. `null` for anything else.
+ */
+export function undeclaredPythonPackage(message: string): string | null {
+  const match = /\bimports (\w+), which an app asks for in manifest\.json/.exec(message);
+  return match && PYTHON_PACKAGES.includes(match[1]) ? match[1] : null;
+}
+
+/**
+ * The language a project's logic is in.
+ *
+ * The files decide when they can: the runtime reads a logic file's name and
+ * nothing else, so a project whose logic is `.py` is Python whatever its
+ * brief once said — an imported bundle has only an inferred brief, and a
+ * project saved before the choice existed has no language in its brief at
+ * all. When the files cannot decide — no logic yet, or both kinds, which the
+ * validator refuses — the brief's choice stands, and without one, JavaScript.
+ */
+export function projectLogicLanguage(
+  files: ReadonlyMap<string, unknown>,
+  brief?: Pick<ProjectBrief, 'logicLanguage'> | null,
+): LogicLanguage {
+  let python = false;
+  let javascript = false;
+  for (const path of files.keys()) {
+    if (isPrivatePath(path)) continue;
+    const lower = path.toLowerCase();
+    if (lower.endsWith('.py')) python = true;
+    else if (lower.endsWith('.logic')) javascript = true;
+  }
+  if (python !== javascript) return python ? 'python' : 'javascript';
+  return brief?.logicLanguage ?? 'javascript';
+}
 
 /**
  * Escape text before it goes into generated HTML.
@@ -121,7 +210,7 @@ export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
       status: 'complete',
       dependencies: ['task-blueprint'],
       retries: 0,
-      files: ['ui/main.ui', ...blueprint.pages.map((page) => `ui/pages/${slugify(page.name)}.ui`)],
+      files: ['ui/main.ui', ...pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0])],
     },
     {
       id: 'task-data',
@@ -184,8 +273,16 @@ function uiText(value: unknown): string {
   return esc(String(value).replace(/[{}]/g, ''));
 }
 
-/** Each page's slug, made unique when two names collapse to one. */
-function pageSlugs(pages: BlueprintPage[]): string[] {
+/**
+ * Each page's slug, made unique when two names collapse to one.
+ *
+ * This is the one page-path rule. The scaffold writes `ui/pages/<slug>.ui`
+ * with it; the pages panel and the validator find a page's file with it. They
+ * used to have three copies that disagreed — the panel looked only in
+ * `pages/` and `ui/`, so clicking a page of a project Studio had just created
+ * found nothing and did nothing.
+ */
+export function pageSlugs(pages: readonly Pick<BlueprintPage, 'name'>[]): string[] {
   const seen = new Map<string, number>();
   return pages.map((page) => {
     const base = slugify(page.name);
@@ -193,6 +290,26 @@ function pageSlugs(pages: BlueprintPage[]): string[] {
     seen.set(base, n + 1);
     return n === 0 ? base : `${base}-${n + 1}`;
   });
+}
+
+/**
+ * The files a page with this slug may live in, in the order they are looked
+ * for: where the scaffold writes it first, then the shapes an imported or
+ * hand-made project uses.
+ */
+export function pageFileCandidates(slug: string): string[] {
+  return [`ui/pages/${slug}.ui`, `ui/${slug}.ui`, `pages/${slug}.ui`, `pages/${slug}.html`, `pages/${slug}.htm`];
+}
+
+/** The file blueprint page `index` lives in, or null when the project has none of its candidates. */
+export function findPageFile(
+  files: ReadonlyMap<string, unknown>,
+  pages: readonly Pick<BlueprintPage, 'name'>[],
+  index: number,
+): string | null {
+  const slug = pageSlugs(pages)[index];
+  if (slug === undefined) return null;
+  return pageFileCandidates(slug).find((path) => files.has(path)) ?? null;
 }
 
 /** The component name a page file declares: an identifier, starting with a letter. */
@@ -216,14 +333,14 @@ function buildDataBlock(blueprint: Blueprint): string {
  * template reads it; a name that closes a tag or opens an expression is then
  * only ever a string.
  */
-function buildMainUi(brief: ProjectBrief, blueprint: Blueprint, slugs: string[]): string {
+function buildMainUi(brief: ProjectBrief, blueprint: Blueprint, slugs: string[], logicPath: string): string {
   const imports = slugs.map((slug) => `<import ${pageComponentName(slug)} from="./pages/${slug}.ui" />`).join('\n');
   const switches = slugs
     .map((slug) => `      #if (page === ${JSON.stringify(slug)})\n        <${pageComponentName(slug)} />\n      #end`)
     .join('\n');
   return `${imports}
 
-${buildDataBlock(blueprint)}<logic src="../logic/main.logic" />
+${buildDataBlock(blueprint)}<logic src="../${logicPath}" />
 
 <App theme="${themeFor(brief.style)}" title={appName}>
   <Container size="lg">
@@ -317,6 +434,38 @@ function buildMainLogic(brief: ProjectBrief, blueprint: Blueprint, slugs: string
 }
 
 /**
+ * buildMainLogic in Python: the same state under the same names, so the one
+ * shell template reads either, and `go` with the `global` a Python function
+ * needs to assign module state.
+ *
+ * The brief's text goes in through JSON.stringify here too. That is valid
+ * Python only because every value is a string, or a list of objects whose
+ * values are strings: JSON's string escapes are Python's, and its `[…]` and
+ * `{"k": …}` are Python's list and dict. A `true`, `false` or `null` would not
+ * be — Python spells them `True`, `False` and `None` — so nothing else may be
+ * written this way.
+ */
+function buildMainPython(brief: ProjectBrief, blueprint: Blueprint, slugs: string[]): string {
+  const pages = blueprint.pages.map((page, i) => ({ id: slugs[i], label: page.name }));
+  return [
+    '# The app shell: which page is showing, and the names the shell displays.',
+    '# Every top-level name is state the template reads; every def is a',
+    '# function it can call.',
+    `appName = ${JSON.stringify(brief.appName)}`,
+    `appDescription = ${JSON.stringify(brief.description)}`,
+    `pages = ${JSON.stringify(pages)}`,
+    `page = ${JSON.stringify(slugs[0] ?? 'home')}`,
+    '',
+    '',
+    'def go(page_id):',
+    '    # Assigning a module-level name needs `global`, or Python makes a local.',
+    '    global page',
+    '    page = page_id',
+    '',
+  ].join('\n');
+}
+
+/**
  * A seed record per collection, in the flat form the runtime reads, with a
  * value in every field so the first page shows a row rather than a blank one.
  */
@@ -347,10 +496,16 @@ function buildXdb(collection: BlueprintCollection): string {
  * It used to be HTML pages behind a manifest `entry` field — a shape nothing
  * else in SoftN read. The runtime and the directory read `main`, resolve
  * files by the manifest's groups, and run .ui; so that is what is written.
+ *
+ * The logic is `logic/main.logic` or, when the brief chose Python,
+ * `logic/main.py`; the file's name is what tells the runtime which it is.
  */
 export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint): Array<{ path: string; content: string }> {
   const slugs = pageSlugs(blueprint.pages);
-  const pagePaths = slugs.map((slug) => `ui/pages/${slug}.ui`);
+  const pagePaths = slugs.map((slug) => pageFileCandidates(slug)[0]);
+  const python = brief.logicLanguage === 'python';
+  const logicPath = python ? 'logic/main.py' : 'logic/main.logic';
+  const packages = python ? (brief.pythonPackages ?? []).filter((name) => PYTHON_PACKAGES.includes(name)) : [];
   const xdbPaths = blueprint.collections.map((c) => `xdb/${collectionKey(c.name)}.xdb`);
   const requirements = [
     `# ${brief.appName}`,
@@ -361,6 +516,8 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
     `- AI: bring your own API key`,
     `- Style: ${brief.style}`,
     `- Authentication: ${brief.authNeeded ? 'required' : 'not required'}`,
+    `- Logic: ${python ? 'Python' : 'JavaScript'}`,
+    ...(packages.length > 0 ? [`- Python packages: ${packages.join(', ')}`] : []),
   ].join('\n');
 
   const files: Array<{ path: string; content: string }> = [
@@ -374,11 +531,16 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
         target: brief.target,
         files: {
           ui: ['ui/main.ui', ...pagePaths],
-          logic: ['logic/main.logic'],
+          logic: [logicPath],
           xdb: xdbPaths,
           assets: [],
         },
-        config: { theme: { mode: themeFor(brief.style) } },
+        config: {
+          theme: { mode: themeFor(brief.style) },
+          // Declared only for Python: a JavaScript app cannot import a Python
+          // package, and a declaration it cannot use would say otherwise.
+          ...(packages.length > 0 ? { python: { packages } } : {}),
+        },
         pages: blueprint.pages.map((page, i) => ({
           id: page.id,
           name: page.name,
@@ -434,12 +596,12 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
       content: JSON.stringify({ perRoleModels: 'configured in settings' }, null, 2),
     },
     {
-      path: 'logic/main.logic',
-      content: buildMainLogic(brief, blueprint, slugs),
+      path: logicPath,
+      content: python ? buildMainPython(brief, blueprint, slugs) : buildMainLogic(brief, blueprint, slugs),
     },
     {
       path: 'ui/main.ui',
-      content: buildMainUi(brief, blueprint, slugs),
+      content: buildMainUi(brief, blueprint, slugs, logicPath),
     },
   ];
 
@@ -548,8 +710,14 @@ export function inferBlueprintFromFiles(projectName: string, files: Map<string, 
   };
 }
 
-export function inferBriefFromBlueprint(blueprint: Blueprint): ProjectBrief {
+/**
+ * A brief for a project that arrived without one. The language is the
+ * project's own — pass `projectLogicLanguage(files)` — so a Python bundle is
+ * edited in Python from the first turn.
+ */
+export function inferBriefFromBlueprint(blueprint: Blueprint, logicLanguage: LogicLanguage = 'javascript'): ProjectBrief {
   return {
+    logicLanguage,
     appName: blueprint.appName,
     description: `Imported SoftN bundle for ${blueprint.appName}. Use AI to inspect, improve, and regenerate parts of the app without rewriting it from scratch.`,
     target: blueprint.target,
