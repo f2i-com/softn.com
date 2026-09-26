@@ -59,6 +59,29 @@ This project declares torch in manifest.json (\`"config": { "python": { "package
 
 export const PYTHON_TORCH_UNDECLARED = `- **torch must be declared.** \`import torch\` is refused unless manifest.json says \`"config": { "python": { "packages": ["torch"] } }\`; add that declaration first if the app needs machine learning.`;
 
+// A project whose manifest has a `server` block has a private backend: a host
+// (FormLogic's native hosting, SoftN's PHP and Rust hosts) runs it and keeps its
+// SQLite database. The rules are the hosts' API v1 (see
+// apps/softn-host-rust/PRIVATE_BACKEND.md and apps/softn-host-php/runtime).
+/**
+ * The SQL functions a host lets an app call (apps/softn-host-php/runtime/sql.mjs, the Rust host's
+ * rules): at request time, and the ones migrations may also call (the clock, for defaults and
+ * backfills). A query or migration that calls anything else is refused.
+ */
+export const SQL_RUNTIME_FUNCTIONS = ['count', 'min', 'max', 'sum', 'avg', 'total', 'coalesce', 'ifnull', 'nullif', 'length', 'lower', 'upper',
+  'trim', 'ltrim', 'rtrim', 'substr', 'substring', 'replace', 'instr', 'abs', 'round', 'like', 'glob', 'typeof', 'unicode', 'char', 'hex', 'quote'] as const;
+export const SQL_MIGRATION_CLOCK_FUNCTIONS = ['datetime', 'date', 'time', 'strftime', 'julianday', 'unixepoch'] as const;
+
+export const PRIVATE_BACKEND_SECTION = `## This app's private backend (server/)
+manifest.json has a \`server\` block: the app has a backend that runs on its host, not in the browser, with a private SQLite database. The app's real data belongs there, in tables, not in XDB or storage.
+
+- **The \`server\` block.** Keep it whenever you rewrite manifest.json. \`entry\` is the backend file (\`server/main.logic\`); \`requires\` is \`{ "apiVersion": 1, "capabilities": ["sql"] }\`; \`database\` is \`{ "kind": "private-sqlite", "migrations": [ …every migration file, in order… ] }\`; \`routes\` lists every endpoint: \`{ "path": "/api/items", "method": "GET", "handler": "listItems", "transaction": "read", "authorization": "anonymous" }\`. A path starts with \`/api/\` and is matched exactly (no \`/:id\` segments: pass an id in the query or the body). Methods are GET, POST, PUT and DELETE; one route per method and path. A route that changes data needs \`"transaction": "write"\`; a \`"read"\` route cannot write. Keep \`config.server.allowedOrigins\` as it is.
+- **server/main.logic is JavaScript**, whatever the page's logic language. Each handler is a top-level \`function listItems(req)\`: \`req.body\` (an object), \`req.query\`, \`req.headers\`, \`req.method\`, \`req.path\`. It returns \`{ status: 200, body: { … } }\`, the body an object. Check its input and answer \`{ status: 422, body: { error: "…" } }\` when it is wrong.
+- **SQL.** \`softn.sql.query(sql, params)\` returns rows, \`softn.sql.first(sql, params)\` one row or null, and \`softn.sql.execute(sql, params)\` returns \`{ changes, lastInsertRowid }\`. One statement per call, always with \`?\` parameters, never text built from input. It is SQLite: \`INTEGER PRIMARY KEY\` numbers rows itself (no SERIAL or AUTO_INCREMENT). A query may call only ${SQL_RUNTIME_FUNCTIONS.join(', ')} — no clock or random functions: take the time from \`softn.time.now()\` (epoch seconds) and pass it as a parameter.
+- **Migrations** are numbered files, \`server/migrations/001.sql\`, \`002.sql\`, … each listed in \`database.migrations\`. Each runs once, in order. Never change or remove one that exists (the host refuses to start); to change a table, add the next file (\`ALTER TABLE items ADD COLUMN done INTEGER NOT NULL DEFAULT 0;\`). Tables, indexes, ALTER TABLE and inserts only: no triggers, views, PRAGMAs or transactions. A migration may call the query functions above and ${SQL_MIGRATION_CLOCK_FUNCTIONS.join(', ')} (e.g. \`DEFAULT (datetime('now'))\`); nothing else. A column added to an existing table with NOT NULL needs a DEFAULT.
+- **Calling the backend from the page.** Call it the way the page already does: \`softn.net.fetch\` with the origin from \`config.server.allowedOrigins\` and the route's path — \`softn.net.fetch(API + "/api/items", { method: "POST", body: { title: title } }, function(response) { … })\`, with \`API\` that origin. \`response.ok\` and \`response.status\` say how it went, and \`response.body\` is the handler's body as JSON text: \`JSON.parse(response.body)\` (in Python, \`json.loads(response["body"])\` after \`import json\`). Load lists in \`_init()\` and again after a change. The host routes these calls to the backend; do not add them to permission.json.
+- **Test the backend by reading it**, and by calling the page's functions with run_app_function: a preview shows the page, and a call to the backend may not answer there.`;
+
 export const PYTHON_APP_EXAMPLE = `## Complete App Example (Python)
 
 Here is a minimal but complete todo app: the .ui file and its logic in \`logic/main.py\`.
@@ -255,7 +278,7 @@ function remaining() {
 // The guide
 // ---------------------------------------------------------------------------
 
-export function buildGuide({ python, torch, style }: { python: boolean; torch: boolean; style: string }): string {
+export function buildGuide({ python, torch, backend = false, style }: { python: boolean; torch: boolean; backend?: boolean; style: string }): string {
   const logicExt = python ? '.py' : '.logic';
   const entry = python ? 'logic/main.py' : 'logic/main.logic';
   return `# How to build a SoftN app
@@ -364,6 +387,19 @@ ${python ? `- JavaScript and Python in one app: "This app mixes Python and JavaS
 
 ## Style
 Match the brief's style: ${style}. Pages should be responsive and polished — production quality, not wireframes: real headings and copy, sensible spacing (\`Stack gap\`, \`Container size\`), empty states, and sample data where it helps.
-
+${backend ? `
+${PRIVATE_BACKEND_SECTION}
+` : ''}
 ${python ? PYTHON_APP_EXAMPLE : JAVASCRIPT_APP_EXAMPLE}`;
+}
+
+/** Whether manifest.json declares a private backend (a `server` block with an entry). */
+export function projectHasBackend(manifestSource: string | undefined): boolean {
+  if (!manifestSource) return false;
+  try {
+    const manifest = JSON.parse(manifestSource) as { server?: { entry?: unknown } };
+    return typeof manifest?.server?.entry === 'string' && manifest.server.entry.length > 0;
+  } catch {
+    return false;
+  }
 }

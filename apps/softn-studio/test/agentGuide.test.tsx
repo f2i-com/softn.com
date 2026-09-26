@@ -19,7 +19,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerAllBuiltins } from '@softn/components';
 import { SoftNRenderer, composeBundleSource, configureZippWasmSource } from '@softn/core';
-import { buildGuide, JAVASCRIPT_APP_EXAMPLE, PYTHON_APP_EXAMPLE } from '../src/lib/agent/guide';
+import { buildGuide, JAVASCRIPT_APP_EXAMPLE, PRIVATE_BACKEND_SECTION, projectHasBackend, PYTHON_APP_EXAMPLE } from '../src/lib/agent/guide';
 import { COMPONENT_INDEX } from '../src/lib/agent/knowledge';
 import { buildPreviewXDBState, composePreviewProject } from '../src/lib/previewProject';
 import type { VFSFile } from '../src/types/studio';
@@ -210,4 +210,35 @@ describe('every markup snippet in the guide', () => {
     expect(errors).toEqual([]);
     expect(text()).toMatch(/0\s*left/);
   }, 30_000);
+});
+
+describe('the private backend section', () => {
+  const runtime = (file: string) => readFileSync(resolve(process.cwd(), '../softn-host-php/runtime', file), 'utf8');
+  const manifest = (server?: unknown) => JSON.stringify({ name: 'Notes', version: '1.0.0', main: 'ui/main.ui', ...(server ? { server } : {}) });
+
+  it('is in the guide only for a project whose manifest declares a backend entry', () => {
+    const backend = { entry: 'server/main.logic', requires: { apiVersion: 1, capabilities: ['sql'] } };
+    expect(projectHasBackend(manifest(backend))).toBe(true);
+    expect(projectHasBackend(manifest())).toBe(false);
+    expect(projectHasBackend(manifest({ database: { kind: 'private-sqlite' } }))).toBe(false);
+    expect(projectHasBackend('{ not json')).toBe(false);
+    expect(projectHasBackend(undefined)).toBe(false);
+    expect(buildGuide({ python: false, torch: false, backend: true, style: 'clean' })).toContain(PRIVATE_BACKEND_SECTION);
+    expect(buildGuide({ python: false, torch: false, style: 'clean' })).not.toContain("This app's private backend");
+  });
+
+  it('says what the backend runtime does: its methods, its route paths and its SQL bindings', () => {
+    const worker = runtime('request-worker.mjs');
+    const host = runtime('wasm-host.mjs');
+    // Methods and the exact-match /api/ paths the section describes.
+    expect(worker).toContain("['GET','POST','PUT','DELETE'].includes(request.method)");
+    expect(worker).toContain(String.raw`/^\/api\/[a-zA-Z0-9/_-]+$/`);
+    expect(worker).toContain('routes.find(r=>r.path===request.path&&r.method===request.method)');
+    expect(PRIVATE_BACKEND_SECTION).toContain('GET, POST, PUT and DELETE');
+    expect(PRIVATE_BACKEND_SECTION).toContain('no `/:id` segments');
+    for (const binding of ['softn.sql.query', 'softn.sql.first', 'softn.sql.execute']) {
+      expect(host).toContain(`${binding}=function(s,p)`);
+      expect(PRIVATE_BACKEND_SECTION).toContain(`\`${binding}(sql, params)\``);
+    }
+  });
 });

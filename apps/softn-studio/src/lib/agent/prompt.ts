@@ -15,7 +15,7 @@ import { useVFSStore } from '../../stores/vfsStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { projectLogicLanguage, projectPythonPackages } from '../studioProject';
 import { describeTree } from './executeTool';
-import { buildGuide } from './guide';
+import { buildGuide, projectHasBackend } from './guide';
 import { componentIndexText, docIndexText } from './knowledge';
 import { textProtocolGuide } from './tools';
 import type { ToolProtocol } from './types';
@@ -53,9 +53,11 @@ export function buildAgentSystemPrompt(protocol: ToolProtocol): string {
   const files = useVFSStore.getState().files;
   const python = projectLogicLanguage(files, ws.brief) === 'python';
   const torch = python && projectPythonPackages(files, ws.brief).includes('torch');
+  const manifest = files.get('manifest.json');
+  const backend = projectHasBackend(typeof manifest?.content === 'string' ? manifest.content : undefined);
   return [
     WORKFLOW,
-    buildGuide({ python, torch, style: ws.brief?.style || 'clean' }),
+    buildGuide({ python, torch, backend, style: ws.brief?.style || 'clean' }),
     `## Components\nEvery component SoftN registers, by group. Use lookup_components for exact props and events.\n${componentIndexText()}`,
     `## Guides (read_docs)\n${docIndexText(python)}`,
     protocol === 'text' ? textProtocolGuide() : '',

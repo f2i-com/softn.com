@@ -158,6 +158,16 @@ describe('which imported entries are text', () => {
     expect(entries.get('assets/logo.svg')).toBe('<svg xmlns="http://www.w3.org/2000/svg"/>');
   });
 
+  it("decodes a private backend's migrations as text, so its agent can read the schema and write the next one", () => {
+    const archive = zipSync({
+      'server/main.logic': strToU8('function listItems(req) { return {status: 200, body: {}}; }'),
+      'server/migrations/001.sql': strToU8('CREATE TABLE items(id INTEGER PRIMARY KEY);'),
+    });
+    const entries = new Map(readProjectArchive(archive).map((entry) => [entry.path, entry.content]));
+    expect(entries.get('server/migrations/001.sql')).toBe('CREATE TABLE items(id INTEGER PRIMARY KEY);');
+    expect(entries.get('server/main.logic')).toContain('function listItems');
+  });
+
   it('keeps decoding the source formats Studio always read as text, which core has no entry for', () => {
     const archive = zipSync({
       'src/helper.ts': strToU8('export const a = 1;\n'),
