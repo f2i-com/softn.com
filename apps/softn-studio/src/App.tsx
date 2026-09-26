@@ -29,6 +29,8 @@ import { validateProject } from './lib/validator';
 import { openExampleInStores, type ExampleProject } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
 import { buildFromBrief } from './lib/agent/buildFromBrief';
+import { reportAgentStatusToHost, startRunFromBrief } from './lib/agent/hostedAgent';
+import { rememberAppliedMigrations } from './lib/agent/appliedMigrations';
 import { exportAsBundle, buildBundle } from './lib/exportBundle';
 import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import {
@@ -288,17 +290,27 @@ const App: React.FC = () => {
 
   const handleImportProjectRef = useRef(handleImportProject);
   handleImportProjectRef.current = handleImportProject;
-  useEffect(() => connectHostedEditor({
-    open: async (bytes, name) => {
-      const result = await handleImportProjectRef.current(new File([new Uint8Array(bytes)], `${name}.softn`, { type: 'application/zip' }));
-      if (!result.ok) throw new Error(result.message);
-      useAIStore.setState({ providers: [{ id: 'formlogic', type: 'custom', name: 'FormLogic AI', apiKey: '', modelId: 'FormLogic default' }], activeProviderId: 'formlogic', modelProfile: { architect: 'FormLogic default', builder: 'FormLogic default', repair: 'FormLogic default', vision: 'FormLogic default' } });
-    },
-    export: () => {
-      if (useAIStore.getState().agentState === 'building') throw new Error('Wait for the AI to finish, or stop generating before reviewing changes.');
-      return buildBundle(useVFSStore.getState().getSnapshot());
-    },
-  }), []);
+  useEffect(() => {
+    if (!isHostedEditor()) return;
+    const disconnect = connectHostedEditor({
+      open: async (bytes, name, { brief }) => {
+        const result = await handleImportProjectRef.current(new File([new Uint8Array(bytes)], `${name}.softn`, { type: 'application/zip' }));
+        if (!result.ok) throw new Error(result.message);
+        // The host installed this project: every migration it came with has run on its database.
+        rememberAppliedMigrations(useVFSStore.getState().files);
+        useAIStore.setState({ providers: [{ id: 'formlogic', type: 'custom', name: 'FormLogic AI', apiKey: '', modelId: 'FormLogic default' }], activeProviderId: 'formlogic', modelProfile: { architect: 'FormLogic default', builder: 'FormLogic default', repair: 'FormLogic default', vision: 'FormLogic default' } });
+        // The host brought the person here to have the agent carry out a request: start it
+        // once the open is answered, so the host is not kept waiting for the whole run.
+        if (brief) setTimeout(() => { void startRunFromBrief(brief); }, 0);
+      },
+      export: () => {
+        if (useAIStore.getState().agentState === 'building') throw new Error('Wait for the AI to finish, or stop generating before reviewing changes.');
+        return buildBundle(useVFSStore.getState().getSnapshot());
+      },
+    }, { agentRuns: true });
+    const stopReporting = reportAgentStatusToHost();
+    return () => { stopReporting(); disconnect(); };
+  }, []);
 
   /**
    * Boot, in one sequence so the order is the same every time:

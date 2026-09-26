@@ -163,3 +163,28 @@ The host side lives in FormLogic (`ui/src/components/studio/AppEditorDialog.tsx`
 the `ai-request` handler). Its current check refuses any message whose role is
 not system/user/assistant or whose content is not a string, which is why
 Studio never sends the structured form until the host has announced `aiTools`.
+
+A second optional capability, `agentRuns` (version `1`), lets the host take a
+person to Studio to have its agent build or change their app while they watch:
+
+- Studio announces it beside `aiTools`: `{ kind: 'formlogic-editor-ready', protocol: 1, aiTools: 1, agentRuns: 1 }`.
+  The Builder has no agent and does not.
+- A host that speaks it answers `agentRuns: 1` in `formlogic-editor-connect`.
+- Such a host's `open` may carry `brief: { prompt, kind: 'build' | 'edit' }`
+  (the prompt up to 8,000 characters). Once the project is open, Studio puts
+  the prompt in its chat as the person's request and starts an agent run of
+  that kind, with the chat showing. A brief from a host that did not announce
+  `agentRuns` is ignored.
+- Studio then reports its agent to that host, once per change:
+  `{ kind: 'agent-status', state, step?, summary?, reason? }`, `state` one of
+  `idle`, `running` (with the step Studio shows, such as "Checking the app…"),
+  `waiting` (a question for the person), `paused` (a network failure it will
+  resume from, with `reason`), `stopped`, `finished` (with the model's
+  `summary`) or `failed` (with `reason`). The host can say what the agent is
+  doing and hold its own "review" and "close" while a run is `running`
+  (Studio's `export` is refused then in any case).
+
+FormLogic's side is `AppEditorDialog.tsx` (the `brief` prop and the status
+bar) and its SoftN app workspace, which opens Studio with the request from
+"Create app" or from its chat. A FormLogic that does not speak `agentRuns`
+opens Studio exactly as before.

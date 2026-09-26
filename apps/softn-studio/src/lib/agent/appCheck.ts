@@ -19,6 +19,7 @@ import { getBundleEntryPath } from '../studioProject';
 import { normalizeProjectPath } from '../paths';
 import { checkTemplateNames, type LogicNames, type TemplateFile } from './templateNames';
 import type { CheckReport } from './types';
+import { backendSqlProblems, migrationSqlProblems } from './sqlLint';
 
 export interface RunFunctionRequest {
   name: string;
@@ -388,6 +389,76 @@ function quietContext(core: CoreModule, files: Map<string, VFSFile>, logs: strin
 
 const NONE = { errors: [] as string[], warnings: [] as string[] };
 
+/** A host's rules for a private backend's routes (apps/softn-host-php/runtime/request-worker.mjs). */
+const ROUTE_PATH = /^\/api\/[a-zA-Z0-9/_-]+$/;
+const ROUTE_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
+const HANDLER_NAME = /^[$A-Z_a-z][$\w]*$/;
+
+interface ServerRoute { path?: unknown; method?: unknown; handler?: unknown }
+
+/**
+ * A private backend (manifest.json's `server`), checked the way its host starts it: the routes
+ * are ones the host serves, the migrations it lists exist, and the entry loads and defines a
+ * function for every route. A host refuses a whole version whose backend does not start, so an
+ * app that looked finished in the preview could not be published; this finds it first.
+ */
+async function backendProblems(files: Map<string, VFSFile>): Promise<{ errors: string[]; warnings: string[] }> {
+  const manifestFile = files.get('manifest.json');
+  if (!manifestFile || typeof manifestFile.content !== 'string') return NONE;
+  let server: { entry?: unknown; routes?: unknown; database?: { migrations?: unknown } } | undefined;
+  try {
+    server = (JSON.parse(manifestFile.content) as { server?: typeof server }).server;
+  } catch {
+    return NONE; // The validator reports manifest.json that does not parse.
+  }
+  if (!server || typeof server !== 'object') return NONE;
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const entry = typeof server.entry === 'string' ? server.entry : '';
+  const source = entry ? files.get(entry)?.content : undefined;
+  if (typeof source !== 'string') {
+    errors.push(`manifest.json: server.entry names ${entry || 'no file'}, which is not a text file in the project.`);
+    return { errors, warnings };
+  }
+  const handlers: Array<{ handler: string; label: string }> = [];
+  const declared = new Set<string>();
+  for (const route of (Array.isArray(server.routes) ? server.routes : []) as ServerRoute[]) {
+    const label = `${typeof route?.method === 'string' ? route.method : '?'} ${typeof route?.path === 'string' ? route.path : '?'}`;
+    if (typeof route?.path !== 'string' || !ROUTE_PATH.test(route.path)) errors.push(`manifest.json: route ${label} needs a path under /api/ made of letters, digits, /, _ and - (matched exactly: pass an id in the query or the body).`);
+    if (typeof route?.method !== 'string' || !ROUTE_METHODS.has(route.method)) errors.push(`manifest.json: route ${label} needs a method of GET, POST, PUT or DELETE.`);
+    if (declared.has(label)) errors.push(`manifest.json: route ${label} is declared twice.`);
+    declared.add(label);
+    if (typeof route?.handler !== 'string' || !HANDLER_NAME.test(route.handler)) errors.push(`manifest.json: route ${label} needs a handler: the name of a function in ${entry}.`);
+    else handlers.push({ handler: route.handler, label });
+  }
+  const migrations = Array.isArray(server.database?.migrations) ? (server.database!.migrations as unknown[]) : [];
+  for (const path of migrations) {
+    const sql = typeof path === 'string' ? files.get(path)?.content : undefined;
+    if (typeof sql !== 'string') errors.push(`manifest.json: server.database.migrations lists ${String(path)}, which is not a text file in the project.`);
+    else errors.push(...migrationSqlProblems(path as string, sql));
+  }
+  errors.push(...backendSqlProblems(entry, source));
+  for (const path of files.keys()) {
+    if (/^server\/migrations\/[^/]+\.sql$/.test(path) && !migrations.includes(path)) warnings.push(`${path} is not listed in manifest.json's server.database.migrations, so the host never runs it.`);
+  }
+  // Loaded as its host loads it: a backend's top level only defines functions (a host refuses SQL outside a request).
+  const core = await import('@softn/core');
+  const logs: string[] = [];
+  const runtime = core.createScriptRuntime(quietContext(core, files, logs) as never, undefined, `studio-agent-backend-${Date.now().toString(36)}`, undefined, undefined, { mode: 'main' } as never);
+  try {
+    const loaded = await withTimeout(runtime.loadScript({ type: 'logic', code: source } as never), 10_000, 'Loading the backend');
+    const defined = new Set(Object.keys(loaded.functions ?? {}));
+    for (const { handler, label } of handlers) {
+      if (!defined.has(handler)) errors.push(`${entry}: route ${label} names ${handler}, which ${entry} does not define as a top-level function.`);
+    }
+  } catch (err) {
+    errors.push(`${entry} does not load, so its host would refuse the whole version: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    runtime.cleanup();
+  }
+  return { errors, warnings };
+}
+
 /**
  * The markup of `page` and every .ui file it imports, checked for names
  * nothing defines (templateNames.ts), against the names the page's logic
@@ -512,6 +583,9 @@ export const browserEnvironment: AgentEnvironment = {
     const lint = lintTemplates(files);
     errors.push(...lint.errors);
     warnings.push(...lint.warnings);
+    const backend = await backendProblems(files);
+    errors.push(...backend.errors);
+    warnings.push(...backend.warnings);
     const target = pageToCheck(files, page);
     if (!target) {
       if (page) errors.push(`${page} is not a file in the project.`);

@@ -15,6 +15,7 @@ import { classifyAsset, pythonModuleName } from '@softn/core';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { useVFSStore, type VFSChangeRecord } from '../../stores/vfsStore';
 import { checkWrite, type SuppliedFiles } from '../changeset';
+import { appliedMigrationRefusal } from './appliedMigrations';
 import { findAlias, isPrivatePath, resolveProjectPath } from '../paths';
 import { formatCheckReport, type AgentEnvironment, type RunFunctionRequest } from './appCheck';
 import { lineDiff, type LineDiff } from './diff';
@@ -273,6 +274,8 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       if (content === undefined) return fail(target.path, 'content is required: the whole file as a string.');
       const current = files.get(target.path);
       if (current && typeof current.content !== 'string') return fail(target.path, `${target.path} is a binary file and cannot be replaced with text.`);
+      const applied = appliedMigrationRefusal(target.path, 'replace', content);
+      if (applied) return fail(target.path, applied);
       const refusal = checkWrite(target.path, ctx.seen, current, 'replace');
       if (refusal) return fail(target.path, describeSeenRefusal(target.path, refusal, 'write_file'));
       const before = current && typeof current.content === 'string' ? current.content : null;
@@ -294,6 +297,8 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       if (!found.ok) return fail(str(input, 'path') ?? '', found.reason);
       const { path, file } = found;
       if (typeof file.content !== 'string') return fail(path, `${path} is a binary file; it cannot be edited as text.`);
+      const applied = appliedMigrationRefusal(path, 'edit');
+      if (applied) return fail(path, applied);
       const oldString = typeof input.old_string === 'string' ? input.old_string : undefined;
       const newString = typeof input.new_string === 'string' ? input.new_string : undefined;
       if (oldString === undefined || newString === undefined) return fail(path, 'old_string and new_string are both required.');
@@ -339,6 +344,8 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
     case 'delete_file': {
       const found = resolveExisting(str(input, 'path'), files);
       if (!found.ok) return fail(str(input, 'path') ?? '', found.reason);
+      const applied = appliedMigrationRefusal(found.path, 'delete');
+      if (applied) return fail(found.path, applied);
       // A delete decided on content that has since changed is decided on old content.
       const read = ctx.seen.get(found.path);
       if (read && read.version !== found.file.version) {
@@ -359,6 +366,8 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
     case 'rename_file': {
       const from = resolveExisting(str(input, 'from'), files);
       if (!from.ok) return fail(str(input, 'from') ?? '', from.reason);
+      const applied = appliedMigrationRefusal(from.path, 'rename');
+      if (applied) return fail(from.path, applied);
       const to = resolveWritable(str(input, 'to'), files, false);
       if (!to.ok) return fail(str(input, 'to') ?? '', to.reason);
       if (to.path === from.path) return fail(from.path, 'from and to are the same path.');

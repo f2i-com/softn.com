@@ -91,6 +91,9 @@ export const ASSET_CLASSIFICATIONS: Record<string, AssetClassification> = {
   // every loader kept it out of the text files the composer reads and a
   // Python app failed at Run with its own main.py "not in the bundle".
   py: { kind: 'text', mime: 'text/x-python', binary: false },
+  // A private backend's migrations (server/migrations/*.sql). Without this entry an editor held
+  // them as opaque bytes: its agent could neither read the schema nor write the next migration.
+  sql: { kind: 'text', mime: 'application/sql', binary: false },
   // Inside a bundle, .softn names a source document, not a nested archive —
   // manifests point main at e.g. ui/main.softn. This registry only ever sees
   // paths from within a bundle, so the on-disk zip meaning does not apply.

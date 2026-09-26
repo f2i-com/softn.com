@@ -77,13 +77,87 @@ let hostAITools = 0;
 /** The `aiTools` version the connected host announced; 0 when it announced none (or nothing is connected). */
 export function hostedAIToolsVersion(): number { return currentPort ? hostAITools : 0; }
 
+/**
+ * The agent-run capability of the bridge (`agentRuns`). Version 1:
+ *  - the host's `open` may carry `brief: { prompt, kind }`, and an editor that
+ *    runs an AI agent starts a run with that request once the project is open;
+ *  - the editor tells the host how its agent is doing with `agent-status`
+ *    messages, so the host can say what is happening and hold "review" and
+ *    "close" while a run is writing.
+ * The editor announces it in `formlogic-editor-ready`. It sends `agent-status`
+ * only to a host that announced it back; a host that did not simply never
+ * sends a brief. Like `aiTools`, it is optional on both sides.
+ */
+export const HOSTED_AGENT_RUNS_VERSION = 1;
+
+/** A request the host asks the editor's agent to carry out as soon as the project is open. */
+export interface HostedBrief { prompt: string; kind: 'build' | 'edit' }
+/** Longest brief the editor takes from a host. */
+export const HOSTED_BRIEF_MAX_CHARS = 8000;
+
+/**
+ * Where the editor's agent is. `running`: a request or a tool is in progress;
+ * `waiting`: it asked the person something; `paused`: a network failure it
+ * will resume from; `stopped`, `finished`, `failed`: the run ended; `idle`:
+ * no run yet.
+ */
+export type HostedAgentState = 'idle' | 'running' | 'waiting' | 'paused' | 'stopped' | 'finished' | 'failed';
+export interface HostedAgentStatus {
+  state: HostedAgentState;
+  /** What it is doing now, as the editor shows it ("Checking the app…"). */
+  step?: string;
+  /** The model's summary, once a run finished. */
+  summary?: string;
+  /** Why a run paused, stopped or failed. */
+  reason?: string;
+}
+
+let hostAgentRuns = 0;
+/** The `agentRuns` version the connected host announced; 0 when it announced none. */
+export function hostedAgentRunsVersion(): number { return currentPort ? hostAgentRuns : 0; }
+
+/** A brief as the host sent it, or null when it sent none or one that is not a brief. */
+export function readHostedBrief(value: unknown): HostedBrief | null {
+  if (!isObject(value) || typeof value.prompt !== 'string') return null;
+  const prompt = value.prompt.trim().slice(0, HOSTED_BRIEF_MAX_CHARS);
+  if (!prompt) return null;
+  return { prompt, kind: value.kind === 'edit' ? 'edit' : 'build' };
+}
+
+let lastAgentStatus = '';
+/**
+ * Tell the host where the agent is. Sent only to a host that announced
+ * `agentRuns`, and only when something changed.
+ */
+export function reportHostedAgentStatus(status: HostedAgentStatus): void {
+  if (!currentPort || hostAgentRuns < 1) return;
+  const message = {
+    kind: 'agent-status',
+    state: status.state,
+    ...(status.step ? { step: status.step.slice(0, 200) } : {}),
+    ...(status.summary ? { summary: status.summary.slice(0, 2000) } : {}),
+    ...(status.reason ? { reason: status.reason.slice(0, 1000) } : {}),
+  };
+  const key = JSON.stringify(message);
+  if (key === lastAgentStatus) return;
+  lastAgentStatus = key;
+  currentPort.postMessage(message);
+}
+
+/**
+ * How long the editor waits for the host to answer an AI request. One round of an agent that
+ * writes whole files can run minutes on a local model; FormLogic gives an editor round 600 s
+ * upstream, and this outlasts that so the host's own answer (or its timeout) arrives first.
+ */
+export const HOSTED_AI_TIMEOUT_MS = 630_000;
+
 function sendAIRequest(payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   if (!currentPort) return Promise.reject(new Error('FormLogic is not connected.'));
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
     const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); hostRequests.delete(id); };
     const abort = () => { currentPort?.postMessage({ kind: 'ai-cancel', id }); finish(); reject(new DOMException('AI request cancelled.', 'AbortError')); };
-    const timer = setTimeout(() => { currentPort?.postMessage({ kind: 'ai-cancel', id }); finish(); reject(new Error('AI request timed out.')); }, 180000);
+    const timer = setTimeout(() => { currentPort?.postMessage({ kind: 'ai-cancel', id }); finish(); reject(new Error('AI request timed out.')); }, HOSTED_AI_TIMEOUT_MS);
     hostRequests.set(id, { resolve: value => { finish(); resolve(value); }, reject: error => { finish(); reject(error); } });
     if (signal?.aborted) { abort(); return; }
     signal?.addEventListener('abort', abort, { once: true });
@@ -158,18 +232,27 @@ function settlePendingSaves(result: HostedSaveResult): void {
   pendingSaves.clear();
 }
 
-export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: string): Promise<void>; export(): Promise<Uint8Array> | Uint8Array }): () => void {
+/** What the host asked for with the project, beyond the project itself. */
+export interface HostedOpenOptions { brief: HostedBrief | null }
+
+/**
+ * `agentRuns`: whether this editor runs an AI agent that can take a brief and
+ * report its status (Studio does; the Builder does not, so it does not announce it).
+ */
+export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: string, options: HostedOpenOptions): Promise<void>; export(): Promise<Uint8Array> | Uint8Array }, capabilities: { agentRuns?: boolean } = {}): () => void {
   if (!isHostedEditor()) return () => {};
   let port: MessagePort | null = null;
   let disposed = false;
   let loaded = false;
   let busy = false;
-  const ready = () => { if (!port) window.parent.postMessage({ kind: 'formlogic-editor-ready', protocol: 1, aiTools: HOSTED_AI_TOOLS_VERSION }, location.origin); };
+  const ready = () => { if (!port) window.parent.postMessage({ kind: 'formlogic-editor-ready', protocol: 1, aiTools: HOSTED_AI_TOOLS_VERSION, ...(capabilities.agentRuns ? { agentRuns: HOSTED_AGENT_RUNS_VERSION } : {}) }, location.origin); };
   const receive = (event: MessageEvent) => {
     if (event.source !== window.parent || event.origin !== location.origin || event.data?.kind !== 'formlogic-editor-connect' || event.data?.protocol !== 1 || port || !event.ports[0]) return;
     port = event.ports[0]; currentPort = port;
     // Optional: a host that takes tool calls says which version; one that does not says nothing.
     hostAITools = Number.isInteger(event.data.aiTools) && event.data.aiTools > 0 ? Math.min(event.data.aiTools, HOSTED_AI_TOOLS_VERSION) : 0;
+    hostAgentRuns = capabilities.agentRuns && Number.isInteger(event.data.agentRuns) && event.data.agentRuns > 0 ? Math.min(event.data.agentRuns, HOSTED_AGENT_RUNS_VERSION) : 0;
+    lastAgentStatus = '';
     port.onmessage = async ({ data }) => {
       if (disposed || typeof data?.id !== 'string') return;
       if (data.kind === 'ai-response') {
@@ -191,12 +274,14 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
       busy = true;
       try {
         if (data.method === 'open' && !loaded) {
-          if (!(data.bytes instanceof Uint8Array) || data.bytes.byteLength > 24 * 1024 * 1024) throw new Error('Invalid app archive.');
+          // Checked by tag, not instanceof: a cloned array can come from another realm.
+          if (Object.prototype.toString.call(data.bytes) !== '[object Uint8Array]' || data.bytes.byteLength > 24 * 1024 * 1024) throw new Error('Invalid app archive.');
           if (data.theme === 'light' || data.theme === 'dark') {
             document.documentElement.setAttribute('data-theme', data.theme);
             document.documentElement.dispatchEvent(new CustomEvent('softn:theme', { detail: data.theme }));
           }
-          await handlers.open(data.bytes, typeof data.name === 'string' ? data.name.slice(0, 150) : 'App');
+          // A brief is only read from a host that said it speaks agentRuns.
+          await handlers.open(data.bytes, typeof data.name === 'string' ? data.name.slice(0, 150) : 'App', { brief: hostAgentRuns > 0 ? readHostedBrief(data.brief) : null });
           if (!disposed) { loaded = true; reply({ opened: true }); }
         } else if (data.method === 'export' && loaded) {
           const bytes = await handlers.export();
@@ -214,7 +299,7 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
   ready();
   return () => {
     disposed = true; window.clearInterval(timer); window.removeEventListener('message', receive);
-    if (currentPort === port) { currentPort = null; hostAITools = 0; }
+    if (currentPort === port) { currentPort = null; hostAITools = 0; hostAgentRuns = 0; lastAgentStatus = ''; }
     for (const request of hostRequests.values()) request.reject(new Error('Editor closed.')); hostRequests.clear();
     // A save the parent never confirmed is NOT saved: say so instead of leaving a promise hanging.
     settlePendingSaves({ ok: false, state: 'error', error: 'The editor session ended before FormLogic confirmed the save.' });

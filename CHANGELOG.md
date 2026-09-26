@@ -8,6 +8,15 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+- Studio can be taken to an app with a request to build: the hosted editor bridge gains an optional `agentRuns` capability. Studio announces it; a host that answers it may open Studio with `brief: { prompt, kind }`, and Studio puts the request in its chat and runs its agent on it. Studio then reports its agent to that host (`agent-status`: running with the current step, waiting, paused, stopped, finished with the summary, failed with the reason), so the host can show the work and hold its own review while the agent writes. Hosts that do not answer it see the bridge exactly as before. `docs/engineering/FORMLOGIC_INTEGRATION.md` describes the wire.
+- Studio's agent knows how to write an app's private backend: a project whose manifest has a `server` block gets a guide to its routes, `server/main.logic` handlers, `softn.sql` and numbered migrations, and to calling it from the page, held by a test to what the host runtime does.
+- `.sql` is text to every reader (`application/sql`): an editor held a private backend's migrations as opaque bytes, so Studio's agent could neither read the schema nor write the next migration.
+- In a hosted editor, the migrations a project arrives with have run on its host's database: Studio's agent is refused a change, delete or rename of one and told to add the next numbered migration instead, which the host then applies. (A host refuses to start on a changed migration; the agent used to rewrite `001.sql` and find out only when the host refused the whole version.)
+- `check_app` checks an app's private backend the way its host starts it: routes a host serves (exact `/api/` paths; GET, POST, PUT or DELETE; once each), listed migrations that exist, and an entry that loads in the real engine and defines a function for every route. A host refuses a whole version whose backend does not start; the agent now finds that before it finishes.
+- The backend guide gives a host's SQL rules exactly — the functions a query may call, the clock functions a migration may add, no triggers, views, PRAGMAs or transactions, SQLite not Postgres — held by a test to the host's own lists, and `check_app` refuses what a host always refuses in a migration or in a query written as a plain string (a real model's `datetime('now')` in a query, and a migration the host would not run).
+- A hosted editor waits 630 s for an AI answer rather than 180: one round of an agent writing whole files runs minutes on a local model.
+- The hosted editor reads the app a host sends by its type tag rather than `instanceof`, so an array cloned from another realm is not refused.
+
 ## v0.0.17
 
 - The FormLogic runtime archive carries the native runtime's `sql.mjs`. v0.0.16's native runtime imported it from `migrations.mjs` and `wasm-host.mjs` but the archive's fixed module list never gained it, so FormLogic's native runtime could not start and every native app request failed. The packager now refuses to build when a native module imports a file the archive does not carry, and a test holds the list to the modules' imports.

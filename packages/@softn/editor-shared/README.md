@@ -16,8 +16,11 @@ the focus hook.
   `build-app-editors.mjs` checks that path exists, so it stays. AI requests
   carry text to every host; to a host that announced `aiTools: 1` in
   `formlogic-editor-connect` they may also carry `tools` and structured
-  messages and get tool calls back (`requestHostedAIReply`). The wire is
-  described in `docs/engineering/FORMLOGIC_INTEGRATION.md`.
+  messages and get tool calls back (`requestHostedAIReply`). An editor with an
+  agent (Studio) also announces `agentRuns: 1`: a host that answers it may
+  open the editor with a `brief` for the agent (`readHostedBrief`) and hears
+  how the agent is doing (`reportHostedAgentStatus`). The wire is described in
+  `docs/engineering/FORMLOGIC_INTEGRATION.md`.
 
 Each editor keeps a thin module with its own signature on top of these
 (`apps/softn-builder/src/utils/handoff.ts`, `apps/softn-studio/src/lib/handoff.ts`,
