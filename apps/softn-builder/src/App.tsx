@@ -46,6 +46,7 @@ import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
 import { connectHostedEditor, isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
+import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { viewsFor } from './utils/workspaceViews';
 import { startNewProject } from './utils/newProject';
 
@@ -309,6 +310,7 @@ function useNarrowScreen(minWidth = 900): boolean {
 function App() {
   useUnsavedChanges();
   const isNarrow = useNarrowScreen();
+  const hostSaveLabel = useHostedSaveLabel();
   const [narrowPreview, setNarrowPreview] = useState(false);
   const projectName = useProjectStore((state) => state.name);
   const projectDirty = useProjectStore((state) => state.isDirty);
@@ -467,7 +469,7 @@ function App() {
     const hosted = requestHostedSave();
     if (hosted.handled) {
       const result = await hosted.completion;
-      if (result.ok) toast.success('Returned to your FormLogic draft. Review and publish it there.');
+      if (result.ok) toast.success('Your changes are back in FormLogic.');
       else toast.error(result.error ?? 'FormLogic could not take the draft. Your changes are still here.');
       return;
     }
@@ -743,9 +745,9 @@ function App() {
         if (isHostedEditor()) return (
           <section style={{ padding: 'clamp(24px, 5vw, 56px)', maxWidth: 760, margin: '0 auto', lineHeight: 1.7 }} aria-label="FormLogic app data">
             <h1 style={{ fontFamily: 'var(--display)', fontSize: 24, letterSpacing: '-0.02em', marginBottom: 12 }}>Your app data lives in FormLogic</h1>
-            <p>Use the app’s Data &amp; forms section to browse records. For native apps, open Native app hosting → Backend to change SQLite tables with a numbered migration.</p>
-            <p style={{ marginTop: 12 }}>Builder’s standalone database designer creates local XDB collections. Those are separate from your hosted database, so edit the hosted schema in FormLogic.</p>
-            <button type="button" className="bl-btn bl-btn-primary bl-btn-lg" onClick={() => void saveCurrentProject()} style={{ marginTop: 24 }}>Review draft in FormLogic</button>
+            <p>Browse and edit your app’s records in FormLogic: a SoftN app’s Data tab, or a forms app’s Data &amp; forms. To add a table or a column, add the next numbered migration in the app’s source, or ask AI Studio.</p>
+            <p style={{ marginTop: 12 }}>Builder’s standalone database designer creates local XDB collections. Those are separate from your hosted database, so change the hosted schema in FormLogic.</p>
+            <button type="button" className="bl-btn bl-btn-primary bl-btn-lg" onClick={() => void saveCurrentProject()} style={{ marginTop: 24 }}>{hostSaveLabel ?? 'Return to FormLogic'}</button>
           </section>
         );
         return (
@@ -772,7 +774,7 @@ function App() {
             {projectName}
             {projectDirty && <span style={{ display: 'block', fontFamily: 'var(--body)', fontWeight: 500, fontSize: 11, letterSpacing: 0, color: 'var(--dim)' }}>Unsaved changes</span>}
           </span>
-          <button className="bl-btn" style={{ minHeight: 44 }} onClick={handleSave} disabled={isSaving} aria-busy={isSaving}>{isSaving ? 'Saving…' : 'Save'}</button>
+          <button className="bl-btn" style={{ minHeight: 44 }} onClick={handleSave} disabled={isSaving} aria-busy={isSaving}>{isSaving ? 'Saving…' : hostSaveLabel ?? 'Save'}</button>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}><LivePreview initialDevice="mobile" /></div>
       </div> : <div style={{ ...styles.app, height: '100dvh' }}>

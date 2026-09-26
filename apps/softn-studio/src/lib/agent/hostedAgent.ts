@@ -60,16 +60,22 @@ export function currentAgentStatus(): HostedAgentStatus {
  * Report the agent's status to the host whenever it changes, until the
  * returned function is called. Step text changes quickly while a run works,
  * so reports are coalesced to one every 250 ms; a run starting or ending is
- * reported at once.
+ * reported at once, and a pause once it has lasted that long.
  */
 export function reportAgentStatusToHost(): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastState = '';
-  const send = () => { timer = null; reportHostedAgentStatus(currentAgentStatus()); };
+  const send = () => {
+    timer = null;
+    const status = currentAgentStatus();
+    lastState = status.state;
+    reportHostedAgentStatus(status);
+  };
   const unsubscribe = useAIStore.subscribe(() => {
     const state = currentAgentStatus().state;
-    if (state !== lastState) {
-      lastState = state;
+    // A run starting or resuming shows as running a moment before the store is building, which
+    // reads as paused: only a pause that lasts past the coalescing is one to tell the host.
+    if (state !== lastState && state !== 'paused') {
       if (timer) clearTimeout(timer);
       send();
       return;

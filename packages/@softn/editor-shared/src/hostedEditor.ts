@@ -124,6 +124,35 @@ export function readHostedBrief(value: unknown): HostedBrief | null {
   return { prompt, kind: value.kind === 'edit' ? 'edit' : 'build' };
 }
 
+/** Longest save label the editor takes from a host. */
+export const HOSTED_SAVE_LABEL_MAX_CHARS = 32;
+let hostSaveLabel: string | null = null;
+const saveLabelListeners = new Set<() => void>();
+
+/**
+ * The host's own name for returning the editor's work to it ("Save changes"), sent
+ * with `open` as `saveLabel`: the editor's button that asks the host to save says
+ * the same as the host's button beside it. Null when the host sent none; each
+ * editor then keeps its own label. Optional, with no capability to announce.
+ */
+export function hostedSaveLabel(): string | null { return currentPort ? hostSaveLabel : null; }
+/** Called when the host's save label changes (on `open`, and when the host goes). */
+export function subscribeHostedSaveLabel(listener: () => void): () => void {
+  saveLabelListeners.add(listener);
+  return () => { saveLabelListeners.delete(listener); };
+}
+/** A save label as the host sent it: one line of plain text, or null. */
+export function readHostedSaveLabel(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const label = value.replace(/\s+/g, ' ').trim();
+  return label && label.length <= HOSTED_SAVE_LABEL_MAX_CHARS ? label : null;
+}
+function setHostSaveLabel(label: string | null): void {
+  if (label === hostSaveLabel) return;
+  hostSaveLabel = label;
+  for (const listener of saveLabelListeners) listener();
+}
+
 let lastAgentStatus = '';
 /**
  * Tell the host where the agent is. Sent only to a host that announced
@@ -280,6 +309,7 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
             document.documentElement.setAttribute('data-theme', data.theme);
             document.documentElement.dispatchEvent(new CustomEvent('softn:theme', { detail: data.theme }));
           }
+          setHostSaveLabel(readHostedSaveLabel(data.saveLabel));
           // A brief is only read from a host that said it speaks agentRuns.
           await handlers.open(data.bytes, typeof data.name === 'string' ? data.name.slice(0, 150) : 'App', { brief: hostAgentRuns > 0 ? readHostedBrief(data.brief) : null });
           if (!disposed) { loaded = true; reply({ opened: true }); }
@@ -299,7 +329,7 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
   ready();
   return () => {
     disposed = true; window.clearInterval(timer); window.removeEventListener('message', receive);
-    if (currentPort === port) { currentPort = null; hostAITools = 0; hostAgentRuns = 0; lastAgentStatus = ''; }
+    if (currentPort === port) { currentPort = null; hostAITools = 0; hostAgentRuns = 0; lastAgentStatus = ''; setHostSaveLabel(null); }
     for (const request of hostRequests.values()) request.reject(new Error('Editor closed.')); hostRequests.clear();
     // A save the parent never confirmed is NOT saved: say so instead of leaving a promise hanging.
     settlePendingSaves({ ok: false, state: 'error', error: 'The editor session ended before FormLogic confirmed the save.' });

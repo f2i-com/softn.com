@@ -11,11 +11,28 @@
 const MIGRATION = /^server\/migrations\/[^/]+\.sql$/;
 let applied = new Map<string, string>();
 
-/** Remember the migrations of the project the host opened (their current text). */
+/** A project path as a manifest may write it: `./server/001.sql` is `server/001.sql`. */
+export function projectRelative(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+}
+
+/**
+ * Remember the migrations of the project the host opened (their current text): every file its
+ * manifest lists in server.database.migrations, wherever it lives, and every server/migrations/*.sql.
+ */
 export function rememberAppliedMigrations(files: Iterable<[string, { content: unknown }]>): void {
   applied = new Map();
-  for (const [path, file] of files) {
-    if (MIGRATION.test(path) && typeof file.content === 'string') applied.set(path, file.content);
+  const all = new Map(files);
+  const listed = new Set<string>();
+  const manifest = all.get('manifest.json')?.content;
+  if (typeof manifest === 'string') {
+    try {
+      const migrations = (JSON.parse(manifest) as { server?: { database?: { migrations?: unknown } } }).server?.database?.migrations;
+      if (Array.isArray(migrations)) for (const path of migrations) if (typeof path === 'string') listed.add(projectRelative(path));
+    } catch { /* A manifest that does not parse lists nothing; the paths below still count. */ }
+  }
+  for (const [path, file] of all) {
+    if ((MIGRATION.test(path) || listed.has(path)) && typeof file.content === 'string') applied.set(path, file.content);
   }
 }
 
@@ -23,10 +40,16 @@ export function forgetAppliedMigrations(): void {
   applied = new Map();
 }
 
-/** The next free migration name after the applied ones, e.g. server/migrations/002.sql. */
-function nextMigration(): string {
+/** The migrations the host has run, as the project names them. */
+export function appliedMigrationPaths(): string[] {
+  return [...applied.keys()];
+}
+
+/** The next free migration name after the applied ones and any the project already has, e.g. server/migrations/002.sql. */
+function nextMigration(projectPaths: Iterable<string>): string {
   let highest = 0;
-  for (const path of applied.keys()) {
+  for (const path of [...applied.keys(), ...projectPaths]) {
+    if (!path.endsWith('.sql')) continue;
     const number = /(\d+)[^/]*\.sql$/.exec(path);
     if (number) highest = Math.max(highest, Number(number[1]));
   }
@@ -35,12 +58,13 @@ function nextMigration(): string {
 
 /**
  * Why `change` to `path` is refused, or null when it may go ahead. Writing a migration back with
- * exactly the text it has is not a change.
+ * exactly the text it has is not a change. `projectPaths`: the project's files, so the next
+ * migration named is one that does not exist yet.
  */
-export function appliedMigrationRefusal(path: string, change: 'replace' | 'edit' | 'delete' | 'rename', next?: string): string | null {
+export function appliedMigrationRefusal(path: string, change: 'replace' | 'edit' | 'delete' | 'rename', next?: string, projectPaths: Iterable<string> = []): string | null {
   const was = applied.get(path);
   if (was === undefined) return null;
   if (change === 'replace' && next === was) return null;
   const verb = change === 'delete' ? 'be deleted' : change === 'rename' ? 'be renamed' : 'change';
-  return `${path} has already run on this app's database on its host, so it cannot ${verb}: the host refuses to start when a migration it ran is changed or missing. Keep it as it is and put the change in a new migration, ${nextMigration()}, listed after it in manifest.json's server.database.migrations (a new column is ALTER TABLE … ADD COLUMN …; a new table is CREATE TABLE …).`;
+  return `${path} has already run on this app's database on its host, so it cannot ${verb}: the host refuses to start when a migration it ran is changed or missing. Keep it as it is and put the change in a new migration, ${nextMigration(projectPaths)}, listed after it in manifest.json's server.database.migrations (a new column is ALTER TABLE … ADD COLUMN …; a new table is CREATE TABLE …).`;
 }

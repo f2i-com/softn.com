@@ -71,6 +71,8 @@ describe('a run started from the host\'s brief', () => {
     const states = host.statuses.map((s) => s.state);
     expect(states[0]).toBe('idle');
     expect(states).toContain('running');
+    // A run starting reads as paused for a moment in between; the host is never told it was.
+    expect(states).not.toContain('paused');
     expect(host.statuses.at(-1)).toEqual({ state: 'finished', summary: 'Turned the list into a recipe box.', reason: undefined });
     expect(states.indexOf('running')).toBeLessThan(states.lastIndexOf('finished'));
   });

@@ -188,3 +188,11 @@ FormLogic's side is `AppEditorDialog.tsx` (the `brief` prop and the status
 bar) and its SoftN app workspace, which opens Studio with the request from
 "Create app" or from its chat. A FormLogic that does not speak `agentRuns`
 opens Studio exactly as before.
+
+Any host's `open` may also carry `saveLabel`, its own name for taking the
+editor's work back ("Save changes"; one line, up to 32 characters). Studio's
+and the Builder's buttons that ask the host to save (`save-requested`) then
+use it, so the editor's button and the host's button beside it say the same
+thing. It needs no capability: an editor from before it ignores it, and a
+host that sends none leaves each editor its own label ("Review changes" in
+Studio, "Save" in the Builder).

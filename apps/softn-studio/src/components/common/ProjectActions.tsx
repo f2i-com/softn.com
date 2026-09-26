@@ -105,7 +105,7 @@ export function useProjectActions(): ProjectActions {
       if (hosted.handled) {
         const result = await hosted.completion;
         useWorkspaceStore.getState().addConsoleOutput(result.ok
-          ? 'Returned to your FormLogic draft. Review and publish it there.'
+          ? 'Your changes are back in FormLogic.'
           : (result.error ?? 'FormLogic could not take the draft. Your project is still here.'));
         return;
       }

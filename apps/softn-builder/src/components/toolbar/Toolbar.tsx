@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { useHistoryStore } from '../../stores/historyStore';
@@ -168,6 +169,8 @@ export function Toolbar({
   const { name, isDirty } = useProjectStore();
   const { canUndo, canRedo, undo, redo } = useHistoryStore();
   const { canInstall, promptInstall } = useInstallPrompt();
+  // Hosted, the host's own name for saving back to it, so its button and this one agree.
+  const saveLabel = useHostedSaveLabel() ?? 'Save';
 
   // The history store never holds the current canvas — callers push before
   // mutating — so stepping in either direction has to hand it over.
@@ -245,7 +248,7 @@ export function Toolbar({
       </button>
 
       <button className="bl-tool" onClick={onSave} disabled={isSaving} aria-busy={isSaving} title={`Save (${withMod('S')})`}>
-        <IconSave /> {isSaving ? 'Saving…' : 'Save'}
+        <IconSave /> {isSaving ? 'Saving…' : saveLabel}
       </button>
 
       {/* Export had no control anywhere in the app. Its only route was

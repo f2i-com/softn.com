@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SQL_MIGRATION_CLOCK_FUNCTIONS, SQL_RUNTIME_FUNCTIONS } from '../src/lib/agent/guide';
+import { SQL_MIGRATION_EXTRA_FUNCTIONS, SQL_RUNTIME_FUNCTIONS } from '../src/lib/agent/guide';
 import { backendSqlProblems, migrationSqlProblems, sqlCode } from '../src/lib/agent/sqlLint';
 
 const HOST_SQL = readFileSync(resolve(process.cwd(), '../softn-host-php/runtime/sql.mjs'), 'utf8');
@@ -18,8 +18,9 @@ const hostSet = (name: string) => {
 describe('the host\'s SQL functions', () => {
   it('are the ones the guide and the lint use', () => {
     expect([...SQL_RUNTIME_FUNCTIONS]).toEqual(hostSet('RUNTIME_FUNCTIONS'));
-    // MIGRATION_FUNCTIONS spreads RUNTIME_FUNCTIONS, then adds the clock and ALTER TABLE's own helpers.
-    expect(hostSet('MIGRATION_FUNCTIONS').slice(0, SQL_MIGRATION_CLOCK_FUNCTIONS.length)).toEqual([...SQL_MIGRATION_CLOCK_FUNCTIONS]);
+    // MIGRATION_FUNCTIONS spreads RUNTIME_FUNCTIONS, then adds what a migration may call, and the
+    // sqlite_* helpers SQLite's own ALTER TABLE calls (which app SQL cannot).
+    expect(hostSet('MIGRATION_FUNCTIONS').filter((name) => !name.startsWith('sqlite_'))).toEqual([...SQL_MIGRATION_EXTRA_FUNCTIONS]);
   });
 });
 
@@ -38,6 +39,16 @@ CREATE INDEX recipes_title ON recipes(title);
 ALTER TABLE recipes ADD COLUMN steps TEXT NOT NULL DEFAULT '';
 INSERT INTO recipes (title, steps) VALUES ('Pancakes; begin here', upper('mix'));`;
     expect(migrationSqlProblems('server/migrations/002.sql', sql)).toEqual([]);
+  });
+
+  it('passes what models write that the host takes: sized types, printf, a column called begin, json_each', () => {
+    const sql = `CREATE TABLE products(name VARCHAR(100) NOT NULL, price DECIMAL(10, 2), code NVARCHAR(20), made TIMESTAMP(3), begin TEXT);
+ALTER TABLE products ADD COLUMN sku VARCHAR(20) NOT NULL DEFAULT '';
+UPDATE products SET code = printf('P-%04d', rowid);
+UPDATE products SET price = CAST(price AS DECIMAL(10, 2));
+INSERT INTO products(name) SELECT value FROM json_each('["a","b"]');
+INSERT INTO products(name) VALUES ('a -- b'), ('call me (maybe)'), ('/* not a comment */ now()');`;
+    expect(migrationSqlProblems('server/migrations/003.sql', sql)).toEqual([]);
   });
 
   it('is refused a trigger, a view, a PRAGMA, a transaction, SERIAL, and functions a host does not allow', () => {
@@ -64,6 +75,28 @@ describe('a backend\'s queries', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('server/main.logic line 2: the query calls datetime()');
     expect(lines[0]).toContain('softn.time.now()');
+  });
+
+  it('refuses a read through execute, a write through query, and RETURNING, at the line the SQL is on', () => {
+    const source = `function a(req) {
+  softn.sql.execute("SELECT * FROM items", []);
+  softn.sql.query('INSERT INTO items(title) VALUES(?)', [req.body.title]);
+  softn.sql.execute(
+    "INSERT INTO items(title) VALUES(?) RETURNING id", [req.body.title]);
+  return softn.sql.first("SELECT id FROM items, json_each(items.tags) WHERE json_each.value = ?", [req.query.tag]);
+}`;
+    const lines = backendSqlProblems('server/main.logic', source);
+    expect(lines).toEqual([
+      expect.stringContaining('server/main.logic line 2: softn.sql.execute runs an INSERT'),
+      expect.stringContaining('server/main.logic line 3: softn.sql.query only reads'),
+      expect.stringContaining('server/main.logic line 5: softn.sql.execute returns no rows, so RETURNING is refused'),
+    ]);
+  });
+
+  it('says to work a value out in JavaScript when the function is not the clock', () => {
+    const [line] = backendSqlProblems('b.logic', `softn.sql.query("SELECT json_extract(data, '$.a') FROM items", [])`);
+    expect(line).toContain('the query calls json_extract()');
+    expect(line).toContain('work the value out in JavaScript');
   });
 
   it('reads only plain strings, and sees no calls inside quotes or identifiers', () => {
