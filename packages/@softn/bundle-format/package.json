@@ -1,6 +1,6 @@
 {
   "name": "@softn/bundle-format",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "private": true,
   "description": "The .softn bundle contract every SoftN surface shares: the archive reader, the inspector, permission declarations and the page-to-page hand-off. No engine, no React.",
   "license": "Apache-2.0",
