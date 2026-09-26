@@ -8,6 +8,8 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+## v0.0.18
+
 - Studio can be taken to an app with a request to build: the hosted editor bridge gains an optional `agentRuns` capability. Studio announces it; a host that answers it may open Studio with `brief: { prompt, kind }`, and Studio puts the request in its chat and runs its agent on it. Studio then reports its agent to that host (`agent-status`: running with the current step, waiting, paused after a network failure, stopped, finished with the summary, failed with the reason), so the host can show the work and hold its own review while the agent writes. Hosts that do not answer it see the bridge exactly as before. `docs/engineering/FORMLOGIC_INTEGRATION.md` describes the wire.
 - Studio's agent knows how to write an app's private backend: a project whose manifest has a `server` block gets a guide to its routes, `server/main.logic` handlers, `softn.sql` and numbered migrations, and to calling it from the page, held by a test to what the host runtime does.
 - `.sql` is text to every reader (`application/sql`), the PHP single-app host's copy of the registry included: an editor held a private backend's migrations as opaque bytes, so Studio's agent could neither read the schema nor write the next migration.
