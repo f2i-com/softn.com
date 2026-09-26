@@ -17,3 +17,4 @@ export * from './handoff';
 export * from './remoteOpen';
 export * from './useModalFocus';
 export * from './hostedEditor';
+export * from './useHostedSaveLabel';

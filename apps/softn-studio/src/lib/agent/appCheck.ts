@@ -20,6 +20,7 @@ import { normalizeProjectPath } from '../paths';
 import { checkTemplateNames, type LogicNames, type TemplateFile } from './templateNames';
 import type { CheckReport } from './types';
 import { backendSqlProblems, migrationSqlProblems } from './sqlLint';
+import { appliedMigrationPaths, projectRelative } from './appliedMigrations';
 
 export interface RunFunctionRequest {
   name: string;
@@ -394,7 +395,10 @@ const ROUTE_PATH = /^\/api\/[a-zA-Z0-9/_-]+$/;
 const ROUTE_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
 const HANDLER_NAME = /^[$A-Z_a-z][$\w]*$/;
 
-interface ServerRoute { path?: unknown; method?: unknown; handler?: unknown }
+interface ServerRoute { path?: unknown; method?: unknown; handler?: unknown; transaction?: unknown; authorization?: unknown }
+/** What a host understands in a route; anything else stops it starting (request-worker.mjs). */
+const ROUTE_TRANSACTIONS = new Set(['read', 'write', 'none']);
+const ROUTE_AUTHORIZATIONS = new Set(['application', 'anonymous', 'host-token', 'hosttoken']);
 
 /**
  * A private backend (manifest.json's `server`), checked the way its host starts it: the routes
@@ -414,7 +418,7 @@ async function backendProblems(files: Map<string, VFSFile>): Promise<{ errors: s
   if (!server || typeof server !== 'object') return NONE;
   const errors: string[] = [];
   const warnings: string[] = [];
-  const entry = typeof server.entry === 'string' ? server.entry : '';
+  const entry = typeof server.entry === 'string' ? projectRelative(server.entry) : '';
   const source = entry ? files.get(entry)?.content : undefined;
   if (typeof source !== 'string') {
     errors.push(`manifest.json: server.entry names ${entry || 'no file'}, which is not a text file in the project.`);
@@ -426,20 +430,30 @@ async function backendProblems(files: Map<string, VFSFile>): Promise<{ errors: s
     const label = `${typeof route?.method === 'string' ? route.method : '?'} ${typeof route?.path === 'string' ? route.path : '?'}`;
     if (typeof route?.path !== 'string' || !ROUTE_PATH.test(route.path)) errors.push(`manifest.json: route ${label} needs a path under /api/ made of letters, digits, /, _ and - (matched exactly: pass an id in the query or the body).`);
     if (typeof route?.method !== 'string' || !ROUTE_METHODS.has(route.method)) errors.push(`manifest.json: route ${label} needs a method of GET, POST, PUT or DELETE.`);
+    if (route?.transaction !== undefined && !ROUTE_TRANSACTIONS.has(route.transaction as string)) errors.push(`manifest.json: route ${label} has "transaction": ${JSON.stringify(route.transaction)}; a host takes "read" or "write" (or none: a GET reads, anything else writes).`);
+    if (route?.authorization !== undefined && !ROUTE_AUTHORIZATIONS.has(route.authorization as string)) errors.push(`manifest.json: route ${label} has "authorization": ${JSON.stringify(route.authorization)}; a host takes "application" (the default) or "anonymous".`);
     if (declared.has(label)) errors.push(`manifest.json: route ${label} is declared twice.`);
     declared.add(label);
     if (typeof route?.handler !== 'string' || !HANDLER_NAME.test(route.handler)) errors.push(`manifest.json: route ${label} needs a handler: the name of a function in ${entry}.`);
     else handlers.push({ handler: route.handler, label });
   }
-  const migrations = Array.isArray(server.database?.migrations) ? (server.database!.migrations as unknown[]) : [];
+  const listed = Array.isArray(server.database?.migrations) ? (server.database!.migrations as unknown[]) : [];
+  const migrations = listed.map((path) => (typeof path === 'string' ? projectRelative(path) : path));
+  const seen = new Set<unknown>();
   for (const path of migrations) {
+    if (seen.has(path)) { errors.push(`manifest.json: server.database.migrations lists ${String(path)} twice; a host refuses a migration listed twice.`); continue; }
+    seen.add(path);
     const sql = typeof path === 'string' ? files.get(path)?.content : undefined;
     if (typeof sql !== 'string') errors.push(`manifest.json: server.database.migrations lists ${String(path)}, which is not a text file in the project.`);
     else errors.push(...migrationSqlProblems(path as string, sql));
   }
+  // In a hosted editor: a migration the host has run and the manifest no longer lists stops it starting.
+  for (const path of appliedMigrationPaths()) {
+    if (!migrations.includes(path)) errors.push(`${path} has already run on this app's database, so manifest.json's server.database.migrations must keep listing it; the host refuses to start without it.`);
+  }
   errors.push(...backendSqlProblems(entry, source));
   for (const path of files.keys()) {
-    if (/^server\/migrations\/[^/]+\.sql$/.test(path) && !migrations.includes(path)) warnings.push(`${path} is not listed in manifest.json's server.database.migrations, so the host never runs it.`);
+    if (/^server\/migrations\/[^/]+\.sql$/.test(path) && !migrations.includes(path) && !appliedMigrationPaths().includes(path)) warnings.push(`${path} is not listed in manifest.json's server.database.migrations, so the host never runs it.`);
   }
   // Loaded as its host loads it: a backend's top level only defines functions (a host refuses SQL outside a request).
   const core = await import('@softn/core');

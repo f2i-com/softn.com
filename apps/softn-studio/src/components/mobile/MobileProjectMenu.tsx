@@ -1,4 +1,5 @@
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Icon } from '../common/Icon';
 import { HandoffReady } from '../common/HandoffReady';
@@ -26,6 +27,8 @@ import { useProjectActions } from '../common/ProjectActions';
  */
 export function MobileProjectMenu(): React.ReactElement {
   const actions = useProjectActions();
+  const hosted = isHostedEditor();
+  const saveLabel = useHostedSaveLabel() ?? 'Review changes';
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -110,8 +113,13 @@ export function MobileProjectMenu(): React.ReactElement {
               {actions.fileCount} file{actions.fileCount === 1 ? '' : 's'} · {actions.problemCount} problem{actions.problemCount === 1 ? '' : 's'}
             </span>
           </div>
-          {item(isHostedEditor() ? 'Return draft' : 'Run', 'play', actions.canRun, actions.describe('runtime', 'Stage the bundle for the SoftN runtime'), actions.run)}
-          {item(isHostedEditor() ? 'Review changes' : 'Publish', 'upload', actions.canPublish, actions.describe('publish', 'Stage the bundle for the directory’s publish page'), actions.publish)}
+          {/* Hosted, Run and Publish both return the work to FormLogic: one item, named as the host names it. */}
+          {hosted
+            ? item(saveLabel, 'upload', actions.canPublish, actions.describe('publish', 'Return your changes to FormLogic'), actions.publish)
+            : <>
+              {item('Run', 'play', actions.canRun, actions.describe('runtime', 'Stage the bundle for the SoftN runtime'), actions.run)}
+              {item('Publish', 'upload', actions.canPublish, actions.describe('publish', 'Stage the bundle for the directory’s publish page'), actions.publish)}
+            </>}
           {item('Export bundle', 'export', actions.canExport, actions.canExport ? 'Download the project as a .softn file' : 'No files to export', actions.exportBundle)}
         </div>
       )}

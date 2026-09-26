@@ -1,4 +1,5 @@
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import React from 'react';
 import { Icon } from '../common/Icon';
 import { Mark } from '../common/Mark';
@@ -22,6 +23,8 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
   const { projectName, hasFiles, preparing, ready } = actions;
 
   const hosted = isHostedEditor();
+  // The host's own name for saving back to it, so the two buttons agree.
+  const saveLabel = useHostedSaveLabel() ?? 'Review changes';
 
   return (
     <div className="st-topbar">
@@ -67,10 +70,10 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
           disabled={!actions.canPublish}
           aria-busy={preparing === 'publish'}
           className={hosted ? 'st-btn st-btn-sm st-btn-primary' : 'st-btn st-btn-sm'}
-          title={actions.describe('publish', hosted ? 'Return your changes to FormLogic for review' : 'Publish: stage the bundle for the directory’s publish page')}
+          title={actions.describe('publish', hosted ? 'Return your changes to FormLogic' : 'Publish: stage the bundle for the directory’s publish page')}
         >
           <Icon name="upload" size={15} />
-          <span>{preparing === 'publish' ? 'Preparing…' : hosted ? 'Review changes' : 'Publish'}</span>
+          <span>{preparing === 'publish' ? 'Preparing…' : hosted ? saveLabel : 'Publish'}</span>
         </button>
         {/* Run is the one to press first: it is the only way to see the app
             with the capabilities the preview does not grant. */}

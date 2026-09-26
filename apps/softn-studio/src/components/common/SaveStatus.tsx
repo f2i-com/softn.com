@@ -57,7 +57,7 @@ function HostedDraftButton(): React.ReactElement {
       : { label: 'FormLogic draft', error: result.error ?? 'FormLogic could not take the draft. Your project is still here.', busy: false });
   };
   return (
-    <span role={state.error ? 'alert' : 'status'} aria-live={state.error ? 'assertive' : 'polite'} style={styles.box} title={state.error ?? 'Return this draft to FormLogic to review and publish'}>
+    <span role={state.error ? 'alert' : 'status'} aria-live={state.error ? 'assertive' : 'polite'} style={styles.box} title={state.error ?? 'Return your changes to FormLogic'}>
       <button type="button" onClick={() => void send()} disabled={state.busy} style={{ ...styles.exportBtn, cursor: state.busy ? 'progress' : 'pointer' }}>{state.label}</button>
       {state.error && <span style={styles.detail}> — {state.error}</span>}
     </span>

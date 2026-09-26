@@ -1,11 +1,14 @@
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import React from 'react';
+import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 
 /** Keep the document reachable on a phone while full editing uses the wider layout. */
 export function NarrowScreenNotice({ studioUrl, runtimeUrl, projectName, isDirty, isSaving = false, onOpen, onSave, onPreview }: {
   studioUrl: string; runtimeUrl: string; projectName: string; isDirty: boolean; isSaving?: boolean;
   onOpen: () => void; onSave: () => void; onPreview: () => void;
 }): React.ReactElement {
+  const hosted = isHostedEditor();
+  const saveLabel = useHostedSaveLabel() ?? 'Save app';
   return (
     <div style={s.wrap}>
       <div style={s.card}>
@@ -22,12 +25,12 @@ export function NarrowScreenNotice({ studioUrl, runtimeUrl, projectName, isDirty
           <p style={{ ...s.copy, marginTop: 6 }} role="status">{isDirty ? 'You have unsaved changes. Save your app before leaving.' : 'Preview your current workspace or open a .softn bundle.'}</p>
           <div style={s.actions}>
             <button type="button" onClick={onPreview} style={{ ...s.action, ...s.primary }}>Preview app</button>
-            <button type="button" onClick={onSave} style={s.action} disabled={isSaving} aria-busy={isSaving}>{isSaving ? 'Saving...' : 'Save app'}</button>
+            <button type="button" onClick={onSave} style={s.action} disabled={isSaving} aria-busy={isSaving}>{isSaving ? 'Saving…' : saveLabel}</button>
             <button type="button" onClick={onOpen} style={s.action}>Open app</button>
           </div>
         </div>
-        <p style={s.copy}>{isHostedEditor() ? "Review changes to return to FormLogic, then choose Open AI Studio to keep editing on your phone." : "Use Studio to create with AI, or open an exported app in the runtime:"}</p>
-        {!isHostedEditor() && <div style={s.actions}>
+        <p style={s.copy}>{hosted ? `${saveLabel} returns your changes to FormLogic. To keep editing on your phone, open AI Studio from there.` : "Use Studio to create with AI, or open an exported app in the runtime:"}</p>
+        {!hosted && <div style={s.actions}>
           <a href={studioUrl} style={{ ...s.action, ...s.primary }}>Open Studio</a>
           <a href={runtimeUrl} style={s.action}>Open the runtime</a>
         </div>}

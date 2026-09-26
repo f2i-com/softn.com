@@ -19,8 +19,10 @@ the focus hook.
   messages and get tool calls back (`requestHostedAIReply`). An editor with an
   agent (Studio) also announces `agentRuns: 1`: a host that answers it may
   open the editor with a `brief` for the agent (`readHostedBrief`) and hears
-  how the agent is doing (`reportHostedAgentStatus`). The wire is described in
-  `docs/engineering/FORMLOGIC_INTEGRATION.md`.
+  how the agent is doing (`reportHostedAgentStatus`). Any host may name its
+  own save button with `saveLabel` on `open`; the editors' buttons that save
+  back to it then say the same (`hostedSaveLabel`, `useHostedSaveLabel`). The
+  wire is described in `docs/engineering/FORMLOGIC_INTEGRATION.md`.
 
 Each editor keeps a thin module with its own signature on top of these
 (`apps/softn-builder/src/utils/handoff.ts`, `apps/softn-studio/src/lib/handoff.ts`,

@@ -109,6 +109,7 @@ const SOFTN_ENTRY_TYPES = [
     'logic' => ['text/plain', 'text'],
     'py' => ['text/x-python', 'text'],
     'softn' => ['text/plain', 'text'],
+    'sql' => ['application/sql', 'text'],
     'wgsl' => ['text/plain', 'text'],
     'xdb' => ['application/json', 'text'],
     'html' => ['text/html', 'text'],

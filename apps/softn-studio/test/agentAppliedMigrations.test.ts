@@ -77,8 +77,25 @@ describe('migrations the host already ran', () => {
     expect(appliedMigrationRefusal('server/migrations/001.sql', 'replace', FIRST)).toBeNull();
     expect(appliedMigrationRefusal('server/migrations/002.sql', 'edit')).toBeNull();
     expect(appliedMigrationRefusal('ui/main.ui', 'delete')).toBeNull();
+    // The next migration named is one the project does not have yet.
+    expect(appliedMigrationRefusal('server/migrations/001.sql', 'edit', undefined, ['server/migrations/001.sql', 'server/migrations/002.sql'])).toContain('server/migrations/003.sql');
     // Outside a hosted editor nothing is remembered, and a migration may be rewritten.
     forgetAppliedMigrations();
     expect(appliedMigrationRefusal('server/migrations/001.sql', 'edit')).toBeNull();
+  });
+});
+
+describe('which migrations count as run', () => {
+  it('are every file the manifest lists, wherever it lives, as well as server/migrations/*.sql', () => {
+    const manifest = JSON.stringify({ server: { database: { migrations: ['./db/001_init.sql', 'server/migrations/001.sql'] } } });
+    rememberAppliedMigrations([
+      ['manifest.json', { content: manifest }],
+      ['db/001_init.sql', { content: 'CREATE TABLE a(id INTEGER PRIMARY KEY);' }],
+      ['server/migrations/001.sql', { content: FIRST }],
+      ['db/notes.sql', { content: 'SELECT 1;' }],
+    ]);
+    expect(appliedMigrationRefusal('db/001_init.sql', 'edit')).toContain('has already run');
+    expect(appliedMigrationRefusal('server/migrations/001.sql', 'delete')).toContain('cannot be deleted');
+    expect(appliedMigrationRefusal('db/notes.sql', 'edit')).toBeNull();
   });
 });
