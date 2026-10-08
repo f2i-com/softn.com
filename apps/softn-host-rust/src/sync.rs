@@ -882,6 +882,7 @@ impl SyncManager {
             let batch_result = db.with_transaction(|db| {
                 let mut batch_accepted = Vec::new();
                 let mut batch_rejected = Vec::new();
+                let mut batch_replayed = Vec::new();
 
                 for mut op in validated_ops {
                     // xdb finds a record by id alone. An op names a collection,
@@ -889,13 +890,27 @@ impl SyncManager {
                     // lives in another collection would otherwise let an op
                     // "in notes" update, delete or (by INSERT OR REPLACE)
                     // overwrite a record the hook never saw.
-                    match db.get_record(&op.record_id) {
+                    let exists = match db.get_record(&op.record_id) {
                         Ok(existing) if existing.collection != op.collection => {
                             batch_rejected.push((op.id.clone(), "recordId belongs to another collection".to_string()));
                             continue;
                         }
-                        Ok(_) | Err(xdb::DbError::NotFound(_)) => {}
+                        Ok(_) => true,
+                        Err(xdb::DbError::NotFound(_)) => false,
                         Err(e) => return Err(e),
+                    };
+                    // A create for an id that is already here is a create
+                    // that already happened: the client sends every op again
+                    // until it is acknowledged, and an acknowledgement can be
+                    // lost after the commit. Applying it again is INSERT OR
+                    // REPLACE with the record's first payload, which wrote
+                    // over whatever another client had changed since and
+                    // brought a deleted record back. It is acknowledged, so
+                    // the client stops sending it, and nothing is written,
+                    // broadcast or handed to the after-sync hooks.
+                    if exists && op.operation == "create" {
+                        batch_replayed.push(op.id.clone());
+                        continue;
                     }
                     let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
                         "create" => {
@@ -936,16 +951,20 @@ impl SyncManager {
                     }
                 }
 
-                Ok((batch_accepted, batch_rejected))
+                Ok((batch_accepted, batch_rejected, batch_replayed))
             });
 
             match batch_result {
-                Ok((batch_accepted, batch_rejected)) => {
+                Ok((batch_accepted, batch_rejected, batch_replayed)) => {
                     for (op_id, reason) in batch_rejected {
                         responses.push(ServerMessage::SyncReject {
                             op_id,
                             reason,
                         });
+                    }
+                    if !batch_replayed.is_empty() {
+                        tracing::debug!("sync_push: {} create(s) already applied, acknowledged without writing", batch_replayed.len());
+                        responses.push(ServerMessage::SyncAck { op_ids: batch_replayed });
                     }
                     accepted_ops = batch_accepted;
                 }
@@ -1135,6 +1154,18 @@ impl SyncManager {
         let result = rt.call("onBeforeSync", vec![op_json])?;
         match &result {
             serde_json::Value::Bool(false) => Ok((false, None)),
+            // `{ data: clean(op.data) }` where `clean` falls off the end of a
+            // branch: undefined crosses as null, and applying that replaced
+            // the record's whole payload with JSON null and broadcast the
+            // wipe. The batch hook already keeps the original for this.
+            serde_json::Value::Object(obj) if obj.get("data").is_some_and(|data| data.is_null()) => {
+                tracing::warn!(
+                    op = %op.id,
+                    "onBeforeSync returned no data for an op — keeping the original payload \
+                     rather than nulling the record"
+                );
+                Ok((true, None))
+            }
             serde_json::Value::Object(obj) if obj.contains_key("data") => {
                 Ok((true, obj.get("data").cloned()))
             }
@@ -1146,15 +1177,16 @@ impl SyncManager {
     fn call_after_sync_batch(&self, ops: &[SyncOp]) -> Result<(), String> {
         let rt = self.runtime.as_ref().ok_or("No runtime")?;
         let ops_json: Vec<serde_json::Value> = ops.iter().map(Self::op_to_json).collect();
-        let _ = rt.call("onAfterSyncBatch", vec![serde_json::Value::Array(ops_json)]);
-        Ok(())
+        // The ops are committed either way; what the hook threw is for the
+        // caller to log. Discarding it here left that log line unreachable,
+        // and an after-sync hook that failed on every push did so in silence.
+        rt.call("onAfterSyncBatch", vec![serde_json::Value::Array(ops_json)]).map(|_| ())
     }
 
     fn call_after_sync(&self, op: &SyncOp) -> Result<(), String> {
         let rt = self.runtime.as_ref().ok_or("No runtime")?;
         let op_json = Self::op_to_json(op);
-        let _ = rt.call("onAfterSync", vec![op_json]);
-        Ok(())
+        rt.call("onAfterSync", vec![op_json]).map(|_| ())
     }
 
     fn op_to_json(op: &SyncOp) -> serde_json::Value {
@@ -1317,6 +1349,88 @@ mod tests {
         assert_eq!(root.data, serde_json::json!({"role":"owner"}));
         assert!(!root.deleted);
         assert_eq!(db.write().get_record("n1").unwrap().collection, "notes");
+    }
+
+    fn acked(responses: &[ServerMessage]) -> Vec<String> {
+        responses.iter().flat_map(|m| match m {
+            ServerMessage::SyncAck { op_ids } => op_ids.clone(),
+            _ => Vec::new(),
+        }).collect()
+    }
+
+    /// The client sends an op again until it is acknowledged, and an
+    /// acknowledgement can be lost after the commit. A create that comes back
+    /// must not undo what happened to the record in between.
+    #[test]
+    fn a_create_sent_again_does_not_overwrite_what_changed_since() {
+        let (sync, db) = manager(None);
+        let first = sync.handle_sync_push(vec![
+            op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"})),
+        ], "a");
+        assert_eq!(acked(&first), vec!["c1"]);
+        // Another client edits the note.
+        let edit = sync.handle_sync_push(vec![
+            op("u1", "notes", "update", "n1", serde_json::json!({"title":"final"})),
+        ], "b");
+        assert_eq!(acked(&edit), vec!["u1"]);
+
+        let mut deltas = sync.broadcast_tx.subscribe();
+        let again = sync.handle_sync_push(vec![
+            op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"})),
+        ], "a");
+        // Acknowledged, so the client stops sending it; not refused.
+        assert_eq!(acked(&again), vec!["c1"], "{again:?}");
+        assert!(rejected(&again).is_empty(), "{again:?}");
+        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
+        // And no peer is told to apply the stale payload.
+        assert!(deltas.try_recv().is_err(), "a replayed create was broadcast");
+    }
+
+    #[test]
+    fn a_create_sent_again_does_not_bring_back_a_deleted_record() {
+        let (sync, db) = manager(None);
+        sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"}))], "a");
+        sync.handle_sync_push(vec![op("d1", "notes", "delete", "n1", serde_json::json!({}))], "b");
+        assert!(db.write().get_record("n1").unwrap().deleted);
+
+        let again = sync.handle_sync_push(vec![
+            op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"})),
+            op("c2", "notes", "create", "n2", serde_json::json!({"title":"new"})),
+        ], "a");
+        let mut ids = acked(&again);
+        ids.sort();
+        assert_eq!(ids, vec!["c1", "c2"], "{again:?}");
+        assert!(db.write().get_record("n1").unwrap().deleted, "the delete was undone");
+        // A create for an id that is not there is still a create.
+        assert_eq!(db.write().get_record("n2").unwrap().data, serde_json::json!({"title":"new"}));
+    }
+
+    /// `{ data: clean(op.data) }` where `clean` returns nothing: the record
+    /// keeps its payload instead of becoming JSON null.
+    #[test]
+    fn a_per_op_hook_that_returns_no_data_does_not_null_the_record() {
+        let (sync, db) = manager(Some(
+            "function onBeforeSync(op) { return { data: op.operation === 'update' ? undefined : op.data }; }",
+        ));
+        sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"}))], "a");
+        let responses = sync.handle_sync_push(vec![
+            op("u1", "notes", "update", "n1", serde_json::json!({"title":"final"})),
+        ], "a");
+        assert_eq!(acked(&responses), vec!["u1"], "{responses:?}");
+        let data = db.write().get_record("n1").unwrap().data;
+        assert!(data.is_object(), "the record's payload became {data}");
+        assert_eq!(data["title"], "final");
+    }
+
+    /// What an after-sync hook throws reaches the caller, which logs it.
+    #[test]
+    fn an_after_sync_hook_that_throws_is_reported() {
+        let (sync, _) = manager(Some("function onAfterSyncBatch(ops) { throw new Error('mail is down'); } function onAfterSync(op) { throw new Error('mail is down'); }"));
+        let ops = vec![op("c1", "notes", "create", "n1", serde_json::json!({}))];
+        let batch = sync.call_after_sync_batch(&ops).unwrap_err();
+        assert!(batch.contains("mail is down"), "{batch}");
+        let single = sync.call_after_sync(&ops[0]).unwrap_err();
+        assert!(single.contains("mail is down"), "{single}");
     }
 
     /// A pull is chunked by bytes as well as by count: the client drops any

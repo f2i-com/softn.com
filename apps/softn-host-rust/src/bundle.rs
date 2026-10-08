@@ -253,6 +253,26 @@ fn validate_server_config(manifest: &ServerManifest) -> Result<(), String> {
 /// extraction directory, extracting to a temp directory first and then
 /// renaming ensures the old directory remains intact until the new one is
 /// fully ready. The old directory is removed only after the rename succeeds.
+/// Read one archive entry, refusing it once it has inflated past `limit`.
+///
+/// An entry's declared size is a field of the archive, written by whoever
+/// made it; the deflate stream beside it is what is actually read. Reading
+/// to the end on the strength of the declaration let an entry that claims a
+/// kilobyte inflate to whatever its stream holds, in memory, before anything
+/// compared the two: one archive in the bundles directory could take the
+/// host down at start.
+fn read_bounded(reader: &mut impl Read, declared: u64, limit: u64) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::with_capacity(declared.min(limit) as usize);
+    reader
+        .take(limit + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| e.to_string())?;
+    if buf.len() as u64 > limit {
+        return Err(format!("entry inflates past the {limit} byte limit (it declares {declared})"));
+    }
+    Ok(buf)
+}
+
 pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
     let file = fs::File::open(zip_path)
         .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
@@ -322,10 +342,6 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
         if entry.size() > MAX_FILE_BYTES {
             return Err(format!("File too large in bundle: {} ({}B)", safe_name.display(), entry.size()));
         }
-        total_bytes += entry.size();
-        if total_bytes > MAX_TOTAL_BYTES {
-            return Err("Bundle contents too large".into());
-        }
 
         let out_path = temp_dir.join(&safe_name);
         if let Some(parent) = out_path.parent() {
@@ -333,9 +349,15 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
                 .map_err(|e| format!("Failed to create dir for {}: {}", safe_name.display(), e))?;
         }
 
-        let mut buf = Vec::with_capacity(entry.size() as usize);
-        entry.read_to_end(&mut buf)
+        // The size checked above is what the archive says about itself. What
+        // is counted is what the entry inflates to, read under the same limit.
+        let declared = entry.size();
+        let buf = read_bounded(&mut entry, declared, MAX_FILE_BYTES)
             .map_err(|e| format!("Failed to read {}: {}", safe_name.display(), e))?;
+        total_bytes += buf.len() as u64;
+        if total_bytes > MAX_TOTAL_BYTES {
+            return Err("Bundle contents too large".into());
+        }
         fs::write(&out_path, &buf)
             .map_err(|e| format!("Failed to write {}: {}", safe_name.display(), e))?;
     }
@@ -590,6 +612,47 @@ pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The limit is on what an entry inflates to, whatever it declares.
+    #[test]
+    fn an_entry_is_read_no_further_than_the_limit_whatever_it_declares() {
+        // Declares 16 bytes, holds a megabyte.
+        let mut lying = std::io::repeat(0u8).take(1024 * 1024);
+        let err = read_bounded(&mut lying, 16, 4096).unwrap_err();
+        assert!(err.contains("past the 4096 byte limit"), "{err}");
+        // It stopped a byte past the limit, not at the end of the stream.
+        assert_eq!(lying.limit(), 1024 * 1024 - 4097);
+
+        // An honest entry, and one exactly at the limit, come back whole.
+        let mut honest = std::io::repeat(7u8).take(100);
+        assert_eq!(read_bounded(&mut honest, 100, 4096).unwrap(), vec![7u8; 100]);
+        let mut full = std::io::repeat(1u8).take(4096);
+        assert_eq!(read_bounded(&mut full, 4096, 4096).unwrap().len(), 4096);
+        // A declaration far past the limit reserves no more than the limit.
+        let mut small = std::io::repeat(1u8).take(8);
+        assert_eq!(read_bounded(&mut small, u64::MAX, 4096).unwrap().len(), 8);
+    }
+
+    /// Reading under the limit changes nothing for an archive that tells
+    /// the truth: it extracts whole.
+    #[test]
+    fn an_archive_is_extracted_by_what_its_entries_hold() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("softn-bundle-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.softn");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("manifest.json", options).unwrap();
+        zip.write_all(br#"{"id":"app","name":"app","version":"1"}"#).unwrap();
+        zip.start_file("assets/blank.bin", options).unwrap();
+        zip.write_all(&vec![0u8; 256 * 1024]).unwrap();
+        zip.finish().unwrap();
+
+        let out = extract_softn_zip(&path).unwrap();
+        assert_eq!(std::fs::read(out.join("assets/blank.bin")).unwrap().len(), 256 * 1024);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn validates_critical_server_fields_and_redacts_private_declarations() {
         let root = std::env::temp_dir().join(format!("softn-manifest-{}", uuid::Uuid::new_v4()));

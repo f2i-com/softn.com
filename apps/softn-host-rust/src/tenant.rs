@@ -123,29 +123,28 @@ impl TenantManager {
                 continue;
             }
 
-            match load_tenant(&path, data_dir, workers_per_tenant, allow_all_capabilities, &shutdown) {
+            // Whether this bundle may be the tenant it says it is, asked
+            // before anything of its is opened or run. These checks used to
+            // follow the load: a bundle declaring another tenant's id had by
+            // then opened that tenant's database and files and run its own
+            // top level and onStart against them, and only afterwards was
+            // logged as a duplicate and dropped.
+            let refuse_id = |id: &str| -> Option<String> {
+                // Reserved names conflict with global routes.
+                if RESERVED_TENANT_IDS.contains(&id) {
+                    return Some(format!("Tenant ID '{}' is reserved (conflicts with global route)", id));
+                }
+                // Case-insensitively: on Windows and macOS `App` and `app`
+                // are one data directory, so two such tenants would share a
+                // database.
+                if tenants.keys().any(|k: &String| k.eq_ignore_ascii_case(id)) {
+                    return Some(format!("Duplicate tenant ID '{}'", id));
+                }
+                None
+            };
+            match load_tenant(&path, data_dir, workers_per_tenant, allow_all_capabilities, &shutdown, &refuse_id) {
                 Ok(tenant) => {
                     let id = tenant.tenant_id.clone();
-
-                    // Check for reserved names that conflict with global routes
-                    if RESERVED_TENANT_IDS.contains(&id.as_str()) {
-                        tracing::error!(
-                            "Tenant ID '{}' is reserved (conflicts with global route) — skipping {}",
-                            id, path.display()
-                        );
-                        continue;
-                    }
-
-                    // Case-insensitively: on Windows and macOS `App` and
-                    // `app` are one data directory, so two such tenants
-                    // would share a database.
-                    if tenants.keys().any(|k: &String| k.eq_ignore_ascii_case(&id)) {
-                        tracing::error!(
-                            "Duplicate tenant ID '{}' — skipping {}",
-                            id, path.display()
-                        );
-                        continue;
-                    }
                     tracing::info!(
                         "Loaded tenant '{}' ({})",
                         id, tenant.manifest.name
@@ -211,6 +210,7 @@ fn load_tenant(
     workers_per_tenant: Option<usize>,
     allow_all_capabilities: bool,
     shutdown: &tokio::sync::watch::Sender<bool>,
+    refuse_id: &dyn Fn(&str) -> Option<String>,
 ) -> Result<TenantContext, String> {
     // Extract ZIP if needed
     let bundle_path = if bundle_path.is_file() {
@@ -241,6 +241,10 @@ fn load_tenant(
             "Tenant ID '{}' contains invalid characters (must be alphanumeric, dash, underscore, or dot)",
             tenant_id
         ));
+    }
+    // Before the data directory is so much as named: see the caller.
+    if let Some(reason) = refuse_id(&tenant_id) {
+        return Err(reason);
     }
 
     // Data directory: <base>/<tenant_id>/
@@ -405,6 +409,36 @@ mod tests {
         bundle(&root.join("bundles").join("lower"), "shop");
         let manager = TenantManager::load(&root.join("bundles"), Some(&root.join("data")), Some(1), false).unwrap();
         assert_eq!(manager.tenant_ids().len(), 1, "{:?}", manager.tenant_ids());
+    }
+
+    /// A bundle that may not be the tenant it names is refused before
+    /// anything of that tenant's is opened: no data directory, no database.
+    #[test]
+    fn a_refused_tenant_id_touches_no_data() {
+        let root = std::env::temp_dir().join(format!("softn-tenants-refused-{}", uuid::Uuid::new_v4()));
+        let reserved = RESERVED_TENANT_IDS[0];
+        bundle(&root.join("bundles").join("ok"), "shop");
+        bundle(&root.join("bundles").join("taken"), reserved);
+        let data = root.join("data");
+        let manager = TenantManager::load(&root.join("bundles"), Some(&data), Some(1), false).unwrap();
+        assert_eq!(manager.tenant_ids(), vec!["shop"]);
+        assert!(data.join("shop").is_dir());
+        assert!(!data.join(reserved).exists(), "a refused tenant's data directory was created");
+    }
+
+    /// Two bundles claiming one id: the second never reaches the first's
+    /// data. On a file system that tells `Shop` from `shop` the loser's
+    /// directory is not created either.
+    #[test]
+    fn a_duplicate_tenant_is_refused_before_its_data_is_opened() {
+        let root = std::env::temp_dir().join(format!("softn-tenants-dup-{}", uuid::Uuid::new_v4()));
+        bundle(&root.join("bundles").join("upper"), "Shop");
+        bundle(&root.join("bundles").join("lower"), "shop");
+        let data = root.join("data");
+        let manager = TenantManager::load(&root.join("bundles"), Some(&data), Some(1), false).unwrap();
+        assert_eq!(manager.tenant_ids().len(), 1);
+        let directories = std::fs::read_dir(&data).unwrap().count();
+        assert_eq!(directories, 1, "the refused duplicate left a data directory behind");
     }
 
     #[test]
