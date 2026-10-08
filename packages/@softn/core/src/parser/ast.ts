@@ -202,12 +202,59 @@ export type PropValue =
 
 /**
  * Event handler: @click={handler}
+ *
+ * `@submit.prevent={save}` and `@keydown.enter={add}` carry modifiers: the
+ * words after the name, in the order written. They decide whether the
+ * handler runs and what is done to the browser event first (see
+ * EVENT_MODIFIERS). Absent when none were written, so a document without
+ * them has the shape it always had.
  */
 export interface EventNode {
   type: 'Event';
   name: string; // "click", "submit", etc.
   handler: Expression;
+  modifiers?: string[];
   loc: SourceLocation;
+}
+
+/**
+ * What a modifier after an event name may be.
+ *
+ * A handler is never given the live DOM event (a script receives plain
+ * data), so there was no way to say "and do not submit the form" or "only
+ * for Enter" short of an arrow that inspects the event in the template.
+ */
+export const EVENT_MODIFIERS = {
+  /** Applied to the browser event before the handler runs. */
+  action: ['prevent', 'stop'],
+  /** Conditions on the event; the handler is skipped when one does not hold. */
+  filter: ['self'],
+  /** A key the event must be for (`key` as the browser names it). */
+  key: {
+    enter: ['Enter'],
+    escape: ['Escape'],
+    esc: ['Escape'],
+    space: [' ', 'Spacebar'],
+    tab: ['Tab'],
+    up: ['ArrowUp'],
+    down: ['ArrowDown'],
+    left: ['ArrowLeft'],
+    right: ['ArrowRight'],
+    backspace: ['Backspace'],
+    delete: ['Delete'],
+  } as Record<string, readonly string[]>,
+  /** A modifier key that must be held. */
+  held: { ctrl: 'ctrlKey', shift: 'shiftKey', alt: 'altKey', meta: 'metaKey' } as Record<string, string>,
+} as const;
+
+/** Whether `name` is a modifier the renderer acts on. */
+export function isEventModifier(name: string): boolean {
+  return (
+    (EVENT_MODIFIERS.action as readonly string[]).includes(name) ||
+    (EVENT_MODIFIERS.filter as readonly string[]).includes(name) ||
+    Object.hasOwn(EVENT_MODIFIERS.key, name) ||
+    Object.hasOwn(EVENT_MODIFIERS.held, name)
+  );
 }
 
 /**
@@ -307,6 +354,8 @@ export type Expression =
   | CallExpression
   | ConditionalExpression
   | AssignmentExpression
+  | UpdateExpression
+  | NewExpression
   | ArrowFunctionExpression
   | ObjectExpression
   | ArrayExpression
@@ -385,7 +434,47 @@ export interface AssignmentExpression {
   loc: SourceLocation;
 }
 
-export type AssignmentOperator = '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '??=' | '||=' | '&&=';
+export type AssignmentOperator =
+  | '='
+  | '+='
+  | '-='
+  | '*='
+  | '/='
+  | '%='
+  | '**='
+  | '??='
+  | '||='
+  | '&&=';
+
+/**
+ * `count++`, `--count`: the one-keystroke handler everyone writes first.
+ *
+ * A node of its own rather than `count += 1` because the two differ in what
+ * they are worth: the postfix form yields the value before the change, and
+ * both count a numeric string as a number where `+=` would append to it.
+ * `argument` is an Identifier or a MemberExpression, as for an assignment.
+ */
+export interface UpdateExpression {
+  type: 'UpdateExpression';
+  operator: '++' | '--';
+  prefix: boolean;
+  argument: Expression;
+  loc: SourceLocation;
+}
+
+/**
+ * `new Date()`, `new Date(task.due)`.
+ *
+ * The parser reads any `new`; the renderer constructs only the classes it
+ * names (see CONSTRUCTIBLE in render.tsx), because a template runs in the
+ * host page and `new` on an arbitrary function is a way out of it.
+ */
+export interface NewExpression {
+  type: 'NewExpression';
+  callee: Expression;
+  arguments: Expression[];
+  loc: SourceLocation;
+}
 
 export interface ArrowFunctionExpression {
   type: 'ArrowFunctionExpression';
@@ -397,7 +486,8 @@ export interface ArrowFunctionExpression {
 
 export interface ObjectExpression {
   type: 'ObjectExpression';
-  properties: ObjectProperty[];
+  /** Properties in source order; a SpreadElement is `...other` among them. */
+  properties: Array<ObjectProperty | SpreadElement>;
   loc: SourceLocation;
 }
 

@@ -314,14 +314,16 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 - \`label="Save"\` is a string; \`size={3}\`, \`disabled={count > 3}\`, \`items={[1, 2]}\`, \`style={{ padding: "1rem" }}\` are expressions; a bare \`disabled\` is \`true\`. \`style="color: red; padding: 8px"\` also works as CSS text.
 - \`{…}\` interpolates: \`<Text>Hello {name}</Text>\`, \`<Badge>{done ? "Done" : "Open"}</Badge>\`.
 - Text reads like HTML around expressions: \`<Text>{count} tasks</Text>\` shows "3 tasks", and \`{first} {last}\` keeps its space.
-- Template expressions support \`?:\`, \`??\`, \`&&\`, \`||\`, comparisons, arithmetic, \`!\`, \`typeof\`, member access, \`?.\`, calls and method calls, array and object literals, template literals, and arrow functions **with parentheses and a single-expression body**: \`(x) => x * 2\`, \`() => save()\`.
-- **Not supported in templates:** \`x => x\` without parentheses, block bodies \`() => { … }\` (the handler never runs), \`new\`, \`undefined\` as a value, \`in\`, \`async\`/\`await\`, spread. Put anything more in a logic function and call it.
-- Globals a template can use: \`Math\`, \`JSON\`, \`Number\`, \`String\`, \`Boolean\`, \`Array\`, \`Date\` (as \`Date.now()\`), \`parseInt\`, \`parseFloat\`, \`isNaN\`, \`encodeURIComponent\`, and helpers such as \`formatDate(value)\`, \`timeAgo(value)\`, \`currency(value)\`, \`truncate(text, n)\`.
+- Template expressions support \`?:\`, \`??\`, \`&&\`, \`||\`, comparisons, \`in\`, \`instanceof\`, arithmetic including \`**\`, \`!\`, \`typeof\`, member access, \`?.\`, calls and method calls, array and object literals, spread (\`[...done, item]\`, \`Math.max(...scores)\`, \`{ ...base, color: "red" }\`), template literals, \`undefined\`, and arrow functions **with a single-expression body**: \`t => t.done\`, \`(a, b) => a - b\`, \`() => save()\`. A comment inside braces, \`{/* note */}\`, renders nothing.
+- **Not supported in templates:** block bodies \`() => { … }\` (the handler never runs), \`function\` expressions, \`async\`/\`await\`, regular expression literals, default or destructured parameters, bitwise operators, and \`{...props}\` spread onto a tag. Put anything more in a logic function and call it.
+- Globals a template can use: \`Math\`, \`JSON\`, \`Number\`, \`String\`, \`Boolean\`, \`Array\`, \`Date\`, \`Map\`, \`Set\`, \`Object.keys\`/\`Object.values\`/\`Object.entries\` (nothing else of \`Object\`), \`parseInt\`, \`parseFloat\`, \`isNaN\`, \`encodeURIComponent\`, and helpers such as \`formatDate(value)\`, \`timeAgo(value)\`, \`currency(value)\`, \`truncate(text, n)\`. \`new\` constructs \`Date\`, \`Array\`, \`Map\` and \`Set\` only: \`{new Date().getFullYear()}\`.
+- A variable may be called \`data\`, \`style\`, \`from\`, \`end\` or any other word markup also uses; JavaScript's own reserved words (\`if\`, \`function\`, \`return\`, \`delete\`) are not names.
 
 ### Events
-- \`@click={() => save()}\`, \`@click={() => count = count + 1}\` (an assignment is allowed), \`@click={() => remove(item.id)}\`. Write handlers as arrows${python ? '' : ', or name a function: `@click={save}` calls it with the event'}.
+- \`@click={() => save()}\`, \`@click={() => count++}\`, \`@click={() => open = !open}\` (one assignment or update is allowed), \`@click={() => remove(item.id)}\`. Write handlers as arrows${python ? '' : ', or name a function: `@click={save}` calls it with the event'}.
 - \`@name\` sets the component's \`onName\` prop: \`@change\` → onChange, \`@keydown\` → onKeyDown, \`@tick\` → onTick. lookup_components lists each component's events.
 - \`@change\` and \`@input\` receive the **new value**, not a DOM event: \`@change={(value) => query = value}\`. Tabs' \`@change\` receives the tab key; a Checkbox's receives \`"on"\`, so toggle with \`@change={() => toggle(item.id)}\`.
+- **Modifiers** go after the event name: \`@submit.prevent={() => save()}\` cancels the browser's default (a form does not reload the page), \`@click.stop\` keeps the event from the elements around it, \`@click.self\` runs only for a click on the element itself (a modal backdrop), and a key name runs the handler for that key only: \`@keydown.enter={() => add()}\`, \`@keydown.escape={() => close()}\`. Keys: enter, escape, space, tab, up, down, left, right, backspace, delete; held keys: ctrl, shift, alt, meta (\`@keydown.ctrl.enter\`). A script never receives the live event, so this is how a handler prevents a default.
 - An arrow written in the template sees the raw event: \`@keydown={(e) => e.key === "Enter" && add()}\`.
 
 ### Binding
@@ -329,7 +331,8 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 - Every other prop is one-way: \`value={x}\` or \`checked={x}\` only shows \`x\`. A controlled component needs its event too: \`<Tabs activeKey={tab} @change={(key) => tab = key} … />\`.
 
 ### Classes and styles
-- On components write \`className="card"\`; \`class:selected={isSelected}\` adds a class when true. (\`class="…"\` only styles plain HTML tags.)
+- On components write \`className="card"\`; \`class:selected={isSelected}\` adds a class when true, hyphens included (\`class:is-active={on}\`). (\`class="…"\` only styles plain HTML tags.)
+- \`style:color={accent}\` sets one style property and leaves the rest of \`style\` alone: \`style:font-size="1.25rem"\`, \`style:--accent={colour}\` for a CSS variable, \`style:opacity={busy && 0.5}\` (a false or empty value sets nothing).
 - A \`<style>\` block is global to the page, not scoped: give your classes distinctive names.
 
 ### Control flow
@@ -354,7 +357,7 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
   #end
 </App>
 \`\`\`
-- Conditions go in parentheses. Write \`#elseif\` — \`#else if\` renders as text. The index form is \`#each (item, i in items)\`; \`#each (item in items; let i)\` is a parse error.
+- Conditions go in parentheses. \`#elseif (…)\` and \`#else if (…)\` are the same branch. The index form is \`#each (item, i in items)\`; \`#each (item in items; let i)\` is a parse error.
 - Inline forms: \`<Box if={open}>…</Box>\`, \`<Card each={items} as="item">{item.title}</Card>\`.
 
 ### Reuse

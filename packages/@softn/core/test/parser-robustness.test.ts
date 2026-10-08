@@ -73,9 +73,14 @@ describe('parser termination', () => {
 
   it('reports, rather than hangs on, an argument it cannot parse', () => {
     // `parsePrimary` falls back to a synthetic `undefined` without consuming
-    // anything, so an unsupported argument used to loop forever.
-    expect(diagnostics('<div>{items.map(x => x.name)}</div>').join(' ')).toMatch(/ARROW|RPAREN/);
-    expect(diagnostics('<div>{fn(...args)}</div>').length).toBeGreaterThan(0);
+    // anything, so an unsupported argument used to loop forever. A paren-less
+    // arrow and a spread were the two that showed it; both parse now (see
+    // parser-expression-forms.test.ts), so the loop is held to forms the
+    // grammar still has no rule for.
+    expect(diagnostics('<div>{items.map(function (x) { return x.name })}</div>').join(' ')).toMatch(
+      /FUNCTION|RPAREN/
+    );
+    expect(diagnostics('<div>{fn(async x)}</div>').length).toBeGreaterThan(0);
   });
 
   it('reports, rather than hangs on, an unsupported arrow parameter', () => {
@@ -225,8 +230,11 @@ describe('optional call arguments', () => {
   it(
     'reports, rather than hangs on, an optional call argument it cannot parse',
     () => {
-      expect(diagnostics('<div>{fn?.(x => x)}</div>').length).toBeGreaterThan(0);
-      expect(diagnostics('<div>{fn?.(...args)}</div>').length).toBeGreaterThan(0);
+      expect(diagnostics('<div>{fn?.(function () {})}</div>').length).toBeGreaterThan(0);
+      expect(diagnostics('<div>{fn?.(return x)}</div>').length).toBeGreaterThan(0);
+      // The two arguments that first showed the hang are read now.
+      expect(diagnostics('<div>{fn?.(x => x)}</div>')).toEqual([]);
+      expect(diagnostics('<div>{fn?.(...args)}</div>')).toEqual([]);
     },
     5000
   );

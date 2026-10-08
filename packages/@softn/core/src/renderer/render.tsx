@@ -17,6 +17,7 @@ import type {
   SlotNode,
   TemplateSlotNode,
 } from '../parser/ast';
+import { EVENT_MODIFIERS } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent } from './registry';
 import {
@@ -26,7 +27,7 @@ import {
   TOP_LAYER_ATTRIBUTES,
   URL_ATTRIBUTES,
 } from './sanitize-html';
-import { inlineStyleObject } from './inline-style';
+import { cssPropertyName, inlineStyleObject } from './inline-style';
 import {
   describeMarkupEgress,
   describeSrcSetEgress,
@@ -35,6 +36,21 @@ import {
 
 // Maximum recursion depth for expression evaluation to prevent infinite loops
 const MAX_EVAL_DEPTH = 100;
+
+/**
+ * What a template sees as `Object`.
+ *
+ * Not the real one: `Object.defineProperty` and its relatives are how a
+ * template would rewrite the page it runs in. These three only read, and
+ * `#each (key in Object.keys(totals))` is how a map is listed. `null` and
+ * `undefined` answer an empty list, because data that has not loaded yet is
+ * the usual reason a template meets them.
+ */
+const TEMPLATE_OBJECT = Object.freeze({
+  keys: (value: unknown) => Object.keys(Object(value ?? {})),
+  values: (value: unknown) => Object.values(Object(value ?? {})),
+  entries: (value: unknown) => Object.entries(Object(value ?? {})),
+});
 
 /**
  * JavaScript globals available in template expressions.
@@ -46,8 +62,11 @@ const JS_GLOBALS: Record<string, unknown> = {
   Boolean,
   Array,
   Date,
+  Map,
+  Set,
   Math,
   JSON,
+  Object: TEMPLATE_OBJECT,
   parseInt,
   parseFloat,
   isNaN,
@@ -58,6 +77,15 @@ const JS_GLOBALS: Record<string, unknown> = {
   encodeURIComponent,
   decodeURIComponent,
 };
+
+/**
+ * What `new` may construct in a template.
+ *
+ * An expression here runs in the host page, not in the script VM, so `new`
+ * on whatever a name evaluates to would be a way to run a constructor the
+ * author was never handed. These build values and nothing else.
+ */
+const CONSTRUCTIBLE: ReadonlySet<unknown> = new Set([Date, Array, Map, Set]);
 
 const BLOCKED_MEMBER_KEYS = new Set(['constructor', '__proto__', 'prototype']);
 
@@ -708,6 +736,90 @@ function createCallbackContext(context: SoftNRenderContext): SoftNRenderContext 
 }
 
 /**
+ * The values of an argument list or an array literal, with every `...list`
+ * laid out in place.
+ *
+ * A list spreads its items; so does anything else that iterates (a string's
+ * characters, a Set's members). `null` and `undefined` spread to nothing
+ * rather than throwing, because the usual reason a template meets one is
+ * data that has not arrived yet; anything else that cannot be iterated is
+ * dropped the same way.
+ */
+function evaluateArguments(
+  nodes: Expression[],
+  evalExpr: (expr: Expression) => unknown
+): unknown[] {
+  const values: unknown[] = [];
+  for (const node of nodes) {
+    if (node.type !== 'SpreadElement') {
+      values.push(evalExpr(node));
+      continue;
+    }
+    const spread = evalExpr(node.argument);
+    if (Array.isArray(spread)) {
+      // Not push(...spread): a long list would overflow the call stack.
+      for (const item of spread) values.push(item);
+    } else if (
+      spread !== null &&
+      spread !== undefined &&
+      typeof (spread as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function'
+    ) {
+      for (const item of spread as Iterable<unknown>) values.push(item);
+    }
+  }
+  return values;
+}
+
+/**
+ * Apply an event's modifiers (`@submit.prevent`, `@keydown.enter`,
+ * `@click.self`) around its handler.
+ *
+ * The filters come first: a key the event is not for, a held key that is not
+ * down or a target that is not the element itself means the handler does not
+ * run and the event is left alone. Then `prevent` and `stop` act on the
+ * event, then the handler is called with what it would have been given.
+ *
+ * A component decides what its callback receives, and some hand over plain
+ * data rather than an event. `prevent` and `stop` then have nothing to act
+ * on and do nothing; a filter has nothing to test and does not pass.
+ */
+function withEventModifiers(handler: EventHandler, modifiers: readonly string[]): EventHandler {
+  const keys: string[] = [];
+  const held: string[] = [];
+  for (const modifier of modifiers) {
+    if (Object.hasOwn(EVENT_MODIFIERS.key, modifier)) keys.push(...EVENT_MODIFIERS.key[modifier]);
+    if (Object.hasOwn(EVENT_MODIFIERS.held, modifier)) held.push(EVENT_MODIFIERS.held[modifier]);
+  }
+  const self = modifiers.includes('self');
+  const prevent = modifiers.includes('prevent');
+  const stop = modifiers.includes('stop');
+
+  return (...args: unknown[]) => {
+    const first = args[0];
+    const event =
+      typeof first === 'object' && first !== null ? (first as Record<string, unknown>) : undefined;
+
+    if (keys.length > 0 && !(event && typeof event.key === 'string' && keys.includes(event.key))) {
+      return undefined;
+    }
+    if (held.some((flag) => !(event && event[flag] === true))) return undefined;
+    if (self && !(event && event.target !== undefined && event.target === event.currentTarget)) {
+      return undefined;
+    }
+
+    if (event) {
+      if (prevent && typeof event.preventDefault === 'function') {
+        (event.preventDefault as () => void).call(event);
+      }
+      if (stop && typeof event.stopPropagation === 'function') {
+        (event.stopPropagation as () => void).call(event);
+      }
+    }
+    return handler(...args);
+  };
+}
+
+/**
  * Evaluate an expression that decides STRUCTURE — a condition or an iterable —
  * and survive it throwing.
  *
@@ -852,6 +964,10 @@ function renderElement(
   // after the loop so it composes with a plain `class="card"` instead of
   // fighting it for the same prop slot.
   const classToggles: string[] = [];
+  // `style:color={accent}` sets one style property and leaves the rest of
+  // `style` alone, the way `class:` does for one class. Merged after the
+  // bindings below, so it also composes with a `:style` binding.
+  let styleDirectives: Record<string, unknown> | null = null;
 
   for (const prop of node.props) {
     if (prop.name.startsWith('class:')) {
@@ -870,6 +986,29 @@ function renderElement(
         on = prop.value.value;
       }
       if (on) classToggles.push(cssClass);
+      continue;
+    }
+    if (prop.name.startsWith('style:')) {
+      const cssProperty = prop.name.slice('style:'.length);
+      let value: unknown;
+      if (prop.value.type === 'expression') {
+        try {
+          value = evaluateExpression(prop.value.value, context);
+        } catch (error) {
+          if (isDevelopment) {
+            console.warn(`Error evaluating style:${cssProperty} on <${node.tag}>:`, error);
+          }
+          value = undefined;
+        }
+      } else {
+        value = prop.value.value;
+      }
+      // Nothing to say is nothing set: `style:color={error && "red"}` leaves
+      // the colour to the stylesheet when there is no error.
+      if (typeof value === 'string' ? value !== '' : typeof value === 'number' && Number.isFinite(value)) {
+        if (!styleDirectives) styleDirectives = {};
+        styleDirectives[cssPropertyName(cssProperty)] = value;
+      }
       continue;
     }
     if (prop.value.type === 'static' || prop.value.type === 'number' || prop.value.type === 'boolean') {
@@ -1073,6 +1212,16 @@ function renderElement(
       });
     }
 
+    // `@submit.prevent`, `@keydown.enter`: outside the value-extracting
+    // wrapper above, because the modifiers read the event itself. Whatever
+    // :bind installed is folded in after this and so is never filtered.
+    if (event.modifiers && event.modifiers.length > 0 && typeof props[boundHandlerName] === 'function') {
+      props[boundHandlerName] = withEventModifiers(
+        props[boundHandlerName] as EventHandler,
+        event.modifiers
+      );
+    }
+
     const authored = props[boundHandlerName];
     if (typeof boundHandler === 'function' && authored !== boundHandler) {
       props[boundHandlerName] = (...args: unknown[]) => {
@@ -1083,6 +1232,16 @@ function renderElement(
         return undefined;
       };
     }
+  }
+
+  if (styleDirectives) {
+    const base =
+      typeof props.style === 'string'
+        ? inlineStyleObject(props.style)
+        : isPlainObject(props.style)
+          ? props.style
+          : {};
+    props.style = { ...base, ...styleDirectives };
   }
 
   // Extract slot content from children (template slots and default content)
@@ -1497,6 +1656,17 @@ export function evaluateExpression(
           return (left as number) / (right as number);
         case '%':
           return (left as number) % (right as number);
+        case '**':
+          return (left as number) ** (right as number);
+        case 'in': {
+          // JavaScript throws for a right side that is not an object; a
+          // template asks this of data that has not loaded yet.
+          if (right === null || (typeof right !== 'object' && typeof right !== 'function')) {
+            return false;
+          }
+          const key = getSafeMemberKey(left);
+          return key !== null && key in (right as object);
+        }
         case '==':
           return left == right;
         case '!=':
@@ -1618,7 +1788,7 @@ export function evaluateExpression(
         return undefined;
       }
 
-      const args = expr.arguments.map((arg) => evalExpr(arg));
+      const args = evaluateArguments(expr.arguments, evalExpr);
 
       if (typeof fn === 'function') {
         if (fn === Function) {
@@ -1634,6 +1804,32 @@ export function evaluateExpression(
     case 'ConditionalExpression': {
       const test = evalExpr(expr.test);
       return test ? evalExpr(expr.consequent) : evalExpr(expr.alternate);
+    }
+
+    case 'UpdateExpression': {
+      // `count++` writes through the same path an assignment does, so
+      // `rows[i].qty++` inside an #each changes that row.
+      const path = getExpressionPath(expr.argument, context);
+      if (!path) {
+        if (isDevelopment) console.error(`[SoftN] Cannot apply "${expr.operator}" to this expression; it must be a name or a property path.`);
+        return undefined;
+      }
+      const current = Number(evalExpr(expr.argument));
+      const next = expr.operator === '++' ? current + 1 : current - 1;
+      context.setState(path, next);
+      return expr.prefix ? next : current;
+    }
+
+    case 'NewExpression': {
+      const ctor = evalExpr(expr.callee);
+      if (!CONSTRUCTIBLE.has(ctor)) {
+        if (isDevelopment) {
+          console.error('[SoftN] "new" in a template constructs Date, Array, Map or Set only; build anything else in a logic function.');
+        }
+        return undefined;
+      }
+      const args = evaluateArguments(expr.arguments, evalExpr);
+      return new (ctor as new (...a: unknown[]) => unknown)(...args);
     }
 
     case 'AssignmentExpression': {
@@ -1688,7 +1884,9 @@ export function evaluateExpression(
                   ? a * b
                   : expr.operator === '/='
                     ? a / b
-                    : a % b;
+                    : expr.operator === '**='
+                      ? a ** b
+                      : a % b;
         }
       }
       context.setState(path, value);
@@ -1738,6 +1936,19 @@ export function evaluateExpression(
     case 'ObjectExpression': {
       const obj: Record<string, unknown> = {};
       for (const prop of expr.properties) {
+        if (prop.type === 'SpreadElement') {
+          // `{ ...base, color: "red" }`: own enumerable keys, in order, under
+          // the same key rule as a written property. Nothing to spread (data
+          // not loaded yet, a number) contributes nothing.
+          const source = evalExpr(prop.argument);
+          if (source !== null && typeof source === 'object') {
+            for (const key of Object.keys(source)) {
+              if (BLOCKED_MEMBER_KEYS.has(key)) continue;
+              obj[key] = (source as Record<string, unknown>)[key];
+            }
+          }
+          continue;
+        }
         // Prevent prototype pollution from user expressions
         if (prop.key === '__proto__' || prop.key === 'constructor' || prop.key === 'prototype') continue;
         obj[prop.key] = evalExpr(prop.value);
@@ -1746,20 +1957,7 @@ export function evaluateExpression(
     }
 
     case 'ArrayExpression': {
-      const result: unknown[] = [];
-      for (const el of expr.elements) {
-        if (el.type === 'SpreadElement') {
-          const spread = evalExpr(el.argument);
-          if (Array.isArray(spread)) {
-            result.push(...spread);
-          } else {
-            result.push(spread);
-          }
-        } else {
-          result.push(evalExpr(el));
-        }
-      }
-      return result;
+      return evaluateArguments(expr.elements, evalExpr);
     }
 
     case 'SpreadElement': {

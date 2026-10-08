@@ -17,10 +17,11 @@
  *
  * This printer parenthesises exactly where the core parser's grammar needs
  * it (its precedence ladder is nullish < or < and < equality < comparison <
- * additive < multiplicative < unary < call/member, every binary level
- * left-associative, the conditional right-associative, assignment below
- * the conditional and right-associative, an arrow body swallowing
- * everything after `=>`), prints strings and non-identifier keys
+ * additive < multiplicative < exponent < unary < call/member, every binary
+ * level left-associative except `**`, which groups to the right and takes
+ * no unary operand on its left, the conditional right-associative,
+ * assignment below the conditional and right-associative, an arrow body
+ * swallowing everything after `=>`), prints strings and non-identifier keys
  * with JSON escaping the lexer reads back, keeps template literals as
  * template literals, and refuses anything outside the grammar with a typed
  * error instead of an empty string. Printing the printed text's parse again
@@ -32,6 +33,7 @@ import type {
   Expression,
   ArrowFunctionExpression,
   ObjectProperty,
+  SpreadElement,
 } from '@softn/core';
 
 /** Thrown for a node the grammar the builder writes does not have. */
@@ -68,12 +70,13 @@ enum Prec {
   Comparison = 7,
   Additive = 8,
   Multiplicative = 9,
-  Unary = 10,
-  Postfix = 11,
-  Primary = 12,
+  Exponent = 10,
+  Unary = 11,
+  Postfix = 12,
+  Primary = 13,
 }
 
-const ASSIGNMENT_OPERATORS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '??=', '||=', '&&=']);
+const ASSIGNMENT_OPERATORS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '??=', '||=', '&&=']);
 
 const BINARY_PRECEDENCE: Record<string, Prec> = {
   '??': Prec.Nullish,
@@ -87,11 +90,14 @@ const BINARY_PRECEDENCE: Record<string, Prec> = {
   '>': Prec.Comparison,
   '<=': Prec.Comparison,
   '>=': Prec.Comparison,
+  in: Prec.Comparison,
+  instanceof: Prec.Comparison,
   '+': Prec.Additive,
   '-': Prec.Additive,
   '*': Prec.Multiplicative,
   '/': Prec.Multiplicative,
   '%': Prec.Multiplicative,
+  '**': Prec.Exponent,
 };
 
 const UNARY_OPERATORS = new Set(['!', '-', '+', 'typeof', 'void']);
@@ -115,8 +121,13 @@ function precedenceOf(expr: Expression): Prec {
     }
     case 'UnaryExpression':
       return Prec.Unary;
+    case 'UpdateExpression':
+      // `++x` is read with the unary operators and `x++` after a member
+      // chain; neither can be the object of one without parentheses.
+      return Prec.Unary;
     case 'MemberExpression':
     case 'CallExpression':
+    case 'NewExpression':
       return Prec.Postfix;
     case 'SpreadElement':
       // Only meaningful as an argument or element; never an operand.
@@ -167,7 +178,8 @@ function printKey(key: string): string {
   return IDENTIFIER.test(key) ? key : printString(key);
 }
 
-function printProperty(prop: ObjectProperty): string {
+function printProperty(prop: ObjectProperty | SpreadElement): string {
+  if (prop.type === 'SpreadElement') return printExpression(prop);
   const key = printKey(prop.key);
   if (
     prop.shorthand &&
@@ -225,11 +237,41 @@ export function printExpression(expr: Expression): string {
 
     case 'BinaryExpression': {
       const prec = precedenceOf(expr);
-      // Every binary level is left-associative in the parser: the left
+      if (expr.operator === '**') {
+        // Right-associative: `2 ** 3 ** 2` is `2 ** (3 ** 2)`, so the right
+        // operand may be another `**` and the left may not. The parser also
+        // refuses a signed base written bare (`-x ** 2`), which is what a
+        // unary left operand would print as.
+        const left = printOperand(expr.left, Prec.Postfix);
+        const right = printOperand(expr.right, Prec.Exponent);
+        return `${left} ** ${right}`;
+      }
+      // Every other binary level is left-associative in the parser: the left
       // operand may be the same level, the right one may not.
       const left = printOperand(expr.left, prec);
       const right = printOperand(expr.right, (prec + 1) as Prec);
       return `${left} ${expr.operator} ${right}`;
+    }
+
+    case 'UpdateExpression': {
+      if (expr.operator !== '++' && expr.operator !== '--') {
+        throw new ExpressionPrintError('UpdateExpression', `operator ${String(expr.operator)}`);
+      }
+      const argument = printOperand(expr.argument, Prec.Postfix);
+      return expr.prefix ? `${expr.operator}${argument}` : `${argument}${expr.operator}`;
+    }
+
+    case 'NewExpression': {
+      // The parser reads the class as a name and a plain member path.
+      let callee: Expression = expr.callee;
+      while (callee.type === 'MemberExpression' && !callee.computed && !callee.optional) {
+        callee = callee.object;
+      }
+      if (callee.type !== 'Identifier') {
+        throw new ExpressionPrintError('NewExpression', `callee ${expr.callee.type}`);
+      }
+      const args = expr.arguments.map((a) => printExpression(a)).join(', ');
+      return `new ${printExpression(expr.callee)}(${args})`;
     }
 
     case 'UnaryExpression': {
@@ -239,12 +281,16 @@ export function printExpression(expr: Expression): string {
       const argument = expr.argument;
       let inner = printOperand(argument, Prec.Unary);
       const wordOperator = /^[a-z]/.test(expr.operator);
-      // `- -x` reads as a decrement to a human and `--` to some lexers;
-      // `-(-x)` is unambiguous and parses back to the same tree.
+      // `- -x` reads as a decrement to a human, and to the lexer: `--x` is
+      // one. `-(-x)` is unambiguous and parses back to the same tree. The
+      // same goes for a sign in front of a prefix update, where `---x` would
+      // be read as `--` then `-x`.
+      const signed = expr.operator === '-' || expr.operator === '+';
       if (
         !wordOperator &&
-        argument.type === 'UnaryExpression' &&
-        (argument.operator === '-' || argument.operator === '+')
+        ((argument.type === 'UnaryExpression' &&
+          (argument.operator === '-' || argument.operator === '+')) ||
+          (signed && argument.type === 'UpdateExpression' && argument.prefix))
       ) {
         inner = parenthesise(inner);
       }

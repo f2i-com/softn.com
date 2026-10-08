@@ -99,6 +99,14 @@ export enum TokenType {
   ASTERISK_ASSIGN = 'ASTERISK_ASSIGN', // *=
   SLASH_ASSIGN = 'SLASH_ASSIGN', // /=
   PERCENT_ASSIGN = 'PERCENT_ASSIGN', // %=
+  // `count++`, `--count` and `2 ** 8` were lexed as two single-character
+  // operators, which parsed to arithmetic on a synthetic `undefined` and said
+  // nothing about it: `count++` in a handler set the count to NaN. Only inside
+  // an expression; in a tag, `--` is still two hyphens of an attribute name.
+  INCREMENT = 'INCREMENT', // ++
+  DECREMENT = 'DECREMENT', // --
+  EXPONENT = 'EXPONENT', // **
+  EXPONENT_ASSIGN = 'EXPONENT_ASSIGN', // **=
   ARROW = 'ARROW', // =>
   DOLLAR = 'DOLLAR', // $ (for $:)
   SEMICOLON = 'SEMICOLON', // ;

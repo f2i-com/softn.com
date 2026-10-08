@@ -401,7 +401,16 @@ function expressionHasCall(expr: Expression | undefined): boolean {
     return typeof expr.body === 'string' ? false : expressionHasCall(expr.body);
   }
   if (expr.type === 'ObjectExpression') {
-    return expr.properties.some((p) => expressionHasCall(p.value));
+    return expr.properties.some((p) =>
+      expressionHasCall(p.type === 'SpreadElement' ? p.argument : p.value)
+    );
+  }
+  if (expr.type === 'UpdateExpression') {
+    return expressionHasCall(expr.argument);
+  }
+  if (expr.type === 'NewExpression') {
+    // Constructing a Date calls nothing of the script's; its arguments might.
+    return expr.arguments.some((a) => expressionHasCall(a));
   }
   if (expr.type === 'ArrayExpression') {
     return expr.elements.some((e) => expressionHasCall(e));
@@ -1937,6 +1946,8 @@ export function useDataBlock(
             const filterObj: Record<string, unknown> = {};
             for (const prop of (def.filter as import('../parser/ast').ObjectExpression)
               .properties) {
+              // A filter is literal fields only; `...other` has nothing to read here.
+              if (prop.type === 'SpreadElement') continue;
               if (prop.value.type === 'Literal') {
                 filterObj[prop.key] = (
                   prop.value as import('../parser/ast').LiteralExpression

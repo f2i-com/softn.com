@@ -214,6 +214,41 @@ const fixtures: Array<[string, unknown]> = [
   ['items[0] = a', 2],
   ['(() => a = a + 1)()', 3],
   ['((v) => a = v)(c)', 5],
+  // an arrow written without parentheses is printed with them
+  ['items.map(v => v * a)', [2, 4, 6]],
+  ['[1, 2].map(data => data + a)', [3, 4]],
+  // spread: in a list, in arguments, in an object
+  ['[...items, a]', [1, 2, 3, 2]],
+  ['pick(...items)', 1],
+  ['{ ...user.profile, last: name }', { first: 'Ada', last: 'World' }],
+  // `**` is tighter than `*`, groups to the right, and takes no bare sign
+  // on its left
+  ['a ** b', 8],
+  ['a ** b ** a', 512],
+  ['(a ** b) ** a', 64],
+  ['a * b ** a', 18],
+  ['(-a) ** b', -8],
+  ['-(a ** b)', -8],
+  ['a ** -b', 0.125],
+  ['a **= b', 8],
+  // `in` and `instanceof` sit with the comparisons
+  ['"first" in user.profile', true],
+  ['("z" in user.profile) === y', true],
+  ['items instanceof Array', true],
+  // updates: the postfix form is worth the old value
+  ['a++', 2],
+  ['++a', 3],
+  ['a++ + b', 5],
+  ['-(--a)', -1],
+  ['+(++a)', 3],
+  ['items[0]--', 1],
+  // construction, and the member chain on its result
+  ['new Date(0).getTime()', 0],
+  ['new Array(b).length', 3],
+  // undefined, a hexadecimal number as written, a numeric key
+  ['pick(undefined) === undefined', true],
+  ['0x10 + a', 18],
+  ['({ 1: a })[1]', 2],
 ];
 
 describe('print → parse → print fixpoint, and engine agreement', () => {
@@ -303,12 +338,54 @@ describe('an unsupported AST node', () => {
   it('refuses a binary operator the grammar does not have', () => {
     const op = {
       type: 'BinaryExpression',
-      operator: '**',
+      operator: '>>>',
       left: exprOf('a'),
       right: exprOf('b'),
       loc: bogus.loc,
     } as Expression;
-    expect(() => printExpression(op)).toThrow(/\*\*/);
+    expect(() => printExpression(op)).toThrow(/>>>/);
+  });
+
+  it('refuses a construction whose class is not a name and a member path', () => {
+    const made = {
+      type: 'NewExpression',
+      callee: exprOf('pick(a)'),
+      arguments: [],
+      loc: bogus.loc,
+    } as Expression;
+    expect(() => printExpression(made)).toThrow(/NewExpression/);
+  });
+});
+
+describe('what the printer writes for the newer forms', () => {
+  it('gives an arrow its parentheses', () => {
+    expect(printExpression(exprOf('items.filter(t => t.done)'))).toBe('items.filter((t) => t.done)');
+  });
+
+  it('keeps an update where it was written, before or after', () => {
+    expect(printExpression(exprOf('count++'))).toBe('count++');
+    expect(printExpression(exprOf('--count'))).toBe('--count');
+  });
+
+  it('never prints three signs in a row', () => {
+    // `---a` lexes as `--` then `-a`: a decrement of something that is not a name.
+    expect(printExpression(exprOf('-(--a)'))).toBe('-(--a)');
+    expect(printExpression(exprOf('+(++a)'))).toBe('+(++a)');
+    expect(printExpression(exprOf('!--a'))).toBe('!--a');
+  });
+
+  it('gives a construction its argument list', () => {
+    expect(printExpression(exprOf('new Date'))).toBe('new Date()');
+    expect(printExpression(exprOf('new Date(due).getFullYear()'))).toBe('new Date(due).getFullYear()');
+  });
+
+  it('keeps a spread a spread', () => {
+    expect(printExpression(exprOf('{ ...base, color: "red" }'))).toBe('{ ...base, color: "red" }');
+    expect(printExpression(exprOf('Math.max(0, ...scores)'))).toBe('Math.max(0, ...scores)');
+  });
+
+  it('keeps a hexadecimal number as written', () => {
+    expect(printExpression(exprOf('0xff8800'))).toBe('0xff8800');
   });
 });
 
@@ -325,5 +402,54 @@ describe('events, bindings and props through parseSource → generateSource', ()
     expect(out).toContain(':value={(a + b) * c}');
     expect(out).toContain('label={`n=${a + b}`}');
     expect(out).toContain('@click={() => setCount((count + 1) * 2)}');
+  });
+
+  it('writes an event back with its modifiers, and keeps two handlers for one event apart', () => {
+    const src = [
+      '<App>',
+      '  <form @submit.prevent={() => save()}>',
+      '    <Input @keydown.enter={() => add()} @keydown.escape={() => clear()} @keydown.ctrl.enter={() => send()} />',
+      '  </form>',
+      '</App>',
+    ].join('\n');
+    const parsed = parseSource(src);
+    expect(parsed.fidelity).toEqual({ lossless: true, reasons: [] });
+    const out = generateSource(parsed.elements, parsed.rootId, '');
+    expect(out).toContain('@submit.prevent={() => save()}');
+    expect(out).toContain('@keydown.enter={() => add()}');
+    expect(out).toContain('@keydown.escape={() => clear()}');
+    expect(out).toContain('@keydown.ctrl.enter={() => send()}');
+    // And what was written back reads as the same document.
+    expect(parseSource(out).fidelity).toEqual({ lossless: true, reasons: [] });
+  });
+
+  it('writes class: and style: names back whole', () => {
+    const src = [
+      '<App>',
+      '  <div class="card" class:is-active={on} style:font-size={size} style:--accent={accent}>x</div>',
+      '</App>',
+    ].join('\n');
+    const parsed = parseSource(src);
+    expect(parsed.fidelity).toEqual({ lossless: true, reasons: [] });
+    const out = generateSource(parsed.elements, parsed.rootId, '');
+    expect(out).toContain('class:is-active={on}');
+    expect(out).toContain('style:font-size={size}');
+    expect(out).toContain('style:--accent={accent}');
+  });
+
+  it('writes #else if back as the #elseif it is', () => {
+    const src = ['<App>', '  #if (a)', '    <Text>A</Text>', '  #else if (b)', '    <Text>B</Text>', '  #else', '    <Text>C</Text>', '  #end', '</App>'].join('\n');
+    const parsed = parseSource(src);
+    expect(parsed.fidelity).toEqual({ lossless: true, reasons: [] });
+    const out = generateSource(parsed.elements, parsed.rootId, '');
+    expect(out).toContain('#elseif (b)');
+    expect(out).not.toContain('#else if');
+    expect(parseSource(out).fidelity).toEqual({ lossless: true, reasons: [] });
+  });
+
+  it('edits a file with a comment in braces as source only', () => {
+    const parsed = parseSource('<App>\n  {/* the header row */}\n  <Text>a</Text>\n</App>');
+    expect(parsed.fidelity.lossless).toBe(false);
+    expect(parsed.fidelity.reasons.join(' ')).toMatch(/comment/);
   });
 });

@@ -256,7 +256,12 @@ function shapeNode(node: TemplateNode): Shape {
         type: 'Element',
         tag: node.tag,
         props: sortedByName(node.props).map((p) => ({ name: p.name, value: shapePropValue(p.value) })),
-        events: sortedByName(node.events).map((e) => ({ name: e.name, handler: shapeExpression(e.handler) })),
+        events: sortedByName(node.events).map((e) => ({
+          name: e.name,
+          // `@submit.prevent` without its modifier is a different handler.
+          modifiers: e.modifiers?.length ? e.modifiers : undefined,
+          handler: shapeExpression(e.handler),
+        })),
         bindings: sortedByName(node.bindings).map((b) => ({
           name: b.name,
           expression: shapeExpression(b.expression),

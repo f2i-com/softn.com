@@ -42,7 +42,7 @@ describe('check_app', () => {
   }, 20_000);
 
   it('reports template syntax the parser could not read, with its line', async () => {
-    const report = await browserEnvironment.checkApp(app(APP.ui.replace('<Button @click={() => add()}>', '<Button @click={x => add()}>')), { blueprint: null });
+    const report = await browserEnvironment.checkApp(app(APP.ui.replace('<Button @click={() => add()}>', '<Button @click={async () => await add()}>')), { blueprint: null });
     expect(report.ok).toBe(false);
     expect(report.errors.join('\n')).toMatch(/Parse error at line \d+/);
   }, 20_000);
@@ -57,11 +57,12 @@ describe('check_app', () => {
   it('reports a parse error in an imported page against that page and its own line, not the composed main page', async () => {
     // From a real run: home.ui's `new Date()` was reported as "ui/main.ui ... line 17", a line of
     // the composed source in neither file, and the model spent a step editing the wrong file.
+    // (`new Date()` parses now; a function expression stands in for syntax the template cannot read.)
     const files = vfs({
       'manifest.json': JSON.stringify({ name: 'Habits', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui', 'ui/pages/home.ui'], logic: ['logic/main.logic'] } }),
       'logic/main.logic': 'let count = 0',
       'ui/main.ui': '<import HomePage from="./pages/home.ui" />\n\n<logic src="../logic/main.logic" />\n\n<App>\n  <Heading level={1}>Habits</Heading>\n  <HomePage />\n</App>',
-      'ui/pages/home.ui': '<Stack>\n  <Heading level={2}>Today</Heading>\n  <Text>{new Date().getDay()}</Text>\n</Stack>',
+      'ui/pages/home.ui': '<Stack>\n  <Heading level={2}>Today</Heading>\n  <Text>{[1, 2].map(function (n) { return n }).length}</Text>\n</Stack>',
     });
     const report = await browserEnvironment.checkApp(files, { blueprint: null });
     expect(report.ok).toBe(false);

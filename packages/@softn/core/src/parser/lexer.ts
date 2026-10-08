@@ -261,6 +261,12 @@ export class Lexer {
             this.position
           );
         }
+        // `{/* note */}` is how a comment is written among JSX children, and
+        // people write it here. Read as operators it was a division of
+        // nothing by nothing that rendered "NaN" where the note stood.
+        if (this.peekChar() === '*' && (this.inExpression > 0 || this.inControlFlow > 0)) {
+          return this.readBlockComment();
+        }
         if (this.peekChar() === '=') {
           this.readChar();
           this.readChar();
@@ -428,6 +434,11 @@ export class Lexer {
           this.readChar();
           return createToken(TokenType.PLUS_ASSIGN, '+=', startLine, startColumn, startPos, this.position);
         }
+        if (this.peekChar() === '+' && (this.inExpression > 0 || this.inControlFlow > 0)) {
+          this.readChar();
+          this.readChar();
+          return createToken(TokenType.INCREMENT, '++', startLine, startColumn, startPos, this.position);
+        }
         this.readChar();
         return createToken(TokenType.PLUS, '+', startLine, startColumn, startPos, this.position);
 
@@ -437,10 +448,24 @@ export class Lexer {
           this.readChar();
           return createToken(TokenType.MINUS_ASSIGN, '-=', startLine, startColumn, startPos, this.position);
         }
+        if (this.peekChar() === '-' && (this.inExpression > 0 || this.inControlFlow > 0)) {
+          this.readChar();
+          this.readChar();
+          return createToken(TokenType.DECREMENT, '--', startLine, startColumn, startPos, this.position);
+        }
         this.readChar();
         return createToken(TokenType.MINUS, '-', startLine, startColumn, startPos, this.position);
 
       case '*':
+        if (this.peekChar() === '*' && (this.inExpression > 0 || this.inControlFlow > 0)) {
+          this.readChar();
+          this.readChar();
+          if (this.currentChar() === '=') {
+            this.readChar();
+            return createToken(TokenType.EXPONENT_ASSIGN, '**=', startLine, startColumn, startPos, this.position);
+          }
+          return createToken(TokenType.EXPONENT, '**', startLine, startColumn, startPos, this.position);
+        }
         if (this.peekChar() === '=') {
           this.readChar();
           this.readChar();
@@ -789,9 +814,20 @@ export class Lexer {
     // #end and #else terminate control flow mode immediately
     // #empty also terminates control flow mode (used in #each...#empty...#end)
     // Note: #elseif is NOT reset here because it's followed by (condition)
+    //
+    // Nor is `#else if (…)`, which is `#elseif (…)` spelled the way most
+    // languages spell it. Leaving the mode at `else` turned the rest of the
+    // line into text: "if (b)" appeared on the page and the two branches
+    // rendered as one.
+    //
+    // Only as the word after the `#`. Inside the parentheses the same letters
+    // are a name: `#if (end > start)` left the header at `end` and lexed the
+    // rest of the condition as text.
     if (
       this.inControlFlow > 0 &&
-      (type === TokenType.END || type === TokenType.ELSE || type === TokenType.EMPTY)
+      this.controlFlowParenDepth === 0 &&
+      (type === TokenType.END || type === TokenType.ELSE || type === TokenType.EMPTY) &&
+      !(type === TokenType.ELSE && this.elseIsFollowedByIf())
     ) {
       this.inControlFlow = 0;
       this.controlFlowParenDepth = 0;
@@ -937,6 +973,15 @@ export class Lexer {
     const startLine = this.line;
     const startColumn = this.column;
     const startPos = this.position;
+
+    // `0xff8800`: a colour as a number, which is how a 3D scene takes one.
+    // It used to lex as `0` followed by a name.
+    if (this.ch === '0' && (this.peekChar() === 'x' || this.peekChar() === 'X') && this.isHexDigit(this.peekCharAt(2))) {
+      this.readChar(); // 0
+      this.readChar(); // x
+      const hex = this.readWhile((ch) => this.isHexDigit(ch));
+      return createToken(TokenType.NUMBER, `0x${hex}`, startLine, startColumn, startPos, this.position);
+    }
 
     let num = this.readWhile((ch) => this.isDigit(ch));
 
@@ -1198,6 +1243,61 @@ export class Lexer {
       if (sourceChar.toLowerCase() !== str[i].toLowerCase()) return false;
     }
     return true;
+  }
+
+  /**
+   * Whether the `else` just read is the first word of `else if (`: on the
+   * same line, the word `if`, then the parenthesis a condition opens with.
+   * Anything else after `#else` is the branch's content.
+   */
+  private elseIsFollowedByIf(): boolean {
+    let i = this.position;
+    while (this.source[i] === ' ' || this.source[i] === '\t') i++;
+    if (i === this.position || this.source.slice(i, i + 2) !== 'if') return false;
+    i += 2;
+    while (this.source[i] === ' ' || this.source[i] === '\t') i++;
+    return this.source[i] === '(';
+  }
+
+  /**
+   * Whether the lexer is inside `{…}` or a control-flow header, where a
+   * comment is something the parser reads past rather than a boundary
+   * between nodes.
+   */
+  public inExpressionContext(): boolean {
+    return this.inExpression > 0 || this.inControlFlow > 0;
+  }
+
+  /**
+   * Read a block comment inside an expression, slash-star to star-slash.
+   */
+  private readBlockComment(): Token {
+    const startLine = this.line;
+    const startColumn = this.column;
+    const startPos = this.position;
+
+    this.readChar(); // consume /
+    this.readChar(); // consume *
+
+    let comment = '';
+    while (this.ch !== '') {
+      if (this.ch === '*' && this.peekChar() === '/') {
+        this.readChar(); // *
+        this.readChar(); // /
+        break;
+      }
+      comment += this.ch;
+      this.readChar();
+    }
+
+    return createToken(
+      TokenType.COMMENT,
+      comment.trim(),
+      startLine,
+      startColumn,
+      startPos,
+      this.position
+    );
   }
 
   /**

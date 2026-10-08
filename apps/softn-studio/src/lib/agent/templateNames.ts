@@ -21,8 +21,9 @@ import type { Expression, SoftNDocument, TemplateNode } from '@softn/core';
  * The JavaScript globals a template expression can name: render.tsx's
  * JS_GLOBALS, which core does not export. The list is checked against the
  * real evaluator by a test (templateNames.test.ts), so the two cannot drift
- * apart. `Object`, `console`, `window`, `Set` and the rest are not in it: in a
- * template they are undefined.
+ * apart. `Object` is three read-only functions there (`keys`, `values`,
+ * `entries`); `console`, `window` and the rest are not in it: in a template
+ * they are undefined.
  */
 export const TEMPLATE_GLOBALS: readonly string[] = [
   'Number',
@@ -30,8 +31,11 @@ export const TEMPLATE_GLOBALS: readonly string[] = [
   'Boolean',
   'Array',
   'Date',
+  'Map',
+  'Set',
   'Math',
   'JSON',
+  'Object',
   'parseInt',
   'parseFloat',
   'isNaN',
@@ -68,7 +72,7 @@ export const HOST_FUNCTIONS: readonly string[] = [
 
 /** JavaScript globals a model reaches for that a template does not have. */
 const UNAVAILABLE_GLOBALS = new Set([
-  'Object', 'Set', 'Map', 'WeakMap', 'Promise', 'Intl', 'RegExp', 'Symbol', 'BigInt', 'Error', 'Reflect', 'Function',
+  'WeakMap', 'Promise', 'Intl', 'RegExp', 'Symbol', 'BigInt', 'Error', 'Reflect', 'Function',
   'console', 'window', 'document', 'globalThis', 'localStorage', 'sessionStorage', 'navigator', 'location', 'fetch',
   'setTimeout', 'setInterval', 'structuredClone', 'crypto', 'performance',
 ]);
@@ -193,6 +197,19 @@ function collect(expr: Expression, local: Set<string>, out: Ref[], handler: stri
       visit(expr.right, local);
       return;
     }
+    case 'UpdateExpression': {
+      // `count++` writes its target and reads it first.
+      const root = rootName(expr.argument);
+      if (root) out.push({ kind: 'assign', name: root.name, line: root.line, local, event: handler });
+      if (expr.argument.type === 'MemberExpression') visit(expr.argument, local);
+      else if (root) out.push({ kind: 'read', name: root.name, line: root.line, local, event: handler });
+      return;
+    }
+    case 'NewExpression':
+      // The class is read, not called: `new Date()` names the global Date.
+      visit(expr.callee, local);
+      for (const arg of expr.arguments) visit(arg, local);
+      return;
     case 'BinaryExpression':
       visit(expr.left, local);
       visit(expr.right, local);
@@ -206,7 +223,9 @@ function collect(expr: Expression, local: Set<string>, out: Ref[], handler: stri
       visit(expr.alternate, local);
       return;
     case 'ObjectExpression':
-      for (const property of expr.properties) visit(property.value, local);
+      for (const property of expr.properties) {
+        visit(property.type === 'SpreadElement' ? property.argument : property.value, local);
+      }
       return;
     case 'ArrayExpression':
       for (const element of expr.elements) visit(element, local);

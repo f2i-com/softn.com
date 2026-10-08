@@ -1801,7 +1801,7 @@
       "id": "ui-language",
       "slug": "ui-language",
       "title": "The SoftN UI language",
-      "summary": "Read component tags, expressions, bindings, event handlers and control flow, and link a page to its logic file.",
+      "summary": "Read component tags, expressions, bindings, event handlers and their modifiers, class and style directives and control flow, and link a page to its logic file.",
       "kind": "reference",
       "audience": [
         "developers"
@@ -1809,9 +1809,9 @@
       "groupId": "language",
       "seo": {
         "title": "The SoftN UI language | SoftN Docs",
-        "description": "SoftN .ui syntax: components, expression props, event handlers and their arguments, two-way binding, conditional and list rendering, and linking logic files."
+        "description": "SoftN .ui syntax: components, expression props, what an expression may contain, event handlers and modifiers, two-way binding, class: and style: directives, conditional and list rendering."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-09",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -1848,6 +1848,70 @@
           ]
         },
         {
+          "id": "expressions",
+          "title": "What an expression can say",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "An expression in braces is JavaScript’s expression syntax, read by SoftN rather than by the browser: comparisons, arithmetic, `?:`, `??`, member access, calls, array and object literals, template literals and arrow functions with a one-expression body. It reads state and calls functions; statements belong in logic."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<Text>{tasks.filter(t => !t.done).length} left</Text>\n<Text>{Math.max(0, ...scores)}</Text>\n<Box style={{ ...cardStyle, opacity: busy ? 0.5 : 1 }} />\n<Text>© {new Date().getFullYear()}</Text>\n<Button @click={() => count++}>Add one</Button>\n{/* A comment in braces renders nothing. */}",
+              "caption": "Arrows with or without parentheses, spread in a list, an argument list or an object, new Date(), and count++ in a handler."
+            },
+            {
+              "type": "table",
+              "columns": [
+                "You can write",
+                "For example"
+              ],
+              "rows": [
+                [
+                  "Arrow functions with one expression",
+                  "`t => t.done`, `(a, b) => a - b`, `() => save()`"
+                ],
+                [
+                  "Spread",
+                  "`[...done, item]`, `Math.max(...scores)`, `{ ...base, color: \"red\" }`"
+                ],
+                [
+                  "One assignment or update in a handler",
+                  "`count = 0`, `count += 1`, `count++`, `open = !open`"
+                ],
+                [
+                  "Operators",
+                  "`+ - * / % **`, comparisons, `&& || ??`, `!`, `typeof`, `in`, `instanceof`, `?.`"
+                ],
+                [
+                  "Values",
+                  "Numbers including `0xff`, strings, template literals, `true`, `false`, `null`, `undefined`"
+                ],
+                [
+                  "Construction",
+                  "`new Date(…)`, `new Array(…)`, `new Map(…)`, `new Set(…)` and nothing else"
+                ],
+                [
+                  "Globals",
+                  "`Math`, `JSON`, `Number`, `String`, `Boolean`, `Array`, `Date`, `Map`, `Set`, `Object.keys`, `Object.values`, `Object.entries`, `parseInt`, `parseFloat`"
+                ]
+              ],
+              "caption": "The expression forms a template reads."
+            },
+            {
+              "type": "paragraph",
+              "text": "A variable can have any name JavaScript allows, including words markup also uses, such as `data`, `style`, `from` and `end`. An arrow with a block body, `() => { … }`, a `function` expression, `async` and `await`, regular expression literals and bitwise operators are not read: the parser reports them, and the place for them is a logic function the expression calls."
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "Templates run beside the app, not inside its sandbox",
+              "text": "Logic runs in the ZIPP sandbox. A template expression is evaluated by the host page, which is why it is limited to reading state, calling the app’s functions and the globals listed above."
+            }
+          ]
+        },
+        {
           "id": "bindings",
           "title": "Events and two-way binding",
           "blocks": [
@@ -1863,7 +1927,54 @@
             },
             {
               "type": "paragraph",
-              "text": "A handler bound by name receives an argument: for most events, a plain-data summary of the browser event, and for `@change` and `@input`, the new value. It is never the live DOM event, so there is no `preventDefault` or `event.target`. Write an arrow, `@click={() => save()}`, to call a function without it; Python apps need that form for functions with no parameters."
+              "text": "A handler bound by name receives an argument: for most events, a plain-data summary of the browser event, and for `@change` and `@input`, the new value. It is never the live DOM event, so there is no `preventDefault` or `event.target`; a modifier does that job. Write an arrow, `@click={() => save()}`, to call a function without it; Python apps need that form for functions with no parameters."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<form @submit.prevent={() => save()}>\n  <Input :bind={title} @keydown.enter={() => save()} @keydown.escape={() => cancel()} />\n</form>\n<Box className=\"backdrop\" @click.self={() => close()}>\n  <Card @click.stop={() => select(item)}>…</Card>\n</Box>",
+              "caption": "Modifiers follow the event name. The form does not reload the page, Enter and Escape each have a handler, and a click inside the card does not close the backdrop."
+            },
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": ".prevent",
+                  "description": "Cancels the browser’s default action for the event before the handler runs."
+                },
+                {
+                  "term": ".stop",
+                  "description": "Stops the event from reaching the elements around this one."
+                },
+                {
+                  "term": ".self",
+                  "description": "Runs the handler only when the event happened on this element, not inside it."
+                },
+                {
+                  "term": "A key",
+                  "description": "`.enter`, `.escape`, `.space`, `.tab`, `.up`, `.down`, `.left`, `.right`, `.backspace` and `.delete` run the handler for that key only."
+                },
+                {
+                  "term": "A held key",
+                  "description": "`.ctrl`, `.shift`, `.alt` and `.meta` require that key to be down, as in `@keydown.ctrl.enter`."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "classes-and-styles",
+          "title": "One class, one style property",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<div class=\"row\" class:is-selected={row.id === selectedId}>…</div>\n<Text style:color={overdue ? \"crimson\" : undefined}>{due}</Text>\n<Box style=\"padding: 1rem\" style:--accent={theme.accent} style:opacity={busy && 0.5} />",
+              "caption": "class: adds one class when its condition holds; style: sets one property and leaves the rest of the style alone."
+            },
+            {
+              "type": "paragraph",
+              "text": "`class:name={condition}` adds the class when the condition is true and nothing when it is not, alongside any `class` or `className` already written. `style:property={value}` sets a single CSS property, spelled as CSS spells it (`style:font-size`) or as a custom property (`style:--accent`). A value that is false, empty or missing sets nothing, so the stylesheet decides."
             }
           ]
         },
@@ -1879,7 +1990,7 @@
             },
             {
               "type": "paragraph",
-              "text": "`#elseif (…)` adds further branches. An `#empty` branch makes the first-run experience explicit, which is kinder than a blank area that leaves someone wondering whether the app has loaded."
+              "text": "`#elseif (…)` adds further branches, and `#else if (…)` is the same thing. An `#empty` branch makes the first-run experience explicit, which is kinder than a blank area that leaves someone wondering whether the app has loaded."
             }
           ]
         },
@@ -2116,7 +2227,7 @@
         "title": "State, events and app lifecycle | SoftN Docs",
         "description": "SoftN state and events: handlers and the plain-data event they receive, two-way binding, keyboard and pointer input in JavaScript and Python, and state versus saved records."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-09",
       "sourceIds": [
         "softn-core-source",
         "softn-languages"
@@ -2142,7 +2253,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "A handler bound by name, such as `@click={save}`, is called with whatever the component passes. For a browser event that is a plain-data summary: the type, pointer position and buttons, modifier keys and the target’s tag. It is never the live DOM event, so `event.preventDefault()` and `event.target` are not available."
+              "text": "A handler bound by name, such as `@click={save}`, is called with whatever the component passes. For a browser event that is a plain-data summary: the type, pointer position and buttons, modifier keys and the target’s tag. It is never the live DOM event, so `event.preventDefault()` and `event.target` are not available. To cancel a default or act on one key, add a modifier to the event in the template: `@submit.prevent={save}`, `@keydown.enter={add}`."
             },
             {
               "type": "paragraph",

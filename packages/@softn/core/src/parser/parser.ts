@@ -28,6 +28,8 @@ import {
   BindingNode,
   Expression,
   AssignmentOperator,
+  ObjectExpression,
+  SpreadElement,
   PropValue,
   TopLevelElement,
   ParseDiagnostic,
@@ -36,6 +38,7 @@ import {
   createTextNode,
   createIdentifier,
   createLiteral,
+  isEventModifier,
   isImportDeclaration,
   isComponentDeclaration,
   isScriptBlock,
@@ -60,9 +63,65 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<TokenType, AssignmentOperator> = new Map
   [TokenType.ASTERISK_ASSIGN, '*='],
   [TokenType.SLASH_ASSIGN, '/='],
   [TokenType.PERCENT_ASSIGN, '%='],
+  [TokenType.EXPONENT_ASSIGN, '**='],
   [TokenType.NULLISH_ASSIGN, '??='],
   [TokenType.OR_ASSIGN, '||='],
   [TokenType.AND_ASSIGN, '&&='],
+]);
+
+/**
+ * Words the lexer types as keywords because markup gives them meaning:
+ * after `<` (`<data>`, `<slot>`), after `#` (`#each`, `#end`) or inside an
+ * import. In an expression they are ordinary names, and common ones: a
+ * variable called `data`, `style`, `from` or `end` could not be read
+ * (`{data.title}` was "Unexpected token data"), and `#each (prop in props)`
+ * failed on its own loop variable. JavaScript's reserved words are not here.
+ */
+const CONTEXTUAL_KEYWORDS: ReadonlySet<TokenType> = new Set([
+  TokenType.EACH,
+  TokenType.END,
+  TokenType.EMPTY,
+  TokenType.ELSEIF,
+  TokenType.SCRIPT,
+  TokenType.LOGIC,
+  TokenType.STYLE,
+  TokenType.DATA,
+  TokenType.COMPONENT,
+  TokenType.FROM,
+  TokenType.PROP,
+  TokenType.SLOT,
+  TokenType.TEMPLATE,
+  TokenType.COLLECTION,
+]);
+
+/**
+ * Operators that need a value on their left. One of these where a value
+ * should begin means the value is missing, and the parser would go on to
+ * apply the operator to a synthetic `undefined` without a word: see
+ * parsePrimary.
+ */
+const NEEDS_LEFT_OPERAND: ReadonlySet<TokenType> = new Set([
+  TokenType.SLASH,
+  TokenType.ASTERISK,
+  TokenType.PERCENT,
+  TokenType.EXPONENT,
+  TokenType.EQ,
+  TokenType.NOT_EQ,
+  TokenType.EQ_STRICT,
+  TokenType.NOT_EQ_STRICT,
+  TokenType.LT,
+  TokenType.GT,
+  TokenType.LTE,
+  TokenType.GTE,
+  TokenType.AND,
+  TokenType.OR,
+  TokenType.NULLISH_COALESCE,
+  TokenType.QUESTION,
+  TokenType.DOT,
+  TokenType.OPTIONAL_CHAIN,
+  TokenType.IN,
+  TokenType.INSTANCEOF,
+  ...ASSIGNMENT_OPERATORS.keys(),
 ]);
 
 /** A short name for what an expression is, for a diagnostic about it. */
@@ -78,6 +137,10 @@ function describeExpression(expr: Expression): string {
       return `a "${expr.operator}" expression`;
     case 'ConditionalExpression':
       return 'a conditional';
+    case 'UpdateExpression':
+      return `a "${expr.operator}" expression`;
+    case 'NewExpression':
+      return 'a "new" expression';
     case 'ArrowFunctionExpression':
       return 'an arrow function';
     case 'ObjectExpression':
@@ -98,18 +161,26 @@ export class Parser {
   private peekToken: Token;
   /** Accumulated diagnostics during fault-tolerant parsing */
   private diagnostics: ParseDiagnostic[] = [];
+  /**
+   * A missing-value diagnostic for the expression being read, held until the
+   * expression closes (see parsePrimary and closeExpression).
+   */
+  private pendingOperand: ParseDiagnostic | null = null;
 
   constructor(source: string) {
     this.source = source;
     this.lexer = new Lexer(source);
-    this.curToken = this.lexer.nextToken();
-    this.peekToken = this.lexer.nextToken();
+    this.curToken = this.pullToken();
+    this.peekToken = this.pullToken();
   }
 
   /**
    * Record a parse diagnostic and continue parsing
    */
   private addDiagnostic(error: unknown): void {
+    // Whatever is being reported ended the expression a held diagnostic
+    // belonged to, and says more about it.
+    this.pendingOperand = null;
     if (error instanceof SoftNParseError) {
       this.diagnostics.push({
         message: error.message,
@@ -856,6 +927,18 @@ export class Parser {
           // Regular prop (including keywords like 'data' that can be used as attribute names)
           element.props.push(this.parseProp());
         }
+      } else if (this.curTokenIs(TokenType.EXPR_START)) {
+        // `<Button {...rest}>`. A brace that is not the value of an attribute
+        // was skipped a token at a time, so the name inside it became a
+        // boolean attribute: this rendered `<Button rest>` and said nothing.
+        this.diagnostics.push({
+          message:
+            'A "{…}" among the attributes is not the value of one and was not read: ' +
+            'spreading with {...name} is not supported on a tag, so write each attribute out',
+          severity: 'error',
+          loc: this.currentLoc(),
+        });
+        this.skipBracedRegion();
       } else {
         this.nextToken();
       }
@@ -1031,15 +1114,27 @@ export class Parser {
     // Adjacency is required: the colon must touch the name. `<div class :bind={x}>`
     // with a space is still an attribute followed by a binding, which is what it
     // has always meant.
+    //
+    // The part after the colon is a class name or a CSS property, so it is
+    // read to the end of the run of touching name pieces: `class:is-active`,
+    // `class:mt-2`, `style:font-size`, `style:--accent`. It used to stop at
+    // the first hyphen, which made `class:is-active={on}` the class "is" and
+    // a separate attribute `active`.
     if (
       this.curTokenIs(TokenType.COLON) &&
       this.curToken.start === nameEnd &&
-      this.peekToken.literal.length > 0 &&
-      /^[A-Za-z_$][A-Za-z0-9_$-]*$/.test(this.peekToken.literal)
+      this.peekToken.start === this.curToken.end &&
+      this.isNamePiece(this.peekToken)
     ) {
       this.nextToken(); // consume ':'
-      name = `${name}:${this.curToken.literal}`;
-      this.nextToken(); // consume the suffix
+      let suffix = '';
+      let suffixEnd = this.curToken.start;
+      while (this.curToken.start === suffixEnd && this.isNamePiece(this.curToken)) {
+        suffix += this.curToken.literal;
+        suffixEnd = this.curToken.end;
+        this.nextToken();
+      }
+      name = `${name}:${suffix}`;
     }
 
     let value: PropValue = { type: 'boolean', value: true };
@@ -1099,6 +1194,31 @@ export class Parser {
       this.nextToken();
     }
 
+    // `@submit.prevent`, `@keydown.enter`, `@click.stop.once`: the words after
+    // the name. A dot here used to end the attribute with "expected EQUALS".
+    // An unknown word is kept on the node and reported, so a typo reads as a
+    // typo rather than as a handler that silently never filters.
+    const modifiers: string[] = [];
+    while (this.curTokenIs(TokenType.DOT)) {
+      this.nextToken(); // consume .
+      if (!this.isPropertyName()) {
+        throw new UnexpectedTokenError(this.curToken, TokenType.IDENTIFIER, this.source);
+      }
+      const modifier = this.curToken.literal;
+      if (!isEventModifier(modifier)) {
+        this.diagnostics.push({
+          message:
+            `Unknown event modifier ".${modifier}" on @${name}. The modifiers are ` +
+            'prevent, stop and self, the keys enter, escape, space, tab, up, down, left, ' +
+            'right, backspace and delete, and the held keys ctrl, shift, alt and meta',
+          severity: 'error',
+          loc: this.currentLoc(),
+        });
+      }
+      modifiers.push(modifier);
+      this.nextToken();
+    }
+
     this.expectToken(TokenType.EQUALS);
 
     let handler: Expression;
@@ -1118,7 +1238,9 @@ export class Parser {
       handler = createIdentifier('undefined', this.currentLoc());
     }
 
-    return { type: 'Event', name, handler, loc };
+    return modifiers.length > 0
+      ? { type: 'Event', name, handler, modifiers, loc }
+      : { type: 'Event', name, handler, loc };
   }
 
   /**
@@ -1169,6 +1291,7 @@ export class Parser {
     this.expectToken(TokenType.LPAREN);
     const condition = this.parseExpression();
     this.expectToken(TokenType.RPAREN);
+    this.reportPendingOperand();
 
     const consequent: TemplateNode[] = [];
 
@@ -1217,6 +1340,12 @@ export class Parser {
       this.nextToken();
 
       if (this.curTokenIs(TokenType.ELSEIF)) {
+        alternate = this.parseIfBlock();
+        return { type: 'IfBlock', condition, consequent, alternate, loc };
+      } else if (this.curTokenIs(TokenType.ELSE) && this.peekToken.type === TokenType.IF) {
+        // `#else if (…)`: the lexer keeps the header open for exactly this
+        // spelling, and it is the same chain link `#elseif (…)` makes.
+        this.nextToken(); // consume 'else'; parseIfBlock consumes the 'if'
         alternate = this.parseIfBlock();
         return { type: 'IfBlock', condition, consequent, alternate, loc };
       } else if (this.curTokenIs(TokenType.ELSE)) {
@@ -1279,13 +1408,13 @@ export class Parser {
     let itemName = '';
     let indexName: string | undefined;
 
-    if (this.curTokenIs(TokenType.IDENTIFIER)) {
+    if (this.isIdentifierToken()) {
       itemName = this.curToken.literal;
       this.nextToken();
 
       if (this.curTokenIs(TokenType.COMMA)) {
         this.nextToken();
-        if (this.curTokenIs(TokenType.IDENTIFIER)) {
+        if (this.isIdentifierToken()) {
           indexName = this.curToken.literal;
           this.nextToken();
         }
@@ -1297,6 +1426,7 @@ export class Parser {
     const iterable = this.parseExpression();
 
     this.expectToken(TokenType.RPAREN);
+    this.reportPendingOperand();
 
     // Optional `key={expr}` after the header.
     //
@@ -1544,11 +1674,15 @@ export class Parser {
   private parseComparison(): Expression {
     let left = this.parseAdditive();
 
+    // `in` and `instanceof` sit with the comparisons, as in JavaScript. The
+    // renderer has always evaluated `instanceof`; nothing ever parsed it.
     while (
       this.curTokenIs(TokenType.LT) ||
       this.curTokenIs(TokenType.GT) ||
       this.curTokenIs(TokenType.LTE) ||
-      this.curTokenIs(TokenType.GTE)
+      this.curTokenIs(TokenType.GTE) ||
+      this.curTokenIs(TokenType.IN) ||
+      this.curTokenIs(TokenType.INSTANCEOF)
     ) {
       const loc = this.currentLoc();
       const operator = this.curToken.literal;
@@ -1575,7 +1709,7 @@ export class Parser {
   }
 
   private parseMultiplicative(): Expression {
-    let left = this.parseUnary();
+    let left = this.parseExponent();
 
     while (
       this.curTokenIs(TokenType.ASTERISK) ||
@@ -1585,11 +1719,46 @@ export class Parser {
       const loc = this.currentLoc();
       const operator = this.curToken.literal;
       this.nextToken();
-      const right = this.parseUnary();
+      const right = this.parseExponent();
       left = { type: 'BinaryExpression', operator, left, right, loc };
     }
 
     return left;
+  }
+
+  /**
+   * `a ** b`, tighter than the multiplicative operators and grouping to the
+   * right: `2 ** 3 ** 2` is `2 ** 9`.
+   *
+   * JavaScript refuses `-x ** 2` because the two readings give different
+   * numbers. The same line is drawn here, as a diagnostic: the parse keeps
+   * `(-x) ** 2` so there is something to render, and the author is told to
+   * choose.
+   */
+  private parseExponent(): Expression {
+    const base = this.curToken;
+    const left = this.parseUnary();
+    if (!this.curTokenIs(TokenType.EXPONENT)) {
+      return left;
+    }
+
+    const loc = this.currentLoc();
+    if (
+      left.type === 'UnaryExpression' &&
+      base.start === left.loc.start &&
+      base.type !== TokenType.LPAREN
+    ) {
+      this.diagnostics.push({
+        message:
+          `Ambiguous "${left.operator}" before "**": write (${left.operator}x) ** y or ` +
+          `${left.operator}(x ** y)`,
+        severity: 'error',
+        loc: left.loc,
+      });
+    }
+    this.nextToken(); // consume **
+    const right = this.parseExponent();
+    return { type: 'BinaryExpression', operator: '**', left, right, loc };
   }
 
   private parseUnary(): Expression {
@@ -1607,11 +1776,94 @@ export class Parser {
       return { type: 'UnaryExpression', operator, argument, prefix: true, loc };
     }
 
+    // `++count`, `--count`
+    if (this.curTokenIs(TokenType.INCREMENT) || this.curTokenIs(TokenType.DECREMENT)) {
+      const loc = this.currentLoc();
+      const operator = this.curToken.literal as '++' | '--';
+      this.nextToken();
+      const argument = this.parseUnary();
+      this.checkUpdateTarget(argument, operator);
+      return { type: 'UpdateExpression', operator, prefix: true, argument, loc };
+    }
+
     return this.parseCallMember();
   }
 
+  /** `count++` changes state, so its operand has to be somewhere state lives. */
+  private checkUpdateTarget(target: Expression, operator: string): void {
+    if (target.type === 'Identifier' || target.type === 'MemberExpression') return;
+    this.diagnostics.push({
+      message: `Invalid "${operator}" target: cannot change ${describeExpression(target)}`,
+      severity: 'error',
+      loc: target.loc,
+    });
+  }
+
+  /**
+   * `new Date()`, `new Date(task.due).getFullYear()`.
+   *
+   * The class is a name and any `.member` path after it; the first `(` is
+   * the construction's own argument list, and what follows that is read by
+   * the caller as a member chain on the new object.
+   */
+  private parseNew(): Expression {
+    const loc = this.currentLoc();
+    this.nextToken(); // consume 'new'
+
+    if (!this.curTokenIs(TokenType.IDENTIFIER)) {
+      throw new UnexpectedTokenError(this.curToken, TokenType.IDENTIFIER, this.source);
+    }
+    let callee: Expression = createIdentifier(this.curToken.literal, this.currentLoc());
+    this.nextToken();
+    while (this.curTokenIs(TokenType.DOT)) {
+      const memberLoc = this.currentLoc();
+      this.nextToken();
+      if (!this.isPropertyName()) {
+        throw new UnexpectedTokenError(this.curToken, TokenType.IDENTIFIER, this.source);
+      }
+      const property = createIdentifier(this.curToken.literal, this.currentLoc());
+      this.nextToken();
+      callee = { type: 'MemberExpression', object: callee, property, computed: false, loc: memberLoc };
+    }
+
+    const args = this.curTokenIs(TokenType.LPAREN) ? this.parseArguments() : [];
+    return { type: 'NewExpression', callee, arguments: args, loc };
+  }
+
+  /**
+   * The arguments of a call, from `(` to `)`. `...list` among them is a
+   * SpreadElement, which the renderer lays out in place.
+   */
+  private parseArguments(): Expression[] {
+    this.nextToken(); // consume (
+    const args: Expression[] = [];
+
+    while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
+      const argStart = this.curToken.start;
+      args.push(this.curTokenIs(TokenType.SPREAD) ? this.parseSpread() : this.parseExpression());
+      if (this.curTokenIs(TokenType.COMMA)) {
+        this.nextToken();
+      }
+      // `parsePrimary` falls back to a synthetic `undefined` without
+      // consuming anything, so an argument it cannot start on otherwise
+      // loops here forever, and the args array grows until the heap gives out.
+      this.expectProgress(argStart, TokenType.RPAREN);
+    }
+
+    this.expectToken(TokenType.RPAREN);
+    return args;
+  }
+
+  /** `...value`, in an array, an argument list or an object literal. */
+  private parseSpread(): SpreadElement {
+    const loc = this.currentLoc();
+    this.nextToken(); // consume ...
+    const argument = this.parseExpression();
+    return { type: 'SpreadElement', argument, loc };
+  }
+
   private parseCallMember(): Expression {
-    let expr = this.parsePrimary();
+    let expr = this.curTokenIs(TokenType.NEW) ? this.parseNew() : this.parsePrimary();
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -1660,22 +1912,7 @@ export class Parser {
           };
         } else if (this.curTokenIs(TokenType.LPAREN)) {
           // obj?.()
-          this.nextToken();
-          const args: Expression[] = [];
-
-          while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
-            const argStart = this.curToken.start;
-            args.push(this.parseExpression());
-            if (this.curTokenIs(TokenType.COMMA)) {
-              this.nextToken();
-            }
-            // Same guard as the plain call below: `fn?.(x => x)` or
-            // `fn?.(...args)` otherwise pushes a synthetic `undefined` here
-            // forever, and the args array grows until the heap gives out.
-            this.expectProgress(argStart, TokenType.RPAREN);
-          }
-
-          this.expectToken(TokenType.RPAREN);
+          const args = this.parseArguments();
           expr = { type: 'CallExpression', callee: expr, arguments: args, optional: true, loc };
         } else {
           // Invalid token after ?. — stop parsing member chain
@@ -1689,26 +1926,20 @@ export class Parser {
         expr = { type: 'MemberExpression', object: expr, property, computed: true, loc };
       } else if (this.curTokenIs(TokenType.LPAREN)) {
         const loc = this.currentLoc();
-        this.nextToken();
-        const args: Expression[] = [];
-
-        while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
-          const argStart = this.curToken.start;
-          args.push(this.parseExpression());
-          if (this.curTokenIs(TokenType.COMMA)) {
-            this.nextToken();
-          }
-          // `parsePrimary` falls back to a synthetic `undefined` without
-          // consuming anything, so an argument it cannot start on — a
-          // paren-less arrow, a spread — otherwise loops here forever.
-          this.expectProgress(argStart, TokenType.RPAREN);
-        }
-
-        this.expectToken(TokenType.RPAREN);
+        const args = this.parseArguments();
         expr = { type: 'CallExpression', callee: expr, arguments: args, loc };
       } else {
         break;
       }
+    }
+
+    // `count++`, `item.qty--`
+    if (this.curTokenIs(TokenType.INCREMENT) || this.curTokenIs(TokenType.DECREMENT)) {
+      const loc = expr.loc;
+      const operator = this.curToken.literal as '++' | '--';
+      this.checkUpdateTarget(expr, operator);
+      this.nextToken();
+      expr = { type: 'UpdateExpression', operator, prefix: false, argument: expr, loc };
     }
 
     return expr;
@@ -1734,7 +1965,7 @@ export class Parser {
 
       // If first token is not an identifier, it's definitely a parenthesized expression
       // e.g. (!a), (1 + 2), ("hello")
-      if (!this.curTokenIs(TokenType.IDENTIFIER)) {
+      if (!this.isIdentifierToken()) {
         const expr = this.parseExpression();
         this.expectToken(TokenType.RPAREN);
         return expr;
@@ -1749,7 +1980,7 @@ export class Parser {
         const params: string[] = [];
         while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
           const paramStart = this.curToken.start;
-          if (this.curTokenIs(TokenType.IDENTIFIER)) {
+          if (this.isIdentifierToken()) {
             params.push(this.curToken.literal);
             this.nextToken();
           }
@@ -1794,7 +2025,8 @@ export class Parser {
 
     // Literals
     if (this.curTokenIs(TokenType.NUMBER)) {
-      const value = parseFloat(this.curToken.literal);
+      // Number, not parseFloat: `0xff` is 255, where parseFloat stops at the x.
+      const value = Number(this.curToken.literal);
       const raw = this.curToken.literal;
       this.nextToken();
       return createLiteral(value, raw, loc);
@@ -1821,21 +2053,54 @@ export class Parser {
       return createLiteral(null, 'null', loc);
     }
 
+    // `undefined` is lexed as a keyword, and no rule here took one: written
+    // out, `{value === undefined}` was a diagnostic about its own name.
+    if (this.curTokenIs(TokenType.UNDEFINED)) {
+      this.nextToken();
+      return createIdentifier('undefined', loc);
+    }
+
     if (this.curTokenIs(TokenType.BACKTICK)) {
       return this.parseTemplateLiteral();
     }
 
-    // Identifier
-    if (this.curTokenIs(TokenType.IDENTIFIER)) {
+    // Identifier, or the parameter of an arrow written without parentheses:
+    // `items.filter(t => t.done)`. That form was refused ("expected RPAREN"),
+    // which is the first thing anyone coming from JavaScript writes.
+    if (this.isIdentifierToken()) {
       const name = this.curToken.literal;
       this.nextToken();
+      if (this.curTokenIs(TokenType.ARROW)) {
+        this.nextToken();
+        const body = this.parseExpression();
+        return { type: 'ArrowFunctionExpression', params: [name], body, async: false, loc };
+      }
       return createIdentifier(name, loc);
     }
 
-    // Arrow function without parens: x => x + 1
-    // This is handled in higher-level parsing
-
-    // Fallback
+    // Nothing here begins a value, and the synthetic `undefined` stands in.
+    // For an empty expression (`{}`, `fn()`) that is the answer, and a stray
+    // word is reported by whoever closes the expression. An operator is
+    // neither: the rules above go on to apply it to the stand-in, so
+    // `{/a+/.test(s)}` parsed as divisions of `undefined` and rendered NaN
+    // with nothing said.
+    //
+    // One per expression, so one mistake is one diagnostic, and held until
+    // the expression closes: `{count</Text>` has no closing brace, reads the
+    // rest of the file as a comparison, and is the unclosed tag's diagnostic
+    // to make, not a complaint about the `/` in `</Text>`.
+    if (NEEDS_LEFT_OPERAND.has(this.curToken.type) && !this.pendingOperand) {
+      const at = this.curToken;
+      this.pendingOperand = {
+        message:
+          at.type === TokenType.SLASH
+            ? 'Unexpected "/" where a value was expected: a regular expression literal is not ' +
+              'supported in a template, so test the text in a logic function'
+            : `Unexpected "${at.literal}" where a value was expected: nothing is on its left`,
+        severity: 'error',
+        loc,
+      };
+    }
     return createIdentifier('undefined', loc);
   }
 
@@ -1907,18 +2172,23 @@ export class Parser {
     const loc = this.currentLoc();
     this.nextToken(); // consume {
 
-    const properties: {
-      type: 'ObjectProperty';
-      key: string;
-      value: Expression;
-      shorthand: boolean;
-      loc: SourceLocation;
-    }[] = [];
+    const properties: ObjectExpression['properties'] = [];
 
     while (!this.curTokenIs(TokenType.EXPR_END) && !this.curTokenIs(TokenType.EOF)) {
-      if (this.curTokenIs(TokenType.IDENTIFIER) || this.curTokenIs(TokenType.STRING) || this.isPropertyName()) {
+      if (this.curTokenIs(TokenType.SPREAD)) {
+        // `{ ...base, color: "red" }`
+        properties.push(this.parseSpread());
+      } else if (
+        this.curTokenIs(TokenType.IDENTIFIER) ||
+        this.curTokenIs(TokenType.STRING) ||
+        this.curTokenIs(TokenType.NUMBER) ||
+        this.isPropertyName()
+      ) {
         const keyLoc = this.currentLoc();
-        const key = this.curToken.literal;
+        // A numeric key is the string JavaScript would make of it: `{ 1: "a" }`.
+        const key = this.curTokenIs(TokenType.NUMBER)
+          ? String(Number(this.curToken.literal))
+          : this.curToken.literal;
         this.nextToken();
 
         if (this.curTokenIs(TokenType.COLON)) {
@@ -1960,7 +2230,9 @@ export class Parser {
 
     while (!this.curTokenIs(TokenType.RBRACKET) && !this.curTokenIs(TokenType.EOF)) {
       const before = this.curToken;
-      elements.push(this.parseExpression());
+      // `[...done, item]`: the renderer has always laid a SpreadElement out in
+      // place here; no rule produced one.
+      elements.push(this.curTokenIs(TokenType.SPREAD) ? this.parseSpread() : this.parseExpression());
       if (this.curTokenIs(TokenType.COMMA)) {
         this.nextToken();
       } else if (this.curToken === before && !this.curTokenIs(TokenType.RBRACKET)) {
@@ -1980,7 +2252,23 @@ export class Parser {
 
   private nextToken(): void {
     this.curToken = this.peekToken;
-    this.peekToken = this.lexer.nextToken();
+    this.peekToken = this.pullToken();
+  }
+
+  /**
+   * The next token, reading past a comment that sits inside `{…}` or a
+   * control-flow header. Between nodes a comment is a token the node loops
+   * skip; inside an expression no rule expects one, so a block comment as
+   * the whole of an interpolation, or `{total // of the visible rows}`,
+   * ended the expression where the comment began. The lexer still emits it,
+   * so a tool that lists comments sees it.
+   */
+  private pullToken(): Token {
+    let token = this.lexer.nextToken();
+    while (token.type === TokenType.COMMENT && this.lexer.inExpressionContext()) {
+      token = this.lexer.nextToken();
+    }
+    return token;
   }
 
   private curTokenIs(type: TokenType): boolean {
@@ -2014,12 +2302,14 @@ export class Parser {
    * attributes.
    */
   private closeExpression(): void {
-    if (this.curTokenIs(TokenType.EXPR_END)) {
-      this.nextToken();
-      return;
-    }
     if (this.curTokenIs(TokenType.EOF)) {
       // A missing `}` is the unclosed tag's diagnostic, not this one's.
+      this.pendingOperand = null;
+      return;
+    }
+    this.reportPendingOperand();
+    if (this.curTokenIs(TokenType.EXPR_END)) {
+      this.nextToken();
       return;
     }
     const at = this.curToken;
@@ -2040,6 +2330,31 @@ export class Parser {
           return;
         }
         depth--;
+      }
+      this.nextToken();
+    }
+  }
+
+  /** Record the held missing-value diagnostic, if the expression made one. */
+  private reportPendingOperand(): void {
+    if (this.pendingOperand) {
+      this.diagnostics.push(this.pendingOperand);
+      this.pendingOperand = null;
+    }
+  }
+
+  /** Skip from the `{` under the cursor to past the `}` that closes it. */
+  private skipBracedRegion(): void {
+    let depth = 0;
+    while (!this.curTokenIs(TokenType.EOF)) {
+      if (this.curTokenIs(TokenType.EXPR_START)) {
+        depth++;
+      } else if (this.curTokenIs(TokenType.EXPR_END)) {
+        depth--;
+        if (depth <= 0) {
+          this.nextToken();
+          return;
+        }
       }
       this.nextToken();
     }
@@ -2096,6 +2411,26 @@ export class Parser {
   }
 
   /**
+   * Whether `token` names a variable: an identifier, or a word that is a
+   * keyword only in markup (see CONTEXTUAL_KEYWORDS).
+   */
+  private isIdentifierToken(token: Token = this.curToken): boolean {
+    return token.type === TokenType.IDENTIFIER || CONTEXTUAL_KEYWORDS.has(token.type);
+  }
+
+  /**
+   * Whether `token` can be part of what follows the colon in `class:name` or
+   * `style:property`: a word, a number or a hyphen.
+   */
+  private isNamePiece(token: Token): boolean {
+    return (
+      token.type === TokenType.MINUS ||
+      token.type === TokenType.NUMBER ||
+      /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(token.literal)
+    );
+  }
+
+  /**
    * Check if the current token can be used as a property name
    * In JavaScript, keywords can be used as property names (obj.data, obj.if, etc.)
    */
@@ -2133,4 +2468,9 @@ export function parse(source: string): SoftNDocument {
 //    could not read to its closing brace (which previously became attributes).
 // 3: Preserve collection attributes on components (SmartForm persistence).
 // 4: Preserve hyphenated attributes, including aria-* and data-*.
-export const PARSER_VERSION = 4;
+// 5: The expression forms a JavaScript author writes first: arrows without
+//    parentheses, spread in arrays, calls and object literals, `++`/`--`,
+//    `**`, `in`, `instanceof`, `new`, `undefined` and comments inside `{…}`;
+//    `#else if`; event modifiers (`@submit.prevent`); and a diagnostic for a
+//    `{…}` among attributes, which used to become a boolean attribute.
+export const PARSER_VERSION = 5;

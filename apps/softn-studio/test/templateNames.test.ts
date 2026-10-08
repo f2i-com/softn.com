@@ -93,12 +93,13 @@ describe('undefined names in the markup', () => {
           '  <Image src={asset("assets/logo.png")} />',
           '  <Button @click={() => xdb_create("tasks", { title: query })}>Add</Button>',
           '  <Text>{true} {false} {null} {count} {map(items, (i) => i.title)}</Text>',
-          '  <Text>{Object.keys(items[0]).length}</Text>',
+          '  <Text>{Object.keys(items[0]).length} {new Set(items).size} {new Map().size} {new Date().getFullYear()} {count === undefined}</Text>',
+          '  <Text>{window.innerWidth}</Text>',
         ].join('\n'),
       ),
       'ui/main.ui',
     );
-    expect(errors).toEqual([expect.stringMatching(/^ui\/main\.ui line 10: Object is not available in templates, so it is undefined there \(templates have Number, String, Boolean, Array, Date, Math, JSON/)]);
+    expect(errors).toEqual([expect.stringMatching(/^ui\/main\.ui line 11: window is not available in templates, so it is undefined there \(templates have Number, String, Boolean, Array, Date, Map, Set, Math, JSON, Object/)]);
   });
 
   it('checks an imported component in its own file, with its declared props, and not the props its tag was given', async () => {
@@ -143,16 +144,51 @@ describe('undefined names in the markup', () => {
   });
 });
 
+describe('names the newer template forms bind and read', () => {
+  it('takes the parameter of an arrow written without parentheses as a local', async () => {
+    const { errors } = await templateNameErrors(
+      page('  <Text>{items.filter(item => item.title).map(t => t.title).join(", ")}</Text>'),
+      'ui/main.ui',
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it('reads what a spread, an update and a construction name', async () => {
+    const { errors, warnings } = await templateNameErrors(
+      page(
+        [
+          '  <Text>{[...items, extra].length} {Math.max(...scores)}</Text>',
+          '  <Button @click={() => count++}>Add</Button>',
+          '  <Button @click={() => missing++}>Add</Button>',
+          '  <Text>{new Date(stamp).getFullYear()}</Text>',
+        ].join('\n'),
+      ),
+      'ui/main.ui',
+    );
+    const text = errors.join('\n');
+    expect(text).toMatch(/line 4: extra is read here but nothing defines it/);
+    expect(text).toMatch(/line 4: scores is read here but nothing defines it/);
+    expect(text).toMatch(/line 7: stamp is read here but nothing defines it/);
+    expect(errors).toHaveLength(3);
+    // An update of a name the logic never declared is the assignment it is:
+    // a warning, since it has a value once the handler has run.
+    expect(warnings).toEqual([
+      expect.stringMatching(/line 6: @click assigns missing, which the logic does not declare/),
+    ]);
+  });
+});
+
 describe('the lists the check trusts', () => {
   it('names exactly the globals the real template evaluator resolves', () => {
     const context = { state: {}, data: {}, computed: {}, props: {}, functions: {}, setState: () => {} } as never;
     const resolves = (name: string) => core.evaluateExpression({ type: 'Identifier', name, loc: { line: 1, column: 1, start: 0, end: 0 } } as never, context) !== undefined;
     for (const name of TEMPLATE_GLOBALS.filter((n) => n !== 'undefined')) expect(resolves(name), name).toBe(true);
-    for (const name of ['Object', 'console', 'window', 'Set', 'Map', 'Promise', 'Intl', 'globalThis']) expect(resolves(name), name).toBe(false);
-    // And no global the source adds is missing here.
+    for (const name of ['console', 'window', 'WeakMap', 'Promise', 'Intl', 'Function', 'globalThis']) expect(resolves(name), name).toBe(false);
+    // And no global the source adds is missing here. An entry is a name, or a
+    // name and what stands in for it (`Object: TEMPLATE_OBJECT`).
     const source = readFileSync(resolve(process.cwd(), '../../packages/@softn/core/src/renderer/render.tsx'), 'utf8');
     const block = /const JS_GLOBALS[^{]*\{([\s\S]*?)\};/.exec(source)?.[1] ?? '';
-    expect(block.split(',').map((s) => s.trim()).filter(Boolean).sort()).toEqual([...TEMPLATE_GLOBALS].sort());
+    expect(block.split(',').map((s) => s.split(':')[0].trim()).filter(Boolean).sort()).toEqual([...TEMPLATE_GLOBALS].sort());
   });
 
   it('suggests a close name, and nothing for a far one', () => {

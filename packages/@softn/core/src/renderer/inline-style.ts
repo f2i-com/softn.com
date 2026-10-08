@@ -27,12 +27,17 @@ export function inlineStyleObject(text: string): Record<string, string> {
       .replace(/!\s*important\s*$/i, '')
       .trim();
     if (!name || !value || !/^-?-?[A-Za-z_][\w-]*$/.test(name)) continue;
-    style[propertyName(name)] = value;
+    style[cssPropertyName(name)] = value;
   }
   return style;
 }
 
-function propertyName(name: string): string {
+/**
+ * A CSS property name as React's style object spells it. Also what
+ * `style:font-size={…}` on a tag is turned into, so the directive and the
+ * attribute agree on every name.
+ */
+export function cssPropertyName(name: string): string {
   if (name.startsWith('--')) return name;
   const lower = name.toLowerCase();
   const camel = lower.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());

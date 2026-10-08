@@ -493,7 +493,11 @@ function astElementToParsedNode(node: AstElementNode): ParsedNode {
   }
 
   for (const event of node.events || []) {
-    parsed.events[event.name] = expressionToString(event.handler);
+    // `@keydown.enter` is kept under its whole name: the generator writes the
+    // key back after `@`, so the modifiers survive a regeneration, and
+    // `@keydown.enter` and `@keydown.escape` stay two handlers.
+    const key = event.modifiers?.length ? `${event.name}.${event.modifiers.join('.')}` : event.name;
+    parsed.events[key] = expressionToString(event.handler);
   }
 
   for (const binding of node.bindings || []) {

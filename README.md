@@ -248,9 +248,20 @@ Before each script function call, all React state is synced to VM globals. After
 // Two-way binding
 <Input :bind={username} placeholder="Enter name" />
 
-// Conditional rendering
+// Event modifiers: cancel the default, act on one key, ignore clicks from inside
+<form @submit.prevent={save}>
+  <Input :bind={title} @keydown.enter={save} @keydown.escape={cancel} />
+</form>
+<Box className="backdrop" @click.self={close} />
+
+// One class or one style property from one expression
+<div class="row" class:is-selected={row.id === selectedId} style:--accent={theme.accent} />
+
+// Conditional rendering (#elseif and #else if are the same branch)
 #if (isLoggedIn)
   <Dashboard />
+#else if (isLoading)
+  <Spinner />
 #else
   <LoginForm />
 #end
@@ -263,6 +274,40 @@ Before each script function call, all React state is synced to VM globals. After
 #end
 ```
 
+### Expressions
+
+What goes in braces is JavaScript's expression syntax, read by SoftN's own
+parser and evaluated by the host page (logic runs in the zipp sandbox; a
+template only reads state and calls the app's functions):
+
+```xml
+<Text>{tasks.filter(t => !t.done).length} left</Text>
+<Text>{Math.max(0, ...scores)}</Text>
+<Box style={{ ...cardStyle, opacity: busy ? 0.5 : 1 }} />
+<Text>© {new Date().getFullYear()}</Text>
+<Button @click={() => count++}>Add one</Button>
+{/* A comment in braces renders nothing. */}
+```
+
+| Form | Examples |
+| :--- | :------- |
+| Arrow functions with one expression | `t => t.done`, `(a, b) => a - b`, `() => save()` |
+| Spread | `[...done, item]`, `Math.max(...scores)`, `{ ...base, color: "red" }` |
+| One assignment or update in a handler | `count = 0`, `count += 1`, `count++`, `open = !open` |
+| Operators | `+ - * / % **`, comparisons, `&& \|\| ??`, `!`, `typeof`, `in`, `instanceof`, `?.` |
+| Values | numbers including `0xff`, strings, template literals, `true`, `false`, `null`, `undefined` |
+| Construction | `new Date(…)`, `new Array(…)`, `new Map(…)`, `new Set(…)`, and nothing else |
+| Globals | `Math`, `JSON`, `Number`, `String`, `Boolean`, `Array`, `Date`, `Map`, `Set`, `Object.keys`/`values`/`entries`, `parseInt`, `parseFloat`, and the built-in helpers (`formatDate`, `currency`, `truncate`, …) |
+
+A variable may be called `data`, `style`, `from`, `end` or any other word
+markup also uses. Block-bodied arrows (`() => { … }`), `function` expressions,
+`async`/`await`, regular expression literals and bitwise operators are not
+read; the parser reports them, and the place for them is a logic function the
+expression calls. Every construct either parses to what it says or produces a
+diagnostic: `parse(source).diagnostics`.
+
+### Events
+
 A handler bound in a template is called without the DOM event: `@click={fn}`
 runs `fn()` with the event reduced to `null`, while component callbacks that
 carry data (`DPad`'s `@press`, `Slider`'s `@change`) pass it through. A script
@@ -271,6 +316,14 @@ that needs pointer coordinates listens on the window instead —
 `clientX`, `clientY`, `key`, `targetTag` and the like. `Box` and `Button`
 forward `@pointerdown`, `@pointerup`, `@pointercancel` and `@pointerleave`,
 which is enough for a hold-to-press control.
+
+Because the script never holds the event, what would be `preventDefault()` or
+a key test is written as a modifier after the event name: `.prevent`, `.stop`
+and `.self` (only when the event happened on the element itself); the keys
+`.enter`, `.escape`, `.space`, `.tab`, `.up`, `.down`, `.left`, `.right`,
+`.backspace` and `.delete`; and the held keys `.ctrl`, `.shift`, `.alt` and
+`.meta`, as in `@keydown.ctrl.enter={send}`. A filter that does not match
+leaves the event alone. Whatever `:bind` does on the same event always runs.
 
 ---
 
