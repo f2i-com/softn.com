@@ -4620,6 +4620,70 @@
       }
     },
     {
+      "name": "Kbd",
+      "source": "src/display/Kbd.tsx",
+      "props": {
+        "interface": "KbdProps",
+        "members": [
+          {
+            "name": "keys",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "string | string[]"
+            },
+            "doc": "The key or combination: \"Enter\", \"Ctrl+K\", or a list of keys"
+          },
+          {
+            "name": "separator",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text between the keys of a combination"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Size"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          },
+          {
+            "name": "children",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "A single key, as content"
+          }
+        ]
+      }
+    },
+    {
       "name": "Layout",
       "source": "src/layout/Layout.tsx",
       "props": {
@@ -5689,6 +5753,166 @@
               ]
             },
             "doc": "Variant style"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          }
+        ]
+      }
+    },
+    {
+      "name": "NumberInput",
+      "source": "src/form/NumberInput.tsx",
+      "props": {
+        "interface": "NumberInputProps",
+        "members": [
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "number | string | null"
+            },
+            "doc": "The number"
+          },
+          {
+            "name": "defaultValue",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "Starting number, when the app does not hold it"
+          },
+          {
+            "name": "min",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "Smallest number allowed"
+          },
+          {
+            "name": "max",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "Largest number allowed"
+          },
+          {
+            "name": "step",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "How much one step changes it"
+          },
+          {
+            "name": "precision",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "Decimal places kept; worked out from the step when omitted"
+          },
+          {
+            "name": "name",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Input name"
+          },
+          {
+            "name": "placeholder",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Placeholder text"
+          },
+          {
+            "name": "disabled",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Whether the input is disabled"
+          },
+          {
+            "name": "readOnly",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Whether the number can be read but not changed"
+          },
+          {
+            "name": "error",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Error state"
+          },
+          {
+            "name": "hideControls",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Hide the step buttons"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Size"
+          },
+          {
+            "name": "fullWidth",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Stretch to the width available"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name, when no visible label names the field"
+          },
+          {
+            "name": "onChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called with the new number, or null when the field is emptied"
           },
           {
             "name": "className",
@@ -6898,6 +7122,126 @@
       }
     },
     {
+      "name": "Rating",
+      "source": "src/form/Rating.tsx",
+      "props": {
+        "interface": "RatingProps",
+        "members": [
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "number | string"
+            },
+            "doc": "The score"
+          },
+          {
+            "name": "defaultValue",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "Starting score, when the app does not hold it"
+          },
+          {
+            "name": "max",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "How many stars"
+          },
+          {
+            "name": "readOnly",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Show the score without letting it be changed"
+          },
+          {
+            "name": "disabled",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Whether the control is disabled"
+          },
+          {
+            "name": "allowClear",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Choosing the current score again clears it to zero"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Size"
+          },
+          {
+            "name": "character",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "The character drawn for each star"
+          },
+          {
+            "name": "color",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Colour of the filled stars"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the group"
+          },
+          {
+            "name": "onChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called with the new score"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          }
+        ]
+      }
+    },
+    {
       "name": "RichTextEditor",
       "source": "src/editors/RichTextEditor.tsx",
       "props": {
@@ -7447,6 +7791,104 @@
               "text": "1 | 2 | 3 | 4 | 5 | 6"
             },
             "doc": "Heading level of the title (default 2)"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SegmentedControl",
+      "source": "src/form/SegmentedControl.tsx",
+      "props": {
+        "interface": "SegmentedControlProps",
+        "members": [
+          {
+            "name": "options",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "Array<string | number | SegmentedOption>"
+            },
+            "doc": "The options: values, or { value, label?, disabled? }"
+          },
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "string | number"
+            },
+            "doc": "The chosen option's value"
+          },
+          {
+            "name": "defaultValue",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "string | number"
+            },
+            "doc": "Starting choice, when the app does not hold it"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Size"
+          },
+          {
+            "name": "fullWidth",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Stretch to the width available, each option an equal share"
+          },
+          {
+            "name": "disabled",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Whether the control is disabled"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the group"
+          },
+          {
+            "name": "onChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called with the chosen option's value"
           },
           {
             "name": "className",
@@ -9840,6 +10282,276 @@
       }
     },
     {
+      "name": "Stat",
+      "source": "src/display/Stat.tsx",
+      "props": {
+        "interface": "StatProps",
+        "members": [
+          {
+            "name": "label",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "What the figure is"
+          },
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "string | number"
+            },
+            "doc": "The figure"
+          },
+          {
+            "name": "prefix",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text before the value, such as a currency sign"
+          },
+          {
+            "name": "suffix",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text after the value, such as a unit"
+          },
+          {
+            "name": "change",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "number | string"
+            },
+            "doc": "How far it moved: a number is shown as a percentage, text as written"
+          },
+          {
+            "name": "changeLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "What the change is measured against, such as \"since last week\""
+          },
+          {
+            "name": "trend",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "up",
+                "down",
+                "flat"
+              ]
+            },
+            "doc": "Direction of the change (worked out from a numeric change when omitted)"
+          },
+          {
+            "name": "positive",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "up",
+                "down"
+              ]
+            },
+            "doc": "Which direction is good news; the other is shown as a warning"
+          },
+          {
+            "name": "helpText",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "A line of explanation under the figure"
+          },
+          {
+            "name": "icon",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "Icon shown beside the label"
+          },
+          {
+            "name": "variant",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "plain",
+                "card",
+                "outlined"
+              ]
+            },
+            "doc": "Appearance"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Size"
+          },
+          {
+            "name": "align",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "left",
+                "center",
+                "right"
+              ]
+            },
+            "doc": "Alignment of the content"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          },
+          {
+            "name": "children",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "Content under the figure, such as a sparkline"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Steps",
+      "source": "src/navigation/Steps.tsx",
+      "props": {
+        "interface": "StepsProps",
+        "members": [
+          {
+            "name": "items",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "Array<string | StepItem>"
+            },
+            "doc": "The steps, in order: names, or { key?, label, description?, disabled? }"
+          },
+          {
+            "name": "current",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "number | string"
+            },
+            "doc": "The step in progress: its position from zero, or its key"
+          },
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "number | string"
+            },
+            "doc": "The same as current, under the name `:bind` writes"
+          },
+          {
+            "name": "orientation",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "horizontal",
+                "vertical"
+              ]
+            },
+            "doc": "Lay the steps out in a row or a column"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Size"
+          },
+          {
+            "name": "status",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "process",
+                "error"
+              ]
+            },
+            "doc": "How the step in progress is shown"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the list"
+          },
+          {
+            "name": "onChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called with the chosen step's key, or its position when it has none"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          }
+        ]
+      }
+    },
+    {
       "name": "Switch",
       "source": "src/form/Switch.tsx",
       "props": {
@@ -10957,6 +11669,98 @@
       }
     },
     {
+      "name": "Timeline",
+      "source": "src/data/Timeline.tsx",
+      "props": {
+        "interface": "TimelineProps",
+        "members": [
+          {
+            "name": "items",
+            "optional": true,
+            "type": {
+              "kind": "array",
+              "text": "TimelineItem[]"
+            },
+            "doc": "The entries, in the order to show them: { title, description?, time?, variant?, key? }"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Size"
+          },
+          {
+            "name": "timePosition",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "inline",
+                "above"
+              ]
+            },
+            "doc": "Where the time is shown"
+          },
+          {
+            "name": "showLine",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Draw the line between markers"
+          },
+          {
+            "name": "reverse",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Show the newest entry first by reversing the list"
+          },
+          {
+            "name": "emptyText",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Text shown when there are no entries"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Accessible name for the list"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          }
+        ]
+      }
+    },
+    {
       "name": "Toast",
       "source": "src/feedback/Toast.tsx",
       "props": {
@@ -11546,6 +12350,9 @@
       "DatePicker",
       "ColorPicker",
       "FileChooser",
+      "NumberInput",
+      "Rating",
+      "SegmentedControl",
       "Text",
       "Heading",
       "Badge",
@@ -11555,6 +12362,9 @@
       "Spinner",
       "Image",
       "Icon",
+      "Skeleton",
+      "Stat",
+      "Kbd",
       "Alert",
       "Modal",
       "Toast",
@@ -11567,10 +12377,12 @@
       "TreeView",
       "Pagination",
       "DataGrid",
+      "Timeline",
       "Tabs",
       "Breadcrumb",
       "Menu",
       "NavItem",
+      "Steps",
       "Accordion",
       "Collapse",
       "Tooltip",

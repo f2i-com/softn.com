@@ -18,3 +18,6 @@ export type { PaginationProps } from './Pagination';
 
 export { DataGrid } from './DataGrid';
 export type { DataGridProps, DataGridColumn, CellEditorProps } from './DataGrid';
+
+export { Timeline } from './Timeline';
+export type { TimelineProps, TimelineItem } from './Timeline';

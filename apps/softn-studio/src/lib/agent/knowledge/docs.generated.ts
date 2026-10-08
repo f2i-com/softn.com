@@ -470,12 +470,17 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "everyday-components",
     "title": "The everyday toolkit",
-    "text": "Need | Components\nPage structure | App, Box, Stack, Grid, Card, Container, Layout, Header, Content, Section\nText and status | Text, Heading, Badge, Tag, Progress, Spinner, Image, Icon\nInput and actions | Button, Input, TextArea, Select, Checkbox, Radio, Switch, Form, Slider\nDates, colours and files | DatePicker, ColorPicker, FileChooser\nNavigation | Tabs, Breadcrumb, Menu, NavItem\nFeedback | Alert, Modal, Toast, Drawer, Popover, EmptyState\n\nChoose the simplest component that matches the interaction. A small settings screen may need only a Stack, Heading, Input and Button. More components do not necessarily make the workflow clearer."
+    "text": "Need | Components\nPage structure | App, Box, Stack, Grid, Card, Container, Layout, Header, Content, Section\nText and status | Text, Heading, Badge, Tag, Progress, Spinner, Skeleton, Image, Icon, Kbd\nInput and actions | Button, Input, NumberInput, TextArea, Select, SegmentedControl, Checkbox, Radio, Switch, Rating, Form, Slider\nDates, colours and files | DatePicker, ColorPicker, FileChooser\nNavigation | Tabs, Breadcrumb, Menu, NavItem, Steps\nFeedback | Alert, Modal, Toast, Drawer, Popover, EmptyState\n\nChoose the simplest component that matches the interaction. A small settings screen may need only a Stack, Heading, Input and Button. More components do not necessarily make the workflow clearer."
    },
    {
     "id": "records-and-dashboards",
     "title": "Records and dashboards",
-    "text": "Need | Components\nLists and tables | List, ListItem, Table, DataGrid, TreeView, Pagination\nData-oriented forms and views | SmartForm, SmartGrid, SmartView, SmartCards, SmartList\nSummaries and timelines | SmartStats, SmartTimeline\nCharts | LineChart, BarChart, PieChart, AreaChart, RadarChart, GaugeChart\n\nUse a table when someone needs to inspect individual records. Use a chart for a question about a pattern or comparison. A chart is most useful when its labels, units and empty state make that question understandable."
+    "text": "Need | Components\nLists and tables | List, ListItem, Table, DataGrid, TreeView, Pagination\nData-oriented forms and views | SmartForm, SmartGrid, SmartView, SmartCards, SmartList\nSummaries and timelines | Stat, Timeline, SmartStats, SmartTimeline\nCharts | LineChart, BarChart, PieChart, AreaChart, RadarChart, GaugeChart\n\nUse a table when someone needs to inspect individual records. Use a chart for a question about a pattern or comparison. A chart is most useful when its labels, units and empty state make that question understandable.\n\nStat and Timeline draw what the app already holds in state: one figure with how it moved, and a list of things that happened. SmartStats and SmartTimeline read a collection themselves."
+   },
+   {
+    "id": "value-controls",
+    "title": "Controls that hold one value",
+    "text": "```softn\n<SegmentedControl :bind={view} options={[\"List\", \"Board\", \"Calendar\"]} />\n<NumberInput :bind={quantity} min={1} max={99} />\n<Rating :bind={score} max={5} />\n<Steps items={[\"Cart\", \"Shipping\", \"Payment\"]} :bind={step} />\n```\n(Each binds like an Input: the state is shown, and what the person chooses is written back.)\n\n- SegmentedControl: One choice from a few options shown side by side. `@change` and `:bind` give the option’s value. Use Tabs when the choice changes the page.\n- NumberInput: A number to type or to step with the buttons and the arrow keys, kept between `min` and `max`. It gives a number, or `null` when the field is empty, never the text.\n- Rating: A score out of `max` stars. With `readOnly` it shows a score and is read aloud as \"3 out of 5\".\n- Steps: Progress through a sequence. `current` is the step in progress, by position or by key; with `:bind` or `@change` the steps are buttons."
    },
    {
     "id": "interactive-media",

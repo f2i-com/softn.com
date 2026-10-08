@@ -14,3 +14,6 @@ export * from './DatePicker';
 export * from './ColorPicker';
 export * from './Slider';
 export * from './FileChooser';
+export * from './NumberInput';
+export * from './Rating';
+export * from './SegmentedControl';

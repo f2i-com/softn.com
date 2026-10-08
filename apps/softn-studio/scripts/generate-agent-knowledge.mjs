@@ -27,7 +27,7 @@
  *   npm run generate:knowledge -w @softn/studio
  *
  * The one-line purposes below are the only hand-written part: the manifest
- * carries a description for six components of a hundred. The generator
+ * carries a description for a handful of components of a hundred. The generator
  * refuses a component without one, so a new component cannot reach the
  * prompt undescribed.
  */
@@ -86,6 +86,7 @@ export const PURPOSES = {
   Icon: 'A named icon from the built-in set, or an SVG.',
   Image: 'An image with fit, position and radius.',
   Input: 'A single-line text field: text, email, password, number and more.',
+  Kbd: 'A keyboard key or shortcut, such as Ctrl+K.',
   Layout: 'Page layout frame that holds Header, Sidebar and Content.',
   LineChart: 'Line chart for one or more series.',
   List: 'A vertical list of ListItem rows.',
@@ -97,6 +98,7 @@ export const PURPOSES = {
   Microphone: 'Records clips or streams microphone input (needs the mic permission).',
   Modal: 'A dialog over the page; open with open/isOpen, close with @close.',
   NavItem: 'A navigation link or button, marked active for the current page.',
+  NumberInput: 'A number to type or step with + and −; @change and :bind give a number, or null when empty.',
   Pagination: 'Page controls for a long list or table.',
   PanView: 'A draggable, zoomable viewport over large content.',
   PieChart: 'Pie or donut chart.',
@@ -108,12 +110,14 @@ export const PURPOSES = {
   QRReader: 'Scans QR codes with the camera (needs the camera permission).',
   RadarChart: 'Radar (spider) chart across several axes.',
   Radio: 'Choose one of several options.',
+  Rating: 'A score out of a few stars, to read (readOnly) or to set; @change and :bind give the number.',
   RichTextEditor: 'Formatted text editing with a toolbar.',
   Scene3D: 'A Three.js 3D scene from a list of objects, lights and a camera.',
   Section: 'A titled section of a page, with an optional action.',
+  SegmentedControl: 'Choose one of a few options shown side by side; @change and :bind give the value.',
   Select: 'A dropdown to choose one option.',
   Sidebar: 'A side column, collapsible.',
-  Skeleton: 'Loading placeholder shapes (helper; not a registered tag).',
+  Skeleton: 'A loading placeholder shaped like the content to come; shows its children once loading is false.',
   SkeletonCard: 'Loading placeholder for a card (helper; not a registered tag).',
   SkeletonCircle: 'Loading placeholder for an avatar (helper; not a registered tag).',
   SkeletonText: 'Loading placeholder for lines of text (helper; not a registered tag).',
@@ -131,6 +135,8 @@ export const PURPOSES = {
   Split: 'Two panes with a draggable divider.',
   Sprite: 'Draws one frame of a sprite sheet: game characters.',
   Stack: 'Lays children out in a row or column with a gap: the everyday layout.',
+  Stat: 'One figure with its label and how it moved: a dashboard tile fed from state.',
+  Steps: 'Where someone is in a sequence: done, current and upcoming steps; with @change the steps are buttons.',
   Switch: 'An on/off toggle with a label.',
   Table: 'A table from columns [{ key, header }] and data rows.',
   Tabs: 'Tabs from [{ key, label }]; @change receives the key.',
@@ -139,6 +145,7 @@ export const PURPOSES = {
   Text: 'A run of text: size, weight, colour, alignment, truncation.',
   TextArea: 'A multi-line text field.',
   TileMap: 'Draws a tile map from a tileset: game levels.',
+  Timeline: 'Things that happened, in order, from a list in state: [{ title, description?, time?, variant? }].',
   Toast: 'A transient notification.',
   Tooltip: 'A hint shown on hover or focus.',
   TooltipTrigger: 'Wraps an element with a tooltip (helper; not a registered tag).',

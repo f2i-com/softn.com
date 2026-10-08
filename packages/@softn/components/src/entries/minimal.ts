@@ -2,7 +2,7 @@
  * The components every app is likely to use and no app is hurt by: layout,
  * forms, display, feedback, navigation, the data views and the light
  * utilities. Measured with esbuild, minified, dependencies external: about
- * 190 KB together, and nothing beyond React and @softn/core in their import
+ * 265 KB together, and nothing beyond React and @softn/core in their import
  * graphs. Everything heavier — Three.js behind Scene3D, the QR scanner and
  * the camera and microphone behind the media group, the editors, the charts,
  * the Smart family, the animation primitives — lives in its own entry and
@@ -57,6 +57,9 @@ import { Slider } from '../form/Slider';
 import { DatePicker } from '../form/DatePicker';
 import { ColorPicker } from '../form/ColorPicker';
 import { FileChooser } from '../form/FileChooser';
+import { NumberInput } from '../form/NumberInput';
+import { Rating } from '../form/Rating';
+import { SegmentedControl } from '../form/SegmentedControl';
 import { Text } from '../display/Text';
 import { Heading } from '../display/Heading';
 import { Badge } from '../display/Badge';
@@ -66,6 +69,9 @@ import { Progress } from '../display/Progress';
 import { Spinner } from '../display/Spinner';
 import { Image } from '../display/Image';
 import { Icon } from '../display/Icon';
+import { Skeleton } from '../display/Skeleton';
+import { Stat } from '../display/Stat';
+import { Kbd } from '../display/Kbd';
 import { Alert } from '../feedback/Alert';
 import { Modal } from '../feedback/Modal';
 import { Toast } from '../feedback/Toast';
@@ -77,10 +83,12 @@ import { Table } from '../data/Table';
 import { TreeView } from '../data/TreeView';
 import { Pagination } from '../data/Pagination';
 import { DataGrid } from '../data/DataGrid';
+import { Timeline } from '../data/Timeline';
 import { Tabs } from '../navigation/Tabs';
 import { Breadcrumb } from '../navigation/Breadcrumb';
 import { Menu } from '../navigation/Menu';
 import { NavItem } from '../navigation/NavItem';
+import { Steps } from '../navigation/Steps';
 import { Accordion } from '../utility/Accordion';
 import { Collapse } from '../utility/Collapse';
 import { Tooltip } from '../utility/Tooltip';
@@ -124,6 +132,9 @@ export const minimalComponents = {
   DatePicker,
   ColorPicker,
   FileChooser,
+  NumberInput,
+  Rating,
+  SegmentedControl,
 
   // Display
   Text,
@@ -135,6 +146,9 @@ export const minimalComponents = {
   Spinner,
   Image,
   Icon,
+  Skeleton,
+  Stat,
+  Kbd,
 
   // Feedback
   Alert,
@@ -151,12 +165,14 @@ export const minimalComponents = {
   TreeView,
   Pagination,
   DataGrid,
+  Timeline,
 
   // Navigation
   Tabs,
   Breadcrumb,
   Menu,
   NavItem,
+  Steps,
 
   // Light utilities
   Accordion,

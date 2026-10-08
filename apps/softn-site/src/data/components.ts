@@ -45,11 +45,27 @@ export const CATEGORIES: Category[] = [
       'DatePicker',
       'ColorPicker',
       'FileChooser',
+      'NumberInput',
+      'Rating',
+      'SegmentedControl',
     ],
   },
   {
     name: 'Display',
-    components: ['Text', 'Heading', 'Badge', 'Tag', 'Avatar', 'Progress', 'Spinner', 'Image', 'Icon'],
+    components: [
+      'Text',
+      'Heading',
+      'Badge',
+      'Tag',
+      'Avatar',
+      'Progress',
+      'Spinner',
+      'Image',
+      'Icon',
+      'Skeleton',
+      'Stat',
+      'Kbd',
+    ],
   },
   {
     name: 'Feedback',
@@ -57,11 +73,11 @@ export const CATEGORIES: Category[] = [
   },
   {
     name: 'Data',
-    components: ['List', 'ListItem', 'Table', 'TreeView', 'Pagination', 'DataGrid'],
+    components: ['List', 'ListItem', 'Table', 'TreeView', 'Pagination', 'DataGrid', 'Timeline'],
   },
   {
     name: 'Navigation',
-    components: ['Tabs', 'Breadcrumb', 'Menu', 'NavItem'],
+    components: ['Tabs', 'Breadcrumb', 'Menu', 'NavItem', 'Steps'],
   },
   {
     name: 'Utility',

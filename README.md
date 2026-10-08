@@ -22,7 +22,7 @@ The project is actively developed. The examples and runtime are usable today; ho
 
 | Capability                | What it gives you                                                                                                                                                              |
 | :------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Interfaces that adapt** | 90 built-in components, themes, forms, tables, charts, dashboards and layouts for different screen sizes.                                                                      |
+| **Interfaces that adapt** | 98 built-in components, themes, forms, tables, charts, dashboards and layouts for different screen sizes.                                                                      |
 | **An editable workspace** | A visual builder, schema editor, source editor and live desktop, tablet and mobile previews. Files the canvas cannot safely rewrite remain editable in Code view.              |
 | **AI-assisted creation**  | Studio turns a brief into an app using your configured OpenAI, Anthropic or custom provider. You can also write `.ui` and `.logic` directly.                                   |
 | **Logic and data**        | JavaScript-compatible `.logic` runs in the zipp Rust/WASM engine. XDB provides app-scoped local records, with synchronization and native storage where the host supports them. |
@@ -188,7 +188,7 @@ Capabilities such as network, microphone and synchronization require support and
                                     |
                                     v
                             Component Registry
-                           (90 built-in + custom)
+                           (98 built-in + custom)
 
 .logic Source
       |
@@ -327,22 +327,37 @@ leaves the event alone. Whatever `:bind` does on the same event always runs.
 
 ---
 
-## Component Library (90 Components)
+## Component Library (98 Components)
 
 | Category   | Count | Components                                                                                                                                      |
 | ---------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Layout     | 15    | `App`, `Box`, `Stack`, `Grid`, `Card`, `Container`, `Center`, `Layout`, `Header`, `Content`, `Section`, `Sidebar`, `Split`, `Spacer`, `Divider` |
-| Form       | 12    | `Button`, `Input`, `TextArea`, `Select`, `Checkbox`, `Radio`, `Switch`, `Form`, `Slider`, `DatePicker`, `ColorPicker`, `FileChooser`            |
-| Display    | 9     | `Text`, `Heading`, `Badge`, `Tag`, `Avatar`, `Progress`, `Spinner`, `Image`, `Icon`                                                             |
+| Form       | 15    | `Button`, `Input`, `NumberInput`, `TextArea`, `Select`, `SegmentedControl`, `Checkbox`, `Radio`, `Switch`, `Rating`, `Form`, `Slider`, `DatePicker`, `ColorPicker`, `FileChooser` |
+| Display    | 12    | `Text`, `Heading`, `Badge`, `Tag`, `Avatar`, `Progress`, `Spinner`, `Skeleton`, `Image`, `Icon`, `Stat`, `Kbd`                                  |
 | Feedback   | 6     | `Alert`, `Modal`, `Toast`, `Drawer`, `Popover`, `EmptyState`                                                                                    |
-| Data       | 6     | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination`                                                                               |
-| Navigation | 4     | `Tabs`, `Breadcrumb`, `Menu`, `NavItem`                                                                                                         |
+| Data       | 7     | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination`, `Timeline`                                                                   |
+| Navigation | 5     | `Tabs`, `Breadcrumb`, `Menu`, `NavItem`, `Steps`                                                                                                |
 | Utility    | 12    | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `PixelCanvas`, `QRCode`, `QRReader`, `Camera`, `Microphone`, `AudioStream`, `DPad`     |
 | Charts     | 6     | `LineChart`, `BarChart`, `PieChart`, `AreaChart`, `RadarChart`, `GaugeChart`                                                                    |
 | Animation  | 9     | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList`, `PanView`, `Sprite`, `TileMap`                           |
 | Editors    | 3     | `CodeEditor`, `MarkdownEditor`, `RichTextEditor`                                                                                                |
 | 3D         | 1     | `Scene3D` (Three.js with GLTF, OBJ, FBX, STL)                                                                                                   |
 | Smart      | 7     | `SmartGrid`, `SmartView`, `SmartForm`, `SmartCards`, `SmartList`, `SmartTimeline`, `SmartStats`                                                 |
+
+The controls that hold one value bind like an `Input`, and hand back the value
+itself rather than an event or its text:
+
+```xml
+<SegmentedControl :bind={view} options={["List", "Board", "Calendar"]} />
+<NumberInput :bind={quantity} min={1} max={99} />
+<Rating :bind={score} max={5} />
+<Steps items={["Cart", "Shipping", "Payment"]} :bind={step} />
+
+<Stat label="Open tasks" value={open} change={-12} changeLabel="since last week" positive="down" />
+<Timeline items={history} />
+<Skeleton loading={busy} lines={3}><Text>{summary}</Text></Skeleton>
+<Text>Press <Kbd keys="Ctrl+K" /> to search</Text>
+```
 
 ---
 

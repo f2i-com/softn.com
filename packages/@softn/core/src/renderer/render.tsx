@@ -603,7 +603,7 @@ function withholdRemoteStyleUrls(props: SoftNProps, policy: EgressPolicy): void 
  *
  * A registered component is not the boundary the check above assumed it was:
  * `<Breadcrumb items={[{label, href}]}>` hands the href straight to an `<a>`,
- * so leaving the guarantee to each of the 90 built-ins holds only for as long
+ * so leaving the guarantee to each of the built-ins holds only for as long
  * as every one of them remembers. Scrubbing here makes it structural.
  *
  * The set is deliberately narrower than `URL_ATTRIBUTES`, because a component

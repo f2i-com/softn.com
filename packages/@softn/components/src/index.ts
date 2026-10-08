@@ -35,6 +35,7 @@ export * from './data/Table';
 export * from './data/TreeView';
 export * from './data/Pagination';
 export * from './data/DataGrid';
+export * from './data/Timeline';
 
 // Chart components
 export * from './charts/LineChart';
