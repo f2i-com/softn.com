@@ -93,8 +93,11 @@ try {
   const file=join(data,'application.sqlite');
   try{if(lstatSync(file).isSymbolicLink())throw new Error('Invalid database');}catch(e){if(e.code!=='ENOENT')throw e;}
   db=new DatabaseSync(file,{allowExtension:false});chmodSync(file,0o600);
-  // Lock waits are three seconds, as on the Rust host.
-  db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072;');
+  // Lock waits are three seconds, as on the Rust host, and the wait is set
+  // before anything that can meet a lock: with journal_mode first, a request
+  // opening the database while another was closing its connection failed at
+  // once with database_busy instead of waiting.
+  db.exec('PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072;');
   startupStage='database_lock';
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -125,7 +128,12 @@ try {
     db.prepare('INSERT INTO _request_limits VALUES(?,?,1) ON CONFLICT(ip) DO UPDATE SET count=CASE WHEN minute=excluded.minute THEN count+1 ELSE 1 END,minute=excluded.minute').run(ip,minute);
     const count=db.prepare('SELECT count FROM _request_limits WHERE ip=?').get(ip).count;
     db.exec('COMMIT');
-    if(count>120){emit({status:429,body:{error:'Too many requests.',code:'rate_limited'}});process.exit(0);}
+    // config.server.requestsPerMinute, as the Rust host reads it: a whole
+    // number, 0 for no limit, 120 when it is not set. It used to be 120
+    // whatever the manifest said.
+    const declaredLimit=manifest.config?.server?.requestsPerMinute;
+    const perMinute=Number.isInteger(declaredLimit)&&declaredLimit>=0?declaredLimit:120;
+    if(perMinute>0&&count>perMinute){emit({status:429,body:{error:'Too many requests.',code:'rate_limited'}});process.exit(0);}
   } catch(e){try{db.exec('ROLLBACK');}catch{}throw e;}
   startupStage='record_events';
   const recordSubscriptions=config.enableHostContext===true?JSON.parse(process.env.SOFTN_RECORD_EVENTS||'[]'):[];

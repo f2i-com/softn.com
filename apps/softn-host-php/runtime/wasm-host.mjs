@@ -49,7 +49,11 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
   initialize();
   const now=()=>Math.floor(Date.now()/1000);
   const services={crypto:createCrypto(key,cryptoDomains),time:{now,parseZoned,format:formatZoned,
-    age:(birth,zone='UTC')=>{
+    age:(birth,zone)=>{
+      // An omitted zone crosses the bridge as null, which a default parameter
+      // leaves alone: softn.time.age("2000-01-01") answered 500 here and 26
+      // on the Rust host.
+      zone??='UTC';
       if(typeof birth!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(birth))return -1;
       const d=new Date(birth+'T00:00:00Z');if(!Number.isFinite(d.getTime())||d.toISOString().slice(0,10)!==birth)return -1;
       const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now()*1000).map(v=>[v.type,v.value]));
@@ -64,20 +68,32 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
     ...Object.fromEntries(['now','parseZoned','format','age'].map(k=>['time.'+k,services.time[k]]))
   });
   function invoke(request,route,context={}) {
-    let engine,transaction=false,calls=0;
+    let engine,transaction=false,calls=0,failed=false;
     try {
       writable=route.transaction!=='read';
       db.exec(writable?'BEGIN IMMEDIATE':'BEGIN');transaction=true;
       engine=new Engine();engine.setInstructionBudget(steps);engine.setSyncHostCapabilities(['db.query']);
       engine.setDbBridge({query:(op,args)=>{
-        if(++calls>512||!Object.hasOwn(operations,op)||!capabilities.includes(op.split('.')[0])||!Array.isArray(args)||args.length>4||Buffer.byteLength(JSON.stringify(args))>1_000_000)throw new Error('Host capability denied');
-        if(route.transaction==='read'&&op==='sql.execute')throw new Error('Read-only transaction');
-        return operations[op](...args);
+        // A host call that fails marks the request, whatever the handler
+        // does with the exception: see the commit below.
+        try {
+          if(++calls>512||!Object.hasOwn(operations,op)||!capabilities.includes(op.split('.')[0])||!Array.isArray(args)||args.length>4||Buffer.byteLength(JSON.stringify(args))>1_000_000)throw new Error('Host capability denied');
+          if(route.transaction==='read'&&op==='sql.execute')throw new Error('Read-only transaction');
+          return operations[op](...args);
+        } catch(e){failed=true;throw e;}
       }});
       engine.initScript(SHIM+'\nsoftn.config='+JSON.stringify({...appConfig,development})+';\n'+source);
       engine.evalInContext('typeof onStart === "function" ? onStart() : null');
       const result=engine.callFunction(route.handler,[{...request,context}]);
       if(!result||!Number.isInteger(result.status)||result.status<200||result.status>599||!Object.hasOwn(result,'body')||Buffer.byteLength(JSON.stringify(result))>3*1024*1024)throw new Error('Invalid response');
+      // "An exception, host error, … rolls back" (the hosts' contract; the
+      // Rust host's sql.mark_failed). A handler that caught a failed
+      // statement and answered used to commit what it had written before
+      // it: a transfer that credited one account, failed to debit the other
+      // and answered 400 left the credit in the database. Such a request is
+      // rolled back and answers host_error, unless the handler asked for the
+      // rollback itself, in which case its answer stands.
+      if(failed&&!result.rollback)throw new Error('Host call failed');
       db.exec(result.rollback?'ROLLBACK':'COMMIT');transaction=false;
       delete result.rollback;return result;
     } catch {

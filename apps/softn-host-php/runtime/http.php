@@ -71,7 +71,9 @@ if ($public && ($backend===$public || str_starts_with($backend,rtrim($public,'/'
 $workers=(int)($manifest['config']['server']['workers']??4);$workers=max(1,min(16,$workers));
 $slot=null;
 for($i=0;$i<$workers;$i++) {
-    $candidate=@fopen($backend.'/private/slot-'.$i.'.lock','c');
+    // 'e': not inherited by the runner, which would otherwise keep the slot
+    // locked for as long as it lived, after this request had gone.
+    $candidate=@fopen($backend.'/private/slot-'.$i.'.lock','ce');
     if($candidate && flock($candidate,LOCK_EX|LOCK_NB)){$slot=$candidate;break;}
     if($candidate)fclose($candidate);
 }

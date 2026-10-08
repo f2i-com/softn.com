@@ -8,6 +8,13 @@ if(is_link($root.'/private'))throw new RuntimeException('Private directory canno
 $lock=fopen($root.'/private/setup.lock','c');flock($lock,LOCK_EX);
 try {
     $file=$root.'/private/config.json';
+    if(!file_exists($file) && !is_file($root.'/app/manifest.json')) {
+        // The archive before an app is installed in it. Reading the manifest
+        // here died with a TypeError and a stack of paths; the message meant
+        // for this case comes later and was never reached on a first run.
+        fwrite(STDERR,"No application is installed at app/ yet: install the private bundle there, then run setup again.\n");
+        exit(1);
+    }
     if(!file_exists($file)) {
         $manifest=json_decode(file_get_contents($root.'/app/manifest.json'),true,32,JSON_THROW_ON_ERROR);
         $defaults=is_file($root.'/operator/defaults.json')?json_decode(file_get_contents($root.'/operator/defaults.json'),true,32,JSON_THROW_ON_ERROR):[];

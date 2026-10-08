@@ -33,10 +33,15 @@ function shapes(req){return {status:200,body:{empty:{},list:[],s:'x\\ud83d'}};}
 function seen(req){return {status:200,body:{keys:Object.keys(req).sort(),body:req.body}};}
 function things(req){return {status:200,body:softn.sql.query("WITH t AS (SELECT label, tag FROM things WHERE label LIKE ?) SELECT label, tag, ? / 2 AS half, 'a;b' AS s FROM t ORDER BY label",["%",5])};}
 function count(req){softn.sql.execute("UPDATE counter SET value=value+1",[]);return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}
+function value(req){return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}
+function creditThenFail(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);try{softn.sql.execute("INSERT INTO no_such_table VALUES(1)",[]);}catch(e){return {status:400,body:{error:'refused'}};}return {status:200,body:{}};}
+function creditThenUndo(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);try{softn.sql.execute("INSERT INTO no_such_table VALUES(1)",[]);}catch(e){return {status:409,rollback:true,body:{error:'undone'}};}return {status:200,body:{}};}
+function creditThenRefuse(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);return {status:422,body:{error:'counted'}};}
+function age(req){return {status:200,body:{plain:softn.time.age("2000-01-01"),zoned:softn.time.age("2000-01-01","UTC"),bad:softn.time.age("not a date")}};}
 `;
 
 /** A backend root holding this checkout's runtime and the given manifest. */
-function backend(manifest){
+function backend(manifest,{capabilities=['sql']}={}){
   const root=mkdtempSync(join(tmpdir(),'softn-routes-'));
   for(const name of readdirSync(runtime))if(name.endsWith('.mjs'))copyFileSync(join(runtime,name),join(root,name));
   mkdirSync(join(root,'wasm'));
@@ -47,7 +52,7 @@ function backend(manifest){
   writeFileSync(join(root,'app/manifest.json'),JSON.stringify(manifest));
   writeFileSync(join(root,'app/server/main.logic'),SOURCE);
   writeFileSync(join(root,'app/server/migrations/001.sql'),'CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0);');
-  writeFileSync(join(root,'private/config.json'),JSON.stringify({appId:manifest.id,development:false,keyHex:'ab'.repeat(32),capabilities:['sql'],cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'}}));
+  writeFileSync(join(root,'private/config.json'),JSON.stringify({appId:manifest.id,development:false,keyHex:'ab'.repeat(32),capabilities,cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'}}));
   const raw=(request)=>{
     const r=spawnSync(process.execPath,['--disable-proto=throw',join(root,'runner.mjs')],{input:JSON.stringify({query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false,...request}),encoding:'utf8',timeout:30000,env:{...process.env,SOFTN_BACKEND_ROOT:root,NODE_NO_WARNINGS:'1'}});
     assert.equal(r.status,0,r.stderr);
@@ -163,6 +168,62 @@ test('migrations run in sorted order, and a listed-twice or removed migration st
   assert.equal(b.invoke({method:'GET',path:'/api/meta'}).body.diagnostic,'database_migrations');
   write(declared);
   assert.equal(b.invoke({method:'POST',path:'/api/count'}).body.value,2);
+});
+
+test('a host call that fails rolls the request back, even when the handler catches it and answers',t=>{
+  const b=backend(manifest([
+    {method:'POST',path:'/api/fail',handler:'creditThenFail'},
+    {method:'POST',path:'/api/undo',handler:'creditThenUndo'},
+    {method:'POST',path:'/api/refuse',handler:'creditThenRefuse'},
+    {method:'GET',path:'/api/value',handler:'value',transaction:'read'},
+  ]));
+  t.after(b.close);
+  const value=()=>b.invoke({method:'GET',path:'/api/value'}).body.value;
+  assert.equal(value(),0);
+  // The handler wrote, a later statement failed, and it caught the failure
+  // and answered 400. Committing left the first write in the database: the
+  // half of a transfer that worked.
+  const failed=b.invoke({method:'POST',path:'/api/fail'});
+  assert.deepEqual(failed,{status:500,body:{error:'The request could not be completed.',code:'host_error'}});
+  assert.equal(value(),0,'the write before the failed call was committed');
+  // Asking for the rollback keeps the handler's own answer.
+  const undone=b.invoke({method:'POST',path:'/api/undo'});
+  assert.deepEqual(undone,{status:409,body:{error:'undone'}});
+  assert.equal(value(),0);
+  // An error answer with no failed call still commits, as the contract says:
+  // a wrong guess keeps its attempt counter.
+  assert.equal(b.invoke({method:'POST',path:'/api/refuse'}).status,422);
+  assert.equal(value(),10);
+});
+
+test('softn.time.age takes UTC when no zone is given',t=>{
+  const timed=manifest([{method:'GET',path:'/api/age',handler:'age'}]);
+  timed.server.requires.capabilities=['sql','time'];
+  const b=backend(timed,{capabilities:['sql','time']});
+  t.after(b.close);
+  const r=b.invoke({method:'GET',path:'/api/age'});
+  assert.equal(r.status,200,JSON.stringify(r));
+  assert.ok(Number.isInteger(r.body.plain)&&r.body.plain>=26,JSON.stringify(r.body));
+  assert.equal(r.body.plain,r.body.zoned);
+  assert.equal(r.body.bad,-1);
+});
+
+test('config.server.requestsPerMinute sets the rate limit, and 0 turns it off',t=>{
+  const limited=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}],{config:{server:{requestsPerMinute:2}}}));
+  t.after(limited.close);
+  const ping=b=>b.invoke({method:'GET',path:'/api/ping',client_ip:'203.0.113.9'}).status;
+  assert.deepEqual([ping(limited),ping(limited),ping(limited)],[200,200,429]);
+  // Another address has its own count.
+  assert.equal(limited.invoke({method:'GET',path:'/api/ping',client_ip:'203.0.113.10'}).status,200);
+
+  const open=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}],{config:{server:{requestsPerMinute:0}}}));
+  t.after(open.close);
+  assert.deepEqual([ping(open),ping(open),ping(open),ping(open)],[200,200,200,200]);
+
+  // Something that is not a whole number is not a limit: the default stands.
+  const odd=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}],{config:{server:{requestsPerMinute:'2'}}}));
+  t.after(odd.close);
+  assert.deepEqual([ping(odd),ping(odd),ping(odd)],[200,200,200]);
 });
 
 test('a database another request holds is a retryable busy answer, not a configuration fault',async t=>{
