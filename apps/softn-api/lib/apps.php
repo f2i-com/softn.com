@@ -238,7 +238,15 @@ final class Apps
         $card['ratingBreakdown'] = $breakdown;
         $card['remixList'] = $remixes;
         $card['lineage'] = $lineage;
-        $card['storage'] = Storage::summary($slug);
+        // An app's page is not its storage: a store that will not open
+        // (see Db::open) is reported here as unavailable rather than taking
+        // the app's detail, and the page built on it, down with it.
+        try {
+            $card['storage'] = Storage::summary($slug);
+        } catch (ApiError | PDOException $e) {
+            error_log("softn-api: the storage of $slug could not be summarised: " . $e->getMessage());
+            $card['storage'] = ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0, 'diskBytes' => 0, 'unavailable' => true];
+        }
         $card['manifest'] = $card['external'] ? null : self::manifestSummary($slug, (int) $row['latest_version']);
         return $card;
     }
@@ -358,6 +366,37 @@ final class Apps
     }
 
     /**
+     * A collection's storage policy is fixed when the app is published, and
+     * a publisher's next version does not get to change it.
+     *
+     * The policy in force is read from the app's current row, and a new
+     * version replaced that row's declaration with its own. So an app
+     * published with `notes: private` — "nobody else reads them, the
+     * publisher included" — could be given a version declaring `notes:
+     * public`, and every visitor's private records were readable by anyone
+     * from that upload on; the same move turned `append-only` and
+     * `owner-write` into `public`. The comparison is of what each collection
+     * comes to, named or through `*`, so re-spelling the same rules is not a
+     * change. An app that had no storage made no promise and may add it; the
+     * operator may change anything.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $info
+     */
+    private static function refuseChangedPolicies(array $row,array $info): void {
+        $had=json_decode((string)($row['capabilities']??'[]'),true);
+        if(!is_array($had)||!in_array('storage',$had,true))return;
+        $before=Storage::policiesOf($row);$after=is_array($info['storagePolicies']??null)?$info['storagePolicies']:[];
+        $effective=fn(array $policies,string $name):string=>$policies[$name]??$policies['*']??'public';
+        $changed=[];
+        foreach(array_unique(array_merge(array_keys($before),array_keys($after),['*'])) as $name){
+            $name=(string)$name;
+            if($effective($before,$name)!==$effective($after,$name))$changed[]=$name==='*'?'every other collection (*)':$name;
+        }
+        if($changed)throw new ApiError(400,'This version changes the storage policy of '.implode(', ',$changed).'. A collection\'s policy is fixed when the app is published, because people have stored records under it; keep the policies as they are, or publish the change as a new app.');
+    }
+
+    /**
      * A new version. The operator's `trusted` goes with the old one unless
      * the operator is the one uploading (`$byAdmin`): trust is their word
      * about the bundle they looked at, and a publisher's next upload — new
@@ -371,6 +410,7 @@ final class Apps
         $row=self::row($slug,true);$info=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);
         $next=(int)$row['latest_version']+1;
         if($next>(int)Config::get('maxVersionsPerApp',50))throw new ApiError(400,'This app has reached its version limit.');
+        if(!$byAdmin)self::refuseChangedPolicies($row,$info);
         $dir=self::dir($slug);$file="v$next.softn";
         self::copyBundle($bundlePath,"$dir/$file");
         $icon=self::storeIcon($dir,$info['icon'])??$row['icon'];$now=time();

@@ -108,11 +108,20 @@ SQL);
         ];
     }
 
-    /** The bytes an app's data takes: every record's collection, id and JSON, and every key and value. */
+    /**
+     * The bytes an app's data takes: every record's collection, id and JSON,
+     * and every key and value.
+     *
+     * Bytes, which is why each column is cast: SQLite's LENGTH of text is a
+     * count of characters. What is about to be written is measured with
+     * strlen, in bytes, so the two sides of the quota disagreed for anything
+     * but ASCII, and a store of emoji or CJK text was admitted at three to
+     * four times `maxDatabaseBytes`.
+     */
     private static function usedBytes(PDO $pdo): int
     {
-        $records = (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(collection) + LENGTH(id) + LENGTH(data)), 0) FROM records')->fetchColumn();
-        $kv = (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0) FROM kv')->fetchColumn();
+        $records = (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(CAST(collection AS BLOB)) + LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(data AS BLOB))), 0) FROM records')->fetchColumn();
+        $kv = (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(CAST(key AS BLOB)) + LENGTH(CAST(value AS BLOB))), 0) FROM kv')->fetchColumn();
         return $records + $kv;
     }
 
@@ -448,7 +457,7 @@ SQL);
         $encoded = json_encode($data, JSON_UNESCAPED_UNICODE);
         $now = time();
         return self::write($pdo, function () use ($pdo, $c, $id, $data, $encoded, $now, $limits, $ctx) {
-            $stmt = $pdo->prepare('SELECT created_at, owner, LENGTH(data) AS bytes FROM records WHERE collection = ? AND id = ?');
+            $stmt = $pdo->prepare('SELECT created_at, owner, LENGTH(CAST(data AS BLOB)) AS bytes FROM records WHERE collection = ? AND id = ?');
             $stmt->execute([$c, $id]);
             $existing = $stmt->fetch();
             if ($existing === false) {
@@ -709,7 +718,7 @@ SQL);
         if ($encoded === false || strlen($encoded) > (int) $limits['maxRecordBytes']) throw new ApiError(413, 'A value is at most ' . (int) ($limits['maxRecordBytes'] / 1024) . ' KB.');
         $now = time();
         return self::write($pdo, function () use ($pdo, $key, $encoded, $now, $limits, $body) {
-            $existing = $pdo->prepare('SELECT LENGTH(key) + LENGTH(value) FROM kv WHERE key = ?');
+            $existing = $pdo->prepare('SELECT LENGTH(CAST(key AS BLOB)) + LENGTH(CAST(value AS BLOB)) FROM kv WHERE key = ?');
             $existing->execute([$key]);
             $replacing = $existing->fetchColumn();
             if ($replacing === false) {

@@ -46,8 +46,13 @@ final class Backup
 {
     public const MANIFEST = 'softn-backup.json';
     public const SCHEMA = 1;
-    /** Names at the top of data/ that a restore may find in an "empty" destination. */
-    private const HARMLESS = ['catalog.lock', 'config.lock', 'README.txt'];
+    /**
+     * Names at the top of data/ that a restore may find in an "empty"
+     * destination: what a fresh deployment ships there (the deny rule and the
+     * note beside it) and the lock files a first request leaves. A restore
+     * replaces the ones the archive also holds and keeps the rest.
+     */
+    private const HARMLESS = ['catalog.lock', 'config.lock', 'ratelimits.lock', 'seed.lock', 'README.txt', '.htaccess'];
 
     // ── Command line ───────────────────────────────────────────────────────
 
@@ -381,6 +386,7 @@ final class Backup
         // Stage beside the destination, so the final step is renames on one volume.
         $staging = "$parent/.softn-restore-" . bin2hex(random_bytes(4));
         if (!mkdir($staging, 0775, true)) throw new RuntimeException("cannot create $staging");
+        $keepStaging = false;
         try {
             foreach ($manifest['files'] as $f) {
                 $to = "$staging/{$f['path']}";
@@ -389,19 +395,18 @@ final class Backup
                 if (filesize($to) !== $f['bytes'] || hash_file('sha256', $to) !== $f['sha256']) throw new Refused("{$f['path']} did not extract as the manifest says");
             }
             $locks = self::lock($dest);
+            // From here the staged files are the only verified copy of the
+            // archive on disk and the messages below point at them, so a
+            // failure leaves them where they are.
+            $keepStaging = true;
             try {
-                if ($force) self::clear($dest);
-                foreach (scandir($staging) ?: [] as $name) {
-                    if ($name === '.' || $name === '..') continue;
-                    if (file_exists("$dest/$name")) throw new RuntimeException("$dest/$name appeared while restoring; the staged files are at $staging");
-                    if (!rename("$staging/$name", "$dest/$name")) throw new RuntimeException("cannot move $name into $dest; the staged files are at $staging");
-                }
+                self::swapIn($staging, $dest, $parent, $force);
             } finally {
                 self::unlock($locks);
             }
             @rmdir($staging);
         } catch (Throwable $e) {
-            self::removeTree($staging, false);
+            if (!$keepStaging) self::removeTree($staging, false);
             throw $e;
         }
         self::say(sprintf('restored %d files (%s) into %s', count($manifest['files']), self::human($manifest['bytes']), $dest));
@@ -409,12 +414,54 @@ final class Backup
     }
 
     /** Empty a destination for --force: everything but the lock files and README.txt. */
-    private static function clear(string $dest): void
+    /**
+     * Move the staged files into the destination, and with `--force` take
+     * what was there out.
+     *
+     * Nothing the destination held is deleted until every staged entry is in
+     * place: each is moved aside first, and put back if a later step fails.
+     * The earlier order — clear the destination, then move — deleted a live
+     * catalogue and then stopped at the first name both sides had. That name
+     * was always there: an export carries `README.txt` (and `.htaccess`),
+     * which the clearing step deliberately kept, so every forced restore
+     * into a deployed data folder emptied it and exited with an error, and
+     * the staged copy the message pointed to was removed on the way out.
+     */
+    private static function swapIn(string $staging, string $dest, string $parent, bool $force): void
     {
-        foreach (scandir($dest) ?: [] as $name) {
-            if ($name === '.' || $name === '..' || in_array($name, self::HARMLESS, true)) continue;
-            self::removeTree("$dest/$name", true);
+        $aside = "$parent/.softn-replaced-" . bin2hex(random_bytes(4));
+        if (!mkdir($aside, 0775, true)) throw new RuntimeException("cannot create $aside; the staged files are at $staging");
+        $retired = [];
+        $placed = [];
+        try {
+            foreach (scandir($staging) ?: [] as $name) {
+                if ($name === '.' || $name === '..') continue;
+                $target = "$dest/$name";
+                if (file_exists($target) || is_link($target)) {
+                    if (!$force && !in_array($name, self::HARMLESS, true)) throw new RuntimeException("$target appeared while restoring; the staged files are at $staging");
+                    if (!rename($target, "$aside/$name")) throw new RuntimeException("cannot move the existing $name out of $dest; the staged files are at $staging");
+                    $retired[] = $name;
+                }
+                if (!rename("$staging/$name", $target)) throw new RuntimeException("cannot move $name into $dest; the staged files are at $staging");
+                $placed[] = $name;
+            }
+            if ($force) {
+                // What the destination held and the archive does not.
+                foreach (scandir($dest) ?: [] as $name) {
+                    if ($name === '.' || $name === '..' || in_array($name, self::HARMLESS, true) || in_array($name, $placed, true)) continue;
+                    if (!rename("$dest/$name", "$aside/$name")) throw new RuntimeException("cannot move the existing $name out of $dest; the staged files are at $staging");
+                    $retired[] = $name;
+                }
+            }
+        } catch (Throwable $e) {
+            // As it was: the staged entries back to the staging folder, the
+            // destination's own back into place.
+            foreach (array_reverse($placed) as $name) @rename("$dest/$name", "$staging/$name");
+            foreach (array_reverse($retired) as $name) @rename("$aside/$name", "$dest/$name");
+            @rmdir($aside);
+            throw $e;
         }
+        self::removeTree($aside, false);
     }
 
     private static function removeTree(string $path, bool $strict): void

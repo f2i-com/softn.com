@@ -209,6 +209,84 @@ test('restore refuses a destination with data in it unless --force, which replac
   assert.match(again.stderr, /exists/);
 });
 
+test('restore into a deployed data folder: what the site ships there is not in the way, and --force replaces a live catalogue', skip, async () => {
+  // The site build puts `.htaccess` and `README.txt` in data/, so every real
+  // data folder has them and every export carries them. `--force` used to
+  // clear the destination, keep README.txt, and then stop at README.txt as
+  // "appeared while restoring": the live catalogue was gone, the restore had
+  // not happened, and the staged copy the message named had been removed.
+  const { s, slugs } = await seed();
+  fs.writeFileSync(path.join(s.dataDir, '.htaccess'), 'Require all denied\n');
+  fs.writeFileSync(path.join(s.dataDir, 'README.txt'), 'the source note\n');
+  const before = await inventory(s.base, slugs);
+  const work = scratch();
+  const archive = path.join(work, 'backup.zip');
+  assert.equal(backup(['export', archive, '--data', s.dataDir]).status, 0);
+  const shipped = Object.keys(unzipSync(fs.readFileSync(archive)));
+  assert.ok(shipped.includes('.htaccess') && shipped.includes('README.txt'), 'the export carries what the site ships in data/');
+
+  // A fresh deployment: only what the build and a first request leave.
+  const fresh = path.join(work, 'fresh');
+  fs.mkdirSync(fresh);
+  fs.writeFileSync(path.join(fresh, '.htaccess'), 'Require all denied\n');
+  fs.writeFileSync(path.join(fresh, 'README.txt'), 'the destination note\n');
+  for (const f of ['catalog.lock', 'config.lock', 'ratelimits.lock', 'seed.lock']) fs.writeFileSync(path.join(fresh, f), '');
+  const plain = backup(['restore', archive, '--into', fresh]);
+  assert.equal(plain.status, 0, plain.stderr + plain.stdout);
+  assert.match(plain.stdout, /inventory matches/);
+  assert.equal(fs.readFileSync(path.join(fresh, 'README.txt'), 'utf8'), 'the source note\n', "the archive\'s copy replaced the one that was there");
+
+  // A live catalogue with its own apps, configuration and shipped files.
+  const live = path.join(work, 'live');
+  fs.mkdirSync(path.join(live, 'apps/old-app'), { recursive: true });
+  fs.writeFileSync(path.join(live, 'apps/old-app/app.json'), '{"schemaVersion":1,"app":{"name":"Old"}}');
+  fs.writeFileSync(path.join(live, 'config.json'), '{"adminKey":"the-old-key"}');
+  fs.writeFileSync(path.join(live, 'only-here.txt'), 'not in the archive');
+  fs.writeFileSync(path.join(live, '.htaccess'), 'Require all denied\n');
+  fs.writeFileSync(path.join(live, 'README.txt'), 'the destination note\n');
+  fs.writeFileSync(path.join(live, 'catalog.lock'), '');
+  const forced = backup(['restore', archive, '--into', live, '--force']);
+  assert.equal(forced.status, 0, forced.stderr + forced.stdout);
+  assert.match(forced.stdout, /inventory matches/);
+  assert.deepEqual(fs.readdirSync(path.join(live, 'apps')).sort(), [...slugs].sort(), "the archive\'s apps, and only those");
+  assert.ok(!fs.existsSync(path.join(live, 'only-here.txt')), 'what the archive does not hold is gone');
+  assert.notEqual(fs.readFileSync(path.join(live, 'config.json'), 'utf8'), '{"adminKey":"the-old-key"}');
+  assert.ok(fs.existsSync(path.join(live, '.htaccess')), 'the deny rule is still there');
+  assert.ok(!fs.readdirSync(work).some((n) => n.startsWith('.softn-restore-') || n.startsWith('.softn-replaced-')), 'nothing staged or set aside is left behind');
+
+  // And it serves what the source served.
+  const t = await startServer({ env: { SOFTN_DATA_DIR: live }, prefix: 'softn-backup-live-' });
+  servers.push(t);
+  assert.deepEqual(await inventory(t.base, slugs), before);
+});
+
+test('the shipped files do not make an occupied destination look empty', skip, async () => {
+  const { s } = await seed();
+  const work = scratch();
+  const archive = path.join(work, 'backup.zip');
+  assert.equal(backup(['export', archive, '--data', s.dataDir]).status, 0);
+
+  // README.txt alone is an empty destination...
+  const dest = path.join(work, 'dest');
+  fs.mkdirSync(dest);
+  fs.writeFileSync(path.join(dest, 'README.txt'), 'the destination note\n');
+  const accepted = backup(['restore', archive, '--into', dest]);
+  assert.equal(accepted.status, 0, accepted.stderr);
+
+  // ...and README.txt beside an app is not: refused, and left as it was.
+
+  const again = path.join(work, 'again');
+  fs.mkdirSync(path.join(again, 'apps/kept'), { recursive: true });
+  fs.writeFileSync(path.join(again, 'apps/kept/app.json'), '{"schemaVersion":1,"app":{"name":"Kept"}}');
+  fs.writeFileSync(path.join(again, 'README.txt'), 'the destination note\n');
+  const stopped = backup(['restore', archive, '--into', again]);
+  assert.equal(stopped.status, 2, stopped.stderr);
+  assert.match(stopped.stderr, /not empty/);
+  assert.deepEqual(fs.readdirSync(again).sort(), ['README.txt', 'apps']);
+  assert.deepEqual(fs.readdirSync(path.join(again, 'apps')), ['kept']);
+  assert.equal(fs.readFileSync(path.join(again, 'README.txt'), 'utf8'), 'the destination note\n');
+});
+
 test('a tar archive round-trips the same way, and a byte flipped inside it is refused', skip, async () => {
   const { s, a, slugs } = await seed();
   const before = await inventory(s.base, slugs);

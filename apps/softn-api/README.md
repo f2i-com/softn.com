@@ -419,8 +419,12 @@ difference: a file missing or added, a byte out of place, a manifest edited.
 `restore` verifies first and writes nothing on failure; then it extracts
 into a staging folder beside the destination, hashes what landed, takes the
 destination's catalogue lock and moves the files in. The destination must
-be absent or empty (`catalog.lock`, `config.lock` and `README.txt` do not
-count); `--force` replaces what is there. The restored folder is booted
+be absent or empty (the lock files, and the `.htaccess` and `README.txt` the
+site build ships in `data/`, do not count, and the archive's copies replace
+them); `--force` replaces what is there. Nothing the destination held is
+deleted until every restored file is in place: each is moved aside first and
+put back if a step fails, and the staged files are kept so the restore can be
+finished by hand. The restored folder is booted
 once, which rebuilds the bundle cache, and the inventory the catalogue then
 lists is compared with the one the archive promised — every slug, every
 version's file and digest — so "restored" means "serves the same apps".
@@ -591,7 +595,9 @@ latest version, which the next publish moves: it is `no-cache, must-revalidate`,
 so every use asks the server, and the answer is usually the 304. `bundle.softn?v=N`
 names one version whose bytes are settled: it is `public, max-age=86400` — a day,
 not immutable, because an unpublish or an admin purge has to reach every cache
-within a day, and because the seed can replace a demo's v1 in place.
+within a day, and because the seed can replace a demo's v1 in place. An empty
+`v=` is the same as none; a `v` that is not a whole number from 1 (`latest`,
+`0`) answers 400 rather than being read as version 1.
 
 `HEAD` on either URL returns the status and headers a `GET` would, `Content-Length`
 and `ETag` included, with no body. `Range` requests are not implemented: the
@@ -635,7 +641,12 @@ collection in the same `storage` entry and fixed at publication:
 | `private` | each visitor, their own records only | anyone with a visitor token | whoever added it |
 | `publisher` | the edit key only | the edit key only | the edit key only |
 
-`*` sets the policy for every collection not named. Clearing a whole
+`*` sets the policy for every collection not named. A new version from the
+publisher may re-spell the declaration but not change what any collection
+comes to, named or through `*`: people stored records under the policy they
+were shown, so `POST .../versions` answers 400 naming the collections that
+differ. An app that had no storage may add it, and the operator's upload
+(`X-Admin-Key`) may change anything. Clearing a whole
 collection needs the edit key under every policy. The key-value store has no
 policies and is always public. Records carry `mine: true` when the visitor
 asking added them, which is what an owner-write interface needs to know.
@@ -689,8 +700,12 @@ warm catalogue inspects no bundle, that a change re-inspects only its own,
 that the sweep is bounded, and that listing, cards and details answer
 exactly as they did before the round-2 repair (`test/fixtures/catalog`,
 whose `make.mjs` regenerates `expected.json` from a known-good revision);
-`backup.test.mjs` export, verify and restore, tampered archives and the
-`--force` rule; `review.test.mjs` a slow body holding no catalogue lock,
+`backup.test.mjs` export, verify and restore, tampered archives, the
+`--force` rule and a restore into a deployed data folder;
+`publishing-integrity.test.mjs` policies a new version may not change, a
+publish or remix whose picture is refused creating nothing, `?v=`, the
+storage quota in bytes, a storage file that is not a database, and the demo
+sync leaving a visitor's app alone; `review.test.mjs` a slow body holding no catalogue lock,
 trust dropped by a publisher's new version, one rating per /64, duplicate
 archive entries, the extension report, and no file in `api/` or a dotfile
 served as itself; `user-content.test.mjs` the SVG icon check against

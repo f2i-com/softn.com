@@ -154,15 +154,22 @@ final class Db
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             ]);
+            // Inside the same try: opening a SQLite file reads nothing, so a
+            // file that is not a database (truncated, half restored) is only
+            // found out by the first statement, and that used to be one of
+            // these, outside it — a 500 from the generic handler instead of
+            // the answer written below. The timeout comes first, so the
+            // switch to WAL waits for another connection instead of failing
+            // at once while one is closing.
+            $pdo->exec('PRAGMA busy_timeout=5000');
+            $pdo->exec('PRAGMA journal_mode=WAL');
+            $pdo->exec('PRAGMA synchronous=NORMAL');
+            $pdo->exec('PRAGMA foreign_keys=ON');
         } catch (PDOException $e) {
             // PDO's message carries the file's path; it goes to the log only.
             error_log('softn-api: the database cannot be opened: ' . $e->getMessage());
             throw new ApiError(503, 'The database cannot be opened.');
         }
-        $pdo->exec('PRAGMA journal_mode=WAL');
-        $pdo->exec('PRAGMA synchronous=NORMAL');
-        $pdo->exec('PRAGMA foreign_keys=ON');
-        $pdo->exec('PRAGMA busy_timeout=5000');
         return $pdo;
     }
     /**

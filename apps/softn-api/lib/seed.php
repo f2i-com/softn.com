@@ -66,7 +66,10 @@ final class Seed
 
         // Bring seeded app categories up to date
         foreach (self::CATEGORY as $slug => $cat) {
-            if(isset(Catalog::all()[$slug]) && Catalog::all()[$slug]['category']!==$cat)Catalog::patch($slug,['category'=>$cat]);
+            // Seeded rows only: a visitor's app that happens to hold one of
+            // these slugs keeps the category its publisher chose.
+            $row=Catalog::all()[$slug]??null;
+            if($row!==null && $row['source']==='seed' && $row['category']!==$cat)Catalog::patch($slug,['category'=>$cat]);
         }
 
         $existing=array_values(Catalog::all());
@@ -107,6 +110,14 @@ final class Seed
                     'tags' => self::TAGS[$id] ?? (is_string($entry['tags'] ?? null) ? $entry['tags'] : ''),
                     'primary' => is_string($entry['primary'] ?? null) ? $entry['primary'] : null,
                 ];
+
+                // The slug belongs to an app the seed did not create: a
+                // visitor published under a plain name (`notes`, `snake`)
+                // before a release added a demo with that id. Updating it
+                // replaced their bundle and description with the demo's and
+                // left their edit key on it. It is theirs; the demo goes
+                // unseeded here until the operator makes room for it.
+                if (isset($existingMap[$id]) && $existingMap[$id]['source'] !== 'seed') continue;
 
                 if (isset($existingMap[$id])) {
                     // Check if bundle on disk was updated (size or sha256 changed)

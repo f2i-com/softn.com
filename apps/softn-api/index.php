@@ -202,6 +202,25 @@ function server_timing(): void
  * route alike: the GET routes used to skip the check the POST made, and a
  * query through them created storage.sqlite in any app's folder.
  */
+/**
+ * The version a request names with `?v=`, or null for the latest.
+ *
+ * `?v=`, `?v=latest` and `?v=0` used to be read as version 1 (an integer
+ * cast, then at least 1) and answered with the one-day public cache a
+ * numbered version gets: an old bundle, served as the pinned one, under a URL
+ * the caller meant as "the current one". An empty value is no version named;
+ * anything else that is not a whole number from 1 is refused.
+ */
+function requested_version(Request $req): ?int
+{
+    $v = $req->query['v'] ?? null;
+    if ($v === null || $v === '') return null;
+    if (!is_string($v) || !ctype_digit($v) || strlen($v) > 9 || (int) $v < 1) {
+        throw new ApiError(400, 'v must be a version number, 1 or more; leave it out for the latest.');
+    }
+    return (int) $v;
+}
+
 function storage_app(string $given): string
 {
     $slug = Apps::resolveSlug($given);
@@ -337,6 +356,12 @@ function handle(string $handler, array $args, Request $req): Response
             }
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent. Upload a .softn as the multipart field "bundle", as the raw request body, or as JSON {"bundleBase64": ...}.');
+            // The picture is checked before the app exists. Read afterwards,
+            // a picture that was refused (not an image, too large) answered
+            // 400 for a publish that had already happened: the app was
+            // listed, its edit key was never sent to anyone, and the retry
+            // published a second one.
+            $image = $req->imageUpload();
             $parent = $req->field('parent');
             $parentSlug = is_string($parent) && $parent !== '' ? Apps::resolveParent($parent) : null;
             $result = Apps::create($file, [
@@ -344,7 +369,6 @@ function handle(string $handler, array $args, Request $req): Response
                 'category' => $req->field('category'), 'tags' => $req->field('tags'), 'notes' => $req->field('notes'),
                 'primary' => $req->field('primary'),
             ], $parentSlug !== null ? 'remix' : ($req->contentType() === 'multipart/form-data' ? 'upload' : 'api'), $parentSlug);
-            $image = $req->imageUpload();
             if ($image !== null) {
                 Apps::setThumbnail($result['app']['slug'], $image);
                 $result['app'] = Apps::card(Apps::row($result['app']['slug']));
@@ -385,7 +409,7 @@ function handle(string $handler, array $args, Request $req): Response
             Seed::ifEmpty();
             $slug = Apps::resolveSlug($args[0]);
             $row = Apps::requireBundle($slug);
-            $v = isset($req->query['v']) ? max(1, (int) $req->query['v']) : null;
+            $v = requested_version($req);
             $ver = Apps::version($slug, $v);
             $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
             if (!is_file($path)) throw new ApiError(404, 'The bundle file is missing.');
@@ -440,7 +464,7 @@ function handle(string $handler, array $args, Request $req): Response
         case 'source': {
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireBundle($slug);
-            $v = isset($req->query['v']) ? max(1, (int) $req->query['v']) : null;
+            $v = requested_version($req);
             $ver = Apps::version($slug, $v);
             $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
             return Response::json(['ok' => true, 'version' => (int) $ver['version']] + Bundle::listSource($path), 200, ['Cache-Control' => 'public, max-age=300']);
@@ -473,8 +497,10 @@ function handle(string $handler, array $args, Request $req): Response
         case 'remix': {
             if (($req->field('website') ?? '') !== '') throw new ApiError(400, 'The remix was not accepted.');
             Db::rateLimit('publish', Config::limitKey($req->ip));
-            // Read before the catalogue is opened; see addVersion.
+            // Read before the catalogue is opened; see addVersion. The
+            // picture too, and before the remix exists: see publish.
             $file = $req->bundleFile();
+            $image = $req->imageUpload();
             $parentSlug = Apps::resolveSlug($args[0]);
             $parent = Apps::requireBundle($parentSlug);
             $copied = false;
@@ -493,7 +519,6 @@ function handle(string $handler, array $args, Request $req): Response
                 'notes' => $req->field('notes') ?: ($copied ? 'Remixed from ' . $parent['name'] : ''),
                 'primary' => $req->field('primary') ?: $parent['primary_color'],
             ], 'remix', $parentSlug);
-            $image = $req->imageUpload();
             if ($image !== null) {
                 Apps::setThumbnail($result['app']['slug'], $image);
                 $result['app'] = Apps::card(Apps::row($result['app']['slug']));
