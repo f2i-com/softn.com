@@ -7,6 +7,7 @@
 
 import React, { useState, useCallback, useId } from 'react';
 import { focusRing, isFocusVisible } from './focus';
+import { choice } from '../utils/choice';
 
 export interface CheckboxProps {
   /** Input name */
@@ -73,7 +74,7 @@ export function Checkbox({
     }
   }, [indeterminate]);
 
-  const sizes = sizeValues[size];
+  const sizes = choice(sizeValues, size, 'md');
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {

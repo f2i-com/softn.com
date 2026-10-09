@@ -7,6 +7,7 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { choice } from '../utils/choice';
 
 export interface InputProps {
   /** Input id (generated when omitted) */
@@ -191,7 +192,7 @@ export function Input({
   const [internalValue, setInternalValue] = useState(value ?? defaultValue ?? '');
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
-  const sizeStyle = sizeConfig[size];
+  const sizeStyle = choice(sizeConfig, size, 'md');
 
   // Determine if this is a search input
   const isSearch = type === 'search';

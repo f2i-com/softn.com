@@ -1485,6 +1485,8 @@ export function Scene3D({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Whether the browser gave the scene a WebGL context to draw with.
+  const [noWebGL, setNoWebGL] = useState(false);
   // With `fill`, the box the scene sits in is the size; measured, not declared.
   const [measured, setMeasured] = useState<{ w: number; h: number } | null>(null);
   useEffect(() => {
@@ -1592,7 +1594,19 @@ export function Scene3D({
       pitchRef,
     };
 
-    const renderer = new THREE.WebGLRenderer({ antialias, alpha });
+    // A browser with WebGL switched off, blocked by policy, or out of
+    // contexts gives none, and three throws from the constructor. That went
+    // to the page's error box (`<Scene3D> Error creating WebGL context.`);
+    // the scene says what it needs instead, and the rest of the page is
+    // untouched.
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias, alpha });
+    } catch {
+      setNoWebGL(true);
+      return;
+    }
+    setNoWebGL(false);
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, Math.max(0.5, maxPixelRatio)));
     if (shadows) {
@@ -2926,7 +2940,28 @@ export function Scene3D({
       }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-      {crosshair && (
+      {noWebGL && (
+        <div
+          role="note"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+            boxSizing: 'border-box',
+            textAlign: 'center',
+            fontSize: '0.875rem',
+            lineHeight: 1.4,
+            color: 'var(--color-text-muted, inherit)',
+            background: 'var(--color-surface, transparent)',
+          }}
+        >
+          This 3D view needs WebGL, which this browser has not made available.
+        </div>
+      )}
+      {crosshair && !noWebGL && (
         <div
           style={{
             position: 'absolute',

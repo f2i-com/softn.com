@@ -7,6 +7,7 @@
 import * as React from 'react';
 import { chartColor } from '../theme/chart-palette';
 import { usePrefersReducedMotion } from '../utils/motion';
+import { formatterOr } from './series';
 
 export interface GaugeThreshold {
   value: number;
@@ -139,11 +140,12 @@ export function GaugeChart({
   animated = true,
   width = 200,
   height,
-  formatValue = (v) => String(Math.round(v)),
+  formatValue: givenFormatValue,
   ariaLabel,
   className = '',
   style,
 }: GaugeChartProps) {
+  const formatValue = formatterOr<NonNullable<GaugeChartProps['formatValue']>>(givenFormatValue, (v) => String(Math.round(v)));
   const reducedMotion = usePrefersReducedMotion();
   const animate = animated && !reducedMotion;
   // Derive height from variant if not provided

@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { choice } from '../utils/choice';
 
 export interface AlertProps {
   /** Alert variant */
@@ -200,7 +201,7 @@ export function Alert({
 }: AlertProps): React.ReactElement {
   const [isVisible, setIsVisible] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
-  const colors = variantColors[variant];
+  const colors = choice(variantColors, variant, 'info');
 
   const handleDismiss = useCallback(() => {
     setIsVisible(false);

@@ -9,6 +9,7 @@ import React from 'react';
 import { isSafeUrl } from '@softn/core';
 import { cssPaint } from '../utils/egress';
 import { usePrefersReducedMotion } from '../utils/motion';
+import { choice } from '../utils/choice';
 
 export interface AvatarProps {
   /** Image source */
@@ -244,7 +245,7 @@ export function Avatar({
     'bottom-left': { bottom: statusOffset, left: statusOffset },
   };
 
-  const statusConfig = statusConfigs[status];
+  const statusConfig = choice(statusConfigs, status, 'none');
   const statusStyle: React.CSSProperties = {
     position: 'absolute',
     width: statusSize,

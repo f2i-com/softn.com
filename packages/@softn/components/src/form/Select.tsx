@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo, useId } from 'react';
+import { choice } from '../utils/choice';
 
 export interface SelectOption {
   value: string;
@@ -168,7 +169,7 @@ export function Select({
   const value = controlledValue !== undefined ? controlledValue : internalValue;
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
-  const config = sizeConfig[size];
+  const config = choice(sizeConfig, size, 'md');
 
   // Get all flat options for filtering
   // Normalised once, here, and used by everything below.
@@ -839,7 +840,8 @@ export function Select({
           onBlur?.();
         }}
       >
-        <input type="hidden" name={name} value={Array.isArray(value) ? value.join(',') : value} />
+        {/* `value={choice}` is null until something is chosen: an empty field, not a null handed to React. */}
+        <input type="hidden" name={name} value={Array.isArray(value) ? value.join(',') : (value ?? '')} />
         <div
           ref={triggerRef}
           tabIndex={disabled ? -1 : 0}

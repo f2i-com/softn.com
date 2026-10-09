@@ -7,6 +7,7 @@
 
 import React, { useState, useCallback, useId } from 'react';
 import { focusRing, isFocusVisible } from './focus';
+import { choice } from '../utils/choice';
 
 export interface SwitchProps {
   /** Input name */
@@ -89,7 +90,7 @@ export function Switch({
   const currentChecked = isControlled ? checked : isChecked;
   const descriptionId = useId();
 
-  const sizes = sizeValues[size];
+  const sizes = choice(sizeValues, size, 'md');
 
   const handleChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {

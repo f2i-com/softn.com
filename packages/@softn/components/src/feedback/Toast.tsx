@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { choice } from '../utils/choice';
 
 export interface ToastProps {
   /** Toast variant */
@@ -166,7 +167,7 @@ export function Toast({
   // Always the latest onClose, without making the countdown depend on its identity.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  const styles = variantStyles[variant];
+  const styles = choice(variantStyles, variant, 'info');
 
   useEffect(() => {
     setVisible(isVisible);

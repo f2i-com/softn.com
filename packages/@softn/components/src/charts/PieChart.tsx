@@ -6,7 +6,7 @@
  */
 
 import * as React from 'react';
-import { describeChart, finiteNumber, normaliseArray } from './series';
+import { describeChart, finiteNumber, formatterOr, normaliseArray } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface PieDataPoint {
@@ -138,13 +138,15 @@ export function PieChart({
   showLegend = true,
   showValues = false,
   centerLabel,
-  formatValue = (v) => String(v),
-  formatPercent = (v) => `${v.toFixed(1)}%`,
+  formatValue: givenFormatValue,
+  formatPercent: givenFormatPercent,
   interactive = false,
   ariaLabel,
   className = '',
   style,
 }: PieChartProps) {
+  const formatValue = formatterOr<NonNullable<PieChartProps['formatValue']>>(givenFormatValue, (v) => String(v));
+  const formatPercent = formatterOr<NonNullable<PieChartProps['formatPercent']>>(givenFormatPercent, (v) => `${v.toFixed(1)}%`);
   // Data that has not arrived yet is an empty chart, not a throw.
   // A value that is not a number counts as nothing: a NaN would carry into
   // every later slice's angle.

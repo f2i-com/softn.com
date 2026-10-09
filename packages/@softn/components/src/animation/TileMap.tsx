@@ -12,17 +12,17 @@ import {ViewportTileMap} from './ViewportTileMap';
 
 export interface TileMapProps {
   /** URL of the tileset sprite sheet */
-  src: string;
+  src?: string;
   /** Size of each tile in pixels (default 32) */
   tileSize?: number;
   /** Number of tile columns in the tileset image */
   tilesetColumns?: number;
   /** Array of tile layers (each is a 2D array of tile indices, -1 = empty) */
-  layers: number[][][];
-  /** Map width in tiles */
-  mapWidth: number;
-  /** Map height in tiles */
-  mapHeight: number;
+  layers?: number[][][];
+  /** Map width in tiles; the longest row of the layers when not given */
+  mapWidth?: number;
+  /** Map height in tiles; the most rows a layer has when not given */
+  mapHeight?: number;
   /** Display scale multiplier */
   scale?: number;
   /** Render only the clipped visible region, with a bounded screen-density backing store. */
@@ -36,6 +36,9 @@ export interface TileMapProps {
   className?: string;
 }
 
+/** A map as it is drawn: its size in tiles is known. */
+export type SizedTileMapProps = TileMapProps & { mapWidth: number; mapHeight: number };
+
 function LegacyTileMap({
   src,
   tileSize = 32,
@@ -46,7 +49,7 @@ function LegacyTileMap({
   scale = 1,
   style,
   className,
-}: TileMapProps) {
+}: SizedTileMapProps) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const imgRef = React.useRef<HTMLImageElement | null>(null);
   const loadedSrcRef = React.useRef<string>('');
@@ -141,5 +144,43 @@ function LegacyTileMap({
   );
 }
 
-export function TileMap(props:TileMapProps){return props.viewport?<ViewportTileMap {...props}/>:<LegacyTileMap {...props}/>;}
+/** A count or a size that can be drawn with: a finite number above zero, or the default. */
+function positive(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * The map with every measure it is drawn by.
+ *
+ * `mapWidth` and `mapHeight` were required and nothing said so at run time:
+ * a map given only its `layers` multiplied undefined by the tile size, the
+ * canvas was sized NaN (which React drops, with a warning), and the tiles
+ * were drawn into the 300 by 150 a canvas has by default and cut off there.
+ * A side that is not given is what the layers cover. A tile size, a scale or
+ * a column count that is null or not above zero is the default, where a
+ * default parameter only stood in for undefined.
+ */
+function sized(props: TileMapProps): SizedTileMapProps {
+  let widest = 0;
+  let tallest = 0;
+  for (const layer of Array.isArray(props.layers) ? props.layers : []) {
+    if (!Array.isArray(layer)) continue;
+    tallest = Math.max(tallest, layer.length);
+    for (const row of layer) if (Array.isArray(row)) widest = Math.max(widest, row.length);
+  }
+  return {
+    ...props,
+    tileSize: positive(props.tileSize, 32),
+    tilesetColumns: Math.floor(positive(props.tilesetColumns, 16)) || 16,
+    scale: positive(props.scale, 1),
+    mapWidth: Math.floor(positive(props.mapWidth, widest)),
+    mapHeight: Math.floor(positive(props.mapHeight, tallest)),
+  };
+}
+
+export function TileMap(props: TileMapProps) {
+  const map = sized(props);
+  return props.viewport ? <ViewportTileMap {...map} /> : <LegacyTileMap {...map} />;
+}
 export default TileMap;

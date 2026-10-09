@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { choice } from '../utils/choice';
 
 export interface SliderProps {
   /** Current value */
@@ -117,7 +118,7 @@ export function Slider({
   const value = settleValue(requestedValue, min, max, step);
   const percentage = max > min ? ((value - min) / (max - min)) * 100 : 0;
 
-  const config = sizeConfig[size];
+  const config = choice(sizeConfig, size, 'md');
   const activeColor = fillColor ?? variantColors[variant];
   const inactiveColor = trackColor ?? 'var(--color-gray-200, rgba(255, 255, 255, 0.1))';
   const thumbActiveColor = thumbColor ?? activeColor;

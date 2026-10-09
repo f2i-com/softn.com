@@ -114,7 +114,7 @@ interface Grabbed {
 }
 
 export function SortableList({
-  items = [],
+  items: givenItems,
   renderKey,
   primary,
   secondary,
@@ -125,6 +125,9 @@ export function SortableList({
   className,
   style,
 }: SortableListProps): React.ReactElement {
+  // A list that has not loaded is null, and one typed as text in an editor
+  // is a string: neither has a `.map`. Nothing to sort is an empty list.
+  const items = React.useMemo(() => (Array.isArray(givenItems) ? givenItems : []), [givenItems]);
   const [dragState, setDragState] = React.useState<DragState | null>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const itemRefs = React.useRef<Map<number, HTMLDivElement>>(new Map());

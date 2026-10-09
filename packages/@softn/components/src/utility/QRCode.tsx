@@ -37,12 +37,16 @@ export function QRCode({
   style,
   className,
 }: QRCodeProps): React.ReactElement {
+  // A level that is not one of the four (`errorCorrection={null}`, "high")
+  // threw inside the encoder; it is the default one. A number is its digits.
+  const level = (['L', 'M', 'Q', 'H'] as const).find((own) => own === errorCorrection) ?? 'M';
+  const text = typeof value === 'string' ? value : value === null || value === undefined ? '' : String(value);
   return React.createElement(QRCodeCanvas, {
-    value: value || ' ',
+    value: text || ' ',
     size,
     fgColor: color,
     bgColor,
-    level: errorCorrection,
+    level,
     marginSize: 4,
     className,
     style,

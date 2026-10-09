@@ -32,6 +32,8 @@ const sizeConfig: Record<string, { fontSize: string; padding: string; minWidth: 
 /** "Ctrl+K" as its keys. A plus that is itself the key ("Ctrl++") is kept. */
 function splitKeys(keys: string | string[]): string[] {
   if (Array.isArray(keys)) return keys.map((key) => String(key)).filter((key) => key !== '');
+  // A shortcut that has not loaded (`keys={command.shortcut}`) is no keys.
+  if (typeof keys !== 'string') return [];
   const parts: string[] = [];
   let current = '';
   for (const ch of keys) {

@@ -45,9 +45,37 @@ export interface CellEditorProps<T = Row> {
   onCancel: () => void;
 }
 
+/**
+ * The columns a grid draws.
+ *
+ * `<DataGrid data={rows} />` threw: `columns.map` of undefined, so the first
+ * thing an author writes (and what Builder drops on the canvas) was an error
+ * box. Columns that are not given are the fields the rows have, in the order
+ * they first appear; a column may also be only its field's name
+ * (`columns={["name", "team"]}`). What is not a column is left out.
+ */
+function gridColumns<T>(given: unknown, data: T[]): DataGridColumn<T>[] {
+  if (Array.isArray(given)) {
+    return given.flatMap((column: unknown): DataGridColumn<T>[] => {
+      if (typeof column === 'string') return column === '' ? [] : [{ key: column, header: column }];
+      if (column === null || typeof column !== 'object') return [];
+      const key = (column as { key?: unknown }).key;
+      if (typeof key === 'string') return [column as DataGridColumn<T>];
+      return typeof key === 'number' ? [{ ...(column as DataGridColumn<T>), key: String(key) }] : [];
+    });
+  }
+  const keys: string[] = [];
+  for (const row of data.slice(0, 50)) {
+    if (row === null || typeof row !== 'object') continue;
+    for (const key of Object.keys(row)) if (!keys.includes(key)) keys.push(key);
+  }
+  return keys.map((key) => ({ key, header: key }));
+}
+
 export interface DataGridProps<T = Row> {
-  columns: DataGridColumn<T>[];
-  data: T[];
+  /** The columns; without them, a column for each field of the rows */
+  columns?: Array<DataGridColumn<T> | string>;
+  data?: T[];
   keyField?: keyof T | ((row: T) => string | number);
   height?: number | string;
   rowHeight?: number;
@@ -75,7 +103,7 @@ export interface DataGridProps<T = Row> {
 }
 
 export function DataGrid<T = Row>({
-  columns,
+  columns: rawColumns,
   data: rawData,
   keyField = 'id' as keyof T,
   height = 400,
@@ -88,7 +116,7 @@ export function DataGrid<T = Row>({
   sortKey,
   sortDirection = 'asc',
   onSort,
-  filters = {},
+  filters: rawFilters,
   onFilterChange,
   selectedKeys: controlledSelectedKeys,
   onSelectionChange,
@@ -102,7 +130,13 @@ export function DataGrid<T = Row>({
 }: DataGridProps<T>) {
   // A grid is routinely bound to rows that have not arrived: `data.length`
   // of undefined threw into the error boundary where an empty grid belonged.
-  const data = React.useMemo(() => (Array.isArray(rawData) ? rawData : []), [rawData]);
+  // A row that is not there (a hole in the list) is not a row.
+  const data = React.useMemo(
+    () => (Array.isArray(rawData) ? (rawData.some((row) => row === null || row === undefined) ? rawData.filter((row) => row !== null && row !== undefined) : rawData) : []),
+    [rawData]
+  );
+  const columns = React.useMemo(() => gridColumns<T>(rawColumns, data), [rawColumns, data]);
+  const filters = rawFilters !== null && typeof rawFilters === 'object' ? rawFilters : {};
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = React.useState(0);
   const [editingCell, setEditingCell] = React.useState<{

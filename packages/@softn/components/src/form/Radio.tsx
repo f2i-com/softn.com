@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { choice } from '../utils/choice';
 
 export interface RadioOption {
   /** Option value */
@@ -78,7 +79,7 @@ export function Radio({
   className,
   style,
 }: RadioProps): React.ReactElement {
-  const sizes = sizeValues[size];
+  const sizes = choice(sizeValues, size, 'md');
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
   const baseId = React.useId();

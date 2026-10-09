@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
+import { choice } from '../utils/choice';
 
 export interface TooltipProps {
   /** Tooltip content */
@@ -141,8 +142,8 @@ export function Tooltip({
   const isOpen = !disabled && requestedOpen;
   const triggers = useMemo(() => (Array.isArray(trigger) ? trigger : [trigger]), [trigger]);
   const opensOnFocus = triggers.includes('focus') || triggers.includes('hover');
-  const variantStyle = variantStyles[variant];
-  const sizeStyle = sizeConfig[size];
+  const variantStyle = choice(variantStyles, variant, 'dark');
+  const sizeStyle = choice(sizeConfig, size, 'md');
 
   // Clear all timeouts
   const clearTimeouts = useCallback(() => {

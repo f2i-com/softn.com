@@ -212,9 +212,11 @@ export function SmartCards<T extends Record<string, unknown>>({
 
   // Grid columns - handle responsive object or static number
   // These go into <style> text below, not a style object: a count, or the default.
-  const colCount = cssColumnCount(typeof columns === 'object' ? columns.lg : columns, 3);
-  const colCountSm = typeof columns === 'object' ? cssColumnCount(columns.sm, 1) : undefined;
-  const colCountMd = typeof columns === 'object' ? cssColumnCount(columns.md, 2) : undefined;
+  // `typeof null` is 'object' too: `columns={null}` read `.lg` of it and threw.
+  const responsive = columns !== null && typeof columns === 'object' ? columns : null;
+  const colCount = cssColumnCount(responsive ? responsive.lg : columns, 3);
+  const colCountSm = responsive ? cssColumnCount(responsive.sm, 1) : undefined;
+  const colCountMd = responsive ? cssColumnCount(responsive.md, 2) : undefined;
 
   // Container style
   const containerStyle: React.CSSProperties = {
@@ -281,7 +283,7 @@ export function SmartCards<T extends Record<string, unknown>>({
 
   // Build responsive CSS if columns is an object
   const responsiveCss =
-    typeof columns === 'object'
+    responsive
       ? `
     @media (max-width: 640px) {
       .${gridClassName} { grid-template-columns: repeat(${colCountSm}, 1fr) !important; }

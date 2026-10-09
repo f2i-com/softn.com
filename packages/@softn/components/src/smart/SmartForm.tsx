@@ -52,7 +52,7 @@ export interface FieldConfig {
 
 export interface SmartFormProps {
   /** Field configurations - can be comma-separated string or array of FieldConfig */
-  fields: string | FieldConfig[];
+  fields?: string | Array<FieldConfig | string>;
   /** Initial form data */
   data?: Record<string, unknown>;
   /** Submit handler */
@@ -102,21 +102,46 @@ function humanize(str: string): string {
     .trim();
 }
 
+/** One spec ("email:email:required") as a field; nothing for an empty one. */
+function parseField(spec: string): FieldConfig | null {
+  const [nameWithType, ...rest] = spec.trim().split(':');
+  const name = nameWithType.trim();
+  // A trailing or doubled comma is not a field: it used to be an input with
+  // no name and no label, whose value was saved under the key "".
+  if (name === '') return null;
+  const type = (rest[0]?.trim() as FieldConfig['type']) || 'text';
+  const required = rest.some((part) => part.trim() === 'required');
+  return { name, type, required, label: humanize(name) };
+}
+
 // Parse fields string into FieldConfig array
 function parseFields(fieldsStr: string): FieldConfig[] {
-  return fieldsStr.split(',').map((field) => {
-    const trimmed = field.trim();
-    const [nameWithType, ...rest] = trimmed.split(':');
-    const name = nameWithType.trim();
-    const type = (rest[0]?.trim() as FieldConfig['type']) || 'text';
-    const required = rest.includes('required');
+  return fieldsStr
+    .split(',')
+    .map(parseField)
+    .filter((field): field is FieldConfig => field !== null);
+}
 
-    return {
-      name,
-      type,
-      required,
-      label: humanize(name),
-    };
+/**
+ * The fields a form is given, as fields.
+ *
+ * `<SmartForm />` threw (`fields.forEach` of undefined), and so did
+ * `fields={schema}` while `schema` was still null: the error box where an
+ * empty form belonged. No fields is a form with none. In a list, a field may
+ * be its spec as text, as it is in the string form, and what is not a field
+ * (no name) is left out.
+ */
+function formFields(given: unknown): FieldConfig[] {
+  if (typeof given === 'string') return parseFields(given);
+  if (!Array.isArray(given)) return [];
+  return given.flatMap((field: unknown): FieldConfig[] => {
+    if (typeof field === 'string') {
+      const parsed = parseField(field);
+      return parsed ? [parsed] : [];
+    }
+    if (field === null || typeof field !== 'object') return [];
+    const name = (field as { name?: unknown }).name;
+    return typeof name === 'string' && name !== '' ? [field as FieldConfig] : [];
   });
 }
 
@@ -224,12 +249,7 @@ export function SmartForm({
   // time the handler resumed, and the record went into its store.
   const xdb = useAppXDB();
   // Parse fields if string
-  const fields = useMemo(() => {
-    if (typeof fieldsProp === 'string') {
-      return parseFields(fieldsProp);
-    }
-    return fieldsProp;
-  }, [fieldsProp]);
+  const fields = useMemo(() => formFields(fieldsProp), [fieldsProp]);
 
   // Form state
   const seedForm = useCallback(

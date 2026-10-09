@@ -48,6 +48,14 @@ section here. Write the section before tagging. Headings are the tag
 - Rust backend host: `db.query(collection, filter)` applies the filter in the store's query, so the 10,000-record limit counts what matches. Filtered by the script after the read, a match past the oldest 10,000 records of a collection was never found.
 - Rust backend host, sync: a push saves each collection's CRDT document once. The document is as large as the collection and was written again for every op of a push, under the store's one writer lock, so a large push held every other write on the host and could outlast its own connection. This needs the xdb revision the build now pins (`with_batch`, xdb.org `c993b5e`): xdb.org has to be pushed before this builds in CI.
 - `PixelGrid` fits the width it is given. A board of `cols * cellSize` pixels in a narrower column was cut off by what held it (Blockfall showed about seven of its ten columns on a phone); it is now drawn whole at that width, every cell and the overlay's lettering smaller by the same amount, and at its own size wherever there is room.
+- No built-in component throws for a prop that is `null`, which is what a page gives it until its data arrives; a default parameter only stood in for `undefined`. Each of the 98 registered components is mounted bare, with every prop null, and with every choice mistyped (`test/missing-props.test.tsx`).
+- A `size` or `variant` that is not one of the component's choices (`<Button variant="primay">`, `size={null}`) is the default one. It used to throw and leave the renderer's error box where the component belonged (Button, Input, TextArea, Select, Checkbox, Radio, Switch, Slider, ColorPicker, Tabs, Alert, Toast, EmptyState, Tooltip, Avatar, SmartStats).
+- `DataGrid` without `columns` shows a column for each field of its rows, where it used to throw; a column may be only its field's name (`columns={["name", "team"]}`).
+- `SmartForm` without `fields` is an empty form, where it used to throw. A stray comma in `fields="name, , email"` is not a field (it was an input with no name), and a field in a list may be its spec as text.
+- Chart `padding` may name some sides (`padding={{ left: 80 }}`) or be one number; a side that is not given keeps the chart's own. Either used to leave the plot NaN wide and empty. A `null` padding or formatter is the chart's own.
+- `TileMap` given only its `layers` is the size they cover. Without `mapWidth` and `mapHeight` its canvas was sized NaN and the map was cut off at 300 by 150.
+- `Scene3D` in a browser that gives no WebGL says so in its own box, where it used to throw into the page's error box.
+- `SmartStats` reads `columns="3"` as three; it read any string as the default four.
 
 ## v0.0.18
 

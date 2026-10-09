@@ -6,7 +6,8 @@
  */
 
 import * as React from 'react';
-import { describeChart, normaliseSeries, numericPoints } from './series';
+import type { ChartPadding } from './series';
+import { chartPadding, describeChart, formatAxisValue, formatterOr, normaliseSeries, numericPoints } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface BarDataPoint {
@@ -25,7 +26,7 @@ export interface BarChartProps {
   series: BarChartSeries[];
   width?: number;
   height?: number;
-  padding?: { top: number; right: number; bottom: number; left: number };
+  padding?: Partial<ChartPadding> | number;
   orientation?: 'vertical' | 'horizontal';
   grouped?: boolean;
   stacked?: boolean;
@@ -50,7 +51,7 @@ export function BarChart({
   series: rawSeries,
   width = 600,
   height = 300,
-  padding = { top: 20, right: 20, bottom: 50, left: 50 },
+  padding: givenPadding,
   orientation = 'vertical',
   grouped = true,
   stacked = false,
@@ -59,16 +60,14 @@ export function BarChart({
   showGrid = true,
   showValues = false,
   showLegend = true,
-  formatValue = (v: number) => {
-    if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k`;
-    const rounded = Math.round(v * 100) / 100;
-    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-  },
+  formatValue: givenFormatValue,
   interactive = false,
   ariaLabel,
   className = '',
   style,
 }: BarChartProps) {
+  const padding = chartPadding(givenPadding, { top: 20, right: 20, bottom: 50, left: 50 });
+  const formatValue = formatterOr<NonNullable<BarChartProps['formatValue']>>(givenFormatValue, formatAxisValue);
   // Data that has not arrived yet is an empty chart, not a throw.
   // A value that is not a number is left out; a numeric string ("42", as
   // JSON often has it) is a number, so a stacked total adds rather than

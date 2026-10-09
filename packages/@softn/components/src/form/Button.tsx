@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { choice } from '../utils/choice';
 
 export interface ButtonProps {
   /** Button type */
@@ -324,8 +325,8 @@ export function Button({
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
 
-  const sizeStyle = sizeConfig[size];
-  const variantStyle = variantStyles[variant];
+  const sizeStyle = choice(sizeConfig, size, 'md');
+  const variantStyle = choice(variantStyles, variant, 'primary');
 
   const handleMouseEnter = useCallback(
     () => !disabled && !loading && setIsHovered(true),

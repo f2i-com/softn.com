@@ -6,6 +6,7 @@
 
 import React, { useState, useCallback, useRef, useEffect, useId } from 'react';
 import { cssPaint } from '../utils/egress';
+import { choice } from '../utils/choice';
 
 export interface ColorPickerProps {
   /** Current color value (hex) */
@@ -72,6 +73,18 @@ function isValidHex(color: string): boolean {
   return /^#([0-9A-Fa-f]{3}){1,2}$/.test(color);
 }
 
+/** The colour a picker shows when it has none of its own. */
+const FALLBACK_COLOR = '#6366f1';
+
+/**
+ * The colour to show for what the picker was given. `value={theme.accent}`
+ * is null until the theme has loaded, and `null.startsWith` threw; what is
+ * not a colour's text is the default one.
+ */
+function shownColor(given: unknown, fallback: unknown): string {
+  return normalizeHex(typeof given === 'string' ? given : typeof fallback === 'string' ? fallback : FALLBACK_COLOR);
+}
+
 function normalizeHex(color: string): string {
   if (!color.startsWith('#')) {
     color = '#' + color;
@@ -85,24 +98,25 @@ function normalizeHex(color: string): string {
 
 export function ColorPicker({
   value,
-  defaultValue = '#6366f1',
+  defaultValue = FALLBACK_COLOR,
   name,
   label,
   disabled = false,
   size = 'md',
-  presets = DEFAULT_PRESETS,
+  presets: givenPresets,
   showInput = true,
   fullWidth = false,
   onChange,
   className,
   style,
 }: ColorPickerProps): React.ReactElement {
-  const [selectedColor, setSelectedColor] = useState(normalizeHex(value ?? defaultValue));
+  const presets = (Array.isArray(givenPresets) ? givenPresets : DEFAULT_PRESETS).filter((color) => typeof color === 'string');
+  const [selectedColor, setSelectedColor] = useState(() => shownColor(value, defaultValue));
   const [inputValue, setInputValue] = useState(selectedColor);
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const sizes = sizeValues[size];
+  const sizes = choice(sizeValues, size, 'md');
   const baseId = useId();
   const labelId = `${baseId}-label`;
   const panelId = `${baseId}-panel`;
@@ -112,11 +126,11 @@ export function ColorPicker({
 
   useEffect(() => {
     if (value !== undefined) {
-      const normalized = normalizeHex(value);
+      const normalized = shownColor(value, defaultValue);
       setSelectedColor(normalized);
       setInputValue(normalized);
     }
-  }, [value]);
+  }, [value, defaultValue]);
 
   // Close on click outside
   useEffect(() => {

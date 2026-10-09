@@ -1,10 +1,10 @@
 import * as React from 'react';
 import {isSafeUrl} from '@softn/core';
-import type {TileMapProps} from './TileMap';
+import type {SizedTileMapProps} from './TileMap';
 import {tileWindow} from './tilemap-window';
 
 /** Keeps world geometry for input, but allocates pixels only for the clipped view. */
-export const ViewportTileMap=React.memo(function ViewportTileMap(props:TileMapProps){
+export const ViewportTileMap=React.memo(function ViewportTileMap(props:SizedTileMapProps){
  const root=React.useRef<HTMLDivElement>(null),surface=React.useRef<HTMLCanvasElement>(null);
  const latest=React.useRef(props);latest.current=props;
  const image=React.useRef<HTMLCanvasElement|null>(null),dirty=React.useRef(true);

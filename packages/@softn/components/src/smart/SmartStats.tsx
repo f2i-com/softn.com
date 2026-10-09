@@ -13,7 +13,8 @@
  */
 
 import React from 'react';
-import { cssPaint } from '../utils/egress';
+import { cssColumnCount, cssPaint } from '../utils/egress';
+import { choice } from '../utils/choice';
 
 export interface StatItem {
   label: string;
@@ -288,14 +289,14 @@ export function SmartStats({
     lg: { padding: '1.5rem', valueSize: '2.25rem', labelSize: '0.875rem', iconSize: '2rem' },
   };
 
-  const sizeStyle = sizeStyles[size];
+  const sizeStyle = choice(sizeStyles, size, 'md');
 
   // Grid columns
+  // `columns={null}` threw here (null is an object with no `lg`), and
+  // `columns="3"`, as an attribute is written, was read as the default four.
   const getGridColumns = () => {
-    if (typeof columns === 'number') {
-      return `repeat(${columns}, 1fr)`;
-    }
-    return `repeat(${columns.lg || 4}, 1fr)`;
+    const wide = columns !== null && typeof columns === 'object' ? columns.lg : columns;
+    return `repeat(${cssColumnCount(wide, 4)}, 1fr)`;
   };
 
   // Container styles

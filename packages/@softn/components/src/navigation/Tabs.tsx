@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useCallback, useRef, useId, useMemo } from 'react';
+import { choice } from '../utils/choice';
 
 export interface Tab {
   /** Unique tab key */
@@ -77,7 +78,7 @@ export function Tabs({
   // no tab had tabIndex 0 and the whole tablist was unreachable by keyboard.
   const activeEnabled = tabs.find((t) => t.key === currentActiveKey && !t.disabled);
   const focusKey = activeEnabled?.key ?? tabs.find((t) => !t.disabled)?.key;
-  const sizes = sizeStyles[size];
+  const sizes = choice(sizeStyles, size, 'md');
 
   const handleTabClick = useCallback(
     (key: string) => {

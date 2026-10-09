@@ -51,7 +51,7 @@ export function PixelGrid({
   rows = 20,
   cols = 20,
   cellSize = 20,
-  items = [],
+  items: givenItems,
   background = '#1a1a2e',
   showGrid = true,
   gridColor,
@@ -60,6 +60,9 @@ export function PixelGrid({
   style,
   className,
 }: PixelGridProps) {
+  // A board whose pieces have not loaded is an empty board, and a piece that
+  // is not there (a hole in the list) is not drawn: both used to throw.
+  const items = (Array.isArray(givenItems) ? givenItems : []).filter((item) => item !== null && typeof item === 'object');
   const width = cols * cellSize;
   // The width the board was given, once it has been laid out with less than
   // it asked for. Its own `width` and `maxWidth: 100%` do the shrinking; this

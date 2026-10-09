@@ -9,6 +9,53 @@
  * chart, not a crash; every chart normalises its props through here first.
  */
 
+/** The space a chart leaves around its plot, a number for each side. */
+export interface ChartPadding {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * The padding a chart was given, as four numbers.
+ *
+ * `padding={null}` threw (a default parameter stands in for undefined, not
+ * for null), and `padding={{ left: 80 }}`, to make room for long axis
+ * labels, left the other three sides undefined: the plot's width and height
+ * were NaN and nothing was drawn. A side that is not given keeps the chart's
+ * own; one number is all four sides, as it is in CSS.
+ */
+export function chartPadding(given: unknown, fallback: ChartPadding): ChartPadding {
+  const side = (value: unknown, own: number): number => {
+    const n = finiteNumber(value);
+    return n === null || n < 0 ? own : n;
+  };
+  if (given !== null && typeof given === 'object') {
+    const sides = given as Partial<Record<keyof ChartPadding, unknown>>;
+    return {
+      top: side(sides.top, fallback.top),
+      right: side(sides.right, fallback.right),
+      bottom: side(sides.bottom, fallback.bottom),
+      left: side(sides.left, fallback.left),
+    };
+  }
+  const all = typeof given === 'boolean' ? null : finiteNumber(given);
+  return all === null || all < 0 ? fallback : { top: all, right: all, bottom: all, left: all };
+}
+
+/** The formatter a chart was given, or its own when that is not a function (`formatValue={null}`). */
+export function formatterOr<F extends (...args: never[]) => string>(given: unknown, own: F): F {
+  return typeof given === 'function' ? (given as F) : own;
+}
+
+/** A value axis's own labels: 1500 is "1.5k", 0.25 is "0.3", 12 is "12". */
+export function formatAxisValue(v: number): string {
+  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k`;
+  const rounded = Math.round(v * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
 /** The array, or nothing: never `undefined`, never a value of another shape. */
 export function normaliseArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [];

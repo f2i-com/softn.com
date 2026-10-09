@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { choice } from '../utils/choice';
 
 export interface EmptyStateProps {
   /** Icon to display */
@@ -127,7 +128,7 @@ export function EmptyState({
   style,
   children,
 }: EmptyStateProps): React.ReactElement {
-  const config = sizeConfig[size];
+  const config = choice(sizeConfig, size, 'md');
   const finalIconSize = iconSize ?? config.iconSize;
 
   const containerStyle: React.CSSProperties = {

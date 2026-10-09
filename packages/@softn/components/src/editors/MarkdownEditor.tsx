@@ -55,6 +55,15 @@ function safeLinkTarget(target: string): string {
   return target.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/**
+ * The text an editor is given. `value={note.body}` is null until the note
+ * has loaded and for a note with no body, and `null.replace` threw in the
+ * preview; a number is its digits. Nothing is the empty document.
+ */
+function asText(given: unknown): string {
+  return typeof given === 'string' ? given : given === null || given === undefined ? '' : String(given);
+}
+
 // Simple markdown to HTML converter
 function markdownToHtml(markdown: string): string {
   let html = markdown;
@@ -223,7 +232,7 @@ export function MarkdownEditor({
   className,
   style,
 }: MarkdownEditorProps): React.ReactElement {
-  const [content, setContent] = useState(value ?? defaultValue);
+  const [content, setContent] = useState(() => asText(value ?? defaultValue));
   // The view mode follows the prop when it changes, and the toolbar switches
   // it in between: it used to take the prop once, at mount.
   const [viewMode, setViewModeState] = useState(viewModeProp);
@@ -241,7 +250,7 @@ export function MarkdownEditor({
 
   useEffect(() => {
     if (value !== undefined) {
-      setContent(value);
+      setContent(asText(value));
     }
   }, [value]);
 

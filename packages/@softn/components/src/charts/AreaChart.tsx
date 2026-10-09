@@ -7,7 +7,8 @@
 
 import * as React from 'react';
 import type { DataPoint } from './LineChart';
-import { describeChart, layoutX, normaliseSeries, numericPoints } from './series';
+import type { ChartPadding } from './series';
+import { chartPadding, describeChart, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface AreaChartSeries {
@@ -23,7 +24,7 @@ export interface AreaChartProps {
   series: AreaChartSeries[];
   width?: number;
   height?: number;
-  padding?: { top: number; right: number; bottom: number; left: number };
+  padding?: Partial<ChartPadding> | number;
   showGrid?: boolean;
   showXAxis?: boolean;
   showYAxis?: boolean;
@@ -51,7 +52,7 @@ export function AreaChart({
   series: rawSeries,
   width = 600,
   height = 300,
-  padding = { top: 20, right: 20, bottom: 40, left: 50 },
+  padding: givenPadding,
   showGrid = true,
   showXAxis = true,
   showYAxis = true,
@@ -60,12 +61,8 @@ export function AreaChart({
   yAxisLabel,
   yMin: propYMin,
   yMax: propYMax,
-  formatXLabel = (v) => String(v),
-  formatYLabel = (v: number) => {
-    if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k`;
-    const rounded = Math.round(v * 100) / 100;
-    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-  },
+  formatXLabel: givenFormatXLabel,
+  formatYLabel: givenFormatYLabel,
   stacked = false,
   gradient = false,
   interactive = false,
@@ -73,6 +70,9 @@ export function AreaChart({
   className = '',
   style,
 }: AreaChartProps) {
+  const padding = chartPadding(givenPadding, { top: 20, right: 20, bottom: 40, left: 50 });
+  const formatXLabel = formatterOr<NonNullable<AreaChartProps['formatXLabel']>>(givenFormatXLabel, (v) => String(v));
+  const formatYLabel = formatterOr<NonNullable<AreaChartProps['formatYLabel']>>(givenFormatYLabel, formatAxisValue);
   // Data that has not arrived yet is an empty chart, not a throw.
   // A point whose y is not a number is left out rather than drawn at NaN.
   const series = React.useMemo(

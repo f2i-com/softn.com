@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { choice } from '../utils/choice';
 
 export interface TextAreaProps {
   /** Textarea id (generated when omitted) */
@@ -116,7 +117,7 @@ export function TextArea({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
-  const sizeStyle = sizeStyles[size];
+  const sizeStyle = choice(sizeStyles, size, 'md');
 
   // Auto-resize function
   const adjustHeight = useCallback(() => {

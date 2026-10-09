@@ -460,7 +460,7 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "{ top: number; right: number; bottom: number; left: number }"
+              "text": "Partial<ChartPadding> | number"
             }
           },
           {
@@ -1162,7 +1162,7 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "{ top: number; right: number; bottom: number; left: number }"
+              "text": "Partial<ChartPadding> | number"
             }
           },
           {
@@ -2669,15 +2669,16 @@
         "members": [
           {
             "name": "columns",
-            "optional": false,
+            "optional": true,
             "type": {
-              "kind": "array",
-              "text": "DataGridColumn<T>[]"
-            }
+              "kind": "other",
+              "text": "Array<DataGridColumn<T> | string>"
+            },
+            "doc": "The columns; without them, a column for each field of the rows"
           },
           {
             "name": "data",
-            "optional": false,
+            "optional": true,
             "type": {
               "kind": "array",
               "text": "T[]"
@@ -4762,7 +4763,7 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "{ top: number; right: number; bottom: number; left: number }"
+              "text": "Partial<ChartPadding> | number"
             }
           },
           {
@@ -8751,10 +8752,10 @@
         "members": [
           {
             "name": "fields",
-            "optional": false,
+            "optional": true,
             "type": {
               "kind": "other",
-              "text": "string | FieldConfig[]"
+              "text": "string | Array<FieldConfig | string>"
             },
             "doc": "Field configurations - can be comma-separated string or array of FieldConfig"
           },
@@ -11570,7 +11571,7 @@
         "members": [
           {
             "name": "src",
-            "optional": false,
+            "optional": true,
             "type": {
               "kind": "string"
             },
@@ -11594,7 +11595,7 @@
           },
           {
             "name": "layers",
-            "optional": false,
+            "optional": true,
             "type": {
               "kind": "array",
               "text": "number[][][]"
@@ -11603,19 +11604,19 @@
           },
           {
             "name": "mapWidth",
-            "optional": false,
+            "optional": true,
             "type": {
               "kind": "number"
             },
-            "doc": "Map width in tiles"
+            "doc": "Map width in tiles; the longest row of the layers when not given"
           },
           {
             "name": "mapHeight",
-            "optional": false,
+            "optional": true,
             "type": {
               "kind": "number"
             },
-            "doc": "Map height in tiles"
+            "doc": "Map height in tiles; the most rows a layer has when not given"
           },
           {
             "name": "scale",
