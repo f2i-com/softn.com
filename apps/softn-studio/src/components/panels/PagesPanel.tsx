@@ -2,9 +2,17 @@ import React from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { findPageFile, getBundleEntryPath } from '../../lib/studioProject';
+import { confirmShowing } from '../../lib/handEdit';
 
 export const PagesPanel: React.FC = () => {
-  const { blueprint, activePageId, activeFilePath, setActivePage, setActiveFilePath } = useWorkspaceStore();
+  const { blueprint, activePageId, activeFilePath, setActivePage, setActiveFilePath: putOnCanvas } = useWorkspaceStore();
+  // Another file takes the canvas from the one being edited by hand: a draft that is not
+  // saved is asked about first, and nothing changes when the answer is no.
+  const setActiveFilePath = (path: string): boolean => {
+    if (!confirmShowing(path)) return false;
+    putOnCanvas(path);
+    return true;
+  };
   const { files } = useVFSStore();
 
   const blueprintPages = blueprint?.pages ?? [];
@@ -52,9 +60,9 @@ export const PagesPanel: React.FC = () => {
               <button
                 key={page.id}
                 onClick={() => {
-                  setActivePage(page.id);
                   const resolved = findPageFile(files, blueprintPages, index);
-                  if (resolved) setActiveFilePath(resolved);
+                  if (resolved && !setActiveFilePath(resolved)) return;
+                  setActivePage(page.id);
                 }}
                 style={{
                   ...styles.pageItem,

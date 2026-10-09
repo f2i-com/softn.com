@@ -181,6 +181,10 @@ export function MediaView({ path, content }: MediaViewProps): React.ReactElement
         <span>{typeLabel}, <span className="num">{mime}</span></span>
         <span className="num">{formatBytes(size)}</span>
         {dimensions && <span className="num">{dimensions}</span>}
+        {/* Why there is no Edit here, where the code view of a text file has one. */}
+        <span className="st-media-readonly">
+          {typeof content === 'string' ? 'Shown as it looks, not as text: ask the AI to change it.' : 'Kept as bytes, not text: shown here, not edited.'}
+        </span>
         {url && (kind === 'pdf' ? (
           <a href={url} target="_blank" rel="noopener noreferrer">Open in a new tab</a>
         ) : (

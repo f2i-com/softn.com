@@ -4,6 +4,7 @@ import { Icon } from '../common/Icon';
 import { getBundleEntryPath } from '../../lib/studioProject';
 import { bundleSummary } from '../../lib/exportBundle';
 import { isPrivatePath } from '../../lib/paths';
+import { confirmShowing } from '../../lib/handEdit';
 
 interface TreeNode {
   name: string;
@@ -125,6 +126,9 @@ export const FilesPanel: React.FC = () => {
   ), [activeFilePath, files]);
 
   const handleSelect = useCallback((path: string) => {
+    // Another file takes the canvas from the one being edited by hand: a draft that is not
+    // saved is asked about first.
+    if (!confirmShowing(path)) return;
     setActiveFilePath(path);
   }, [setActiveFilePath]);
 

@@ -5,7 +5,9 @@ import { declarePythonPackage, resolveActivePreviewPath, resolveManifest, undecl
 import { getXDB, type SoftNRendererProps } from '@softn/core';
 import type { ThemeProviderProps } from '@softn/components';
 import { createPreviewAssetResolver, rewriteAssetReferences } from '../../lib/previewAssets';
-import { CodeView } from './CodeView';
+import { CodeFile, FileEditor } from './FileEditor';
+import { useEditStore } from '../../stores/editStore';
+import { confirmLeaveDraft } from '../../lib/handEdit';
 import { MediaView, mediaKindFor } from './MediaView';
 import {
   buildPreviewXDBState,
@@ -212,6 +214,9 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [viewMode, setViewModeState] = useState<CanvasViewMode>(readCanvasViewMode);
   const setViewMode = useCallback((mode: CanvasViewMode) => {
+    // Leaving the code view leaves the editor that may be open in it: a draft that is not
+    // saved is asked about first, and the view stays where it is when the answer is no.
+    if (mode !== 'code' && !confirmLeaveDraft()) return;
     setViewModeState(mode);
     writeCanvasViewMode(mode);
   }, []);
@@ -464,7 +469,11 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     }
   }, []);
 
+  // A draft whose file has gone from the project keeps its editor on the canvas (lib/handEdit.ts).
+  const orphanedDraft = useEditStore((s) => (s.draft && !liveFiles.has(s.draft.path) ? s.draft.path : null));
+
   const renderPreviewContent = () => {
+    if (orphanedDraft) return <FileEditor path={orphanedDraft} onClose={() => {}} />;
     if (showsAsMedia && activeVFSFile && activeContent !== null) {
       return <MediaView key={activeVFSFile} path={activeVFSFile} content={activeContent} />;
     }
@@ -482,7 +491,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       );
     }
 
-    const codeView = activeVFSFile ? <CodeView path={activeVFSFile} source={previewFileContent} /> : null;
+    const codeView = activeVFSFile ? <CodeFile path={activeVFSFile} source={previewFileContent} /> : null;
 
     // Code, for a page whose preview is not running: nothing to keep alive.
     if (showCode && !(isSoftNUIFile && softNSource && PreviewComponent) && !(isHtmlFile && blobUrl)) {

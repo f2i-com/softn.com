@@ -1,4 +1,4 @@
-import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
+import { useAIStore, useEditStore, useVFSStore, useWorkspaceStore } from '../stores';
 import { DEFAULT_TOKEN_BUDGET } from '../stores/aiStore';
 import { bundleNameFromUrl, resolveBundleUrl } from '@softn/bundle-format/url';
 import { fetchSameOriginBundle } from '@softn/editor-shared/remoteOpen';
@@ -160,6 +160,8 @@ export function beginNewProjectSession(): string {
     useWorkspaceStore.setState({ projectId, themePreview: theme });
     useVFSStore.getState().reset();
     useAIStore.getState().resetSession();
+    // A draft of a file edited by hand is of the project that is going away.
+    useEditStore.getState().close();
   } finally {
     hydrating = false;
   }
@@ -247,6 +249,8 @@ export function applyProjectRecord(record: ProjectRecord): void {
   const ws = record.workspace;
   hydrating = true;
   try {
+    // A draft of a file edited by hand was of the project this one replaces.
+    useEditStore.getState().close();
     useWorkspaceStore.getState().reset();
     useWorkspaceStore.setState({
       projectName: ws.projectName,

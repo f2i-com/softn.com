@@ -20,6 +20,7 @@ import { MobileProjectMenu } from './components/mobile/MobileProjectMenu';
 import { SaveStatusIndicator } from './components/common/SaveStatus';
 import { exportCurrentProject } from './components/common/ProjectActions';
 import { openImportedInStores } from './lib/importedProject';
+import { confirmLeaveDraft } from './lib/handEdit';
 import { validateProject } from './lib/validator';
 import { openExampleInStores, type ExampleProject } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
@@ -133,6 +134,8 @@ const App: React.FC = () => {
    * Resolves with whether to go on.
    */
   const checkpointBeforeReplace = useCallback(async (): Promise<boolean> => {
+    // A file being edited by hand, with changes not saved, goes with the project: ask first.
+    if (!confirmLeaveDraft()) return false;
     const autosave = autosaveRef.current;
     if (!autosave || !hasProjectContent()) return true;
     const result = await autosave.flush();
@@ -171,6 +174,8 @@ const App: React.FC = () => {
   }, [checkpointBeforeReplace, refreshRecent]);
 
   const handleBackToDashboard = useCallback(() => {
+    // Home closes the editor on a file being edited by hand: a draft not saved is asked about.
+    if (!confirmLeaveDraft()) return;
     abortAgentTurn();
     void (autosaveRef.current?.flush() ?? Promise.resolve()).then(() => refreshRecent());
     setView('dashboard');

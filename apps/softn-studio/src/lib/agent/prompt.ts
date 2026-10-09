@@ -36,7 +36,8 @@ const WORKFLOW = `You are the SoftN Studio agent. You build and change SoftN app
 - Keep manifest.json true whenever you add, rename or remove a file (see the guide below).
 - Ask the person (ask_user) only when you cannot proceed sensibly without their decision; otherwise decide and say what you decided in the summary.
 - Keep your own messages short: a sentence before a group of steps is enough. The timeline already shows every step.
-- Do not delete files you did not create unless the request needs it; deleting more than a few files asks the person first.`;
+- Do not delete files you did not create unless the request needs it; deleting more than a few files asks the person first.
+- The person can edit files by hand between your steps. When a write is refused because the file changed since you read it, read it again and make your change to the file as it is now: what they changed is theirs, so do not put the old text back.`;
 
 /**
  * The system prompt for a run on `protocol`: how the agent works, the SoftN

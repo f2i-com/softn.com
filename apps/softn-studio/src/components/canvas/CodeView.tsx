@@ -12,18 +12,25 @@ interface CodeViewProps {
   path: string;
   /** Overrides the language the path implies. */
   language?: CodeLanguage;
+  /**
+   * Editing by hand, when the view is of a project file: `begin` opens the
+   * editor in this view's place, `refusal` says why this file has none, and
+   * `takeFocus` puts the keyboard on Edit (it has just come back from the editor).
+   */
+  edit?: { begin(): void; refusal: string | null; takeFocus?: boolean };
 }
 
 /**
- * A file's source, read-only, with line numbers and syntax colours.
+ * A file's source with line numbers and syntax colours, for reading.
  *
  * Every token is a React text node — the tokenizer returns strings, never
  * markup — so whatever the file contains is shown as text. Line numbers are
  * drawn by a CSS counter, so selecting and copying the code copies the code
- * only. Studio is AI-first: changes are asked for in the chat, and this view
- * is for reading what was written.
+ * only. Studio is AI-first: most changes are asked for in the chat. This view
+ * is where what was written is read, and Edit swaps it for an editor of the
+ * same file (FileEditor.tsx) for the change that is quicker made than asked for.
  */
-export function CodeView({ source, path, language }: CodeViewProps): React.ReactElement {
+export function CodeView({ source, path, language, edit }: CodeViewProps): React.ReactElement {
   const lang = language ?? languageForPath(path);
   const lines = useMemo(
     () => tokenizeLines(source, source.length > HIGHLIGHT_LIMIT ? 'plain' : lang),
@@ -49,6 +56,12 @@ export function CodeView({ source, path, language }: CodeViewProps): React.React
   };
 
   const name = path.split('/').pop() ?? path;
+  // Back from the editor, the keyboard is on the control that opened it.
+  const editButton = useRef<HTMLButtonElement>(null);
+  const takeFocus = edit?.takeFocus ?? false;
+  useEffect(() => {
+    if (takeFocus) editButton.current?.focus();
+  }, [takeFocus]);
   // Wide enough for the largest line number, so the code column never shifts.
   const gutter = `${String(lines.length).length + 1}ch`;
 
@@ -59,7 +72,20 @@ export function CodeView({ source, path, language }: CodeViewProps): React.React
         <span className="st-codeview-meta">
           {lines.length.toLocaleString()} line{lines.length === 1 ? '' : 's'}
           {source.length > HIGHLIGHT_LIMIT ? ', too large to colour' : ''}
+          {edit?.refusal ? <span className="st-codeview-readonly"> · {edit.refusal}</span> : null}
         </span>
+        {edit && !edit.refusal && (
+          <button
+            ref={editButton}
+            type="button"
+            className="st-btn st-btn-sm st-btn-ghost st-codeview-edit"
+            onClick={edit.begin}
+            aria-label={`Edit ${name} by hand`}
+          >
+            <Icon name="edit" size={14} />
+            <span>Edit</span>
+          </button>
+        )}
         <button
           type="button"
           className="st-btn st-btn-sm st-btn-ghost st-codeview-copy"
