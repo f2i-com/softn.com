@@ -256,7 +256,30 @@ API v1 requires object JSON bodies and `application/json` for nonempty bodies.
 A route accepts the smaller of its own `maxBodySize` and
 `config.server.maxBodySize` when either is declared (1 byte to 16 MiB), else
 2 MiB (5,600,100 bytes on an `upload: "photo"` route). The app's value used to
-cap a route that declared more. Responses remain capped at 2 MiB.
+cap a route that declared more. A response may be 3 MiB as JSON, as on the PHP
+host (it was 2 MiB here), with any one string in it at most 2 MiB.
+
+A handler's answer and the host's own errors carry `Cache-Control: no-store`
+and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, as
+the PHP host's do: the answer is for that request, and JSON is never a page.
+A bundle's own files carry neither. On API v1 `req.headers.authorization` and
+`req.headers["idempotency-key"]` are always present, empty when not sent (or
+when the host kept `Authorization` for itself on a host-token route), again
+as on the PHP host.
+
+`onStart()` is one place the two hosts differ. Here it runs once, when the
+app is loaded, on one worker and outside any transaction, and a global it
+sets is discarded by the isolation between requests; an `onStart` that fails
+stops the app from starting. On the PHP host every request is a new VM, so
+the script's top level and `onStart()` run for each one, inside that
+request's transaction. Write `onStart` to check what it needs and to create
+nothing a request depends on being in memory, and both hosts run it alike.
+
+Photo decoding is bounded across the host: as many decodes at once as there
+are cores, between two and eight. An upload past that is answered 503
+`database_busy`, the retryable answer, rather than queued. A decode can hold
+64 MB and runs before the handler, so it used to be bounded only by the
+rate limit, a minute's allowance at once.
 
 Each client address (an IPv6 /64 counting as one) may make 120 requests a
 minute to an API v1 app's routes, as on the PHP host, and is answered 429
@@ -379,11 +402,42 @@ holds a visitor to 2 of its 8 connections.)
 
 Stopping: Ctrl+C or SIGTERM (what systemd, Docker and Kubernetes send) stop
 accepting, let requests in flight finish, and close sync sockets with 1001
-before exiting (up to 40 seconds).
+before exiting (up to 40 seconds for each; a connection that will not finish
+is left behind, where the process used to wait on it for ever).
+
+Connections: 768 are served at once and the rest wait in the listen queue
+(the process needs a file-descriptor limit above that; the default 1024 is
+enough). A response the client does not read is dropped when 30 seconds pass
+without the client taking a byte, on plain requests and on sync sockets
+alike; a slow client is not affected, only one that has stopped. One sync
+message has two minutes to leave at most.
+
+Workers: a handler stuck inside one native call (a catastrophic regex, a
+huge `JSON.parse`) cannot be interrupted, so its worker is abandoned and a
+replacement started, for up to eight such threads running at once. When an
+abandoned thread's call returns the thread exits and its place is free
+again. It used to be eight for the life of the process, after which every
+further stall cost the pool a worker for good. At the limit, or when no
+replacement can be started, the worker is left in the pool and serves again
+when its call returns. A call that no worker took within 30 seconds is
+logged as that, not as a wedged worker.
 
 Multi-tenant: tenant IDs that differ only in case are one tenant (they would
 share a data directory on Windows and macOS), and a `<name>_bundle` directory
-unpacked beside `<name>.softn` is not loaded as a second copy of it.
+unpacked beside `<name>.softn` is not loaded as a second copy of it. When two
+bundles claim one id, the tenant is the one that served that id's data before:
+each tenant's data directory holds a `.bundle` file naming the bundle (its
+name in the bundles directory) that last served it. The other is refused
+before it is unpacked or run, and both are named in the log. The record only
+settles such a dispute: a bundle that is renamed, replaced by a new version
+under another name, or moved to another bundles directory is loaded as ever,
+and the record follows it. With no record the first by name is the tenant.
+Bundles are loaded in name order.
+
+Sync hooks: what `onBeforeSync` or `onBeforeSyncBatch` hands back as an op's
+`data` must be an object no larger than a client may send (512 KB). Anything
+else is not applied, and the client is told to retry, as when the hook
+throws: a string or a number would have replaced the whole record.
 
 The legacy `http` bridge refuses private, link-local, unique-local (including
 cloud metadata such as `fd00:ec2::254`), multicast and reserved addresses,

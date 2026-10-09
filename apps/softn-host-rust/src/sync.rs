@@ -1128,11 +1128,26 @@ impl SyncManager {
                     .collect();
 
                 if !mutations.is_empty() {
+                    let mut refused = std::collections::HashSet::new();
                     for op in &mut accepted {
                         if let Some(&new_data) = mutations.get(op.id.as_str()) {
+                            if op.data.as_ref() == Some(new_data) {
+                                continue;
+                            }
+                            // Held to what a client may send (check_hook_data).
+                            if let Err(why) = Self::check_hook_data(new_data) {
+                                tracing::warn!(op = %op.id, "onBeforeSyncBatch: {why} — the op is not applied");
+                                responses.push(ServerMessage::SyncRetry {
+                                    op_ids: vec![op.id.clone()],
+                                    reason: "Transient hook error — retry later".into(),
+                                });
+                                refused.insert(op.id.clone());
+                                continue;
+                            }
                             op.data = Some(new_data.clone());
                         }
                     }
+                    accepted.retain(|op| !refused.contains(&op.id));
                     tracing::info!(
                         "onBeforeSyncBatch mutated data for {} op(s)",
                         mutations.len()
@@ -1167,10 +1182,37 @@ impl SyncManager {
                 Ok((true, None))
             }
             serde_json::Value::Object(obj) if obj.contains_key("data") => {
-                Ok((true, obj.get("data").cloned()))
+                let data = obj.get("data").cloned().unwrap_or_default();
+                // Handed back as it came: nothing to check, nothing changed.
+                if op.data.as_ref() == Some(&data) {
+                    return Ok((true, None));
+                }
+                Self::check_hook_data(&data)?;
+                Ok((true, Some(data)))
             }
             _ => Ok((true, None)),
         }
+    }
+
+    /// Whether data a before-hook handed back may replace an op's payload.
+    ///
+    /// The size of what a client sends is checked before the hooks run, so a
+    /// hook could hand back more than any client may send. And anything but
+    /// an object replaces the whole record with that value (xdb): a hook that
+    /// returned a string or a number by mistake wiped the record, and the
+    /// wipe was broadcast. Such an op is not applied; the client keeps it and
+    /// is told to retry, as it is when the hook throws. Writing what the
+    /// client sent instead would let through exactly what a sanitising hook
+    /// was there to change.
+    fn check_hook_data(data: &serde_json::Value) -> Result<(), String> {
+        if !data.is_object() {
+            return Err("a before-sync hook returned data that is not an object".into());
+        }
+        let size = data.to_string().len();
+        if size > MAX_OP_DATA_BYTES {
+            return Err(format!("a before-sync hook returned {size} bytes of data for one op (max {MAX_OP_DATA_BYTES})"));
+        }
+        Ok(())
     }
 
     /// Batch after-sync hook: passes all accepted ops in a single RPC call.
@@ -1420,6 +1462,46 @@ mod tests {
         let data = db.write().get_record("n1").unwrap().data;
         assert!(data.is_object(), "the record's payload became {data}");
         assert_eq!(data["title"], "final");
+    }
+
+    /// A hook may change an op's data to another object of a size a client
+    /// may send, and to nothing else: a string would replace the record with
+    /// that string, and more than a client may send was never checked.
+    #[test]
+    fn what_a_before_hook_hands_back_is_held_to_what_a_client_may_send() {
+        for hook in [
+            "function onBeforeSync(op) { return { data: change(op) }; }",
+            "function onBeforeSyncBatch(ops) { return { rejected: [], ops: ops.map(function (op) { return { id: op.id, data: change(op) }; }) }; }",
+        ] {
+            let source = format!(
+                "function change(op) {{
+                    if (op.data.as === 'text') return 'wiped';
+                    if (op.data.as === 'list') return [1, 2];
+                    if (op.data.as === 'huge') return {{ blob: new Array({}).join('x') }};
+                    if (op.data.as === 'clean') return {{ title: op.data.title.trim() }};
+                    return op.data;
+                }}
+                {hook}",
+                MAX_OP_DATA_BYTES + 2
+            );
+            let (sync, db) = manager(Some(&source));
+            sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title":"kept"}))], "a");
+            for bad in ["text", "list", "huge"] {
+                let responses = sync.handle_sync_push(vec![
+                    op(&format!("u-{bad}"), "notes", "update", "n1", serde_json::json!({"as": bad})),
+                ], "a");
+                assert!(acked(&responses).is_empty(), "{bad}: {responses:?}");
+                assert!(rejected(&responses).is_empty(), "{bad}: the client keeps the op: {responses:?}");
+                assert!(responses.iter().any(|r| matches!(r, ServerMessage::SyncRetry { op_ids, .. } if op_ids == &vec![format!("u-{bad}")])), "{bad}: {responses:?}");
+                assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"kept"}), "{bad} ({hook})");
+            }
+            // An object of an ordinary size is what a sanitising hook is for.
+            let responses = sync.handle_sync_push(vec![
+                op("u-clean", "notes", "update", "n1", serde_json::json!({"as":"clean","title":"  tidy  "})),
+            ], "a");
+            assert_eq!(acked(&responses), vec!["u-clean"], "{responses:?}");
+            assert_eq!(db.write().get_record("n1").unwrap().data["title"], "tidy");
+        }
     }
 
     /// What an after-sync hook throws reaches the caller, which logs it.

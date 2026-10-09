@@ -37,6 +37,65 @@ const PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// client would hit IDLE_TIMEOUT and be disconnected. The browser's built-in
 /// Pong reply resets the reader's idle timer automatically.
 const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// The longest one message may take to leave. The stream under the socket
+/// already fails a write that makes no progress for 30 seconds
+/// (`http::StallGuard`), so this is the outer bound, generous enough for a
+/// megabyte over a poor mobile link.
+const WRITER_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long the writer is given to finish once the reader has gone.
+const WRITER_DRAIN: std::time::Duration = SEND_TIMEOUT_BULK;
+
+/// The sink, with a deadline on everything sent through it.
+///
+/// No send had one. A peer that asked for a pull and stopped reading (a phone
+/// in a tunnel that never sent FIN, or one doing it on purpose) left the
+/// writer inside `send` until TCP gave up, which for a zero window is never:
+/// the connection's slot under `maxSyncConnections`, its socket and up to
+/// 512 queued messages stayed held, and a few such behind one address were
+/// 429 for everyone there. After the first send that fails or runs out of
+/// time, every later one fails at once: there is nobody to say goodbye to.
+struct Deadlined<S> {
+    sink: S,
+    limit: std::time::Duration,
+    dead: bool,
+}
+
+impl<S: futures_util::Sink<Message> + Unpin> Deadlined<S> {
+    async fn within<F: std::future::Future<Output = Result<(), S::Error>>>(limit: std::time::Duration, dead: &mut bool, work: F) -> Result<(), ()> {
+        if *dead {
+            return Err(());
+        }
+        match tokio::time::timeout(limit, work).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => {
+                *dead = true;
+                Err(())
+            }
+            Err(_) => {
+                tracing::warn!("A sync peer took nothing for {}s — dropping the connection", limit.as_secs());
+                *dead = true;
+                Err(())
+            }
+        }
+    }
+
+    async fn send(&mut self, message: Message) -> Result<(), ()> {
+        Self::within(self.limit, &mut self.dead, self.sink.send(message)).await
+    }
+
+    async fn close(&mut self) -> Result<(), ()> {
+        Self::within(self.limit, &mut self.dead, self.sink.close()).await
+    }
+}
+
+/// Wait for the writer to finish, for `wait` and no longer, then end it.
+/// The reader has gone, so nothing more is coming for it to send.
+async fn finish_writer(mut writer: tokio::task::JoinHandle<()>, wait: std::time::Duration) {
+    if tokio::time::timeout(wait, &mut writer).await.is_err() {
+        writer.abort();
+        let _ = writer.await;
+    }
+}
 
 /// Send a direct response (sync_pull/sync_push result) to the writer task.
 /// Uses an async send with a timeout — these are responses the client is
@@ -108,7 +167,7 @@ pub async fn handle_ws(
         server_time: iso_now(),
     };
     if let Ok(json) = serde_json::to_string(&msg) {
-        if ws_tx.send(Message::Text(json.into())).await.is_err() {
+        if !matches!(tokio::time::timeout(SEND_TIMEOUT, ws_tx.send(Message::Text(json.into()))).await, Ok(Ok(()))) {
             return;
         }
     }
@@ -128,14 +187,14 @@ pub async fn handle_ws(
     let (close_reason_tx, close_reason_rx) = watch::channel::<Option<String>>(None);
 
     let cid_for_writer = cid.clone();
-    let writer_handle = tokio::spawn(writer_task(ws_tx, out_rx, broadcast_rx, cid_for_writer, shutdown_rx, close_reason_rx));
+    let writer_handle = tokio::spawn(writer_task(ws_tx, out_rx, broadcast_rx, cid_for_writer, shutdown_rx, close_reason_rx, WRITER_SEND_TIMEOUT));
 
     // Reader task: runs in the current task
     reader_task(&mut ws_rx, &sync, &cid, &out_tx, &close_reason_tx).await;
 
     // Reader exited (client disconnected or error) — drop out_tx to signal writer
     drop(out_tx);
-    let _ = writer_handle.await;
+    finish_writer(writer_handle, WRITER_DRAIN).await;
     tracing::info!("Client {} disconnected", cid);
 }
 
@@ -143,14 +202,16 @@ pub async fn handle_ws(
 /// the reader (via out_rx) and broadcast notifications (via broadcast_rx).
 /// Also listens for the server shutdown signal to send a clean Close frame
 /// before the process exits.
-async fn writer_task(
-    mut ws_tx: futures_util::stream::SplitSink<WebSocket, Message>,
+async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
+    sink: S,
     mut out_rx: mpsc::Receiver<ServerMessage>,
     mut broadcast_rx: broadcast::Receiver<(String, ServerMessage)>,
     cid: String,
     mut shutdown_rx: watch::Receiver<bool>,
     close_reason_rx: watch::Receiver<Option<String>>,
+    send_limit: std::time::Duration,
 ) {
+    let mut ws_tx = Deadlined { sink, limit: send_limit, dead: false };
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     // First tick fires immediately — skip it so we don't ping right after connect.
     ping_interval.tick().await;
@@ -449,4 +510,81 @@ async fn reader_task(
 
 fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
+
+    /// A peer that takes nothing: never ready for a message, never closed.
+    /// Counts how often it is asked to close.
+    struct Stalled(Arc<AtomicUsize>);
+
+    impl futures_util::Sink<Message> for Stalled {
+        type Error = std::io::Error;
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Poll::Pending
+        }
+    }
+
+    /// The writer of a connection whose peer stopped reading ends, and with
+    /// it the connection's slot is returned.
+    #[tokio::test]
+    async fn the_writer_gives_up_on_a_peer_that_takes_nothing() {
+        let closes = Arc::new(AtomicUsize::new(0));
+        let (out_tx, out_rx) = mpsc::channel::<ServerMessage>(4);
+        let (_broadcast_tx, broadcast_rx) = broadcast::channel::<(String, ServerMessage)>(4);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_reason_tx, reason_rx) = watch::channel::<Option<String>>(None);
+        let writer = tokio::spawn(writer_task(
+            Stalled(closes.clone()), out_rx, broadcast_rx, "peer".into(), shutdown_rx, reason_rx,
+            std::time::Duration::from_millis(100),
+        ));
+        out_tx.send(ServerMessage::Error { message: "one".into() }).await.unwrap();
+        out_tx.send(ServerMessage::Error { message: "two".into() }).await.unwrap();
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(3), writer).await;
+        assert!(ended.is_ok(), "the writer was still inside a send its peer will never take");
+        // One send ran out of time. The goodbye after it was not waited for as well.
+        assert_eq!(closes.load(Ordering::Relaxed), 0);
+    }
+
+    /// Once the reader has gone the writer is waited for, not waited on.
+    #[tokio::test]
+    async fn a_writer_that_does_not_finish_is_ended() {
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let ended = Arc::new(AtomicBool::new(false));
+        let held = Dropped(ended.clone());
+        let writer = tokio::spawn(async move {
+            let _held = held;
+            std::future::pending::<()>().await;
+        });
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            finish_writer(writer, std::time::Duration::from_millis(100)),
+        ).await;
+        assert!(waited.is_ok(), "the connection waited on its writer without end");
+        assert!(ended.load(Ordering::Relaxed), "and the writer's task is gone, with what it held");
+
+        // One that finishes in time is simply waited for.
+        let quick = tokio::spawn(async {});
+        finish_writer(quick, std::time::Duration::from_secs(5)).await;
+    }
 }

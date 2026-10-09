@@ -107,11 +107,139 @@ const WALL_TIME_MS: u64 = 25_000;
 /// abandons it and starts a replacement instead of losing a worker for good.
 const WEDGE_GRACE_MS: u64 = 25_000;
 
-/// How many abandoned threads the pool will tolerate before it stops replacing
-/// them. Each one keeps burning a core, so replacing without limit turns a
-/// wedged-worker problem into a CPU-exhaustion one. Past this the server keeps
-/// serving on a reduced pool and says so.
+/// How many abandoned threads the pool will have running at once before it
+/// stops replacing wedged workers. Each one keeps burning a core, so replacing
+/// without limit turns a wedged-worker problem into a CPU-exhaustion one. At
+/// the limit a wedged worker is left where it is, and serves again when its
+/// call returns.
 const MAX_ABANDONED_WORKERS: usize = 8;
+
+/// What the watchdog and the workers both keep of the threads the pool has
+/// given up on.
+///
+/// It used to be a count the watchdog kept to itself and never lowered: the
+/// eighth stall in a process's life was the last one a replacement was
+/// started for, however long ago the other seven threads had finished and
+/// gone. From then on a wedged worker was marked abandoned with nothing to
+/// replace it, and left the pool when its call came back healthy. The pool
+/// shrank by one each time, to nothing, while /health said ok. The threads a
+/// replacement added to the process-wide budget were not given back when the
+/// thread they replaced exited, either.
+#[derive(Default)]
+struct Abandonment(std::sync::Mutex<AbandonmentState>);
+
+#[derive(Default)]
+struct AbandonmentState {
+    /// Abandoned threads still inside the call they were left in.
+    live: usize,
+    /// Threads this pool has beyond the ones it started with: one for each
+    /// replacement whose original has not exited yet.
+    extra_threads: usize,
+    /// The runtime is gone and has given its whole thread budget back.
+    closed: bool,
+}
+
+impl Abandonment {
+    fn state(&self) -> std::sync::MutexGuard<'_, AbandonmentState> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Take a place for one more abandoned thread. False at the limit.
+    fn reserve(&self) -> bool {
+        let mut state = self.state();
+        if state.live >= MAX_ABANDONED_WORKERS {
+            return false;
+        }
+        state.live += 1;
+        true
+    }
+
+    /// Give the place back unused: no replacement could be started.
+    fn release(&self) {
+        let mut state = self.state();
+        state.live = state.live.saturating_sub(1);
+    }
+
+    /// A replacement now runs beside the thread it replaces.
+    fn replaced(&self) {
+        self.state().extra_threads += 1;
+    }
+
+    /// An abandoned thread's call returned and the thread is going. Its place
+    /// is free again; true when its share of the process-wide thread budget
+    /// is the caller's to give back (false once the runtime has closed and
+    /// given everything back itself).
+    fn exited(&self) -> bool {
+        let mut state = self.state();
+        state.live = state.live.saturating_sub(1);
+        if state.closed {
+            return false;
+        }
+        state.extra_threads = state.extra_threads.saturating_sub(1);
+        true
+    }
+
+    /// The runtime is dropped: how many threads beyond its own it still holds.
+    fn close(&self) -> usize {
+        let mut state = self.state();
+        state.closed = true;
+        state.extra_threads
+    }
+
+    fn live(&self) -> usize {
+        self.state().live
+    }
+}
+
+/// Give up on a worker wedged in a native call, if it can be replaced.
+///
+/// Three things are needed, in this order: a place among the abandoned, a
+/// thread from the process-wide budget, and the replacement itself, which
+/// `start` makes. Only with all three is the worker marked abandoned. Marked
+/// first, as it was, a worker that could not be replaced still left the pool
+/// when its call returned.
+fn replace_wedged(
+    guard: &CallGuard,
+    abandonment: &Abandonment,
+    start: impl FnOnce() -> Result<Arc<CallGuard>, String>,
+) -> Option<Arc<CallGuard>> {
+    let refuse = |why: String| -> Option<Arc<CallGuard>> {
+        // Once for each stall, not once a tick for as long as it lasts.
+        if !guard.wedge_reported.swap(true, Ordering::Relaxed) {
+            tracing::error!(
+                "Worker wedged in a native call and not replaced ({why}). It stays in the pool \
+                 and serves again when the call returns. This is almost always a catastrophic \
+                 regex or a huge JSON.parse."
+            );
+        }
+        None
+    };
+    if !abandonment.reserve() {
+        return refuse(format!("{MAX_ABANDONED_WORKERS} abandoned threads are still running, the most allowed"));
+    }
+    if GLOBAL_WORKER_COUNT.fetch_add(1, Ordering::AcqRel) >= MAX_GLOBAL_WORKER_THREADS {
+        GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+        abandonment.release();
+        return refuse(format!("the process-wide limit of {MAX_GLOBAL_WORKER_THREADS} worker threads is in use"));
+    }
+    match start() {
+        Ok(replacement) => {
+            guard.abandoned.store(true, Ordering::Relaxed);
+            abandonment.replaced();
+            tracing::error!(
+                abandoned = abandonment.live(),
+                "Worker wedged in a native call — abandoned it and started a replacement. \
+                 The stuck thread holds a core until its call returns."
+            );
+            Some(replacement)
+        }
+        Err(why) => {
+            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+            abandonment.release();
+            refuse(why)
+        }
+    }
+}
 
 /// The longest [`ServerRuntime::call`] will wait for a worker's reply.
 ///
@@ -178,20 +306,27 @@ struct CallGuard {
     /// Set once the watchdog has given up on this worker and replaced it, so it
     /// is neither warned about nor replaced twice.
     abandoned: AtomicBool,
+    /// The current stall has been reported as one that cannot be replaced.
+    wedge_reported: AtomicBool,
+    /// Shared with the watchdog and the runtime.
+    abandonment: Arc<Abandonment>,
 }
 
 impl CallGuard {
-    fn new() -> Self {
+    fn new(abandonment: Arc<Abandonment>) -> Self {
         Self {
             abort: Arc::new(AtomicBool::new(false)),
             deadline_ms: AtomicU64::new(0),
             abandoned: AtomicBool::new(false),
+            wedge_reported: AtomicBool::new(false),
+            abandonment,
         }
     }
 
     /// Arm for a call that may run for `WALL_TIME_MS`.
     fn arm(&self) {
         self.abort.store(false, Ordering::Relaxed);
+        self.wedge_reported.store(false, Ordering::Relaxed);
         self.deadline_ms.store(elapsed_ms() + WALL_TIME_MS, Ordering::Relaxed);
     }
 
@@ -211,6 +346,8 @@ enum ScriptRequest {
         args: Vec<serde_json::Value>,
         transaction: TransactionMode,
         cancellation: Arc<AtomicBool>,
+        /// Set by the worker that takes the call off the queue.
+        started: Arc<AtomicBool>,
         reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
     },
 }
@@ -275,7 +412,7 @@ pub struct ServerRuntime {
     init_source: Arc<std::sync::Mutex<Option<String>>>,
     /// Replacement workers the watchdog started. Counted against the global
     /// thread cap like any other worker, and returned to it on drop.
-    replacements: Arc<std::sync::atomic::AtomicUsize>,
+    abandonment: Arc<Abandonment>,
 }
 
 impl ServerRuntime {
@@ -331,9 +468,10 @@ impl ServerRuntime {
         let (work_tx, work_rx) = crossbeam_channel::bounded::<ScriptRequest>(worker_count * 2);
         let mut init_txs = Vec::with_capacity(worker_count);
         let mut guards = Vec::with_capacity(worker_count);
+        let abandonment = Arc::new(Abandonment::default());
 
         for i in 0..worker_count {
-            match Self::spawn_worker(format!("softn-worker-{}", i), factory.clone(), work_rx.clone()) {
+            match Self::spawn_worker(format!("softn-worker-{}", i), factory.clone(), work_rx.clone(), abandonment.clone()) {
                 Ok((init_tx, guard)) => {
                     init_txs.push(init_tx);
                     guards.push(guard);
@@ -355,13 +493,11 @@ impl ServerRuntime {
         let wd_factory = factory.clone();
         let wd_work_rx = work_rx.clone();
         let wd_source = init_source.clone();
-        let replacements_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let wd_replacements = replacements_count.clone();
+        let wd_abandonment = abandonment.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("softn-vm-watchdog".to_string())
             .spawn(move || {
                 let mut guards = guards;
-                let mut abandoned = 0usize;
                 let mut next_id = guards.len();
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(WATCHDOG_TICK);
@@ -389,65 +525,27 @@ impl ServerRuntime {
                         if now < deadline.saturating_add(WEDGE_GRACE_MS) {
                             continue;
                         }
-                        g.abandoned.store(true, Ordering::Relaxed);
-                        if abandoned >= MAX_ABANDONED_WORKERS {
-                            tracing::error!(
-                                abandoned = abandoned,
-                                limit = MAX_ABANDONED_WORKERS,
-                                "Worker wedged in a native call, but the abandoned-thread limit is \
-                                 reached — NOT replacing it, so the pool is now smaller. This is \
-                                 almost always a catastrophic regex or a huge JSON.parse."
-                            );
-                            continue;
-                        }
-                        // A replacement is an additional thread — the wedged one
-                        // cannot be reclaimed — so it has to come out of the same
-                        // global budget as any other worker.
-                        if GLOBAL_WORKER_COUNT.fetch_add(1, Ordering::Relaxed) >= MAX_GLOBAL_WORKER_THREADS {
-                            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
-                            tracing::error!(
-                                "Worker wedged, but the global thread limit ({}) leaves no room for                                  a replacement — the pool is now smaller.",
-                                MAX_GLOBAL_WORKER_THREADS
-                            );
-                            continue;
-                        }
-                        abandoned += 1;
-                        let source = wd_source.lock().ok().and_then(|s| s.clone());
-                        let Some(source) = source else {
-                            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
-                            abandoned -= 1;
-                            tracing::error!("Worker wedged before init completed — not replacing it");
-                            continue;
-                        };
-                        match Self::spawn_worker(
-                            format!("softn-worker-r{}", next_id),
-                            wd_factory.clone(),
-                            wd_work_rx.clone(),
-                        ) {
-                            Ok((init_tx, guard)) => {
-                                // The replacement initialises itself off the same
-                                // source; nothing is waiting on the reply.
-                                let (reply_tx, _reply_rx) = std::sync::mpsc::channel();
-                                if init_tx.send(ScriptRequest::Init { source, reply: reply_tx }).is_ok() {
-                                    tracing::error!(
-                                        abandoned = abandoned,
-                                        "Worker wedged in a native call — abandoned it and started \
-                                         a replacement. The stuck thread keeps consuming a core \
-                                         until the process exits."
-                                    );
-                                    replacements.push(guard);
-                                    wd_replacements.fetch_add(1, Ordering::Relaxed);
-                                    next_id += 1;
-                                } else {
-                                    GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
-                                    abandoned -= 1;
-                                }
-                            }
-                            Err(e) => {
-                                GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
-                                abandoned -= 1;
-                                tracing::error!("Failed to spawn replacement worker: {}", e);
-                            }
+                        let id = next_id;
+                        let replacement = replace_wedged(g, &wd_abandonment, || {
+                            let source = wd_source.lock().ok().and_then(|s| s.clone())
+                                .ok_or_else(|| "its script had not finished loading".to_string())?;
+                            let (init_tx, guard) = Self::spawn_worker(
+                                format!("softn-worker-r{}", id),
+                                wd_factory.clone(),
+                                wd_work_rx.clone(),
+                                wd_abandonment.clone(),
+                            )
+                            .map_err(|e| format!("a thread could not be started: {e}"))?;
+                            // The replacement initialises itself off the same
+                            // source; nothing is waiting on the reply.
+                            let (reply_tx, _reply_rx) = std::sync::mpsc::channel();
+                            init_tx.send(ScriptRequest::Init { source, reply: reply_tx })
+                                .map_err(|_| "the new thread ended before it was given the script".to_string())?;
+                            Ok(guard)
+                        });
+                        if let Some(replacement) = replacement {
+                            replacements.push(replacement);
+                            next_id += 1;
                         }
                     }
                     guards.extend(replacements);
@@ -468,7 +566,7 @@ impl ServerRuntime {
             known_globals: OnceLock::new(),
             watchdog_stop,
             init_source,
-            replacements: replacements_count,
+            abandonment,
         }))
     }
 
@@ -478,12 +576,13 @@ impl ServerRuntime {
         name: String,
         factory: Arc<F>,
         work_rx: crossbeam_channel::Receiver<ScriptRequest>,
+        abandonment: Arc<Abandonment>,
     ) -> Result<(crossbeam_channel::Sender<ScriptRequest>, Arc<CallGuard>), std::io::Error>
     where
         F: Fn() -> BridgeSet + Send + Sync + 'static,
     {
         let (init_tx, init_rx) = crossbeam_channel::bounded::<ScriptRequest>(1);
-        let guard = Arc::new(CallGuard::new());
+        let guard = Arc::new(CallGuard::new(abandonment));
         let guard_clone = guard.clone();
         std::thread::Builder::new().name(name).spawn(move || {
             Self::script_thread(init_rx, work_rx, &*factory, &guard_clone);
@@ -563,6 +662,10 @@ impl ServerRuntime {
                 tracing::warn!(
                     "Abandoned worker finished its call — exiting rather than rejoining                      the pool, where it would run unbounded."
                 );
+                // Its place among the abandoned and its thread come back.
+                if guard.abandonment.exited() {
+                    GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+                }
                 return;
             }
 
@@ -734,7 +837,8 @@ impl ServerRuntime {
                     }
                 }
             }
-            ScriptRequest::Call { name, args, transaction, cancellation, reply } => {
+            ScriptRequest::Call { name, args, transaction, cancellation, started, reply } => {
+                started.store(true, Ordering::Relaxed);
                 let result = match worker.as_mut() {
                     Some(w) => Self::call_handler(w, &name, args, transaction, cancellation, mutation_warned, guard),
                     None => Err("Runtime not initialized".into()),
@@ -959,12 +1063,14 @@ impl ServerRuntime {
         cancellation: Arc<AtomicBool>,
     ) -> Result<serde_json::Value, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let started = Arc::new(AtomicBool::new(false));
         self.work_tx
             .try_send(ScriptRequest::Call {
                 name: name.to_string(),
                 args,
                 transaction,
                 cancellation: cancellation.clone(),
+                started: started.clone(),
                 reply: reply_tx,
             })
             .map_err(|e| match e {
@@ -984,7 +1090,16 @@ impl ServerRuntime {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 cancellation.store(true, Ordering::Relaxed);
-                Err("Handler did not return — the worker is wedged".to_string())
+                // Two different things, and the log should say which: a call
+                // no worker ever took is a pool too small for the load (or
+                // one held up by long calls), not a wedged worker.
+                if started.load(Ordering::Relaxed) {
+                    tracing::warn!(handler = name, "Handler did not return within {}s — its worker is wedged", MAX_CALL_WAIT.as_secs());
+                    Err("Handler did not return — the worker is wedged".to_string())
+                } else {
+                    tracing::warn!(handler = name, "No worker took the call within {}s — every worker was busy", MAX_CALL_WAIT.as_secs());
+                    Err("Handler did not start — every worker was busy".to_string())
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Script worker died".to_string())
@@ -1004,7 +1119,7 @@ impl ServerRuntime {
 impl Drop for ServerRuntime {
     fn drop(&mut self) {
         self.watchdog_stop.store(true, Ordering::Relaxed);
-        let extra = self.replacements.load(Ordering::Relaxed);
+        let extra = self.abandonment.close();
         GLOBAL_WORKER_COUNT.fetch_sub(self.worker_count + extra, Ordering::Relaxed);
     }
 }
@@ -1035,12 +1150,18 @@ const MAX_JSON_DEPTH: usize = 64;
 const MAX_STRING_VALUE_LEN: usize = 2 * 1024 * 1024;
 const MAX_INPUT_STRING_VALUE_LEN: usize = 16 * 1024 * 1024;
 
+/// The most a handler's whole answer may be, as JSON: the PHP host's 3 MiB
+/// (wasm-host.mjs). It was the 2 MiB a single string is held to, so an answer
+/// between the two worked on that host and was a 500 on this one. One string
+/// in it is still held to MAX_STRING_VALUE_LEN.
+const MAX_PRIVATE_RESPONSE_BYTES: usize = 3 * 1024 * 1024;
+
 pub(crate) fn validate_private_response(value: &serde_json::Value) -> Result<(), String> {
     let valid = value.get("status").and_then(|s| s.as_u64())
         .is_some_and(|status| (200..=599).contains(&status))
         && value.get("body").is_some();
     let bounded = serde_json::to_vec(value)
-        .is_ok_and(|bytes| bytes.len() <= MAX_STRING_VALUE_LEN);
+        .is_ok_and(|bytes| bytes.len() <= MAX_PRIVATE_RESPONSE_BYTES);
     if !valid || !bounded {
         return Err("Handler returned an invalid or oversized response".into());
     }
@@ -1179,6 +1300,20 @@ fn number_to_json(n: f64) -> serde_json::Value {
 mod host_json_tests {
     use super::*;
 
+    /// A whole answer may be 3 MiB, as on the PHP host, of strings of at most 2 MiB.
+    #[test]
+    fn an_answer_may_be_the_php_hosts_size() {
+        let piece = "x".repeat(1024 * 1024);
+        let answer = |pieces: usize| serde_json::json!({"status": 200, "body": vec![piece.clone(); pieces]});
+        // Two and a half megabytes: refused when the bound was one string's.
+        let mut fits = answer(2);
+        fits["body"].as_array_mut().unwrap().push(serde_json::Value::String("x".repeat(512 * 1024)));
+        assert!(validate_private_response(&fits).is_ok());
+        assert!(validate_private_response(&answer(3)).is_err(), "3 MiB of text and its punctuation is over");
+        assert!(validate_private_response(&serde_json::json!({"status": 99, "body": {}})).is_err());
+        assert!(validate_private_response(&serde_json::json!({"status": 200})).is_err());
+    }
+
     #[test]
     fn utf16_json_preserves_pairs_nul_and_nested_text() {
         let value = HostValue::Object(vec![("body".into(), HostValue::Array(vec![
@@ -1269,6 +1404,88 @@ mod host_json_tests {
         assert_eq!(state.get_slot(slot("n")), HostValue::Float32Array(vec![2.0, 3.0]));
         let restored = state.set_slot(slot("n"), &HostValue::Number(1.0));
         assert_eq!(restored, state.get_slot(slot("n")) == HostValue::Number(1.0), "a refused write leaves the slot as the handler left it, and isolate() rebuilds");
+    }
+}
+
+#[cfg(test)]
+mod abandonment_tests {
+    use super::*;
+
+    fn guard(abandonment: &Arc<Abandonment>) -> Arc<CallGuard> {
+        Arc::new(CallGuard::new(abandonment.clone()))
+    }
+
+    /// The limit is on abandoned threads that are still running, not on how
+    /// many stalls a process has ever had.
+    #[test]
+    fn a_place_among_the_abandoned_comes_back_when_the_thread_exits() {
+        let abandonment = Abandonment::default();
+        for _ in 0..MAX_ABANDONED_WORKERS {
+            assert!(abandonment.reserve());
+            abandonment.replaced();
+        }
+        assert!(!abandonment.reserve(), "the ninth has no place while eight still run");
+        assert!(abandonment.exited(), "the thread's share of the budget is the caller's to give back");
+        assert_eq!(abandonment.live(), MAX_ABANDONED_WORKERS - 1);
+        assert!(abandonment.reserve(), "and one more may be abandoned in its place");
+        // A place taken and not used is given back whole.
+        abandonment.release();
+        assert_eq!(abandonment.live(), MAX_ABANDONED_WORKERS - 1);
+    }
+
+    /// The runtime gives its whole budget back when it is dropped; a thread
+    /// that outlives it must not give its share back a second time.
+    #[test]
+    fn a_thread_that_outlives_its_runtime_gives_nothing_back_twice() {
+        let abandonment = Abandonment::default();
+        assert!(abandonment.reserve());
+        abandonment.replaced();
+        assert!(abandonment.reserve());
+        abandonment.replaced();
+        assert!(abandonment.exited());
+        assert_eq!(abandonment.close(), 1, "one replacement's original is still running");
+        assert!(!abandonment.exited(), "the runtime already gave that thread's share back");
+        assert_eq!(abandonment.live(), 0);
+    }
+
+    /// A wedged worker is only given up on when its replacement has started.
+    #[test]
+    fn a_worker_that_cannot_be_replaced_stays_in_the_pool() {
+        let abandonment = Arc::new(Abandonment::default());
+
+        // No thread could be started: nothing is taken, nothing is marked.
+        let wedged = guard(&abandonment);
+        assert!(replace_wedged(&wedged, &abandonment, || Err("no thread".to_string())).is_none());
+        assert!(!wedged.abandoned.load(Ordering::Relaxed), "it would have left the pool when its call returned");
+        assert_eq!(abandonment.live(), 0);
+        assert!(wedged.wedge_reported.load(Ordering::Relaxed));
+        // The next call it takes is a new one to report on.
+        wedged.arm();
+        assert!(!wedged.wedge_reported.load(Ordering::Relaxed));
+        wedged.disarm();
+
+        // Replaced: marked, counted, and the replacement is handed back.
+        let replacement = guard(&abandonment);
+        let handed = replacement.clone();
+        let got = replace_wedged(&wedged, &abandonment, move || Ok(handed));
+        assert!(got.is_some_and(|g| Arc::ptr_eq(&g, &replacement)));
+        assert!(wedged.abandoned.load(Ordering::Relaxed));
+        assert_eq!(abandonment.live(), 1);
+        // This test took one thread from the process-wide budget as a
+        // replacement does; give it back as the exiting thread would.
+        assert!(abandonment.exited());
+        GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+
+        // At the limit: the start is not even tried.
+        for _ in 0..MAX_ABANDONED_WORKERS {
+            assert!(abandonment.reserve());
+        }
+        let late = guard(&abandonment);
+        let mut tried = false;
+        assert!(replace_wedged(&late, &abandonment, || { tried = true; Err("unreached".to_string()) }).is_none());
+        assert!(!tried);
+        assert!(!late.abandoned.load(Ordering::Relaxed));
+        assert_eq!(abandonment.live(), MAX_ABANDONED_WORKERS);
     }
 }
 

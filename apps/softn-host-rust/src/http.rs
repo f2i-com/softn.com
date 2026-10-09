@@ -209,15 +209,121 @@ pub async fn serve_multi(manager: Arc<TenantManager>, host: &str, port: u16, opt
     Ok(())
 }
 
+/// What bounds a connection, beyond the time it has to send its headers.
+#[derive(Clone, Copy)]
+pub struct ServeLimits {
+    /// How long a client may take to send a request's headers, and how long
+    /// an idle keep-alive connection is kept.
+    pub header_timeout: Duration,
+    /// How long a write may make no progress at all before the connection is
+    /// dropped (see [`StallGuard`]).
+    pub write_stall: Duration,
+    /// Connections served at once. The rest wait in the listen queue.
+    pub connections: usize,
+    /// How long shutdown waits for the requests in flight.
+    pub drain: Duration,
+}
+
+impl ServeLimits {
+    pub const fn with_header_timeout(header_timeout: Duration) -> Self {
+        Self {
+            header_timeout,
+            write_stall: Duration::from_secs(30),
+            // Under the 1024 descriptors a process is given by default, with
+            // room for the databases and files the host itself holds open.
+            connections: 768,
+            // A handler in flight may take MAX_CALL_WAIT plus its margin.
+            drain: Duration::from_secs(40),
+        }
+    }
+}
+
+/// A stream whose writes may not stall.
+///
+/// A response is written as fast as the client reads it. A client that asks
+/// for a file or a large answer and then reads nothing leaves the write
+/// pending for ever: hyper has a timeout for reading headers and none for
+/// writing, so each such connection held a task, a descriptor and an open
+/// file until the process ran out of them. This counts the time a write has
+/// made no progress at all, and fails it past `limit`; any byte the peer
+/// takes starts the count again, so a slow link is not a stalled one. It
+/// sits under hyper, and so under an upgraded WebSocket as well.
+pub(crate) struct StallGuard<S> {
+    inner: S,
+    limit: Duration,
+    stalled: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<S> StallGuard<S> {
+    pub(crate) fn new(inner: S, limit: Duration) -> Self {
+        Self { inner, limit, stalled: None }
+    }
+
+    /// The write under way is pending: start the count, or see whether it has run out.
+    fn wait<T>(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<T>> {
+        let limit = self.limit;
+        let sleep = self.stalled.get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
+        match std::future::Future::poll(sleep.as_mut(), cx) {
+            std::task::Poll::Ready(()) => {
+                self.stalled = None;
+                std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the peer stopped reading",
+                )))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+
+    fn progress<T>(&mut self, result: std::task::Poll<std::io::Result<T>>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<T>> {
+        match result {
+            std::task::Poll::Ready(done) => {
+                self.stalled = None;
+                std::task::Poll::Ready(done)
+            }
+            std::task::Poll::Pending => self.wait(cx),
+        }
+    }
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for StallGuard<S> {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for StallGuard<S> {
+    fn poll_write(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+        let this = &mut *self;
+        let result = std::pin::Pin::new(&mut this.inner).poll_write(cx, buf);
+        this.progress(result, cx)
+    }
+
+    fn poll_write_vectored(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, bufs: &[std::io::IoSlice<'_>]) -> std::task::Poll<std::io::Result<usize>> {
+        let this = &mut *self;
+        let result = std::pin::Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        this.progress(result, cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        let result = std::pin::Pin::new(&mut this.inner).poll_flush(cx);
+        this.progress(result, cx)
+    }
+
+    fn poll_shutdown(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        let result = std::pin::Pin::new(&mut this.inner).poll_shutdown(cx);
+        this.progress(result, cx)
+    }
+}
+
 /// Accept connections and serve `router` on each until `shutdown` resolves,
 /// then let the requests in flight finish.
-///
-/// This is `axum::serve` with a timer. axum builds each hyper connection
-/// without one, which leaves hyper's header-read timeout switched off: a
-/// client could hold a connection, and a file descriptor, for ever by sending
-/// a request's headers a byte at a time. The same timeout closes keep-alive
-/// connections that sit idle. Upgraded (WebSocket) connections leave hyper
-/// and are bounded by the sync layer's own idle timeout.
 pub async fn serve_router<F>(
     listener: tokio::net::TcpListener,
     router: Router,
@@ -227,10 +333,45 @@ pub async fn serve_router<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    serve_router_with(listener, router, ServeLimits::with_header_timeout(header_timeout), shutdown).await
+}
+
+/// [`serve_router`] with every limit given.
+///
+/// This is `axum::serve` with a timer and three bounds it does not have.
+/// axum builds each hyper connection without a timer, which leaves hyper's
+/// header-read timeout switched off: a client could hold a connection, and a
+/// file descriptor, for ever by sending a request's headers a byte at a time.
+/// The same timeout closes keep-alive connections that sit idle. The other
+/// side of that was still open: a client that never reads its answer
+/// ([`StallGuard`]), any number of such connections at once
+/// (`limits.connections`), and a shutdown that waited on them without end
+/// (`limits.drain`). Upgraded (WebSocket) connections leave hyper and are
+/// bounded by the sync layer's own limits, over the same guarded stream.
+pub async fn serve_router_with<F>(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    limits: ServeLimits,
+    shutdown: F,
+) -> Result<(), String>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     let (signal_tx, signal_rx) = tokio::sync::watch::channel(());
     let (close_tx, close_rx) = tokio::sync::watch::channel(());
+    let places = Arc::new(tokio::sync::Semaphore::new(limits.connections.max(1)));
     tokio::pin!(shutdown);
     loop {
+        // A place before the connection is taken: at the limit the rest wait
+        // in the listen queue, which costs the host nothing, instead of each
+        // taking a task and a descriptor until `accept` itself fails.
+        let place = tokio::select! {
+            place = places.clone().acquire_owned() => match place {
+                Ok(place) => place,
+                Err(_) => break,
+            },
+            _ = &mut shutdown => break,
+        };
         let (stream, peer) = tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok(pair) => pair,
@@ -249,12 +390,14 @@ where
         let mut signal_rx = signal_rx.clone();
         let close_rx = close_rx.clone();
         tokio::spawn(async move {
+            let _place = place;
             let service = hyper::service::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
                 request.extensions_mut().insert(ConnectInfo(peer));
                 tower::ServiceExt::oneshot(router.clone(), request.map(axum::body::Body::new))
             });
             let mut builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
-            builder.http1().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(header_timeout);
+            builder.http1().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(limits.header_timeout);
+            let stream = StallGuard::new(stream, limits.write_stall);
             let connection = builder.serve_connection_with_upgrades(hyper_util::rt::TokioIo::new(stream), service);
             tokio::pin!(connection);
             tokio::select! {
@@ -270,7 +413,11 @@ where
     drop(listener);
     let _ = signal_tx.send(());
     drop(close_rx);
-    close_tx.closed().await;
+    // The requests in flight get their time and no more: one connection that
+    // would not finish used to keep the process from ever exiting on its own.
+    if tokio::time::timeout(limits.drain, close_tx.closed()).await.is_err() {
+        tracing::warn!("Shutdown: connections still open after {}s were left behind", limits.drain.as_secs());
+    }
     Ok(())
 }
 
@@ -639,7 +786,7 @@ fn api_response(
     value: serde_json::Value,
 ) -> axum::response::Response {
     if !poll || status != StatusCode::OK {
-        return (status, Json(value)).into_response();
+        return api_headers((status, Json(value)).into_response());
     }
     use sha2::Digest;
     let bytes = serde_json::to_vec(&value).unwrap_or_default();
@@ -663,13 +810,28 @@ fn api_response(
         response.headers_mut().insert(axum::http::header::ETAG, value);
     }
     response.headers_mut().insert("x-softn-poll-interval", axum::http::HeaderValue::from_static("5000"));
-    response
+    api_headers(response)
 }
 
 // ── Errors in the shape handlers use ──
 
 fn json_error(status: StatusCode, message: &str, code: &str) -> axum::response::Response {
-    (status, Json(serde_json::json!({ "error": message, "code": code }))).into_response()
+    api_headers((status, Json(serde_json::json!({ "error": message, "code": code }))).into_response())
+}
+
+/// What the PHP host sends with every API answer (runtime/http.php): it is
+/// for this request and no other, and it is JSON, never a page, so nothing
+/// in it may load, run or be framed. On a handler's answer and on the host's
+/// own errors. A bundle's files are the page's to declare for, and are left
+/// to it.
+fn api_headers(mut response: axum::response::Response) -> axum::response::Response {
+    let headers = response.headers_mut();
+    headers.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    headers.insert(
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        axum::http::HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    response
 }
 
 async fn not_found() -> axum::response::Response {
@@ -1352,8 +1514,14 @@ impl ApiRouteOptions {
 /// which is what the PHP host forwards too. `Authorization` is forwarded on
 /// an application or anonymous route, where it is the app's session, and
 /// withheld on a host-token route, where it is the operator's token.
-fn script_headers(headers: &axum::http::HeaderMap, host_auth: bool) -> serde_json::Map<String, serde_json::Value> {
-    headers
+///
+/// On API v1 `authorization` and `idempotency-key` are always there, empty
+/// when not sent or when the host kept the header for itself, as the PHP
+/// host has always supplied them: a handler that writes
+/// `req.headers.authorization.slice(7)` answered its own 401 there and threw
+/// here, into a 500.
+fn script_headers(headers: &axum::http::HeaderMap, host_auth: bool, private_api: bool) -> serde_json::Map<String, serde_json::Value> {
+    let mut seen: serde_json::Map<String, serde_json::Value> = headers
         .iter()
         .filter(|(k, _)| {
             let name = k.as_str();
@@ -1366,7 +1534,50 @@ fn script_headers(headers: &axum::http::HeaderMap, host_auth: bool) -> serde_jso
                 (k.as_str().to_lowercase(), serde_json::Value::String(val.to_string()))
             })
         })
-        .collect()
+        .collect();
+    if private_api {
+        for name in ["authorization", "idempotency-key"] {
+            seen.entry(name).or_insert_with(|| serde_json::Value::String(String::new()));
+        }
+    }
+    seen
+}
+
+/// Photo decodes that may run at once, across the host.
+fn photo_decodes() -> &'static tokio::sync::Semaphore {
+    static PERMITS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+        tokio::sync::Semaphore::new(cores.clamp(2, 8))
+    })
+}
+
+enum UploadRefused {
+    /// Every decode the host allows at once is running.
+    Busy,
+    /// Not a photo the host takes.
+    Rejected,
+}
+
+/// Decode and re-encode an upload, if one of `permits` is free.
+///
+/// A decode holds up to 64 MB, and it runs before the handler: before an
+/// application route has looked at its session. The rate limit lets a
+/// minute's allowance through at once, so 120 uploads from one address were
+/// 120 decodes at once, some gigabytes, and more addresses multiplied it.
+/// The PHP host decodes inside one of its 4 to 16 worker slots. Past the
+/// bound the answer is the retryable busy one, not a queue.
+async fn sanitize_upload(permits: &'static tokio::sync::Semaphore, data_url: Option<String>) -> Result<serde_json::Value, UploadRefused> {
+    let permit = permits.try_acquire().map_err(|_| UploadRefused::Busy)?;
+    let sanitized = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        data_url.ok_or_else(|| "missing data_url".to_string())
+            .and_then(|url| crate::bridges::media::sanitize_photo(&url))
+    }).await;
+    match sanitized {
+        Ok(Ok(upload)) => Ok(upload),
+        _ => Err(UploadRefused::Rejected),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1413,13 +1624,13 @@ async fn execute_api_handler(
             .and_then(|b| b.get("data_url"))
             .and_then(|v| v.as_str())
             .map(String::from);
-        let sanitized = tokio::task::spawn_blocking(move || {
-            data_url.ok_or_else(|| "missing data_url".to_string())
-                .and_then(|url| crate::bridges::media::sanitize_photo(&url))
-        }).await;
-        match sanitized {
-            Ok(Ok(upload)) => (Some(serde_json::json!({})), Some(upload)),
-            _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+        match sanitize_upload(photo_decodes(), data_url).await {
+            Ok(upload) => (Some(serde_json::json!({})), Some(upload)),
+            Err(UploadRefused::Busy) => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+                "error": "The server is busy. Please retry.",
+                "code": "database_busy",
+            }))),
+            Err(UploadRefused::Rejected) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
                 "error": "Photo rejected. Use a still JPEG, PNG or WebP under 4 MB, 16 megapixels and 8192 pixels a side.",
                 "code": "photo_rejected",
             }))),
@@ -1428,7 +1639,7 @@ async fn execute_api_handler(
         (private_body, None)
     };
 
-    let headers_json = script_headers(&headers, options.host_auth);
+    let headers_json = script_headers(&headers, options.host_auth, options.private_api);
     let query_json = serde_json::to_value(&query.0).unwrap_or_default();
     let method_str = method.to_string();
     let path_str = uri.path().to_string();
@@ -1520,7 +1731,9 @@ async fn execute_api_handler(
             if e.starts_with("Worker queue full") || e.starts_with("Private database is busy") {
                 return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"The server is busy. Please retry.","code":"database_busy"})));
             }
-            if e.starts_with("Handler did not return") || e.starts_with("Request cancelled") {
+            // Logged where it is told apart (runtime.rs): a wedged worker, or
+            // a call no worker was free to take.
+            if e.starts_with("Handler did not return") || e.starts_with("Handler did not start") || e.starts_with("Request cancelled") {
                 return runner_unavailable();
             }
             tracing::error!("Script handler error: {}", e);
@@ -1794,7 +2007,7 @@ mod private_api_tests {
             db: None, http: None, fs: None, env: None, sql: None, crypto: None,
             allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
         }, Some(1)).unwrap();
-        runtime.init("function inspect(req) { if(req.body.invalid) return {status:999,body:{}}; if(req.body.large) return {status:200,body:{a:req.body.value,b:req.body.value}}; return {status:200,body:{length:req.body.value ? req.body.value.length : 0, ip:req.client_ip}}; }".into()).unwrap();
+        runtime.init("function inspect(req) { if(req.body.invalid) return {status:999,body:{}}; if(req.body.large) { var parts = {}; for (var i = 0; i < req.body.large; i++) parts['p' + i] = req.body.value; return {status:200,body:parts}; } return {status:200,body:{length:req.body.value ? req.body.value.length : 0, ip:req.client_ip}}; }".into()).unwrap();
         let invoke = |body: Vec<u8>, content_type: &'static str, input_limit: usize| {
             let mut headers = axum::http::HeaderMap::new();
             headers.insert("content-type", content_type.parse().unwrap());
@@ -1816,8 +2029,11 @@ mod private_api_tests {
         assert_eq!(value["ip"], "127.0.0.1");
         assert_eq!(invoke(Vec::new(), "application/json", 100).await.0, StatusCode::OK);
         assert_eq!(invoke(br#"{"invalid":true}"#.to_vec(), "application/json", 100).await.0, StatusCode::INTERNAL_SERVER_ERROR);
-        let oversized = serde_json::to_vec(&serde_json::json!({"large":true,"value":"x".repeat(MAX_JSON_PARSE_SIZE / 2)})).unwrap();
-        assert_eq!(invoke(oversized, "application/json", MAX_JSON_PARSE_SIZE).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+        // An answer of megabyte strings: two of them (it was a 500 while the
+        // bound was one string's 2 MiB) is within the PHP host's 3 MiB, four are not.
+        let answer_of = |parts: usize| serde_json::to_vec(&serde_json::json!({"large":parts,"value":"x".repeat(MAX_JSON_PARSE_SIZE / 2)})).unwrap();
+        assert_eq!(invoke(answer_of(2), "application/json", MAX_JSON_PARSE_SIZE).await.0, StatusCode::OK);
+        assert_eq!(invoke(answer_of(4), "application/json", MAX_JSON_PARSE_SIZE).await.0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
@@ -2035,11 +2251,11 @@ mod sync_upgrade_tests {
         headers.insert("cookie", "sid=1".parse().unwrap());
         headers.insert("proxy-authorization", "Basic eA==".parse().unwrap());
         headers.insert("x-custom", "kept".parse().unwrap());
-        let app_route = script_headers(&headers, false);
+        let app_route = script_headers(&headers, false, false);
         assert_eq!(app_route.get("authorization").and_then(|v| v.as_str()), Some("Bearer app-session"));
         assert_eq!(app_route.get("x-custom").and_then(|v| v.as_str()), Some("kept"));
         assert!(!app_route.contains_key("cookie") && !app_route.contains_key("proxy-authorization"));
-        let host_route = script_headers(&headers, true);
+        let host_route = script_headers(&headers, true, false);
         assert!(!host_route.contains_key("authorization"));
         assert!(host_route.contains_key("x-custom"));
     }

@@ -80,6 +80,10 @@ impl TenantManager {
         let mut tenants = HashMap::new();
         let mut errors = Vec::new();
 
+        // What there is to load, in name order: which of two bundles is read
+        // first was the directory's own order, different from one start to
+        // the next.
+        let mut candidates: Vec<(String, PathBuf)> = Vec::new();
         for entry in entries {
             let entry = match entry {
                 Ok(e) => e,
@@ -114,7 +118,14 @@ impl TenantManager {
                 // its onStart ran, and whichever copy was read first won.
                 continue;
             }
+            candidates.push((name_str.into_owned(), path));
+        }
+        candidates.sort();
 
+        // Two bundles that claim one id: decided before either is loaded.
+        let losers = contested_losers(&candidates, data_dir);
+
+        for (name, path) in candidates {
             if tenants.len() >= MAX_TENANTS {
                 tracing::error!(
                     "Tenant limit reached ({}) — skipping {}",
@@ -129,6 +140,13 @@ impl TenantManager {
             // then opened that tenant's database and files and run its own
             // top level and onStart against them, and only afterwards was
             // logged as a duplicate and dropped.
+            if let Some(owner) = losers.get(&name) {
+                // Not unpacked, not opened, not run.
+                let reason = format!("it claims the tenant ID of the bundle '{}', which is that tenant", owner);
+                tracing::error!("Failed to load bundle {}: {}", path.display(), reason);
+                errors.push(format!("{}: {}", path.display(), reason));
+                continue;
+            }
             let refuse_id = |id: &str| -> Option<String> {
                 // Reserved names conflict with global routes.
                 if RESERVED_TENANT_IDS.contains(&id) {
@@ -149,6 +167,7 @@ impl TenantManager {
                         "Loaded tenant '{}' ({})",
                         id, tenant.manifest.name
                     );
+                    record_owner(&tenant.data_dir, &name);
                     tenants.insert(id, Arc::new(tenant));
                 }
                 Err(e) => {
@@ -190,6 +209,106 @@ impl TenantManager {
     pub fn tenants(&self) -> impl Iterator<Item = &Arc<TenantContext>> {
         self.tenants.values()
     }
+}
+
+/// The file in a tenant's data directory that names the bundle which last
+/// served it: the bundle's own name in the bundles directory.
+const OWNER_FILE: &str = ".bundle";
+
+/// Note which bundle is serving this data. Best effort: it only ever settles
+/// a dispute, and without it a dispute is settled as it was before.
+fn record_owner(data_dir: &Path, bundle_name: &str) {
+    let file = data_dir.join(OWNER_FILE);
+    if std::fs::read_to_string(&file).is_ok_and(|recorded| recorded.trim() == bundle_name) {
+        return;
+    }
+    if let Err(e) = std::fs::write(&file, bundle_name) {
+        tracing::warn!("Could not record which bundle serves {}: {}", data_dir.display(), e);
+    }
+}
+
+/// Where a tenant's data lives, by the rule `load_tenant` applies.
+fn tenant_data_dir(data_dir_base: Option<&Path>, bundle_path: &Path, tenant_id: &str) -> PathBuf {
+    if let Some(base) = data_dir_base {
+        base.join(tenant_id)
+    } else if let Some(base) = dirs::data_dir() {
+        base.join("softn").join(tenant_id)
+    } else {
+        bundle_path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{}-data", tenant_id))
+    }
+}
+
+/// The id a bundle will claim, read without unpacking or running anything:
+/// `manifest.id`, else `manifest.name`, as `load_tenant` takes it.
+fn peek_tenant_id(path: &Path) -> Option<String> {
+    let bytes = if path.is_dir() {
+        std::fs::read(path.join("manifest.json")).ok()?
+    } else {
+        use std::io::Read;
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
+        let entry = archive.by_name("manifest.json").ok()?;
+        let mut bytes = Vec::new();
+        entry.take(1024 * 1024).read_to_end(&mut bytes).ok()?;
+        bytes
+    };
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    manifest.get("id").and_then(|v| v.as_str())
+        .or_else(|| manifest.get("name").and_then(|v| v.as_str()))
+        .map(String::from)
+}
+
+/// Of the bundles that claim an id another bundle claims too, the ones that
+/// are not that tenant: bundle name to the name of the bundle that is.
+///
+/// One id, two bundles: one of them is served and the other refused, and
+/// which was which used to be whichever the directory listed first. A copy
+/// left behind (`shop-old/`) could be the one that ran against the live
+/// data on the next start, and so could a bundle put there to do exactly
+/// that. The tenant is now the bundle that served that data before, which
+/// its data directory records ([`OWNER_FILE`]). The record only settles a
+/// dispute: a bundle that is renamed or moved, with no rival for its id, is
+/// loaded as ever and the record follows it. With no record (a first start,
+/// or one from before there was a record) the first by name is the tenant,
+/// which is at least the same one every time.
+fn contested_losers(candidates: &[(String, PathBuf)], data_dir_base: Option<&Path>) -> HashMap<String, String> {
+    let mut claims: HashMap<String, Vec<(&String, &PathBuf, String)>> = HashMap::new();
+    for (name, path) in candidates {
+        if let Some(id) = peek_tenant_id(path) {
+            claims.entry(id.to_ascii_lowercase()).or_default().push((name, path, id));
+        }
+    }
+    let mut losers = HashMap::new();
+    for (_, claimants) in claims {
+        if claimants.len() < 2 {
+            continue;
+        }
+        let recorded = claimants.iter().find(|(name, path, id)| {
+            std::fs::read_to_string(tenant_data_dir(data_dir_base, path, id).join(OWNER_FILE))
+                .is_ok_and(|owner| owner.trim() == name.as_str())
+        });
+        let (owner, _, id) = recorded.unwrap_or(&claimants[0]);
+        let names: Vec<&str> = claimants.iter().map(|(name, _, _)| name.as_str()).collect();
+        if recorded.is_some() {
+            tracing::error!(
+                "Tenant ID '{}' is claimed by {} bundles ({}). '{}' served this tenant's data before and is loaded; the rest are refused.",
+                id, names.len(), names.join(", "), owner
+            );
+        } else {
+            tracing::error!(
+                "Tenant ID '{}' is claimed by {} bundles ({}) and none is on record as having served its data. '{}' (first by name) is loaded and the rest are refused; remove the others.",
+                id, names.len(), names.join(", "), owner
+            );
+        }
+        for (name, _, _) in &claimants {
+            if name != owner {
+                losers.insert((*name).clone(), (*owner).clone());
+            }
+        }
+    }
+    losers
 }
 
 /// Whether directory `name` in `dir` is where a sibling `.softn`/`.zip` was
@@ -248,16 +367,7 @@ fn load_tenant(
     }
 
     // Data directory: <base>/<tenant_id>/
-    let data_dir = if let Some(base) = data_dir_base {
-        base.join(&tenant_id)
-    } else if let Some(base) = dirs::data_dir() {
-        base.join("softn").join(&tenant_id)
-    } else {
-        bundle_path.parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .join(format!("{}-data", tenant_id))
-    };
+    let data_dir = tenant_data_dir(data_dir_base, &bundle_path, &tenant_id);
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("Failed to create data dir: {}", e))?;
     let private_backend = crate::private_backend::PrivateBackend::load(&manifest, &bundle_path, &data_dir)?;
@@ -458,5 +568,76 @@ mod tests {
         let manager = TenantManager::load(&bundles, Some(&root.join("data")), Some(1), false).unwrap();
         assert_eq!(manager.tenant_ids(), vec!["game"]);
         assert_eq!(manager.get("game").unwrap().manifest.version, "2", "the archive, not a stale copy, is the tenant");
+    }
+
+    fn versioned(dir: &Path, id: &str, version: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let manifest = serde_json::json!({"id": id, "name": id, "version": version});
+        std::fs::write(dir.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    }
+
+    /// One id, two bundles: the tenant is the one that served that data
+    /// before, however the two are named, and it is the same one each start.
+    #[test]
+    fn of_two_bundles_claiming_an_id_the_one_that_served_its_data_before_is_the_tenant() {
+        let root = std::env::temp_dir().join(format!("softn-tenants-owner-{}", uuid::Uuid::new_v4()));
+        let bundles = root.join("bundles");
+        let data = root.join("data");
+        let version = |bundles: &Path| {
+            let manager = TenantManager::load(bundles, Some(&data), Some(1), false).unwrap();
+            assert_eq!(manager.tenant_ids(), vec!["shop"]);
+            manager.get("shop").unwrap().manifest.version.clone()
+        };
+        // The shop, alone: served, and on record.
+        versioned(&bundles.join("shop"), "shop", "real");
+        assert_eq!(version(&bundles), "real");
+        assert_eq!(std::fs::read_to_string(data.join("shop").join(OWNER_FILE)).unwrap(), "shop");
+        // A second bundle with its id, named to be read first.
+        versioned(&bundles.join("a-copy"), "shop", "impostor");
+        for _ in 0..2 {
+            assert_eq!(version(&bundles), "real", "a bundle that never served this data took the tenant");
+        }
+        assert_eq!(std::fs::read_to_string(data.join("shop").join(OWNER_FILE)).unwrap(), "shop");
+
+        // The archive form is read without being unpacked, and loses the same way.
+        std::fs::remove_dir_all(bundles.join("a-copy")).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(bundles.join("a-shop.softn")).unwrap());
+        zip.start_file("manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(br#"{"id":"shop","name":"shop","version":"archived impostor"}"#).unwrap();
+        zip.finish().unwrap();
+        assert_eq!(version(&bundles), "real");
+        assert!(!bundles.join("a-shop_bundle").exists(), "the refused archive was unpacked to find out its id");
+    }
+
+    /// The record settles a dispute and nothing else: a bundle renamed or
+    /// moved, with no rival, is the tenant it always was.
+    #[test]
+    fn a_renamed_bundle_is_still_its_tenant() {
+        let root = std::env::temp_dir().join(format!("softn-tenants-rename-{}", uuid::Uuid::new_v4()));
+        let data = root.join("data");
+        versioned(&root.join("bundles").join("shop-1.0"), "shop", "1.0");
+        TenantManager::load(&root.join("bundles"), Some(&data), Some(1), false).unwrap();
+        std::fs::rename(root.join("bundles").join("shop-1.0"), root.join("bundles").join("shop-1.1")).unwrap();
+        let manager = TenantManager::load(&root.join("bundles"), Some(&data), Some(1), false).unwrap();
+        assert_eq!(manager.tenant_ids(), vec!["shop"]);
+        assert_eq!(std::fs::read_to_string(data.join("shop").join(OWNER_FILE)).unwrap(), "shop-1.1");
+        // And a whole new bundles directory elsewhere, as a release does it.
+        versioned(&root.join("release-2").join("shop-1.1"), "shop", "1.1");
+        let manager = TenantManager::load(&root.join("release-2"), Some(&data), Some(1), false).unwrap();
+        assert_eq!(manager.tenant_ids(), vec!["shop"]);
+    }
+
+    /// With nothing on record the first by name is the tenant, every time.
+    #[test]
+    fn with_no_record_the_same_bundle_wins_every_start() {
+        let root = std::env::temp_dir().join(format!("softn-tenants-first-{}", uuid::Uuid::new_v4()));
+        versioned(&root.join("bundles").join("b"), "shop", "b");
+        versioned(&root.join("bundles").join("a"), "shop", "a");
+        versioned(&root.join("bundles").join("c"), "shop", "c");
+        for attempt in 0..3 {
+            let data = root.join(format!("data-{attempt}"));
+            let manager = TenantManager::load(&root.join("bundles"), Some(&data), Some(1), false).unwrap();
+            assert_eq!(manager.get("shop").unwrap().manifest.version, "a");
+        }
     }
 }

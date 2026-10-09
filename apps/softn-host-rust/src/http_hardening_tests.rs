@@ -707,3 +707,168 @@ async fn no_answer_leaves_its_type_to_the_browser() {
         assert!(head.contains("x-content-type-options: nosniff"), "{request}\n{head}");
     }
 }
+
+/// A handler's answer and the host's own errors carry what the PHP host's
+/// do: not to be stored, and nothing in them to load, run or be framed. A
+/// file of the bundle is the page's, and carries neither.
+#[tokio::test]
+async fn api_answers_are_not_stored_and_are_never_a_page() {
+    let addr = serve(settings_app()).await;
+    let host = addr.to_string();
+    let get = |path: &str| format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    for (request, expected) in [
+        (post(&host, "/api/settings", None, "{}", "application/json"), 200),
+        (get("/api/nope"), 404),
+        (get("/api/settings"), 405),
+    ] {
+        let (status, head, _) = send(addr, request.clone()).await;
+        assert_eq!(status, expected, "{request}");
+        assert!(head.contains("cache-control: no-store"), "{request}\n{head}");
+        assert!(head.contains("content-security-policy: default-src 'none'; frame-ancestors 'none'"), "{request}\n{head}");
+    }
+    let (status, head, _) = send(addr, get("/assets/note.txt")).await;
+    assert_eq!(status, 200);
+    assert!(!head.contains("content-security-policy") && !head.contains("no-store"), "{head}");
+    // A polled route's 200 and its 304 alike.
+    let polled = api_response(true, None, StatusCode::OK, serde_json::json!({"n": 1}));
+    assert_eq!(polled.headers().get("cache-control").unwrap(), "no-store");
+    let etag = polled.headers().get("etag").unwrap().clone();
+    let unchanged = api_response(true, Some(&etag), StatusCode::OK, serde_json::json!({"n": 1}));
+    assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(unchanged.headers().get("cache-control").unwrap(), "no-store");
+    assert!(unchanged.headers().get("content-security-policy").is_some());
+}
+
+/// `req.headers.authorization` and `req.headers["idempotency-key"]` are
+/// always there on API v1, as on the PHP host, so a handler may slice one
+/// without first asking whether it was sent.
+#[test]
+fn an_api_v1_handler_always_has_the_two_headers_it_reads() {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-request-id", "abc".parse().unwrap());
+    let seen = script_headers(&headers, false, true);
+    assert_eq!(seen["authorization"], "");
+    assert_eq!(seen["idempotency-key"], "");
+    assert_eq!(seen["x-request-id"], "abc");
+    // What was sent is what is seen.
+    headers.insert("authorization", "Bearer session".parse().unwrap());
+    headers.insert("idempotency-key", "k1".parse().unwrap());
+    let seen = script_headers(&headers, false, true);
+    assert_eq!(seen["authorization"], "Bearer session");
+    assert_eq!(seen["idempotency-key"], "k1");
+    // The host's own token is withheld, and the name is still there.
+    assert_eq!(script_headers(&headers, true, true)["authorization"], "");
+    // A legacy bundle sees what was sent and nothing added, as before.
+    let legacy = script_headers(&axum::http::HeaderMap::new(), false, false);
+    assert!(legacy.get("authorization").is_none() && legacy.get("idempotency-key").is_none());
+}
+
+/// A photo is decoded only while one of the host's decodes is free; past
+/// that the upload is told to come back, not queued.
+#[tokio::test]
+async fn photo_decodes_are_bounded() {
+    use base64::Engine;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(64, 64).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let data_url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png.into_inner()));
+    let permits: &'static tokio::sync::Semaphore = Box::leak(Box::new(tokio::sync::Semaphore::new(1)));
+
+    let held = permits.try_acquire().unwrap();
+    assert!(matches!(sanitize_upload(permits, Some(data_url.clone())).await, Err(UploadRefused::Busy)));
+    drop(held);
+    let upload = sanitize_upload(permits, Some(data_url)).await;
+    assert!(upload.is_ok_and(|u| u["sanitized"] == true));
+    // The place comes back whatever the decode made of the bytes.
+    assert!(matches!(sanitize_upload(permits, Some("data:image/png;base64,AAAA".into())).await, Err(UploadRefused::Rejected)));
+    assert!(matches!(sanitize_upload(permits, None).await, Err(UploadRefused::Rejected)));
+    assert_eq!(permits.available_permits(), 1);
+}
+
+/// A write that makes no progress is failed; one that is slow is not.
+#[tokio::test]
+async fn a_write_nobody_reads_is_failed_and_a_slow_one_is_not() {
+    let limit = std::time::Duration::from_millis(150);
+    // Nobody reads: the 64-byte pipe fills and the rest never leaves.
+    let (near, far) = tokio::io::duplex(64);
+    let mut guarded = StallGuard::new(near, limit);
+    let stalled = tokio::time::timeout(std::time::Duration::from_secs(5), guarded.write_all(&[7u8; 4096])).await;
+    let error = stalled.expect("the write was still pending: nothing bounds it").unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    drop(far);
+
+    // Read 32 bytes every 30 ms: a kilobyte takes about a second, several
+    // times the limit, and never goes the limit without a byte being taken.
+    let (near, mut far) = tokio::io::duplex(64);
+    let mut guarded = StallGuard::new(near, limit);
+    let reader = tokio::spawn(async move {
+        let mut taken = 0usize;
+        let mut chunk = [0u8; 32];
+        while taken < 1024 {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            taken += far.read(&mut chunk).await.unwrap();
+        }
+        taken
+    });
+    let started = std::time::Instant::now();
+    guarded.write_all(&[7u8; 1024]).await.expect("a slow reader is not a stalled one");
+    assert!(started.elapsed() > limit * 3, "the write was not slow enough to show anything");
+    assert_eq!(reader.await.unwrap(), 1024);
+}
+
+async fn serve_with(ctx: Arc<AppContext>, limits: ServeLimits, shutdown: tokio::sync::oneshot::Receiver<()>) -> (SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+    let (conn_tx, conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+    std::mem::forget(conn_rx);
+    let router = build_single_tenant_router(ctx, &test_options(false), conn_tx);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve_router_with(listener, router, limits, async move { let _ = shutdown.await; }));
+    (addr, server)
+}
+
+/// Past the limit a connection waits to be taken up; it is not served, and
+/// it does not cost the host a task and a descriptor while it waits.
+#[tokio::test]
+async fn connections_past_the_limit_wait_their_turn() {
+    let limits = ServeLimits { connections: 2, ..ServeLimits::with_header_timeout(std::time::Duration::from_secs(30)) };
+    let (_stop, stopped) = tokio::sync::oneshot::channel();
+    let (addr, _server) = serve_with(legacy_app(serde_json::json!({})), limits, stopped).await;
+    let host = addr.to_string();
+    // Two connections that have begun a request and not finished it.
+    let mut holders = Vec::new();
+    for _ in 0..2 {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(format!("GET /health HTTP/1.1\r\nHost: {host}\r\n").as_bytes()).await.unwrap();
+        holders.push(stream);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // A third is connected by the kernel and waits for a place.
+    let mut third = tokio::net::TcpStream::connect(addr).await.unwrap();
+    third.write_all(format!("GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut answer = [0u8; 12];
+    let early = tokio::time::timeout(std::time::Duration::from_millis(400), third.read_exact(&mut answer)).await;
+    assert!(early.is_err(), "the third connection was served while two held the only places");
+    // A place comes free, and it is served.
+    holders.pop();
+    tokio::time::timeout(std::time::Duration::from_secs(5), third.read_exact(&mut answer)).await
+        .expect("the third connection was never taken up").unwrap();
+    assert_eq!(&answer, b"HTTP/1.1 200");
+}
+
+/// Shutdown gives the requests in flight their time and then returns.
+#[tokio::test]
+async fn shutdown_does_not_wait_for_ever_on_a_connection_that_will_not_finish() {
+    let limits = ServeLimits {
+        drain: std::time::Duration::from_millis(300),
+        ..ServeLimits::with_header_timeout(std::time::Duration::from_secs(120))
+    };
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let (addr, server) = serve_with(legacy_app(serde_json::json!({})), limits, stopped).await;
+    // A request begun and never finished: it has two minutes to send its headers.
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(format!("POST /api/echo HTTP/1.1\r\nHost: {addr}\r\n").as_bytes()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    stop.send(()).unwrap();
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), server).await;
+    assert!(ended.is_ok(), "the server was still waiting on a connection that will not finish");
+    drop(stream);
+}
