@@ -110,8 +110,8 @@ describe('the guide names only components that exist', () => {
   ])('%s', (_language, guide) => {
     const tags = new Set([...guide.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]));
     const unknown = [...tags].filter((t) => !REGISTERED.has(t));
-    // <Header /> appears as an example of pasting an imported file, not as the component.
-    expect(unknown.filter((t) => t !== 'Header')).toEqual([]);
+    // <TaskRow /> is the guide's example of an imported page, which is placed by its tag and is not a component.
+    expect(unknown.filter((t) => t !== 'TaskRow')).toEqual([]);
     expect(tags.size).toBeGreaterThan(15);
   });
 });

@@ -12,6 +12,8 @@
  */
 
 import { createElement } from 'react';
+import { UI_IMPORT_PATTERN } from '@softn/core';
+import { resolveProjectRelativePath } from '../projectImport';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { validateProject } from '../validator';
 import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } from '../previewProject';
@@ -301,7 +303,9 @@ export function lintTemplates(files: Map<string, VFSFile>): { errors: string[]; 
   const errors: string[] = [];
   const warnings: string[] = [];
   for (const [path, file] of files) {
-    if (!/\.ui$/i.test(path) || typeof file.content !== 'string') continue;
+    if (typeof file.content !== 'string') continue;
+    if (/\.(ui|logic|py)$/i.test(path)) warnings.push(...emitUses(path, file.content));
+    if (!/\.ui$/i.test(path)) continue;
     // Blank out other languages, keeping line numbers.
     const template = file.content.replace(/<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, (block) => block.replace(/[^\n]/g, ' '));
     const lineOf = (index: number) => template.slice(0, index).split('\n').length;
@@ -317,6 +321,7 @@ export function lintTemplates(files: Map<string, VFSFile>): { errors: string[]; 
     for (const match of template.matchAll(/<(Input|TextArea)\b[^>]*\s:value=\{/g)) {
       warnings.push(`${path} line ${lineOf(match.index)}: <${match[1]} :value={…}> is one-way, so typing never changes the state. Use :bind={name}.`);
     }
+    warnings.push(...importedPageMisuse(path, file.content, template, lineOf));
   }
   return { errors, warnings };
 }
@@ -339,8 +344,80 @@ function blankTemplateComments(source: string): string {
   return out;
 }
 
-/** What the composer does with `<import Name from="./x.ui" />`: the same pattern, so the files checked are the files pasted in. */
-const UI_IMPORT = /<import\s+(\w+)\s+from=["']([^"']+)["']\s*\/>/g;
+/**
+ * What the composer does with `<import Name from="./x.ui" />`: core's own pattern, so the
+ * files checked are the files placed. The check had a copy that took only `from="…"`; the
+ * composer also places `from "…"`, and a page imported that way was placed and never checked.
+ */
+const UI_IMPORT = new RegExp(UI_IMPORT_PATTERN.source, 'g');
+
+/** An opening tag read from just after its name: where it ends, whether it closes itself, and the attributes written on it. */
+function readOpeningTag(template: string, from: number): { end: number; selfClosing: boolean; attributes: string[] } {
+  let depth = 0;
+  let quote: string | null = null;
+  let plain = '';
+  let i = from;
+  for (; i < template.length; i++) {
+    const ch = template[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth = Math.max(0, depth - 1);
+    } else if (ch === '>' && depth === 0) {
+      break;
+    } else if (depth === 0) {
+      // Only what is written on the tag itself: values, in braces or quotes, are left out.
+      plain += ch;
+    }
+  }
+  const selfClosing = /\/\s*$/.test(plain);
+  const attributes = [...plain.replace(/\/\s*$/, '').matchAll(/(?:^|\s)([@:]?[A-Za-z_][\w:.-]*)/g)].map((match) => match[1]);
+  return { end: Math.min(i + 1, template.length), selfClosing, attributes };
+}
+
+/**
+ * Uses of an imported page that carry what an imported page cannot take. `<Row />` places
+ * row.ui's markup where the tag is, in this page's scope; attributes and children on the tag
+ * are dropped (core says so in the console, once the page runs). The page composes, renders
+ * and passes nothing, so it is said here, at the tag, with what to do instead.
+ */
+function importedPageMisuse(path: string, source: string, template: string, lineOf: (index: number) => number): string[] {
+  const out: string[] = [];
+  for (const imported of source.matchAll(UI_IMPORT)) {
+    const tag = imported[1];
+    const file = resolveProjectRelativePath(path, imported[2]) ?? imported[2];
+    for (const use of template.matchAll(new RegExp(`<${tag}(?=[\\s/>])`, 'g'))) {
+      const opening = readOpeningTag(template, use.index + use[0].length);
+      const close = opening.selfClosing ? -1 : template.indexOf(`</${tag}`, opening.end);
+      const children = close >= 0 && /\S/.test(template.slice(opening.end, close));
+      if (opening.attributes.length === 0 && !children) continue;
+      const ignored = [
+        opening.attributes.length > 0 ? `the attributes written on it (${opening.attributes.join(', ')})` : '',
+        children ? 'the content written inside it' : '',
+      ].filter(Boolean).join(' and ');
+      const has = [opening.attributes.length > 0 ? 'no props and no events' : '', children ? 'no slot' : ''].filter(Boolean).join(', and ');
+      const instead = [
+        opening.attributes.length > 0 ? 'Remove the attributes, and keep state that belongs to one use (which row is being edited) in the page\'s logic.' : '',
+        children ? 'Write the content in the imported file, or beside the tag.' : '',
+      ].filter(Boolean).join(' ');
+      out.push(
+        `${path} line ${lineOf(use.index)}: <${tag}> is an imported page (${file}), not a component, so ${ignored} ${opening.attributes.length > 0 ? 'are' : 'is'} ignored: an imported page has ${has}. It is placed here as written, in this page's scope: it reads this page's state, calls its functions and sees a loop's variable by the same names. ${instead}`,
+      );
+    }
+  }
+  return out;
+}
+
+/** `$emit(` anywhere in a page or a logic file: it is another language's, and nothing here answers it. */
+function emitUses(path: string, source: string): string[] {
+  return [...source.matchAll(/(^|[^\w$])\$emit\s*\(/g)].map((match) =>
+    `${path} line ${source.slice(0, match.index + match[1].length).split('\n').length}: $emit does not exist in SoftN: an imported page has no events to send. It is placed in the page's scope, so call the page's function, or set its state, directly.`,
+  );
+}
 
 type CoreModule = typeof import('@softn/core');
 

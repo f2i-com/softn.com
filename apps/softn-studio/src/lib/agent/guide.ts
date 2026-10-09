@@ -104,7 +104,7 @@ Here is a minimal but complete todo app: the .ui file and its logic in \`logic/m
         <Button @click={() => add_task()} variant="primary">Add</Button>
       </Stack>
 
-      #each (task in tasks)
+      #each (task in tasks) key={task.id}
         <Card>
           <Stack direction="horizontal" gap="md" align="center">
             <Checkbox checked={task.done} @change={() => toggle_task(task.id)} />
@@ -218,7 +218,7 @@ A minimal but complete todo app: the page, its logic in \`logic/main.logic\`, an
 
       <Tabs tabs={[{ key: "all", label: "All" }, { key: "active", label: "Active" }, { key: "done", label: "Done" }]} activeKey={filter} @change={(key) => filter = key} />
 
-      #each (task in visibleTasks())
+      #each (task in visibleTasks()) key={task.id}
         <Card>
           <Stack direction="horizontal" gap="md" align="center">
             <Checkbox checked={task.done} @change={() => toggleTask(task.id)} />
@@ -364,11 +364,45 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 - Conditions go in parentheses. \`#elseif (…)\` and \`#else if (…)\` are the same branch. The index form is \`#each (item, i in items)\`; \`#each (item in items; let i)\` is a parse error.
 - The loop variable may take the item apart: \`#each ({ id, title } in tasks)\`, \`#each ([name, total] in Object.entries(totals))\` (no defaults there; use \`??\` where the name is used).
 - \`#each\` goes through a list, a \`Set\`, a \`Map\` (as \`[key, value]\` pairs), a record (its values, with the key as the second name: \`#each (value, key in settings)\`) and a whole number, which counts from 1 (\`#each (n in 5)\`). Text is not gone through letter by letter.
+- Give a loop over records a key, so each row keeps its identity as the list changes: \`#each (task in tasks) key={task.id}\`. Without one the page warns when it renders.
 - \`#if\` and \`#each\` may be written inside \`#empty\`.
 - Inline forms: \`<Box if={open}>…</Box>\`, \`<Card each={items} as="item">{item.title}</Card>\`.
 
-### Reuse
-\`<import Header from="./header.ui" />\` pastes that file's markup wherever \`<Header />\` appears, reading the page's state — but the tag's props and children are dropped, and \`<component>\`, \`<prop>\` and \`<slot>\` declarations do nothing useful. For repeated UI, loop over data with \`#each\` and keep the shared behaviour in logic functions.
+### Reuse: an imported page
+\`<import TaskRow from="./task-row.ui" />\` then \`<TaskRow />\` places that file's markup where the tag is, **in this page's scope**. It is not a component:
+- It reads this page's state, calls this page's functions and sees a loop's variable, by the same names the page uses.
+- Attributes and children written on the tag are dropped (\`<TaskRow task={task} @done={…} />\` passes nothing): there are no props, no events and no \`$emit\`. check_app warns at each such use.
+- The file has no scope of its own. State that belongs to one use, such as which row is being edited, lives in the page's logic (\`editingId\`), never in the imported file.
+- An imported file's \`<logic>\` joins the page's one scope, its \`<data>\` is declared by the page, and its own \`<App>\` root is taken off.
+
+\`ui/main.ui\`:
+
+\`\`\`softn
+<import TaskRow from="./task-row.ui" />
+<logic src="../${entry}" />
+
+<App>
+  <Stack direction="vertical" gap="sm" padding="lg">
+    #each (task in tasks) key={task.id}
+      <TaskRow />
+    #end
+  </Stack>
+</App>
+\`\`\`
+
+\`ui/task-row.ui\`, which reads \`task\` from the loop it is placed in and \`editingId\`, \`draft\`, \`rename\` and \`save\` from the page's logic:
+
+\`\`\`softn
+<Card>
+  #if (editingId === task.id)
+    <Input :bind={draft} />
+    <Button variant="primary" @click={() => save(task.id)}>Save</Button>
+  #else
+    <Text>{task.title}</Text>
+    <Button variant="ghost" @click={() => rename(task.id)}>Rename</Button>
+  #end
+</Card>
+\`\`\`
 
 ### Assets
 \`<Image src={asset("assets/logo.png")} alt="Logo" />\` — the path is from the bundle root, never \`../\`.
