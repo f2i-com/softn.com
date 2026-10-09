@@ -10,6 +10,7 @@ import type { SoftNBundle, BundleFile } from './types';
 import { readBundle, readBundleFromFile, readBundleFromUrl, seedXDBBundleData } from './bundle';
 import { parse } from '../parser';
 import { renderDocument } from '../renderer';
+import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
 import { getDefaultRegistry } from '../renderer/registry';
 import { getXDB } from '../runtime/xdb';
 import { AppScopeProvider, type AppScope } from '../loader/app-scope';
@@ -534,6 +535,12 @@ function BundleRendererInstance({
     [appId]
   );
 
+  // What the last drawing made, kept for the life of this mount so the next
+  // can hand React the same elements where nothing came out different.
+  const renderCacheRef = useRef<SoftNRenderCache | null>(null);
+  if (!renderCacheRef.current) renderCacheRef.current = createRenderCache();
+  const renderCache = renderCacheRef.current;
+
   // Build render context
   const context = useMemo<SoftNRenderContext>(() => {
     const runtimeHelpers = {
@@ -548,8 +555,9 @@ function BundleRendererInstance({
       computed: {},
       functions: runtimeHelpers,
       asyncFunctions: runtimeHelpers,
+      renderCache,
     };
-  }, [componentState, setState, props, runtime]);
+  }, [componentState, setState, props, runtime, renderCache]);
 
   // Loading state
   if (isLoading) {

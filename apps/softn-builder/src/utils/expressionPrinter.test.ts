@@ -249,6 +249,19 @@ const fixtures: Array<[string, unknown]> = [
   ['pick(undefined) === undefined', true],
   ['0x10 + a', 18],
   ['({ 1: a })[1]', 2],
+  // parameters that take their argument apart, have a default or gather the rest
+  ['Object.entries(user.profile).map(([key, value]) => key + value).join("")', 'firstAda'],
+  ['pick(({ profile: { first } }) => first)(user)', 'Ada'],
+  ['pick(({ tags: [head, ...tail], ...others }) => head + tail.length + Object.keys(others).length)(user)', 'x11'],
+  ['pick((first, second = first * 10, ...others) => first + second + others.length)(a)', 22],
+  ['pick(([p = a, q = b]) => p * q)([c])', 15],
+  ['pick(({ k: found = "none" }) => found)(mk())', 'v'],
+  ['pick(({ k = "none", absent = c }) => k + absent)(mk())', 'v5'],
+  ['pick(({ "a b": spaced }) => spaced)({ "a b": c })', 5],
+  ['items.reduce((sum, n) => sum + n, 0)', 6],
+  // a key that is worked out
+  ['({ [name]: a, fixed: b })[name]', 2],
+  ['Object.keys({ ...user.profile, ["k" + a]: 1 }).join(",")', 'first,k2'],
 ];
 
 describe('print → parse → print fixpoint, and engine agreement', () => {
@@ -386,6 +399,22 @@ describe('what the printer writes for the newer forms', () => {
 
   it('keeps a hexadecimal number as written', () => {
     expect(printExpression(exprOf('0xff8800'))).toBe('0xff8800');
+  });
+
+  it('writes a parameter as the pattern it is, not as the names it binds', () => {
+    // `params` lists the names; printing those alone would turn the entry
+    // callback into a function of two arguments.
+    expect(printExpression(exprOf('rows.map(([key, value]) => key)'))).toBe('rows.map(([key, value]) => key)');
+    expect(printExpression(exprOf('rows.map(({id,title:heading}) => id)'))).toBe('rows.map(({ id, title: heading }) => id)');
+    expect(printExpression(exprOf('(a, b = 1, ...rest) => a'))).toBe('(a, b = 1, ...rest) => a');
+    expect(printExpression(exprOf('({ size: s = "md" }, [x = 0, ...xs]) => s'))).toBe('({ size: s = "md" }, [x = 0, ...xs]) => s');
+    expect(printExpression(exprOf('(fn = x => x) => fn'))).toBe('(fn = (x) => x) => fn');
+    expect(printExpression(exprOf('({ minutes = 0, size: size = "md" }) => minutes'))).toBe('({ minutes = 0, size = "md" }) => minutes');
+  });
+
+  it('keeps a worked-out key in its brackets', () => {
+    expect(printExpression(exprOf('{ ...filters, [field]: value }'))).toBe('{ ...filters, [field]: value }');
+    expect(printExpression(exprOf('{ ["a" + n]: 1 }'))).toBe('{ ["a" + n]: 1 }');
   });
 });
 

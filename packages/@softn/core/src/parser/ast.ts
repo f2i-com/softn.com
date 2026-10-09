@@ -302,11 +302,19 @@ export interface IfBlock {
 
 /**
  * Each block: #each (item in items) ... #empty ... #end
+ *
+ * The variable may be taken apart as it is bound: `#each ([key, value] in
+ * Object.entries(totals))`, `#each ({ id, title } in tasks)`. `itemPattern`
+ * is then the pattern, and `itemName` its text as it is written
+ * (`[key, value]`), so that whatever prints a loop from `itemName` prints
+ * this one correctly without knowing about patterns. `patternNames` gives
+ * the names it binds.
  */
 export interface EachBlock {
   type: 'EachBlock';
   iterable: Expression;
   itemName: string;
+  itemPattern?: BindingPattern;
   indexName?: string;
   keyExpression?: Expression;
   body: TemplateNode[];
@@ -476,12 +484,103 @@ export interface NewExpression {
   loc: SourceLocation;
 }
 
+/**
+ * `t => t.done`, `(a, b) => a - b`, `([key, value]) => key`.
+ *
+ * `params` is every name the arrow binds, in the order they are bound. For
+ * an arrow whose parameters are all plain names that is the whole of it, and
+ * `patterns` is absent: such an arrow has the shape it always had. When a
+ * parameter is destructured, has a default or gathers the rest, `patterns`
+ * says how each argument is taken apart, one entry a parameter, and `params`
+ * still lists the names, which is all a reader that only asks "what does
+ * this arrow bind" needs.
+ */
 export interface ArrowFunctionExpression {
   type: 'ArrowFunctionExpression';
   params: string[];
+  patterns?: ParamPattern[];
   body: Expression | string; // Expression for concise, string for block body
   async: boolean;
   loc: SourceLocation;
+}
+
+/**
+ * What a parameter of an arrow, or the variable of an `#each`, may be
+ * besides a plain name: a list taken apart by position, a record taken apart
+ * by key, either inside the other.
+ */
+export type BindingPattern = NamePattern | ArrayPattern | ObjectPattern;
+
+export interface NamePattern {
+  type: 'NamePattern';
+  name: string;
+}
+
+/** `[first, second, ...others]` */
+export interface ArrayPattern {
+  type: 'ArrayPattern';
+  elements: BindingTarget[];
+  rest?: BindingPattern;
+}
+
+/** `{ id, title: heading, ...others }` */
+export interface ObjectPattern {
+  type: 'ObjectPattern';
+  properties: Array<{ key: string; value: BindingTarget }>;
+  /** The name that takes the keys not named above. */
+  rest?: string;
+}
+
+/** A pattern, and what stands in when the value given to it is `undefined`. */
+export interface BindingTarget {
+  pattern: BindingPattern;
+  default?: Expression;
+}
+
+/** One parameter of an arrow. `rest` gathers this argument and those after it into a list. */
+export interface ParamPattern extends BindingTarget {
+  rest?: boolean;
+}
+
+/** The names a pattern binds, in the order it binds them. */
+export function patternNames(pattern: BindingPattern, into: string[] = []): string[] {
+  if (pattern.type === 'NamePattern') {
+    into.push(pattern.name);
+  } else if (pattern.type === 'ArrayPattern') {
+    for (const element of pattern.elements) patternNames(element.pattern, into);
+    if (pattern.rest) patternNames(pattern.rest, into);
+  } else {
+    for (const property of pattern.properties) patternNames(property.value.pattern, into);
+    if (pattern.rest !== undefined) into.push(pattern.rest);
+  }
+  return into;
+}
+
+/** Whether `text` can be written as a bare name: after a dot, or as a key without quotes. */
+export function isIdentifierName(text: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(text);
+}
+
+/**
+ * A pattern as it is written, without its defaults: `[key, value]`,
+ * `{ id, title: heading, ...others }`. What an `#each` over a pattern keeps
+ * as its `itemName`.
+ */
+export function patternText(pattern: BindingPattern): string {
+  if (pattern.type === 'NamePattern') return pattern.name;
+  if (pattern.type === 'ArrayPattern') {
+    const parts = pattern.elements.map((element) => patternText(element.pattern));
+    if (pattern.rest) parts.push(`...${patternText(pattern.rest)}`);
+    return `[${parts.join(', ')}]`;
+  }
+  const parts = pattern.properties.map(({ key, value }) => {
+    const written = isIdentifierName(key) ? key : JSON.stringify(key);
+    return value.pattern.type === 'NamePattern' && value.pattern.name === key
+      ? written
+      : `${written}: ${patternText(value.pattern)}`;
+  });
+  if (pattern.rest !== undefined) parts.push(`...${pattern.rest}`);
+  return parts.length > 0 ? `{ ${parts.join(', ')} }` : '{}';
 }
 
 export interface ObjectExpression {
@@ -494,6 +593,11 @@ export interface ObjectExpression {
 export interface ObjectProperty {
   type: 'ObjectProperty';
   key: string;
+  /**
+   * `{ [field]: value }`: the key is worked out when the object is made.
+   * `key` is then the empty string and this is what to evaluate.
+   */
+  computedKey?: Expression;
   value: Expression;
   shorthand: boolean; // { foo } instead of { foo: foo }
   loc: SourceLocation;

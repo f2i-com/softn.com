@@ -32,6 +32,8 @@
 import type {
   Expression,
   ArrowFunctionExpression,
+  BindingPattern,
+  BindingTarget,
   ObjectProperty,
   SpreadElement,
 } from '@softn/core';
@@ -180,6 +182,8 @@ function printKey(key: string): string {
 
 function printProperty(prop: ObjectProperty | SpreadElement): string {
   if (prop.type === 'SpreadElement') return printExpression(prop);
+  // `{ [field]: value }`: the key is an expression, kept in its brackets.
+  if (prop.computedKey) return `[${printExpression(prop.computedKey)}]: ${printExpression(prop.value)}`;
   const key = printKey(prop.key);
   if (
     prop.shorthand &&
@@ -192,8 +196,39 @@ function printProperty(prop: ObjectProperty | SpreadElement): string {
   return `${key}: ${printExpression(prop.value)}`;
 }
 
+/**
+ * A parameter pattern as the parser reads it back: `[key, value]`,
+ * `{ id, title: heading }`, a default after the name it stands in for.
+ */
+function printPattern(pattern: BindingPattern): string {
+  if (pattern.type === 'NamePattern') return pattern.name;
+  if (pattern.type === 'ArrayPattern') {
+    const parts = pattern.elements.map(printTarget);
+    if (pattern.rest) parts.push(`...${printPattern(pattern.rest)}`);
+    return `[${parts.join(', ')}]`;
+  }
+  const parts = pattern.properties.map(({ key, value }) => {
+    // `{ id }` and `{ size = "md" }` for a name bound under its own key;
+    // the long form for another name or a deeper pattern.
+    const own = value.pattern.type === 'NamePattern' && value.pattern.name === key && IDENTIFIER.test(key);
+    return own ? printTarget(value) : `${printKey(key)}: ${printTarget(value)}`;
+  });
+  if (pattern.rest !== undefined) parts.push(`...${pattern.rest}`);
+  return parts.length > 0 ? `{ ${parts.join(', ')} }` : '{}';
+}
+
+function printTarget(target: BindingTarget): string {
+  const pattern = printPattern(target.pattern);
+  return target.default ? `${pattern} = ${printExpression(target.default)}` : pattern;
+}
+
 function printArrow(expr: ArrowFunctionExpression): string {
-  const params = `(${expr.params.join(', ')})`;
+  // `params` is only the names; an arrow that takes an argument apart, has
+  // a default or gathers the rest says how in `patterns`, and printing the
+  // names alone would write a different function.
+  const params = expr.patterns
+    ? `(${expr.patterns.map((param) => (param.rest ? `...${printPattern(param.pattern)}` : printTarget(param))).join(', ')})`
+    : `(${expr.params.join(', ')})`;
   let body: string;
   if (typeof expr.body === 'string') {
     // A block body is carried as its source text.

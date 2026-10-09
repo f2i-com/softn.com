@@ -314,8 +314,8 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 - \`label="Save"\` is a string; \`size={3}\`, \`disabled={count > 3}\`, \`items={[1, 2]}\`, \`style={{ padding: "1rem" }}\` are expressions; a bare \`disabled\` is \`true\`. \`style="color: red; padding: 8px"\` also works as CSS text.
 - \`{…}\` interpolates: \`<Text>Hello {name}</Text>\`, \`<Badge>{done ? "Done" : "Open"}</Badge>\`.
 - Text reads like HTML around expressions: \`<Text>{count} tasks</Text>\` shows "3 tasks", and \`{first} {last}\` keeps its space.
-- Template expressions support \`?:\`, \`??\`, \`&&\`, \`||\`, comparisons, \`in\`, \`instanceof\`, arithmetic including \`**\`, \`!\`, \`typeof\`, member access, \`?.\`, calls and method calls, array and object literals, spread (\`[...done, item]\`, \`Math.max(...scores)\`, \`{ ...base, color: "red" }\`), template literals, \`undefined\`, and arrow functions **with a single-expression body**: \`t => t.done\`, \`(a, b) => a - b\`, \`() => save()\`. A comment inside braces, \`{/* note */}\`, renders nothing.
-- **Not supported in templates:** block bodies \`() => { … }\` (the handler never runs), \`function\` expressions, \`async\`/\`await\`, regular expression literals, default or destructured parameters, bitwise operators, and \`{...props}\` spread onto a tag. Put anything more in a logic function and call it.
+- Template expressions support \`?:\`, \`??\`, \`&&\`, \`||\`, comparisons, \`in\`, \`instanceof\`, arithmetic including \`**\`, \`!\`, \`typeof\`, member access, \`?.\`, calls and method calls, array and object literals, spread (\`[...done, item]\`, \`Math.max(...scores)\`, \`{ ...base, color: "red" }\`), template literals, \`undefined\`, and arrow functions **with a single-expression body**: \`t => t.done\`, \`(a, b) => a - b\`, \`() => save()\`. A parameter may take its argument apart, have a default or gather the rest: \`([key, value]) => key\`, \`({ id, title }) => title\`, \`({ size = "md" }) => size\`, \`(n, step = 1) => n + step\`, \`(first, ...others) => others.length\`. An object literal may work out a key: \`{ ...filters, [name]: value }\`. A comment inside braces, \`{/* note */}\`, renders nothing.
+- **Not supported in templates:** block bodies \`() => { … }\` (the handler never runs), \`function\` expressions, \`async\`/\`await\`, regular expression literals, bitwise operators, a comma between expressions (\`(a, b)\` without \`=>\`), and \`{...props}\` spread onto a tag. Put anything more in a logic function and call it.
 - Globals a template can use: \`Math\`, \`JSON\`, \`Number\`, \`String\`, \`Boolean\`, \`Array\`, \`Date\`, \`Map\`, \`Set\`, \`Object.keys\`/\`Object.values\`/\`Object.entries\` (nothing else of \`Object\`), \`parseInt\`, \`parseFloat\`, \`isNaN\`, \`encodeURIComponent\`, and helpers such as \`formatDate(value)\`, \`timeAgo(value)\`, \`currency(value)\`, \`truncate(text, n)\`. \`new\` constructs \`Date\`, \`Array\`, \`Map\` and \`Set\` only: \`{new Date().getFullYear()}\`.
 - A variable may be called \`data\`, \`style\`, \`from\`, \`end\` or any other word markup also uses; JavaScript's own reserved words (\`if\`, \`function\`, \`return\`, \`delete\`) are not names.
 
@@ -328,6 +328,7 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 
 ### Binding
 - **\`:bind={name}\` is the only two-way binding**: it shows the state and writes what the person types or checks back to it. \`<Input :bind={query} />\`, \`<Checkbox :bind={agreed} />\`, \`<Select :bind={choice} options={["A", "B"]} />\`.
+- **Inside \`#each\`, bind the loop item itself.** \`#each (todo in todos)\` with \`<Checkbox :bind={todo.done} />\` writes that row, and so does a handler that assigns to it: \`@click={() => todo.done = !todo.done}\`, \`@click={() => todo.count++}\`. This needs the list to be state (a state variable, or a path into one such as \`project.tasks\`). Over a list worked out in the page (\`todos.filter(…)\`), a computed value or a \`<data>\` collection, the item has nowhere in state to be written: nothing changes and the console says so. There, call a logic function with the item's id.
 - Every other prop is one-way: \`value={x}\` or \`checked={x}\` only shows \`x\`. A controlled component needs its event too: \`<Tabs activeKey={tab} @change={(key) => tab = key} … />\`.
 
 ### Classes and styles
@@ -358,6 +359,9 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 </App>
 \`\`\`
 - Conditions go in parentheses. \`#elseif (…)\` and \`#else if (…)\` are the same branch. The index form is \`#each (item, i in items)\`; \`#each (item in items; let i)\` is a parse error.
+- The loop variable may take the item apart: \`#each ({ id, title } in tasks)\`, \`#each ([name, total] in Object.entries(totals))\` (no defaults there; use \`??\` where the name is used).
+- \`#each\` goes through a list, a \`Set\`, a \`Map\` (as \`[key, value]\` pairs), a record (its values, with the key as the second name: \`#each (value, key in settings)\`) and a whole number, which counts from 1 (\`#each (n in 5)\`). Text is not gone through letter by letter.
+- \`#if\` and \`#each\` may be written inside \`#empty\`.
 - Inline forms: \`<Box if={open}>…</Box>\`, \`<Card each={items} as="item">{item.title}</Card>\`.
 
 ### Reuse

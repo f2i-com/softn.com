@@ -123,8 +123,50 @@ export interface SoftNRenderContext {
     key?: string;
   };
 
+  /**
+   * The names the template itself has bound where this is being drawn: the
+   * variables of the `#each` blocks around it, innermost first. Looked up
+   * before `state`, so a loop variable hides a state variable of its name.
+   * The renderer makes these; a host does not set it.
+   */
+  locals?: SoftNLocalScope;
+
+  /**
+   * What this mount drew last time, so that what comes out the same is
+   * handed to React as the element it already has and its component is not
+   * run again. A host makes one with `createRenderCache()` for each mounted
+   * document and passes the same one on every render; leaving it out draws
+   * every element afresh. See renderer/reuse.ts for what counts as the same.
+   */
+  renderCache?: import('../renderer/reuse').SoftNRenderCache;
+
   // Slot content passed from parent component
   slots?: SlotContent;
+}
+
+/**
+ * One layer of names a template bound: a pass of an `#each`, or a call of an
+ * arrow function.
+ *
+ * A layer rather than a copy of `state` with the names added, which is what
+ * this was: every row of a list, and every call of the arrow in
+ * `rows.filter(r => …)`, copied each of the app's state variables to add one
+ * or two. `names` and `values` are parallel.
+ *
+ * A pass of a loop over a list that is in the app's state also says where
+ * its item lives there, which is what lets `:bind={todo.done}` write the
+ * row: `list` is the list's path (`todos`), `position` the item's index or
+ * key, and `suffixes[i]` what follows for `names[i]` (`""` for the item
+ * itself, `".id"` for a name destructured out of it, `undefined` for a name
+ * with no place, such as the index).
+ */
+export interface SoftNLocalScope {
+  readonly names: readonly string[];
+  readonly values: readonly unknown[];
+  readonly list?: string;
+  readonly position?: number | string;
+  readonly suffixes?: readonly (string | undefined)[];
+  readonly parent?: SoftNLocalScope;
 }
 
 /**

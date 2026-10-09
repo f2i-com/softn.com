@@ -16,9 +16,12 @@ import type {
   Expression,
   SlotNode,
   TemplateSlotNode,
+  BindingPattern,
+  BindingTarget,
+  ArrowFunctionExpression,
 } from '../parser/ast';
-import { EVENT_MODIFIERS } from '../parser/ast';
-import type { SoftNRenderContext, SoftNProps } from '../types';
+import { EVENT_MODIFIERS, isIdentifierName, patternNames } from '../parser/ast';
+import type { SoftNLocalScope, SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent } from './registry';
 import {
   cssResourceReferences,
@@ -28,6 +31,16 @@ import {
   URL_ATTRIBUTES,
 } from './sanitize-html';
 import { cssPropertyName, inlineStyleObject } from './inline-style';
+import {
+  beginPass,
+  keep,
+  recall,
+  sameNodes,
+  sameProps,
+  settleProps,
+  type ReuseKind,
+  type ReusePass,
+} from './reuse';
 import {
   describeMarkupEgress,
   describeSrcSetEgress,
@@ -136,7 +149,7 @@ function getSafeMemberKey(value: unknown): string | null {
  * entire document tree.
  */
 class ComponentErrorBoundary extends React.Component<
-  React.PropsWithChildren<{ tag: string }>,
+  React.PropsWithChildren<{ tag: string; failure?: { caught: boolean } }>,
   { error: Error | null }
 > {
   state: { error: Error | null } = { error: null };
@@ -146,6 +159,11 @@ class ComponentErrorBoundary extends React.Component<
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // Tell whoever kept this element that it holds a failure, so the next
+    // drawing makes the component again rather than handing this back. A
+    // component that failed has always been tried again when the page next
+    // drew, which is how one recovers once whatever it lacked has arrived.
+    if (this.props.failure) this.props.failure.caught = true;
     if (isDevelopment) {
       console.error(`[SoftN] Error in <${this.props.tag}>:`, error);
       console.error('[SoftN] Component stack:', info.componentStack);
@@ -236,7 +254,49 @@ export function renderDocument(
   context: SoftNRenderContext,
   registry: ComponentRegistry
 ): React.ReactNode {
-  return renderNodes(document.template, context, registry);
+  // A host that keeps a cache for this mount gets back, for everything that
+  // comes out the same as last time, the element it was given last time; see
+  // reuse.ts. Without one every element is made afresh.
+  if (!context.renderCache) return renderNodes(document.template, context, registry);
+  const outer = pass;
+  pass = beginPass(context.renderCache, document);
+  try {
+    return renderNodes(document.template, context, registry);
+  } finally {
+    pass = outer;
+  }
+}
+
+/**
+ * The drawing in progress, when the host keeps what is drawn between one
+ * render and the next. Module state, like `renderDepth`: a drawing is one
+ * synchronous call, and the functions below are too many to hand it through.
+ */
+let pass: ReusePass | null = null;
+
+/**
+ * A fragment holding `children`, or the one this place had last time when
+ * the children are the elements they were.
+ */
+function reusableFragment(
+  node: object,
+  kind: ReuseKind,
+  cacheKey: number | string | undefined,
+  reactKey: number | string | undefined,
+  children: React.ReactNode
+): React.ReactNode {
+  const active = pass;
+  if (!active || typeof cacheKey !== 'string' || !Array.isArray(children)) {
+    return React.createElement(React.Fragment, { key: reactKey }, children);
+  }
+  const before = recall(active, cacheKey, node, kind);
+  if (before && before.text === String(reactKey) && sameNodes(before.children, children)) {
+    keep(active, cacheKey, before);
+    return before.result;
+  }
+  const result = React.createElement(React.Fragment, { key: reactKey }, children);
+  keep(active, cacheKey, { node, kind, result, children, text: String(reactKey) });
+  return result;
 }
 
 /**
@@ -879,12 +939,25 @@ const _callbackCtxCache = new WeakMap<SoftNRenderContext, SoftNRenderContext>();
 function createCallbackContext(context: SoftNRenderContext): SoftNRenderContext {
   let cached = _callbackCtxCache.get(context);
   if (cached) return cached;
-  cached = {
-    ...context,
-    functions: { ...context.functions, ...context.asyncFunctions },
-  };
+  cached = { ...context, functions: callbackFunctions(context) };
   _callbackCtxCache.set(context, cached);
   return cached;
+}
+
+/**
+ * The functions a callback may call: the app's, with the state-tracking
+ * version of each in place of the plain one. Kept for the pair of tables it
+ * was made from. Every row of a loop is drawn in a context of its own, and
+ * each of them used to merge the two tables again.
+ */
+type FunctionTable = SoftNRenderContext['functions'];
+const _callbackFunctions = new WeakMap<FunctionTable, { tracked: FunctionTable; merged: FunctionTable }>();
+function callbackFunctions(context: SoftNRenderContext): FunctionTable {
+  const made = _callbackFunctions.get(context.functions);
+  if (made && made.tracked === context.asyncFunctions) return made.merged;
+  const merged = { ...context.functions, ...context.asyncFunctions };
+  _callbackFunctions.set(context.functions, { tracked: context.asyncFunctions, merged });
+  return merged;
 }
 
 /**
@@ -899,15 +972,17 @@ function createCallbackContext(context: SoftNRenderContext): SoftNRenderContext 
  */
 function evaluateArguments(
   nodes: Expression[],
-  evalExpr: (expr: Expression) => unknown
+  context: SoftNRenderContext,
+  locals: SoftNLocalScope | undefined,
+  depth: number
 ): unknown[] {
   const values: unknown[] = [];
   for (const node of nodes) {
     if (node.type !== 'SpreadElement') {
-      values.push(evalExpr(node));
+      values.push(evaluate(node, context, locals, depth));
       continue;
     }
-    const spread = evalExpr(node.argument);
+    const spread = evaluate(node.argument, context, locals, depth);
     if (Array.isArray(spread)) {
       // Not push(...spread): a long list would overflow the call stack.
       for (const item of spread) values.push(item);
@@ -1013,7 +1088,8 @@ function renderElement(
   node: ElementNode,
   context: SoftNRenderContext,
   registry: ComponentRegistry,
-  key?: number | string
+  key?: number | string,
+  inLoopPass = false
 ): React.ReactNode {
   // Check inline conditional first.
   //
@@ -1022,7 +1098,7 @@ function renderElement(
   // falsy and drops the whole loop. The per-item recursion below re-enters
   // with the variable bound and keeps `conditionalIf`, which is where an
   // `each` + `if` pair is meant to be resolved.
-  if (node.conditionalIf && !node.inlineEach) {
+  if (node.conditionalIf && (inLoopPass || !node.inlineEach)) {
     const condition = evaluateStructural(node.conditionalIf, context, false, 'if= condition');
     if (!condition) {
       return null; // Don't render if condition is falsy
@@ -1030,40 +1106,33 @@ function renderElement(
   }
 
   // Check for inline loop
-  if (node.inlineEach) {
+  if (node.inlineEach && !inLoopPass) {
     const iterable = evaluateStructural(node.inlineEach.iterable, context, [], 'each= iterable');
+    const { items, keys } = iterationOf(iterable);
 
-    if (!Array.isArray(iterable) || iterable.length === 0) {
+    if (items.length === 0) {
+      reportEachCount(node, iterable, 'each=');
       return null; // Don't render if iterable is empty
     }
 
+    const binding = loopBinding(node.inlineEach.itemName, node.inlineEach.indexName);
+    const list = writableListPath(node.inlineEach.iterable, context);
+
     // Render element once per item
-    const renderedItems = iterable.map((item, index) => {
-      const iterContext: SoftNRenderContext = {
-        ...context,
-        state: {
-          ...context.state,
-          [node.inlineEach!.itemName]: item,
-          ...(node.inlineEach!.indexName ? { [node.inlineEach!.indexName]: index } : {}),
-        },
-      };
+    const renderedItems = items.map((item, index) => {
+      const iterContext = loopPassContext(context, binding, list, item, index, keys?.[index]);
 
       // Generate a unique key for each iteration
       const itemKey =
         typeof item === 'object' && item !== null && 'id' in item
           ? String((item as { id: unknown }).id)
-          : String(index);
+          : (keys?.[index] ?? String(index));
 
-      // Render this element without the inline loop (to avoid infinite recursion)
-      const nodeWithoutLoop: ElementNode = {
-        ...node,
-        inlineEach: undefined,
-      };
-
-      return renderElement(nodeWithoutLoop, iterContext, registry, `${key}-${itemKey}`);
+      // The same element, drawn for this pass rather than looped again.
+      return renderElement(node, iterContext, registry, `${key}-${itemKey}`, true);
     });
 
-    return React.createElement(React.Fragment, { key }, renderedItems);
+    return reusableFragment(node, 'each', key, key, renderedItems);
   }
 
   // First, check the registry for a custom component
@@ -1107,8 +1176,10 @@ function renderElement(
   // Build props
   const props: SoftNProps = { key };
 
-  // Create a unified context for callbacks
-  const callbackContext = createCallbackContext(context);
+  // The unified context for callbacks, made when the element has one.
+  let madeCallbackContext: SoftNRenderContext | undefined;
+  const callbackContext = (): SoftNRenderContext =>
+    (madeCallbackContext ??= createCallbackContext(context));
 
   // Static and dynamic props
   // `class:active={cond}` adds "active" to the class list when the condition
@@ -1170,7 +1241,7 @@ function renderElement(
         // Use callbackContext for props that look like callbacks (on*) to ensure
         // state changes from these handlers trigger re-renders
         const isCallbackProp = prop.name.startsWith('on') && prop.name.length > 2;
-        const evalContext = isCallbackProp ? callbackContext : context;
+        const evalContext = isCallbackProp ? callbackContext() : context;
 
         // `onClick={doThing()}` names the call to make on click, not a value to
         // compute now — the same reading `@click={doThing()}` already gets from
@@ -1254,6 +1325,7 @@ function renderElement(
         // The context carries the loop variables, so an index inside #each
         // resolves to the row actually being edited.
         const path = getExpressionPath(binding.expression, context);
+        if (!path) reportUnplacedWrite(binding.expression, context.locals);
         if (path) {
           const rootVar = path.split('.')[0].split('[')[0]; // Handle array access
 
@@ -1339,19 +1411,20 @@ function renderElement(
     // we need to wrap it in a closure to prevent immediate execution during render.
     // If it's a function reference or arrow function, evaluate it directly.
     const handlerExpr = event.handler;
+    const handlerContext = callbackContext();
 
     if (handlerExpr.type === 'CallExpression') {
       // Wrap in closure - execute the call when the event fires
       props[reactEventProp(event.name)] = wrapEventHandler(event.name, () => {
-        return evaluateExpression(handlerExpr, callbackContext);
+        return evaluateExpression(handlerExpr, handlerContext);
       });
     } else if (handlerExpr.type === 'ArrowFunctionExpression') {
       // Arrow functions are already deferred - evaluate to get the function
-      const handler = evaluateExpression(handlerExpr, callbackContext);
+      const handler = evaluateExpression(handlerExpr, handlerContext);
       props[reactEventProp(event.name)] = typeof handler === 'function' ? wrapEventHandler(event.name, handler as EventHandler) : handler;
     } else if (handlerExpr.type === 'Identifier' || handlerExpr.type === 'MemberExpression') {
       // Function reference - evaluate to get the function, wrap to ensure it's callable
-      const handler = evaluateExpression(handlerExpr, callbackContext);
+      const handler = evaluateExpression(handlerExpr, handlerContext);
       if (typeof handler === 'function') {
         props[reactEventProp(event.name)] = wrapEventHandler(event.name, handler as EventHandler);
       } else {
@@ -1366,7 +1439,7 @@ function renderElement(
     } else {
       // Other expression types - wrap in closure for safety
       props[reactEventProp(event.name)] = wrapEventHandler(event.name, () => {
-        return evaluateExpression(handlerExpr, callbackContext);
+        return evaluateExpression(handlerExpr, handlerContext);
       });
     }
 
@@ -1403,7 +1476,7 @@ function renderElement(
   }
 
   // Extract slot content from children (template slots and default content)
-  const { slotContent, defaultChildren } = extractSlotContent(node.children);
+  const { slotContent, defaultChildren } = slotContentOf(node.children);
 
   // Create context with slots for child components
   const childContext: SoftNRenderContext = slotContent
@@ -1438,19 +1511,57 @@ function renderElement(
   // above, so every one of them crashed the render of any `.ui` that used the
   // plain HTML tag. The demos only reach them through wrapper components like
   // `<Image>`, which is why it went unnoticed.
-  const element =
-    typeof FinalComponent === 'string' && VOID_ELEMENTS.has(node.tag.toLowerCase())
-      ? React.createElement(FinalComponent, props)
-      : React.createElement(FinalComponent, props, children);
+  const isVoid = typeof FinalComponent === 'string' && VOID_ELEMENTS.has(node.tag.toLowerCase());
+
+  // With everything this element would be made from in hand, see whether it
+  // is what this place was made from last time; see reuse.ts.
+  const active = typeof key === 'string' ? pass : null;
+  const before = active ? recall(active, key as string, node, 'element') : undefined;
+  const settled = active ? settleProps(props, before) : undefined;
+  const drawn = isVoid ? NO_CHILDREN : (children as React.ReactNode[]);
+  if (
+    active &&
+    settled &&
+    before &&
+    before.component === FinalComponent &&
+    !before.failure?.caught &&
+    before.props &&
+    sameProps(before.props, props, settled.styleUnchanged) &&
+    sameNodes(before.children, drawn)
+  ) {
+    keep(active, key as string, before);
+    return before.result;
+  }
+
+  const element = isVoid
+    ? React.createElement(FinalComponent, props)
+    : React.createElement(FinalComponent, props, children);
 
   // Wrap registered (non-HTML) components in a per-component error boundary
   // so a single component crash doesn't take down the entire document
-  if (typeof FinalComponent !== 'string') {
-    return React.createElement(ComponentErrorBoundary, { key, tag: node.tag }, element);
-  }
+  const failure = active && typeof FinalComponent !== 'string' ? { caught: false } : undefined;
+  const result =
+    typeof FinalComponent !== 'string'
+      ? React.createElement(ComponentErrorBoundary, { key, tag: node.tag, failure }, element)
+      : element;
 
-  return element;
+  if (active && settled) {
+    keep(active, key as string, {
+      node,
+      kind: 'element',
+      result,
+      component: FinalComponent,
+      props,
+      children: drawn,
+      handlers: settled.handlers,
+      style: settled.style,
+      failure,
+    });
+  }
+  return result;
 }
+
+const NO_CHILDREN: readonly React.ReactNode[] = [];
 
 /**
  * Extract slot content from children
@@ -1461,10 +1572,28 @@ function renderElement(
  * - Non-slot children are kept as defaultChildren and rendered normally
  * - If there are no template slots, children are rendered normally (no slot extraction)
  */
-function extractSlotContent(children: TemplateNode[]): {
+type ExtractedSlots = {
   slotContent: Record<string, TemplateNode[]> | null;
   defaultChildren: TemplateNode[];
-} {
+};
+
+/**
+ * `extractSlotContent` for a node's children, worked out once. It depends on
+ * the parsed children alone, which nothing changes after parsing, and it was
+ * done again for every element on every drawing: two lists and a record made
+ * to find, nearly always, that there were no slots.
+ */
+const extractedSlots = new WeakMap<TemplateNode[], ExtractedSlots>();
+function slotContentOf(children: TemplateNode[]): ExtractedSlots {
+  let extracted = extractedSlots.get(children);
+  if (!extracted) {
+    extracted = extractSlotContent(children);
+    extractedSlots.set(children, extracted);
+  }
+  return extracted;
+}
+
+function extractSlotContent(children: TemplateNode[]): ExtractedSlots {
   const slotContent: Record<string, TemplateNode[]> = {};
   const defaultChildren: TemplateNode[] = [];
   let hasTemplateSlots = false;
@@ -1516,19 +1645,23 @@ function renderSlot(
   // Check if we have content for this slot from parent
   if (context.slots && context.slots[slotName]) {
     const slotChildren = context.slots[slotName];
-    return React.createElement(
-      React.Fragment,
-      { key },
-      renderNodes(slotChildren, context, registry, `slot-${slotName}`)
+    return reusableFragment(
+      node,
+      'slot',
+      key,
+      key,
+      renderNodes(slotChildren, context, registry, `${key ?? ''}-slot-${slotName}`)
     );
   }
 
   // Use fallback content if provided
   if (node.fallback && node.fallback.length > 0) {
-    return React.createElement(
-      React.Fragment,
-      { key },
-      renderNodes(node.fallback, context, registry, `slot-fallback-${slotName}`)
+    return reusableFragment(
+      node,
+      'slot',
+      key,
+      key,
+      renderNodes(node.fallback, context, registry, `${key ?? ''}-slot-fallback-${slotName}`)
     );
   }
 
@@ -1540,6 +1673,17 @@ function renderSlot(
  * Render a text node
  */
 function renderText(node: TextNode, key?: number | string): React.ReactNode {
+  const active = pass;
+  if (active && typeof key === 'string') {
+    const before = recall(active, key, node, 'text');
+    if (before) {
+      keep(active, key, before);
+      return before.result;
+    }
+    const result = React.createElement(React.Fragment, { key }, node.content);
+    keep(active, key, { node, kind: 'text', result });
+    return result;
+  }
   // Use React.Fragment to properly handle text nodes
   return React.createElement(React.Fragment, { key }, node.content);
 }
@@ -1563,6 +1707,17 @@ function renderExpression(
   // UI — which is what the idiom is meant to avoid. A bundle that wants to show
   // one can ask for it with `{String(flag)}`.
   const text = value == null || typeof value === 'boolean' ? '' : String(value);
+  const active = pass;
+  if (active && typeof key === 'string') {
+    const before = recall(active, key, node, 'expression');
+    if (before && before.text === text) {
+      keep(active, key, before);
+      return before.result;
+    }
+    const result = React.createElement(React.Fragment, { key }, text);
+    keep(active, key, { node, kind: 'expression', result, text });
+    return result;
+  }
   return React.createElement(React.Fragment, { key }, text);
 }
 
@@ -1628,7 +1783,7 @@ function renderIfBlock(
 
     // Use React.Fragment with key to avoid DOM pollution and ensure proper React reconciliation
     // The key forces React to unmount/remount when switching between branches
-    return React.createElement(React.Fragment, { key: branchKey }, children);
+    return reusableFragment(node, 'branch', branchKey, branchKey, children);
   }
 
   if (node.alternate) {
@@ -1637,7 +1792,7 @@ function renderIfBlock(
       const branchKey = `softn-if-${key ?? '0'}-L${conditionLine}-else-${currentPage}${branchPath}`;
       const children = renderNodes(node.alternate, context, registry, branchKey);
 
-      return React.createElement(React.Fragment, { key: branchKey }, children);
+      return reusableFragment(node, 'branch', branchKey, branchKey, children);
     } else {
       // Chained #elseif - extend the path to track which elseif branch we're in
       return renderIfBlock(node.alternate, context, registry, key, branchPath + '-elif');
@@ -1645,6 +1800,135 @@ function renderIfBlock(
   }
 
   return null;
+}
+
+/**
+ * The most a count may be in `#each (n in count)`. A count comes from state,
+ * and one that is wrong by a few orders of magnitude should not be a page
+ * that never finishes drawing.
+ */
+const MAX_EACH_COUNT = 100_000;
+
+/** What an `#each` goes through: its items in order and, for a record, the key of each. */
+interface Iteration {
+  items: readonly unknown[];
+  keys?: readonly string[];
+}
+
+const NOTHING_TO_ITERATE: Iteration = { items: [] };
+
+/**
+ * What `#each` goes through for a value.
+ *
+ * A list is its items. So is anything else that holds several things: a
+ * Set's members and a Map's `[key, value]` pairs, in the order JavaScript
+ * gives them; a record's values, with the key where a list has the index;
+ * and a whole number, which counts from 1. These used to draw the `#empty`
+ * branch as though they held nothing, which for a Set built in the template
+ * (`new Set(tags)`) said the opposite of the truth.
+ *
+ * Text is not a list of its characters here: a string where a list was
+ * expected is a list that has not arrived in the right shape, and the empty
+ * branch is the right thing to draw for it.
+ */
+function iterationOf(value: unknown): Iteration {
+  if (Array.isArray(value)) return { items: value };
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 1 || value > MAX_EACH_COUNT) return NOTHING_TO_ITERATE;
+    const items = new Array<number>(value);
+    for (let i = 0; i < value; i++) items[i] = i + 1;
+    return { items };
+  }
+  if (value === null || typeof value !== 'object') return NOTHING_TO_ITERATE;
+  if (typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function') {
+    return { items: Array.from(value as Iterable<unknown>) };
+  }
+  if (isPlainObject(value)) {
+    const keys = Object.keys(value).filter((key) => !BLOCKED_MEMBER_KEYS.has(key));
+    return { items: keys.map((key) => value[key]), keys };
+  }
+  return NOTHING_TO_ITERATE;
+}
+
+/** Loops already told that their count is not one. */
+const reportedEachCounts = new WeakSet<object>();
+
+/** Say, once, that a number given to `#each` is not a count it can make. */
+function reportEachCount(node: object, value: unknown, what: string): void {
+  if (typeof value !== 'number' || value === 0 || reportedEachCounts.has(node)) return;
+  if (Number.isInteger(value) && value >= 1 && value <= MAX_EACH_COUNT) return;
+  reportedEachCounts.add(node);
+  console.error(
+    `[SoftN] ${what} was given the number ${value}, which is not a count it can go through: ` +
+      `a count is a whole number from 0 to ${MAX_EACH_COUNT}. Nothing was drawn for it.`
+  );
+}
+
+/**
+ * The names one loop binds, and how a pass of it is laid over what was bound
+ * around it. Made once for a drawing of the loop, not once a row.
+ */
+interface LoopBinding {
+  names: readonly string[];
+  /** For each name, what follows the item's own place in state; see SoftNLocalScope. */
+  suffixes: readonly (string | undefined)[];
+  /** The values of `names` for this item and its index or key. */
+  values: (item: unknown, second: number | string) => unknown[];
+}
+
+function loopBinding(
+  itemName: string,
+  indexName: string | undefined,
+  itemPattern?: BindingPattern
+): LoopBinding {
+  if (itemPattern) {
+    // `#each ({ id, title } in tasks)`: each name is bound to its part of
+    // the item, and knows its part of the item's place in state.
+    const names = patternNames(itemPattern);
+    const suffixes: Array<string | undefined> = [];
+    patternSuffixes(itemPattern, '', suffixes);
+    if (indexName) {
+      names.push(indexName);
+      suffixes.push(undefined);
+    }
+    return {
+      names,
+      suffixes,
+      values: (item, second) => {
+        const values: unknown[] = [];
+        takeApart(itemPattern, item, values);
+        if (indexName) values.push(second);
+        return values;
+      },
+    };
+  }
+  return indexName
+    ? { names: [itemName, indexName], suffixes: ['', undefined], values: (item, second) => [item, second] }
+    : { names: [itemName], suffixes: [''], values: (item) => [item] };
+}
+
+/** The context one pass of a loop is drawn in. */
+function loopPassContext(
+  context: SoftNRenderContext,
+  binding: LoopBinding,
+  list: string | null,
+  item: unknown,
+  index: number,
+  recordKey: string | undefined
+): SoftNRenderContext {
+  const second = recordKey ?? index;
+  return {
+    ...context,
+    locals: {
+      names: binding.names,
+      values: binding.values(item, second),
+      list: list ?? undefined,
+      position: second,
+      suffixes: binding.suffixes,
+      parent: context.locals,
+    },
+    each: { item, index, key: recordKey ?? String(index) },
+  };
 }
 
 /**
@@ -1657,70 +1941,176 @@ function renderEachBlock(
   key?: number | string
 ): React.ReactNode {
   const iterable = evaluateStructural(node.iterable, context, [], '#each iterable');
+  const { items, keys } = iterationOf(iterable);
 
-  if (!Array.isArray(iterable) || iterable.length === 0) {
+  if (items.length === 0) {
+    reportEachCount(node, iterable, '#each');
     if (node.emptyFallback) {
-      return React.createElement(
-        React.Fragment,
-        { key },
+      return reusableFragment(
+        node,
+        'empty',
+        key,
+        key,
         renderNodes(node.emptyFallback, context, registry, `${key}-empty`)
       );
     }
     return null;
   }
 
-  const renderedItems = iterable.map((item, index) => {
-    // Create new context with iteration variables
-    const iterContext: SoftNRenderContext = {
-      ...context,
-      state: {
-        ...context.state,
-        [node.itemName]: item,
-        ...(node.indexName ? { [node.indexName]: index } : {}),
-      },
-      each: {
-        item,
-        index,
-        key: node.keyExpression
-          ? String(
-              evaluateExpression(node.keyExpression, {
-                ...context,
-                state: {
-                  ...context.state,
-                  [node.itemName]: item,
-                  // The index variable belongs in scope here too. Without it,
-                  // `#each (row, i in rows) key={i}` evaluated `i` against a
-                  // state that had never heard of it: every row got the key
-                  // "undefined", React warned about duplicate children, and
-                  // component state attached to whichever row happened to be
-                  // matched — so editing one row's input moved the text to
-                  // another when the list reordered.
-                  ...(node.indexName ? { [node.indexName]: index } : {}),
-                },
-              })
-            )
-          : String(index),
-      },
-    };
+  const binding = loopBinding(node.itemName, node.indexName, node.itemPattern);
+  const list = writableListPath(node.iterable, context);
 
-    // Use the computed key from keyExpression if available, otherwise warn and use index
-    const itemKey = iterContext.each?.key ?? String(index);
+  // Warn in development if using index as key for items that might have state
+  if (!node.keyExpression && !keys && isDevelopment) {
+    console.warn(
+      `[SoftN] Each block without key expression detected. Consider adding a key for better performance: ` +
+        `#each (${node.itemName}${node.indexName ? `, ${node.indexName}` : ''} in iterable) key={${node.itemName}.id}`
+    );
+  }
 
-    // Warn in development if using index as key for items that might have state
-    if (!node.keyExpression && isDevelopment && index === 0) {
-      // Only warn once per each block (on first item)
-      console.warn(
-        `[SoftN] Each block without key expression detected. Consider adding a key for better performance: ` +
-          `#each (${node.itemName}${node.indexName ? `, ${node.indexName}` : ''} in iterable) key={${node.itemName}.id}`
-      );
-    }
+  const renderedItems = items.map((item, index) => {
+    const iterContext = loopPassContext(context, binding, list, item, index, keys?.[index]);
 
-    const children = renderNodes(node.body, iterContext, registry, `${key}-item-${itemKey}`);
+    // `key={…}` is worked out with the row's own names bound, the index among
+    // them. Without it, `#each (row, i in rows) key={i}` evaluated `i` against
+    // a state that had never heard of it: every row got the key "undefined",
+    // React warned about duplicate children, and component state attached to
+    // whichever row happened to be matched — so editing one row's input moved
+    // the text to another when the list reordered.
+    const itemKey = node.keyExpression
+      ? String(evaluateExpression(node.keyExpression, iterContext))
+      : (iterContext.each?.key ?? String(index));
+    if (node.keyExpression && iterContext.each) iterContext.each.key = itemKey;
 
-    return React.createElement(React.Fragment, { key: itemKey }, children);
+    const rowKey = `${key}-item-${itemKey}`;
+    const children = renderNodes(node.body, iterContext, registry, rowKey);
+
+    return reusableFragment(node, 'row', rowKey, itemKey, children);
   });
 
-  return React.createElement(React.Fragment, { key }, renderedItems);
+  return reusableFragment(node, 'each', key, key, renderedItems);
+}
+
+/** A value as the list a list pattern takes apart: a list is itself, a Set or Map its members. */
+function listToTakeApart(value: unknown): readonly unknown[] {
+  if (Array.isArray(value)) return value;
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function'
+  ) {
+    return Array.from(value as Iterable<unknown>);
+  }
+  return [];
+}
+
+/**
+ * Take `value` apart by `pattern`, pushing what each name is bound to onto
+ * `values` in the order `patternNames` lists the names.
+ *
+ * Where JavaScript would throw (a list pattern given a number, a record
+ * pattern given null) every name is `undefined`: a template meets data that
+ * has not arrived far more often than data of the wrong kind. Keys are read
+ * under the rule a member access is, so `{ constructor }` binds nothing.
+ *
+ * `defaults` evaluates a default; it is absent for an `#each`, whose
+ * patterns have none.
+ */
+function takeApart(
+  pattern: BindingPattern,
+  value: unknown,
+  values: unknown[],
+  defaults?: (expr: Expression) => unknown
+): void {
+  if (pattern.type === 'NamePattern') {
+    values.push(value);
+    return;
+  }
+  if (pattern.type === 'ArrayPattern') {
+    const list = listToTakeApart(value);
+    for (let i = 0; i < pattern.elements.length; i++) bindTarget(pattern.elements[i], list[i], values, defaults);
+    if (pattern.rest) takeApart(pattern.rest, list.slice(pattern.elements.length), values, defaults);
+    return;
+  }
+  const record = value === null || value === undefined ? undefined : (value as Record<string, unknown>);
+  for (const property of pattern.properties) {
+    const key = getSafeMemberKey(property.key);
+    bindTarget(property.value, record !== undefined && key !== null ? record[key] : undefined, values, defaults);
+  }
+  if (pattern.rest !== undefined) {
+    const rest: Record<string, unknown> = {};
+    if (record !== undefined && typeof record === 'object') {
+      const taken = new Set(pattern.properties.map((property) => property.key));
+      for (const key of Object.keys(record)) {
+        if (!taken.has(key) && !BLOCKED_MEMBER_KEYS.has(key)) rest[key] = record[key];
+      }
+    }
+    values.push(rest);
+  }
+}
+
+function bindTarget(
+  target: BindingTarget,
+  value: unknown,
+  values: unknown[],
+  defaults?: (expr: Expression) => unknown
+): void {
+  takeApart(
+    target.pattern,
+    value === undefined && target.default && defaults ? defaults(target.default) : value,
+    values,
+    defaults
+  );
+}
+
+/**
+ * What an arrow's names are bound to for a call, when its parameters are
+ * more than names. A default is evaluated with the parameters before it
+ * already bound, as in JavaScript (`(a, b = a) => …`).
+ */
+function boundParams(
+  expr: ArrowFunctionExpression,
+  args: unknown[],
+  context: SoftNRenderContext,
+  locals: SoftNLocalScope | undefined,
+  depth: number
+): unknown[] {
+  const values: unknown[] = [];
+  // The layer the body will see, already in place for the defaults: a name
+  // not bound yet is past the end of `values`, and reads as undefined.
+  const scope: SoftNLocalScope = { names: expr.params, values, parent: locals };
+  const defaults = (expression: Expression) => evaluate(expression, context, scope, depth + 1);
+  const patterns = expr.patterns ?? [];
+  for (let i = 0; i < patterns.length; i++) {
+    const param = patterns[i];
+    if (param.rest) takeApart(param.pattern, args.slice(i), values, defaults);
+    else bindTarget(param, args[i], values, defaults);
+  }
+  return values;
+}
+
+/**
+ * For each name a pattern binds, what follows the item's own place in state:
+ * `.title` for `{ title }`, `[0]` for the first of `[a, b]`. A name with no
+ * place of its own (a rest, a key a path cannot spell) is `undefined`.
+ */
+function patternSuffixes(pattern: BindingPattern, prefix: string | undefined, into: Array<string | undefined>): void {
+  if (pattern.type === 'NamePattern') {
+    into.push(prefix);
+    return;
+  }
+  if (pattern.type === 'ArrayPattern') {
+    pattern.elements.forEach((element, i) =>
+      patternSuffixes(element.pattern, prefix === undefined ? undefined : `${prefix}[${i}]`, into)
+    );
+    if (pattern.rest) patternSuffixes(pattern.rest, undefined, into);
+    return;
+  }
+  for (const property of pattern.properties) {
+    const step = isIdentifierName(property.key) ? `.${property.key}` : pathStep(property.key);
+    patternSuffixes(property.value.pattern, prefix === undefined || step === null ? undefined : prefix + step, into);
+  }
+  if (pattern.rest !== undefined) into.push(undefined);
 }
 
 /**
@@ -1732,6 +2122,22 @@ export function evaluateExpression(
   context: SoftNRenderContext,
   depth: number = 0
 ): unknown {
+  return evaluate(expr, context, context.locals, depth);
+}
+
+/**
+ * The evaluator itself. `locals` is what the template has bound here: it
+ * starts as the context's (the loops around the expression) and gains a
+ * layer for each arrow called, which is why it is passed beside the context
+ * rather than read from it. A call of an arrow then costs one small layer,
+ * where it used to copy the context and every state variable in it.
+ */
+function evaluate(
+  expr: Expression,
+  context: SoftNRenderContext,
+  locals: SoftNLocalScope | undefined,
+  depth: number
+): unknown {
   // Prevent infinite recursion
   if (depth > MAX_EVAL_DEPTH) {
     if (isDevelopment) {
@@ -1742,11 +2148,15 @@ export function evaluateExpression(
     return undefined;
   }
 
-  const evalExpr = (e: Expression) => evaluateExpression(e, context, depth + 1);
-
   switch (expr.type) {
     case 'Identifier':
-      // Look up in state, data, computed, props, functions, then JS globals.
+      // What the template bound itself comes first: a loop variable or an
+      // arrow's parameter hides a state variable of the same name.
+      for (let scope = locals; scope; scope = scope.parent) {
+        const at = scope.names.indexOf(expr.name);
+        if (at !== -1) return scope.values[at];
+      }
+      // Then state, data, computed, props, functions, then JS globals.
       //
       // Own keys only: these are plain objects, so `in` also answered yes for
       // everything on Object.prototype, and an identifier named `constructor`
@@ -1786,20 +2196,20 @@ export function evaluateExpression(
     case 'BinaryExpression': {
       // Short-circuit operators must evaluate right side lazily
       if (expr.operator === '&&') {
-        const left = evalExpr(expr.left);
-        return left ? evalExpr(expr.right) : left;
+        const left = evaluate(expr.left, context, locals, depth + 1);
+        return left ? evaluate(expr.right, context, locals, depth + 1) : left;
       }
       if (expr.operator === '||') {
-        const left = evalExpr(expr.left);
-        return left ? left : evalExpr(expr.right);
+        const left = evaluate(expr.left, context, locals, depth + 1);
+        return left ? left : evaluate(expr.right, context, locals, depth + 1);
       }
       if (expr.operator === '??') {
-        const left = evalExpr(expr.left);
-        return left != null ? left : evalExpr(expr.right);
+        const left = evaluate(expr.left, context, locals, depth + 1);
+        return left != null ? left : evaluate(expr.right, context, locals, depth + 1);
       }
 
-      const left = evalExpr(expr.left);
-      const right = evalExpr(expr.right);
+      const left = evaluate(expr.left, context, locals, depth + 1);
+      const right = evaluate(expr.right, context, locals, depth + 1);
 
       switch (expr.operator) {
         case '+':
@@ -1852,7 +2262,7 @@ export function evaluateExpression(
     }
 
     case 'UnaryExpression': {
-      const arg = evalExpr(expr.argument);
+      const arg = evaluate(expr.argument, context, locals, depth + 1);
 
       switch (expr.operator) {
         case '!':
@@ -1871,7 +2281,7 @@ export function evaluateExpression(
     }
 
     case 'MemberExpression': {
-      const obj = evalExpr(expr.object);
+      const obj = evaluate(expr.object, context, locals, depth + 1);
 
       // Handle optional chaining - return undefined if object is null/undefined
       // This gracefully handles cases like {selectedItem.name} when selectedItem is null
@@ -1883,7 +2293,7 @@ export function evaluateExpression(
       const target = obj as Record<string, unknown>;
 
       if (expr.computed) {
-        const prop = evalExpr(expr.property);
+        const prop = evaluate(expr.property, context, locals, depth + 1);
         const safeKey = getSafeMemberKey(prop);
         if (safeKey === null) return undefined;
         return target[safeKey];
@@ -1902,11 +2312,11 @@ export function evaluateExpression(
       let thisObj: unknown = undefined;
 
       if (expr.callee.type === 'MemberExpression') {
-        thisObj = evalExpr(expr.callee.object);
+        thisObj = evaluate(expr.callee.object, context, locals, depth + 1);
         if (thisObj != null) {
           const target = thisObj as Record<string, unknown>;
           if (expr.callee.computed) {
-            const prop = evalExpr(expr.callee.property);
+            const prop = evaluate(expr.callee.property, context, locals, depth + 1);
             const safeKey = getSafeMemberKey(prop);
             if (safeKey === null) {
               fn = undefined;
@@ -1923,7 +2333,7 @@ export function evaluateExpression(
           }
         }
       } else {
-        fn = evalExpr(expr.callee);
+        fn = evaluate(expr.callee, context, locals, depth + 1);
       }
 
       // Handle optional chaining - return undefined if function is null/undefined
@@ -1947,7 +2357,7 @@ export function evaluateExpression(
         return undefined;
       }
 
-      const args = evaluateArguments(expr.arguments, evalExpr);
+      const args = evaluateArguments(expr.arguments, context, locals, depth + 1);
 
       if (typeof fn === 'function') {
         if (fn === Function) {
@@ -1961,33 +2371,35 @@ export function evaluateExpression(
     }
 
     case 'ConditionalExpression': {
-      const test = evalExpr(expr.test);
-      return test ? evalExpr(expr.consequent) : evalExpr(expr.alternate);
+      const test = evaluate(expr.test, context, locals, depth + 1);
+      return test ? evaluate(expr.consequent, context, locals, depth + 1) : evaluate(expr.alternate, context, locals, depth + 1);
     }
 
     case 'UpdateExpression': {
       // `count++` writes through the same path an assignment does, so
       // `rows[i].qty++` inside an #each changes that row.
-      const path = getExpressionPath(expr.argument, context);
+      const path = getExpressionPath(expr.argument, context, locals);
       if (!path) {
-        if (isDevelopment) console.error(`[SoftN] Cannot apply "${expr.operator}" to this expression; it must be a name or a property path.`);
+        if (!reportUnplacedWrite(expr.argument, locals) && isDevelopment) {
+          console.error(`[SoftN] Cannot apply "${expr.operator}" to this expression; it must be a name or a property path.`);
+        }
         return undefined;
       }
-      const current = Number(evalExpr(expr.argument));
+      const current = Number(evaluate(expr.argument, context, locals, depth + 1));
       const next = expr.operator === '++' ? current + 1 : current - 1;
       if (stateWriteAllowed(expr, `"${expr.operator}"`)) context.setState(path, next);
       return expr.prefix ? next : current;
     }
 
     case 'NewExpression': {
-      const ctor = evalExpr(expr.callee);
+      const ctor = evaluate(expr.callee, context, locals, depth + 1);
       if (!CONSTRUCTIBLE.has(ctor)) {
         if (isDevelopment) {
           console.error('[SoftN] "new" in a template constructs Date, Array, Map or Set only; build anything else in a logic function.');
         }
         return undefined;
       }
-      const args = evaluateArguments(expr.arguments, evalExpr);
+      const args = evaluateArguments(expr.arguments, context, locals, depth + 1);
       return new (ctor as new (...a: unknown[]) => unknown)(...args);
     }
 
@@ -1999,37 +2411,39 @@ export function evaluateExpression(
       // path (a call, a literal) is a parse-time diagnostic; here it is
       // reported once and the assignment is a no-op rather than a throw that
       // would take the whole handler down.
-      const path = getExpressionPath(expr.left, context);
+      const path = getExpressionPath(expr.left, context, locals);
       if (!path) {
-        if (isDevelopment) console.error('[SoftN] Cannot assign to this expression; the left side must be a name or a property path.');
+        if (!reportUnplacedWrite(expr.left, locals) && isDevelopment) {
+          console.error('[SoftN] Cannot assign to this expression; the left side must be a name or a property path.');
+        }
         return undefined;
       }
-      const right = evalExpr(expr.right);
+      const right = evaluate(expr.right, context, locals, depth + 1);
       let value: unknown;
       switch (expr.operator) {
         case '=':
           value = right;
           break;
         case '??=': {
-          const current = evalExpr(expr.left);
+          const current = evaluate(expr.left, context, locals, depth + 1);
           if (current !== null && current !== undefined) return current;
           value = right;
           break;
         }
         case '||=': {
-          const current = evalExpr(expr.left);
+          const current = evaluate(expr.left, context, locals, depth + 1);
           if (current) return current;
           value = right;
           break;
         }
         case '&&=': {
-          const current = evalExpr(expr.left);
+          const current = evaluate(expr.left, context, locals, depth + 1);
           if (!current) return current;
           value = right;
           break;
         }
         default: {
-          const current = evalExpr(expr.left);
+          const current = evaluate(expr.left, context, locals, depth + 1);
           const a = current as number;
           const b = right as number;
           value =
@@ -2054,16 +2468,6 @@ export function evaluateExpression(
 
     case 'ArrowFunctionExpression': {
       return (...args: unknown[]) => {
-        const fnContext: SoftNRenderContext = {
-          ...context,
-          state: { ...context.state },
-        };
-
-        // Bind parameters
-        expr.params.forEach((param, i) => {
-          fnContext.state[param] = args[i];
-        });
-
         if (typeof expr.body === 'string') {
           // A block body is not executed here — running arbitrary statements is
           // the script VM's job, not the renderer's.
@@ -2088,7 +2492,11 @@ export function evaluateExpression(
           return undefined;
         }
 
-        return evaluateExpression(expr.body, fnContext, depth + 1);
+        // The parameters are a layer over what was bound where the arrow
+        // was written. An argument that was not passed is `undefined`, which
+        // is what reading past the end of `args` gives.
+        const values = expr.patterns ? boundParams(expr, args, context, locals, depth) : args;
+        return evaluate(expr.body, context, { names: expr.params, values, parent: locals }, depth + 1);
       };
     }
 
@@ -2099,7 +2507,7 @@ export function evaluateExpression(
           // `{ ...base, color: "red" }`: own enumerable keys, in order, under
           // the same key rule as a written property. Nothing to spread (data
           // not loaded yet, a number) contributes nothing.
-          const source = evalExpr(prop.argument);
+          const source = evaluate(prop.argument, context, locals, depth + 1);
           if (source !== null && typeof source === 'object') {
             for (const key of Object.keys(source)) {
               if (BLOCKED_MEMBER_KEYS.has(key)) continue;
@@ -2108,20 +2516,29 @@ export function evaluateExpression(
           }
           continue;
         }
+        if (prop.computedKey) {
+          // `{ [field]: value }`. The key goes through the rule every key
+          // read from a template goes through, so one that works out to
+          // `__proto__` sets nothing rather than the object's prototype.
+          const key = getSafeMemberKey(evaluate(prop.computedKey, context, locals, depth + 1));
+          const value = evaluate(prop.value, context, locals, depth + 1);
+          if (key !== null) obj[key] = value;
+          continue;
+        }
         // Prevent prototype pollution from user expressions
         if (prop.key === '__proto__' || prop.key === 'constructor' || prop.key === 'prototype') continue;
-        obj[prop.key] = evalExpr(prop.value);
+        obj[prop.key] = evaluate(prop.value, context, locals, depth + 1);
       }
       return obj;
     }
 
     case 'ArrayExpression': {
-      return evaluateArguments(expr.elements, evalExpr);
+      return evaluateArguments(expr.elements, context, locals, depth + 1);
     }
 
     case 'SpreadElement': {
       // Spread elements should be handled in their parent context (object/array)
-      const value = evalExpr(expr.argument);
+      const value = evaluate(expr.argument, context, locals, depth + 1);
       return value;
     }
 
@@ -2136,7 +2553,7 @@ export function evaluateExpression(
         // quasis[i] may be a TemplateElement object or a plain string
         result += typeof q === 'string' ? q : (q?.value?.cooked ?? q?.value?.raw ?? String(q ?? ''));
         if (i < expressions.length) {
-          result += String(evalExpr(expressions[i]) ?? '');
+          result += String(evaluate(expressions[i], context, locals, depth + 1) ?? '');
         }
       }
       return result;
@@ -2147,17 +2564,110 @@ export function evaluateExpression(
   }
 }
 
+/** `[3]` or `["theme"]`: one step of a state path, or null for a key a path cannot spell. */
+function pathStep(position: number | string): string | null {
+  if (typeof position === 'number') return `[${position}]`;
+  // The path is split on `]` and has its quotes taken off, so a key holding
+  // either cannot be written back whole, and an empty one is dropped.
+  return position === '' || /["'\]]/.test(position) ? null : `["${position}"]`;
+}
+
+/** Where in the app's state the value of `scope.names[at]` lives, or null when it has no place there. */
+function placeInState(scope: SoftNLocalScope, at: number): string | null {
+  const suffix = scope.suffixes?.[at];
+  if (scope.list === undefined || scope.position === undefined || suffix === undefined) return null;
+  const step = pathStep(scope.position);
+  return step === null ? null : scope.list + step + suffix;
+}
+
+/**
+ * The path of a list an `#each` goes through, when it is one a row can be
+ * written back to: a path whose first name is a state variable, or a prop
+ * (which the binding hands to the parent's handler). A collection's records
+ * and a computed value read the same way and are not state: writing at
+ * `notes[0].title` would make a state variable called `notes` that hides the
+ * collection. The order is the one a name is looked up in.
+ */
+function writableListPath(expr: Expression, context: SoftNRenderContext): string | null {
+  const path = getExpressionPath(expr, context);
+  if (!path) return null;
+  const end = path.search(/[.[]/);
+  const root = end === -1 ? path : path.slice(0, end);
+  if (Object.hasOwn(context.state, root)) return path;
+  if (Object.hasOwn(context.data, root) || Object.hasOwn(context.computed, root)) return null;
+  return Object.hasOwn(context.props, root) ? path : null;
+}
+
+/** An assignment target as it was written, for a message: `todo.done`, `rows[i].qty`. */
+function spelledTarget(expr: Expression): string {
+  if (expr.type === 'Identifier') return expr.name;
+  if (expr.type === 'MemberExpression') {
+    const object = spelledTarget(expr.object);
+    if (!expr.computed && expr.property.type === 'Identifier') return `${object}.${expr.property.name}`;
+    if (expr.property.type === 'Identifier') return `${object}[${expr.property.name}]`;
+    if (expr.property.type === 'Literal') return `${object}[${expr.property.raw}]`;
+    return `${object}[…]`;
+  }
+  return '…';
+}
+
+/** Targets already reported as having no place in state. */
+const reportedUnplacedWrites = new WeakSet<object>();
+
+/**
+ * Report, once, a write whose target starts from a name the template bound
+ * and that has no place in the app's state. True when that is what `target`
+ * is (reported now or before); false when it is something else, which the
+ * caller has its own words for.
+ *
+ * Not kept to development: the control or button this is behind looks
+ * ordinary and does nothing, and this line is the only thing that says why.
+ */
+function reportUnplacedWrite(target: Expression, locals: SoftNLocalScope | undefined): boolean {
+  let root = target;
+  while (root.type === 'MemberExpression') root = root.object;
+  if (root.type !== 'Identifier') return false;
+  const name = root.name;
+  let bound = false;
+  for (let scope = locals; scope && !bound; scope = scope.parent) bound = scope.names.includes(name);
+  if (!bound) return false;
+  if (!reportedUnplacedWrites.has(target)) {
+    reportedUnplacedWrites.add(target);
+    console.error(
+      `[SoftN] "${spelledTarget(target)}" on line ${target.loc?.line ?? '?'} was not written: "${name}" is a name ` +
+        'the page itself bound (an item of a list that is worked out in the page or is not the app’s state, ' +
+        'a loop’s index, or an arrow’s parameter), so there is nowhere in state to write it. ' +
+        'Loop over the state list itself, or make the change in a logic function.'
+    );
+  }
+  return true;
+}
+
 /**
  * Get the path string from an expression (for state updates)
  * Supports complex paths including computed properties and optional chaining
  */
-function getExpressionPath(expr: Expression, context?: SoftNRenderContext): string | null {
+function getExpressionPath(
+  expr: Expression,
+  context?: SoftNRenderContext,
+  locals: SoftNLocalScope | undefined = context?.locals
+): string | null {
   if (expr.type === 'Identifier') {
+    // A name the template bound is not a state variable. An `#each` variable
+    // over a list in state stands for a place in that list, and the path is
+    // that place; anything else bound here (an index, an arrow's parameter,
+    // an item of a list that was worked out) has no place to write to.
+    // Answering with the name, as this did, wrote a state variable called
+    // after the loop variable.
+    for (let scope = locals; scope; scope = scope.parent) {
+      const at = scope.names.indexOf(expr.name);
+      if (at !== -1) return placeInState(scope, at);
+    }
     return expr.name;
   }
 
   if (expr.type === 'MemberExpression') {
-    const objectPath = getExpressionPath(expr.object, context);
+    const objectPath = getExpressionPath(expr.object, context, locals);
     if (!objectPath) return null;
 
     if (!expr.computed && expr.property.type === 'Identifier') {
@@ -2184,7 +2694,7 @@ function getExpressionPath(expr: Expression, context?: SoftNRenderContext): stri
         // appeared beside the list, so typing in the second row changed nothing
         // visible and quietly corrupted the data behind it.
         if (context) {
-          const index = evaluateExpression(expr.property, context);
+          const index = evaluate(expr.property, context, locals, 0);
           if (typeof index === 'number' || typeof index === 'string') {
             return typeof index === 'number'
               ? `${objectPath}[${index}]`

@@ -15,7 +15,8 @@
  * show nothing, which no one intends.
  */
 
-import type { Expression, SoftNDocument, TemplateNode } from '@softn/core';
+import { patternNames } from '@softn/core';
+import type { BindingTarget, Expression, SoftNDocument, TemplateNode } from '@softn/core';
 
 /**
  * The JavaScript globals a template expression can name: render.tsx's
@@ -160,6 +161,14 @@ function rootName(expr: Expression): { name: string; line: number } | null {
   return node.type === 'Identifier' ? { name: node.name, line: node.loc.line } : null;
 }
 
+/** Every default written in a parameter's pattern, however deep. */
+function visitDefaults(target: BindingTarget, visit: (expr: Expression) => void): void {
+  if (target.default) visit(target.default);
+  const pattern = target.pattern;
+  if (pattern.type === 'ArrayPattern') for (const element of pattern.elements) visitDefaults(element, visit);
+  else if (pattern.type === 'ObjectPattern') for (const property of pattern.properties) visitDefaults(property.value, visit);
+}
+
 /** Every name an expression reads or calls, with arrow parameters in scope. */
 function collect(expr: Expression, local: Set<string>, out: Ref[], handler: string | undefined): void {
   const visit = (e: Expression, scope: Set<string>) => collect(e, scope, out, handler);
@@ -184,7 +193,10 @@ function collect(expr: Expression, local: Set<string>, out: Ref[], handler: stri
     case 'ArrowFunctionExpression': {
       if (typeof expr.body === 'string') return; // A block body never runs; lintTemplates says so.
       const inner = new Set(local);
+      // `params` is every name the arrow binds, destructured ones included.
       for (const param of expr.params) inner.add(param.replace(/^\.\.\./, '').replace(/\s*=.*$/, '').trim());
+      // A default is read with the parameters in scope: `(a, b = a) => …`.
+      for (const param of expr.patterns ?? []) visitDefaults(param, (e) => visit(e, inner));
       visit(expr.body, inner);
       return;
     }
@@ -224,7 +236,13 @@ function collect(expr: Expression, local: Set<string>, out: Ref[], handler: stri
       return;
     case 'ObjectExpression':
       for (const property of expr.properties) {
-        visit(property.type === 'SpreadElement' ? property.argument : property.value, local);
+        if (property.type === 'SpreadElement') {
+          visit(property.argument, local);
+          continue;
+        }
+        // `{ [field]: value }` reads `field`.
+        if (property.computedKey) visit(property.computedKey, local);
+        visit(property.value, local);
       }
       return;
     case 'ArrayExpression':
@@ -304,7 +322,10 @@ export function templateReferences(file: TemplateFile): Ref[] {
       case 'EachBlock': {
         collect(node.iterable, local, out, undefined);
         const inner = new Set(local);
-        inner.add(node.itemName);
+        // `#each ({ id, title } in tasks)` binds the names in the pattern;
+        // `itemName` is then the pattern's text, not a name.
+        if (node.itemPattern) for (const name of patternNames(node.itemPattern)) inner.add(name);
+        else inner.add(node.itemName);
         if (node.indexName) inner.add(node.indexName);
         if (node.keyExpression) collect(node.keyExpression, inner, out, undefined);
         walkNodes(node.body, inner);

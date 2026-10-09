@@ -30,6 +30,9 @@ import {
   AssignmentOperator,
   ObjectExpression,
   SpreadElement,
+  BindingPattern,
+  BindingTarget,
+  ParamPattern,
   PropValue,
   TopLevelElement,
   ParseDiagnostic,
@@ -39,6 +42,8 @@ import {
   createIdentifier,
   createLiteral,
   isEventModifier,
+  patternNames,
+  patternText,
   isImportDeclaration,
   isComponentDeclaration,
   isScriptBlock,
@@ -170,6 +175,25 @@ const CLOSES_EXPRESSION: ReadonlySet<TokenType> = new Set([
 ]);
 
 /** A short name for what an expression is, for a diagnostic about it. */
+/** What `{ name = value }` is told when it is a record being made and not a pattern. */
+const COVER_DEFAULT_MESSAGE =
+  'A name with a default (name = value) inside { } is only read where a record is taken apart: ' +
+  'as the parameter of an arrow, ({ name = value }) => …. In a record that is being made, write name: value';
+
+/** Whether any part of a pattern has a default written for it. */
+function patternHasDefault(pattern: BindingPattern): boolean {
+  if (pattern.type === 'NamePattern') return false;
+  if (pattern.type === 'ArrayPattern') {
+    return (
+      pattern.elements.some((element) => element.default !== undefined || patternHasDefault(element.pattern)) ||
+      (pattern.rest !== undefined && patternHasDefault(pattern.rest))
+    );
+  }
+  return pattern.properties.some(
+    ({ value }) => value.default !== undefined || patternHasDefault(value.pattern)
+  );
+}
+
 function describeExpression(expr: Expression): string {
   switch (expr.type) {
     case 'Literal':
@@ -975,6 +999,21 @@ export class Parser {
           // Regular prop (including keywords like 'data' that can be used as attribute names)
           element.props.push(this.parseProp());
         }
+      } else if (
+        (this.curTokenIs(TokenType.ELSE) || this.curTokenIs(TokenType.ELSEIF)) &&
+        this.peekToken.type !== TokenType.EQUALS
+      ) {
+        // `<p if={a}>…</p><p else>…</p>`: `if=` on a tag is real, so `else`
+        // beside it is the natural guess, and it was skipped without a word:
+        // the second element was simply always drawn.
+        this.diagnostics.push({
+          message:
+            `"${this.curToken.literal}" is not an attribute: a tag has if={…} and nothing that follows it. ` +
+            'Write the two branches as #if (…) … #else … #end',
+          severity: 'error',
+          loc: this.currentLoc(),
+        });
+        this.nextToken();
       } else if (this.curTokenIs(TokenType.EXPR_START)) {
         // `<Button {...rest}>`. A brace that is not the value of an attribute
         // was skipped a token at a time, so the name inside it became a
@@ -1454,18 +1493,52 @@ export class Parser {
 
     // Parse item name (and optional index)
     let itemName = '';
+    let itemPattern: BindingPattern | undefined;
     let indexName: string | undefined;
 
-    if (this.isIdentifierToken()) {
+    if (this.curTokenIs(TokenType.LBRACKET) || this.curTokenIs(TokenType.EXPR_START)) {
+      // `#each ([key, value] in Object.entries(totals))`, `#each ({ id, title }
+      // in tasks)`: the item taken apart as it is bound. Read as the list or
+      // record literal it looks like, then turned into a pattern; read as an
+      // expression it would take the `in` for the operator.
+      const patternLoc = this.currentLoc();
+      const firstDiagnostic = this.diagnostics.length;
+      const written = this.curTokenIs(TokenType.LBRACKET)
+        ? this.parseArrayExpression()
+        : this.parseObjectExpression();
+      const pattern = this.toPattern(written);
+      // Reported below in #each's own words.
+      if (pattern) this.dropCoverDefaults(firstDiagnostic);
+      if (!pattern) {
+        this.diagnostics.push({
+          message:
+            'This is not something #each can take an item apart into. Write names in a list or a record, ' +
+            'as in #each ([key, value] in entries) or #each ({ id, title } in tasks)',
+          severity: 'error',
+          loc: patternLoc,
+        });
+      } else if (patternHasDefault(pattern)) {
+        this.diagnostics.push({
+          message:
+            'A default (name = value) is not read in the variable of an #each. ' +
+            'Use ?? where the name is used: {title ?? "Untitled"}',
+          severity: 'error',
+          loc: patternLoc,
+        });
+      } else {
+        itemPattern = pattern;
+        itemName = patternText(pattern);
+      }
+    } else if (this.isIdentifierToken()) {
       itemName = this.curToken.literal;
       this.nextToken();
+    }
 
-      if (this.curTokenIs(TokenType.COMMA)) {
+    if (itemName !== '' && this.curTokenIs(TokenType.COMMA)) {
+      this.nextToken();
+      if (this.isIdentifierToken()) {
+        indexName = this.curToken.literal;
         this.nextToken();
-        if (this.isIdentifierToken()) {
-          indexName = this.curToken.literal;
-          this.nextToken();
-        }
       }
     }
 
@@ -1550,6 +1623,13 @@ export class Parser {
         if (this.curTokenIs(TokenType.TAG_OPEN)) {
           this.nextToken();
           emptyFallback.push(this.parseElement());
+        } else if (this.curTokenIs(TokenType.HASH)) {
+          // An #if or an #each inside #empty. This branch had no rule for
+          // one and stepped over the `#`, the keyword and the header a token
+          // at a time: `#if (loading) … #else … #end` drew both of its
+          // branches, and the block's own #end was taken for the loop's.
+          const cf = this.parseControlFlow();
+          if (cf) emptyFallback.push(cf);
         } else if (this.curTokenIs(TokenType.EXPR_START)) {
           emptyFallback.push(this.parseExpressionNode());
         } else if (this.curTokenIs(TokenType.TEXT)) {
@@ -1575,6 +1655,8 @@ export class Parser {
       type: 'EachBlock',
       iterable,
       itemName,
+      // Absent for a plain name, so such a loop has the shape it always had.
+      ...(itemPattern ? { itemPattern } : {}),
       indexName,
       keyExpression,
       body,
@@ -2016,54 +2098,72 @@ export class Parser {
         return createIdentifier('undefined', loc);
       }
 
-      // If first token is not an identifier, it's definitely a parenthesized expression
-      // e.g. (!a), (1 + 2), ("hello")
-      if (!this.isIdentifierToken()) {
-        const expr = this.parseExpression();
-        this.expectToken(TokenType.RPAREN);
-        return expr;
+      // What is in the parentheses is read as a list of expressions, and
+      // what follows the `)` says what it was. Before `=>` it is the
+      // parameters of an arrow, each of which reads as an expression of the
+      // same shape: a name, a default (`limit = 10`), a list or record to
+      // take the argument apart (`[key, value]`, `{ id, title }`), a rest
+      // (`...others`). Anything else is one expression in parentheses.
+      //
+      // Only names were read as parameters before, so the callback everyone
+      // writes for `Object.entries(…)`, `([key, value]) => …`, was refused
+      // with "expected RPAREN".
+      const firstDiagnostic = this.diagnostics.length;
+      const items: Expression[] = [];
+      while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
+        const itemStart = this.curToken.start;
+        items.push(this.curTokenIs(TokenType.SPREAD) ? this.parseSpread() : this.parseExpression());
+        if (!this.curTokenIs(TokenType.COMMA)) break;
+        this.nextToken();
+        this.expectProgress(itemStart, TokenType.RPAREN);
       }
-
-      // First token is an identifier. Check peek to determine if this could be arrow params.
-      // Arrow params look like: (a) => or (a, b) => or (a, b, c) =>
-      // Parenthesized expressions look like: (a ? b : c), (a + b), (a.x), (a())
-      const peekType = this.peekToken.type;
-      if (peekType === TokenType.RPAREN || peekType === TokenType.COMMA) {
-        // Could be arrow function params - use original approach
-        const params: string[] = [];
-        while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
-          const paramStart = this.curToken.start;
-          if (this.isIdentifierToken()) {
-            params.push(this.curToken.literal);
-            this.nextToken();
-          }
-          if (this.curTokenIs(TokenType.COMMA)) {
-            this.nextToken();
-          }
-          // Only identifiers and commas advance here, so a default value, a
-          // rest element or a destructured parameter would spin.
-          this.expectProgress(paramStart, TokenType.RPAREN);
-        }
-        this.expectToken(TokenType.RPAREN);
-
-        if (this.curTokenIs(TokenType.ARROW)) {
-          this.nextToken();
-          const body = this.parseExpression();
-          return { type: 'ArrowFunctionExpression', params, body, async: false, loc };
-        }
-
-        // Not an arrow function - parenthesized identifier(s)
-        if (params.length === 1) {
-          return createIdentifier(params[0], loc);
-        }
-        return createIdentifier('undefined', loc);
-      }
-
-      // First token is an identifier but followed by an operator/other token
-      // This is a parenthesized expression like (a ? b : c) or (a + b)
-      const expr = this.parseExpression();
       this.expectToken(TokenType.RPAREN);
-      return expr;
+
+      if (this.curTokenIs(TokenType.ARROW)) {
+        const patterns = this.toParams(items);
+        if (patterns) {
+          // A parameter such as `[a, b] = pair` was read as an assignment to
+          // a list and reported as one; as a parameter it is a default.
+          this.dropInvalidTargets(firstDiagnostic);
+          this.dropCoverDefaults(firstDiagnostic);
+          this.nextToken(); // consume =>
+          const body = this.parseExpression();
+          const params: string[] = [];
+          for (const param of patterns) patternNames(param.pattern, params);
+          const plain = patterns.every(
+            (param) => param.pattern.type === 'NamePattern' && !param.default && !param.rest
+          );
+          return plain
+            ? { type: 'ArrowFunctionExpression', params, body, async: false, loc }
+            : { type: 'ArrowFunctionExpression', params, patterns, body, async: false, loc };
+        }
+        this.diagnostics.push({
+          message:
+            'This is not a parameter list an arrow can have. A parameter is a name, a name with a default ' +
+            '(limit = 10), a list or record that takes the argument apart ([key, value], { id, title }), ' +
+            'or a last ...rest',
+          severity: 'error',
+          loc,
+        });
+        this.nextToken(); // consume =>
+        const body = this.parseExpression();
+        return { type: 'ArrowFunctionExpression', params: [], body, async: false, loc };
+      }
+
+      if (items.length === 1 && items[0].type !== 'SpreadElement') {
+        return items[0];
+      }
+      // `(a, b)` with no arrow after it: JavaScript's comma operator, which
+      // a template has no use for. It used to be worth `undefined` with
+      // nothing said.
+      this.diagnostics.push({
+        message:
+          'Unexpected "," in parentheses: a comma here would make this a list of expressions, which is ' +
+          'not read. For the parameters of an arrow, write => and its body after the ")"',
+        severity: 'error',
+        loc,
+      });
+      return createIdentifier('undefined', loc);
     }
 
     // Object literal
@@ -2248,6 +2348,17 @@ export class Parser {
       if (this.curTokenIs(TokenType.SPREAD)) {
         // `{ ...base, color: "red" }`
         properties.push(this.parseSpread());
+      } else if (this.curTokenIs(TokenType.LBRACKET)) {
+        // `{ [field]: value }`: the key is worked out when the object is
+        // made, which is how one field of a record is replaced by name:
+        // `filters = { ...filters, [name]: value }`.
+        const keyLoc = this.currentLoc();
+        this.nextToken(); // consume [
+        const computedKey = this.parseExpression();
+        this.expectToken(TokenType.RBRACKET);
+        this.expectToken(TokenType.COLON);
+        const value = this.parseExpression();
+        properties.push({ type: 'ObjectProperty', key: '', computedKey, value, shorthand: false, loc: keyLoc });
       } else if (
         this.curTokenIs(TokenType.IDENTIFIER) ||
         this.curTokenIs(TokenType.STRING) ||
@@ -2265,6 +2376,29 @@ export class Parser {
           this.nextToken();
           const value = this.parseExpression();
           properties.push({ type: 'ObjectProperty', key, value, shorthand: false, loc: keyLoc });
+        } else if (this.curTokenIs(TokenType.EQUALS)) {
+          // `{ minutes = 0 }`: a name with a default, which only a pattern
+          // has (`({ minutes = 0 }) => …`); in a record that is being made
+          // it means nothing. Which this is cannot be known until what
+          // follows the record has been read, so it is read as the pattern
+          // would read it and reported, and whoever turns the record into a
+          // pattern takes the report back (see dropCoverDefaults).
+          this.nextToken(); // consume =
+          const fallback = this.parseExpression();
+          this.diagnostics.push({ message: COVER_DEFAULT_MESSAGE, severity: 'error', loc: keyLoc });
+          properties.push({
+            type: 'ObjectProperty',
+            key,
+            value: {
+              type: 'AssignmentExpression',
+              operator: '=',
+              left: createIdentifier(key, keyLoc),
+              right: fallback,
+              loc: keyLoc,
+            },
+            shorthand: true,
+            loc: keyLoc,
+          });
         } else {
           // Shorthand
           properties.push({
@@ -2314,6 +2448,107 @@ export class Parser {
     this.expectToken(TokenType.RBRACKET);
 
     return { type: 'ArrayExpression', elements, loc };
+  }
+
+  // =========================================================================
+  // Patterns
+  // =========================================================================
+
+  /**
+   * The parameters an arrow has, from the expressions its parentheses were
+   * read as, or null when one of them is not something a parameter can be.
+   */
+  private toParams(items: Expression[]): ParamPattern[] | null {
+    const params: ParamPattern[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type === 'SpreadElement') {
+        // `...rest` gathers what is left, so nothing can follow it.
+        const pattern = i === items.length - 1 ? this.toPattern(item.argument) : null;
+        if (!pattern) return null;
+        params.push({ pattern, rest: true });
+        continue;
+      }
+      const target = this.toTarget(item);
+      if (!target) return null;
+      params.push(target);
+    }
+    // One name bound twice would make the later one unreachable by position.
+    const names: string[] = [];
+    for (const param of params) patternNames(param.pattern, names);
+    return new Set(names).size === names.length ? params : null;
+  }
+
+  /** A pattern with its default, from `name`, `name = value`, `[a, b]` or `{ a, b }`. */
+  private toTarget(expr: Expression): BindingTarget | null {
+    if (expr.type === 'AssignmentExpression') {
+      if (expr.operator !== '=') return null;
+      const pattern = this.toPattern(expr.left);
+      return pattern ? { pattern, default: expr.right } : null;
+    }
+    const pattern = this.toPattern(expr);
+    return pattern ? { pattern } : null;
+  }
+
+  /** The pattern an expression spells, or null when it spells none. */
+  private toPattern(expr: Expression): BindingPattern | null {
+    if (expr.type === 'Identifier') {
+      // `undefined` is what the parser puts where it found nothing to read.
+      return expr.name === 'undefined' ? null : { type: 'NamePattern', name: expr.name };
+    }
+    if (expr.type === 'ArrayExpression') {
+      const elements: BindingTarget[] = [];
+      let rest: BindingPattern | undefined;
+      for (let i = 0; i < expr.elements.length; i++) {
+        const element = expr.elements[i];
+        if (element.type === 'SpreadElement') {
+          const pattern = i === expr.elements.length - 1 ? this.toPattern(element.argument) : null;
+          if (!pattern) return null;
+          rest = pattern;
+          continue;
+        }
+        const target = this.toTarget(element);
+        if (!target) return null;
+        elements.push(target);
+      }
+      return rest ? { type: 'ArrayPattern', elements, rest } : { type: 'ArrayPattern', elements };
+    }
+    if (expr.type === 'ObjectExpression') {
+      const properties: Array<{ key: string; value: BindingTarget }> = [];
+      let rest: string | undefined;
+      for (let i = 0; i < expr.properties.length; i++) {
+        const property = expr.properties[i];
+        if (property.type === 'SpreadElement') {
+          if (i !== expr.properties.length - 1 || property.argument.type !== 'Identifier') return null;
+          rest = property.argument.name;
+          continue;
+        }
+        if (property.computedKey) return null;
+        const value = this.toTarget(property.value);
+        if (!value) return null;
+        properties.push({ key: property.key, value });
+      }
+      return rest !== undefined
+        ? { type: 'ObjectPattern', properties, rest }
+        : { type: 'ObjectPattern', properties };
+    }
+    return null;
+  }
+
+  /** Take back the reports of `{ name = value }` made since `from`: the record turned out to be a pattern. */
+  private dropCoverDefaults(from: number): void {
+    for (let i = this.diagnostics.length - 1; i >= from; i--) {
+      if (this.diagnostics[i].message === COVER_DEFAULT_MESSAGE) this.diagnostics.splice(i, 1);
+    }
+  }
+
+  /** Take back the "Invalid assignment target" diagnostics made since `from`. */
+  private dropInvalidTargets(from: number): void {
+    for (let i = this.diagnostics.length - 1; i >= from; i--) {
+      if (this.diagnostics[i].message.startsWith('Invalid assignment target')) {
+        this.diagnostics.splice(i, 1);
+      }
+    }
   }
 
   // =========================================================================
@@ -2544,4 +2779,9 @@ export function parse(source: string): SoftNDocument {
 //    `**`, `in`, `instanceof`, `new`, `undefined` and comments inside `{…}`;
 //    `#else if`; event modifiers (`@submit.prevent`); and a diagnostic for a
 //    `{…}` among attributes, which used to become a boolean attribute.
-export const PARSER_VERSION = 5;
+// 6: Arrow parameters that take their argument apart (`([key, value]) => …`,
+//    `({ id }) => …`), have a default or gather the rest; the same patterns
+//    as the variable of an `#each`; computed keys (`{ [name]: value }`);
+//    `#if` and `#each` inside `#empty`, which used to be read as text; and
+//    diagnostics for `(a, b)` without an arrow and for `else` as an attribute.
+export const PARSER_VERSION = 6;

@@ -15,6 +15,7 @@ import React, {
 } from 'react';
 import { parseCached } from '../parser';
 import { renderDocument } from '../renderer';
+import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
 import { getDefaultRegistry } from '../renderer/registry';
 import { collectFirstScreenTags } from '../renderer/document-tags';
 import { isRemoteUrl, rewriteCssResources } from '../renderer/sanitize-html';
@@ -46,7 +47,7 @@ import { getXDB, type XDBService } from '../runtime/xdb';
 import { readSavedSyncRoom } from '../runtime/xdb-sync-key';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
-import type { Expression, TemplateNode } from '../parser/ast';
+import type { BindingTarget, Expression, TemplateNode } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { parseStatePath } from '../runtime/state-path';
 import { debug } from '../runtime/debug';
@@ -342,6 +343,14 @@ export interface SoftNRendererProps {
   stateRef?: React.MutableRefObject<(() => Record<string, unknown>) | null>;
 
   /**
+   * Hand React, for every part of the page that comes out the same as it did
+   * last time, the element it already has, so the components there are not
+   * run again (see renderer/reuse.ts). On unless set to false, which draws
+   * every element afresh on every change, as the renderer did before.
+   */
+  reuseElements?: boolean;
+
+  /**
    * Whether the host is showing this app. softn-web keeps every open tab
    * mounted and toggles them with `display`, so a renderer cannot tell from
    * its own tree whether it is on screen. Published to the components below;
@@ -398,11 +407,15 @@ function expressionHasCall(expr: Expression | undefined): boolean {
     );
   }
   if (expr.type === 'ArrowFunctionExpression') {
+    // A default is an expression too: `(row, label = title(row)) => …`.
+    if (expr.patterns?.some((param) => targetHasCall(param))) return true;
     return typeof expr.body === 'string' ? false : expressionHasCall(expr.body);
   }
   if (expr.type === 'ObjectExpression') {
     return expr.properties.some((p) =>
-      expressionHasCall(p.type === 'SpreadElement' ? p.argument : p.value)
+      p.type === 'SpreadElement'
+        ? expressionHasCall(p.argument)
+        : expressionHasCall(p.computedKey) || expressionHasCall(p.value)
     );
   }
   if (expr.type === 'UpdateExpression') {
@@ -421,6 +434,15 @@ function expressionHasCall(expr: Expression | undefined): boolean {
   if (expr.type === 'TemplateLiteral') {
     return expr.expressions.some((e) => expressionHasCall(e));
   }
+  return false;
+}
+
+/** Whether a default anywhere in a parameter's pattern makes a call. */
+function targetHasCall(target: BindingTarget): boolean {
+  if (expressionHasCall(target.default)) return true;
+  const pattern = target.pattern;
+  if (pattern.type === 'ArrayPattern') return pattern.elements.some(targetHasCall);
+  if (pattern.type === 'ObjectPattern') return pattern.properties.some((property) => targetHasCall(property.value));
   return false;
 }
 
@@ -609,10 +631,16 @@ export function SoftNRenderer({
   resumeSavedSyncRoom = false,
   bundleFileProvider,
   stateRef,
+  reuseElements = true,
   active = true,
   assetResolver,
   xdb: xdbProp,
 }: SoftNRendererProps): React.ReactElement | null {
+  // One for the life of the mount: what the last drawing made, kept so the
+  // next can hand React the same elements where nothing came out different.
+  const renderCacheRef = useRef<SoftNRenderCache | null>(null);
+  if (reuseElements && !renderCacheRef.current) renderCacheRef.current = createRenderCache();
+  const renderCache = reuseElements ? (renderCacheRef.current ?? undefined) : undefined;
   const runtimePermissions = useStructurallyStableValue(permissions);
   const runtimePermissionConfig = useStructurallyStableValue(permissionConfig);
   const runtimePython = useStructurallyStableValue(python);
@@ -1641,6 +1669,7 @@ export function SoftNRenderer({
       // What the markup may fetch, judged by the bundle's own declaration. A
       // host that supplied no config is not enforcing; see egress-policy.ts.
       egress: runtimePermissionConfig ?? null,
+      renderCache,
     };
   }, [
     state.componentState,
@@ -1654,6 +1683,7 @@ export function SoftNRenderer({
     scriptLoaded,
     state.scriptComputed,
     runtimePermissionConfig,
+    renderCache,
   ]);
 
   // What the device components are allowed: which capabilities the bundle

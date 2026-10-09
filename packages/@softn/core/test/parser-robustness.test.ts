@@ -83,13 +83,19 @@ describe('parser termination', () => {
     expect(diagnostics('<div>{fn(async x)}</div>').length).toBeGreaterThan(0);
   });
 
-  it('reports, rather than hangs on, an unsupported arrow parameter', () => {
-    // Only identifiers and commas advanced this loop, so a default, rest or
-    // destructured parameter never terminated. One parameter already errored;
-    // adding a second turned it into a hang.
-    expect(diagnostics('<div><Button @click={(e, n = 1) => f(n)}>x</Button></div>').length)
+  it('reads a default and a rest parameter, which it once hung on, and reports what is still not one', () => {
+    // Only identifiers and commas advanced the parameter loop, so a default,
+    // rest or destructured parameter never terminated. One parameter already
+    // errored; adding a second turned it into a hang. They were then
+    // reported, and are now read (see language-patterns.test.tsx).
+    expect(diagnostics('<div><Button @click={(e, n = 1) => f(n)}>x</Button></div>')).toEqual([]);
+    expect(diagnostics('<div><Button @click={(a, ...rest) => f(a)}>x</Button></div>')).toEqual([]);
+    // What cannot be a parameter list still ends in a diagnostic, not a hang.
+    expect(diagnostics('<div><Button @click={(a, ...rest, b) => f(a)}>x</Button></div>').length)
       .toBeGreaterThan(0);
-    expect(diagnostics('<div><Button @click={(a, ...rest) => f(a)}>x</Button></div>').length)
+    expect(diagnostics('<div><Button @click={(a.b, 1) => f(a)}>x</Button></div>').length)
+      .toBeGreaterThan(0);
+    expect(diagnostics('<div><Button @click={(a, , b +) => f(a)}>x</Button></div>').length)
       .toBeGreaterThan(0);
   });
 

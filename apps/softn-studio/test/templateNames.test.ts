@@ -83,6 +83,35 @@ describe('undefined names in the markup', () => {
     expect(warnings).toEqual([expect.stringMatching(/^ui\/main\.ui line 13: @click assigns tab, which the logic does not declare: it has no value until the handler runs\./)]);
   });
 
+  it('does not flag the names a pattern binds, in an arrow or a loop, and still flags what a default or a worked-out key reads', async () => {
+    const { errors } = await templateNameErrors(
+      page(
+        [
+          '  <Text>{Object.entries(items[0]).map(([key, value]) => key + value).join(", ")}</Text>',
+          '  <Text>{items.reduce((sum, { title, done = false }) => sum + (done ? 0 : title.length), 0)}</Text>',
+          '  <Text>{items.map(({ title: heading, ...rest }, i) => heading + i + Object.keys(rest).length)}</Text>',
+          '  #each ({ title, done }, i in items) key={title}',
+          '    <Checkbox :bind={done} label={`${i}. ${title}`} />',
+          '  #end',
+          '  #each ([name, amount] in Object.entries(items[0]))',
+          '    <Text>{name}: {amount}</Text>',
+          '  #end',
+          '  <Text>{items.map((row, label = fallbak) => label)}</Text>',
+          '  <Button @click={() => saveItem({ [fieldd]: query })}>Save</Button>',
+          '  <Text>{title}</Text>',
+        ].join('\n'),
+      ),
+      'ui/main.ui',
+    );
+    const text = errors.join('\n');
+    // What a default reads and what a key is worked out from are read like anything else...
+    expect(text).toMatch(/line 13: fallbak is read here/);
+    expect(text).toMatch(/line 14: fieldd is read here/);
+    // ...and a name a loop bound is not in scope after its #end.
+    expect(text).toMatch(/line 15: title is read here/);
+    expect(errors).toHaveLength(3);
+  });
+
   it('does not flag what the template evaluator provides, and says which globals it does not', async () => {
     const { errors } = await templateNameErrors(
       page(
