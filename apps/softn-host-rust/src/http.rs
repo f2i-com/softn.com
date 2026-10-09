@@ -322,7 +322,24 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, options: &ServeOptions, conn
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .layer(axum::Extension(conn_tx))
         .layer(axum::Extension(options.trusted_proxy.clone()))
+        .layer(axum::middleware::from_fn(no_sniff))
         .with_state(ctx)
+}
+
+/// `X-Content-Type-Options: nosniff` on every answer, the refusals included.
+///
+/// The host serves a bundle's own files beside its API. Without the header a
+/// browser may decide for itself what a response is: a file an app stored and
+/// serves back as text or as an image, opened in a tab, can be run as a page
+/// on this origin, with the app's cookies and its API. With it, a response is
+/// only ever what its Content-Type says.
+async fn no_sniff(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .entry(axum::http::header::X_CONTENT_TYPE_OPTIONS)
+        .or_insert(axum::http::HeaderValue::from_static("nosniff"));
+    response
 }
 
 /// The most any route of this bundle accepts, which is what the body
@@ -432,6 +449,7 @@ fn build_multi_tenant_router(
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .layer(axum::Extension(conn_tx))
         .layer(axum::Extension(options.trusted_proxy.clone()))
+        .layer(axum::middleware::from_fn(no_sniff))
 }
 
 /// What every route of one bundle shares.
@@ -1774,7 +1792,7 @@ mod private_api_tests {
     async fn validates_json_and_route_limits_without_requiring_sql() {
         let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
             db: None, http: None, fs: None, env: None, sql: None, crypto: None,
-            allow_time: false, development: true, allow_photos: false,
+            allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
         }, Some(1)).unwrap();
         runtime.init("function inspect(req) { if(req.body.invalid) return {status:999,body:{}}; if(req.body.large) return {status:200,body:{a:req.body.value,b:req.body.value}}; return {status:200,body:{length:req.body.value ? req.body.value.length : 0, ip:req.client_ip}}; }".into()).unwrap();
         let invoke = |body: Vec<u8>, content_type: &'static str, input_limit: usize| {
@@ -1806,7 +1824,7 @@ mod private_api_tests {
     async fn a_script_never_sees_cookies_or_the_host_token() {
         let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
             db: None, http: None, fs: None, env: None, sql: None, crypto: None,
-            allow_time: false, development: true, allow_photos: false,
+            allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
         }, Some(1)).unwrap();
         runtime.init("function headers(req) { return {status:200, body:req.headers}; }".into()).unwrap();
         let invoke = |host_auth: bool| {

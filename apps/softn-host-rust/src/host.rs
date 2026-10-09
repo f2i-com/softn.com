@@ -26,6 +26,9 @@ pub struct BridgeSet {
     pub allow_time: bool,
     pub development: bool,
     pub allow_photos: bool,
+    /// The manifest's `config.app`: the app's own settings, which a script
+    /// reads at the top level of `softn.config`. Null when there are none.
+    pub app_config: serde_json::Value,
 }
 
 /// Service one `__zippHostCall`.
@@ -45,7 +48,7 @@ fn dispatch_inner(bridges: &mut BridgeSet, kind: &str, args: &[String]) -> Resul
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
 
     match kind {
-        "server.config" => enc(&serde_json::json!({"apiVersion":1,"development":bridges.development,"photos":bridges.allow_photos})),
+        "server.config" => enc(&serde_json::json!({"apiVersion":1,"development":bridges.development,"photos":bridges.allow_photos,"app":bridges.app_config})),
         "media.sanitizePhoto" => {
             if !bridges.allow_photos { return Err(capability_denied("photos.sanitizePhoto")); }
             enc(&crate::bridges::media::sanitize_photo(arg(0))?)

@@ -1215,7 +1215,7 @@ mod tests {
         let runtime = script.map(|source| {
             let rt = ServerRuntime::new(|| crate::host::BridgeSet {
                 db: None, http: None, fs: None, env: None, sql: None, crypto: None,
-                allow_time: false, development: true, allow_photos: false,
+                allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
             }, Some(1)).unwrap();
             rt.init(source.to_string()).unwrap();
             rt

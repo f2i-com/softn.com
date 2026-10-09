@@ -14,8 +14,24 @@
 // rather than as a script global it has to isolate between requests.
 
 var db = {
-  query: function (c) {
-    return JSON.parse(__zippHostCall("db.query", String(c)));
+  // The records of a collection, or with a filter those whose data has every
+  // one of its fields with that value: what db.query(collection, filter) is
+  // in a page's logic. The second argument used to be dropped, so
+  // db.query("notes", {owner: id}) answered with everybody's notes.
+  query: function (c, filter) {
+    var rows = JSON.parse(__zippHostCall("db.query", String(c)));
+    if (filter === undefined || filter === null || typeof filter !== "object") return rows;
+    var keys = Object.keys(filter);
+    if (keys.length === 0) return rows;
+    var has = Object.prototype.hasOwnProperty;
+    return rows.filter(function (row) {
+      var data = row.data;
+      if (data === null || typeof data !== "object") return false;
+      for (var i = 0; i < keys.length; i++) {
+        if (!has.call(data, keys[i]) || data[keys[i]] !== filter[keys[i]]) return false;
+      }
+      return true;
+    });
   },
   get: function (c, id) {
     return JSON.parse(__zippHostCall("db.get", String(c), String(id)));
@@ -111,9 +127,31 @@ function __softnRpc(kind, args) {
   return JSON.parse(__zippHostCall.apply(null, values));
 }
 var __softnConfig = __softnRpc('server.config', []);
+// softn.config is the app's own settings (the manifest's config.app) with the
+// operator's two flags over them, as on the PHP host: an app key named
+// `development` cannot turn development on. It is frozen all the way down,
+// because this object outlives the request: what one handler changed in a
+// nested setting, every later one on this worker would have read.
+function __softnFreeze(value) {
+  if (value !== null && typeof value === 'object') {
+    var keys = Object.keys(value);
+    for (var i = 0; i < keys.length; i++) __softnFreeze(value[keys[i]]);
+    Object.freeze(value);
+  }
+  return value;
+}
+var __softnSettings = {};
+if (__softnConfig.app !== null && typeof __softnConfig.app === 'object' && !Array.isArray(__softnConfig.app)) {
+  var __softnAppKeys = Object.keys(__softnConfig.app);
+  for (var __softnI = 0; __softnI < __softnAppKeys.length; __softnI++) {
+    __softnSettings[__softnAppKeys[__softnI]] = __softnConfig.app[__softnAppKeys[__softnI]];
+  }
+}
+__softnSettings.development = __softnConfig.development === true;
+__softnSettings.photos = __softnConfig.photos === true;
 var softn = {
   serverApiVersion: __softnConfig.apiVersion,
-  config: Object.freeze({development: __softnConfig.development === true, photos: __softnConfig.photos === true}),
+  config: __softnFreeze(__softnSettings),
   media: Object.freeze({sanitizePhoto: function(dataUrl) { return __softnRpc("media.sanitizePhoto", [dataUrl]); }}),
   sql: Object.freeze({
     query: function(sql, params) { return __softnRpc('sql.query', [sql, JSON.stringify(params || [])]); },

@@ -281,7 +281,7 @@ fn only_a_trusted_client_ip_grant_reveals_the_address() {
 async fn a_handler_without_the_grant_sees_no_client_ip() {
     let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
         db: None, http: None, fs: None, env: None, sql: None, crypto: None,
-        allow_time: false, development: true, allow_photos: false,
+        allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
     }, Some(1)).unwrap();
     runtime
         .init("function ip(req) { return {status:200, body:{has: req.client_ip !== undefined, ip: req.client_ip || null}}; }".into())
@@ -348,7 +348,7 @@ async fn a_photo_upload_route_hands_the_handler_a_sanitized_photo() {
     use base64::Engine;
     let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
         db: None, http: None, fs: None, env: None, sql: None, crypto: None,
-        allow_time: false, development: true, allow_photos: true,
+        allow_time: false, development: true, allow_photos: true, app_config: serde_json::Value::Null,
     }, Some(1)).unwrap();
     runtime
         .init("function photo(req) { return {status:200, body:{sanitized: req.upload.sanitized, thumb: req.upload.thumbnail.slice(0, 23), keys: Object.keys(req.body).length}}; }".into())
@@ -380,7 +380,7 @@ async fn a_photo_upload_route_hands_the_handler_a_sanitized_photo() {
 async fn failures_answer_with_the_php_hosts_codes() {
     let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
         db: None, http: None, fs: None, env: None, sql: None, crypto: None,
-        allow_time: false, development: true, allow_photos: false,
+        allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
     }, Some(1)).unwrap();
     runtime.init("function boom() { throw new Error('private detail'); }".into()).unwrap();
     let (status, Json(body)) = execute_api_handler(runtime.clone(), "boom".into(), ApiRouteOptions {
@@ -613,4 +613,97 @@ async fn a_tenant_gets_the_body_deadline_the_early_refusal_and_the_visitor_cap()
     assert_eq!(send(addr, socket("https://tenant.example")).await.0, 429);
     drop(first);
     assert!(upgrades_again(addr, socket("https://tenant.example")).await);
+}
+
+/// A legacy bundle (the document store is always granted) whose manifest has
+/// settings of its own, two of them named like the operator's flags.
+fn settings_app() -> Arc<AppContext> {
+    let root = std::env::temp_dir().join(format!("softn-settings-{}", uuid::Uuid::new_v4()));
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("server")).unwrap();
+    std::fs::create_dir_all(bundle.join("assets")).unwrap();
+    std::fs::write(bundle.join("assets/note.txt"), "<script>alert(1)</script>").unwrap();
+    let manifest = serde_json::json!({"id":"com.example.settings","name":"Settings","version":"1",
+        "config":{"app":{"plan":"pro","limits":{"notes":3},"development":true,"photos":true}},
+        "server":{"routes":[
+            {"method":"POST","path":"/api/settings","handler":"settings","public":true},
+            {"method":"POST","path":"/api/notes","handler":"notes","public":true}]}});
+    std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(
+        bundle.join("server/main.logic"),
+        r#"
+        function settings(req) {
+            var before = softn.config.limits.notes;
+            try { softn.config.limits.notes = 99; } catch (e) {}
+            try { softn.config.plan = "free"; } catch (e) {}
+            return { status: 200, body: { plan: softn.config.plan, before: before, notes: softn.config.limits.notes,
+                development: softn.config.development, photos: softn.config.photos } };
+        }
+        function notes(req) {
+            if (db.query("notes").length === 0) {
+                db.create("notes", { owner: "ann", done: true });
+                db.create("notes", { owner: "bob", done: true });
+                db.create("notes", { owner: "ann", done: false });
+                db.create("notes", { owner: "ann" });
+            }
+            var count = function (filter) { return db.query("notes", filter).length; };
+            return { status: 200, body: { all: count(), ann: count({ owner: "ann" }), annDone: count({ owner: "ann", done: true }),
+                nobody: count({ owner: "zed" }), absent: count({ done: undefined }), empty: count({}), none: count(null) } };
+        }"#,
+    )
+    .unwrap();
+    AppContext::load(bundle, Some(root.join("data")), Some(1), false).unwrap()
+}
+
+/// `softn.config` is the manifest's `config.app` under the operator's flags,
+/// as on the PHP host, and a handler cannot change it for the next request.
+#[tokio::test]
+async fn a_script_reads_the_apps_settings_and_cannot_change_them_or_the_operators_flags() {
+    let addr = serve(settings_app()).await;
+    let host = addr.to_string();
+    for round in 0..2 {
+        let (status, _, body) = send(addr, post(&host, "/api/settings", None, "{}", "application/json")).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"plan":"pro","before":3,"notes":3,"development":false,"photos":false}),
+            "request {round}"
+        );
+    }
+}
+
+/// `db.query(collection, filter)` keeps the records whose data has every
+/// field of the filter, as it does in a page's logic.
+#[tokio::test]
+async fn a_filtered_query_answers_with_the_matching_records_only() {
+    let addr = serve(settings_app()).await;
+    let host = addr.to_string();
+    let (status, _, body) = send(addr, post(&host, "/api/notes", None, "{}", "application/json")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+        serde_json::json!({"all":4,"ann":3,"annDone":1,"nobody":0,"absent":0,"empty":4,"none":4})
+    );
+}
+
+/// Every answer says its type is not to be guessed: a handler's, a file of
+/// the bundle, an error, a refusal and the health check.
+#[tokio::test]
+async fn no_answer_leaves_its_type_to_the_browser() {
+    let addr = serve(settings_app()).await;
+    let host = addr.to_string();
+    let get = |path: &str, name: &str| format!("GET {path} HTTP/1.1\r\nHost: {name}\r\nConnection: close\r\n\r\n");
+    for (request, expected) in [
+        (post(&host, "/api/settings", None, "{}", "application/json"), 200),
+        (get("/assets/note.txt", &host), 200),
+        (get("/manifest.json", &host), 200),
+        (get("/health", &host), 200),
+        (get("/api/nope", &host), 404),
+        (get("/api/settings", &host), 405),
+        (get("/assets/note.txt", "evil.example"), 403),
+    ] {
+        let (status, head, _) = send(addr, request.clone()).await;
+        assert_eq!(status, expected, "{request}");
+        assert!(head.contains("x-content-type-options: nosniff"), "{request}\n{head}");
+    }
 }

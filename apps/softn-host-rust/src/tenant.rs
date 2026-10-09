@@ -332,6 +332,7 @@ fn load_tenant(
                 .unwrap_or(false)
         };
 
+        let app_config = bundle::app_config(&manifest);
         let rt = ServerRuntime::new(move || BridgeSet {
             db: Some(Box::new(NativeDbBridge::new(db_for_factory.clone()))),
             http: if allow_http { Some(Box::new(NativeHttpBridge::new())) } else { None },
@@ -341,7 +342,8 @@ fn load_tenant(
             crypto: private_backend.crypto.clone(),
             allow_time: private_backend.time,
             development: private_backend.development,
-                allow_photos: private_backend.photos,
+            allow_photos: private_backend.photos,
+            app_config: app_config.clone(),
         }, configured_workers)?;
 
         rt.init(source)?;

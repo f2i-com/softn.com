@@ -91,6 +91,18 @@ pub struct RouteDefinition {
     pub upload: Option<String>,
 }
 
+/// The app's own settings, `config.app`, which a server script reads at the
+/// top level of `softn.config` (as on the PHP host). Null unless it is an
+/// object. Nothing here is secret: `config` is part of the manifest every
+/// client is served.
+pub fn app_config(manifest: &ServerManifest) -> serde_json::Value {
+    manifest.config.as_ref()
+        .and_then(|c| c.get("app"))
+        .filter(|app| app.is_object())
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Requests a minute one client address may make to the app's routes:
 /// `config.server.requestsPerMinute`, else 120 for an API v1 app (the PHP
 /// host's fixed limit, so the shared contract behaves alike) and no limit for

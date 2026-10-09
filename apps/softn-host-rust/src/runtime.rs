@@ -1285,7 +1285,7 @@ mod private_sql_tests {
         let runtime = ServerRuntime::new(move || BridgeSet {
             db: None, http: None, fs: None, env: None,
             sql: Some(NativeSql::new(worker_path.clone())), crypto: None,
-            allow_time: false, development: true, allow_photos: false,
+            allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
         }, Some(2)).unwrap();
         runtime.init(r#"
             var forceRebuild = {};

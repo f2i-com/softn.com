@@ -183,6 +183,7 @@ impl AppContext {
                 allow_http, allow_fs
             );
 
+            let app_config = bundle::app_config(&manifest);
             let rt = ServerRuntime::new(move || BridgeSet {
                 db: Some(Box::new(NativeDbBridge::new(db_for_factory.clone()))),
                 http: if allow_http { Some(Box::new(NativeHttpBridge::new())) } else { None },
@@ -194,6 +195,7 @@ impl AppContext {
                 allow_time: private_backend.time,
                 development: private_backend.development,
                 allow_photos: private_backend.photos,
+                app_config: app_config.clone(),
             }, configured_workers)?;
 
             // Initialize all worker threads with the same source

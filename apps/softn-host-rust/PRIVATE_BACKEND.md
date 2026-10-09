@@ -106,6 +106,11 @@ Sync is on unless the manifest turns it off, so who may open `/sync` matters:
   with its public name).** The poker authority guide's systemd unit passes
   `--trusted-proxy`; its first sample command does not, and run that way
   behind nginx every request is now refused until one of the two is added.
+- Every answer carries `X-Content-Type-Options: nosniff`, the errors and
+  refusals included, as the PHP host's `.htaccess` sends it: a file of the
+  bundle is only ever what its `Content-Type` says, never a page because a
+  browser guessed so. A proxy in front may set its own; the host does not
+  send a `Content-Security-Policy`, which is the page's to declare.
 - A browser's handshake carries `Origin`, and the upgrade is refused (403)
   unless that origin is the host's own (the `Host` the request was sent to,
   or a trusted proxy's `X-Forwarded-Host`) or is listed in
@@ -178,11 +183,19 @@ Supported script bindings:
 | Binding                                                   | Behavior                                                                                           |
 | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `softn.serverApiVersion`                                  | `1`                                                                                                |
-| `softn.config.development`, `.photos`                     | Immutable operator-controlled flags                                                                |
+| `softn.config`                                            | The app's `config.app` settings under the operator's `.development` and `.photos`; frozen          |
 | `softn.sql.query/first/execute(sql, parameters)`          | Parameterized private SQL, row objects or `{changes,lastInsertRowid}`                              |
 | `softn.crypto.sha256/hmac/randomHex/randomInt/equal/seal` | Native hashing, tenant-keyed HMAC, OS randomness, constant-time equality, authenticated encryption |
 | `softn.time.now/age/parseZoned/format`                    | Trusted epoch clock, calendar age in a chosen timezone, validated IANA local time                  |
 | `softn.media.sanitizePhoto(dataUrl)`                      | Optional `photos` capability; sanitized image and thumbnail                                        |
+
+`softn.config` is the manifest's `config.app` object, key for key, with the two
+flags the operator owns set over it: an app key named `development` or `photos`
+is replaced, so a bundle cannot turn development mode on for itself. The PHP
+host gives a script the same settings. The object is frozen all the way down,
+because it outlives the request: a handler cannot change a setting for the
+ones that follow. `config` is part of the manifest every client is served, so
+nothing in it is a secret; keys and tokens belong in `backend.json`.
 
 `softn.time.age(date, timezone)` accepts a `YYYY-MM-DD` date and an optional IANA
 zone (default `UTC`); specify the application's calendar zone explicitly.
