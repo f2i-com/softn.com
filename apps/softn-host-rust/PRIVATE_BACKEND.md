@@ -323,13 +323,19 @@ already paid it). Keep the top level cheap, and keep state in the database.
 
 One push is one request, however many ops it carries. The per-op sync hooks
 of a push (`onBeforeSync` for each op, and after the push is stored
-`onAfterSync` for each) run in order on one worker: the first starts from the
-script as loaded, like any request, and each of the rest finds memory as the
-one before left it, unless that one threw or was cut off, after which the next
-starts clean again. The before-hooks are one such run and the after-hooks
-another. The next push, and every HTTP request, starts clean. A thousand ops
-with both hooks take about 30 ms; a rebuild for each took 0.9 s for the
-before-hooks alone, against the five seconds a push is given.
+`onAfterSync` for each) are run in order, one worker at a time, and the first
+starts from the script as loaded, like any request. To spare a compile an op,
+the next op's hook runs in the VM the one before it ran in, so it may find in
+memory what that one left. That is a saving and not a promise: the hook after
+one that threw or was cut off starts clean, and so does the first hook after
+each tenth of a second, when the worker is handed to whatever else is waiting
+and the rest of the push takes its turn behind it. A push whose hooks are slow
+(one that calls out for each op, say) would otherwise hold a worker until its
+last op, and on a pool of one every other request would wait for it. The next
+push, and every HTTP request, starts clean. Keep what must last in the
+database. A thousand ops with both hooks take about 30 ms; a compile for each
+took 0.9 s for the before-hooks alone, against the five seconds a push is
+given.
 
 `onStart()` is one place the two hosts differ. Here it runs once, when the
 app is loaded, on one worker and outside any transaction, and a global it

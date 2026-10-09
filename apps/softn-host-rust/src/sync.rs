@@ -1602,6 +1602,8 @@ mod tests {
         let (sync, db) = manager_with(Some(
             "var seen = 0; function onBeforeSync(op) { seen = seen + 1; return { data: { seq: seen } }; }",
         ), 4);
+        // One stretch, however slowly this machine is running the test.
+        sync.runtime.as_ref().unwrap().each_slice_ms.store(600_000, std::sync::atomic::Ordering::Relaxed);
         for prefix in ["a", "b"] {
             let ops: Vec<SyncOp> = (0..12)
                 .map(|n| op(&format!("{prefix}{n}"), "notes", "create", &format!("{prefix}-r{n}"), serde_json::json!({"n": n})))

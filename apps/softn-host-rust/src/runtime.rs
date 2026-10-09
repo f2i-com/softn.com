@@ -207,6 +207,13 @@ fn replace_wedged(
 /// after the client has been told it failed.
 pub const MAX_CALL_WAIT: Duration = Duration::from_millis(WALL_TIME_MS + 5_000);
 
+/// How long a run of calls made for one request (`call_each`) keeps its worker
+/// before whatever else is waiting has a turn. Long enough that the rebuild a
+/// further stretch begins with (about a millisecond) is a small part of it,
+/// and short enough that a request arriving behind a long push does not wait
+/// for the push.
+const EACH_SLICE: Duration = Duration::from_millis(100);
+
 /// How often the watchdog looks for overrunning calls. The engine polls the
 /// abort flag every few thousand instructions, so the true overshoot is this
 /// plus a poll interval — well inside the 5s margin to the HTTP timeout.
@@ -304,18 +311,40 @@ enum ScriptRequest {
         started: Arc<AtomicBool>,
         reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
     },
-    /// One handler run once for each of `args`, in order, by the worker that
-    /// takes this off the queue: see `call_each`.
+    /// One handler run for `args[from..]`, in order, by the worker that takes
+    /// this off the queue, for `slice` from when it does: see `call_each`.
     CallEach {
         name: String,
-        args: Vec<serde_json::Value>,
-        /// Past this no further call is begun. The first always is.
+        /// Shared with the caller, which sends what a stretch did not reach
+        /// as a further one: the ops of a push are not copied for each.
+        args: Arc<Vec<serde_json::Value>>,
+        from: usize,
+        /// How long the worker goes on beginning calls. Counted from when it
+        /// takes this, not from when it was sent: a stretch that had waited
+        /// its length in the queue would otherwise be one call long, and a
+        /// busy host would compile the script for every op again.
+        slice: Duration,
+        /// Past this no further call is begun either. The first always is.
         deadline: Option<Instant>,
         cancellation: Arc<AtomicBool>,
         started: Arc<AtomicBool>,
-        /// An answer a call, in order. Dropped when no more will be made.
-        reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
+        reply: std::sync::mpsc::Sender<EachReply>,
     },
+}
+
+/// When a stretch a worker took at `taken` stops beginning calls: its slice
+/// later, or at the caller's deadline if that comes first.
+fn stretch_end(taken: Instant, slice: Duration, deadline: Option<Instant>) -> Instant {
+    let end = taken + slice;
+    deadline.map_or(end, |at| at.min(end))
+}
+
+/// What a worker says of a `CallEach` it took.
+enum EachReply {
+    /// The answer of the next call, in order.
+    Answer(Result<serde_json::Value, String>),
+    /// Its time was up. The calls not answered were not begun.
+    OutOfTime,
 }
 
 /// Everything one worker keeps between requests.
@@ -377,6 +406,9 @@ pub struct ServerRuntime {
     /// Replacement workers the watchdog started. Counted against the global
     /// thread cap like any other worker, and returned to it on drop.
     abandonment: Arc<Abandonment>,
+    /// `EACH_SLICE` in milliseconds. A test sets it to make a run of calls
+    /// one stretch, or a stretch a call.
+    pub(crate) each_slice_ms: AtomicU64,
 }
 
 impl ServerRuntime {
@@ -531,6 +563,7 @@ impl ServerRuntime {
             watchdog_stop,
             init_source,
             abandonment,
+            each_slice_ms: AtomicU64::new(EACH_SLICE.as_millis() as u64),
         }))
     }
 
@@ -787,26 +820,33 @@ impl ServerRuntime {
                 };
                 let _ = reply.send(result);
             }
-            ScriptRequest::CallEach { name, args, deadline, cancellation, started, reply } => {
+            ScriptRequest::CallEach { name, args, from, slice, deadline, cancellation, started, reply } => {
                 started.store(true, Ordering::Relaxed);
+                let until = stretch_end(Instant::now(), slice, deadline);
                 // The first call starts from the script as loaded, like any
                 // request. Each of the rest takes the VM as the one before left
                 // it, unless that one failed: it may have stopped anywhere.
                 let mut fresh = true;
-                for (index, arg) in args.into_iter().enumerate() {
-                    let out_of_time = deadline.is_some_and(|at| Instant::now() >= at);
-                    if index > 0 && (out_of_time || cancellation.load(Ordering::Relaxed)) {
-                        break;
+                for index in from..args.len() {
+                    if index > from {
+                        // Nobody is waiting for the rest.
+                        if cancellation.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if Instant::now() >= until {
+                            let _ = reply.send(EachReply::OutOfTime);
+                            break;
+                        }
                     }
                     let result = match worker.as_mut() {
-                        Some(w) => Self::call_handler(w, &name, vec![arg], TransactionMode::None, cancellation.clone(), fresh, guard),
+                        Some(w) => Self::call_handler(w, &name, vec![args[index].clone()], TransactionMode::None, cancellation.clone(), fresh, guard),
                         None => Err("Runtime not initialized".into()),
                     };
                     fresh = result.is_err();
                     // Nobody is waiting any more, or the watchdog gave up on
                     // this thread during that call and will not arm against
                     // it again: nothing more may run here.
-                    if reply.send(result).is_err() || guard.abandoned.load(Ordering::Relaxed) {
+                    if reply.send(EachReply::Answer(result)).is_err() || guard.abandoned.load(Ordering::Relaxed) {
                         break;
                     }
                 }
@@ -972,64 +1012,91 @@ impl ServerRuntime {
         self.call_transaction(name, args, TransactionMode::None, Arc::new(AtomicBool::new(false)))
     }
 
-    /// Run `name` once for each of `args`, in order, on one worker and in one VM.
+    /// Run `name` once for each of `args`, in order: the calls one request makes.
     ///
     /// What a request leaves in the script's memory must not be there for the
     /// next, so a worker rebuilds its VM before every call, and that made the
     /// per-op sync hooks, which are one call an op, pay a rebuild an op: about
-    /// a millisecond each. A push is one request from one client, so its hooks
-    /// are one job. The first call starts from the script as loaded, like any
-    /// request; each of the rest takes the VM as the one before left it,
-    /// unless that one failed. Whatever the worker runs next starts clean.
+    /// a millisecond each. A push is one request from one client, so its
+    /// hooks are sent as a run that one worker makes one after another. The
+    /// first call starts from the script as loaded, like any request; each of
+    /// the rest takes the VM as the one before left it, unless that one
+    /// failed. Whatever the worker runs next starts clean.
     ///
-    /// One job on one worker, and not calls that each name their request:
-    /// idle workers take calls in turn, so with four of them the calls of one
-    /// push ran in four VMs and a hook that counted saw 1, 1, 1, 1, 2, 2…
+    /// A run on one worker, and not calls that each name their request: idle
+    /// workers take calls in turn, so with four of them the calls of one push
+    /// ran in four VMs and a hook that counted saw 1, 1, 1, 1, 2, 2…
     ///
-    /// Past `deadline` no further call is begun; the first always is. The
-    /// answers are those of the calls that were made, in order, so fewer than
-    /// `args` means the rest were not run. `Err` when no worker could be asked.
+    /// And not the whole run at once. A worker that is making these calls is
+    /// taking nothing else, so a push whose hooks are slow (one that calls out
+    /// for each op, say) held a worker for as long as it lasted, where a call
+    /// an op had let other requests in between: on a pool of one, everything
+    /// else waited for the push and was refused after `MAX_CALL_WAIT`. A
+    /// stretch is `EACH_SLICE` long. What it did not reach is sent as a
+    /// further stretch, behind whatever is waiting by then, and that one
+    /// starts clean like the first. So the calls are made in order, and what
+    /// one of them finds in memory from the one before is a saving and not a
+    /// promise.
+    ///
+    /// Past `deadline` nothing further is begun; the first call always is.
+    /// The answers are those of the calls that were made, in order, so fewer
+    /// than `args` means the rest were not run. `Err` when no worker could be
+    /// asked at all.
     pub fn call_each(
         &self,
         name: &str,
         args: Vec<serde_json::Value>,
         deadline: Option<Instant>,
     ) -> Result<Vec<Result<serde_json::Value, String>>, String> {
-        let expected = args.len();
-        if expected == 0 {
-            return Ok(Vec::new());
-        }
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        let started = Arc::new(AtomicBool::new(false));
-        let cancellation = Arc::new(AtomicBool::new(false));
-        self.work_tx
-            .try_send(ScriptRequest::CallEach {
+        let args = Arc::new(args);
+        let mut answers = Vec::with_capacity(args.len());
+        'stretches: while answers.len() < args.len() {
+            if !answers.is_empty() && deadline.is_some_and(|at| Instant::now() >= at) {
+                break;
+            }
+            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+            let started = Arc::new(AtomicBool::new(false));
+            let cancellation = Arc::new(AtomicBool::new(false));
+            let queued = self.work_tx.try_send(ScriptRequest::CallEach {
                 name: name.to_string(),
-                args,
+                args: Arc::clone(&args),
+                from: answers.len(),
+                slice: Duration::from_millis(self.each_slice_ms.load(Ordering::Relaxed)),
                 deadline,
                 cancellation: cancellation.clone(),
                 started: started.clone(),
                 reply: reply_tx,
-            })
-            .map_err(Self::not_queued)?;
-        let mut answers = Vec::with_capacity(expected);
-        while answers.len() < expected {
-            // Each call is waited for as a call of its own is: see `call_transaction`.
-            match reply_rx.recv_timeout(MAX_CALL_WAIT) {
-                Ok(answer) => answers.push(answer),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    cancellation.store(true, Ordering::Relaxed);
-                    answers.push(Err(Self::unanswered(name, &started)));
-                    break;
+            });
+            if let Err(error) = queued.map_err(Self::not_queued) {
+                // Nothing was asked: the caller is told so. Later, it is the
+                // failure of the call that could not be sent.
+                if answers.is_empty() {
+                    return Err(error);
                 }
-                // The worker will make no more of them. Running out of time
-                // is no call's failure; anything else is the failure of the
-                // call it was on.
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    if deadline.is_none_or(|at| Instant::now() < at) {
-                        answers.push(Err("Script worker died".to_string()));
+                answers.push(Err(error));
+                break;
+            }
+            loop {
+                // Each call is waited for as a call of its own is: see `call_transaction`.
+                match reply_rx.recv_timeout(MAX_CALL_WAIT) {
+                    Ok(EachReply::Answer(answer)) => {
+                        answers.push(answer);
+                        if answers.len() == args.len() {
+                            break 'stretches;
+                        }
                     }
-                    break;
+                    Ok(EachReply::OutOfTime) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        cancellation.store(true, Ordering::Relaxed);
+                        answers.push(Err(Self::unanswered(name, &started)));
+                        break 'stretches;
+                    }
+                    // The worker stopped without saying its time was up: that
+                    // is the failure of the call it was on.
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        answers.push(Err("Script worker died".to_string()));
+                        break 'stretches;
+                    }
                 }
             }
         }
@@ -1526,6 +1593,8 @@ mod isolation_tests {
                 return {status: 200, body: count.n};
             }
         "#.to_string()).unwrap();
+        // One stretch, however slowly this machine is running the test.
+        runtime.each_slice_ms.store(600_000, Ordering::Relaxed);
         let each = |args: Vec<serde_json::Value>, deadline: Option<Instant>| -> Vec<Option<i64>> {
             runtime.call_each("count", args, deadline).unwrap().into_iter()
                 .map(|answer| answer.ok().and_then(|value| value["body"].as_i64()))
@@ -1551,6 +1620,7 @@ mod isolation_tests {
 
         // On one worker there is no other VM for the next job to land in.
         let single = one_worker("function count(req) { count.n = (count.n || 0) + 1; return {status: 200, body: count.n}; }");
+        single.each_slice_ms.store(600_000, Ordering::Relaxed);
         let bodies = |n: usize| -> Vec<i64> {
             single.call_each("count", vec![serde_json::json!({}); n], None).unwrap().into_iter()
                 .map(|answer| answer.unwrap()["body"].as_i64().unwrap())
@@ -1559,6 +1629,102 @@ mod isolation_tests {
         assert_eq!(bodies(3), vec![1, 2, 3]);
         assert_eq!(bodies(2), vec![1, 2]);
         assert_eq!(single.call("count", vec![serde_json::json!({})]).unwrap()["body"], 1);
+    }
+}
+
+#[cfg(test)]
+mod each_slice_tests {
+    use super::*;
+    use crate::host::BridgeSet;
+
+    fn one_worker(source: &str) -> Arc<ServerRuntime> {
+        let runtime = ServerRuntime::new(|| BridgeSet {
+            db: None, http: None, fs: None, env: None, sql: None, crypto: None,
+            allow_time: false, development: false, allow_photos: false, app_config: serde_json::Value::Null,
+        }, Some(1)).unwrap();
+        runtime.init(source.to_string()).unwrap();
+        runtime
+    }
+
+    /// A run of calls keeps its worker for a stretch and no longer: what it
+    /// did not reach waits its turn behind whatever else has arrived, and
+    /// starts clean. Made all at once, a push with slow per-op hooks held a
+    /// worker until its last op, and on a pool of one every other request
+    /// waited for it (a request sent 5 ms into a run of 300 calls was
+    /// answered when the run was, where a call an op had let it in after one).
+    #[test]
+    fn a_long_run_of_calls_lets_other_requests_in() {
+        let runtime = one_worker(r#"
+            function count(req) { count.n = (count.n || 0) + 1; return {status: 200, body: count.n}; }
+            function other(req) { return {status: 200, body: 'in'}; }
+            function echo(req) { return {status: 200, body: req.n}; }
+        "#);
+        // A stretch of no time at all is one call: the first is always made.
+        runtime.each_slice_ms.store(0, Ordering::Relaxed);
+        let bodies = |n: usize| -> Vec<i64> {
+            runtime.call_each("count", vec![serde_json::json!({}); n], None).unwrap().into_iter()
+                .map(|answer| answer.unwrap()["body"].as_i64().unwrap())
+                .collect()
+        };
+        // Every call is made, in order, and each stretch starts clean.
+        assert_eq!(bodies(4), vec![1, 1, 1, 1]);
+        let echoed: Vec<i64> = runtime
+            .call_each("echo", (0..6).map(|n| serde_json::json!({"n": n})).collect(), None).unwrap().into_iter()
+            .map(|answer| answer.unwrap()["body"].as_i64().unwrap())
+            .collect();
+        assert_eq!(echoed, vec![0, 1, 2, 3, 4, 5]);
+
+        // The run is 300 stretches, each a rebuild long. A request sent as
+        // it begins is answered long before it ends.
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let run_is_over = Arc::new(AtomicBool::new(false));
+        let run = {
+            let (runtime, gate, run_is_over) = (runtime.clone(), gate.clone(), run_is_over.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                let answers = runtime.call_each("count", vec![serde_json::json!({}); 300], None).unwrap();
+                run_is_over.store(true, Ordering::SeqCst);
+                answers.len()
+            })
+        };
+        gate.wait();
+        let answer = runtime.call("other", vec![serde_json::json!({})]).unwrap();
+        let waited_for_the_run = run_is_over.load(Ordering::SeqCst);
+        assert_eq!(answer["body"], "in");
+        assert_eq!(run.join().unwrap(), 300);
+        assert!(!waited_for_the_run, "the request was answered only when the run of 300 calls was over");
+    }
+
+    /// The deadline is the caller's and a stretch never outlasts it: with a
+    /// stretch far longer than the time the run is given, the run still ends
+    /// at its deadline, having made the calls it had time for.
+    #[test]
+    fn a_run_ends_at_its_deadline_whatever_the_stretch() {
+        let runtime = one_worker("function count(req) { count.n = (count.n || 0) + 1; return {status: 200, body: count.n}; }");
+        runtime.each_slice_ms.store(600_000, Ordering::Relaxed);
+        let answers = runtime.call_each("count", vec![serde_json::json!({}); 5], Some(Instant::now())).unwrap();
+        assert_eq!(answers.len(), 1);
+        // And with no time for a stretch either, it is the same one call.
+        runtime.each_slice_ms.store(0, Ordering::Relaxed);
+        let answers = runtime.call_each("count", vec![serde_json::json!({}); 5], Some(Instant::now())).unwrap();
+        assert_eq!(answers.len(), 1);
+        assert!(runtime.call_each("count", Vec::new(), None).unwrap().is_empty());
+    }
+
+    /// A stretch is timed from when a worker takes it. Timed from when it was
+    /// sent, one that had waited its length behind other requests was a
+    /// single call long, and a busy host compiled the script for every op.
+    #[test]
+    fn a_stretch_is_timed_from_when_it_is_taken() {
+        let slice = Duration::from_millis(100);
+        let taken = Instant::now() + Duration::from_secs(3);
+        assert_eq!(stretch_end(taken, slice, None), taken + slice);
+        // The caller's deadline ends it sooner, and a later one does not extend it.
+        let soon = taken + Duration::from_millis(10);
+        assert_eq!(stretch_end(taken, slice, Some(soon)), soon);
+        assert_eq!(stretch_end(taken, slice, Some(taken + Duration::from_secs(60))), taken + slice);
+        // Past the deadline already: only the call that is always made.
+        assert!(stretch_end(taken, slice, Some(taken - Duration::from_secs(1))) < taken);
     }
 }
 
