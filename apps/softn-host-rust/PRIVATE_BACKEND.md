@@ -300,6 +300,12 @@ A route accepts the smaller of its own `maxBodySize` and
 cap a route that declared more. A response may be 3 MiB as JSON, as on the PHP
 host (it was 2 MiB here), with any one string in it at most 2 MiB.
 
+One difference in what a body may hold: an object key, at any depth, that
+begins with a NUL character (`{"\u0000k":1}`) is a key like any other here,
+and on the PHP host the request is answered `400 invalid_request`, because
+PHP's JSON decoder refuses such a property name. A NUL later in a key, a NUL
+in a value and an empty key are taken by both.
+
 A handler's answer and the host's own errors carry `Cache-Control: no-store`
 and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, as
 the PHP host's do: the answer is for that request, and JSON is never a page.

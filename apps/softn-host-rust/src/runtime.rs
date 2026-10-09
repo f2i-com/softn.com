@@ -1586,6 +1586,18 @@ mod isolation_tests {
         assert_eq!(answer["body"], serde_json::json!({"negative": true, "zero": true, "plain": true}));
     }
 
+    /// A key of a body that begins with a NUL character is a key like any
+    /// other here. The PHP host answers such a body 400: its JSON decoder
+    /// refuses the property name. PRIVATE_BACKEND.md says so; this is the
+    /// half of that sentence that is about this host.
+    #[test]
+    fn a_body_key_that_begins_with_nul_reaches_the_handler() {
+        let runtime = one_worker("function keys(req) { var k = Object.keys(req.body)[0]; return {status: 200, body: {first: k.charCodeAt(0), rest: k.slice(1), value: req.body[k]}}; }");
+        let body: serde_json::Value = serde_json::from_str(r#"{"\u0000k":7}"#).unwrap();
+        let answer = runtime.call("keys", vec![serde_json::json!({ "body": body })]).unwrap();
+        assert_eq!(answer["body"], serde_json::json!({"first": 0, "rest": "k", "value": 7}));
+    }
+
     /// The calls of one `call_each` are one request's: each may find what the
     /// one before left, in order, however many workers there are (idle
     /// workers take calls in turn, so calls sent one by one ran in as many
