@@ -237,6 +237,20 @@ describe('a URL deep inside a component’s items', () => {
     expect(out).toBe('<nav><a>loop</a><a>child</a></nav>');
   });
 
+  it('a tree whose branches are shared is walked once a branch, not once a path', () => {
+    // Twenty-four levels, each holding the one below twice: sixteen million
+    // paths to the leaf and twenty-five records. Walked by path that is ten
+    // seconds of a frozen page, and every level more doubles it; the limit
+    // this replaced kept it short by not looking.
+    let node: Node = { label: 'leaf', href: SCRIPT };
+    for (let i = 0; i < 24; i++) node = { label: `level ${i}`, children: [node, node] };
+    const started = Date.now();
+    const out = html('<Deepest items={tree} />', { tree: [node] });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(out).not.toContain('javascript:');
+    expect(out).toContain('data-levels="25"');
+  });
+
   it('a record that appears twice is not a tree that holds itself', () => {
     const shared = { label: 'Twice', href: '/twice' };
     const out = html('<Trail items={items} />', { items: [shared, shared] });

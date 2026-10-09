@@ -729,7 +729,7 @@ const COMPONENT_URL_PROPS = new Set([
  * two more. The cap used to be 8, and what lay past it was returned as it
  * was: a URL five levels down a tree was not judged at all. A value that
  * refers back to itself is what the cap was for, and that is now caught as
- * what it is (see `scrubUrlsIn`), so the cap only bounds the call stack. It
+ * what it is (see `Scrubbed`), so the cap only bounds the call stack. It
  * is far past any tree an app draws, and what is past it is dropped, not
  * passed: a limit on what gets checked must not be a way round the check.
  */
@@ -748,12 +748,27 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * these arrays and objects are the app's own state, so deleting a key in place
  * would corrupt the state as well as the render.
  */
+/**
+ * What one scrub has made of each list and record it has met.
+ *
+ * A value is `WALKING` while the scrub is inside it and its scrubbed form
+ * once it is through. That is two questions answered at once. Meeting a
+ * value that is still being walked is a value that holds itself, and the way
+ * back round is cut. Meeting one that is done is a value reached by a second
+ * path, and it is not walked again: without this a tree whose branches are
+ * shared (`node.children = [below, below]`, twenty levels of it) was walked
+ * once per path, a million times, where the depth limit this replaced had
+ * at least kept that short.
+ */
+type Scrubbed = Map<object, unknown>;
+const WALKING = Symbol('being scrubbed');
+
 function scrubUrlsIn(
   value: unknown,
   depth: number,
   blocked: string[],
   policy: EgressPolicy,
-  within: Set<object>
+  seen: Scrubbed
 ): unknown {
   // Elements arriving as a prop were built by `renderElement`, which already
   // sanitized them; copying one here would drop the non-enumerable bookkeeping
@@ -764,40 +779,43 @@ function scrubUrlsIn(
   if (!list && !isPlainObject(value)) return value;
   const holder = value as object;
 
-  // A value that holds itself: the way back up ends here, where returning
-  // the original would hand over everything in it unjudged. `within` is the
-  // values this one is inside, not every value seen, so a record that only
-  // appears twice is walked twice and kept both times.
-  if (within.has(holder) || depth > MAX_SCRUB_DEPTH) return undefined;
+  if (seen.has(holder)) {
+    // A value that holds itself: the way back up ends here, where returning
+    // the original would hand over everything in it unjudged. One that has
+    // been walked already (a record that appears twice) is what it was
+    // found to be the first time.
+    const before = seen.get(holder);
+    return before === WALKING ? undefined : before;
+  }
+  if (depth > MAX_SCRUB_DEPTH) return undefined;
 
-  within.add(holder);
-  try {
-    if (list) {
-      const entries = value as unknown[];
-      let copy: unknown[] | null = null;
-      for (let i = 0; i < entries.length; i++) {
-        const next = scrubUrlsIn(entries[i], depth + 1, blocked, policy, within);
-        if (next !== entries[i]) {
-          if (!copy) copy = entries.slice();
-          copy[i] = next;
-        }
+  seen.set(holder, WALKING);
+  let result: unknown;
+  if (list) {
+    const entries = value as unknown[];
+    let copy: unknown[] | null = null;
+    for (let i = 0; i < entries.length; i++) {
+      const next = scrubUrlsIn(entries[i], depth + 1, blocked, policy, seen);
+      if (next !== entries[i]) {
+        if (!copy) copy = entries.slice();
+        copy[i] = next;
       }
-      return copy ?? value;
     }
-
+    result = copy ?? value;
+  } else {
     const record = value as Record<string, unknown>;
     let copy: Record<string, unknown> | null = null;
     for (const name of Object.keys(record)) {
-      const next = scrubUrlProp(name, record[name], depth + 1, blocked, policy, within);
+      const next = scrubUrlProp(name, record[name], depth + 1, blocked, policy, seen);
       if (next !== record[name]) {
         if (!copy) copy = { ...record };
         copy[name] = next;
       }
     }
-    return copy ?? value;
-  } finally {
-    within.delete(holder);
+    result = copy ?? value;
   }
+  seen.set(holder, result);
+  return result;
 }
 
 function scrubUrlProp(
@@ -806,7 +824,7 @@ function scrubUrlProp(
   depth: number,
   blocked: string[],
   policy: EgressPolicy,
-  within: Set<object>
+  seen: Scrubbed
 ): unknown {
   if (COMPONENT_URL_PROPS.has(urlPropName(name))) {
     if (value === undefined || value === null) return value;
@@ -816,16 +834,16 @@ function scrubUrlProp(
     if (safe === undefined && typeof value !== 'boolean') blocked.push(describeUrlValue(value));
     return safe;
   }
-  return scrubUrlsIn(value, depth, blocked, policy, within);
+  return scrubUrlsIn(value, depth, blocked, policy, seen);
 }
 
 /** Drop unsafe URLs from the props of a registered component. */
 function sanitizeComponentUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy): void {
   const blocked: string[] = [];
 
-  const within = new Set<object>();
+  const seen: Scrubbed = new Map();
   for (const name of Object.keys(props)) {
-    const next = scrubUrlProp(name, props[name], 0, blocked, policy, within);
+    const next = scrubUrlProp(name, props[name], 0, blocked, policy, seen);
     if (next !== props[name]) props[name] = next;
   }
 
