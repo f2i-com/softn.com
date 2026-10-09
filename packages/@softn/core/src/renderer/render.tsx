@@ -1295,7 +1295,16 @@ function renderElement(
     // its `value` is the constant "on". Binding `value` left `checked`
     // undefined, so the control ran uncontrolled and never reflected the bound
     // variable, while the change wrote the string "on" back over it.
-    const isRadio = node.tag === 'Radio' || props.type === 'radio';
+    // One radio: a plain `<input type="radio">`, or a host's own Radio
+    // that is one option with a `value`. The built-in Radio is a group: it
+    // takes `options` and the chosen `value`, and hands its callback the new
+    // one, like any other control that holds a value. Wired as one radio it
+    // was told `checked` and never the value, so the chosen option was not
+    // shown, and choosing one wrote the group's own `value` prop, which it
+    // does not have: `undefined`, over the answer.
+    const isRadio =
+      props.type === 'radio' ||
+      (node.tag === 'Radio' && props.options === undefined && props.value !== undefined);
     const isCheckable =
       node.tag === 'Checkbox' ||
       node.tag === 'Switch' ||
@@ -1505,20 +1514,26 @@ function renderElement(
   // element reaches the network by exactly the same route a raw <div> does.
   withholdRemoteStyleUrls(props, egressPolicy);
 
-  // Void elements take no children, and React throws rather than ignoring the
-  // argument — even for the empty array `renderNodes` returns for a childless
-  // element. `img`, `br`, `hr`, `input` and `source` are all on the allowlist
-  // above, so every one of them crashed the render of any `.ui` that used the
-  // plain HTML tag. The demos only reach them through wrapper components like
-  // `<Image>`, which is why it went unnoticed.
+  // A tag with nothing inside it has no children, as in JSX. It was given
+  // the empty list `renderNodes` returns, and a component that asks whether
+  // it was given children took that for a yes: `<Avatar name="Ada" />` drew
+  // its absent children where its initials belong.
+  //
+  // A void element takes none whatever is written, and React throws rather
+  // than ignoring the argument, even for that empty list. `img`, `br`, `hr`,
+  // `input` and `source` are all on the allowlist above, so every one of
+  // them crashed the render of any `.ui` that used the plain HTML tag. The
+  // demos only reach them through wrapper components like `<Image>`, which
+  // is why it went unnoticed.
   const isVoid = typeof FinalComponent === 'string' && VOID_ELEMENTS.has(node.tag.toLowerCase());
+  const childless = isVoid || (children as React.ReactNode[]).length === 0;
 
   // With everything this element would be made from in hand, see whether it
   // is what this place was made from last time; see reuse.ts.
   const active = typeof key === 'string' ? pass : null;
   const before = active ? recall(active, key as string, node, 'element') : undefined;
   const settled = active ? settleProps(props, before) : undefined;
-  const drawn = isVoid ? NO_CHILDREN : (children as React.ReactNode[]);
+  const drawn = childless ? NO_CHILDREN : (children as React.ReactNode[]);
   if (
     active &&
     settled &&
@@ -1533,7 +1548,7 @@ function renderElement(
     return before.result;
   }
 
-  const element = isVoid
+  const element = childless
     ? React.createElement(FinalComponent, props)
     : React.createElement(FinalComponent, props, children);
 
