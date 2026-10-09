@@ -29,14 +29,17 @@
  * - a private/ made by another account was "run setup first", and slot
  *   files nobody could open were "the server is busy", both for ever;
  * - setup.php that could not write its folder, read its manifest or find its
- *   Node said so with a TypeError, a JsonException or a chmod() warning.
+ *   Node said so with a TypeError, a JsonException or a chmod() warning;
+ * - a request that found every worker slot held was told 503 in the same
+ *   instant, so the fifth call of a page that made five was refused though
+ *   a slot would be free a fifth of a second later.
  *
  * Skipped, with the reason, when PHP is not on PATH.
  */
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
-import {readFileSync,mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,realpathSync,chmodSync} from 'node:fs';
+import {spawnSync,spawn} from 'node:child_process';
+import {readFileSync,mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,realpathSync,chmodSync,symlinkSync,readdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -150,7 +153,8 @@ test('a preflight approves the header names asked for, and nothing that is not o
  */
 const cgiSkip=skip||(spawnSync('php-cgi',['-v']).status===0?false:'php-cgi is not on PATH (it ships with PHP; Debian/Ubuntu: php-cgi)');
 if(cgiSkip&&!skip)console.warn('WARNING: tests/request.test.mjs OPTIONS test skipped: '+cgiSkip);
-function cgi(method,origin,t,{routes=[],prepare=()=>{},remote='127.0.0.1',uri='/api/ping',php=[],server=()=>({})}={}) {
+/** webroot/api.php beside backend/ with http.php and a manifest of `routes`: what one request needs before a runner. */
+function deployment(t,{routes=[],prepare=()=>{}}={}) {
   const root=mkdtempSync(join(tmpdir(),'softn-cgi-'));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   mkdirSync(join(root,'webroot'));mkdirSync(join(root,'backend/app'),{recursive:true});
@@ -158,15 +162,33 @@ function cgi(method,origin,t,{routes=[],prepare=()=>{},remote='127.0.0.1',uri='/
   for(const name of ['http.php','request.php','client-ip.php'])copyFileSync(runtime+name,join(root,'backend',name));
   writeFileSync(join(root,'backend/app/manifest.json'),JSON.stringify({id:'cgi',config:{server:{allowedOrigins:['https://app.example']}},server:{routes}}));
   prepare(join(root,'backend'));
-  // `php`: settings for this php-cgi, as a host's php.ini would make them.
-  // `server`: more of what the web server tells PHP (DOCUMENT_ROOT, say), given the deployment's root.
-  const env={...process.env,REQUEST_METHOD:method,REQUEST_URI:uri,SCRIPT_FILENAME:join(root,'webroot/api.php'),REDIRECT_STATUS:'200',
-    HTTP_HOST:'site.example',REMOTE_ADDR:remote,GATEWAY_INTERFACE:'CGI/1.1',SERVER_PROTOCOL:'HTTP/1.1',...(origin?{HTTP_ORIGIN:origin}:{}),...server(root)};
-  const r=spawnSync('php-cgi',typeof php==='function'?php(root):php,{env,encoding:'utf8'});
-  assert.equal(r.status,0,r.stderr);
-  const [head,body]=r.stdout.split(/\r?\n\r?\n/,2),headers={};
+  return root;
+}
+/** What the web server tells php-cgi of a request, and php-cgi's answer taken apart. */
+const told=(root,method,origin,{remote='127.0.0.1',uri='/api/ping',server=()=>({})}={})=>({...process.env,REQUEST_METHOD:method,REQUEST_URI:uri,SCRIPT_FILENAME:join(root,'webroot/api.php'),REDIRECT_STATUS:'200',
+  HTTP_HOST:'site.example',REMOTE_ADDR:remote,GATEWAY_INTERFACE:'CGI/1.1',SERVER_PROTOCOL:'HTTP/1.1',...(origin?{HTTP_ORIGIN:origin}:{}),...server(root)});
+function answered(stdout,root) {
+  const [head,body]=stdout.split(/\r?\n\r?\n/,2),headers={};
   for(const line of head.split(/\r?\n/)){const i=line.indexOf(':');headers[line.slice(0,i).toLowerCase()]=line.slice(i+1).trim();}
   return {status:Number((headers.status??'200').split(' ')[0]),headers,body,root};
+}
+function cgi(method,origin,t,{routes=[],prepare=()=>{},remote='127.0.0.1',uri='/api/ping',php=[],server=()=>({}),root=deployment(t,{routes,prepare})}={}) {
+  // `php`: settings for this php-cgi, as a host's php.ini would make them.
+  // `server`: more of what the web server tells PHP (DOCUMENT_ROOT, say), given the deployment's root.
+  // `root`: a deployment made earlier, for a second request to the same one.
+  const r=spawnSync('php-cgi',typeof php==='function'?php(root):php,{env:told(root,method,origin,{remote,uri,server}),encoding:'utf8'});
+  assert.equal(r.status,0,r.stderr);
+  return answered(r.stdout,root);
+}
+/** The same request without waiting for it here: its answer when it comes, and how long it took. */
+function cgiStarted(root,method,options={}) {
+  const began=performance.now();
+  return new Promise((resolve,reject)=>{
+    const child=spawn('php-cgi',[],{env:told(root,method,null,options),stdio:['ignore','pipe','ignore']});
+    let out='';child.stdout.on('data',chunk=>out+=chunk);
+    child.on('error',reject);
+    child.on('close',()=>resolve({...answered(out,root),ms:performance.now()-began}));
+  });
 }
 
 nodeTest('OPTIONS is always a 204, as on the Rust host, and only an allowed Origin is given Access-Control-Allow-Origin',{skip:cgiSkip},t=>{
@@ -332,9 +354,20 @@ test('setup.php says there is no app to set up, and prepares one that is there',
   // This bin/node is an empty file, so the check that starts it says so.
   assert.equal(ready.status,1);
   assert.match(ready.stderr,/WARNING: The bundled Node \(bin\/node\) does not run on this machine/);
-  // A second run keeps the key it made.
-  setup();
+  // What no check can see is said: how many of the web server's PHP workers
+  // this app may hold at once, running and waiting for a slot
+  // (request.php softn_slot_waiters), and what the operator has to see to:
+  // under php-fpm nothing, since nobody waits there until they say how
+  // many may (softn_pool_has_room); everywhere else, the size of the pool.
+  assert.match(ready.stdout,/Up to 4 requests run at once, each holding one of the web server's PHP workers, and a request past them may wait for one, or not, by where PHP runs\. Under php-fpm none waits \(a request past the 4 is told at once that the server is busy\) until "slotWaiters" in private\/config\.json says how many may: a php-fpm pool is small as it comes \(Ubuntu's package ships pm\.max_children = 5\), which leaves none to wait with, so write a number only for a pm\.max_children larger than 4 plus that number\. Under any other PHP \(Apache's own, CGI, FastCGI\) 2 may wait: there the pool \(Apache's MaxRequestWorkers, a shared host's process limit\) must be larger than 6, and if it is not, set "slotWaiters": 0\./);
+  // A second run keeps the key it made, and reads the operator's own number:
+  // none to wait, or as many as they say their pool can hold, php-fpm's included.
+  writeFileSync(join(root,'private/config.json'),JSON.stringify({...config,slotWaiters:0}));
+  const again=setup();
   assert.equal(JSON.parse(readFileSync(join(root,'private/config.json'),'utf8')).keyHex,config.keyHex);
+  assert.match(again.stdout,/Up to 4 requests run at once, each holding one of the web server's PHP workers; none waits for a slot \("slotWaiters": 0 in private\/config\.json\), so a request past them is told at once that the server is busy\./);
+  writeFileSync(join(root,'private/config.json'),JSON.stringify({...config,slotWaiters:8}));
+  assert.match(setup().stdout,/Up to 4 requests run at once and 8 more may wait for one of them \("slotWaiters" in private\/config\.json\), each holding one of the web server's PHP workers\. That number is taken at its word, under php-fpm too: the pool \(php-fpm's pm\.max_children, Apache's MaxRequestWorkers, a shared host's process limit\) must be larger than 12\./);
 });
 
 test('http.php passes the runner\'s body through and never re-encodes it',()=>{
@@ -436,15 +469,10 @@ nodeTest('a photo route on a PHP without GD says which extension is missing, and
   // {"error":"Enable PHP GD for photo uploads."}: no code, unlike every
   // other refusal of this host, and no word of where GD comes from.
   const routes=[{method:'POST',path:'/api/photo',handler:'save',upload:'photo'}];
-  // Set up as far as http.php looks before it turns to the upload: a
-  // configuration, and a bin/node it could start (it never does here).
-  const prepare=backend=>{
-    mkdirSync(join(backend,'private'));writeFileSync(join(backend,'private/config.json'),'{}');
-    mkdirSync(join(backend,'bin'));copyFileSync(process.execPath,join(backend,'bin/node'));
-    if(process.platform!=='win32')chmodSync(join(backend,'bin/node'),0o755);
-  };
-  // -n: no php.ini, so no extension that is not built in.
-  const r=cgi('POST',null,t,{routes,uri:'/api/photo',prepare,php:['-n'],server:root=>({DOCUMENT_ROOT:join(root,'webroot')})});
+  // Set up as far as http.php looks before it turns to the upload (it
+  // never starts the bin/node it finds). -n: no php.ini, so no extension
+  // that is not built in.
+  const r=cgi('POST',null,t,{routes,uri:'/api/photo',prepare:readyForSlots,php:['-n'],server:root=>({DOCUMENT_ROOT:join(root,'webroot')})});
   assert.equal(r.status,503,JSON.stringify(r));
   assert.deepEqual(JSON.parse(r.body),{error:'Enable the PHP GD extension for photo uploads (Debian/Ubuntu: the php-gd package).',code:'backend_unavailable',diagnostic:'php_gd'});
 });
@@ -492,6 +520,289 @@ test('a worker slot is the first nobody holds; slots nobody can open are not "th
   const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
   assert.match(http,/if\(!\$slot&&!\$slotsUsable\)reply\(503,\[[^\]]*'diagnostic'=>'private_permissions'\]\);/);
   assert.match(http,/if\(!\$slot\)reply\(503,\[[^\]]*'code'=>'database_busy'\]\);/);
+});
+
+/**
+ * Other requests' hold on the worker slots: a PHP process that locks the
+ * first `count` slot files of `dir` and keeps them for `ms`. Resolves once
+ * they are locked.
+ */
+function holding(t,dir,count,ms) {
+  const script=`$held=[];for($i=0;$i<(int)$argv[2];$i++){$f=fopen($argv[1].'/slot-'.$i.'.lock','c');flock($f,LOCK_EX);$held[]=$f;}echo "held\\n";usleep((int)$argv[3]*1000);`;
+  const child=spawn('php',['-r',script,dir,String(count),String(ms)],{stdio:['ignore','pipe','inherit']});
+  t.after(()=>child.kill());
+  return new Promise((resolve,reject)=>{
+    child.stdout.once('data',()=>resolve(child));
+    child.once('error',reject);
+    child.once('exit',code=>reject(new Error('the slots were let go before they were held: exit '+code)));
+  });
+}
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+
+/** softn_worker_slot in a PHP of its own, as a request would call it: its answer, here or when it comes. */
+const wantScript=`require ${JSON.stringify(runtime+'request.php')};$r=softn_worker_slot($argv[1],(int)$argv[2],(int)$argv[3],(int)$argv[4]);echo json_encode(['held'=>is_resource($r['slot']),'usable'=>$r['usable'],'waited'=>$r['waited']??null]);`;
+function wanting(dir,workers,wait,room) {
+  const r=spawnSync('php',['-d','display_errors=stderr','-r',wantScript,dir,String(workers),String(wait),String(room)],{encoding:'utf8'});
+  assert.equal(r.status,0,r.stderr);assert.equal(r.stderr,'');
+  return JSON.parse(r.stdout);
+}
+function wantingMeanwhile(dir,workers,wait,room) {
+  return new Promise((resolve,reject)=>{
+    const child=spawn('php',['-r',wantScript,dir,String(workers),String(wait),String(room)],{stdio:['ignore','pipe','inherit']});
+    let out='';child.stdout.on('data',chunk=>out+=chunk);
+    child.on('error',reject);child.on('close',()=>resolve(JSON.parse(out)));
+  });
+}
+/** The places taken in a private directory's waiting room. */
+const places=dir=>existsSync(join(dir,'waiting'))?readdirSync(join(dir,'waiting')):[];
+
+test('with every slot held a request waits for one, for as long as it is given and no longer',async t=>{
+  const root=mkdtempSync(join(tmpdir(),'softn-slots-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  for(const name of ['soon','long','blocked/slot-0.lock','blocked/slot-1.lock'])mkdirSync(join(root,name),{recursive:true});
+  // Both slots held by requests that end in 0.8 s, and one and a half
+  // seconds to wait: the slot is had when they let go. It was refused at
+  // once, however soon a slot was coming.
+  await holding(t,join(root,'soon'),2,800);
+  const served=wanting(join(root,'soon'),2,1500,2);
+  assert.equal(served.held,true,JSON.stringify(served));
+  assert.ok(served.waited>100&&served.waited<1400,'it waited for the slot, and not for the whole bound: '+served.waited+' ms');
+  assert.deepEqual(places(join(root,'soon')),[],'its place in the waiting room went with it');
+  // Held for longer than the request is given: refused when its time is up,
+  // not sooner and not much later.
+  const others=await holding(t,join(root,'long'),2,6000);
+  const shed=wanting(join(root,'long'),2,300,2);
+  assert.deepEqual({held:shed.held,usable:shed.usable},{held:false,usable:true});
+  assert.ok(shed.waited>=300&&shed.waited<600,'refused after about 300 ms: '+shed.waited+' ms');
+  assert.deepEqual(places(join(root,'long')),[],'and nothing is left of a request that gave up');
+  // Given no time, or no room to wait in, it is refused at once, as every request was.
+  for(const [wait,room] of [[0,2],[1500,0]]) {
+    const hurried=wanting(join(root,'long'),2,wait,room);
+    assert.equal(hurried.held,false);
+    assert.ok(hurried.waited<100,wait+' ms, room for '+room+': '+hurried.waited+' ms');
+  }
+  others.kill();
+  // And slots nobody can open are nothing to wait for.
+  const blocked=wanting(join(root,'blocked'),2,1500,2);
+  assert.deepEqual({held:blocked.held,usable:blocked.usable},{held:false,usable:false});
+  assert.ok(blocked.waited<100,blocked.waited+' ms');
+});
+
+test('no more requests wait for a slot than there is room for: the next is refused at once',async t=>{
+  // The bound that keeps an overload from the rest of the site. Each waiting
+  // request holds one of the web server's PHP workers; with any number
+  // allowed to wait, 40 requests a second filled a pool of eight with them
+  // and a static file of the same site took seconds to come.
+  const root=mkdtempSync(join(tmpdir(),'softn-slots-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const others=await holding(t,root,2,8000);
+  // Room for two, and two take it.
+  const first=wantingMeanwhile(root,2,1500,2),second=wantingMeanwhile(root,2,1500,2);
+  for(let i=0;i<100&&places(root).length<2;i++)await pause(20);
+  assert.equal(places(root).length,2,'two requests stand waiting, each with a place: '+places(root).join(' '));
+  // The third finds no room and is told so in the same instant, where the
+  // two are told after their second and a half.
+  const third=wanting(root,2,1500,2);
+  assert.deepEqual({held:third.held,usable:third.usable},{held:false,usable:true});
+  assert.ok(third.waited<100,'refused at once: '+third.waited+' ms');
+  // With room for three it would have waited too.
+  const fourth=wanting(root,2,300,3);
+  assert.ok(fourth.waited>=300,'a place, and the wait: '+fourth.waited+' ms');
+  for(const waited of await Promise.all([first,second])){assert.equal(waited.held,false);assert.ok(waited.waited>=1500&&waited.waited<2300,waited.waited+' ms');}
+  assert.deepEqual(places(root),[],'every place is given back');
+  // A place whose owner died as it waited (PHP was killed) is no place taken
+  // once it is older than any wait, and is cleared; a fresh one counts.
+  const now=Math.floor(Date.now()/1000);
+  writeFileSync(join(root,'waiting',(now-120)+'-abandoned'),'');writeFileSync(join(root,'waiting',(now-90)+'-abandoned'),'');
+  const afterTheDead=wanting(root,2,200,2);
+  assert.ok(afterTheDead.waited>=200,'two abandoned places do not fill a room for two: '+afterTheDead.waited+' ms');
+  assert.deepEqual(places(root),[]);
+  writeFileSync(join(root,'waiting',now+'-another'),'');writeFileSync(join(root,'waiting',now+'-request'),'');
+  assert.ok(wanting(root,2,1500,2).waited<100,'two that are waiting now do');
+  others.kill();
+  // How many: the operator's number, or half the workers.
+  const got=php([[null,4],[null,1],[null,16],[null,5],[0,4],[8,4],[1000,4],['8',4],[-1,4],[2.5,4]].map(([configured,workers])=>['softn_slot_waiters',configured,workers]));
+  assert.deepEqual(got,[2,1,8,3,0,8,64,2,2,2]);
+  const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
+  assert.match(http,/\$slotWaiters=is_array\(\$operator\)\?\(\$operator\['slotWaiters'\]\?\?null\):null;/);
+  assert.match(http,/\$waiters=softn_slot_waiters\(\$slotWaiters,\$workers\);/);
+  assert.match(http,/softn_worker_slot\(\$backend\.'\/private',\$workers,SOFTN_SLOT_WAIT_MS,\$waiters\)/);
+});
+
+test('under php-fpm nobody waits unless the operator says how many may: its pool cannot be seen, and is taken to have no worker to spare',()=>{
+  // php-fpm's own pool is five children, one more than the four workers.
+  // With two requests allowed to wait, the fifth child stood waiting where
+  // it used to refuse, nothing was left to refuse with, and an overload of
+  // the API queued every PHP page of the site behind it for three seconds
+  // (measured on php-fpm 8.3.6, pm.max_children = 5, static and dynamic).
+  // fpm_get_status() is the one place a request could see its pool, and
+  // softn_pool_has_room is how its answer would be read; but where it was
+  // tried the call itself ended php-fpm 8.3.6 children with SIGSEGV, in
+  // some runs, when requests made it together, so http.php makes no such
+  // call and hands the reader nothing.
+  const idle=(n,queue=0,more={})=>({'idle-processes':n,'active-processes':5-n,'total-processes':5,'listen-queue':queue,...more});
+  const cases=[
+    // Not php-fpm: nothing to look at, and the default stands (the operator of a small pool has slotWaiters).
+    ['cgi-fcgi',null,true],['apache2handler',null,true],['litespeed',null,true],['cli-server',idle(0),true],['cli',null,true],
+    // php-fpm: another process idle and nothing queued for a child.
+    ['fpm-fcgi',idle(1),true],['fpm-fcgi',idle(4),true],
+    // Every other child busy: this one is the last, and it refuses, as it always did.
+    ['fpm-fcgi',idle(0),false],
+    // Requests already queued for a child.
+    ['fpm-fcgi',idle(2,1),false],['fpm-fcgi',idle(1,300),false],
+    // No status to read (the function missing or disabled, or its answer no array): no waiting.
+    ['fpm-fcgi',null,false],['fpm-fcgi',false,false],['fpm-fcgi','idle',false],['fpm-fcgi',{},false],
+    // A status that does not say what is asked of it is not read as good news.
+    ['fpm-fcgi',{'idle-processes':3},false],['fpm-fcgi',{'listen-queue':0},false],
+    ['fpm-fcgi',{'idle-processes':'3','listen-queue':0},false],['fpm-fcgi',{'idle-processes':3,'listen-queue':'0'},false],
+    ['fpm-fcgi',{'idle-processes':3,'listen-queue':null},false],['fpm-fcgi',idle(-1),false],
+    // What php-fpm 8.3 answers at rest on a pool of five, as it was read from one.
+    ['fpm-fcgi',{pool:'www','process-manager':'static','start-time':1791577899,'start-since':0,'accepted-conn':2,'listen-queue':0,'max-listen-queue':0,'listen-queue-len':0,'idle-processes':4,'active-processes':1,'total-processes':5,'max-active-processes':1,'max-children-reached':0,'slow-requests':0},true],
+  ];
+  // A status array reaches PHP as an array; php() hands a JSON object over as one.
+  assert.deepEqual(php(cases.map(([sapi,status])=>['softn_pool_has_room',sapi,status])),cases.map(([,,room])=>room));
+  // The operator's own number is a number: 0 or more, whole. Anything else is no number of theirs.
+  assert.deepEqual(php([[0],[8],[64],[null],['8'],[-1],[2.5],[true]].map(([configured])=>['softn_slot_waiters_set',configured])),[true,true,true,false,false,false,false,false]);
+
+  // http.php: with no number of the operator's, a pool that is not seen to
+  // have room has nobody waiting. It is handed no status (null), so under
+  // php-fpm that is always; and fpm_get_status() is nowhere called.
+  const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
+  assert.match(http,/if\(!softn_slot_waiters_set\(\$slotWaiters\)&&!softn_pool_has_room\(PHP_SAPI,null\)\)\$waiters=0;/);
+  assert.ok(http.indexOf('softn_pool_has_room(PHP_SAPI,null)')<http.indexOf('softn_worker_slot($backend'),'decided before the slots are looked at');
+  for(const name of ['http.php','request.php','setup.php'])assert.doesNotMatch(readFileSync(new URL('../runtime/'+name,import.meta.url),'utf8').replace(/^\s*(\/\/|\*).*$/gm,''),/fpm_get_status\s*\(/,name+' does not call fpm_get_status()');
+  // What that comes to, for the SAPIs a host runs PHP under, with the
+  // default four workers: two may wait everywhere but under php-fpm, and
+  // the operator's number stands wherever it is written.
+  const decide=(sapi,written)=>`$w=softn_slot_waiters(${written},4);if(!softn_slot_waiters_set(${written})&&!softn_pool_has_room('${sapi}',null))$w=0;$out[]=$w;`;
+  const decided=spawnSync('php',['-d','display_errors=stderr','-r',`require ${JSON.stringify(runtime+'request.php')};$out=[];`+[['apache2handler','null'],['cgi-fcgi','null'],['litespeed','null'],['fpm-fcgi','null'],['fpm-fcgi','2'],['fpm-fcgi','8'],['fpm-fcgi','0'],['cgi-fcgi','0'],['cgi-fcgi','8']].map(([sapi,written])=>decide(sapi,written)).join('')+'echo json_encode($out);'],{encoding:'utf8'});
+  assert.equal(decided.status,0,decided.stderr);
+  assert.deepEqual(JSON.parse(decided.stdout),[2,2,2,0,2,8,0,0,8]);
+});
+/** How long http.php waits for a slot (request.php), for the tests that wait with it. */
+const SLOT_WAIT=skip?0:Number(spawnSync('php',['-d','display_errors=stderr','-r',`require ${JSON.stringify(runtime+'request.php')};echo SOFTN_SLOT_WAIT_MS;`],{encoding:'utf8'}).stdout)||0;
+/**
+ * Set up as far as http.php looks before it takes a slot: a configuration,
+ * and a bin/node it could start. A link to this Node where there are links
+ * (nothing here runs setup.php, which would change the mode of what it
+ * points at). On Windows is_executable() wants the file itself: a small
+ * program of the system's stands in, since nothing here needs it to be
+ * Node (started, it exits at once, which is a runner that failed), and a
+ * copy of Node is 88 MB that the machine may stop to look over.
+ */
+function readyForSlots(backend) {
+  mkdirSync(join(backend,'private'));writeFileSync(join(backend,'private/config.json'),'{}');
+  mkdirSync(join(backend,'bin'));
+  if(process.platform!=='win32'){symlinkSync(process.execPath,join(backend,'bin/node'));return;}
+  const small=join(process.env.SystemRoot??'C:\\Windows','System32','hostname.exe');
+  copyFileSync(existsSync(small)?small:process.execPath,join(backend,'bin/node'));
+}
+/** Resolves when `count` requests stand waiting for a slot there: each has its place by then, and is past everything http.php does before. */
+async function standing(privateDir,count) {
+  for(let i=0;i<500&&places(privateDir).length<count;i++)await pause(20);
+  assert.equal(places(privateDir).length,count,count+' waiting');
+}
+const besideWebroot=root=>({DOCUMENT_ROOT:join(root,'webroot')});
+
+nodeTest('a request that finds all four slots held waits for one, where it was told at once that the server was busy',{skip:cgiSkip},async t=>{
+  // A page that makes five calls as it loads: four take the slots, and the
+  // fifth was a 503 `database_busy` in the same instant, though a slot
+  // would be free a fifth of a second later.
+  const routes=[{method:'GET',path:'/api/ping',handler:'ping'}];
+  const root=deployment(t,{routes,prepare:readyForSlots});
+  const others=await holding(t,join(root,'backend/private'),4,60000);
+  const asked=cgiStarted(root,'GET',{server:besideWebroot});
+  // It stands waiting; then one of the four is done.
+  await standing(join(root,'backend/private'),1);
+  others.kill();
+  const r=await asked;
+  // It took the slot and went on to start a runner. This deployment
+  // has none to start (no runner.mjs; and http.php's environment starts no
+  // Node on Windows), so that is how it ends here: what matters is that it
+  // was not turned away at the door. tests/http-runner.test.mjs has the
+  // same five calls answered 200, where a runner can run.
+  assert.equal(r.status,503,JSON.stringify(r));
+  assert.equal(JSON.parse(r.body).code,'runner_unavailable',r.body);
+  assert.deepEqual(places(join(root,'backend/private')),[],'and its place in the line is given back');
+});
+
+nodeTest('slots held for longer than the wait are still "the server is busy": after the wait, and not long after',{skip:cgiSkip},async t=>{
+  assert.ok(SLOT_WAIT>=500&&SLOT_WAIT<=3000,'a wait this test can sit through: '+SLOT_WAIT+' ms');
+  const routes=[{method:'GET',path:'/api/ping',handler:'ping'},{method:'POST',path:'/api/save',handler:'save'}];
+  const root=deployment(t,{routes,prepare:readyForSlots});
+  await holding(t,join(root,'backend/private'),4,SLOT_WAIT+6000);
+  const r=await cgiStarted(root,'GET',{server:besideWebroot});
+  assert.equal(r.status,503,JSON.stringify(r));
+  assert.deepEqual(JSON.parse(r.body),{error:'The server is busy. Please retry.',code:'database_busy'});
+  // php-cgi's own start is in the time measured, and a busy machine can
+  // take a second over that, which is why "not long after" is generous
+  // here; softn_worker_slot's own clock is held to the bound above.
+  assert.ok(r.ms>=SLOT_WAIT,'not before the wait was up: '+Math.round(r.ms)+' ms');
+  assert.ok(r.ms<SLOT_WAIT+2500,'and not long after it: '+Math.round(r.ms)+' ms');
+  // What is refused without a runner is refused before the slots are looked
+  // at, and so without waiting, however busy they are: a path nobody
+  // declared, a method the path does not take, another site's page.
+  for(const [method,options,status] of [['GET',{uri:'/api/nothing'},404],['PUT',{uri:'/api/ping'},405],['POST',{uri:'/api/save',origin:'https://evil.example'},403]]) {
+    const began=performance.now();
+    const refused=cgi(method,options.origin??null,t,{root,uri:options.uri,server:besideWebroot});
+    assert.equal(refused.status,status,method+' '+options.uri);
+    assert.ok(performance.now()-began<SLOT_WAIT/2,method+' '+options.uri+' did not wait for a slot');
+  }
+});
+
+nodeTest('past the two that may wait a request is refused at once, and an operator can have none wait',{skip:cgiSkip},async t=>{
+  const routes=[{method:'GET',path:'/api/ping',handler:'ping'}];
+  const root=deployment(t,{routes,prepare:readyForSlots});
+  const privateDir=join(root,'backend/private');
+  await holding(t,privateDir,4,SLOT_WAIT+8000);
+  // Four workers by default, so room for two to wait: the fifth and sixth
+  // calls of a page. They stand in line.
+  const standing=[cgiStarted(root,'GET',{server:besideWebroot}),cgiStarted(root,'GET',{server:besideWebroot})];
+  for(let i=0;i<150&&places(privateDir).length<2;i++)await pause(20);
+  assert.equal(places(privateDir).length,2,'two requests wait');
+  // The seventh does not: each one waiting holds a PHP worker of the web
+  // server's, and the pool they come from is not this host's to fill.
+  let began=performance.now();
+  const seventh=cgi('GET',null,t,{root,server:besideWebroot});
+  assert.equal(seventh.status,503,JSON.stringify(seventh));
+  assert.deepEqual(JSON.parse(seventh.body),{error:'The server is busy. Please retry.',code:'database_busy'});
+  assert.ok(performance.now()-began<SLOT_WAIT/2,'refused without waiting');
+  for(const r of await Promise.all(standing)) {
+    assert.equal(JSON.parse(r.body).code,'database_busy',r.body);
+    assert.ok(r.ms>=SLOT_WAIT,'the two that waited were told when their wait was up: '+Math.round(r.ms)+' ms');
+  }
+  assert.deepEqual(places(privateDir),[]);
+  // private/config.json "slotWaiters": 0, for a PHP pool with no worker to
+  // spare: every request past the slots is refused at once, as all were.
+  writeFileSync(join(privateDir,'config.json'),JSON.stringify({slotWaiters:0}));
+  began=performance.now();
+  const none=cgi('GET',null,t,{root,server:besideWebroot});
+  assert.equal(JSON.parse(none.body).code,'database_busy',none.body);
+  assert.ok(performance.now()-began<SLOT_WAIT/2,'no waiting where the operator wants none');
+  assert.deepEqual(places(privateDir),[]);
+});
+
+nodeTest('a bucket refused while its request stood waiting is answered 429, and no runner is started to say so',{skip:cgiSkip},async t=>{
+  // A flood from one address: the requests that got slots are counted, the
+  // runner notes the bucket (request-worker.mjs markLimited), and the rest
+  // are still standing in line. Each used to be handed a slot and a Node
+  // process only to be told what the note already said.
+  const routes=[{method:'GET',path:'/api/ping',handler:'ping'}];
+  const root=deployment(t,{routes,prepare:readyForSlots});
+  const remote='203.0.113.7';
+  const others=await holding(t,join(root,'backend/private'),4,60000);
+  const waiting=cgiStarted(root,'GET',{server:besideWebroot,remote});
+  // It is past the look it took at the note on arrival, and waiting.
+  await standing(join(root,'backend/private'),1);
+  const [key]=php([['softn_rate_key',remote]]);
+  const minute=Math.floor(Date.now()/60000),bucket=createHash('sha256').update(key).digest('hex');
+  for(const m of [minute,minute+1]){mkdirSync(join(root,'backend/private/limited',String(m)),{recursive:true});writeFileSync(join(root,'backend/private/limited',String(m),bucket),'');}
+  // Now a slot comes free, and it is this request's turn.
+  others.kill();
+  const r=await waiting;
+  assert.equal(r.status,429,JSON.stringify(r));
+  assert.deepEqual(JSON.parse(r.body),{error:'Too many requests.',code:'rate_limited'});
+  assert.ok(Number(r.headers['retry-after'])>=1);
 });
 
 test('a request and setup start the runner by one rule, with no request data in it',()=>{

@@ -72,6 +72,24 @@ try {
     // What these checks cannot see. Said, not failed on: neither is wrong on every host.
     if($account===0)fwrite(STDERR,"NOTE: setup ran as root, so private/ and the database belong to root and the web server's PHP cannot read them (requests will answer 503 private_permissions). Hand the backend folder to the web server's PHP account (chown -R) or run setup as it.\n");
     echo "These checks ran with the command-line PHP".($accountName===null?'':" as $accountName").". The web server's PHP is configured separately (its own disable_functions and extensions) and may run as another account: request /api/meta through the site to check that one.\n";
+    // And what nothing here can see at all: how many PHP workers the web
+    // server has. Requests that run and requests that wait for a slot each
+    // hold one (request.php softn_slot_waiters), and a pool no larger than
+    // the two together is one an overload of the API takes whole. Under
+    // php-fpm, whose own pool is that small, no request waits unless the
+    // operator wrote a number (softn_pool_has_room); under anything else,
+    // and wherever they did write one, the pool is theirs to have sized.
+    $installed=json_decode((string)@file_get_contents($root.'/app/manifest.json'),true);
+    $settings=json_decode((string)@file_get_contents($file),true);
+    if(is_array($installed)) {
+        $workers=max(1,min(16,(int)($installed['config']['server']['workers']??4)));
+        $written=is_array($settings)?($settings['slotWaiters']??null):null;
+        $waiters=softn_slot_waiters($written,$workers);
+        $pools="php-fpm's pm.max_children, Apache's MaxRequestWorkers, a shared host's process limit";
+        if($waiters===0)echo "Up to $workers requests run at once, each holding one of the web server's PHP workers; none waits for a slot (\"slotWaiters\": 0 in private/config.json), so a request past them is told at once that the server is busy.\n";
+        elseif(softn_slot_waiters_set($written))echo "Up to $workers requests run at once and $waiters more may wait for one of them (\"slotWaiters\" in private/config.json), each holding one of the web server's PHP workers. That number is taken at its word, under php-fpm too: the pool ($pools) must be larger than ".($workers+$waiters).".\n";
+        else echo "Up to $workers requests run at once, each holding one of the web server's PHP workers, and a request past them may wait for one, or not, by where PHP runs. Under php-fpm none waits (a request past the $workers is told at once that the server is busy) until \"slotWaiters\" in private/config.json says how many may: a php-fpm pool is small as it comes (Ubuntu's package ships pm.max_children = 5), which leaves none to wait with, so write a number only for a pm.max_children larger than $workers plus that number. Under any other PHP (Apache's own, CGI, FastCGI) $waiters may wait: there the pool (Apache's MaxRequestWorkers, a shared host's process limit) must be larger than ".($workers+$waiters).", and if it is not, set \"slotWaiters\": 0.\n";
+    }
     if($problems)exit(1);
 } finally {flock($lock,LOCK_UN);fclose($lock);}
 

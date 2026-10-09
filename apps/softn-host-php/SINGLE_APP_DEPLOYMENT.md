@@ -52,6 +52,17 @@ separate listening server or systemd service is required.
    the generated keyHex and cryptoDomains. Grant only the capabilities the app
    needs. Configure any trusted operator integrations separately. Do not put
    provider credentials in runtime.config.json or the public client bundle.
+   Setup says how many of the web server's PHP workers the app may hold at
+   once: four requests running, and requests waiting for one of those four
+   to finish. Who waits depends on where PHP runs. Under php-fpm nobody
+   does (a fifth request at once is told the server is busy) until you
+   write "slotWaiters": N here, and you should only for a pm.max_children
+   larger than four plus N; Ubuntu's php-fpm package ships 5. Under any other PHP
+   (Apache's own, CGI, FastCGI) two wait by default: where the server gives
+   PHP six workers or fewer (some shared hosts allow few processes), write
+   "slotWaiters": 0, or an overload of the API holds every PHP worker and
+   the rest of the site waits behind it. README-RUNTIME.md, Isolation and
+   operation, has the measurements.
 7. Visit /api/meta. A configured host reports runtime:zipp-wasm-on-demand. If it
    fails, its static diagnostic label identifies the failing startup check without
    exposing secrets (README-RUNTIME.md lists them: backend_public means backend/

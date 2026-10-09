@@ -101,9 +101,34 @@ if (!$backend || !is_file($backend.'/private/config.json') || !is_executable($ba
 // in the manifest, four when unset, at most sixteen on this host. A slot file
 // setup did not make is made here.
 $workers=(int)($manifest['config']['server']['workers']??4);$workers=max(1,min(16,$workers));
-['slot'=>$slot,'usable'=>$slotsUsable]=softn_worker_slot($backend.'/private',$workers);
+// With every slot held the request waits for one, briefly, and only then is
+// told the server is busy; unless enough are waiting already, and then it
+// is told at once, as every request was (request.php: SOFTN_SLOT_WAIT_MS
+// for how long, softn_slot_waiters for how many, and why both). The fifth
+// call of a page that made five as it loaded was a 503. The wait is here,
+// after everything that is refused without a runner (origin, path, method,
+// a limited bucket, size, type and body), so that only a request a runner
+// would be started for waits; and before the photo is decoded, so that no
+// more are decoded at once than there are slots. Nothing has been counted
+// yet, and nothing is: a request that gives up was never started.
+$slotWaiters=is_array($operator)?($operator['slotWaiters']??null):null;
+$waiters=softn_slot_waiters($slotWaiters,$workers);
+// Under php-fpm nobody waits unless the operator wrote a number: its stock
+// pool is one child more than the workers, and that child has to stay free
+// to refuse with. The pool is handed no status to be judged by (null), and
+// fpm_get_status() is not called here: where it was tried it ended php-fpm
+// 8.3.6 children with SIGSEGV, in some runs, when requests called it
+// together (request.php softn_pool_has_room says where and how often). An operator who wrote a number has said what their
+// pool can hold, and is taken at their word, under php-fpm too.
+if(!softn_slot_waiters_set($slotWaiters)&&!softn_pool_has_room(PHP_SAPI,null))$waiters=0;
+['slot'=>$slot,'usable'=>$slotsUsable,'waited'=>$slotWait]=softn_worker_slot($backend.'/private',$workers,SOFTN_SLOT_WAIT_MS,$waiters);
 if(!$slot&&!$slotsUsable)reply(503,['error'=>'The private backend folder is not writable by the account this web server runs PHP as. Run setup as that account.','code'=>'backend_unavailable','diagnostic'=>'private_permissions']);
 if(!$slot)reply(503,['error'=>'The server is busy. Please retry.','code'=>'database_busy']);
+// The bucket may have been refused while this request stood waiting (the
+// others of a flood were served and counted in the meantime). Looked at
+// again, it is answered as it would have been on arrival, and no runner is
+// started to say the same.
+if($slotWait>=1&&is_file(softn_rate_marker($backend,$rateKey,time()))){flock($slot,LOCK_UN);fclose($slot);header('Retry-After: '.softn_retry_after(time()));reply(429,['error'=>'Too many requests.','code'=>'rate_limited']);}
 // `body` marks where the body's own text goes (softn_runner_input); the
 // decoded copy is only for the photo adapter below.
 $request=['path'=>$path,'method'=>$method,'query'=>(object)softn_query((string)($_SERVER['QUERY_STRING']??'')),

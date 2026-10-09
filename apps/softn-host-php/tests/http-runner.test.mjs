@@ -13,6 +13,8 @@
  * - a server that passes no DOCUMENT_ROOT was refused as though the backend
  *   were public (the fallback compared the backend with itself);
  * - slot files nobody could open were "the server is busy", for ever;
+ * - the fifth of five calls made at once was "the server is busy" in the
+ *   same instant, with a slot a fifth of a second from free;
  * - setup.php threw away what the runner said when the app did not start.
  *
  * The backend is assembled from this checkout: the runtime files, the ZIPP
@@ -27,7 +29,7 @@ import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readd
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {spawnSync} from 'node:child_process';
+import {spawnSync,spawn} from 'node:child_process';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const runtime=join(here,'../runtime');
@@ -70,19 +72,31 @@ function deployment(t,{appId='http-runner',ownNode=false}={}) {
   writeFileSync(join(backend,'app/server/main.logic'),SOURCE);
   writeFileSync(join(backend,'private/config.json'),JSON.stringify({appId,development:false,keyHex:'ab'.repeat(32),capabilities:['sql'],cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'},trustedProxies:[]}));
   /** What the web server tells PHP; `server` adds to it or, with undefined, leaves a name out. */
-  const ask=(method,uri,{body='',server={}}={})=>{
+  const told=(method,uri,{body='',server={}}={})=>{
     const env={PATH:process.env.PATH,REQUEST_METHOD:method,REQUEST_URI:uri,QUERY_STRING:uri.split('?')[1]??'',SCRIPT_FILENAME:join(root,'webroot/api.php'),SCRIPT_NAME:'/api.php',
       DOCUMENT_ROOT:join(root,'webroot'),REDIRECT_STATUS:'200',HTTP_HOST:'site.example',REMOTE_ADDR:'203.0.113.10',GATEWAY_INTERFACE:'CGI/1.1',SERVER_PROTOCOL:'HTTP/1.1',
       ...(body!==''?{CONTENT_TYPE:'application/json',CONTENT_LENGTH:String(Buffer.byteLength(body))}:{}),...server};
     for(const name of Object.keys(env))if(env[name]===undefined)delete env[name];
-    const r=spawnSync('php-cgi',[],{env,input:body,encoding:'utf8',maxBuffer:64*1024*1024,timeout:60000});
-    assert.equal(r.status,0,r.stderr);
-    const at=r.stdout.search(/\r?\n\r?\n/),head=r.stdout.slice(0,at),text=r.stdout.slice(at).replace(/^\r?\n\r?\n/,''),headers={};
+    return env;
+  };
+  const answered=(stdout,log)=>{
+    const at=stdout.search(/\r?\n\r?\n/),head=stdout.slice(0,at),text=stdout.slice(at).replace(/^\r?\n\r?\n/,''),headers={};
     for(const line of head.split(/\r?\n/)){const i=line.indexOf(':');headers[line.slice(0,i).toLowerCase()]=line.slice(i+1).trim();}
     // PHP's error log is php-cgi's stderr here: what an operator would read.
-    return {status:Number((headers.status??'200').split(' ')[0]),headers,text,log:r.stderr};
+    return {status:Number((headers.status??'200').split(' ')[0]),headers,text,log};
   };
-  return {root,backend,ask};
+  const ask=(method,uri,{body='',server={}}={})=>{
+    const r=spawnSync('php-cgi',[],{env:told(method,uri,{body,server}),input:body,encoding:'utf8',maxBuffer:64*1024*1024,timeout:60000});
+    assert.equal(r.status,0,r.stderr);
+    return answered(r.stdout,r.stderr);
+  };
+  /** The same request without waiting for it here, so that several can be in hand at once. */
+  const asking=(method,uri)=>new Promise((resolve,reject)=>{
+    const child=spawn('php-cgi',[],{env:told(method,uri),stdio:['ignore','pipe','pipe']});
+    let out='',log='';child.stdout.on('data',chunk=>out+=chunk);child.stderr.on('data',chunk=>log+=chunk);
+    child.on('error',reject);child.on('close',()=>resolve(answered(out,log)));
+  });
+  return {root,backend,ask,asking};
 }
 
 test('a body of numbers reaches the handler as the text the client sent',t=>{
@@ -131,6 +145,18 @@ test('slot files nobody can open are a fault of the installation, not a busy ser
   assert.equal(r.status,503);
   // It was `database_busy`, "please retry", however long the client retried.
   assert.deepEqual(JSON.parse(r.text),{error:'The private backend folder is not writable by the account this web server runs PHP as. Run setup as that account.',code:'backend_unavailable',diagnostic:'private_permissions'});
+});
+
+test('a page that makes five calls at once is answered five times by four workers',async t=>{
+  const d=deployment(t);
+  // One alone first, so that the five find a database that is already made.
+  assert.equal(d.ask('GET','/api/ping').status,200);
+  // Four take the slots. The fifth was told `503 database_busy` in the same
+  // instant; it now waits the fifth of a second until one of the four is
+  // done (request.php SOFTN_SLOT_WAIT_MS is how long it would wait).
+  const answers=await Promise.all(Array.from({length:5},()=>d.asking('GET','/api/ping')));
+  assert.deepEqual(answers.map(a=>a.status),[200,200,200,200,200],answers.map(a=>a.text).join(' '));
+  for(const a of answers){assert.equal(a.text,'{"ok":true}');assert.equal(a.log,'');}
 });
 
 test('setup.php starts the runner as a request does and says why an app does not start',t=>{

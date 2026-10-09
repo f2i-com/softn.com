@@ -167,25 +167,158 @@ function softn_backend_is_public(string $backend, array $server): bool {
 }
 
 /**
+ * How long a request waits for a worker slot before it is told the server
+ * is busy, in milliseconds.
+ *
+ * A slot is held for about a fifth of a second, so a page that makes six
+ * calls as it loads found four slots and was refused the other two at once,
+ * with a slot a moment from free. One and a half seconds is seven turns of
+ * the slots on the machine this was measured on; it leaves a host that
+ * takes three times as long over a request two turns. It is no longer
+ * because the wait comes out of what the caller allows the whole request:
+ * the app's own fetch gives up after 15 seconds and the live bridge's poll
+ * after 10, and PHP's time limit (30 seconds where http.php may not raise
+ * it) has to cover this and the 25 seconds the runner may then take.
+ */
+const SOFTN_SLOT_WAIT_MS=1500;
+
+/**
+ * How many requests may stand waiting for a slot at once: private/config.json
+ * `slotWaiters` when the operator set it (0 for none: every request past the
+ * slots is refused at once, as all were), else half as many as there are
+ * workers, two for the default four. Under php-fpm http.php lets none wait
+ * without the operator's number (softn_pool_has_room says why).
+ *
+ * The bound that matters is this one, not the time. Every waiting request
+ * holds one of the web server's PHP workers, and a server has only so many
+ * (Apache's MaxRequestWorkers, php-fpm's pm.max_children, a shared host's
+ * process limit). With no limit on how many wait, an overload of the API
+ * filled that pool with waiting requests and the rest stood in the web
+ * server's own queue, which nothing here bounds: measured on a pool of
+ * eight (Apache prefork, PHP as CGI) under 40 requests a second, every
+ * answer of the site, a static file included, took three to seven seconds,
+ * where refusing at once had left them at a millisecond. Workers and
+ * waiters together have to stay below the pool for it to have a worker
+ * free to say "busy" with. This host cannot see the pool; the operator
+ * can, which is why the number is theirs to set, and why setup.php says
+ * what it comes to.
+ */
+function softn_slot_waiters(mixed $configured, int $workers): int {
+    if(softn_slot_waiters_set($configured))return min(64,$configured);
+    return intdiv($workers+1,2);
+}
+
+/** Whether private/config.json `slotWaiters` holds the operator's own number: a whole number, 0 or more. */
+function softn_slot_waiters_set(mixed $configured): bool {
+    return is_int($configured)&&$configured>=0;
+}
+
+/**
+ * Whether the PHP pool can be seen to have a worker to spare, so that a
+ * request may stand waiting for a slot without taking the last one.
+ *
+ * Under any SAPI but php-fpm there is nothing to look at and the answer is
+ * yes: Apache's own PHP and CGI pools are counted in tens, and the operator
+ * of a small one has `slotWaiters`. Under php-fpm the answer is what
+ * `$status` shows, and no status is no room. That is the package's own
+ * pool: php-fpm ships with five children (Ubuntu's package:
+ * `pm.max_children = 5`), one more than the default four workers, and with two requests allowed to
+ * wait there the fifth child waited where it used to refuse. Measured on
+ * such a pool at 40 requests a second, every PHP page of the site took
+ * three seconds, where refusing at once left a page at a millisecond.
+ *
+ * `$status` is what fpm_get_status() answers: room when another process of
+ * the pool is idle (this request's own counts as active) and nothing is
+ * queued for a child. http.php hands it NO status, on purpose, so under
+ * php-fpm nobody waits unless the operator wrote `slotWaiters`. The call
+ * that would fill it could not be trusted where it was tried: php-fpm
+ * 8.3.6, the binary of Ubuntu 24.04's package unpacked and run as a user
+ * (no php.ini, not under systemd), static pools behind Apache. A page that
+ * did nothing but call fpm_get_status() ended its child with SIGSEGV when
+ * requests asked for it together, in some runs and not in others (never in
+ * 200 one at a time; 9 times in 60 two at a time; once in 480 twelve at a
+ * time), and so did this host's own requests when they called it. What
+ * sets it off was not found. The reading of the answer is kept, and
+ * tested, for the day the call can be trusted; until then it reads nothing. (On a unix socket `listen-queue`
+ * stayed 0 with hundreds queued, so the idle count is what would decide.)
+ */
+function softn_pool_has_room(string $sapi, mixed $status): bool {
+    if($sapi!=='fpm-fcgi')return true;
+    return is_array($status)&&is_int($status['idle-processes']??null)&&$status['idle-processes']>=1&&($status['listen-queue']??null)===0;
+}
+
+/**
+ * A place among the requests waiting for a slot, or null when `$room` of
+ * them are waiting already. The place is an empty file in private/waiting/,
+ * named by the second it was made; it is counted, never locked, so a
+ * request that stands waiting holds nothing another could be kept out by.
+ * softn_worker_slot removes it when the wait ends, either way. One whose
+ * owner died (PHP was killed as it waited) is not counted once it is older
+ * than any wait, and is cleared by whoever notices.
+ *
+ * Counted and then made, not the other way about: requests that arrive in
+ * the same instant may each count the others out and all find room, so a
+ * burst can stand a few over the number. That is the case the room is for.
+ */
+function softn_waiting_place(string $private, int $room): ?string {
+    if($room<=0)return null;
+    $dir=$private.'/waiting';$now=time();$waiting=0;
+    foreach(@scandir($dir)?:[] as $name) {
+        if($name==='.'||$name==='..')continue;
+        if($now-(int)$name>30){@unlink($dir.'/'.$name);continue;}
+        $waiting++;
+    }
+    if($waiting>=$room)return null;
+    if(!is_dir($dir)&&!@mkdir($dir,0700)&&!is_dir($dir))return null;
+    $place=$dir.'/'.$now.'-'.bin2hex(random_bytes(6));
+    return @touch($place)?$place:null;
+}
+
+/**
  * A worker slot: the first of `private/slot-N.lock` nobody holds, locked,
  * or null when every one is held. `usable` says whether any of them could
  * be opened at all. When none can, nobody is holding them: this account may
  * not write in private/ (setup was run as another), and "the server is
  * busy, please retry" was the answer to that for ever.
- * @return array{slot:mixed,usable:bool}
+ *
+ * With every slot held, a request that finds a place among at most `$room`
+ * waiting (softn_waiting_place) goes on trying for `$waitMs`, every few
+ * milliseconds, the gap drawn at random so that they do not all try in the
+ * same instant; one that finds no place is refused at once, as every
+ * request was. No lock is held while it waits: each try opens the slot
+ * files, asks without blocking and closes them again, so a request that
+ * gives up, or dies, never stands in another's way. `waited` is how long it
+ * took, in milliseconds, whichever way it ended.
+ * @return array{slot:mixed,usable:bool,waited:float}
  */
-function softn_worker_slot(string $private, int $workers): array {
-    $usable=false;
-    for($i=0;$i<$workers;$i++) {
-        // 'e': not inherited by the runner, which would otherwise keep the slot
-        // locked for as long as it lived, after this request had gone.
-        $candidate=@fopen($private.'/slot-'.$i.'.lock','ce');
-        if(!$candidate)continue;
-        $usable=true;
-        if(flock($candidate,LOCK_EX|LOCK_NB))return ['slot'=>$candidate,'usable'=>true];
-        fclose($candidate);
+function softn_worker_slot(string $private, int $workers, int $waitMs=0, int $room=0): array {
+    $started=hrtime(true);$deadline=$started+max(0,$waitMs)*1_000_000;$place=null;
+    // A host may disable usleep(); without it there is no waiting, as before.
+    $patient=$waitMs>0&&$room>0&&function_exists('usleep');
+    try {
+        for(;;) {
+            $usable=false;
+            for($i=0;$i<$workers;$i++) {
+                // 'e': not inherited by the runner, which would otherwise keep the slot
+                // locked for as long as it lived, after this request had gone.
+                $candidate=@fopen($private.'/slot-'.$i.'.lock','ce');
+                if(!$candidate)continue;
+                $usable=true;
+                if(flock($candidate,LOCK_EX|LOCK_NB))return ['slot'=>$candidate,'usable'=>true,'waited'=>(hrtime(true)-$started)/1e6];
+                fclose($candidate);
+            }
+            // Slots nobody could open will not come free; and the bound is the bound.
+            $left=$deadline-hrtime(true);
+            if(!$usable||!$patient||$left<=0)return ['slot'=>null,'usable'=>$usable,'waited'=>(hrtime(true)-$started)/1e6];
+            // The first time round: a place to wait in, or no waiting.
+            $place??=softn_waiting_place($private,$room);
+            if($place===null)return ['slot'=>null,'usable'=>true,'waited'=>(hrtime(true)-$started)/1e6];
+            // 5 to 15 ms, and never past the bound.
+            usleep((int)min(mt_rand(5000,15000),intdiv($left,1000)+1));
+        }
+    } finally {
+        if($place!==null)@unlink($place);
     }
-    return ['slot'=>null,'usable'=>$usable];
 }
 
 /**
