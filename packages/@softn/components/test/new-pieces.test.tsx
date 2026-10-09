@@ -274,6 +274,24 @@ describe('Confirm', () => {
     unmount();
   });
 
+  it('puts the keyboard on the answer that changes nothing', () => {
+    // Enter on a dialog that has just opened must not be "Delete". The
+    // Modal it is built on focuses the dialog itself, which is one Tab away
+    // from either answer; a question is answered from the keyboard, so the
+    // focus goes to the safe one.
+    const { unmount } = mount(<Confirm open title="Delete this note?" confirmText="Delete" variant="danger" />);
+    expect(document.activeElement).toBe(button('Cancel'));
+    unmount();
+  });
+
+  it('does not take the keyboard back when the page draws again', () => {
+    const { rerender, unmount } = mount(<Confirm open title="Delete this note?" confirmText="Delete" />);
+    button('Delete').focus();
+    rerender(<Confirm open title="Delete this note?" message="Still asking." confirmText="Delete" />);
+    expect(document.activeElement).toBe(button('Delete'));
+    unmount();
+  });
+
   it('tells the app which answer was given, and closes nothing itself', () => {
     const onConfirm = vi.fn();
     const onCancel = vi.fn();
@@ -373,6 +391,19 @@ describe('AvatarGroup', () => {
     expect(faces(container)).toContain('1 more');
     expect(container.querySelector<HTMLElement>('[aria-label="Ada Lovelace"]')!.style.width).toBe('32px');
     unmount();
+  });
+
+  it('keeps its first avatar inside itself', () => {
+    // Every avatar but the last is pulled left over its neighbour; the
+    // first has none, and stood that far outside the group.
+    const { container, unmount } = page('<AvatarGroup>\n<Avatar name="Ada Lovelace" />\n<Avatar name="Grace Hopper" />\n</AvatarGroup>');
+    const group = container.querySelector<HTMLElement>('[role="img"]')!.parentElement!.parentElement!;
+    expect(group.style.paddingLeft).toBe('8px');
+    unmount();
+    const apart = page('<AvatarGroup spacing={4}>\n<Avatar name="Ada Lovelace" />\n<Avatar name="Grace Hopper" />\n</AvatarGroup>');
+    const spaced = apart.container.querySelector<HTMLElement>('[role="img"]')!.parentElement!.parentElement!;
+    expect(spaced.style.paddingLeft).toBe('0px');
+    apart.unmount();
   });
 
   it('leaves an avatar outside a group as it was written', () => {

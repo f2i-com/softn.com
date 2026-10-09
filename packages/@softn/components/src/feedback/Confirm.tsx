@@ -90,6 +90,16 @@ export function Confirm({
 
   const hasMessage = message !== null && message !== undefined && message !== '' && typeof message !== 'boolean';
 
+  // The keyboard starts on the answer that changes nothing. The Modal this
+  // is built on focuses the dialog itself when it opens; a question is
+  // answered from the keyboard, and Enter on one that has just appeared
+  // must not be "Delete". Called once, when the answers are first drawn:
+  // a callback that changed each render would take the focus back every
+  // time the page drew again.
+  const focusSafeAnswer = React.useCallback((answers: HTMLDivElement | null) => {
+    answers?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }, []);
+
   return (
     <Modal
       open={open === true}
@@ -103,16 +113,17 @@ export function Confirm({
       className={className}
       style={style}
       footer={
-        // The answer that changes nothing comes first, so it is where the
-        // keyboard's focus lands when the dialog opens.
-        <>
+        // The answer that changes nothing comes first, and is given the
+        // keyboard when the dialog opens. `display: contents` leaves the
+        // two buttons laid out by the Modal's footer as though unwrapped.
+        <div ref={focusSafeAnswer} style={{ display: 'contents' }}>
           <Button variant="secondary" onClick={cancel} disabled={busy}>
             {cancelText ?? 'Cancel'}
           </Button>
           <Button variant={named(variants, variant) ?? 'primary'} onClick={confirm} loading={busy}>
             {confirmText ?? 'Confirm'}
           </Button>
-        </>
+        </div>
       }
     >
       {hasMessage && <p style={messageStyle}>{message}</p>}

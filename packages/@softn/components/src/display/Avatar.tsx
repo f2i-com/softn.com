@@ -419,10 +419,16 @@ export function AvatarGroup({
 
   const sizeValue = getSizeValue(size);
 
+  // Each avatar but the last is pulled left over its neighbour, the first
+  // among them, which has no neighbour there: it stood that far outside the
+  // group, over whatever was beside it. The group makes the room back.
+  const overlap = Number.isFinite(spacing) && spacing < 0 ? -spacing : 0;
+
   const containerStyle: React.CSSProperties = {
     display: 'inline-flex',
     alignItems: 'center',
     flexDirection: 'row-reverse',
+    paddingLeft: overlap,
     ...style,
   };
 
