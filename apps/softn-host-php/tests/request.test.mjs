@@ -15,14 +15,19 @@
  *   suffixed with -gzip never matched;
  * - every IPv6 address had its own rate-limit bucket;
  * - a body with a number out of range (`1e999`) was answered 503 "please
- *   retry" after a runner had been started for it, where it is a 400.
+ *   retry" after a runner had been started for it, where it is a 400;
+ * - a client past its rate limit was refused by a runner started for the
+ *   purpose, at the cost of a request that was served;
+ * - nothing that failed was written anywhere an operator could read it;
+ * - setup.php on an archive with no app died with a TypeError.
  *
  * Skipped, with the reason, when PHP is not on PATH.
  */
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {readFileSync,mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync} from 'node:fs';
+import {readFileSync,mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -133,15 +138,16 @@ test('a preflight approves the header names asked for, and nothing that is not o
  */
 const cgiSkip=skip||(spawnSync('php-cgi',['-v']).status===0?false:'php-cgi is not on PATH (it ships with PHP; Debian/Ubuntu: php-cgi)');
 if(cgiSkip&&!skip)console.warn('WARNING: tests/request.test.mjs OPTIONS test skipped: '+cgiSkip);
-function cgi(method,origin,t) {
+function cgi(method,origin,t,{routes=[],prepare=()=>{},remote='127.0.0.1'}={}) {
   const root=mkdtempSync(join(tmpdir(),'softn-cgi-'));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   mkdirSync(join(root,'webroot'));mkdirSync(join(root,'backend/app'),{recursive:true});
   copyFileSync(new URL('../api.php',import.meta.url),join(root,'webroot/api.php'));
   for(const name of ['http.php','request.php','client-ip.php'])copyFileSync(runtime+name,join(root,'backend',name));
-  writeFileSync(join(root,'backend/app/manifest.json'),JSON.stringify({id:'cgi',config:{server:{allowedOrigins:['https://app.example']}},server:{routes:[]}}));
+  writeFileSync(join(root,'backend/app/manifest.json'),JSON.stringify({id:'cgi',config:{server:{allowedOrigins:['https://app.example']}},server:{routes}}));
+  prepare(join(root,'backend'));
   const env={...process.env,REQUEST_METHOD:method,REQUEST_URI:'/api/ping',SCRIPT_FILENAME:join(root,'webroot/api.php'),REDIRECT_STATUS:'200',
-    HTTP_HOST:'site.example',REMOTE_ADDR:'127.0.0.1',GATEWAY_INTERFACE:'CGI/1.1',SERVER_PROTOCOL:'HTTP/1.1',...(origin?{HTTP_ORIGIN:origin}:{})};
+    HTTP_HOST:'site.example',REMOTE_ADDR:remote,GATEWAY_INTERFACE:'CGI/1.1',SERVER_PROTOCOL:'HTTP/1.1',...(origin?{HTTP_ORIGIN:origin}:{})};
   const r=spawnSync('php-cgi',[],{env,encoding:'utf8'});
   assert.equal(r.status,0,r.stderr);
   const [head,body]=r.stdout.split(/\r?\n\r?\n/,2),headers={};
@@ -184,12 +190,92 @@ test('a body is a JSON object the runner can be handed, or it is refused',()=>{
   assert.ok(http.indexOf('softn_request_body($raw)')<http.indexOf('proc_open(['));
 });
 
+nodeTest('a bucket the runner refused this minute is answered 429 before the body, a slot or a runner',{skip:cgiSkip},t=>{
+  const routes=[{method:'GET',path:'/api/ping',handler:'ping'}];
+  // The note the runner leaves (request-worker.mjs markLimited), for this
+  // minute and the next, in case the clock turns while the test runs.
+  const note=remote=>backend=>{
+    const [key]=php([['softn_rate_key',remote]]);
+    const minute=Math.floor(Date.now()/60000),bucket=createHash('sha256').update(key).digest('hex');
+    for(const m of [minute,minute+1]){mkdirSync(join(backend,'private/limited',String(m)),{recursive:true});writeFileSync(join(backend,'private/limited',String(m),bucket),'');}
+  };
+  const limited=cgi('GET',null,t,{routes,prepare:note('127.0.0.1')});
+  assert.equal(limited.status,429,JSON.stringify(limited));
+  assert.deepEqual(JSON.parse(limited.body),{error:'Too many requests.',code:'rate_limited'});
+  const wait=Number(limited.headers['retry-after']);
+  assert.ok(Number.isInteger(wait)&&wait>=1&&wait<=60,'Retry-After says when the minute turns: '+limited.headers['retry-after']);
+  // Another address is not that bucket, and with no note nobody is: the
+  // request goes on to where a runner would be started (there is none here).
+  for(const other of [cgi('GET',null,t,{routes,prepare:note('127.0.0.1'),remote:'203.0.113.7'}),cgi('GET',null,t,{routes})]) {
+    assert.equal(other.status,503,JSON.stringify(other));
+    assert.equal(JSON.parse(other.body).diagnostic,'setup_required');
+    assert.equal(other.headers['retry-after'],undefined);
+  }
+  // An IPv6 client is refused by its /64, the bucket the runner counts.
+  const v6=cgi('GET',null,t,{routes,prepare:note('2001:db8:1:2::9'),remote:'2001:db8:1:2:aaaa:bbbb:cccc:dddd'});
+  assert.equal(v6.status,429,JSON.stringify(v6));
+});
+
+test('the marker is where the runner writes it, and Retry-After counts down the minute',()=>{
+  const [marker,atStart,atEnd]=php([['softn_rate_marker','/srv/backend','203.0.113.9',125],['softn_retry_after',120],['softn_retry_after',179]]);
+  assert.equal(marker,'/srv/backend/private/limited/2/'+createHash('sha256').update('203.0.113.9').digest('hex'));
+  assert.equal(atStart,60);
+  assert.equal(atEnd,1);
+});
+
+test('what the runner said becomes a few bounded lines for the error log',()=>{
+  const [lines,none,many]=php([
+    ['softn_log_lines','softn: handler save: no such table: notes\r\n\n  bell\u0007and\ttab\n'+'x'.repeat(900)+'\n'],
+    ['softn_log_lines',' \n\n'],
+    ['softn_log_lines',Array.from({length:30},(_,i)=>'line '+i).join('\n')],
+  ]);
+  assert.deepEqual(lines,['softn: handler save: no such table: notes','bell and tab','x'.repeat(400)]);
+  assert.deepEqual(none,[]);
+  assert.equal(many.length,8);
+  // http.php hands them to error_log, and says which step failed without saying more.
+  const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
+  assert.match(http,/foreach\(softn_log_lines\(\$errors\) as \$line\)error_log\(/);
+  assert.match(http,/'diagnostic'=>\$reason/);
+});
+
+test('setup.php says there is no app to set up, and prepares one that is there',t=>{
+  const root=mkdtempSync(join(tmpdir(),'softn-setup-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  copyFileSync(runtime+'setup.php',join(root,'setup.php'));
+  const setup=()=>spawnSync('php',['-d','display_errors=stderr',join(root,'setup.php')],{encoding:'utf8'});
+  // The archive before an app is installed in it: this was a TypeError and a stack of paths.
+  const empty=setup();
+  assert.equal(empty.status,1);
+  assert.match(empty.stderr,/^No application is installed at app\/ yet/);
+  assert.doesNotMatch(empty.stdout+empty.stderr,/TypeError|Fatal|Warning/);
+  assert.equal(existsSync(join(root,'private/config.json')),false);
+  // With an app: the operator's configuration is written from its manifest.
+  mkdirSync(join(root,'app'));mkdirSync(join(root,'bin'));writeFileSync(join(root,'bin/node'),'');
+  writeFileSync(join(root,'app/manifest.json'),JSON.stringify({id:'com.example.setup',server:{requires:{apiVersion:1,capabilities:['sql','time']}}}));
+  const ready=setup();
+  const config=JSON.parse(readFileSync(join(root,'private/config.json'),'utf8'));
+  assert.equal(config.appId,'com.example.setup');
+  assert.deepEqual(config.capabilities,['sql','time']);
+  assert.equal(config.development,false);
+  assert.match(config.keyHex,/^[a-f0-9]{64}$/);
+  assert.deepEqual(config.cryptoDomains,{hmac:'com.example.setup:hmac:v1',seal:'com.example.setup:seal:v1'});
+  assert.ok(existsSync(join(root,'private/data'))&&existsSync(join(root,'private/slot-3.lock')));
+  // This bin/node is an empty file, so the check that starts it says so.
+  assert.equal(ready.status,1);
+  assert.match(ready.stderr,/WARNING: The bundled Node \(bin\/node\) does not run on this machine/);
+  // A second run keeps the key it made.
+  setup();
+  assert.equal(JSON.parse(readFileSync(join(root,'private/config.json'),'utf8')).keyHex,config.keyHex);
+});
+
 test('http.php passes the runner\'s body through and never re-encodes it',()=>{
   const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
   assert.match(http,/softn_runner_result\(\$output\)/);
   assert.doesNotMatch(http,/json_decode\(\$output/);
   assert.match(http,/'query'=>\(object\)softn_query\(/);
   assert.doesNotMatch(http,/\$_GET/);
+  // Text goes to the runner as itself: \uXXXX tripled a body of two-byte characters.
+  assert.match(http,/\$input=json_encode\(\$request,[A-Z0-9_|]*JSON_UNESCAPED_UNICODE/);
 });
 
 test('api.php refuses an old PHP or a wrong backend path with JSON, not a parse error',()=>{

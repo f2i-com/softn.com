@@ -49,6 +49,17 @@ if (!in_array($method,['GET','POST','PUT','DELETE'],true)) reply(405,['error'=>'
 $routes=$manifest['server']['routes']??[];
 $route=null;foreach(is_array($routes)?$routes:[] as $r)if(is_array($r)&&($r['path']??null)===$path&&($r['method']??null)===$method){$route=$r;break;}
 if($route===null && !($path==='/api/meta'&&$method==='GET'))reply(404,['error'=>'Endpoint not found.']);
+// Only HTTP metadata from Apache is trusted. Never accept a caller's client_ip,
+// upload flags, executable path or script source. X-Forwarded-For is read only
+// from a peer the operator listed in private/config.json trustedProxies
+// (client-ip.php); with none listed, the client is REMOTE_ADDR.
+$clientIp=softn_client_ip($remoteAddr,$_SERVER['HTTP_X_FORWARDED_FOR']??null,$trustedProxies);
+$rateKey=softn_rate_key($clientIp);
+// A bucket the runner has refused this minute is answered here, before the
+// body is read: no worker slot, no photo decode, no Node process. The runner
+// leaves the note and stays the one that counts (request-worker.mjs
+// markLimited); the Rust host checks its limit at this point too.
+if(is_file(softn_rate_marker($backend,$rateKey,time()))){header('Retry-After: '.softn_retry_after(time()));reply(429,['error'=>'Too many requests.','code'=>'rate_limited']);}
 $upload=($route['upload']??null)==='photo' && $method==='POST';
 $limit=softn_body_limit($route['maxBodySize']??null,$manifest['config']['server']['maxBodySize']??null,$upload);
 if($limit===null)reply(503,['error'=>'Invalid body limit configuration.']);
@@ -76,21 +87,16 @@ for($i=0;$i<$workers;$i++) {
     if($candidate)fclose($candidate);
 }
 if(!$slot)reply(503,['error'=>'The server is busy. Please retry.','code'=>'database_busy']);
-// Only HTTP metadata from Apache is trusted. Never accept a caller's client_ip,
-// upload flags, executable path or script source. X-Forwarded-For is read only
-// from a peer the operator listed in private/config.json trustedProxies
-// (client-ip.php); with none listed, the client is REMOTE_ADDR.
-$clientIp=softn_client_ip($remoteAddr,$_SERVER['HTTP_X_FORWARDED_FOR']??null,$trustedProxies);
 $request=['path'=>$path,'method'=>$method,'query'=>(object)softn_query((string)($_SERVER['QUERY_STRING']??'')),
     'headers'=>(object)softn_request_headers($_SERVER),'body'=>$body,
-    'client_ip'=>$clientIp,'rate_key'=>softn_rate_key($clientIp),'photos'=>extension_loaded('gd')];
+    'client_ip'=>$clientIp,'rate_key'=>$rateKey,'photos'=>extension_loaded('gd')];
 if($upload) {
     if(!extension_loaded('gd'))reply(503,['error'=>'Enable PHP GD for photo uploads.']);
     require_once $backend.'/photos.php';
     try{$request['upload']=sanitize_photo($body->data_url??null);$request['body']=new stdClass();}
     catch(Throwable $e){reply(400,['error'=>'Photo rejected. Use a still JPEG, PNG or WebP under 4 MB, 16 megapixels and 8192 pixels a side.']);}
 }
-$process=null;$pipes=[];
+$process=null;$pipes=[];$errors='';$exitCode=null;
 try {
     // Array command bypasses the shell; no request data becomes an argument.
     $process=proc_open([$backend.'/bin/node','--max-old-space-size=128','--disable-proto=throw',$backend.'/runner.mjs'],
@@ -99,7 +105,10 @@ try {
     if(!is_resource($process))throw new RuntimeException('spawn');
     foreach($pipes as $pipe)stream_set_blocking($pipe,false);
     // Invalid UTF-8 in a header or the query becomes U+FFFD rather than failing the request.
-    $input=json_encode($request,JSON_THROW_ON_ERROR|JSON_INVALID_UTF8_SUBSTITUTE);$offset=0;$output='';$errorBytes=0;$exitCode=null;
+    // Text goes through as itself: escaped to \uXXXX, a 2 MiB body of
+    // two-byte characters was 6 MB by the time the runner measured it, and
+    // was refused there with "please retry".
+    $input=json_encode($request,JSON_THROW_ON_ERROR|JSON_INVALID_UTF8_SUBSTITUTE|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);$offset=0;$output='';$errorBytes=0;
     $deadline=hrtime(true)+25_000_000_000;
     while(true) {
         if(hrtime(true)>$deadline)throw new RuntimeException('timeout');
@@ -112,7 +121,7 @@ try {
         }
         foreach($read as $pipe) {
             $chunk=fread($pipe,65536);if($chunk===false)throw new RuntimeException('read');
-            if($pipe===$pipes[1])$output.=$chunk;else $errorBytes+=strlen($chunk);
+            if($pipe===$pipes[1])$output.=$chunk;else{$errorBytes+=strlen($chunk);if(strlen($errors)<4096)$errors.=substr($chunk,0,4096-strlen($errors));}
             if(strlen($output)>3*1024*1024+64 || $errorBytes>65536)throw new RuntimeException('output limit');
         }
         $status=proc_get_status($process);
@@ -125,7 +134,10 @@ try {
     $result=softn_runner_result($output);
     if($result===null)throw new RuntimeException('protocol');
 } catch(Throwable $e) {
-    $result=['status'=>503,'body'=>json_encode(['error'=>'The request could not be completed. Please retry.','code'=>'runner_unavailable'])];
+    // Which step failed, as one of a fixed set of words: never what it said.
+    $reason=in_array($e->getMessage(),['spawn','timeout','write','read','output limit','runner failure','protocol'],true)?str_replace(' ','_',$e->getMessage()):($e instanceof JsonException?'request_encoding':'unexpected');
+    $result=['status'=>503,'body'=>json_encode(['error'=>'The request could not be completed. Please retry.','code'=>'runner_unavailable','diagnostic'=>$reason])];
+    $errors="softn: runner $reason".($exitCode===null||$exitCode===0?'':" (exit $exitCode)")."\n".$errors;
 } finally {
     if(is_resource($process)) {
         if(proc_get_status($process)['running'])proc_terminate($process,9);
@@ -134,6 +146,12 @@ try {
     }
     flock($slot,LOCK_UN);fclose($slot);
 }
+// What failed, for whoever runs this host: the runner's own line naming the
+// handler or startup stage and its reason (wasm-host.mjs logFailure), and
+// the step that failed here. It goes to PHP's error log and nowhere else.
+if($errors!==''&&function_exists('error_log'))foreach(softn_log_lines($errors) as $line)error_log('softn-host '.$method.' '.$path.': '.$line);
+// The host's own refusal says when to come back, as the Rust host does.
+if($result['status']===429&&is_file(softn_rate_marker($backend,$rateKey,time())))header('Retry-After: '.softn_retry_after(time()));
 $responseBody=$result['body'];
 // Always run the authenticated handler first, including on conditional polls.
 // No server-side user-response cache and no bypass of revocation checks.

@@ -17,6 +17,8 @@ import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const runtime=join(here,'../runtime');
@@ -38,6 +40,10 @@ function creditThenFail(req){softn.sql.execute("UPDATE counter SET value=value+1
 function creditThenUndo(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);try{softn.sql.execute("INSERT INTO no_such_table VALUES(1)",[]);}catch(e){return {status:409,rollback:true,body:{error:'undone'}};}return {status:200,body:{}};}
 function creditThenRefuse(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);return {status:422,body:{error:'counted'}};}
 function settings(req){return {status:200,body:softn.config};}
+function boom(req){softn.sql.execute("UPDATE counter SET value=value+5",[]);throw new Error("boom at /home/app/secret.txt with\\ttab");}
+function sneak(req){softn.sql.execute("UPDATE counter SET value=value+7",[]);return {status:200,body:{ok:true}};}
+function big(req){var s=new Array((req.query.n|0)+1).join("x");return {status:200,body:softn.sql.first("SELECT length(?) AS n",[s])};}
+function text(req){return {status:200,body:{text:req.body.text}};}
 function age(req){return {status:200,body:{plain:softn.time.age("2000-01-01"),zoned:softn.time.age("2000-01-01","UTC"),bad:softn.time.age("not a date")}};}
 `;
 
@@ -54,13 +60,16 @@ function backend(manifest,{capabilities=['sql']}={}){
   writeFileSync(join(root,'app/server/main.logic'),SOURCE);
   writeFileSync(join(root,'app/server/migrations/001.sql'),'CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0);');
   writeFileSync(join(root,'private/config.json'),JSON.stringify({appId:manifest.id,development:false,keyHex:'ab'.repeat(32),capabilities,cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'}}));
-  const raw=(request)=>{
+  const run=(request)=>{
     const r=spawnSync(process.execPath,['--disable-proto=throw',join(root,'runner.mjs')],{input:JSON.stringify({query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false,...request}),encoding:'utf8',timeout:30000,env:{...process.env,SOFTN_BACKEND_ROOT:root,NODE_NO_WARNINGS:'1'}});
     assert.equal(r.status,0,r.stderr);
-    return r.stdout;
+    return r;
   };
+  const raw=request=>run(request).stdout;
   const invoke=request=>JSON.parse(raw(request));
-  return {root,raw,invoke,close:()=>rmSync(root,{recursive:true,force:true})};
+  /** The answer, and what the runner wrote for the operator's log. */
+  const logged=request=>{const r=run(request);return {...JSON.parse(r.stdout),stderr:r.stderr};};
+  return {root,raw,invoke,logged,close:()=>rmSync(root,{recursive:true,force:true})};
 }
 
 const manifest=(routes,extra={})=>({id:'route-schema',version:'1.0.0',main:'ui/main.ui',server:{entry:'server/main.logic',requires:{apiVersion:1,capabilities:['sql']},database:{kind:'private-sqlite',migrations:['server/migrations/001.sql']},routes},...extra});
@@ -229,6 +238,64 @@ test('softn.config is the app\'s settings under the two flags the host owns',t=>
   assert.equal(granted.invoke({method:'GET',path:'/api/meta',photos:false}).body.photos,false);
 });
 
+test('a handler that throws and a read route that writes change nothing, and the log says which and why',t=>{
+  const b=backend(manifest([
+    {method:'POST',path:'/api/boom',handler:'boom'},
+    {method:'GET',path:'/api/sneak',handler:'sneak'},
+    {method:'GET',path:'/api/value',handler:'value'},
+  ]));
+  t.after(b.close);
+  const value=()=>b.invoke({method:'GET',path:'/api/value'}).body.value;
+  const thrown=b.logged({method:'POST',path:'/api/boom'});
+  assert.equal(thrown.status,500);
+  assert.deepEqual(thrown.body,{error:'The request could not be completed.',code:'host_error'},'the client is told nothing of the reason');
+  assert.equal(value(),0,'what the handler wrote before it threw is not kept');
+  // One line for whoever runs the host: the handler and the reason, with
+  // anything shaped like a path replaced and control characters removed.
+  assert.match(thrown.stderr,/^softn: handler boom: .*boom at <path> with tab\n$/);
+  assert.doesNotMatch(thrown.stderr,/secret|\t/);
+  const refused=b.logged({method:'GET',path:'/api/sneak'});
+  assert.equal(refused.status,500);
+  assert.equal(value(),0,'a read route cannot write');
+  assert.match(refused.stderr,/^softn: handler sneak: Read-only transaction\n$/);
+  // A request that works leaves nothing to log.
+  assert.equal(b.logged({method:'GET',path:'/api/value'}).stderr,'');
+});
+
+test('a startup that fails names its stage on stderr, without the path that was missing',t=>{
+  const b=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}]));
+  t.after(b.close);
+  rmSync(join(b.root,'app/server/migrations/001.sql'));
+  const r=b.logged({method:'GET',path:'/api/ping'});
+  assert.equal(r.status,503);
+  assert.deepEqual(r.body,{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:'database_migrations'});
+  assert.match(r.stderr,/^softn: startup stage database_migrations: ENOENT.*<path>/);
+  assert.ok(!r.stderr.includes(b.root)&&!r.stderr.includes('001.sql'),r.stderr);
+});
+
+test('a host call carries 2 MiB of arguments, as on the Rust host',t=>{
+  const b=backend(manifest([{method:'GET',path:'/api/big',handler:'big'}]));
+  t.after(b.close);
+  // 1.5 MB was refused when the limit was 1 MB.
+  assert.deepEqual(b.invoke({method:'GET',path:'/api/big',query:{n:'1500000'}}),{status:200,body:{n:1500000}});
+  const over=b.logged({method:'GET',path:'/api/big',query:{n:'2200000'}});
+  assert.equal(over.status,500);
+  assert.match(over.stderr,/softn: handler big: Host call arguments exceed 2117152 bytes: sql\.first/);
+});
+
+test('text that is not ASCII reaches the handler whole, however the runner is fed',t=>{
+  const b=backend(manifest([{method:'POST',path:'/api/text',handler:'text',transaction:'none'}]));
+  t.after(b.close);
+  // 600 KB of two-, three- and four-byte characters, sent as themselves:
+  // read as raw chunks, each boundary inside a character left U+FFFD behind.
+  const sent='\u00e9\u4e16\u{1F600}'.repeat(66000)+'end';
+  const got=b.invoke({method:'POST',path:'/api/text',body:{text:sent}});
+  assert.equal(got.status,200,JSON.stringify(got).slice(0,200));
+  assert.equal(got.body.text.length,sent.length);
+  assert.ok(got.body.text===sent,'the text came back as it was sent');
+  assert.ok(!got.body.text.includes('\ufffd'));
+});
+
 test('config.server.requestsPerMinute sets the rate limit, and 0 turns it off',t=>{
   const limited=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}],{config:{server:{requestsPerMinute:2}}}));
   t.after(limited.close);
@@ -239,13 +306,25 @@ test('config.server.requestsPerMinute sets the rate limit, and 0 turns it off',t
   // one minute held them all; otherwise they are sent again from another
   // address.
   const minute=()=>Math.floor(Date.now()/60000);
-  let burst=null;
+  // A note left by an earlier minute, which the next refusal clears away.
+  mkdirSync(join(limited.root,'private/limited/1'),{recursive:true});
+  writeFileSync(join(limited.root,'private/limited/1/stale'),'');
+  let burst=null,refused=null;
   for(let attempt=0;burst===null&&attempt<3;attempt++){
     const started=minute(),ip='203.0.113.'+(20+attempt);
     const got=[ping(limited,ip),ping(limited,ip),ping(limited,ip)];
-    if(minute()===started)burst=got;
+    if(minute()===started){burst=got;refused={ip,minute:started};}
   }
   assert.deepEqual(burst,[200,200,429]);
+  // The refusal is noted where http.php looks before it starts anything
+  // (request.php softn_rate_marker), and only this minute's notes are kept.
+  const bucket=createHash('sha256').update(refused.ip).digest('hex');
+  assert.ok(existsSync(join(limited.root,'private/limited',String(refused.minute),bucket)),'the refused bucket is noted');
+  assert.deepEqual(readdirSync(join(limited.root,'private/limited')).filter(name=>name!==String(refused.minute)&&name!==String(refused.minute+1)),[]);
+  // A bucket is counted by the minute: when the minute has turned, it starts again.
+  const store=new DatabaseSync(join(limited.root,'private/data/application.sqlite'));
+  try{store.exec('UPDATE _request_limits SET minute=minute-1');}finally{store.close();}
+  assert.equal(ping(limited,refused.ip),200);
   // Another address has its own count.
   assert.equal(limited.invoke({method:'GET',path:'/api/ping',client_ip:'203.0.113.10'}).status,200);
 

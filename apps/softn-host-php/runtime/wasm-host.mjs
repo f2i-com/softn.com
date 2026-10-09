@@ -5,6 +5,8 @@ import {parseZoned,formatZoned} from './time.mjs';
 import {initSync,Engine,zippProfile} from './wasm/zipp_wasm.mjs';
 
 let initialized=false;
+/** What one host call may carry: 2 MiB of arguments and a statement's 20 KB (sql.mjs). */
+const MAX_CALL_BYTES=2*1024*1024+20_000;
 const SHIM=`
 var softn={serverApiVersion:1,config:{development:false},sql:{},crypto:{},time:{}};
 function __softnCall(op,args){return db.query(op,args);}
@@ -32,6 +34,18 @@ function initialize() {
 }
 
 /** Compile declarations before a deployment's migrations touch its database. */
+/**
+ * One line on stderr for the operator's log (http.php hands it to PHP's
+ * error_log): what failed, and the reason as the exception gave it. Never a
+ * stack or a bind value; anything shaped like a path is replaced, control
+ * characters are removed, and the reason stops at 300 characters. The client
+ * is still told only `host_error` or a static stage label.
+ */
+export function logFailure(what, error) {
+  const reason=String(error?.message??error??'unknown').replace(/[\x00-\x1f\x7f]+/g,' ').replace(/(?:[A-Za-z]:)?[\\/][^\s'"`]+/g,'<path>').slice(0,300);
+  try{process.stderr.write('softn: '+what+': '+reason+'\n');}catch{}
+}
+
 /**
  * softn.config: the app's own settings (manifest config.app) under the two
  * flags the host owns. An app key named `development` or `photos` is
@@ -78,7 +92,7 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
     ...Object.fromEntries(['now','parseZoned','format','age'].map(k=>['time.'+k,services.time[k]]))
   });
   function invoke(request,route,context={}) {
-    let engine,transaction=false,calls=0,failed=false;
+    let engine,transaction=false,calls=0,failed=false,failure=null;
     try {
       writable=route.transaction!=='read';
       db.exec(writable?'BEGIN IMMEDIATE':'BEGIN');transaction=true;
@@ -87,10 +101,14 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
         // A host call that fails marks the request, whatever the handler
         // does with the exception: see the commit below.
         try {
-          if(++calls>512||!Object.hasOwn(operations,op)||!capabilities.includes(op.split('.')[0])||!Array.isArray(args)||args.length>4||Buffer.byteLength(JSON.stringify(args))>1_000_000)throw new Error('Host capability denied');
+          // 2 MiB of binds or of text to hash, as the Rust host allows, and
+          // the 20 KB a statement may be. It was 1 MB: a route that takes a
+          // 2 MiB body could not store what it had been sent.
+          if(++calls>512||!Object.hasOwn(operations,op)||!capabilities.includes(op.split('.')[0])||!Array.isArray(args)||args.length>4)throw new Error('Host capability denied: '+String(op).slice(0,40));
+          if(Buffer.byteLength(JSON.stringify(args))>MAX_CALL_BYTES)throw new Error('Host call arguments exceed '+MAX_CALL_BYTES+' bytes: '+String(op).slice(0,40));
           if(route.transaction==='read'&&op==='sql.execute')throw new Error('Read-only transaction');
           return operations[op](...args);
-        } catch(e){failed=true;throw e;}
+        } catch(e){failed=true;failure??=e;throw e;}
       }});
       // The answer /api/meta gives: granted, and GD is there to do it.
       engine.initScript(SHIM+'\nsoftn.config='+scriptConfig(appConfig,development,capabilities.includes('photos')&&request.photos===true)+';\n'+source);
@@ -107,7 +125,9 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
       if(failed&&!result.rollback)throw new Error('Host call failed');
       db.exec(result.rollback?'ROLLBACK':'COMMIT');transaction=false;
       delete result.rollback;return result;
-    } catch {
+    } catch(e) {
+      // The first host call that failed says more than what the VM made of it.
+      logFailure('handler '+route.handler,failure??e);
       if(transaction)try{db.exec('ROLLBACK');}catch{}
       return {status:transaction?500:503,body:{error:'The request could not be completed.',code:transaction?'host_error':'database_busy'}};
     } finally { if (engine) { try { engine.dispose(); } finally { engine.free(); } } }

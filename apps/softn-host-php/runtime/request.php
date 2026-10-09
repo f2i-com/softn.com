@@ -74,6 +74,38 @@ function softn_request_body(string $raw): ?object {
 }
 
 /**
+ * Where the runner notes that a rate bucket is over its limit for the
+ * current minute (request-worker.mjs markLimited): one directory a minute,
+ * one empty file a bucket, named by the SHA-256 the runner counts it under.
+ */
+function softn_rate_marker(string $backend, string $rateKey, int $now): string {
+    return $backend.'/private/limited/'.intdiv($now,60).'/'.hash('sha256',$rateKey);
+}
+
+/** Seconds until the minute the limiter counts by turns: what Retry-After says. */
+function softn_retry_after(int $now): int {
+    return 60-$now%60;
+}
+
+/**
+ * What the runner wrote on stderr, as lines for PHP's error log: at most
+ * eight, each at most 400 characters, with no control characters. The runner
+ * writes one line for a handler or a startup stage that failed
+ * (wasm-host.mjs logFailure); Node itself may add its own when it dies.
+ * @return list<string>
+ */
+function softn_log_lines(string $stderr): array {
+    $lines=[];
+    foreach(preg_split('/\R/',$stderr)?:[] as $line) {
+        $line=trim((string)preg_replace('/[\x00-\x1F\x7F]+/',' ',$line));
+        if($line==='')continue;
+        $lines[]=substr($line,0,400);
+        if(count($lines)===8)break;
+    }
+    return $lines;
+}
+
+/**
  * The body a route may carry: the smaller of the route's maxBodySize and the
  * app's config.server.maxBodySize, as the Rust host bounds a route by both.
  * Neither declared is 256 KB here (2 MB there: an on-demand process per

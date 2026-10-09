@@ -1,10 +1,10 @@
 import {DatabaseSync} from 'node:sqlite';
 import {workerData} from 'node:worker_threads';
-import {readFileSync,lstatSync,realpathSync,chmodSync} from 'node:fs';
+import {readFileSync,lstatSync,realpathSync,chmodSync,mkdirSync,writeFileSync,readdirSync,rmSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {join,dirname,relative,isAbsolute} from 'node:path';
-import {createWasmHost,validateWasmSource} from './wasm-host.mjs';
+import {createWasmHost,validateWasmSource,logFailure} from './wasm-host.mjs';
 import {applyMigration} from './migrations.mjs';
 import {configureRecordEvents} from './record-events.mjs';
 import {invokeWithHook} from './request-hook.mjs';
@@ -13,6 +13,23 @@ import {invokeWithHook} from './request-hook.mjs';
 const root=realpathSync(process.env.SOFTN_BACKEND_ROOT || dirname(fileURLToPath(import.meta.url)));
 const contained=(parent,child)=>{const path=relative(parent,child);return path!==''&&!isAbsolute(path)&&path!=='..'&&!path.startsWith('..'+(process.platform==='win32'?'\\':'/'));};
 let db;
+/**
+ * Note that a rate bucket is over its limit for this minute, where http.php
+ * looks before it does anything else (request.php softn_rate_marker): one
+ * directory a minute, one empty file a bucket. A 429 used to cost what a 200
+ * costs, a worker slot, a Node process and on a photo route the decode, so a
+ * client past its limit could keep every slot busy being refused. The
+ * directories of earlier minutes are removed here, so there is never more
+ * than one. Without the marker the limit still holds: this goes on counting.
+ */
+function markLimited(minute,bucket) {
+  try {
+    const all=join(root,'private/limited'),now=join(all,String(minute));
+    mkdirSync(now,{recursive:true,mode:0o700});
+    writeFileSync(join(now,bucket),'',{mode:0o600});
+    for(const name of readdirSync(all))if(name!==String(minute))rmSync(join(all,name),{recursive:true,force:true});
+  } catch { /* see above */ }
+}
 // The answer PHP reads: exactly `{"status":N,"body":...}`, status first and
 // body last, so http.php passes the body's JSON text through untouched
 // (runtime/request.php softn_runner_result). Anything else is a host error.
@@ -133,7 +150,7 @@ try {
     // whatever the manifest said.
     const declaredLimit=manifest.config?.server?.requestsPerMinute;
     const perMinute=Number.isInteger(declaredLimit)&&declaredLimit>=0?declaredLimit:120;
-    if(perMinute>0&&count>perMinute){emit({status:429,body:{error:'Too many requests.',code:'rate_limited'}});process.exit(0);}
+    if(perMinute>0&&count>perMinute){markLimited(minute,ip);emit({status:429,body:{error:'Too many requests.',code:'rate_limited'}});process.exit(0);}
   } catch(e){try{db.exec('ROLLBACK');}catch{}throw e;}
   startupStage='record_events';
   const recordSubscriptions=config.enableHostContext===true?JSON.parse(process.env.SOFTN_RECORD_EVENTS||'[]'):[];
@@ -164,6 +181,8 @@ try {
   }
   emit(result);
 } catch(e) {
+  // A busy database is a moment's load, not something to look into.
+  if(!busy(e))logFailure('startup stage '+startupStage,e);
   emit(busy(e)?{status:503,body:{error:'The server is busy. Please retry.',code:'database_busy'}}
     :{status:503,body:{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:startupStage}});
 } finally {try{db?.close();}catch{}}

@@ -102,6 +102,61 @@ test('a photo is turned the way its EXIF orientation says, in either byte order'
   });
 });
 
+/** In PHP: why sanitize_photo() refuses each input, or 'accepted'. */
+function refusals(names) {
+  const script=`
+require ${JSON.stringify(photos)};
+function picture(int $w,int $h,string $type): string {
+  $im=imagecreatetruecolor($w,$h);imagefilledrectangle($im,0,0,$w-1,$h-1,imagecolorallocate($im,40,120,200));
+  ob_start();if($type==='png')imagepng($im);elseif($type==='webp')imagewebp($im);else imagejpeg($im,null,90);return ob_get_clean();
+}
+function url(string $bytes,string $type='jpeg'): string { return 'data:image/'.$type.';base64,'.base64_encode($bytes); }
+$png=picture(64,64,'png');
+// An animation control chunk straight after the header: what makes a PNG an APNG.
+$apng=substr($png,0,33).pack('N',8).'acTL'.pack('NN',2,0).pack('N',crc32('acTL'.pack('NN',2,0))).substr($png,33);
+$inputs=[
+  'still jpeg'=>url(picture(64,64,'jpeg')),
+  'still png'=>url($png,'png'),
+  'animated png'=>url($apng,'png'),
+  'not a string'=>null,
+  'not a data url'=>'https://example.test/cat.jpg',
+  'a type it does not take'=>'data:image/gif;base64,'.base64_encode('GIF89a'),
+  'not base64'=>'data:image/jpeg;base64,@@@@',
+  'not an image'=>url(str_repeat('x',500)),
+  'too small'=>url(picture(20,20,'jpeg')),
+  'too wide'=>url(picture(8200,32,'png'),'png'),
+  'too long a url'=>'data:image/jpeg;base64,'.str_repeat('A',5600000),
+];
+if(function_exists('imagewebp')) {
+  $webp=picture(64,64,'webp');
+  $inputs['still webp']=url($webp,'webp');
+  $inputs['animated webp']=url($webp.'ANIM','webp');
+}
+$out=[];
+foreach(json_decode(stream_get_contents(STDIN),true) as $name) {
+  if(!array_key_exists($name,$inputs)){$out[$name]='skipped';continue;}
+  try { $r=sanitize_photo($inputs[$name]); $out[$name]=$r['sanitized']===true&&str_starts_with($r['image'],'data:image/jpeg;base64,')&&str_starts_with($r['thumbnail'],'data:image/jpeg;base64,')?'accepted':'odd'; }
+  catch(Throwable $e) { $out[$name]=$e->getMessage(); }
+}
+echo json_encode($out);`;
+  const r=spawnSync('php',['-d','display_errors=stderr','-d','memory_limit=512M','-r',script],{input:JSON.stringify(names),encoding:'utf8'});
+  assert.equal(r.status,0,r.stderr);
+  assert.equal(r.stderr,'',r.stderr);
+  return JSON.parse(r.stdout);
+}
+
+test('a still photo is taken, and each thing that is not one is refused for its own reason',()=>{
+  const want={
+    'still jpeg':'accepted','still png':'accepted','still webp':'accepted',
+    'animated png':'animation','animated webp':'animation',
+    'not a string':'format','not a data url':'format','a type it does not take':'format','not base64':'format','too long a url':'format',
+    'not an image':'dimensions','too small':'dimensions','too wide':'dimensions',
+  };
+  const got=refusals(Object.keys(want));
+  for(const [name,reason] of Object.entries(want))if(got[name]!=='skipped')assert.equal(got[name],reason,name);
+  assert.equal(got['still jpeg'],'accepted');
+});
+
 test('a photo with no orientation, or with EXIF that cannot be read, is left as it is',()=>{
   const got=sanitize([{exif:'none'},{exif:'little',orientation:0},{exif:'big',orientation:9},{exif:'cut'}]);
   for(const row of got) {
