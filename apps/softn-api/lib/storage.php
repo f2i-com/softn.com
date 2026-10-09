@@ -80,6 +80,12 @@ final class Storage
      * each while it holds the catalogue lock. It is taken here before the
      * catalogue is released, so neither can come between the two.
      */
+    /** Whether this request has let the catalogue go and holds the stores' lock instead. */
+    public static function outsideCatalogue(): bool
+    {
+        return self::$busy !== null;
+    }
+
     public static function leaveCatalogue(): void
     {
         if (self::$busy === null) {

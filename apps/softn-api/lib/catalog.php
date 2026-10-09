@@ -114,6 +114,15 @@ final class Catalog
      * Held until response generation ends; never delete or replace this file. */
     public static function boot(): void {
         if (self::$ready) return;
+        // A request that let the catalogue go (Storage::leaveCatalogue) holds
+        // the stores' lock, and a backup or a retirement takes the two in the
+        // other order: catalogue, then stores. Coming back for the catalogue
+        // from here is how the two would wait on each other for good, with
+        // nothing to say so but a request that never ends. It is a mistake in
+        // the handler, and is refused where it is made.
+        if (class_exists('Storage', false) && Storage::outsideCatalogue()) {
+            throw new LogicException('The catalogue was let go for this request and cannot be taken again.');
+        }
         $root = Config::dataDir();
         $waiting = hrtime(true);
         self::$lock = fopen("$root/catalog.lock", 'c');

@@ -64,6 +64,7 @@ section here. Write the section before tagging. Headings are the tag
 - **Security:** a URL prop that is not text is no longer passed on. `<a href={["javascript:alert(1)"]}>` reached the page with the script URL intact, because the URL check read only strings and React writes a list out as its entries joined; the same list under `src`, `srcset`, `poster`, `ping` or in an inline `style` fetched from any host before consent and without `net`. Under a URL name, text is judged, a number is its digits, and anything else is removed, on raw elements and at any depth in a component's props.
 - **Security:** a URL nested more than four levels down in a component's items is judged. The scrub used to stop at a fixed depth and hand on what lay below unchecked; a value that refers back to itself is now cut where it comes round instead.
 - `Image`, `Avatar`, `Sprite` and `TileMap` given a `src` that is not text draw without it, where the URL check threw.
+- Directory: a storage request that has let the catalogue lock go is refused if it asks for it again, where it could have deadlocked with a backup or the removal of an app.
 
 ## v0.0.18
 

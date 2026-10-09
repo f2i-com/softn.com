@@ -279,6 +279,32 @@ function duplicateEntryZip(name) {
   assert.equal(renamed, 2, 'the local header and the central directory both carry the name');
   return bytes;
 }
+test('a request that let the catalogue go cannot take it again', skip, () => {
+  // It holds the stores' lock from then on, and a backup takes the two in
+  // the other order. Coming back for the catalogue is how the two would wait
+  // on each other with nothing to end it, so the handler's mistake is
+  // refused where it is made, and the lock is not asked for at all.
+  const again = runPhp({
+    dataDir: s.dataDir,
+    script: `
+Catalog::boot();
+Storage::leaveCatalogue();
+$free = flock(fopen($argv[1] . '/catalog.lock', 'c'), LOCK_EX | LOCK_NB);
+try { Catalog::boot(); $outcome = 'taken again'; }
+catch (LogicException $e) { $outcome = 'refused: ' . $e->getMessage(); }
+echo json_encode(['freeAfterLeaving' => $free, 'outcome' => $outcome]);`,
+  });
+  assert.equal(again.status, 0, again.stderr);
+  const seen = JSON.parse(again.stdout);
+  assert.equal(seen.freeAfterLeaving, true);
+  assert.match(seen.outcome, /^refused: The catalogue was let go/);
+
+  // A request that never left it boots as often as it likes.
+  const twice = runPhp({ dataDir: s.dataDir, script: `Catalog::boot(); Catalog::release(); Catalog::boot(); echo 'ok';` });
+  assert.equal(twice.status, 0, twice.stderr);
+  assert.equal(twice.stdout, 'ok');
+});
+
 test('a bundle with two entries of one name is refused at publication', skip, async () => {
   for (const name of ['manifest.json', 'ui/main.ui']) {
     const fd = new FormData();
