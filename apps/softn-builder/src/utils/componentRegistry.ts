@@ -495,10 +495,10 @@ const baseRegistry: ComponentMeta[] = [
     'Form',
     'droplet',
     'Color input',
-    { defaultValue: 'var(--coral)' },
+    { defaultValue: '#6366f1' },
     [
       { name: 'value', type: 'expression' },
-      { name: 'defaultValue', type: 'color', default: 'var(--coral)' },
+      { name: 'defaultValue', type: 'color', default: '#6366f1' },
       { name: 'label', type: 'string' },
       { name: 'showInput', type: 'boolean', default: true },
       { name: 'disabled', type: 'boolean', default: false },

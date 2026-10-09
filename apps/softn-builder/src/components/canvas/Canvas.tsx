@@ -120,9 +120,9 @@ export function Canvas() {
       // Use dropIndicator if available, otherwise append to root
       const indicator = state.dropIndicator;
       if (indicator) {
-        state.addElement(state.draggedType, indicator.parentId, indicator.index);
+        state.addElement(state.draggedType, indicator.parentId, indicator.index, { starter: true });
       } else {
-        state.addElement(state.draggedType, state.rootId);
+        state.addElement(state.draggedType, state.rootId, undefined, { starter: true });
       }
       state.setDraggedType(null);
       state.setDropIndicator(null);
@@ -187,7 +187,7 @@ export function Canvas() {
         historyState.push(state.elements, state.rootId);
 
         // Add the element to the root
-        state.addElement(componentType, state.rootId);
+        state.addElement(componentType, state.rootId, undefined, { starter: true });
 
         // Clear dragged type
         setDraggedType(null);

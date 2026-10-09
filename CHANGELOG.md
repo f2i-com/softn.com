@@ -68,6 +68,7 @@ section here. Write the section before tagging. Headings are the tag
 - **Security:** `dangerouslySetInnerHTML` is dropped wherever a bundle puts it. On a plain element only React's own refusal stopped it (and took the document down); a host-registered component that spreads its props onto its root set the markup as given. No built-in component does.
 - `db.update` of a record that has been deleted is refused in the browser as it is on the desktop. The browser's store patched the deleted record, announced the update and answered as though it had worked, on a record the script could no longer read.
 - `db.update` of a record that is not there, deleted or never created, is an error in a worker (`config.execution: "worker"`) as it is on the page's thread. The worker answered `null`, so `try { db.update(…) } catch { db.create(…) }` never created there and a script that ignored the answer carried on as though its write had landed.
+- Builder: a component taken from the palette starts with what its registry entry gives it, in the source and in the app that runs. A dropped Button was drawn on the canvas with a placeholder label and written as a bare `<Button />`; it is now `<Button variant="primary" size="md">Click me</Button>`, a Steps has its steps, a chart its height. Project templates are unchanged.
 
 ## v0.0.18
 

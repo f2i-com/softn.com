@@ -347,7 +347,7 @@ export const CanvasElement = React.memo(function CanvasElement({
         e.stopPropagation();
         const historyState = useHistoryStore.getState();
         historyState.push(state.elements, state.rootId);
-        state.addElement(state.draggedType, indicator.parentId, indicator.index);
+        state.addElement(state.draggedType, indicator.parentId, indicator.index, { starter: true });
         state.setDraggedType(null);
         state.setDropIndicator(null);
         return;

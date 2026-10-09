@@ -7,6 +7,7 @@ import { useProjectStore } from './projectStore';
 import type { CanvasBlock, CanvasElement, CanvasState, UIImport } from '../types/builder';
 import { debug } from '../utils/debug';
 import { defaultBlock, isBlockHead, isContinuationType } from '../utils/blocks';
+import { starterProps } from '../utils/starterProps';
 
 function generateId(): string {
   return `el_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -20,7 +21,13 @@ interface CanvasStore extends CanvasState {
   getImportSource: (componentType: string) => string | null;
 
   // Actions
-  addElement: (type: string, parentId: string | null, index?: number) => string;
+  /**
+   * Add an element. With `starter`, it is given what its registry entry
+   * says a new one starts with (utils/starterProps.ts): that is a component
+   * taken from the palette. Without, it has no props, for a caller that sets
+   * its own (a project template).
+   */
+  addElement: (type: string, parentId: string | null, index?: number, options?: { starter?: boolean }) => string;
   updateElement: (id: string, updates: Partial<CanvasElement>) => void;
   updateElementProps: (id: string, props: Record<string, unknown>) => void;
   deleteElement: (id: string) => void;
@@ -125,9 +132,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     return imp ? imp.source : null;
   },
 
-  addElement: (type, parentId, index) => {
+  addElement: (type, parentId, index, options) => {
     const id = generateId();
     const parent = parentId || get().rootId;
+    const starter = options?.starter ? starterProps(type) : null;
 
     edit((state) => {
       const newElements = new Map(state.elements);
@@ -136,10 +144,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       const newElement: CanvasElement = {
         id,
         componentType: type,
-        props: {},
+        props: starter ? starter.props : {},
         events: {},
         bindings: {},
-        expressionProps: [],
+        expressionProps: starter ? starter.expressionProps : [],
         children: [],
         parentId: parent,
       };

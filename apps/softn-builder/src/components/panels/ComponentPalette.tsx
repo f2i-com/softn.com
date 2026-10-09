@@ -149,7 +149,7 @@ interface ComponentItemProps {
 export function insertFromPalette(type: string): string {
   const canvas = useCanvasStore.getState();
   useHistoryStore.getState().push(canvas.elements, canvas.rootId);
-  const id = canvas.addElement(type, canvas.rootId);
+  const id = canvas.addElement(type, canvas.rootId, undefined, { starter: true });
   useCanvasStore.getState().selectElement(id);
   return id;
 }
