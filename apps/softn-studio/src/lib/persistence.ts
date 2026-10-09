@@ -56,7 +56,8 @@ const STUDIO_DB_VERSION = 1;
 export const PROJECTS_STORE = 'projects';
 export const PROJECT_SCHEMA_VERSION = 1;
 
-export type SaveFailureReason = 'quota' | 'blocked' | 'unavailable' | 'error';
+/** `conflict`: storage holds a newer copy of the project than the one this tab last saw, written by another tab. */
+export type SaveFailureReason = 'quota' | 'blocked' | 'unavailable' | 'error' | 'conflict';
 export type SaveResult = { ok: true } | { ok: false; reason: SaveFailureReason; message: string };
 
 export type PersistedWorkspace = {
@@ -783,12 +784,28 @@ function committed(tx: IDBTransaction): Promise<void> {
   });
 }
 
+const CHANGED_IN_ANOTHER_TAB: SaveResult = {
+  ok: false,
+  reason: 'conflict',
+  message:
+    'This project was changed in another tab after it was opened here, so this tab’s copy was not saved over it. Reload to continue from the saved copy. To keep what is in this tab instead, use Export bundle first.',
+};
+
 /**
  * Write one project record whole. Resolves only after the transaction has
  * committed: a put whose transaction aborts is a failed save, and the
  * previous revision of the record is untouched.
+ *
+ * `lastSeenRevision` is the revision of this project the writer last read or
+ * wrote. Given it, a stored copy with a later revision is someone else's
+ * work — the same project open in another tab — and is not written over:
+ * the whole record is the unit of saving, so the tab holding the older copy
+ * used to put its old files back in place of the newer ones the moment
+ * anything in it changed. The look and the write share one transaction, so
+ * nothing can be stored between them. Without it the write is unconditional
+ * (a project's first save, the legacy migration).
  */
-export async function saveProjectRecord(record: ProjectRecord): Promise<SaveResult> {
+export async function saveProjectRecord(record: ProjectRecord, lastSeenRevision?: number): Promise<SaveResult> {
   let db: IDBDatabase;
   try {
     db = await openStudioDb();
@@ -798,6 +815,10 @@ export async function saveProjectRecord(record: ProjectRecord): Promise<SaveResu
   try {
     const tx = db.transaction(PROJECTS_STORE, 'readwrite');
     const store = tx.objectStore(PROJECTS_STORE);
+    if (lastSeenRevision !== undefined) {
+      const stored: unknown = await request(store.get(record.projectId));
+      if (isRecord(stored) && typeof stored.revision === 'number' && stored.revision > lastSeenRevision) return CHANGED_IN_ANOTHER_TAB;
+    }
     await request(store.put(record, record.projectId));
     await committed(tx);
     return { ok: true };

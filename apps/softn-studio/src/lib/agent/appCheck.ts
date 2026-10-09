@@ -305,8 +305,14 @@ export function lintTemplates(files: Map<string, VFSFile>): { errors: string[]; 
     // Blank out other languages, keeping line numbers.
     const template = file.content.replace(/<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, (block) => block.replace(/[^\n]/g, ' '));
     const lineOf = (index: number) => template.slice(0, index).split('\n').length;
-    for (const match of template.matchAll(/@([\w-]+)=\{\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{/g)) {
-      errors.push(`${path} line ${lineOf(match.index)}: @${match[1]} has a block-bodied arrow (\`=> { … }\`), which templates read as an object literal — the handler never runs. Use a single expression, e.g. @${match[1]}={() => doIt()}, and put statements in a logic function.`);
+    // An event with whatever modifiers it carries (`@click`, `@submit.prevent`, `@keydown.ctrl.enter`),
+    // or a callback prop (`onClick`). The name used to be read up to its first dot, and only
+    // events were looked at, so both of those passed: neither the parser nor the name check
+    // objects to an object literal that is then called.
+    // (The character before the name is matched too, so that `iconOnly=` is not taken for `onOnly=`.)
+    for (const match of template.matchAll(/(^|[^\w-])(@[\w-]+(?:\.[\w-]+)*|on[A-Z]\w*)=\{\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{/g)) {
+      const name = match[2];
+      errors.push(`${path} line ${lineOf(match.index + match[1].length)}: ${name} has a block-bodied arrow (\`=> { … }\`), which templates read as an object literal — the handler never runs. Use a single expression, e.g. ${name}={() => doIt()}, and put statements in a logic function.`);
     }
     for (const match of template.matchAll(/<(Input|TextArea)\b[^>]*\s:value=\{/g)) {
       warnings.push(`${path} line ${lineOf(match.index)}: <${match[1]} :value={…}> is one-way, so typing never changes the state. Use :bind={name}.`);
@@ -497,10 +503,14 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
     const file = files.get(path);
     if (!file || typeof file.content !== 'string') continue;
     const importedTags = new Set<string>();
+    // Which file each tag pastes: a name the pasted file reads may be bound where its tag stands.
+    const imports = new Map<string, string>();
     for (const match of file.content.matchAll(UI_IMPORT)) {
       importedTags.add(match[1]);
       try {
-        queue.push(core.resolveBundlePath(path, match[2]));
+        const imported = core.resolveBundlePath(path, match[2]);
+        imports.set(match[1], imported);
+        queue.push(imported);
       } catch {
         // An unsafe path is the composer's to report.
       }
@@ -513,7 +523,7 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
     }
     // A file that does not parse is reported as such; its partial tree would only add noise.
     if ((doc.diagnostics ?? []).some((d) => d.severity === 'error')) continue;
-    templates.push({ path, doc, importedTags });
+    templates.push({ path, doc, importedTags, imports });
   }
   if (templates.length === 0) return NONE;
 

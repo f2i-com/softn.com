@@ -1182,6 +1182,10 @@
             {
               "type": "paragraph",
               "text": "A handler can be any expression. A name the file does not define is kept, with a warning such as “No function named save in logic/main.py.”"
+            },
+            {
+              "type": "paragraph",
+              "text": "A property field writes what it shows. In a text field, braces make an expression, `{user.name}`, and anything else is text. A field for an expression, such as a Modal’s `open` or a table’s `data`, takes the expression itself and writes it once it reads as a whole one. A checkbox, a number or a choice that a file binds to an expression is shown as that expression; empty it to get the usual control back. Emptying a field removes the property, so the component’s own default applies."
             }
           ]
         },
@@ -1239,7 +1243,11 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Not every source construct is safe for a canvas to rewrite. Code view marks each file Visual + source or Source-only; a Source-only file is edited as text, which protects its source rather than simplifying it until the canvas accepts it."
+              "text": "Design writes a page’s template from the canvas and leaves the rest of the file exactly as it stands: the comment at its head, its `<logic>`, `<import>`, `<data>` and `<style>` blocks, and their order. Inside the template, a comment is kept with the element it stands before and shown above it on the canvas, and words with elements among them, such as a sentence with a key or a link in it, are shown as the words and elements they are."
+            },
+            {
+              "type": "paragraph",
+              "text": "A few constructs have no element to stay with: a comment directly before a closing tag, `#else` or `#empty`, or a comment inside braces. Code view marks each file Visual + source or Source-only; a Source-only file is edited as text, with the reason shown, which protects its source rather than simplifying it until the canvas accepts it."
             },
             {
               "type": "paragraph",
@@ -1844,6 +1852,16 @@
             {
               "type": "paragraph",
               "text": "Quoted values are literal strings. Braces hold expressions whose values come from the app’s state. Keep expressions simple and move complicated decisions into named logic functions."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<Text>Press <Kbd keys=\"Ctrl+S\" /> to save, or <a href=\"/help\">read how</a>.</Text>\n<Text><b>Total:</b> {total} <i>items</i></Text>\n<Input placeholder=\"e.g. &quot;Milk&quot; &amp; eggs\" />",
+              "caption": "Words and tags on one line keep the spaces between them; a quote inside a quoted value is written &quot;."
+            },
+            {
+              "type": "paragraph",
+              "text": "Text is read the way HTML reads it. Within a line of words, a space between a word, a tag and an expression is a space on the page, and a run of spaces is one; the line breaks and indentation between tags written one to a line are layout and draw nothing. Entities such as `&amp;`, `&lt;`, `&quot;` and `&nbsp;` are read in text and in a quoted value alike, so `&quot;` writes the double quote a value is closed by. Inside braces the text is JavaScript, where a quote in a string is written `\\\"`."
             }
           ]
         },

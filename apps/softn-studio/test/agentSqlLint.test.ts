@@ -51,6 +51,16 @@ INSERT INTO products(name) VALUES ('a -- b'), ('call me (maybe)'), ('/* not a co
     expect(migrationSqlProblems('server/migrations/003.sql', sql)).toEqual([]);
   });
 
+  it('passes a sized type on a column whose name is also an SQL word', () => {
+    // "key VARCHAR(40)" was reported as "calls varchar()": a size is told from a call by the
+    // word before it, and a column called key, filter or offset reads as a keyword there.
+    const sql = `CREATE TABLE settings (key VARCHAR(40) PRIMARY KEY, value TEXT, offset INT(11), filter NVARCHAR(20) NOT NULL DEFAULT '');
+ALTER TABLE settings ADD COLUMN replace DECIMAL(10, 2);`;
+    expect(migrationSqlProblems('server/migrations/004.sql', sql)).toEqual([]);
+    // After a keyword, anything that is not a type is still the call it looks like.
+    expect(migrationSqlProblems('m.sql', 'INSERT INTO settings(key) SELECT randomblob(8);')[0]).toContain('calls randomblob()');
+  });
+
   it('is refused a trigger, a view, a PRAGMA, a transaction, SERIAL, and functions a host does not allow', () => {
     const lines = migrationSqlProblems('server/migrations/002.sql', `BEGIN;
 PRAGMA foreign_keys = ON;

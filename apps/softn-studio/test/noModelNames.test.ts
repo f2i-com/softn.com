@@ -17,7 +17,7 @@ const SRC = join(__dirname, '..', 'src');
  * or an example. Word boundaries keep "Ollama" (a server, which the setup
  * does name) from matching "llama".
  */
-const MODEL_NAME = /\b(?:claude-|gpt-|o[1-9]-(?:mini|pro|preview)\b|llama|mistral|mixtral|gemma|qwen|phi-?\d|deepseek|codellama|sonnet|opus|haiku)/i;
+const MODEL_NAME = /\b(?:claude-|gpt-|o[1-9]-(?:mini|pro|preview)\b|llama|mistral|mixtral|gemma|qwen|phi-?\d|deepseek|codellama|sonnet|opus|haiku|whisper|dall-e)/i;
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {

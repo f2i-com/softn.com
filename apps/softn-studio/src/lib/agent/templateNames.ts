@@ -71,6 +71,25 @@ export const HOST_FUNCTIONS: readonly string[] = [
   'xdb_getDbPath',
 ];
 
+/**
+ * Props whose name reads like a callback's (`on…`) and are not one: the
+ * component manifest types them as data. Per tag, checked against the manifest
+ * by a test (templateNames.test.ts), so a new one cannot be missed.
+ *
+ * Every `on…` prop was read as a handler, so `<Switch onColor={accent} />`,
+ * whose onColor is the colour of the switch when it is on, was reported as
+ * "onColor calls accent, but accent is state, not a function".
+ */
+export const ON_PROPS_THAT_ARE_VALUES: Readonly<Record<string, readonly string[]>> = {
+  Switch: ['onColor'],
+};
+
+/** Whether a prop is a callback: named `on…`, and not one the manifest types as a value. */
+function isCallbackProp(tag: string, name: string): boolean {
+  if (!/^on[A-Z]/.test(name)) return false;
+  return !(Object.hasOwn(ON_PROPS_THAT_ARE_VALUES, tag) && ON_PROPS_THAT_ARE_VALUES[tag].includes(name));
+}
+
 /** JavaScript globals a model reaches for that a template does not have. */
 const UNAVAILABLE_GLOBALS = new Set([
   'WeakMap', 'Promise', 'Intl', 'RegExp', 'Symbol', 'BigInt', 'Error', 'Reflect', 'Function',
@@ -91,6 +110,8 @@ export interface TemplateFile {
   doc: SoftNDocument;
   /** Tags that are <import>ed .ui files: the composer pastes their markup and drops the tag's props and children. */
   importedTags: Set<string>;
+  /** For each of those tags, the path of the file it pastes, when that file is among the ones checked. */
+  imports?: Map<string, string>;
 }
 
 export interface NameCheckInput {
@@ -268,8 +289,12 @@ function collectHandler(expr: Expression, local: Set<string>, out: Ref[], event:
   collect(expr, local, out, event);
 }
 
-/** Every reference in a file's template, each with the loop variables and parameters in scope where it is. */
-export function templateReferences(file: TemplateFile): Ref[] {
+/**
+ * Every reference in a file's template, each with the loop variables and
+ * parameters in scope where it is. `onImportUse` is told each place an
+ * imported file's tag stands, with the names bound there.
+ */
+export function templateReferences(file: TemplateFile, onImportUse?: (tag: string, local: Set<string>) => void): Ref[] {
   const out: Ref[] = [];
   const walkNodes = (nodes: TemplateNode[] | undefined, local: Set<string>) => {
     for (const node of nodes ?? []) walk(node, local);
@@ -278,7 +303,10 @@ export function templateReferences(file: TemplateFile): Ref[] {
     switch (node.type) {
       case 'Element': {
         // An imported component's tag is replaced by its markup: its props and children never render.
-        if (file.importedTags.has(node.tag)) return;
+        if (file.importedTags.has(node.tag)) {
+          onImportUse?.(node.tag, local);
+          return;
+        }
         let scope = local;
         if (node.inlineEach) {
           collect(node.inlineEach.iterable, local, out, undefined);
@@ -291,8 +319,7 @@ export function templateReferences(file: TemplateFile): Ref[] {
           if (prop.value.type !== 'expression') continue;
           const value = prop.value.value;
           // `onClick={…}` is a callback, read the way an event is.
-          const callback = prop.name.startsWith('on') && prop.name.length > 2 && /[A-Z]/.test(prop.name[2]);
-          if (callback) collectHandler(value, scope, out, prop.name);
+          if (isCallbackProp(node.tag, prop.name)) collectHandler(value, scope, out, prop.name);
           else collect(value, scope, out, undefined);
         }
         for (const event of node.events) collectHandler(event.handler, scope, out, `@${event.name}`);
@@ -365,7 +392,37 @@ export function checkTemplateNames(input: NameCheckInput): { errors: string[]; w
   const globals = new Set(TEMPLATE_GLOBALS);
   const aliases = new Set<string>(input.dataNames);
   for (const file of input.files) for (const c of file.doc.data?.collections ?? []) aliases.add(c.as);
-  const references = input.files.map((file) => ({ file, refs: templateReferences(file) }));
+  // The composer pastes an imported file where its tag stands, so the file reads what is bound
+  // there: inside `#each (task in tasks)` its `{task.title}` is the loop's. Checked on its own
+  // with nothing in scope, such a file was told that task "renders empty", of a row that
+  // renders. So each use of a file is noted with the names bound at it, and a name is the
+  // file's to read when some use binds it; only one that no use binds is reported.
+  const uses = new Map<string, Array<{ from: string; local: Set<string> }>>();
+  const references = input.files.map((file) => ({
+    file,
+    refs: templateReferences(file, (tag, local) => {
+      const target = file.imports?.get(tag);
+      if (target === undefined) return;
+      const list = uses.get(target) ?? [];
+      list.push({ from: file.path, local });
+      uses.set(target, list);
+    }),
+  }));
+  const boundAtUse = new Map<string, Set<string>>();
+  // To a fixed point, for an import of an import: what is bound around the outer one reaches the inner one.
+  for (let pass = 0, grew = true; grew && pass <= input.files.length; pass++) {
+    grew = false;
+    for (const [path, list] of uses) {
+      const names = boundAtUse.get(path) ?? new Set<string>();
+      const before = names.size;
+      for (const { from, local } of list) {
+        for (const name of local) names.add(name);
+        for (const name of boundAtUse.get(from) ?? []) names.add(name);
+      }
+      boundAtUse.set(path, names);
+      if (names.size !== before) grew = true;
+    }
+  }
   // A name the markup assigns (`@click={() => tab = "a"}`) becomes state when the handler runs.
   const assigned = new Set<string>();
   for (const { refs } of references) for (const r of refs) if (r.kind === 'assign') assigned.add(r.name);
@@ -385,8 +442,11 @@ export function checkTemplateNames(input: NameCheckInput): { errors: string[]; w
 
   for (const { file, refs } of references) {
     const props = new Set((file.doc.component?.props ?? []).map((p) => p.name));
+    const outer = boundAtUse.get(file.path);
+    /** Bound here: by a loop or an arrow in this file, or around a tag this file is pasted in place of. */
+    const bound = (name: string, local: Set<string>) => local.has(name) || (outer?.has(name) ?? false);
     const isValue = (name: string, local: Set<string>) =>
-      local.has(name) || logic.state.has(name) || logic.computed.has(name) || logic.functions.has(name) || aliases.has(name) || props.has(name) || globals.has(name) || helpers.has(name);
+      bound(name, local) || logic.state.has(name) || logic.computed.has(name) || logic.functions.has(name) || aliases.has(name) || props.has(name) || globals.has(name) || helpers.has(name);
     const suggest = (name: string, pool: Iterable<string>) => {
       const near = nearestName(name, pool);
       return near ? ` Did you mean ${near}?` : '';
@@ -396,7 +456,7 @@ export function checkTemplateNames(input: NameCheckInput): { errors: string[]; w
       switch (ref.kind) {
         case 'handler':
         case 'call': {
-          const callable = logic.functions.has(name) || helpers.has(name) || globals.has(name) || local.has(name) || props.has(name) || logic.computed.has(name);
+          const callable = logic.functions.has(name) || helpers.has(name) || globals.has(name) || bound(name, local) || props.has(name) || logic.computed.has(name);
           if (callable) break;
           if (ref.kind === 'call' && !ref.event && (logic.state.has(name) || aliases.has(name) || assigned.has(name))) break;
           const where = ref.event ? `${ref.event} calls ${name}${ref.kind === 'call' ? '()' : ''}` : `{${name}(…)} calls ${name}()`;
@@ -410,7 +470,7 @@ export function checkTemplateNames(input: NameCheckInput): { errors: string[]; w
           break;
         }
         case 'bind': {
-          if (logic.state.has(name) || local.has(name) || aliases.has(name)) break;
+          if (logic.state.has(name) || bound(name, local) || aliases.has(name)) break;
           const why = logic.computed.has(name)
             ? `${name} is a computed value, which cannot be written`
             : logic.functions.has(name)
@@ -423,7 +483,7 @@ export function checkTemplateNames(input: NameCheckInput): { errors: string[]; w
           break;
         }
         case 'assign': {
-          if (logic.state.has(name) || local.has(name) || aliases.has(name)) break;
+          if (logic.state.has(name) || bound(name, local) || aliases.has(name)) break;
           report(file.path, `assign:${name}`, ref.line, () => `${ref.event ?? 'An expression'} assigns ${name}, which the logic does not declare: it has no value until the handler runs.${suggest(name, logic.state)} Declare it in the logic (${declare(name)}).`);
           break;
         }

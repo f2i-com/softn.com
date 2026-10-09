@@ -43,14 +43,14 @@ function splitName(name: string): { base: string; ext: string } {
 const FileTreeItem: React.FC<{
   node: TreeNode;
   depth: number;
+  /** The file showing on the canvas. */
   selectedPath: string | null;
-  activeFilePath: string | null;
   onSelect: (path: string) => void;
   expanded: Set<string>;
   onToggle: (path: string) => void;
-}> = ({ node, depth, selectedPath, activeFilePath, onSelect, expanded, onToggle }) => {
+}> = ({ node, depth, selectedPath, onSelect, expanded, onToggle }) => {
   const isOpen = expanded.has(node.path);
-  const isSelected = selectedPath === node.path || activeFilePath === node.path;
+  const isSelected = selectedPath === node.path;
   const { base, ext } = splitName(node.name);
 
   return (
@@ -91,7 +91,6 @@ const FileTreeItem: React.FC<{
           node={child}
           depth={depth + 1}
           selectedPath={selectedPath}
-          activeFilePath={activeFilePath}
           onSelect={onSelect}
           expanded={expanded}
           onToggle={onToggle}
@@ -104,40 +103,40 @@ const FileTreeItem: React.FC<{
 export const FilesPanel: React.FC = () => {
   const { files } = useVFSStore();
   const { activeFilePath, setActiveFilePath } = useWorkspaceStore();
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const paths = useMemo(() => Array.from(files.keys()), [files]);
   const tree = useMemo(() => buildTree(paths), [paths]);
   const rootFolders = useMemo(() => tree.filter((node) => node.isDir).map((node) => node.path), [tree]);
   const rootFolderKey = rootFolders.join('|');
-  const preferredPath = useMemo(() => (
-    getBundleEntryPath(files) ?? paths[0] ?? null
-  ), [files, paths]);
+  // The file showing on the canvas: the workspace's active file, and with none (or one that
+  // is gone) the bundle's entry, which is what the canvas falls back to. The panel marks it
+  // and nothing more. It used to keep a selection of its own, empty each time the panel was
+  // opened, and on finding none made the entry the workspace's active file: opening the panel,
+  // or reloading with it open, put the main page on the canvas in place of the file the
+  // person had chosen, and counted as a change to the project.
+  const shownPath = useMemo(() => (
+    activeFilePath && files.has(activeFilePath) ? activeFilePath : getBundleEntryPath(files)
+  ), [activeFilePath, files]);
 
   const handleSelect = useCallback((path: string) => {
-    setSelectedPath(path);
     setActiveFilePath(path);
   }, [setActiveFilePath]);
 
+  // The top folders start open, and so do the folders the file showing is in, so that it can
+  // be seen. A folder closed by hand stays closed until another file is shown.
   useEffect(() => {
-    if (rootFolders.length === 0) return;
+    const open = [...rootFolders];
+    const parts = shownPath ? shownPath.split('/').slice(0, -1) : [];
+    parts.forEach((_, index) => open.push(parts.slice(0, index + 1).join('/')));
+    if (open.length === 0) return;
     setExpanded((prev) => {
       const next = new Set(prev);
-      rootFolders.forEach((path) => next.add(path));
-      if (next.size === prev.size && Array.from(next).every((path) => prev.has(path))) {
-        return prev;
-      }
-      return next;
+      open.forEach((path) => next.add(path));
+      return next.size === prev.size ? prev : next;
     });
-  }, [rootFolderKey, rootFolders]);
-
-  useEffect(() => {
-    if (!preferredPath) return;
-    if (!selectedPath || !files.has(selectedPath)) {
-      handleSelect(preferredPath);
-    }
-  }, [preferredPath, selectedPath, files, handleSelect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootFolderKey, shownPath]);
 
   const handleToggle = (path: string) => {
     setExpanded((prev) => {
@@ -173,8 +172,7 @@ export const FilesPanel: React.FC = () => {
             key={node.path}
             node={node}
             depth={0}
-            selectedPath={selectedPath}
-            activeFilePath={activeFilePath}
+            selectedPath={shownPath}
             onSelect={handleSelect}
             expanded={expanded}
             onToggle={handleToggle}

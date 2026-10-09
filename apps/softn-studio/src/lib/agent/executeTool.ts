@@ -11,7 +11,7 @@
  * every step can be undone on its own and the run reverted as a whole.
  */
 
-import { classifyAsset, pythonModuleName } from '@softn/core';
+import { ASSET_CLASSIFICATIONS, classifyAsset, pythonModuleName } from '@softn/core';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { useVFSStore, type VFSChangeRecord } from '../../stores/vfsStore';
 import { checkWrite, type SuppliedFiles } from '../changeset';
@@ -89,6 +89,29 @@ export function describeTree(files: Map<string, VFSFile>, prefix = ''): string {
     .join('\n');
 }
 
+/** Archives and compiled code: bytes too, though core's registry, which lists what a bundle serves, does not name them. */
+const ARCHIVE_OR_COMPILED = /\.(zip|gz|tgz|tar|bz2|xz|7z|rar|jar|wasm)$/i;
+
+/**
+ * Whether a path's type is one the project keeps as bytes — a picture, a
+ * sound, a video, a font, a model, an archive — so a file of it cannot be
+ * written from text.
+ *
+ * Everything else is the text it is written as. This used to ask whether
+ * core's registry lists the extension as text, and the registry's answer for
+ * an extension it does not know is "bytes": right for a reader, which must not
+ * decode what it cannot name, and wrong for a writer, which refused a .csv, a
+ * README and a .ts file as "a binary format".
+ */
+function keptAsBytes(path: string): boolean {
+  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  // An SVG is markup. The registry carries it as bytes for the runtime's icon paths; import
+  // decodes it so that it can be read and edited here, and so it can be written here.
+  if (extension === 'svg') return false;
+  if (ARCHIVE_OR_COMPILED.test(path)) return true;
+  return Object.hasOwn(ASSET_CLASSIFICATIONS, extension) && ASSET_CLASSIFICATIONS[extension].binary;
+}
+
 /** Resolve a path the model wants to write, or say why it may not. */
 function resolveWritable(raw: string | undefined, files: Map<string, VFSFile>, text: boolean): { ok: true; path: string } | { ok: false; reason: string } {
   if (!raw) return { ok: false, reason: 'A path is required.' };
@@ -97,8 +120,10 @@ function resolveWritable(raw: string | undefined, files: Map<string, VFSFile>, t
   if (verdict.private) return { ok: false, reason: `${verdict.path} is private editor state (builder/), which you do not write.` };
   const alias = findAlias(verdict.path, files.keys());
   if (alias !== null) return { ok: false, reason: `${raw} is the same file as the project's ${alias} on a case-insensitive disk. Use ${alias}.` };
-  if (text && classifyAsset(verdict.path).binary) {
-    return { ok: false, reason: `${verdict.path} is a binary format (${classifyAsset(verdict.path).mime}); files are written as text, so a binary asset cannot be written. Reference assets that exist, or use an SVG or text format.` };
+  if (text && keptAsBytes(verdict.path)) {
+    // The way out named here has to be one that works: this once ended "or use an SVG", in
+    // answer to a model that had just been refused one.
+    return { ok: false, reason: `${verdict.path} is a binary format (${classifyAsset(verdict.path).mime}): its bytes cannot be written as text. Reference an asset the project already has, or, for a picture, draw it as an .svg file, which is text.` };
   }
   if (/\.py$/i.test(verdict.path)) {
     try {
@@ -187,6 +212,20 @@ function nearestLines(content: string, oldString: string): string {
   return lines.slice(from, to).map((l, i) => `${String(from + i + 1).padStart(4)}| ${l}`).join('\n');
 }
 
+/**
+ * Text with its line breaks written the way `content` writes its own.
+ *
+ * A file imported from a bundle written on Windows keeps its \r\n. read_file
+ * shows it line by line and a model writes the lines back joined by \n, so an
+ * old_string of more than one line never matched, and the hint to "check the
+ * line breaks" asked for a character it had no way to see. An edit is matched
+ * across that difference, and what it writes is written the file's way, so the
+ * file keeps its own line endings.
+ */
+function inLineEndingsOf(content: string, text: string): string {
+  return content.includes('\r\n') ? text.replace(/\r?\n/g, '\r\n') : text.replace(/\r\n/g, '\n');
+}
+
 function numbered(lines: string[], start: number): string {
   return lines.map((l, i) => `${String(start + i).padStart(4)}| ${l}`).join('\n');
 }
@@ -220,16 +259,27 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       start = Math.min(start, end);
       let slice = lines.slice(start - 1, end);
       let text = numbered(slice, start);
+      /** The length of a first line too long to show whole, when it was cut. */
+      let cutLineLength: number | null = null;
       if (text.length > MAX_READ_CHARS) {
         // Very long lines: cut by characters, and say where.
         let chars = 0;
         let n = 0;
         while (n < slice.length && chars + slice[n].length < MAX_READ_CHARS) chars += slice[n++].length + 1;
-        slice = slice.slice(0, Math.max(1, n));
+        if (n === 0) {
+          // The first line alone is past the cap, so the cap is kept inside it. Keeping "at
+          // least one line" sent a file that is one line — a compact .xdb, a minified
+          // script — whole, however large.
+          cutLineLength = slice[0].length;
+          slice = [slice[0].slice(0, MAX_READ_CHARS)];
+        } else {
+          slice = slice.slice(0, n);
+        }
         end = start + slice.length - 1;
         text = numbered(slice, start);
       }
-      const whole = start === 1 && end === total;
+      // A line that was cut was not read whole, so neither was the file.
+      const whole = start === 1 && end === total && cutLineLength === null;
       const previous = ctx.seen.get(path);
       const stillCurrent = previous?.version === file.version;
       ctx.seen.set(path, {
@@ -239,7 +289,12 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
         shown: whole ? file.content.length : slice.join('\n').length,
         total: file.content.length,
       });
-      const header = whole ? `${path} (${total} lines, complete)` : `${path} lines ${start}–${end} of ${total}${end < total ? ` — read on with start_line ${end + 1}` : ''}`;
+      const readOn = end < total ? ` — read on with start_line ${end + 1}` : '';
+      const header = whole
+        ? `${path} (${total} lines, complete)`
+        : cutLineLength !== null
+          ? `${path} line ${start} of ${total}, cut: the first ${MAX_READ_CHARS.toLocaleString()} of its ${cutLineLength.toLocaleString()} characters are shown, and read_file cannot show the rest of this line (search_files finds text in it)${readOn}`
+          : `${path} lines ${start}–${end} of ${total}${readOn}`;
       return { content: `${header}\n${text}`, isError: false, subject: path };
     }
 
@@ -299,15 +354,18 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       if (typeof file.content !== 'string') return fail(path, `${path} is a binary file; it cannot be edited as text.`);
       const applied = appliedMigrationRefusal(path, 'edit', undefined, files.keys());
       if (applied) return fail(path, applied);
-      const oldString = typeof input.old_string === 'string' ? input.old_string : undefined;
-      const newString = typeof input.new_string === 'string' ? input.new_string : undefined;
-      if (oldString === undefined || newString === undefined) return fail(path, 'old_string and new_string are both required.');
-      if (oldString.length === 0) return fail(path, 'old_string is empty. To add to a file, include the neighbouring lines in old_string; to create a file, use write_file.');
-      if (oldString === newString) return fail(path, 'old_string and new_string are the same; nothing would change.');
+      const givenOld = typeof input.old_string === 'string' ? input.old_string : undefined;
+      const givenNew = typeof input.new_string === 'string' ? input.new_string : undefined;
+      if (givenOld === undefined || givenNew === undefined) return fail(path, 'old_string and new_string are both required.');
+      if (givenOld.length === 0) return fail(path, 'old_string is empty. To add to a file, include the neighbouring lines in old_string; to create a file, use write_file.');
+      if (givenOld === givenNew) return fail(path, 'old_string and new_string are the same; nothing would change.');
       const refusal = checkWrite(path, ctx.seen, file, 'edit');
       if (refusal) return fail(path, describeSeenRefusal(path, refusal, 'edit_file'));
 
       const content = file.content;
+      // Matched as given first; failing that, with its line breaks written the file's way.
+      const oldString = content.includes(givenOld) || !content.includes(inLineEndingsOf(content, givenOld)) ? givenOld : inLineEndingsOf(content, givenOld);
+      const newString = inLineEndingsOf(content, givenNew);
       const count = content.split(oldString).length - 1;
       if (count === 0) {
         const squash = (s: string) => s.replace(/\s+/g, ' ').trim();

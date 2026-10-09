@@ -533,19 +533,34 @@ export async function continueAgentRun(runId: string): Promise<void> {
   if (useAIStore.getState().agentState === 'building') return;
   const settings = useAIStore.getState().agentSettings;
   activeRunId = ctl.id;
+  // Reverting a run and then continuing it is asking it to try again: what it does from here
+  // is its to undo and revert (the steps already put back stay marked as undone).
+  const wasReverted = run.reverted === true;
   patch(ctl, (r) => ({
     ...r,
     maxSteps: r.steps >= r.maxSteps ? r.steps + settings.maxSteps : r.maxSteps,
-    tokenBudget: runEffective(r.tokens) >= r.tokenBudget * 0.9 ? runEffective(r.tokens) + settings.runTokenBudget : r.tokenBudget,
+    // Another allowance from where the run stands, at the setting as it is now. The budget
+    // used to grow only once nine tenths of it were spent, but the stop reserves the next
+    // request and a whole reply, which is often more than the last tenth: Continue then met
+    // the same stop without sending anything, and so did raising the setting.
+    tokenBudget: Math.max(r.tokenBudget, runEffective(r.tokens) + settings.runTokenBudget),
+    ...(wasReverted ? { reverted: false } : {}),
   }));
   ctl.sameCheckFailures = 0;
   ctl.sameToolErrors = 0;
   ctl.truncations = 0;
   const wasPaused = run.status === 'paused';
   setStatus(ctl, 'running');
-  // A paused request is sent again as it was; a stopped or limited run is told it was resumed.
-  if (!ctl.pending && (!wasPaused || ctl.turns.at(-1)?.role === 'assistant')) {
-    ctl.turns.push({ role: 'user', text: 'The person resumed the run. Continue where you left off: check the app, fix what is broken, and call finish when the request is done.' });
+  // A paused request is sent again as it was; a stopped or limited run is told it was resumed,
+  // and one whose files were put back in the meantime is told that, or it would carry on as
+  // though they were still there.
+  if (!ctl.pending && (wasReverted || !wasPaused || ctl.turns.at(-1)?.role === 'assistant')) {
+    ctl.turns.push({
+      role: 'user',
+      text: wasReverted
+        ? 'The person reverted this run and then resumed it: every file it created is gone, and every file it changed or deleted is as it was before the run. Read a file again before you change it, do again what the request still needs, and call finish when it is done.'
+        : 'The person resumed the run. Continue where you left off: check the app, fix what is broken, and call finish when the request is done.',
+    });
   }
   await drive(ctl);
 }
@@ -1109,7 +1124,9 @@ async function processCalls(ctl: RunController): Promise<boolean> {
     }
 
     await runOneCall(ctl, call, step);
-    if (!ctl.alive) return true;
+    // Discarded, or stopped while the tool ran: Stop answered what was left of these calls,
+    // so none of them is run after it — not even if the run has been continued since.
+    if (!ctl.alive || ctl.pending !== pending) return true;
     pending.index++;
     if (ctl.sameToolErrors >= REPEAT_LIMIT) {
       settlePending(ctl, 'Not run: the run stopped after repeated failures.');
@@ -1144,6 +1161,11 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
     }
     if (!ctl.alive) return true;
     updateEntry(ctl, entryId, { status: report.ok ? 'ok' : 'error', subject: report.page ?? 'app', result: formatCheckReport(report).slice(0, 2_000), check: report });
+    // Stop came while the check ran. It has already answered this step's calls, and a stopped
+    // run stays stopped: carrying on from here answered them a second time, so every later
+    // request held two results for one call, and a reply that had also called finish turned
+    // the run the person had stopped into a finished one. The check's row keeps its result.
+    if (ctl.pending !== pending) return true;
     // Appended to the last write's result: the one place every protocol lets a note travel.
     const lastWrite = [...pending.results].reverse().find((r) => WRITE_TOOLS.has(r.name) && !r.isError) ?? pending.results.at(-1);
     if (lastWrite) {

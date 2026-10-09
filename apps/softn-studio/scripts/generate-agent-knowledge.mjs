@@ -300,8 +300,12 @@ export function buildKnowledge(manifestText, docsText, readSource = readComponen
     const registered = category[component.name] !== undefined;
     index.push({ name: component.name, category: category[component.name] ?? 'helper', purpose: PURPOSES[component.name], registered });
     const members = component.props?.members ?? [];
-    const props = members.filter((m) => !COMMON_PROPS.has(m.name) && !eventName(m.name));
-    const events = members.filter((m) => eventName(m.name));
+    // An event is a prop that is named for one and takes a function. The name
+    // alone is not enough: Switch's onColor is the colour it has when on, and
+    // was listed for the model as an event called @color.
+    const isEvent = (m) => eventName(m.name) !== null && m.type?.kind === 'function';
+    const props = members.filter((m) => !COMMON_PROPS.has(m.name) && !isEvent(m));
+    const events = members.filter(isEvent);
     const acceptsChildren = members.some((m) => m.name === 'children');
     const lines = [];
     lines.push(`## ${component.name} — ${PURPOSES[component.name]}`);

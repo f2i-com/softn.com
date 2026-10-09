@@ -131,6 +131,25 @@ describe('project records', () => {
     expect(loaded?.files[1].content).toBeInstanceOf(Uint8Array);
   });
 
+  it('does not write over a stored copy newer than the one the writer last saw, and says what to do', async () => {
+    // Two tabs with one project open: the second, still holding the copy it had opened, wrote
+    // its whole record over what the first had saved since — its old files in place of the new.
+    await saveProjectRecord(record('a', 'Notes', 3, 'as both tabs opened it'));
+    // The other tab, which last saw revision 3, saves its work.
+    expect(await saveProjectRecord(record('a', 'Notes', 9, 'the other tab’s work'), 3)).toEqual({ ok: true });
+    // This tab last saw revision 3 too.
+    const refused = await saveProjectRecord(record('a', 'Notes', 4, 'as both tabs opened it'), 3);
+    expect(refused).toMatchObject({ ok: false, reason: 'conflict' });
+    expect(refused.ok ? '' : refused.message).toMatch(/changed in another tab/);
+    expect(refused.ok ? '' : refused.message).toMatch(/Reload/);
+    expect((await loadProjectRecord('a'))?.files[0].content).toBe('the other tab’s work');
+    // A writer that has seen what is stored goes on writing, and one that names no revision
+    // writes as it always did (a first save, the legacy migration).
+    expect(await saveProjectRecord(record('a', 'Notes', 10, 'next'), 9)).toEqual({ ok: true });
+    expect(await saveProjectRecord(record('a', 'Notes', 1, 'unconditional'))).toEqual({ ok: true });
+    expect((await loadProjectRecord('a'))?.files[0].content).toBe('unconditional');
+  });
+
   it('a write that does not commit leaves the previous revision whole, never a mix of two', async () => {
     await saveProjectRecord(record('a', 'Notes v1', 1, 'one'));
     idb.abortNextTransaction = true;

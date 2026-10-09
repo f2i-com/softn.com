@@ -43,8 +43,12 @@ describe('the generated knowledge', () => {
       expect(text).toContain(`## ${component.name} — `);
       for (const member of component.props?.members ?? []) {
         if (['className', 'style', 'id'].includes(member.name)) continue;
-        if (/^on[A-Z]/.test(member.name)) expect(text).toContain(`@${member.name.charAt(2).toLowerCase()}${member.name.slice(3)}`);
-        else expect(text).toContain(`- ${member.name}`);
+        // An event is named for one and takes a function; Switch's onColor is a colour, and a prop.
+        if (/^on[A-Z]/.test(member.name) && member.type.kind === 'function') {
+          expect(text).toContain(`@${member.name.charAt(2).toLowerCase()}${member.name.slice(3)}`);
+        } else {
+          expect(text).toContain(`- ${member.name}`);
+        }
         for (const option of member.type.options ?? []) expect(text).toContain(JSON.stringify(option));
       }
     }

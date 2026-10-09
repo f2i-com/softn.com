@@ -4,7 +4,7 @@ import { Icon } from '../common/Icon';
 import { declarePythonPackage, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
 import { getXDB, type SoftNRendererProps } from '@softn/core';
 import type { ThemeProviderProps } from '@softn/components';
-import { createPreviewAssetResolver } from '../../lib/previewAssets';
+import { createPreviewAssetResolver, rewriteAssetReferences } from '../../lib/previewAssets';
 import { CodeView } from './CodeView';
 import { MediaView, mediaKindFor } from './MediaView';
 import {
@@ -15,15 +15,6 @@ import {
   replacePreviewXDBCollections,
   stripTemplateComments,
 } from '../../lib/previewProject';
-
-function rewriteAssetReferences(source: string, resolveAsset: (path: string) => string): string {
-  return source.replace(
-    /(["'])(assets\/[^"']+|\.\.\/assets\/[^"']+|\.\/assets\/[^"']+)(\1)/g,
-    (_match, quote: string, assetPath: string) => {
-      return `${quote}${resolveAsset(assetPath)}${quote}`;
-    }
-  );
-}
 
 /**
  * The files the preview renders. While an agent run is writing, a burst of

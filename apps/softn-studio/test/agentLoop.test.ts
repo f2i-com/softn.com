@@ -11,15 +11,20 @@ import {
   answerAgentQuestion,
   continueAgentRun,
   revertAgentRun,
+  runRevertState,
+  setAgentEnvironment,
   startAgentRun,
+  stepUndoState,
   stopAgentRun,
   undoAgentStep,
 } from '../src/lib/agent/runAgent';
+import { executeTool } from '../src/lib/agent/executeTool';
 import { parseTextToolCalls } from '../src/lib/agent/protocol';
+import type { SuppliedFiles } from '../src/lib/changeset';
 import { useAIStore } from '../src/stores/aiStore';
 import { useVFSStore } from '../src/stores/vfsStore';
 import { useWorkspaceStore } from '../src/stores/workspaceStore';
-import { APP, assertScriptsPassed, fakeProvider, lastRun, LOCAL, OPENAI, resetAgent, resultsIn, say, seedApp, text } from './helpers/agentHarness';
+import { APP, assertScriptsPassed, fakeProvider, lastRun, LOCAL, nodeEnvironment, OPENAI, resetAgent, resultsIn, say, seedApp, text } from './helpers/agentHarness';
 
 beforeEach(() => resetAgent());
 afterEach(() => {
@@ -168,6 +173,78 @@ describe('editing with edit_file (OpenAI tool_calls)', () => {
     await startAgentRun();
     expect(text('ui/list.ui')).toBe('<Text>b</Text>\n<Text>b</Text>');
   });
+
+  it('edits across line endings: an old_string written with \\n matches a file that has \\r\\n, and the file keeps its own', async () => {
+    // A bundle written on Windows keeps its \r\n. read_file shows the lines, the model writes
+    // them back joined by \n, and no edit of more than one line ever matched: "old_string was
+    // not found … check the indentation and line breaks", three times, and the run stopped.
+    useVFSStore.getState().hydrateFiles([{ path: 'ui/win.ui', content: '<App>\r\n  <Text>one</Text>\r\n  <Text>two</Text>\r\n</App>\r\n' }]);
+    fakeProvider('openai', [
+      {
+        calls: [
+          { name: 'read_file', input: { path: 'ui/win.ui' } },
+          { name: 'edit_file', input: { path: 'ui/win.ui', old_string: '  <Text>one</Text>\n  <Text>two</Text>', new_string: '  <Text>1</Text>\n  <Text>2</Text>\n  <Text>3</Text>' } },
+        ],
+      },
+      { calls: [{ name: 'finish', input: { summary: 'done' } }] },
+    ]);
+    say('Renumber');
+    await startAgentRun();
+    expect(toolEntries().find((e) => e.name === 'edit_file')?.status).toBe('ok');
+    expect(text('ui/win.ui')).toBe('<App>\r\n  <Text>1</Text>\r\n  <Text>2</Text>\r\n  <Text>3</Text>\r\n</App>\r\n');
+  });
+});
+
+describe('tool calls that arrive without an id', () => {
+  it('gives each one its own, so a later step does not write over the rows of the steps before it', async () => {
+    // Some OpenAI-compatible servers send no id. Every call was then "call_0", the timeline is
+    // kept by id, and each finished step rewrote all the rows before it: after two writes both
+    // rows read "Finished.", with no path, no diff and no Undo.
+    resetAgent(LOCAL);
+    seedApp();
+    const provider = fakeProvider('openai', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/one.ui', content: '<App><Text>1</Text></App>' } }], noCallIds: true },
+      { calls: [{ name: 'write_file', input: { path: 'ui/two.ui', content: '<App><Text>2</Text></App>' } }], noCallIds: true },
+      { calls: [{ name: 'finish', input: { summary: 'Two files.' } }], noCallIds: true },
+    ]);
+    say('Two files');
+    await startAgentRun();
+    expect(lastRun().run.status).toBe('finished');
+    const writes = toolEntries().filter((e) => e.name === 'write_file');
+    expect(writes.map((e) => e.subject)).toEqual(['ui/one.ui', 'ui/two.ui']);
+    expect(writes.map((e) => e.diff?.[0].path)).toEqual(['ui/one.ui', 'ui/two.ui']);
+    expect(writes.every((e) => e.transactionId)).toBe(true);
+    expect(new Set(toolEntries().map((e) => e.id)).size).toBe(toolEntries().length);
+    // The wire still pairs each result with the call it answers.
+    const messages = provider.bodies[2].messages as Array<{ role: string; tool_call_id?: string; tool_calls?: Array<{ id: string }> }>;
+    const ids = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.tool_calls ?? []).map((c) => c.id);
+    expect(new Set(ids).size).toBe(2);
+    expect(messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id)).toEqual(ids);
+  });
+});
+
+describe('reading a file', () => {
+  beforeEach(() => seedApp());
+
+  it('cuts one very long line at the size cap and says so, and does not count it as read whole', async () => {
+    // The cap kept at least one line, so a file that is one line — a compact .xdb, a minified
+    // script — came back whole: hundreds of thousands of characters into the conversation,
+    // marked "complete".
+    const long = JSON.stringify({ collection: 'big', records: Array.from({ length: 5000 }, (_, i) => ({ id: String(i), title: `Record number ${i}` })) });
+    useVFSStore.getState().createFile('data/big.xdb', long);
+    const seen: SuppliedFiles = new Map();
+    const context = { seen, env: nodeEnvironment, blueprint: null, newTransactionId: () => crypto.randomUUID() };
+    const read = await executeTool({ id: 'r', name: 'read_file', input: { path: 'data/big.xdb' } }, context);
+    expect(read.isError).toBe(false);
+    expect(read.content.length).toBeLessThan(41_000);
+    expect(read.content.split('\n')[0]).toMatch(/^data\/big\.xdb line 1 of 1, cut: the first 40,000 of its [\d,]+ characters are shown/);
+    expect(read.content).toContain('{"collection":"big"');
+    // What was not shown was not read: replacing the file whole is still refused.
+    expect(seen.get('data/big.xdb')?.complete).toBe(false);
+    const write = await executeTool({ id: 'w', name: 'write_file', input: { path: 'data/big.xdb', content: '{}' } }, context);
+    expect(write.isError).toBe(true);
+    expect(write.content).toContain('You have read only part of data/big.xdb');
+  });
 });
 
 describe('the changeset rules, as tool errors', () => {
@@ -202,6 +279,38 @@ describe('the changeset rules, as tool errors', () => {
     expect(useVFSStore.getState().files).toEqual(before);
     expect(useVFSStore.getState().history).toEqual([]);
     expect(toolEntries().filter((e) => e.name === 'write_file').every((e) => e.status === 'error')).toBe(true);
+  });
+
+  it('writes an SVG, a CSV and a file with no extension as the text they are, and refuses only what is kept as bytes', async () => {
+    // Whatever core's registry does not list as text was refused as "a binary format": a .csv, a
+    // README, and an .svg too — in a message that ended "or use an SVG or text format".
+    fakeProvider('anthropic', [
+      {
+        calls: [
+          { name: 'write_file', input: { path: 'assets/icon.svg', content: '<svg xmlns="http://www.w3.org/2000/svg"/>' } },
+          { name: 'write_file', input: { path: 'data/tasks.csv', content: 'title,done\nBuy milk,false\n' } },
+          { name: 'write_file', input: { path: 'README', content: 'Tasks' } },
+          { name: 'write_file', input: { path: 'assets/photo.png', content: 'not bytes' } },
+          { name: 'write_file', input: { path: 'assets/theme.zip', content: 'not bytes' } },
+        ],
+      },
+      (body) => {
+        const sent = resultsIn(body);
+        expect(sent).toContain('assets/photo.png is a binary format (image/png)');
+        expect(sent).toContain('assets/theme.zip is a binary format');
+        expect(sent).toContain('draw it as an .svg file');
+        expect(sent).not.toContain('or use an SVG or text format');
+        return { calls: [{ name: 'finish', input: { summary: 'Wrote the text files.' } }] };
+      },
+    ]);
+    say('Add an icon and some data');
+    await startAgentRun();
+    expect(text('assets/icon.svg')).toBe('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    expect(text('data/tasks.csv')).toBe('title,done\nBuy milk,false\n');
+    expect(text('README')).toBe('Tasks');
+    expect(useVFSStore.getState().files.has('assets/photo.png')).toBe(false);
+    expect(useVFSStore.getState().files.has('assets/theme.zip')).toBe(false);
+    expect(toolEntries().filter((e) => e.name === 'write_file').map((e) => e.status)).toEqual(['ok', 'ok', 'ok', 'error', 'error']);
   });
 
   it('refuses write_file after reading only part of a file, and an edit to a file the person changed since it was read', async () => {
@@ -457,6 +566,86 @@ describe('stopping and limits', () => {
     expect(provider.count()).toBe(0);
   });
 
+  it('continues after a token-budget stop: the budget becomes what was spent plus the setting as it is now', async () => {
+    // The budget was extended only once nine tenths of it were spent. The stop reserves the
+    // next request and a whole reply, often more than the last tenth, so Continue failed again
+    // at once without sending anything — and so did raising the budget in Settings, the other
+    // thing the message says to do.
+    useAIStore.getState().updateAgentSettings({ runTokenBudget: 10_000 });
+    const provider = fakeProvider('anthropic', [{ calls: [{ name: 'finish', input: { summary: 'ok' } }] }]);
+    say('Go');
+    await startAgentRun();
+    let { run } = lastRun();
+    expect(run.reason).toMatch(/run's token budget would be exceeded/);
+    expect(provider.count()).toBe(0);
+    useAIStore.getState().updateAgentSettings({ runTokenBudget: 2_000_000 });
+    await continueAgentRun(run.id);
+    ({ run } = lastRun());
+    expect(provider.count()).toBe(1);
+    expect(run.tokenBudget).toBe(2_000_000);
+    expect(run.status).toBe('finished');
+  });
+
+  it('grants another allowance on Continue however little of the budget was spent when the run stopped', async () => {
+    // Two thirds spent, and a reply's reservation larger than what was left: under nine tenths,
+    // so Continue changed nothing.
+    useAIStore.setState({ maxOutputTokens: 50_000 });
+    useAIStore.getState().updateAgentSettings({ runTokenBudget: 150_000 });
+    const provider = fakeProvider('anthropic', [
+      { calls: [{ name: 'list_files', input: {} }], usage: { input: 100_000, output: 1_000 } },
+      { calls: [{ name: 'finish', input: { summary: 'ok' } }] },
+    ]);
+    say('Go');
+    await startAgentRun();
+    let { run } = lastRun();
+    expect(run.status).toBe('failed');
+    expect(run.reason).toMatch(/run's token budget would be exceeded: 101,000 of 150,000/);
+    expect(provider.count()).toBe(1);
+    await continueAgentRun(run.id);
+    ({ run } = lastRun());
+    expect(run.tokenBudget).toBe(251_000);
+    expect(provider.count()).toBe(2);
+    expect(run.status).toBe('finished');
+  });
+
+  it('stays stopped when Stop lands during the automatic check, and answers each call once', async () => {
+    // Stop answered the step's calls. The check then came back, answered them a second time —
+    // so every later request carried two results for one call — and, the reply having also
+    // called finish, turned the run the person had stopped into a finished one.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let checks = 0;
+    setAgentEnvironment({
+      ...nodeEnvironment,
+      checkApp: async (files, options) => {
+        checks++;
+        await held;
+        return nodeEnvironment.checkApp(files, options);
+      },
+    });
+    const provider = fakeProvider('anthropic', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/late.ui', content: '<App/>' } }, { name: 'finish', input: { summary: 'Done.' } }] },
+      { calls: [{ name: 'finish', input: { summary: 'Resumed and done.' } }] },
+    ]);
+    say('Go');
+    const running = startAgentRun();
+    await vi.waitFor(() => expect(checks).toBe(1));
+    stopAgentRun();
+    release();
+    await running;
+    expect(lastRun().run.status).toBe('stopped');
+    // The check's row is not left spinning.
+    expect(toolEntries().find((e) => e.auto)?.status).not.toBe('running');
+    await continueAgentRun(lastRun().run.id);
+    const blocks = (provider.bodies[1].messages as Array<{ content: unknown }>).flatMap((m) => (Array.isArray(m.content) ? (m.content as Array<{ type: string; tool_use_id?: string }>) : []));
+    const answered = blocks.filter((b) => b.type === 'tool_result').map((b) => b.tool_use_id);
+    expect(answered).toHaveLength(2);
+    expect(new Set(answered).size).toBe(2);
+    expect(lastRun().run.summary).toBe('Resumed and done.');
+  });
+
   it('refuses a request the session budget cannot cover', async () => {
     useAIStore.setState({ tokenBudget: 5_000, tokensUsed: 0 });
     const provider = fakeProvider('anthropic', []);
@@ -576,6 +765,38 @@ describe('undo and revert', () => {
     expect(useVFSStore.getState().files.has('ui/one.ui')).toBe(false);
     expect(text('logic/main.logic')).toBe(APP.logic);
     expect(lastRun().run.reverted).toBe(true);
+  });
+
+  it('after Revert run and Continue, tells the model its files were put back, and what it does next can be undone', async () => {
+    // The run stayed marked as reverted: the steps it made after Continue had no Undo and no
+    // Revert run, and the model was told only to carry on, as though its files were still there.
+    useAIStore.getState().updateAgentSettings({ maxSteps: 5 });
+    const list = { name: 'list_files', input: {} };
+    fakeProvider('anthropic', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/one.ui', content: '<App><Text>1</Text></App>' } }, list, list, list, list] },
+      (body) => {
+        expect(resultsIn(body)).toContain('The person reverted this run');
+        return { calls: [{ name: 'write_file', input: { path: 'ui/two.ui', content: '<App><Text>2</Text></App>' } }] };
+      },
+      { calls: [{ name: 'finish', input: { summary: 'Wrote it again.' } }] },
+    ]);
+    say('Go');
+    await startAgentRun();
+    let { run, message } = lastRun();
+    expect(run.reason).toMatch(/limit of 5 steps/);
+    expect(revertAgentRun(message.id).ok).toBe(true);
+    expect(useVFSStore.getState().files.has('ui/one.ui')).toBe(false);
+    await continueAgentRun(run.id);
+    ({ run, message } = lastRun());
+    expect(run.status).toBe('finished');
+    // The step taken since is the run's to undo and to revert; the reverted ones stay undone.
+    expect(run.reverted).toBeFalsy();
+    const second = toolEntries().find((e) => e.subject === 'ui/two.ui')!;
+    expect(stepUndoState(second)).toEqual({ kind: 'available' });
+    expect(stepUndoState(toolEntries().find((e) => e.subject === 'ui/one.ui')!)).toEqual({ kind: 'undone' });
+    expect(runRevertState(run).available).toBe(true);
+    expect(revertAgentRun(message.id)).toEqual({ ok: true, paths: ['ui/two.ui'] });
+    expect(useVFSStore.getState().files.has('ui/two.ui')).toBe(false);
   });
 });
 

@@ -412,7 +412,10 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
     if (!record) return NOTHING_TO_SAVE;
     if (isSavedAt(record.projectId, rev)) return NOTHING_TO_SAVE;
     setSaveStatus({ state: 'saving', revision: rev });
-    const result = await save(record);
+    // The revision of this project this tab last read or wrote: the save is refused when
+    // storage holds a later one, which is another tab's work (see saveProjectRecord).
+    const lastSeen = lastSaved !== null && lastSaved.projectId === record.projectId ? lastSaved.revision : undefined;
+    const result = await save(record, lastSeen);
     if (stopped) return result;
     if (result.ok) {
       lastSaved = { projectId: record.projectId, revision: rev };

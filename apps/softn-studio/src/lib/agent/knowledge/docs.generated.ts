@@ -181,7 +181,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "handlers",
     "title": "Event handlers from your functions",
-    "text": "In the properties panel, an event field such as a Button’s click suggests the functions the linked logic file defines, shown as `name(params)`. Choosing a Python function with no parameters inserts `() => name()`, because a handler bound by name is passed the event.\n\nA handler can be any expression. A name the file does not define is kept, with a warning such as “No function named save in logic/main.py.”"
+    "text": "In the properties panel, an event field such as a Button’s click suggests the functions the linked logic file defines, shown as `name(params)`. Choosing a Python function with no parameters inserts `() => name()`, because a handler bound by name is passed the event.\n\nA handler can be any expression. A name the file does not define is kept, with a warning such as “No function named save in logic/main.py.”\n\nA property field writes what it shows. In a text field, braces make an expression, `{user.name}`, and anything else is text. A field for an expression, such as a Modal’s `open` or a table’s `data`, takes the expression itself and writes it once it reads as a whole one. A checkbox, a number or a choice that a file binds to an expression is shown as that expression; empty it to get the usual control back. Emptying a field removes the property, so the component’s own default applies."
    },
    {
     "id": "files",
@@ -196,7 +196,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "visual-and-code",
     "title": "Design and Code work together",
-    "text": "Not every source construct is safe for a canvas to rewrite. Code view marks each file Visual + source or Source-only; a Source-only file is edited as text, which protects its source rather than simplifying it until the canvas accepts it.\n\nUse Design where it offers a clear control, and Code for complex behaviour and structures that do not round-trip through the canvas. After either, run the same user flow again."
+    "text": "Design writes a page’s template from the canvas and leaves the rest of the file exactly as it stands: the comment at its head, its `<logic>`, `<import>`, `<data>` and `<style>` blocks, and their order. Inside the template, a comment is kept with the element it stands before and shown above it on the canvas, and words with elements among them, such as a sentence with a key or a link in it, are shown as the words and elements they are.\n\nA few constructs have no element to stay with: a comment directly before a closing tag, `#else` or `#empty`, or a comment inside braces. Code view marks each file Visual + source or Source-only; a Source-only file is edited as text, with the reason shown, which protects its source rather than simplifying it until the canvas accepts it.\n\nUse Design where it offers a clear control, and Code for complex behaviour and structures that do not round-trip through the canvas. After either, run the same user flow again."
    },
    {
     "id": "preview",
@@ -354,7 +354,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "properties",
     "title": "Strings and expressions",
-    "text": "```softn\n<Button variant=\"primary\" size=\"md\">Save</Button>\n<Text>{message}</Text>\n<Text color={isDark ? \"white\" : \"black\"}>{message}</Text>\n```\n(Literal properties and brace-delimited expressions.)\n\nQuoted values are literal strings. Braces hold expressions whose values come from the app’s state. Keep expressions simple and move complicated decisions into named logic functions."
+    "text": "```softn\n<Button variant=\"primary\" size=\"md\">Save</Button>\n<Text>{message}</Text>\n<Text color={isDark ? \"white\" : \"black\"}>{message}</Text>\n```\n(Literal properties and brace-delimited expressions.)\n\nQuoted values are literal strings. Braces hold expressions whose values come from the app’s state. Keep expressions simple and move complicated decisions into named logic functions.\n\n```softn\n<Text>Press <Kbd keys=\"Ctrl+S\" /> to save, or <a href=\"/help\">read how</a>.</Text>\n<Text><b>Total:</b> {total} <i>items</i></Text>\n<Input placeholder=\"e.g. &quot;Milk&quot; &amp; eggs\" />\n```\n(Words and tags on one line keep the spaces between them; a quote inside a quoted value is written &quot;.)\n\nText is read the way HTML reads it. Within a line of words, a space between a word, a tag and an expression is a space on the page, and a run of spaces is one; the line breaks and indentation between tags written one to a line are layout and draw nothing. Entities such as `&amp;`, `&lt;`, `&quot;` and `&nbsp;` are read in text and in a quoted value alike, so `&quot;` writes the double quote a value is closed by. Inside braces the text is JavaScript, where a quote in a string is written `\\\"`."
    },
    {
     "id": "expressions",

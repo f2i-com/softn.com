@@ -317,7 +317,7 @@ export function sortModels(models: ModelInfo[]): ModelInfo[] {
  * text into vectors, speech or pictures, or check content. The list is of
  * capabilities, not of models, so a new chat model is never hidden by it.
  */
-const NON_CHAT_WORDS = ['embed', 'tts', 'whisper', 'transcribe', 'speech', 'audio', 'realtime', 'dall-e', 'image', 'video', 'moderation', 'rerank'];
+const NON_CHAT_WORDS = ['embed', 'tts', 'transcribe', 'speech', 'audio', 'realtime', 'image', 'video', 'moderation', 'rerank'];
 
 /** Whether an id looks like a model that can hold a conversation. */
 export function isLikelyChatModel(id: string): boolean {

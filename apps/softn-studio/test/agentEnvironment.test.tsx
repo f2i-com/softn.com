@@ -12,7 +12,7 @@ import { resolve } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registerAllBuiltins } from '@softn/components';
 import { configureZippWasmSource } from '@softn/core';
-import { browserEnvironment, formatCheckReport } from '../src/lib/agent/appCheck';
+import { browserEnvironment, formatCheckReport, lintTemplates } from '../src/lib/agent/appCheck';
 import type { VFSFile } from '../src/types/studio';
 import { APP } from './helpers/agentHarness';
 
@@ -53,6 +53,27 @@ describe('check_app', () => {
     expect(report.errors.join('\n')).toMatch(/ui\/main\.ui line 8: @click has a block-bodied arrow/);
     expect(report.warnings.join('\n')).toMatch(/ui\/main\.ui line 7: <Input :value=\{…\}> is one-way/);
   }, 20_000);
+
+  it('catches the handler that never runs on an event with modifiers and on an on… prop too', () => {
+    // The lint read an event's name up to its first dot and looked at events only, so
+    // "@submit.prevent={() => { save() }}" and onClick={() => { … }} passed: the parser reads
+    // each as an object that is then called, and nothing else in the check objects.
+    const { errors } = lintTemplates(vfs({
+      'ui/a.ui': [
+        '<App>',
+        '  <form @submit.prevent={() => { save() }}>x</form>',
+        '  <Input @keydown.ctrl.enter={(e) => { add() }} />',
+        '  <Button onClick={() => { add() }}>y</Button>',
+        '  <Button @click.stop={() => add()} onClick={() => ({ a: 1 })} icon={{ name: "x" }}>fine</Button>',
+        '</App>',
+      ].join('\n'),
+    }));
+    expect(errors).toEqual([
+      expect.stringMatching(/^ui\/a\.ui line 2: @submit\.prevent has a block-bodied arrow .* e\.g\. @submit\.prevent=\{\(\) => doIt\(\)\}/),
+      expect.stringMatching(/^ui\/a\.ui line 3: @keydown\.ctrl\.enter has a block-bodied arrow/),
+      expect.stringMatching(/^ui\/a\.ui line 4: onClick has a block-bodied arrow .* e\.g\. onClick=\{\(\) => doIt\(\)\}/),
+    ]);
+  });
 
   it('reports a parse error in an imported page against that page and its own line, not the composed main page', async () => {
     // From a real run: home.ui's `new Date()` was reported as "ui/main.ui ... line 17", a line of

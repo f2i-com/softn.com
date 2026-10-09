@@ -10,7 +10,7 @@ import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import * as core from '@softn/core';
 import { browserEnvironment, formatCheckReport, templateNameErrors } from '../src/lib/agent/appCheck';
-import { editDistance, nearestName, TEMPLATE_GLOBALS } from '../src/lib/agent/templateNames';
+import { editDistance, nearestName, ON_PROPS_THAT_ARE_VALUES, TEMPLATE_GLOBALS } from '../src/lib/agent/templateNames';
 import type { VFSFile } from '../src/types/studio';
 import { APP } from './helpers/agentHarness';
 
@@ -140,6 +140,43 @@ describe('undefined names in the markup', () => {
     expect(errors).toEqual([expect.stringMatching(/^ui\/header\.ui line 7: userName is read here but nothing defines it/)]);
   });
 
+  it('takes a name an imported file reads from the loop its tag stands in, and still reports one that no use of it binds', async () => {
+    // The composer pastes an imported file where its tag stands, so inside "#each (task in items)"
+    // the file reads the loop's variable. Checked on its own it was told "task is read here but
+    // nothing defines it … so it renders empty", of a row that renders.
+    const files = page(
+      '  #each (task, i in items)\n    <Row />\n  #end\n  #each ({ title, done } in items)\n    <Line />\n  #end\n  <Loose />',
+      {
+        'ui/row.ui': '<import Cell from="./cell.ui" />\n<Card>\n  <Text>{i + 1}. {task.title} {nowhere}</Text>\n  <Checkbox :bind={task.done} />\n  <Cell />\n</Card>',
+        // An import of an import stands inside the same loop.
+        'ui/cell.ui': '<Badge>{task.done ? "done" : "open"}</Badge>',
+        'ui/line.ui': '<Text>{title} {done ? "x" : ""}</Text>',
+        'ui/loose.ui': '<Text>{task.title}</Text>',
+      },
+    );
+    files.set('ui/main.ui', {
+      ...files.get('ui/main.ui')!,
+      content: `<import Row from="./row.ui" />\n<import Line from="./line.ui" />\n<import Loose from="./loose.ui" />\n${String(files.get('ui/main.ui')!.content)}`,
+    });
+    const { errors } = await templateNameErrors(files, 'ui/main.ui');
+    expect(errors).toHaveLength(2);
+    expect(errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^ui\/row\.ui line 3: nowhere is read here but nothing defines it/),
+      // Used outside any loop, the same read is still nothing.
+      expect.stringMatching(/^ui\/loose\.ui line 1: task is read here but nothing defines it/),
+    ]));
+  });
+
+  it('reads a prop named on… as a callback only where the component takes a function', async () => {
+    // Switch's onColor is a colour. Given state it was "onColor calls accent, but accent is
+    // state, not a function — so it does nothing when it fires".
+    const { errors } = await templateNameErrors(
+      page('  <Switch :bind={dark} onColor={accent} />\n  <Button onClick={query}>Go</Button>', {}, `${LOGIC}\nlet dark = false\nlet accent = "#22c55e"`),
+      'ui/main.ui',
+    );
+    expect(errors).toEqual([expect.stringMatching(/^ui\/main\.ui line 5: onClick calls query, but query is state, not a function/)]);
+  });
+
   it('keeps line numbers true past template comments', async () => {
     const { errors } = await templateNameErrors(page('  // a comment\n\n\n  // another\n  <Text>{missing}</Text>'), 'ui/main.ui');
     expect(errors).toEqual([expect.stringMatching(/^ui\/main\.ui line 8: missing is read here/)]);
@@ -218,6 +255,18 @@ describe('the lists the check trusts', () => {
     const source = readFileSync(resolve(process.cwd(), '../../packages/@softn/core/src/renderer/render.tsx'), 'utf8');
     const block = /const JS_GLOBALS[^{]*\{([\s\S]*?)\};/.exec(source)?.[1] ?? '';
     expect(block.split(',').map((s) => s.split(':')[0].trim()).filter(Boolean).sort()).toEqual([...TEMPLATE_GLOBALS].sort());
+  });
+
+  it('names exactly the on… props the component manifest types as something other than a function', () => {
+    const manifest = JSON.parse(readFileSync(resolve(process.cwd(), '../../packages/@softn/components/component-manifest.json'), 'utf8')) as {
+      components: Array<{ name: string; props?: { members: Array<{ name: string; type: { kind: string } }> } }>;
+    };
+    const expected: Record<string, string[]> = {};
+    for (const component of manifest.components) {
+      const values = (component.props?.members ?? []).filter((m) => /^on[A-Z]/.test(m.name) && m.type.kind !== 'function').map((m) => m.name);
+      if (values.length > 0) expected[component.name] = values;
+    }
+    expect(ON_PROPS_THAT_ARE_VALUES).toEqual(expected);
   });
 
   it('suggests a close name, and nothing for a far one', () => {

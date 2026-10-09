@@ -33,6 +33,8 @@ export interface Step {
   networkError?: boolean;
   /** Answer a streamed request with one JSON body, as a server that ignores `stream` does. */
   noStream?: boolean;
+  /** Send the tool calls without an id, as some OpenAI-compatible servers do. */
+  noCallIds?: boolean;
 }
 
 export type Script = Array<Step | ((body: Record<string, unknown>) => Step)>;
@@ -80,7 +82,7 @@ function respond(shape: Shape, step: Step): Record<string, unknown> {
     };
   }
   if (shape === 'openai') {
-    const toolCalls = (step.calls ?? []).map((call) => ({ id: `call_${++callCounter}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input) } }));
+    const toolCalls = (step.calls ?? []).map((call) => ({ ...(step.noCallIds ? {} : { id: `call_${++callCounter}` }), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input) } }));
     return {
       choices: [
         {
@@ -194,7 +196,7 @@ export function sseEvents(wire: 'anthropic' | 'openai', json: Record<string, unk
     return lines.join('');
   }
   const choice = ((json.choices ?? []) as Array<Record<string, unknown>>)[0] ?? {};
-  const message = (choice.message ?? {}) as { content?: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> };
+  const message = (choice.message ?? {}) as { content?: string | null; tool_calls?: Array<{ id?: string; function: { name: string; arguments: string } }> };
   const chunk = (delta: Record<string, unknown>, finish: string | null = null) => send({ id: 'chunk', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: finish }] });
   chunk({ role: 'assistant', content: '' });
   for (const part of pieces(message.content ?? '', 3)) chunk({ content: part });

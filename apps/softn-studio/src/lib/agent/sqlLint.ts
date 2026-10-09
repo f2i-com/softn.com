@@ -27,6 +27,13 @@ const KEYWORDS = new Set(['values', 'check', 'in', 'exists', 'key', 'unique', 'p
   'to', 'if', 'index', 'conflict', 'do', 'nothing', 'generated', 'always', 'stored', 'virtual', 'with', 'recursive', 'escape', 'like', 'glob']);
 /** `VARCHAR(100)`, `DECIMAL(10, 2)`: a column type's size, not a call. */
 const TYPE_SIZE = /^\(\s*[+-]?\d+(?:\s*,\s*[+-]?\d+)?\s*\)/;
+/**
+ * Type names written with a size. None is a function a host could be asked to
+ * run (`char` is one, and is allowed), so one of these before a size is a type
+ * whatever word stands before it.
+ */
+const SIZED_TYPES = new Set(['varchar', 'nvarchar', 'char', 'nchar', 'character', 'varying', 'decimal', 'numeric', 'number', 'int', 'integer', 'tinyint', 'smallint',
+  'mediumint', 'bigint', 'float', 'double', 'real', 'bit', 'binary', 'varbinary', 'timestamp']);
 /** Statements a host never runs in a migration, as the first word of a statement. */
 const DENIED_STATEMENTS = /^(PRAGMA|ATTACH|DETACH|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|VACUUM|ANALYZE)\b/i;
 
@@ -77,6 +84,9 @@ function forbiddenCalls(sql: string, allowed: Set<string>): string[] {
     const before = /([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(code.slice(0, match.index))?.[1]?.toLowerCase();
     // A type's size comes after the column's name (`name VARCHAR(100)`) or CAST's AS; `randomblob(8)` after another keyword or `(` is a call.
     if (before && (!KEYWORDS.has(before) || before === 'as') && TYPE_SIZE.test(code.slice(match.index + match[0].length - 1))) continue;
+    // A column may be called by an SQL word (`key VARCHAR(40)`, `offset INT(11)`): the word before
+    // the type is then a keyword, and the size was read as the arguments of a call to varchar().
+    if (SIZED_TYPES.has(name) && TYPE_SIZE.test(code.slice(match.index + match[0].length - 1))) continue;
     if (before && NOT_A_CALL_BEFORE.has(before)) continue;
     // `CREATE INDEX name ON items(col)` and `INSERT INTO items (a) VALUES`: a table after its keyword two words back.
     const twoBack = /([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*$/.exec(code.slice(0, match.index))?.[1]?.toLowerCase();

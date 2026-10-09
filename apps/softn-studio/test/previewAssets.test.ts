@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createPreviewAssetResolver } from '../src/lib/previewAssets';
+import { createPreviewAssetResolver, rewriteAssetReferences } from '../src/lib/previewAssets';
 import type { VFSFile } from '../src/types/studio';
 
 const file = (path: string, content: string | Uint8Array): VFSFile => ({
@@ -39,5 +39,42 @@ describe('Studio bundle asset previews', () => {
       expect(resolve(path)).toBe('');
     }
     expect(resolve('data:image/png;base64,AQID')).toBe('data:image/png;base64,AQID');
+  });
+});
+
+describe('asset paths written in the previewed source', () => {
+  const svg = "<svg xmlns='http://www.w3.org/2000/svg'><title>Ada's logo</title></svg>";
+  const files = new Map([
+    ['assets/logo.svg', file('assets/logo.svg', svg)],
+    ['assets/avatars/ada.png', file('assets/avatars/ada.png', new Uint8Array([137, 80, 78, 71]))],
+  ]);
+  const resolve = createPreviewAssetResolver(files, 'ui/main.ui');
+
+  it('are rewritten only where the quoted path is a file of the project', () => {
+    // Every quoted string that began "assets/" was replaced, and one that named no file by "":
+    // asset("assets/avatars/" + id + ".png") lost its folder, in the preview and nowhere else.
+    const source = [
+      '<Image src={asset("assets/avatars/" + person.id + ".png")} />',
+      '<Image src="assets/avatars/ada.png" />',
+      '<logic>',
+      'const SPRITES = "assets/sprites/"',
+      'let missing = "./assets/gone.png"',
+      '</logic>',
+    ].join('\n');
+    const out = rewriteAssetReferences(source, resolve);
+    expect(out).toContain('asset("assets/avatars/" + person.id + ".png")');
+    expect(out).toContain('const SPRITES = "assets/sprites/"');
+    expect(out).toContain('let missing = "./assets/gone.png"');
+    expect(out).toContain(`<Image src="${resolve('assets/avatars/ada.png')}" />`);
+  });
+
+  it('are replaced by a URL that stays inside the quotes it is written in', () => {
+    // A text file goes in as a data: URL, with its apostrophes as they were: inside
+    // asset('assets/logo.svg') the first one ended the string and the page stopped parsing.
+    const out = rewriteAssetReferences("<Image src={asset('assets/logo.svg')} alt=\"Logo\" />", resolve);
+    const written = /asset\('([^']*)'\)/.exec(out)?.[1] ?? '';
+    expect(written).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
+    expect(decodeURIComponent(written.slice(written.indexOf(',') + 1))).toBe(svg);
+    expect(out.endsWith(' alt="Logo" />')).toBe(true);
   });
 });

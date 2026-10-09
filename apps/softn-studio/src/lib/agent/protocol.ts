@@ -219,12 +219,13 @@ export function encodeHosted(turns: AgentTurn[]): HostedAIMessage[] {
 
 export function decodeHosted(reply: HostedAIReply): AgentReply {
   const calls: AgentToolCall[] = reply.toolCalls.map((call) => {
-    if (typeof call.arguments !== 'string') return { id: call.id, name: call.name, input: call.arguments };
+    const id = call.id || unnamedCallId();
+    if (typeof call.arguments !== 'string') return { id, name: call.name, input: call.arguments };
     try {
       const parsed: unknown = call.arguments.trim() ? JSON.parse(call.arguments) : {};
-      return { id: call.id, name: call.name, input: isRecord(parsed) ? parsed : {} };
+      return { id, name: call.name, input: isRecord(parsed) ? parsed : {} };
     } catch (err) {
-      return { id: call.id, name: call.name, input: {}, parseError: `The arguments were not valid JSON (${err instanceof Error ? err.message : String(err)}). Send the call again with a JSON object.` };
+      return { id, name: call.name, input: {}, parseError: `The arguments were not valid JSON (${err instanceof Error ? err.message : String(err)}). Send the call again with a JSON object.` };
     }
   });
   const stop = reply.stopReason;
@@ -410,6 +411,19 @@ export function encodeOpenAI(turns: AgentTurn[]): unknown[] {
   return out;
 }
 
+let unnamedCallCounter = 0;
+
+/**
+ * An id for a tool call the server sent without one. Counted for the life of
+ * the page, so no two calls of a run share one: the id is what a result is
+ * paired with and what the timeline keeps a step's row by. It used to be the
+ * call's place in its reply — "call_0" for the first call of every reply — and
+ * each finished step then wrote over the rows of all the steps before it.
+ */
+function unnamedCallId(): string {
+  return `call_s${++unnamedCallCounter}`;
+}
+
 export function decodeOpenAI(data: Record<string, unknown>): AgentReply {
   const choice = Array.isArray(data.choices) && isRecord(data.choices[0]) ? data.choices[0] : {};
   const message = isRecord(choice.message) ? choice.message : {};
@@ -420,11 +434,11 @@ export function decodeOpenAI(data: Record<string, unknown>): AgentReply {
       : '';
   const calls: AgentToolCall[] = [];
   if (Array.isArray(message.tool_calls)) {
-    for (const [index, raw] of message.tool_calls.entries()) {
+    for (const raw of message.tool_calls) {
       if (!isRecord(raw)) continue;
       const fn = isRecord(raw.function) ? raw.function : {};
       const name = typeof fn.name === 'string' ? fn.name : '';
-      const id = typeof raw.id === 'string' && raw.id ? raw.id : `call_${index}`;
+      const id = typeof raw.id === 'string' && raw.id ? raw.id : unnamedCallId();
       const args = fn.arguments;
       if (isRecord(args)) {
         calls.push({ id, name, input: args });

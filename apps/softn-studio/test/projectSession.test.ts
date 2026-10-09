@@ -27,7 +27,7 @@ import {
   restoreSession,
   startProjectAutosave,
 } from '../src/lib/projectSession';
-import { loadActiveProjectId, loadGlobalSettings, loadProjectRecord, loadRecentProjects, saveGlobalSettings, type ProjectRecord, type SaveResult } from '../src/lib/persistence';
+import { loadActiveProjectId, loadGlobalSettings, loadProjectRecord, loadRecentProjects, saveGlobalSettings, saveProjectRecord, type ProjectRecord, type SaveResult } from '../src/lib/persistence';
 import { buildBundle } from '../src/lib/exportBundle';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../src/stores';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../src/lib/aiProvider';
@@ -146,6 +146,34 @@ describe('autosave', () => {
     expect(save).toHaveBeenCalledTimes(2);
     expect(save.mock.calls[1][0].revision).toBeGreaterThan(writtenRevision);
     expect(save.mock.calls[1][0].files[0].content).toBe('<Text>Two</Text>');
+    autosave.stop();
+  });
+
+  it('does not save over what another tab saved since this one opened the project, and says to reload', async () => {
+    // Nothing compared a save with what was stored. A second tab holding an older copy wrote
+    // the whole of it back — old files, old chat — the moment anything in it changed, and
+    // switching a panel is a change.
+    const id = beginNewProjectSession();
+    useWorkspaceStore.getState().setProjectName('Notes');
+    useVFSStore.getState().createFile('ui/main.ui', '<Text>One</Text>');
+    const autosave = startProjectAutosave({ debounceMs: 10 });
+    expect(await autosave.flush()).toEqual({ ok: true });
+
+    // Another tab, which opened the same record, changes the file and saves.
+    const stored = (await loadProjectRecord(id))!;
+    await saveProjectRecord({ ...stored, revision: stored.revision + 5, files: stored.files.map((f) => ({ ...f, content: '<Text>From the other tab</Text>' })) });
+
+    useWorkspaceStore.getState().setLeftPanel('files');
+    expect(await autosave.flush()).toMatchObject({ ok: false, reason: 'conflict' });
+    const status = getSaveStatus();
+    expect(status).toMatchObject({ state: 'failed', reason: 'conflict' });
+    expect(status.state === 'failed' ? status.message : '').toMatch(/changed in another tab.*Reload/);
+    expect((await loadProjectRecord(id))?.files[0].content).toBe('<Text>From the other tab</Text>');
+
+    // It stays refused: a later change here does not get through either.
+    useVFSStore.getState().updateFile('ui/main.ui', '<Text>Two</Text>');
+    expect((await autosave.flush()).ok).toBe(false);
+    expect((await loadProjectRecord(id))?.files[0].content).toBe('<Text>From the other tab</Text>');
     autosave.stop();
   });
 
