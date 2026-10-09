@@ -47,6 +47,7 @@ section here. Write the section before tagging. Headings are the tag
 - Rust backend host, sync: a push is acknowledged and broadcast as soon as its ops are stored, before `onAfterSync` runs. The answer used to wait for the after-hooks, and a push whose hooks took long was told "timed out" and sent again while the first attempt committed. The per-op `onBeforeSync` stops taking ops of one push after five seconds and the client re-sends the rest.
 - Rust backend host: `db.query(collection, filter)` applies the filter in the store's query, so the 10,000-record limit counts what matches. Filtered by the script after the read, a match past the oldest 10,000 records of a collection was never found.
 - Rust backend host, sync: a push saves each collection's CRDT document once. The document is as large as the collection and was written again for every op of a push, under the store's one writer lock, so a large push held every other write on the host and could outlast its own connection. This needs the xdb revision the build now pins (`with_batch`, xdb.org `c993b5e`): xdb.org has to be pushed before this builds in CI.
+- `PixelGrid` fits the width it is given. A board of `cols * cellSize` pixels in a narrower column was cut off by what held it (Blockfall showed about seven of its ten columns on a phone); it is now drawn whole at that width, every cell and the overlay's lettering smaller by the same amount, and at its own size wherever there is room.
 
 ## v0.0.18
 

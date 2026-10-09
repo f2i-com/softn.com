@@ -6412,7 +6412,7 @@
             "type": {
               "kind": "number"
             },
-            "doc": "Pixel size per cell (default 20)"
+            "doc": "Pixel size per cell (default 20), at most: the board fits the width it is given"
           },
           {
             "name": "items",
