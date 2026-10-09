@@ -192,10 +192,18 @@ Supported script bindings:
 `softn.config` is the manifest's `config.app` object, key for key, with the two
 flags the operator owns set over it: an app key named `development` or `photos`
 is replaced, so a bundle cannot turn development mode on for itself. The PHP
-host gives a script the same settings. The object is frozen all the way down,
+host gives a script the same settings under the same two flags (there
+`photos` also needs PHP's GD). The object is frozen all the way down,
 because it outlives the request: a handler cannot change a setting for the
 ones that follow. `config` is part of the manifest every client is served, so
 nothing in it is a secret; keys and tokens belong in `backend.json`.
+
+`db.query(collection, filter)`, on the document store (which the PHP host
+does not have), keeps the records whose data has every field of `filter`.
+The host reads at most 10,000 records of a collection for a query, oldest
+first, and the filter is applied to those: on a larger collection a filtered
+query can miss records, as an unfiltered one already stops at 10,000. Keep
+what must be found by a field in `softn.sql`.
 
 `softn.time.age(date, timezone)` accepts a `YYYY-MM-DD` date and an optional IANA
 zone (default `UTC`); specify the application's calendar zone explicitly.

@@ -18,6 +18,9 @@ var db = {
   // one of its fields with that value: what db.query(collection, filter) is
   // in a page's logic. The second argument used to be dropped, so
   // db.query("notes", {owner: id}) answered with everybody's notes.
+  // The host reads at most 10,000 records of a collection (pool.rs,
+  // MAX_COLLECTION_ROWS), oldest first, and this filters those: past that
+  // size a match can be missed, as an unfiltered query already stops there.
   query: function (c, filter) {
     var rows = JSON.parse(__zippHostCall("db.query", String(c)));
     if (filter === undefined || filter === null || typeof filter !== "object") return rows;
