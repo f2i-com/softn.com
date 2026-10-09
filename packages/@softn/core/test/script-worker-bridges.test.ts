@@ -20,6 +20,27 @@ describe('SnapshotDBBridge', () => {
     expect(missing).toEqual([]);
   });
 
+  it('filters a query by field values, as the main thread does', () => {
+    const bridge = new SnapshotDBBridge();
+    const task = (id: string, data: Record<string, unknown>) => ({ ...rec(id, 'tasks', '2026-01-01'), data });
+    bridge.updateSnapshot({
+      tasks: [
+        task('a', { owner: 'ann', done: true }),
+        task('b', { owner: 'bob', done: true }),
+        task('c', { owner: 'ann', done: false }),
+        task('d', { owner: 'ann' }),
+      ],
+    });
+    const ids = (filter?: Record<string, unknown>) => bridge.query('tasks', filter).map((r) => r.id);
+    expect(ids({ owner: 'ann' })).toEqual(['a', 'c', 'd']);
+    expect(ids({ owner: 'ann', done: true })).toEqual(['a']);
+    // A field a record does not have matches nothing, undefined included.
+    expect(ids({ done: undefined })).toEqual([]);
+    expect(ids({ owner: 'nobody' })).toEqual([]);
+    expect(ids({})).toEqual(['a', 'b', 'c', 'd']);
+    expect(ids()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('prunes the oldest records from its snapshot and queues one mutation for the main thread', () => {
     const bridge = new SnapshotDBBridge();
     bridge.updateSnapshot({

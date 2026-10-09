@@ -139,8 +139,18 @@ export class SnapshotDBBridge {
 
   // --- DBNamespace-compatible interface ---
 
-  query(collection: string): WorkerXDBRecord[] {
-    return this.collections.get(collection) || [];
+  /**
+   * The records of a collection, optionally those whose data matches every
+   * field of `filter`: the rule the main thread's namespace applies
+   * (XDBService.query). The parameter was missing here, so a bundle that
+   * runs its logic in the worker got every record back from
+   * `db.query("notes", { owner: me })`.
+   */
+  query(collection: string, filter?: Record<string, unknown> | null): WorkerXDBRecord[] {
+    const records = this.collections.get(collection) || [];
+    if (!filter) return records;
+    const wanted = Object.entries(filter);
+    return records.filter((record) => wanted.every(([key, value]) => key in record.data && record.data[key] === value));
   }
 
   create(collection: string, data: Record<string, unknown>): WorkerXDBRecord {
