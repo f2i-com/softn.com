@@ -272,9 +272,11 @@ function generateElement(
     const children = childrenOf(element, elements);
     if (children.some((child) => isTextNode(child) || child.spaceBefore)) {
       // Words among the children: the tags go on the line with them, so no
-      // line break is read as a space the author did not write.
+      // line break is read as a space the author did not write. The line
+      // comes back indented as a child; only that is taken off, since a
+      // space the words begin with is one the page draws.
       const [line] = generateChildren(children, elements, depth + 1, options);
-      lines.push(`${indent}${open}${line.trimStart()}${close}`);
+      lines.push(`${indent}${open}${line.slice(options.indent!.length * (depth + 1))}${close}`);
       return lines;
     }
 

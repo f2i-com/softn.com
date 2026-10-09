@@ -11,7 +11,12 @@ import type { EntityDef, SchemaField } from '../../types/builder';
 const styles: Record<string, React.CSSProperties> = {
   node: {
     background: 'var(--ink-2)',
-    border: '1px solid var(--line-strong)',
+    // Longhands: the picked card changes the colour, and set as the `border`
+    // shorthand React cleared that colour when the card was no longer
+    // picked, leaving its border the colour of its text.
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--line-strong)',
     borderRadius: 10,
     minWidth: 200,
     maxWidth: 320,
@@ -101,6 +106,11 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 /** What each field type is called on its card; the store's names, in words. */
+/** A collection's card, picked or not. */
+export function entityNodeStyle(selected: boolean): React.CSSProperties {
+  return { ...styles.node, ...(selected ? styles.nodeSelected : {}) };
+}
+
 const fieldTypeLabels: Record<string, string> = {
   string: 'text',
   number: 'number',
@@ -131,7 +141,7 @@ function EntityNodeComponent({ data, selected }: EntityNodeProps) {
   useEffect(() => { updateNodeInternals(entity.id); }, [entity.id, handleLayout, updateNodeInternals]);
 
   return (
-    <div style={{ ...styles.node, ...(selected ? styles.nodeSelected : {}) }}>
+    <div style={entityNodeStyle(selected === true)}>
       <div style={styles.header}>
         <span style={{ minWidth: 0, flex: 1, overflowWrap: 'anywhere' }}>{entity.name}</span>
         <span style={styles.alias}>({entity.alias})</span>

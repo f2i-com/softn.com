@@ -32,6 +32,21 @@ function draggedTypeOf(state: { draggedType: string | null; draggedElementId: st
   return state.draggedElementId ? state.elements.get(state.draggedElementId)?.componentType ?? null : null;
 }
 
+/** The place an element's wrapper draws for its own children, or null when it draws none. */
+function ownChildrenArea(wrapper: HTMLElement): HTMLElement | null {
+  return wrapper.querySelector<HTMLElement>(':scope > [data-canvas-treeitem] > [data-children-area]');
+}
+
+/** Where among the elements drawn in `area` the height `y` falls: before the first whose middle is below it. */
+function placeAmong(area: HTMLElement, y: number): number {
+  const drawn = [...area.children].filter((child) => child.querySelector(':scope > [data-canvas-treeitem]') !== null);
+  const at = drawn.findIndex((child) => {
+    const rect = child.getBoundingClientRect();
+    return y < rect.top + rect.height / 2;
+  });
+  return at === -1 ? drawn.length : at;
+}
+
 // Check if an element is a descendant of another
 function isDescendantOf(
   elements: Map<string, CanvasElementType>,
@@ -229,7 +244,7 @@ export const CanvasElement = React.memo(function CanvasElement({
 
     // Check for palette component
     if (state.draggedType) {
-      return canDropInto(target, state.draggedType);
+      return canDropInto(target, state.draggedType, { elements: state.elements });
     }
 
     // Check for canvas element
@@ -242,7 +257,7 @@ export const CanvasElement = React.memo(function CanvasElement({
 
       const draggedElement = state.elements.get(state.draggedElementId);
       if (draggedElement) {
-        return canDropInto(target, draggedElement.componentType);
+        return canDropInto(target, draggedElement.componentType, { elements: state.elements, draggedId: state.draggedElementId });
       }
     }
 
@@ -281,10 +296,19 @@ export const CanvasElement = React.memo(function CanvasElement({
       // cursor: a place that is shown is a place the drop is made.
       const dragged = draggedTypeOf(state);
       const self = state.elements.get(elementId);
-      const takesIt = allowsChildren && self !== undefined && canDropInto(self, dragged);
-      const beside = canDropInto(parentElement, dragged);
+      const context = { elements: state.elements, draggedId: state.draggedElementId };
+      const takesIt = allowsChildren && self !== undefined && canDropInto(self, dragged, context);
+      const beside = canDropInto(parentElement, dragged, context);
+      const area = takesIt ? ownChildrenArea(el) : null;
 
-      if (takesIt && (!beside || (relativeY >= 0.25 && relativeY <= 0.75))) {
+      if (area && e.target instanceof Node && area.contains(e.target)) {
+        // In this element's own place for children, with none of them under
+        // the pointer (one that was would have answered): the drop is into
+        // it, where the pointer is among what it holds. How far down the
+        // whole element that is says nothing: the place is its lower part,
+        // so the bottom of "Drop children here" used to be a drop beside it.
+        indicator = { parentId: elementId, index: Math.min(placeAmong(area, e.clientY), branchEnd(self!, state.elements)) };
+      } else if (takesIt && (!beside || (relativeY >= 0.25 && relativeY <= 0.75))) {
         // Into this container: the middle half of it, or all of it when the
         // element may not go beside it. At the end of its own branch.
         indicator = { parentId: elementId, index: branchEnd(self, state.elements) };

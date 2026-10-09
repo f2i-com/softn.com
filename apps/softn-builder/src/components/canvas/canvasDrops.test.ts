@@ -152,6 +152,93 @@ describe('the pointer over an element inside another', () => {
   });
 });
 
+describe('the pointer over a container’s own place for children', () => {
+  // Where the drop goes was read off how far down the whole element the
+  // pointer was: the lowest quarter meant "after it". The place a container
+  // draws for its children is the lower part of it, so the bottom of the box
+  // that says "Drop children here" was a drop beside the container, and
+  // below the last element inside a Stack was a drop after the Stack. With a
+  // header that wraps onto two lines, as a block's does in a narrow canvas,
+  // even the middle of the box was.
+
+  /** The element's own place for children, as the canvas draws it. */
+  function areaOf(id: string): HTMLElement {
+    const node = host.querySelector<HTMLElement>(`[data-canvas-element-id="${id}"]`)!;
+    return [...node.children].find((child) => child.hasAttribute('data-children-area')) as HTMLElement;
+  }
+
+  /** Give a canvas node a place of its own height. */
+  function sized(node: HTMLElement, top: number, height: number): HTMLElement {
+    node.getBoundingClientRect = () => ({ top, bottom: top + height, left: 0, right: 300, width: 300, height, x: 0, y: top, toJSON: () => ({}) });
+    return node;
+  }
+
+  function pointerOver(target: HTMLElement, y: number): void {
+    act(() => {
+      target.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 10, clientY: y }));
+    });
+  }
+
+  it('is a drop into an empty block, right down to the bottom of its box', () => {
+    open('<App><Text>Above</Text>#each (task in tasks)\n#end</App>');
+    mount();
+    const each = byType('#each');
+    placed(each.id, 100);
+    act(() => canvas().setDraggedType('Text'));
+    pointerOver(areaOf(each.id).firstElementChild as HTMLElement, 192);
+    expect(canvas().dropIndicator).toEqual({ parentId: each.id, index: 0 });
+  });
+
+  it('is a drop at the end of a Stack when it is below the last element in it', () => {
+    open('<App><Stack><Text>One</Text><Text>Two</Text></Stack><Text>After</Text></App>');
+    mount();
+    const stack = byType('Stack');
+    placed(stack.id, 0);
+    sized(placed(byText('One').id, 10), 10, 30);
+    sized(placed(byText('Two').id, 50), 50, 30);
+    act(() => canvas().setDraggedType('Badge'));
+    // The strip of the Stack's own area under "Two".
+    pointerOver(areaOf(stack.id), 97);
+    expect(canvas().dropIndicator).toEqual({ parentId: stack.id, index: 2 });
+
+    release(placed(stack.id, 0));
+    expect(inside('Stack')).toEqual(['One', 'Two', 'Badge']);
+  });
+
+  it('is a drop between two elements when it is in the gap between them', () => {
+    open('<App><Stack><Text>One</Text><Text>Two</Text></Stack></App>');
+    mount();
+    const stack = byType('Stack');
+    placed(stack.id, 0);
+    sized(placed(byText('One').id, 10), 10, 30);
+    sized(placed(byText('Two').id, 60), 60, 30);
+    act(() => canvas().setDraggedType('Badge'));
+    pointerOver(areaOf(stack.id), 50);
+    expect(canvas().dropIndicator).toEqual({ parentId: stack.id, index: 1 });
+  });
+
+  it('stays in the branch of a block that has another', () => {
+    open('<App>#each (task in tasks)\n<Text>{task}</Text>\n#empty\n<Text>None</Text>\n#end</App>');
+    mount();
+    const each = byType('#each');
+    placed(each.id, 0);
+    act(() => canvas().setDraggedType('Badge'));
+    pointerOver(areaOf(each.id), 98);
+    // Below everything in the block is still before its #empty.
+    expect(canvas().dropIndicator).toEqual({ parentId: each.id, index: 1 });
+  });
+
+  it('is still a drop beside a container that may not hold what is dragged', () => {
+    open('<App><ButtonGroup><Button>One</Button></ButtonGroup></App>');
+    mount();
+    const group = byType('ButtonGroup');
+    placed(group.id, 0);
+    act(() => canvas().setDraggedType('Text'));
+    pointerOver(areaOf(group.id), 97);
+    expect(canvas().dropIndicator).toEqual({ parentId: canvas().rootId, index: 1 });
+  });
+});
+
 describe('a drop into a block that has another branch', () => {
   it('goes into the branch of the block, before #empty', () => {
     open('<App>#each (task in tasks)\n<Text>{task}</Text>\n#empty\n<Text>None</Text>\n#end</App>');

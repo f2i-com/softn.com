@@ -3,7 +3,7 @@
  * Metadata for all 65+ built-in components
  */
 
-import type { ComponentMeta, ComponentCategory, PropSchema } from '../types/builder';
+import { PAGE_TYPE, type ComponentMeta, type ComponentCategory, type PropSchema } from '../types/builder';
 import { getNativeHtmlMeta } from './nativeHtmlMetadata';
 
 // Helper to create component metadata
@@ -585,7 +585,9 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'children', type: 'string', default: 'Hello World' },
       { name: 'className', type: 'string' },
     ],
-    true
+    // Its content is its words. One that holds elements among them (a key,
+    // a link) still shows them and takes more; a new one is not a container.
+    false
   ),
 
   comp(    'Heading',
@@ -605,7 +607,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'children', type: 'string', default: 'Heading' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
 
   comp(
@@ -625,7 +627,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'children', type: 'string', default: 'Badge' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
 
   comp(    'Tag',
@@ -645,7 +647,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'children', type: 'string', default: 'Tag' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
 
   comp(
@@ -796,7 +798,8 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'onClose', type: 'event' },
       { name: 'className', type: 'string' },
     ],
-    true
+    // What it says is its `message`: it draws nothing written inside it.
+    false
   ),
 
   comp(
@@ -845,10 +848,20 @@ const baseRegistry: ComponentMeta[] = [
     'Navigation',
     'folder',
     'Tab navigation',
-    { defaultActiveKey: 'tab1' },
+    // A new one has tabs to show. It started on `tab1` with none, and drew
+    // nothing in the running app.
+    {
+      tabs: [
+        { key: 'first', label: 'First' },
+        { key: 'second', label: 'Second' },
+      ],
+      defaultActiveKey: 'first',
+    },
     [
-      { name: 'tabs', type: 'json', description: 'Tabs as [{ key, label, disabled? }]; the content is the children under each key' },
-      { name: 'defaultActiveKey', type: 'string', default: 'tab1' },
+      // The row of tabs is all the component draws. This said the content
+      // was "the children under each key", which it never reads.
+      { name: 'tabs', type: 'json', description: 'Tabs as [{ key, label, disabled? }]. Bind the chosen key with :bind and show each tab’s content in an #if below' },
+      { name: 'defaultActiveKey', type: 'string', default: 'first' },
       { name: 'activeKey', type: 'expression' },
       { name: 'variant', type: 'select', options: ['default', 'pills', 'underline'], default: 'default' },
       { name: 'size', type: 'select', options: ['sm', 'md', 'lg'], default: 'md' },
@@ -856,7 +869,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'onChange', type: 'event' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
 
   comp(
@@ -870,7 +883,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'items', type: 'json', description: 'Array of { label, href } objects' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
 
   comp(    'Menu',
@@ -884,7 +897,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'width', type: 'string' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
 
   comp(    'NavItem',
@@ -920,7 +933,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'onChange', type: 'event' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
 
   comp(    'Collapse',
@@ -1003,7 +1016,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'onRowClick', type: 'event' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
 
   comp(    'TreeView',
@@ -1812,7 +1825,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'size', type: 'select', options: ['sm', 'md', 'lg'], default: 'md' },
       { name: 'className', type: 'string' },
     ],
-    true
+    false
   ),
   comp(
     'Skeleton',
@@ -2132,16 +2145,32 @@ const MANIFEST_PROPS: Record<string, PropSchema[]> = {
 /** Props the property panel shows under Accessibility rather than Advanced. */
 export const ACCESSIBILITY_PROP_NAMES: ReadonlySet<string> = new Set(['ariaLabel', 'removeLabel', 'caption', 'headingLevel', 'role']);
 
+/**
+ * Components that draw a fixed number of children and no more. A Split
+ * takes its first two for its panes; a third was on the canvas and in the
+ * file, and not on the page.
+ */
+const MAX_CHILDREN: Record<string, number> = { Split: 2 };
+
 export const componentRegistry: ComponentMeta[] = baseRegistry.map((meta) => {
   const extra = (MANIFEST_PROPS[meta.name] ?? []).filter((prop) => !meta.propSchema.some((own) => own.name === prop.name));
-  return extra.length ? { ...meta, propSchema: [...meta.propSchema, ...extra] } : meta;
+  const limit = MAX_CHILDREN[meta.name];
+  if (!extra.length && limit === undefined) return meta;
+  return { ...meta, propSchema: [...meta.propSchema, ...extra], ...(limit !== undefined ? { maxChildren: limit } : {}) };
 });
+
+/**
+ * What the palette offers: every component but the page itself. `App` is an
+ * entry because the page's own properties are edited from it; it is the
+ * root of a page and there is one, so it is not something to take and drop.
+ */
+export const paletteComponents: ComponentMeta[] = componentRegistry.filter((meta) => meta.name !== PAGE_TYPE);
 
 // Group components by category
 export function getComponentsByCategory(): Map<string, ComponentMeta[]> {
   const grouped = new Map<string, ComponentMeta[]>();
 
-  for (const comp of componentRegistry) {
+  for (const comp of paletteComponents) {
     const existing = grouped.get(comp.category) || [];
     existing.push(comp);
     grouped.set(comp.category, existing);

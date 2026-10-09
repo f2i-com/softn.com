@@ -55,7 +55,9 @@ function sourceOfCanvas(): string {
 }
 
 /** The one element under the root, as the store has it. */
-function dropped(id: string): CanvasElement {
+/** The element the palette put on the canvas. It says null for what it does not insert (the page itself). */
+function dropped(id: string | null): CanvasElement {
+  if (id === null) throw new Error('the palette inserted nothing');
   return useCanvasStore.getState().elements.get(id)!;
 }
 

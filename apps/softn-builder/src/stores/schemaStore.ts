@@ -89,6 +89,41 @@ const defaultField = (name: string = 'newField'): SchemaField => ({
   required: false,
 });
 
+/**
+ * What the engine reads as a collection's name and as the name pages use
+ * for it (`<collection name="…" as="…" />`, parser.ts
+ * parseCollectionDeclaration). The Data view took any text for either, and
+ * `Task items` or an alias of `my-tasks`, written into every page's `<data>`
+ * block, is a parse error there: the exported app did not start.
+ */
+const COLLECTION_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+const COLLECTION_ALIAS = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
+
+/** The nearest name the engine reads to what was typed, to offer in its place. */
+function nearestName(typed: string): string {
+  const words = typed.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^[^a-zA-Z]+/, '').replace(/-+$/, '');
+  return words || 'tasks';
+}
+
+/** The name pages use for a collection called `name`, until one is chosen: `Task-items` is `taskItems`. */
+function aliasFor(name: string): string {
+  const joined = name.replace(/-+([a-zA-Z0-9_])?/g, (_dash, next: string | undefined) => (next ?? '').toUpperCase());
+  return joined.charAt(0).toLowerCase() + joined.slice(1);
+}
+
+/**
+ * The collections made in this sitting that have yet to be named. Only
+ * these take their alias from the name they are first given: a collection
+ * that came with an app may be called `Entity1` too, and its pages already
+ * say `entity1`.
+ */
+const awaitingName = new Set<string>();
+
+/** Whether the collection still has the name and alias it was made with here: `Entity1`, read as `entity1`. */
+function isUnnamed(entity: EntityDef): boolean {
+  return awaitingName.has(entity.id) && entity.alias === aliasFor(entity.name);
+}
+
 /** `newField`, or `newField2`, `newField3`… so a new field never shares a name. */
 function uniqueFieldName(fields: SchemaField[], base = 'newField'): string {
   const taken = new Set(fields.map((f) => f.name));
@@ -147,6 +182,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
       position,
     };
 
+    awaitingName.add(id);
     edit((state) => ({
       entities: [...state.entities, entity],
       selectedEntityId: id,
@@ -163,20 +199,38 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
     if (updates.name !== undefined) {
       const name = updates.name.trim();
       if (!name) return 'Enter a collection name.';
+      if (name !== entity.name && !COLLECTION_NAME.test(name)) {
+        return `A collection name starts with a letter and has only letters, digits, _ and -. "${nearestName(name)}" would do.`;
+      }
       if (name !== entity.name && get().entities.some(e => e.id !== id && e.name === name)) {
         return `A collection named "${name}" already exists.`;
       }
       updates = { ...updates, name };
+      // Named for the first time, it is called that in pages too: the alias
+      // is what a page writes, and it stayed `entity1` under a collection
+      // now called `tasks`. An alias someone chose, or one pages may already
+      // use (any later rename), is left alone.
+      if (updates.alias === undefined && name !== entity.name && isUnnamed(entity)) {
+        const alias = aliasFor(name);
+        if (COLLECTION_ALIAS.test(alias) && !get().entities.some(e => e.id !== id && e.alias === alias)) {
+          updates = { ...updates, alias };
+        }
+      }
     }
     if (updates.alias !== undefined) {
       const alias = updates.alias.trim();
       if (!alias) return 'Enter an alias.';
+      if (alias !== entity.alias && !COLLECTION_ALIAS.test(alias)) {
+        return 'An alias is the name pages use in code: letters, digits and _, not starting with a digit.';
+      }
       if (alias !== entity.alias && get().entities.some(e => e.id !== id && e.alias === alias)) {
         return `The alias "${alias}" is already in use.`;
       }
       updates = { ...updates, alias };
     }
     if (Object.entries(updates).every(([key, value]) => entity[key as keyof EntityDef] === value)) return null;
+    // Named, or given an alias by hand: from here on its alias is its own.
+    if (updates.name !== undefined || updates.alias !== undefined) awaitingName.delete(id);
     edit((state) => {
       const entities = state.entities.map((e) => (e.id === id ? { ...e, ...updates } : e));
       return { entities, relationships: validRelationships(entities, state.relationships) };
@@ -449,6 +503,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   loadEntities: (entities) => {
+    awaitingName.clear();
     set({ entities: entities.map(entity => ({ ...entity, fields: ensureFieldIds(entity.fields) })), selectedEntityId: entities[0]?.id || null });
   },
 
@@ -486,6 +541,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   reset: () => {
+    awaitingName.clear();
     set({
       entities: [],
       relationships: [],

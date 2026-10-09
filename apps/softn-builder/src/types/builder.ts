@@ -20,6 +20,8 @@ export interface ComponentMeta {
   propSchema: PropSchema[];
   allowChildren: boolean;
   childTypes?: string[];
+  /** How many elements the component draws, where it draws no more: a Split has two panes. */
+  maxChildren?: number;
 }
 
 export type ComponentCategory =
@@ -74,6 +76,13 @@ export const BLOCK_COMPONENT_TYPES = ['#if', '#elseif', '#else', '#each', '#empt
  * text, `{expressions}` included, in its place among its siblings.
  */
 export const TEXT_NODE_TYPE = '#text';
+
+/**
+ * The tag of the page itself. A page has one, at its root, and it is never
+ * dropped, moved or pasted into anything: the palette offered it beside the
+ * components, and a second `<App>` went inside the first.
+ */
+export const PAGE_TYPE = 'App';
 
 /**
  * A comment kept with the element it stands before.

@@ -4,13 +4,46 @@
 
 import { create } from 'zustand';
 import { useProjectStore } from './projectStore';
-import type { CanvasBlock, CanvasElement, CanvasState, UIImport } from '../types/builder';
+import { TEXT_NODE_TYPE, type CanvasBlock, type CanvasElement, type CanvasState, type UIImport } from '../types/builder';
 import { debug } from '../utils/debug';
-import { branchEnd, defaultBlock, isBlockHead, isContinuationType } from '../utils/blocks';
+import { branchEnd, canDropInto, defaultBlock, hasTextField, isBlockHead, isContinuationType, wordsOf } from '../utils/blocks';
 import { starterProps } from '../utils/starterProps';
 
 function generateId(): string {
   return `el_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * Before `parentId` is given an element: the words it held as its text
+ * become an element among its children, where the generator writes them.
+ *
+ * Words are an element's text only while they are all it holds
+ * (`<Button>Save</Button>`); beside an element they are elements of the
+ * page in their place, which is how the parser reads `<Button>Save <Icon
+ * /></Button>`. The generator writes the text of an element with no
+ * children and the children of one that has some, so an element given its
+ * first child kept its words on the canvas and in the panel and lost them
+ * from the file. Returns whether there were words to move: they are first,
+ * so a place counted before they were an element is one further on.
+ */
+function wordsBecomeElement(elements: Map<string, CanvasElement>, parentId: string): boolean {
+  const parent = elements.get(parentId);
+  if (!parent) return false;
+  const words = wordsOf(parent);
+  if (words === null) return false;
+
+  const id = generateId();
+  elements.set(id, {
+    id,
+    componentType: TEXT_NODE_TYPE,
+    props: { children: words },
+    children: [],
+    parentId,
+  });
+  const props = { ...parent.props };
+  delete props.children;
+  elements.set(parentId, { ...parent, props, children: [id, ...parent.children] });
+  return true;
 }
 
 interface CanvasStore extends CanvasState {
@@ -79,6 +112,13 @@ interface CanvasStore extends CanvasState {
   // Reset
   reset: () => void;
   loadState: (elements: Map<string, CanvasElement>, rootId: string, imports?: UIImport[]) => void;
+  /**
+   * Put back the elements of an earlier state of the same page: what undo
+   * and redo do. Unlike `loadState`, which opens a page, it leaves the
+   * clipboard and the page's imports as they are, and keeps selected
+   * whatever of the selection is still there.
+   */
+  restoreElements: (elements: Map<string, CanvasElement>, rootId: string) => void;
 
   // Get element
   getElement: (id: string) => CanvasElement | undefined;
@@ -99,6 +139,24 @@ const initialElements = new Map<string, CanvasElement>([
     },
   ],
 ]);
+
+/**
+ * After `parentId` has lost an element: words that are again all it holds
+ * are its text again, where the panel has a Text field for them. The other
+ * way round from `wordsBecomeElement`, and what the parser reads the file
+ * as; a Button whose Icon was deleted was left holding its label as an
+ * element, with no field to change it in.
+ */
+function wordsBecomeText(elements: Map<string, CanvasElement>, parentId: string | null): void {
+  const parent = parentId ? elements.get(parentId) : undefined;
+  if (!parent || parent.block || parent.children.length !== 1 || !hasTextField(parent.componentType)) return;
+  const only = elements.get(parent.children[0]);
+  if (!only || only.componentType !== TEXT_NODE_TYPE || only.leadingComments?.length) return;
+  const words = wordsOf(only);
+  if (words === null || wordsOf(parent) !== null) return;
+  elements.delete(only.id);
+  elements.set(parent.id, { ...parent, props: { ...parent.props, children: words }, children: [] });
+}
 
 export const useCanvasStore = create<CanvasStore>((set, get) => {
   const edit: typeof set = (...args) => {
@@ -158,14 +216,15 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
       newElements.set(id, newElement);
 
-      // Add to parent's children
+      // Add to parent's children, after the words it held as its text.
+      const shift = wordsBecomeElement(newElements, parent) ? 1 : 0;
       const parentElement = newElements.get(parent);
       if (parentElement) {
         const newChildren = [...parentElement.children];
         // An element of a block goes in its branch, before any `#else` or
         // `#empty`: after one it would be written inside that branch.
         const end = isContinuationType(type) ? newChildren.length : branchEnd(parentElement, newElements);
-        newChildren.splice(index !== undefined && index >= 0 ? Math.min(index, end) : end, 0, id);
+        newChildren.splice(index !== undefined && index >= 0 ? Math.min(index + shift, end) : end, 0, id);
         newElements.set(parent, { ...parentElement, children: newChildren });
       }
 
@@ -230,6 +289,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
           });
         }
       }
+      wordsBecomeText(newElements, element.parentId);
 
       // Update selection: the element and whatever it held are gone from it.
       const newSelectedIds = state.selectedIds.filter((sid) => newElements.has(sid));
@@ -285,7 +345,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         }
       }
 
-      // Add to new parent, within its own branch (see addElement).
+      // Add to new parent, within its own branch and after the words it
+      // held as its text (see addElement).
+      if (wordsBecomeElement(newElements, targetParentId)) at += 1;
       const newParent = newElements.get(targetParentId);
       if (newParent) {
         const newChildren = [...newParent.children];
@@ -295,8 +357,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
       // Update element's parent reference
       newElements.set(id, { ...element, parentId: targetParentId });
+      // What it left behind, if that is now only words.
+      if (element.parentId !== targetParentId) wordsBecomeText(newElements, element.parentId);
 
-      return { elements: newElements };
+      return { elements: newElements, selectedIds: state.selectedIds.filter((sid) => newElements.has(sid)) };
     });
   },
 
@@ -304,6 +368,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     const state = get();
     const element = state.elements.get(id);
     if (!element || id === state.rootId) return null;
+    // A copy goes beside the original, so what holds the original has to
+    // have room for one more: a Split draws two panes, and a third made
+    // this way was in the file and not on the page.
+    const holder = element.parentId ? state.elements.get(element.parentId) : undefined;
+    if (holder && !canDropInto(holder, element.componentType, { elements: state.elements })) return null;
 
     const newId = generateId();
 
@@ -425,13 +494,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         children: [],
         parentId: blockId,
       });
+      // The words of the branch it is added to stay in that branch.
+      wordsBecomeElement(newElements, blockId);
+      const held = newElements.get(blockId) ?? head;
       // An #elseif sits before the #else; any other branch goes last.
-      const children = [...head.children];
+      const children = [...held.children];
       const elseIndex =
         kind === 'elseif' ? children.findIndex((cid) => newElements.get(cid)?.block?.kind === 'else') : -1;
       if (elseIndex === -1) children.push(branchId);
       else children.splice(elseIndex, 0, branchId);
-      newElements.set(blockId, { ...head, children });
+      newElements.set(blockId, { ...held, children });
       return { elements: newElements, selectedIds: [branchId] };
     });
 
@@ -506,14 +578,17 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     const state = get();
     // An element selected together with something that holds it is copied
     // as part of that, not a second time on its own.
-    const selected = new Set(state.selectedIds);
+    // The page itself is not something to paste: picked in the hierarchy
+    // and copied, it came back as the whole page again inside itself.
+    const picked = state.selectedIds.filter((id) => id !== state.rootId);
+    const selected = new Set(picked);
     const heldBySelected = (el: CanvasElement): boolean => {
       for (let parent = el.parentId; parent; parent = state.elements.get(parent)?.parentId ?? null) {
         if (selected.has(parent)) return true;
       }
       return false;
     };
-    const clipboard = state.selectedIds
+    const clipboard = picked
       .map((id) => state.elements.get(id))
       .filter((el): el is CanvasElement => el !== undefined && !heldBySelected(el));
 
@@ -544,6 +619,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
     edit((currentState) => {
       const newElements = new Map(currentState.elements);
+      // What is pasted goes after the words the target held as its text.
+      wordsBecomeElement(newElements, targetParentId);
 
       // Deep clone function to recursively clone element and children
       const deepCloneElement = (el: CanvasElement, newParentId: string): string => {
@@ -648,6 +725,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   clipboardTree: new Map(),
       imports,
     });
+  },
+
+  restoreElements: (elements, rootId) => {
+    set((state) => ({
+      elements,
+      rootId,
+      selectedIds: state.selectedIds.filter((id) => elements.has(id)),
+      hoveredId: null,
+      dropIndicator: null,
+    }));
   },
 
   getElement: (id) => {

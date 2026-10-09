@@ -266,3 +266,32 @@ describe('a list of records', () => {
     expect(source()).toContain('items={checkoutSteps}');
   });
 });
+
+describe('a binding', () => {
+  // The field's placeholder was `{expression}`, and what was typed was put
+  // between braces as it stood: `{about}`, typed as the field showed, was
+  // written `:bind={{about}}`, a record with one key, and half a name was
+  // written into the file at every keystroke.
+  it('typed in braces is the expression inside them', () => {
+    drop('Modal');
+    type(field<HTMLInputElement>(':bind'), '{about}');
+    expect(source()).toContain(':bind={about}');
+    expect(field<HTMLInputElement>(':bind').value).toBe('about');
+  });
+
+  it('is not written while it is half typed, and is once it is whole', () => {
+    drop('Input');
+    type(field<HTMLInputElement>(':bind'), 'form.');
+    expect(source()).not.toContain(':bind');
+    expect(field<HTMLInputElement>(':bind').value).toBe('form.');
+    type(field<HTMLInputElement>(':bind'), 'form.title');
+    expect(source()).toContain(':bind={form.title}');
+  });
+
+  it('is removed when it is emptied', () => {
+    open('<App><Input :bind={title} /></App>', 'Input');
+    expect(field<HTMLInputElement>(':bind').value).toBe('title');
+    type(field<HTMLInputElement>(':bind'), '');
+    expect(source()).toBe('<App>\n  <Input />\n</App>');
+  });
+});

@@ -111,4 +111,46 @@ describe('deleting from the navigator', () => {
     expect(del.getAttribute('aria-disabled')).toBe('true');
     expect(del.title).toMatch(/entry file/);
   });
+
+  it('says which pages use a file before it is deleted', () => {
+    // The question was only 'Delete file "Banner.ui"?'. A page that imports
+    // it was left importing a file that is not there, and the export wrote
+    // it that way: the first sign was the app that ran.
+    const files = useFilesStore.getState();
+    const banner = files.createFile('ui', 'Banner.ui', 'ui');
+    files.createFile('ui', 'Unused.ui', 'ui');
+    files.updateUIFileSource('main_ui', '<import Banner from="./Banner.ui" />\n<App>\n  <Banner />\n</App>');
+    expect(useFilesStore.getState().usersOf(banner)).toEqual(['ui/main.ui']);
+
+    const asked: string[] = [];
+    const confirm = window.confirm;
+    window.confirm = (message?: string) => { asked.push(String(message)); return false; };
+    try {
+      mount();
+      for (const name of ['Banner.ui', 'Unused.ui']) {
+        const row = [...host.querySelectorAll<HTMLElement>('[data-file-row]')].find((el) => el.textContent?.startsWith(name))!;
+        act(() => {
+          row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+        });
+        const del = [...host.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) => el.textContent === 'Delete')!;
+        act(() => del.click());
+      }
+    } finally {
+      window.confirm = confirm;
+    }
+    expect(asked[0]).toContain('Banner.ui');
+    expect(asked[0]).toContain('ui/main.ui');
+    expect(asked[1]).toBe('Delete file "Unused.ui"?');
+    // Nothing was deleted: the answer was no.
+    expect(useFilesStore.getState().uiFiles.size).toBe(3);
+  });
+
+  it('counts a page that links a logic file as using it', () => {
+    const files = useFilesStore.getState();
+    const helper = files.createFile('logic', 'helper.logic', 'logic');
+    files.createFile('ui', 'Other.ui', 'ui');
+    const other = [...useFilesStore.getState().uiFiles.values()].find((file) => file.path === 'ui/Other.ui')!;
+    files.updateUIFileSource(other.id, '<logic src="../logic/helper.logic" />\n<App>\n  <Text>Other</Text>\n</App>');
+    expect(useFilesStore.getState().usersOf(helper)).toEqual(['ui/Other.ui']);
+  });
 });

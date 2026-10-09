@@ -14,8 +14,8 @@
  */
 
 import type { CanvasBlock, CanvasElement, ComponentMeta } from '../types/builder';
-import { TEXT_NODE_TYPE } from '../types/builder';
-import { getComponentMeta } from './componentRegistry';
+import { PAGE_TYPE, TEXT_NODE_TYPE } from '../types/builder';
+import { getComponentMeta, paletteComponents } from './componentRegistry';
 
 /** Whether the element is words that stand beside elements (see TEXT_NODE_TYPE). */
 export function isTextNode(element: CanvasElement): boolean {
@@ -73,31 +73,94 @@ export function defaultBlock(componentType: string): CanvasBlock | undefined {
 }
 
 /**
- * Whether the element can hold children on the canvas: a block always can,
- * a component if its registry entry says so, and any element that already
+ * The words an element holds as its text, or null. Words are kept this way
+ * only while they are all the element holds (see `wordsBecomeElement` in
+ * the canvas store).
+ */
+export function wordsOf(element: CanvasElement): string | null {
+  const words = element.props.children;
+  return typeof words === 'string' && words !== '' ? words : null;
+}
+
+/**
+ * Whether the element can hold children on the canvas, which is also
+ * whether it is drawn with a place for them: a block always can, a
+ * component if its registry entry says so, and any element that already
  * holds some. A `<Text>` with a `<Kbd>` among its words has children
  * whatever its entry says, and they have to be seen to be edited.
+ *
+ * A component whose content is its words, edited in the panel's Text
+ * field, is complete as it stands. A Button with its label was drawn with a
+ * dashed box under it asking for children, and took whatever was let go
+ * over its middle; emptied of its words it is a container again.
  */
 export function acceptsChildren(element: CanvasElement): boolean {
   if (element.block) return true;
   if (isTextNode(element)) return false;
   if (element.children.length > 0) return true;
+  if (wordsOf(element) !== null && hasTextField(element.componentType)) return false;
   return getComponentMeta(element.componentType)?.allowChildren ?? false;
 }
 
 /**
- * Whether `draggedType` may be dropped into `target`. A continuation is
- * never dropped anywhere (see isContinuationType); a block takes any
- * component or block; a component takes what its registry entry allows.
+ * Whether the panel has a Text field for the words of an element of this
+ * type. Where it has, words that are all the element holds are its text;
+ * where it has none (a block, the page, a Card) they are an element in
+ * their place, or there would be nowhere to see them or change them.
  */
-export function canDropInto(target: CanvasElement, draggedType: string | null): boolean {
+export function hasTextField(componentType: string): boolean {
+  return getComponentMeta(componentType)?.propSchema.some((prop) => prop.name === 'children') ?? false;
+}
+
+/** What `canDropInto` may be told about the canvas the drop is made on. */
+export interface DropContext {
+  elements: Map<string, CanvasElement>;
+  /** The element being moved, when the drag is a move and not a new element. */
+  draggedId?: string | null;
+}
+
+/** The component a block stands in: its rules are the rules of the block's branch. */
+function componentAround(block: CanvasElement, elements: Map<string, CanvasElement>): CanvasElement | undefined {
+  let current: CanvasElement | undefined = block;
+  while (current?.block) current = current.parentId ? elements.get(current.parentId) : undefined;
+  return current;
+}
+
+/**
+ * Whether `draggedType` may be dropped into `target`. A continuation is
+ * never dropped anywhere (see isContinuationType), nor is the page; a
+ * component takes what its registry entry allows, and as many as it draws;
+ * a block takes what the component around it takes, since what is in its
+ * branch is drawn there.
+ */
+export function canDropInto(target: CanvasElement, draggedType: string | null, context?: DropContext): boolean {
   if (draggedType && isContinuationType(draggedType)) return false;
-  if (target.block) return true;
+  if (draggedType === PAGE_TYPE) return false;
   if (isTextNode(target)) return false;
+
+  if (target.block) {
+    const around = context ? componentAround(target, context.elements) : undefined;
+    const kinds = around ? getComponentMeta(around.componentType)?.childTypes : undefined;
+    return !kinds?.length || !draggedType || draggedType.startsWith('#') || kinds.includes(draggedType);
+  }
+
+  if (!acceptsChildren(target)) return false;
   const meta = getComponentMeta(target.componentType);
-  if (!meta?.allowChildren) return target.children.length > 0;
-  if (meta.childTypes && meta.childTypes.length > 0 && draggedType) {
-    return meta.childTypes.includes(draggedType);
+  // One that holds elements whatever its entry says takes more of any kind.
+  if (!meta?.allowChildren) return true;
+  // A block is not one of the kinds, and is how they are usually made:
+  // an AvatarGroup holds an `#each` around an Avatar.
+  if (meta.childTypes && meta.childTypes.length > 0 && draggedType && !draggedType.startsWith('#')) {
+    if (!meta.childTypes.includes(draggedType)) return false;
+  }
+  if (meta.maxChildren !== undefined && context) {
+    // One of its own, changing places, is not one more.
+    const own = context.draggedId ? target.children.includes(context.draggedId) : false;
+    const held = target.children.filter((id) => {
+      const child = context.elements.get(id);
+      return child !== undefined && !isTextNode(child);
+    }).length;
+    if (!own && held >= meta.maxChildren) return false;
   }
   return true;
 }
@@ -137,6 +200,11 @@ export const blockPalette: ComponentMeta[] = [
     allowChildren: true,
   },
 ];
+
+/** Whether `type` is something the palette offers: a component it lists, or one of the two blocks. */
+export function isPaletteType(type: string): boolean {
+  return blockPalette.some((entry) => entry.name === type) || paletteComponents.some((entry) => entry.name === type);
+}
 
 /** A short description of what a block does, for the canvas and the property panel. */
 export function blockDescription(block: CanvasBlock): string {

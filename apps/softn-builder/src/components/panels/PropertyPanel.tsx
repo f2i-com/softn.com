@@ -14,7 +14,7 @@ import { callableNames, handlerFor, handlerTarget, logicFunctions, type LogicFun
 import { eventKeyFor } from '../../utils/eventProps';
 import { nativeElementMeta } from '../../utils/nativeHtmlMetadata';
 import { blockHeaderText } from '../../utils/sourceGenerator';
-import { blockDescription, isBlockHead, isTextNode, textNodeMeta } from '../../utils/blocks';
+import { blockDescription, hasTextField, isBlockHead, isTextNode, textNodeMeta } from '../../utils/blocks';
 import { controlFor, propState, shownValue, withProp, writtenValue, type PropState } from '../../utils/propValues';
 import type { CanvasBlock, PropSchema } from '../../types/builder';
 
@@ -497,6 +497,9 @@ function PropEditor({ id, propDef, state, onChange }: PropEditorProps) {
 /** A plain text property, for a field that is one whatever the registry calls it. */
 const STRING_PROP: PropSchema = { name: 'src', type: 'string' };
 
+/** What a `:binding` holds: an expression and nothing else. */
+const BINDING_PROP: PropSchema = { name: 'bind', type: 'expression' };
+
 export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
   const selectedIds = useCanvasStore(s => s.selectedIds);
   const updateElement = useCanvasStore(s => s.updateElement);
@@ -629,12 +632,30 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
     );
   }, [selectedElement]);
 
+  // Whether the selected element's content is edited as the elements it
+  // holds, and not in a Text field of its own.
+  const wordsAmongElements =
+    selectedElement !== null && !isTextNode(selectedElement) && selectedElement.children.length > 0 && hasTextField(selectedElement.componentType);
+
+  // Whether any of what it holds is words, which the note under its name
+  // sends a person to; one that holds an Icon and nothing else has none.
+  const holdsWords = useCanvasStore((s) =>
+    wordsAmongElements && selectedElement !== null && selectedElement.children.some((id) => {
+      const child = s.elements.get(id);
+      return child !== undefined && isTextNode(child);
+    })
+  );
+
   const groupedProps = useMemo(() => {
     if (!meta) return null;
 
     const groups: Record<string, PropSchema[]> = { main: [], accessibility: [], style: [], events: [], advanced: [] };
 
     for (const prop of meta.propSchema) {
+      // Words that stand among elements are elements themselves, each with
+      // its own field. A Text field here wrote text the file never got: the
+      // generator writes an element's children, or its text, not both.
+      if (prop.name === 'children' && wordsAmongElements) continue;
       if (prop.type === 'event') groups.events.push(prop);
       else if (prop.name === 'className' || prop.name === 'style') groups.style.push(prop);
       else if (prop.name === 'children' || ['variant', 'size', 'disabled'].includes(prop.name)) groups.main.push(prop);
@@ -643,7 +664,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
     }
 
     return groups;
-  }, [meta]);
+  }, [meta, wordsAmongElements]);
 
   // The DOM events every element takes, less those the component lists as
   // its own: a Button's onClick was offered twice, as its component event and
@@ -821,6 +842,16 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
           {meta && <div style={styles.componentDescription}>{meta.description}</div>}
           {selectedElement.block && (
             <div style={styles.componentDescription}>{blockDescription(selectedElement.block)}</div>
+          )}
+          {wordsAmongElements && holdsWords && (
+            <div style={{ ...styles.componentDescription, marginTop: 6 }} data-words-among-elements>
+              Its words stand among the elements it holds. Pick the words on the canvas, or in the hierarchy below, to change them.
+            </div>
+          )}
+          {wordsAmongElements && !holdsWords && (
+            <div style={{ ...styles.componentDescription, marginTop: 6 }} data-holds-elements>
+              What it shows is the elements it holds. It has a Text field again when it holds none.
+            </div>
           )}
         </div>
 
@@ -1130,13 +1161,22 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
                 return (
                   <div key={bindingName} style={styles.field}>
                     <label htmlFor={`panel-${selectedElement.id}-bind-${bindingName}`} style={styles.label}>:{bindingName}</label>
-                    <input
+                    {/* An expression, held to the rule of every other
+                        expression field: braces typed around it are taken
+                        off, and it is written once it reads as a whole one.
+                        The placeholder used to be `{expression}`, and
+                        `{about}` typed as it showed was `:bind={{about}}`. */}
+                    <ExpressionField
                       id={`panel-${selectedElement.id}-bind-${bindingName}`}
-                      type="text"
-                      style={{ ...styles.input, fontFamily: 'var(--mono)' }}
-                      value={value}
-                      onChange={(e) => handleBindingChange(bindingName, e.target.value)}
-                      placeholder="{expression}"
+                      shown={value}
+                      multiline={false}
+                      placeholder={bindingName === 'bind' ? 'a name from the logic, such as title' : 'an expression'}
+                      onInput={(text) => {
+                        const next = writtenValue(BINDING_PROP, { value, isExpression: true }, text);
+                        if (!next) return false;
+                        handleBindingChange(bindingName, typeof next.value === 'string' ? next.value : '');
+                        return true;
+                      }}
                     />
                   </div>
                 );

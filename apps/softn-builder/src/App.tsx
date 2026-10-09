@@ -45,6 +45,7 @@ import { useUnsavedChanges } from './hooks/useUnsavedChanges';
 import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { useActiveFileOnCanvas } from './hooks/useActiveFileOnCanvas';
+import { PANEL_WIDTHS, useSidePanels } from './hooks/usePanelsThatFit';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
 import { connectHostedEditor, isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
@@ -74,8 +75,8 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--line-soft)',
     borderRadius: 10,
     overflow: 'hidden',
-    width: 260,
-    minWidth: 260,
+    width: PANEL_WIDTHS.components,
+    minWidth: PANEL_WIDTHS.components,
     background: 'var(--ink-2)',
   },
   centerWithTabs: {
@@ -102,8 +103,8 @@ const styles: Record<string, React.CSSProperties> = {
   rightPanel: {
     display: 'flex',
     flexDirection: 'column',
-    width: 320,
-    minWidth: 320,
+    width: PANEL_WIDTHS.properties,
+    minWidth: PANEL_WIDTHS.properties,
     border: '1px solid var(--line-soft)',
     borderRadius: 10,
     background: 'var(--ink-2)',
@@ -168,8 +169,8 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
   },
   collapsedRailLeft: {
-    width: 34,
-    minWidth: 34,
+    width: PANEL_WIDTHS.rail,
+    minWidth: PANEL_WIDTHS.rail,
     border: '1px solid var(--line-soft)',
     borderRadius: 10,
     background: 'var(--ink-2)',
@@ -181,8 +182,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   collapsedRailRight: {
-    width: 34,
-    minWidth: 34,
+    width: PANEL_WIDTHS.rail,
+    minWidth: PANEL_WIDTHS.rail,
     border: '1px solid var(--line-soft)',
     borderRadius: 10,
     background: 'var(--ink-2)',
@@ -316,8 +317,9 @@ function App() {
   const projectName = useProjectStore((state) => state.name);
   const projectDirty = useProjectStore((state) => state.isDirty);
   const [view, setView] = useState<ViewMode>('design');
-  const [dockFiles, setDockFiles] = useState(true);
-  const [dockComponents, setDockComponents] = useState(true);
+  // A panel the window has no room for starts as its rail, so the canvas is
+  // on the screen: at 900 pixels the three panels left it no room at all.
+  const { files: dockFiles, components: dockComponents, setFiles: setDockFiles, setComponents: setDockComponents } = useSidePanels();
   const [dockInspector, setDockInspector] = useState(true);
   const [dockLogic, setDockLogic] = useState(true);
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -529,18 +531,18 @@ function App() {
     else shell.removeAttribute('aria-hidden');
   }, [modalOpen, isNarrow]);
 
-  useWorkspaceShortcuts({
-    blocked: modalOpen, narrow: isNarrow, save: handleSave, open: handleOpen,
-    create: handleNew, export: handleExport, shortcuts: () => setShowShortcuts(true),
-    changeView,
-  });
-
   // Sync active file with canvas when file selection changes
   const activeFileId = useFilesStore((state) => state.activeFileId);
   const assetFiles = useFilesStore((state) => state.assetFiles);
   const fileNodes = useFilesStore((state) => state.nodes);
   const activeNode = activeFileId ? fileNodes.get(activeFileId) : null;
   const activeFileType = activeNode?.fileType ?? null;
+
+  useWorkspaceShortcuts({
+    blocked: modalOpen, narrow: isNarrow, save: handleSave, open: handleOpen,
+    create: handleNew, export: handleExport, shortcuts: () => setShowShortcuts(true),
+    changeView, canvas: view === 'design' && activeFileType === 'ui',
+  });
   const isLogicFileActive = activeFileType === 'logic';
   const isAssetFileActive = activeFileType === 'asset';
   const hasActiveFile = !!activeNode;

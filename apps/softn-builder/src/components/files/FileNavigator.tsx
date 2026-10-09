@@ -10,6 +10,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useSourceFidelity } from '../../utils/useSourceFidelity';
 import type { ProjectFileNode } from '../../types/builder';
 import { FileGlyph, type FileGlyphKind } from './fileIcons';
+import { PANEL_WIDTHS } from '../../hooks/usePanelsThatFit';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -18,8 +19,8 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     background: 'var(--ink-2)',
     borderRight: '1px solid var(--line-soft)',
-    width: 280,
-    minWidth: 280,
+    width: PANEL_WIDTHS.files,
+    minWidth: PANEL_WIDTHS.files,
   },
   header: {
     padding: '12px 12px 8px',
@@ -677,10 +678,16 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     const node = nodes.get(contextMenu.nodeId);
     if (!node) return;
 
+    // The pages that use it are named in the question: one that imports a
+    // deleted file is left importing nothing, and the export writes it so.
+    const users = useFilesStore.getState().usersOf(contextMenu.nodeId);
+    const left = users.length === 0
+      ? ''
+      : `\n\n${users.join(', ')} ${users.length === 1 ? 'uses' : 'use'} ${node.type === 'folder' ? 'what is in it' : 'it'}, and will be left pointing at a file that is not there.`;
     const confirmMsg =
-      node.type === 'folder'
+      (node.type === 'folder'
         ? `Delete folder "${node.name}" and all its contents?`
-        : `Delete file "${node.name}"?`;
+        : `Delete file "${node.name}"?`) + left;
 
     if (window.confirm(confirmMsg)) {
       attempt(() => {

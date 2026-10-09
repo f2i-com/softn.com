@@ -9,6 +9,8 @@ import { useFilesStore } from '../../stores/filesStore';
 import { useSourceFidelity, summariseReasons } from '../../utils/useSourceFidelity';
 import { CanvasElement } from './CanvasElement';
 import { DragLayer } from './DragLayer';
+import { canDropInto, isPaletteType } from '../../utils/blocks';
+import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
 import { isDesktop } from '../../utils/desktop';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 
@@ -114,15 +116,15 @@ export function Canvas() {
       e.preventDefault();
       e.stopPropagation();
 
-      const historyState = useHistoryStore.getState();
-      historyState.push(state.elements, state.rootId);
-
       // Use dropIndicator if available, otherwise append to root
       const indicator = state.dropIndicator;
-      if (indicator) {
-        state.addElement(state.draggedType, indicator.parentId, indicator.index, { starter: true });
-      } else {
-        state.addElement(state.draggedType, state.rootId, undefined, { starter: true });
+      const parent = state.elements.get(indicator ? indicator.parentId : state.rootId);
+      // What may hold what is asked here too: let go over the background,
+      // a drag had nothing in its way.
+      if (parent && canDropInto(parent, state.draggedType, { elements: state.elements })) {
+        const historyState = useHistoryStore.getState();
+        historyState.push(state.elements, state.rootId);
+        state.addElement(state.draggedType, parent.id, indicator?.index, { starter: true });
       }
       state.setDraggedType(null);
       state.setDropIndicator(null);
@@ -179,8 +181,11 @@ export function Canvas() {
       // Get component type from store (primary) or fallback to dataTransfer
       const state = useCanvasStore.getState();
       const componentType = state.draggedType || e.dataTransfer.getData('text/plain');
+      const page = state.elements.get(state.rootId);
 
-      if (componentType) {
+      // Only something the palette offers: whatever text was dragged in from
+      // another window used to become an element called by that text.
+      if (componentType && page && isPaletteType(componentType) && canDropInto(page, componentType, { elements: state.elements })) {
         const historyState = useHistoryStore.getState();
 
         // Save history before change
@@ -209,8 +214,12 @@ export function Canvas() {
     const canvasState = useCanvasStore.getState();
     const historyState = useHistoryStore.getState();
     const hasSelection = canvasState.selectedIds.length > 0;
+    const mod = e.ctrlKey || e.metaKey;
+    // As a small letter whatever Caps Lock says: with it on the keyboard
+    // sends `Z`, and none of these were heard.
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
 
-    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+    if (mod && key === 'a') {
       e.preventDefault();
       const allElementIds = Array.from(canvasState.elements.keys()).filter(
         (id) => id !== canvasState.rootId
@@ -220,17 +229,30 @@ export function Canvas() {
     }
 
     // Paste can work with no selection (falls back to root).
-    if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+    if (mod && key === 'v') {
       e.preventDefault();
       historyState.push(canvasState.elements, canvasState.rootId);
       canvasState.paste(null);
       return;
     }
 
+    // Undo and redo, which need nothing selected. In the app the workspace
+    // hears these first, wherever the focus is (useWorkspaceShortcuts).
+    if (mod && key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      undoCanvas();
+      return;
+    }
+    if (mod && (key === 'y' || (key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      redoCanvas();
+      return;
+    }
+
     if (!hasSelection) return;
 
     // Delete selected elements
-    if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (key === 'Delete' || key === 'Backspace') {
       e.preventDefault();
       historyState.push(canvasState.elements, canvasState.rootId);
       canvasState.selectedIds.forEach((id) => {
@@ -241,21 +263,21 @@ export function Canvas() {
     }
 
     // Copy
-    if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+    if (mod && key === 'c') {
       e.preventDefault();
       canvasState.copySelected();
     }
 
     // Paste
     // Cut
-    if ((e.ctrlKey || e.metaKey) && e.key === 'x') {
+    if (mod && key === 'x') {
       e.preventDefault();
       historyState.push(canvasState.elements, canvasState.rootId);
       canvasState.cutSelected();
     }
 
     // Duplicate
-    if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
+    if (mod && key === 'd') {
       e.preventDefault();
       historyState.push(canvasState.elements, canvasState.rootId);
       canvasState.selectedIds.forEach((id) => {
@@ -263,33 +285,6 @@ export function Canvas() {
       });
     }
 
-    // Undo
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-      e.preventDefault();
-      const canvas = useCanvasStore.getState();
-      const entry = historyState.undo({
-        elements: canvas.elements,
-        rootId: canvas.rootId,
-        timestamp: Date.now(),
-      });
-      if (entry) {
-        useCanvasStore.getState().loadState(entry.elements, entry.rootId);
-      }
-    }
-
-    // Redo
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-      e.preventDefault();
-      const canvas = useCanvasStore.getState();
-      const entry = historyState.redo({
-        elements: canvas.elements,
-        rootId: canvas.rootId,
-        timestamp: Date.now(),
-      });
-      if (entry) {
-        useCanvasStore.getState().loadState(entry.elements, entry.rootId);
-      }
-    }
   }, []);
 
   const dropIndicator = useCanvasStore((s) => s.dropIndicator);

@@ -59,9 +59,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     color: 'var(--paper)',
   },
+  entityAlias: {
+    fontWeight: 400,
+    color: 'var(--dim)',
+  },
   entityRecords: {
     fontSize: 11,
     color: 'var(--dim)',
+    whiteSpace: 'nowrap',
+  },
+  usage: {
+    fontFamily: 'var(--mono)',
+    fontSize: 11.5,
+    color: 'var(--paper)',
+    overflowWrap: 'anywhere',
   },
 };
 
@@ -93,14 +104,30 @@ export function DataPanel() {
           {entities.map((entity) => {
             const records = seedData.get(entity.id) || [];
             return (
-              <div key={entity.id} style={styles.entityItem}>
-                <span style={styles.entityName}>{entity.name}</span>
+              <div key={entity.id} style={styles.entityItem} data-collection={entity.name}>
+                <span style={styles.entityName}>
+                  {entity.name}
+                  {/* What a page writes, where that is not the name itself. */}
+                  {entity.alias !== entity.name && (
+                    <span style={styles.entityAlias}>
+                      {' as '}
+                      <code data-collection-alias>{entity.alias}</code>
+                    </span>
+                  )}
+                </span>
                 <span style={styles.entityRecords}>
                   {records.length} record{records.length !== 1 ? 's' : ''}
                 </span>
               </div>
             );
           })}
+          {/* How a page reads one: nothing on this side of the editor said,
+              and a record's fields are under `data`, which nobody guesses. */}
+          <div style={styles.hint} data-collection-usage>
+            A page reads a collection as a list of records:{' '}
+            <code style={styles.usage}>#each (item in {entities[0].alias})</code>, and a field as{' '}
+            <code style={styles.usage}>{`{item.data.${entities[0].fields.find((field) => field.name !== 'id')?.name ?? 'id'}}`}</code>.
+          </div>
         </div>
       ) : (
         <div style={styles.hint}>

@@ -32,6 +32,7 @@ import type {
   SoftNDocument,
 } from '@softn/core';
 import { printExpressionSafe } from './expressionPrinter';
+import { hasTextField } from './blocks';
 import { computeFidelity } from './sourceFidelity';
 import { anchorOf, commentsOf, frameSource, hasSingleAppRoot, type SourceComment } from './sourceFrame';
 
@@ -999,13 +1000,17 @@ function buildElementTree(
     else runs.push(child);
   }
 
-  if (runs.every((run) => typeof run === 'string')) {
+  if (runs.every((run) => typeof run === 'string') && hasTextField(node.type) && !node.block) {
     // Words are all the tag holds: they are its text, as the engine has
     // them. Nothing is trimmed here, the lexer has already taken the
     // layout away, and what it left (`Hello ` before `<b>`) is drawn.
     const text = runs.join('');
     if (text !== '') props.children = text;
   } else {
+    // Words beside elements; and words that are all a block, the page or a
+    // Card holds, which have no Text field in the panel to be seen or
+    // changed in: as the text of such an element they were drawn nowhere,
+    // and a block whose branch is a sentence looked empty.
     runs.forEach((run, index) => {
       if (typeof run !== 'string') {
         childIds.push(buildElementTree(run, id, elements));

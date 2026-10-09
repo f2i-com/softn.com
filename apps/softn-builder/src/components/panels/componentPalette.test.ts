@@ -60,6 +60,54 @@ describe('adding from the palette', () => {
     expect(count('Stack')).toBe(1);
   });
 
+  it('does not offer the page itself, which a page has one of', () => {
+    act(() => root.render(React.createElement(ComponentPalette)));
+    const offered = () => [...host.querySelectorAll<HTMLElement>('[data-palette-item]')].map((item) => item.dataset.paletteItem);
+    expect(offered()).toContain('Stack');
+    expect(offered()).not.toContain('App');
+
+    // Nor when it is searched for by name.
+    const search = host.querySelector<HTMLInputElement>('input[type="search"]')!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setValue.call(search, 'App');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(offered()).not.toContain('App');
+
+    // The number beside the title is the number of components that can be taken.
+    act(() => {
+      setValue.call(search, '');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    for (const header of host.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]')) act(() => header.click());
+    const counted = Number(host.querySelector('.bl-badge')!.textContent);
+    expect(offered().filter((name) => !name!.startsWith('#'))).toHaveLength(counted);
+  });
+
+  it('draws an item the same after it has been dragged as before', () => {
+    // The item set `border` and its dragged state set `borderStyle` and
+    // `borderColor`. When the drag ended React took those two away by
+    // clearing them, which clears that part of the shorthand: the item was
+    // left with no border style, two pixels shorter, and an error in the
+    // console at the end of every drag.
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+    try {
+      act(() => root.render(React.createElement(ComponentPalette)));
+      const item = host.querySelector<HTMLElement>('[data-palette-item="Stack"]')!;
+      const before = item.getAttribute('style');
+      act(() => canvas().setDraggedType('Stack'));
+      expect(item.getAttribute('style')).not.toBe(before);
+      act(() => canvas().setDraggedType(null));
+      expect(item.getAttribute('style')).toBe(before);
+    } finally {
+      console.error = original;
+    }
+    expect(errors.filter((message) => message.includes('shorthand'))).toEqual([]);
+  });
+
   it('says when a search matches nothing', () => {
     act(() => root.render(React.createElement(ComponentPalette)));
     const search = host.querySelector<HTMLInputElement>('input[type="search"]')!;

@@ -8,6 +8,9 @@ import { useFilesStore } from '../../stores/filesStore';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { buildProjectBundle } from '../../utils/buildProjectBundle';
+import { useHistoryStore } from '../../stores/historyStore';
+import { generateSource } from '../../utils/sourceGenerator';
+import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
 
 let changeSource: (value: string) => void;
 vi.mock('./CodeEditor', () => ({ CodeEditor: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => {
@@ -51,5 +54,31 @@ describe('source edits and the visual model', () => {
     expect(host.querySelector('[title="Unsaved changes"]')).not.toBeNull();
     act(() => useFilesStore.getState().markFileDirty('main_ui', false));
     expect(host.querySelector('[title="Unsaved changes"]')).toBeNull();
+  });
+
+  it('is one step for Undo, back to the page as it was when Code was opened', () => {
+    // An edit in Code recorded no step. Back in Design, Undo went to the
+    // state before the last change made on the canvas: what was written in
+    // Code and that change were taken back together, by one press.
+    const canvas = () => useCanvasStore.getState();
+    const onCanvas = () => generateSource(canvas().elements, canvas().rootId, '');
+    /** What the app does after each change: the file's tree goes onto the canvas. */
+    const sync = () => {
+      const file = useFilesStore.getState().uiFiles.get('main_ui')!;
+      if (canvas().elements !== file.elements) canvas().loadState(file.elements, file.rootId);
+    };
+    useHistoryStore.getState().clear();
+
+    act(() => changeSource('<App><Text>Original</Text><Badge>One</Badge></App>'));
+    sync();
+    act(() => changeSource('<App><Text>Original</Text><Badge>Two</Badge></App>'));
+    sync();
+    expect(onCanvas()).toContain('<Badge>Two</Badge>');
+    expect(useHistoryStore.getState().past).toHaveLength(1);
+
+    expect(undoCanvas()).toBe(true);
+    expect(onCanvas()).toBe('<App>\n  <Text>Original</Text>\n</App>');
+    expect(redoCanvas()).toBe(true);
+    expect(onCanvas()).toContain('<Badge>Two</Badge>');
   });
 });

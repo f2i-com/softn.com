@@ -4,14 +4,14 @@
 
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
-  componentRegistry,
+  paletteComponents,
   getComponentsByCategory,
   categoryOrder,
 } from '../../utils/componentRegistry';
 import { TokenIcon } from '../icons/TokenIcon';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
-import { blockPalette } from '../../utils/blocks';
+import { blockPalette, canDropInto } from '../../utils/blocks';
 import type { ComponentMeta } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -111,7 +111,12 @@ const componentStyle: React.CSSProperties = {
   color: 'var(--paper)',
   transition: 'background 0.15s',
   userSelect: 'none',
-  border: '1px solid transparent',
+  // Longhands, as the dragged state below changes two of them: set as the
+  // `border` shorthand, React cleared those two when the drag ended and left
+  // the item with no border style at all.
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: 'transparent',
 };
 
 const componentHoverStyle: React.CSSProperties = {
@@ -146,8 +151,11 @@ interface ComponentItemProps {
  * Enter on a palette item do; a double-click used to add without recording
  * a step, so Undo could not take it back.
  */
-export function insertFromPalette(type: string): string {
+export function insertFromPalette(type: string): string | null {
   const canvas = useCanvasStore.getState();
+  // The page takes what any container takes, and never another page.
+  const page = canvas.elements.get(canvas.rootId);
+  if (!page || !canDropInto(page, type, { elements: canvas.elements })) return null;
   useHistoryStore.getState().push(canvas.elements, canvas.rootId);
   const id = canvas.addElement(type, canvas.rootId, undefined, { starter: true });
   useCanvasStore.getState().selectElement(id);
@@ -316,7 +324,7 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
   // into one becomes its branch. Their alternate branches (#elseif, #else,
   // #empty) are added from the block's properties, not from here.
   const filteredComponents = searchQuery
-    ? [...blockPalette, ...componentRegistry].filter(
+    ? [...blockPalette, ...paletteComponents].filter(
         (c) =>
           c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
           c.description.toLowerCase().includes(searchQuery.toLowerCase())
@@ -328,7 +336,7 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
       <div style={styles.header}>
         <div style={styles.headerLeft}>
           <span>Components</span>
-          <span className="bl-badge">{componentRegistry.length}</span>
+          <span className="bl-badge">{paletteComponents.length}</span>
         </div>
         <div style={styles.headerRight}>
           {onToggleDock && (

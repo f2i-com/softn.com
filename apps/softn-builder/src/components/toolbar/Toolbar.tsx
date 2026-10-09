@@ -4,12 +4,12 @@
 
 import React from 'react';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
-import { useCanvasStore } from '../../stores/canvasStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useInstallPrompt } from './useInstallPrompt';
 import { viewsFor } from '../../utils/workspaceViews';
 import { withMod } from '../../utils/platformKeys';
+import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
 
 // The controls are classes in styles/builder.css (.bl-tool, .bl-seg), which
 // can draw hover and focus; these are only the row's own layout.
@@ -167,35 +167,19 @@ export function Toolbar({
   activeFileType,
 }: ToolbarProps) {
   const { name, isDirty } = useProjectStore();
-  const { canUndo, canRedo, undo, redo } = useHistoryStore();
+  const { canUndo, canRedo } = useHistoryStore();
   const { canInstall, promptInstall } = useInstallPrompt();
   // Hosted, the host's own name for saving back to it, so its button and this one agree.
   const saveLabel = useHostedSaveLabel() ?? 'Save';
 
-  // The history store never holds the current canvas — callers push before
-  // mutating — so stepping in either direction has to hand it over.
-  const currentEntry = () => {
-    const canvas = useCanvasStore.getState();
-    return { elements: canvas.elements, rootId: canvas.rootId, timestamp: Date.now() };
-  };
-
-  const handleUndo = () => {
-    const entry = undo(currentEntry());
-    if (entry) {
-      useCanvasStore.getState().loadState(entry.elements, entry.rootId);
-    }
-  };
-
-  const handleRedo = () => {
-    const entry = redo(currentEntry());
-    if (entry) {
-      useCanvasStore.getState().loadState(entry.elements, entry.rootId);
-    }
-  };
-
   const views = viewsFor(activeFileType);
-  const undoable = canUndo();
-  const redoable = canRedo();
+  // The history is the canvas's, so the two buttons are offered where the
+  // canvas is. In Data they were live, and took an element off a page that
+  // was not on the screen while the collection just added stayed.
+  const canvasShown = view === 'design' && activeFileType === 'ui';
+  const undoable = canvasShown && canUndo();
+  const redoable = canvasShown && canRedo();
+  const elsewhere = view === 'code' ? 'steps the canvas, in Design; the code editor has its own' : 'steps the canvas, in Design';
 
   return (
     <div style={styles.toolbar} role="toolbar" aria-label="Project">
@@ -212,11 +196,11 @@ export function Toolbar({
 
       <div style={styles.divider} />
 
-      <button className="bl-tool" onClick={handleUndo} disabled={!undoable} title={`Undo (${withMod('Z')})`}>
+      <button className="bl-tool" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${withMod('Z')})` : `Undo ${elsewhere}`}>
         <IconUndo /> Undo
       </button>
 
-      <button className="bl-tool" onClick={handleRedo} disabled={!redoable} title={`Redo (${withMod('Y')})`}>
+      <button className="bl-tool" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${withMod('Y')})` : `Redo ${elsewhere}`}>
         <IconRedo /> Redo
       </button>
 

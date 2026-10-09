@@ -2,8 +2,9 @@
  * SourceView - Editable .ui source view with live preview sync
  */
 
-import React, { useMemo, useCallback } from 'react';
+import React, { useMemo, useCallback, useRef } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
+import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { generateSource } from '../../utils/sourceGenerator';
@@ -86,11 +87,24 @@ export function SourceView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elements, rootId, projectCollections, entities, activeFileId, uiFiles, logicFiles]);
 
+  // What is written here is one step for Undo, taken once: the canvas as it
+  // was when this view was opened, or the file changed under it. Without
+  // one, Undo back in Design went to before the last change made on the
+  // canvas, and took that change away along with everything written here.
+  // One and not one per keystroke: the tree of a line half typed is not a
+  // state to step back to and write the file from.
+  const recordedFor = useRef<string | null>(null);
+
   // Handle source changes from the editor
   const handleSourceChange = useCallback(
     (newSource: string) => {
       // Update the store immediately for live preview
       if (activeFileId) {
+        if (recordedFor.current !== activeFileId) {
+          recordedFor.current = activeFileId;
+          const canvas = useCanvasStore.getState();
+          useHistoryStore.getState().push(canvas.elements, canvas.rootId);
+        }
         updateUIFileSource(activeFileId, newSource);
       }
     },

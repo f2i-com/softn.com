@@ -293,6 +293,12 @@ interface FilesStore {
   moveFile: (id: string, newParentPath: string, newName?: string) => void;
   /** Why this file or folder cannot be deleted, or null when it can. */
   deletionRefusedReason: (id: string) => string | null;
+  /**
+   * The pages, by path, that use this file or something in this folder: a
+   * page that imports it with `<import … from>`, or links it with `<logic
+   * src>`. What is left pointing at nothing when it is deleted.
+   */
+  usersOf: (id: string) => string[];
 
   // Tab actions
   openFile: (id: string) => void;
@@ -1104,6 +1110,21 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       }
       return { nodes: newNodes };
     });
+  },
+
+  usersOf: (id) => {
+    const { nodes, uiFiles } = get();
+    const node = nodes.get(id);
+    if (!node) return [];
+    const within = (path: string) => path === node.path || (node.type === 'folder' && path.startsWith(`${node.path}/`));
+    const users: string[] = [];
+    for (const file of uiFiles.values()) {
+      // What is deleted with it is not left behind to miss it.
+      if (within(file.path)) continue;
+      const uses = [...file.imports.map((entry) => entry.source), ...(file.logicSrc ? [file.logicSrc] : [])];
+      if (uses.some((source) => within(resolveImportPath(file.path, source)))) users.push(file.path);
+    }
+    return users.sort();
   },
 
   resolveImportPath: (fromPath, importPath) => {

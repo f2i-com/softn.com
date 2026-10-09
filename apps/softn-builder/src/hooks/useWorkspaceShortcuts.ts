@@ -1,9 +1,12 @@
 import { useEffect, useRef } from 'react';
 import type { ViewMode } from '../utils/openProject';
+import { ownsTextKeys, redoCanvas, undoCanvas } from '../utils/canvasHistory';
 
 export interface WorkspaceShortcutActions {
   blocked: boolean;
   narrow: boolean;
+  /** Whether the canvas is on the screen: Design, with a page open. */
+  canvas?: boolean;
   save: () => void;
   open: () => void;
   create: () => void;
@@ -45,6 +48,17 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
             if (target?.matches('[data-schema-name]')) target.blur();
             fileAction();
           }
+          return;
+        }
+        // Undo and redo step the canvas wherever the focus is while the
+        // canvas is on the screen: they were heard only inside the canvas,
+        // so after picking an element in the hierarchy, or adding one from
+        // the palette, Ctrl+Z did nothing. A field being typed in, and the
+        // code editor, keep their own.
+        if (current.canvas && !current.narrow && !ownsTextKeys(target) && (key === 'z' || (key === 'y' && !event.shiftKey))) {
+          event.preventDefault(); event.stopPropagation();
+          if (key === 'z' && !event.shiftKey) undoCanvas();
+          else redoCanvas();
           return;
         }
         if (isInput || current.narrow || event.shiftKey) return;
