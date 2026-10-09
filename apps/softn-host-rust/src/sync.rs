@@ -992,7 +992,15 @@ impl SyncManager {
             // Without this, each operation auto-commits individually, causing
             // 1000 ops × 1 fsync each = massive I/O overhead and prolonged
             // writer mutex hold time. A single transaction flushes to disk once.
-            let batch_result = db.with_transaction(|db| {
+            //
+            // And as one xdb batch: each record write used to save its
+            // collection's whole CRDT document, which is as large as the
+            // collection, so a push of N ops into a collection of size C
+            // encoded and wrote C bytes N times, all of it under this lock.
+            // The document is now saved once per collection, in the same
+            // transaction as the rows. An op that fails is still refused
+            // alone: xdb keeps the others in the document it saves.
+            let batch_result = db.with_batch(|db| {
                 let mut batch_accepted = Vec::new();
                 let mut batch_rejected = Vec::new();
                 let mut batch_replayed = Vec::new();
@@ -1707,6 +1715,54 @@ mod tests {
         let mut ids = acked(&responses);
         ids.sort();
         assert_eq!(ids, vec!["c2", "c3"]);
+    }
+
+    /// A push writes each collection's CRDT document once, not once an op,
+    /// and what it writes is still every op of the push but the one refused.
+    #[test]
+    fn a_push_saves_each_collections_document_once() {
+        let ops = |prefix: &str| -> Vec<SyncOp> {
+            (0..20).map(|n| op(&format!("{prefix}{n}"), "notes", "create", &format!("n{n}"), serde_json::json!({"n": n}))).collect()
+        };
+        // Twenty ops in one push, and the same twenty a push each: the rows
+        // are the same, and the one push saves the document nineteen fewer times.
+        let (together, db_together) = manager(None);
+        let before = db_together.write().total_changes();
+        let responses = together.handle_sync_push(ops("c"), "a");
+        assert_eq!(acked(&responses).len(), 20, "{responses:?}");
+        let one_push = db_together.write().total_changes() - before;
+
+        let (apart, db_apart) = manager(None);
+        let before = db_apart.write().total_changes();
+        for single in ops("c") {
+            apart.handle_sync_push(vec![single], "a");
+        }
+        let twenty_pushes = db_apart.write().total_changes() - before;
+        assert_eq!(twenty_pushes - one_push, 19, "{one_push} changes for one push, {twenty_pushes} for twenty");
+
+        // One op of a push refused by the store (an update of a record that
+        // is not there); the rest, on both sides of it, are in the document a
+        // peer would be sent.
+        let mixed = together.handle_sync_push(vec![
+            op("u1", "notes", "update", "n1", serde_json::json!({"edited": true})),
+            op("u-missing", "notes", "update", "nobody", serde_json::json!({"edited": true})),
+            op("u2", "notes", "update", "n2", serde_json::json!({"edited": true})),
+        ], "a");
+        let mut done = acked(&mixed);
+        done.sort();
+        assert_eq!(done, vec!["u1", "u2"], "{mixed:?}");
+        assert_eq!(rejected(&mixed), vec!["u-missing"]);
+        let state = db_together.write().get_full_state("notes").unwrap();
+        let dir = std::env::temp_dir().join(format!("softn-sync-peer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let peer = xdb::create_shared_db(dir.join("peer.sqlite")).unwrap();
+        let peer_db = ServerDb::new(peer, &dir.join("peer.sqlite"), 2).unwrap();
+        peer_db.write().apply_remote_update("notes", &state).unwrap();
+        let replicated = peer_db.write().get_collection("notes").unwrap();
+        assert_eq!(replicated.len(), 20);
+        let edited: Vec<&str> = replicated.iter().filter(|r| r.data["edited"] == true).map(|r| r.id.as_str()).collect();
+        assert_eq!(edited.len(), 2, "{edited:?}");
+        assert!(edited.contains(&"n1") && edited.contains(&"n2"));
     }
 
     /// What an after-sync hook throws reaches the caller, which logs it.

@@ -454,6 +454,13 @@ stops taking ops of one push after five seconds; the rest are answered
 `sync_retry` and the client sends them again. Prefer `onBeforeSyncBatch`,
 which is one call for the whole push.
 
+A push is one transaction and one saved CRDT document per collection it
+touches. The document is as large as the collection, and it used to be
+written again for every op of the push, under the store's one writer lock:
+a push of 500 ops into a large collection held every other write on the
+host for the length of 500 such writes. This needs xdb at the revision
+`.github/scripts/checkout-xdb.sh` pins (`with_batch`).
+
 Sync hooks: what `onBeforeSync` or `onBeforeSyncBatch` hands back as an op's
 `data` must be an object no larger than a client may send (512 KB). Anything
 else is not applied, and the client is told to retry, as when the hook
