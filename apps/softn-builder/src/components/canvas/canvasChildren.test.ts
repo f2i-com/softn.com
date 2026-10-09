@@ -112,7 +112,11 @@ function dropFromPalette(dragged: string, into: string): string[] {
 
 describe('a place to drop children', () => {
   it('is not drawn under an element whose content is its words', () => {
-    for (const type of ['Text', 'Heading', 'Badge', 'Tag', 'Kbd', 'Button', 'Alert']) insertFromPalette(type);
+    // Each on the page itself: with one selected, the next would go beside its words.
+    for (const type of ['Text', 'Heading', 'Badge', 'Tag', 'Kbd', 'Button', 'Alert']) {
+      canvas().deselectAll();
+      insertFromPalette(type);
+    }
     mount();
     expect(host.textContent).not.toContain('Drop children here');
     for (const type of ['Text', 'Heading', 'Badge', 'Tag', 'Kbd', 'Button', 'Alert']) {
@@ -133,12 +137,368 @@ describe('a place to drop children', () => {
   });
 });
 
-describe('a drop over the middle of an element', () => {
-  it('goes beside a Text, not into it', () => {
+describe('something that stands in a line of words, over an element whose content is its words', () => {
+  // A labelled Button took nothing at all once it stopped drawing a box for
+  // children, so `<Button><Icon name="plus" /> Add</Button>`, the commonest
+  // pattern there is, could be made only in Code. An Icon, a Kbd, a Badge, a
+  // Tag or a Spinner is part of a line of words, and is taken into one: on
+  // the side of the words the pointer is on.
+
+  /** Let `dragged` go over the element of type `over`, at `x` across it and `y` down it (each 0 to 1). */
+  function dropOn(over: string, dragged: string, x: number, y: number): void {
+    placed(canvas().rootId!, 0);
+    const node = placed(byType(over).id, 200);
+    act(() => canvas().setDraggedType(dragged));
+    act(() => {
+      node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 300 * x, clientY: 200 + 100 * y }));
+    });
+    release(node);
+    act(() => canvas().setDraggedType(null));
+  }
+
+  /** The page as written, which has to be the page the same file gives back. */
+  function written(): string {
+    const text = source();
+    const again = parseSource(text);
+    expect(again.fidelity.reasons, text).toEqual([]);
+    expect(generateSource(again.elements, again.rootId, ''), 'written again from what was read').toBe(text);
+    return text;
+  }
+
+  it('goes after the words when let go on their right, with the space a line of words has', () => {
+    open('<App><Text>Press</Text></App>');
+    mount();
+    dropOn('Text', 'Kbd', 0.8, 0.5);
+    expect(written()).toBe('<App>\n  <Text>Press <Kbd keys="Ctrl+K" /></Text>\n</App>');
+  });
+
+  it('goes before the words when let go on their left', () => {
+    open('<App><Button>Add</Button></App>');
+    mount();
+    dropOn('Button', 'Icon', 0.2, 0.5);
+    expect(written()).toBe('<App>\n  <Button><Icon name="check" size={20} /> Add</Button>\n</App>');
+  });
+
+  it('shows on the element which side that is, before it is let go', () => {
+    open('<App><Heading>Inbox</Heading></App>');
+    mount();
+    placed(canvas().rootId!, 0);
+    const node = placed(byType('Heading').id, 200);
+    act(() => canvas().setDraggedType('Badge'));
+    act(() => {
+      node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 250, clientY: 250 }));
+    });
+    expect(canvas().dropIndicator).toMatchObject({ parentId: byType('Heading').id, side: 'end' });
+    expect(host.querySelector('[data-drop-side="end"]')).not.toBeNull();
+    expect(host.textContent).toContain('after its words');
+    act(() => {
+      node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 40, clientY: 250 }));
+    });
+    expect(host.querySelector('[data-drop-side="start"]')).not.toBeNull();
+    expect(host.textContent).toContain('before its words');
+    act(() => canvas().setDraggedType(null));
+  });
+
+  describe('where the words are a small part of the row the element is drawn as', () => {
+    // A Button is a row of the page, and its label the left end of that
+    // row. Measured against the row, every point on the label was "before
+    // its words": "after" began at the middle of the row, far to the right
+    // of the label, and that is where the bar was drawn too. And an Icon
+    // meant to go beside the Button had only the top and the bottom few
+    // pixels of the row to be let go in. The words are what is measured:
+    // on them is into them, and the rest of the row is beside the element,
+    // as it is for anything else.
+
+    /** The words as a browser would measure them: 16 to 76 across a row that is 300 wide. */
+    const words = { left: 16, right: 76, width: 60, top: 230, bottom: 270, height: 40, x: 16, y: 230, toJSON: () => ({}) };
+    const ranges = Range.prototype as { getBoundingClientRect?: () => DOMRect };
+    let unmeasured: (() => DOMRect) | undefined;
+    beforeEach(() => {
+      unmeasured = ranges.getBoundingClientRect;
+      ranges.getBoundingClientRect = () => words as DOMRect;
+    });
+    afterEach(() => {
+      if (unmeasured) ranges.getBoundingClientRect = unmeasured;
+      else delete ranges.getBoundingClientRect;
+    });
+
+    /** Hold an Icon over the Button at `x` across the row and `y` down the page, and say what is offered. */
+    function held(x: number, y = 250) {
+      placed(canvas().rootId!, 0);
+      const node = placed(byType('Button').id, 200);
+      act(() => canvas().setDraggedType('Icon'));
+      act(() => {
+        node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+      });
+      return canvas().dropIndicator;
+    }
+
+    it('goes before or after them by which half of the words the pointer is on', () => {
+      open('<App><Button>Save</Button></App>');
+      mount();
+      expect(held(30)).toEqual({ parentId: byType('Button').id, index: 0, side: 'start' });
+      expect(held(60)).toEqual({ parentId: byType('Button').id, index: 0, side: 'end' });
+      act(() => canvas().setDraggedType(null));
+    });
+
+    it('is shown where it would go: the bar stands at that end of the words, not of the row', () => {
+      open('<App><Button>Save</Button></App>');
+      mount();
+      held(60);
+      expect(host.querySelector<HTMLElement>('[data-drop-side="end"]')!.style.left).toBe('78px');
+      held(30);
+      expect(host.querySelector<HTMLElement>('[data-drop-side="start"]')!.style.left).toBe('11px');
+      act(() => canvas().setDraggedType(null));
+    });
+
+    it('goes beside the element anywhere on the row away from its words, at any height', () => {
+      open('<App><Button>Save</Button></App>');
+      mount();
+      expect(held(200, 240)).toEqual({ parentId: canvas().rootId, index: 0 });
+      expect(held(200, 260)).toEqual({ parentId: canvas().rootId, index: 1 });
+      // A little past the end of the words is still on them: a label is a small thing to aim at.
+      expect(held(90)).toMatchObject({ parentId: byType('Button').id, side: 'end' });
+      act(() => canvas().setDraggedType(null));
+    });
+  });
+
+  it('still goes beside the element in its upper and lower quarter, as anything does', () => {
+    open('<App><Button>Add</Button></App>');
+    mount();
+    dropOn('Button', 'Icon', 0.5, 0.1);
+    dropOn('Button', 'Badge', 0.5, 0.9);
+    expect(byType('App').children.map((id) => canvas().elements.get(id)!.componentType)).toEqual(['Icon', 'Button', 'Badge']);
+    expect(byType('Button').children).toEqual([]);
+  });
+
+  it('is the only kind taken: a Card or another Button goes beside', () => {
     open('<App><Text>One</Text></App>');
     mount();
-    expect(dropFromPalette('Badge', 'Text')).toEqual([]);
-    expect(source()).toBe('<App>\n  <Text>One</Text>\n  <Badge variant="default">Badge</Badge>\n</App>');
+    dropOn('Text', 'Card', 0.5, 0.5);
+    dropOn('Text', 'Button', 0.5, 0.5);
+    expect(byType('Text').children).toEqual([]);
+    expect(source()).toContain('<Text>One</Text>\n  <Button');
+  });
+
+  it('is not taken by its own kind, nor a Tag by a Button, which would hold a button inside a button', () => {
+    open('<App><Badge>New</Badge><Button>Add</Button></App>');
+    const context = { elements: canvas().elements };
+    expect(canDropInto(byType('Badge'), 'Badge', context)).toBe(false);
+    expect(canDropInto(byType('Badge'), 'Icon', context)).toBe(true);
+    expect(canDropInto(byType('Button'), 'Tag', context)).toBe(false);
+    expect(canDropInto(byType('Button'), 'Spinner', context)).toBe(true);
+  });
+
+  it('is taken the same way when it is moved there from elsewhere on the page', () => {
+    open('<App><Heading>Inbox</Heading><Badge>3</Badge></App>');
+    mount();
+    placed(canvas().rootId!, 0);
+    const node = placed(byType('Heading').id, 200);
+    act(() => canvas().setDraggedElementId(byType('Badge').id));
+    act(() => {
+      node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 280, clientY: 250 }));
+    });
+    release(node);
+    expect(written()).toBe('<App>\n  <Heading>Inbox <Badge>3</Badge></Heading>\n</App>');
+  });
+
+  it('is still the only kind taken once the element holds one: a Text with a key takes a Badge and not a Card', () => {
+    open('<App><Text>Press <Kbd>S</Kbd></Text><Stack><Text>Deep</Text></Stack></App>');
+    const text = byType('Text');
+    const context = { elements: canvas().elements };
+    expect(canDropInto(text, 'Badge', context)).toBe(true);
+    expect(canDropInto(text, '#if', context)).toBe(true);
+    expect(canDropInto(text, '#text', context)).toBe(true);
+    expect(canDropInto(text, 'Card', context)).toBe(false);
+    expect(canDropInto(text, 'Button', context)).toBe(false);
+    // A native element that holds elements is a container like any other.
+    open('<App><div><span>One</span></div></App>');
+    expect(canDropInto(byType('div'), 'Card', { elements: canvas().elements })).toBe(true);
+  });
+
+  it('goes beside the whole line when it is let go over a word or a key in it and is no part of one', () => {
+    // The word under the pointer had nowhere to offer and said so, and that
+    // was the answer: nothing was shown, and the Card landed at the end of
+    // the page when the button was let go.
+    open('<App><Heading>Above</Heading><Text>Hold <Kbd>S</Kbd></Text></App>');
+    mount();
+    placed(canvas().rootId!, 0);
+    const text = byType('Text');
+    placed(text.id, 200);
+    const words = host.querySelector<HTMLElement>(`[data-canvas-element-id="${text.children[0]}"]`)!.parentElement!;
+    act(() => canvas().setDraggedType('Card'));
+    act(() => {
+      words.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 20, clientY: 220 }));
+    });
+    expect(canvas().dropIndicator).toEqual({ parentId: canvas().rootId, index: 1 });
+    act(() => {
+      words.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 20, clientY: 280 }));
+    });
+    expect(canvas().dropIndicator).toEqual({ parentId: canvas().rootId, index: 2 });
+    act(() => canvas().setDraggedType(null));
+  });
+
+  it('is shown no place where neither the word under it nor anything around that has one', () => {
+    // Asking outwards must still end: a place shown a moment ago is taken
+    // away when the last to be asked has none either.
+    open('<App><Text>Hold <Kbd>S</Kbd></Text></App>');
+    mount();
+    placed(canvas().rootId!, 0);
+    const text = byType('Text');
+    placed(text.id, 200);
+    const words = host.querySelector<HTMLElement>(`[data-canvas-element-id="${text.children[0]}"]`)!.parentElement!;
+    act(() => canvas().setDropIndicator({ parentId: canvas().rootId!, index: 0 }));
+    // A branch of a block is dropped nowhere on its own.
+    act(() => canvas().setDraggedType('#else'));
+    act(() => {
+      words.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 20, clientY: 220 }));
+    });
+    expect(canvas().dropIndicator).toBeNull();
+    act(() => canvas().setDraggedType(null));
+  });
+
+  it('is joined in a line that holds elements by a Text, which is a run of its words, and by what the line holds changing places', () => {
+    // The shipped apps style part of a line with a Text inside a Text (79
+    // times in the 78 pages of the directory's apps) and with a span (11).
+    // Held to the kinds the palette marks as part of a line alone, such a
+    // line took no second run, and its own runs could not be put in
+    // another order.
+    open('<App><Text>Score: <Text weight="bold">{score}</Text> <span>pts</span></Text><Kbd>S</Kbd></App>');
+    const context = { elements: canvas().elements };
+    const line = [...canvas().elements.values()].find((element) => element.componentType === 'Text' && element.parentId === canvas().rootId)!;
+    expect(canDropInto(line, 'Text', context)).toBe(true);
+    expect(canDropInto(line, 'span', { ...context, draggedId: byType('span').id })).toBe(true);
+    // Still not what is no part of a line, nor a span from somewhere else.
+    expect(canDropInto(line, 'Card', context)).toBe(false);
+    expect(canDropInto(line, 'span', context)).toBe(false);
+    // A key that holds its letter is not a line a Text goes into.
+    expect(canDropInto(byType('Kbd'), 'Text', context)).toBe(false);
+  });
+
+  it('is the only kind a key takes too, once it holds its letter as words', () => {
+    // `<Kbd>S</Kbd>` holds its letter as words, having no Text field for it,
+    // and anything that holds elements took more of any kind: a Button let
+    // go over the key went inside the key.
+    open('<App><Kbd>S</Kbd><Greeting>Hello <b>you</b></Greeting></App>');
+    const context = { elements: canvas().elements };
+    expect(canDropInto(byType('Kbd'), 'Button', context)).toBe(false);
+    expect(canDropInto(byType('Kbd'), 'Card', context)).toBe(false);
+    expect(canDropInto(byType('Kbd'), 'Icon', context)).toBe(true);
+    expect(canDropInto(byType('Kbd'), '#text', context)).toBe(true);
+    // A component the registry does not know, a page's own, takes any kind.
+    expect(canDropInto(byType('Greeting'), 'Card', context)).toBe(true);
+  });
+
+  it('is taken by a Text that has no words yet', () => {
+    open('<App><Text size="lg" /></App>');
+    mount();
+    dropOn('Text', 'Icon', 0.5, 0.5);
+    expect(written()).toBe('<App>\n  <Text size="lg">\n    <Icon name="check" size={20} />\n  </Text>\n</App>');
+  });
+});
+
+describe('an element being moved, held over itself or over what it holds', () => {
+  it('is offered no place there, and stays where it is when let go', () => {
+    // A Card held over its own Text was shown a line inside itself, where
+    // it cannot go: let go there, nothing moved and an Undo step was
+    // recorded for it all the same. And the place shown a moment before it
+    // came back over itself stayed up, so putting it down where it was
+    // picked up moved it there.
+    open('<App><Heading>Top</Heading><Card><Text>In</Text></Card></App>');
+    mount();
+    placed(canvas().rootId!, 0);
+    const card = placed(byType('Card').id, 200);
+    const text = placed(byType('Text').id, 240);
+    act(() => canvas().setDraggedElementId(byType('Card').id));
+    act(() => canvas().setDropIndicator({ parentId: canvas().rootId!, index: 0 }));
+    pointerAt(text, 250);
+    expect(canvas().dropIndicator).toBeNull();
+
+    act(() => canvas().setDropIndicator({ parentId: canvas().rootId!, index: 0 }));
+    pointerAt(card, 210);
+    expect(canvas().dropIndicator).toBeNull();
+
+    const steps = useHistoryStore.getState().past.length;
+    release(text);
+    expect(byType('App').children.map((id) => canvas().elements.get(id)!.componentType)).toEqual(['Heading', 'Card']);
+    expect(useHistoryStore.getState().past).toHaveLength(steps);
+    act(() => canvas().setDraggedElementId(null));
+  });
+});
+
+describe('a Stack and a Box on the canvas', () => {
+  it('say what they are, as every other container does', () => {
+    // Each was a grey bar with nothing written on it: every other
+    // component is drawn with its name, and these two, which a page is
+    // mostly made of, could be told apart only by hovering over each.
+    open('<App><Stack direction="horizontal"><Box></Box></Stack><Card></Card></App>');
+    mount();
+    const named = (type: string) => host.querySelector(`[data-canvas-element-id="${byType(type).id}"] > [aria-hidden] [data-canvas-container-name]`)?.textContent;
+    expect(named('Stack')).toBe('Stack · horizontal');
+    expect(named('Box')).toBe('Box');
+  });
+});
+
+describe('the empty page', () => {
+  function emptyCanvas(props: { onShowComponents?: () => void } = {}): void {
+    root = createRoot(host);
+    act(() => root!.render(React.createElement(Canvas, props)));
+  }
+
+  it('says to drag one from Components while that panel is open', () => {
+    emptyCanvas();
+    expect(host.textContent).toContain('Drag one from Components onto this page');
+    expect(host.querySelector('[data-action="show-components"]')).toBeNull();
+  });
+
+  it('opens the Components panel from its own sentence where the panel is shut', () => {
+    // In a narrow window the panel starts as a rail at the far left, and the
+    // page still said "Drag one from Components", which was not there.
+    let opened = 0;
+    emptyCanvas({ onShowComponents: () => { opened += 1; } });
+    const open = host.querySelector<HTMLButtonElement>('[data-action="show-components"]')!;
+    expect(open.textContent).toBe('Open Components');
+    expect(host.textContent).toContain('Open Components, then drag one onto this page');
+    act(() => open.click());
+    expect(opened).toBe(1);
+  });
+});
+
+describe('a selected element', () => {
+  it('is outlined, with nothing at its corners that looks like it resizes', () => {
+    // Four squares stood at the corners with resize cursors and did
+    // nothing: an element's size is its properties, not a drag. They also
+    // took the press, so an element could not be picked up by a corner.
+    open('<App><Card></Card></App>');
+    mount();
+    act(() => canvas().selectElement(byType('Card').id));
+    const node = host.querySelector<HTMLElement>(`[data-canvas-element-id="${byType('Card').id}"]`)!;
+    const outline = node.querySelector<HTMLElement>('[data-selection-outline]')!;
+    expect(outline).not.toBeNull();
+    expect(outline.style.pointerEvents).toBe('none');
+    expect(outline.children).toHaveLength(0);
+    expect([...node.querySelectorAll<HTMLElement>('*')].filter((el) => el.style.cursor.includes('resize'))).toEqual([]);
+  });
+});
+
+describe('words, moved', () => {
+  it('do not go into a container that holds one kind of element', () => {
+    // A block may, being how its elements are made; the rule read any type
+    // beginning `#` as a block, and words are `#text`.
+    open('<App><AvatarGroup></AvatarGroup><Card>Loose <Badge>words</Badge></Card></App>');
+    const words = [...canvas().elements.values()].find((el) => el.componentType === '#text')!;
+    expect(canDropInto(byType('AvatarGroup'), words.componentType, { elements: canvas().elements, draggedId: words.id })).toBe(false);
+    expect(canDropInto(byType('AvatarGroup'), '#each', { elements: canvas().elements })).toBe(true);
+  });
+});
+
+describe('a drop over the middle of an element', () => {
+  it('goes beside a Text when it is not part of a line of words', () => {
+    // This used to be a Badge, which is now taken into the Text (above).
+    open('<App><Text>One</Text></App>');
+    mount();
+    expect(dropFromPalette('Card', 'Text')).toEqual([]);
+    expect(source()).toBe('<App>\n  <Text>One</Text>\n  <Card padding="md" variant="elevated" />\n</App>');
   });
 
   it('goes beside a Tabs, which would not draw it', () => {

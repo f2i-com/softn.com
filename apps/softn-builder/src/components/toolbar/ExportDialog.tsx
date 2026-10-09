@@ -30,6 +30,7 @@ import { buildProjectBundle, bundleFileName, gatherCollections } from '../../uti
 import type { PermissionDeclaration } from '../../utils/permissions';
 import { destinationLabel, prepareHandoff, type ReadyHandoff } from '../../utils/handoff';
 import { isDesktop, saveDesktopFile } from '../../utils/desktop';
+import { danglingReferences, describeDangling, type DanglingReference } from '../../utils/projectReferences';
 import {
   discardQuarantinedSession,
   exportQuarantinedSession,
@@ -268,6 +269,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   /** A bundle staged for the runtime or the publish page, with the link that claims it. */
   const [ready, setReady] = useState<ReadyHandoff | null>(null);
   const [inspection, setInspection] = useState<BundleInspection | null>(null);
+  const [references, setReferences] = useState<DanglingReference[]>([]);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   /** A saved session that would not restore, kept for download (utils/openProject.ts). */
   const [quarantine, setQuarantine] = useState<QuarantinedSession | null>(null);
@@ -381,13 +383,20 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   useEffect(() => {
     if (!isOpen) return;
     setInspection(null);
+    setReferences([]);
     setPreflightError(null);
     if (collections.error) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       buildProjectBundle()
         .then((bytes) => {
-          if (!cancelled) setInspection(inspectBundle(bytes));
+          if (cancelled) return;
+          setInspection(inspectBundle(bytes));
+          // What the directory's reading does not ask: whether each page's
+          // imports and logic link lead to a file the project has. Read
+          // after the build, which puts the canvas into its file first.
+          const files = useFilesStore.getState();
+          setReferences(danglingReferences(files.uiFiles, files.logicFiles));
         })
         .catch((e) => {
           if (!cancelled) setPreflightError(e instanceof Error ? e.message : 'Could not check the bundle.');
@@ -723,6 +732,15 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                           ✕ {l.text}
                         </span>
                       ))}
+                      {references.length > 0 && (
+                        <span data-report="references" style={{ display: 'contents' }}>
+                          {references.map((reference, i) => (
+                            <span key={`r${i}`} style={styles.reportWarn}>
+                              △ {describeDangling(reference)}
+                            </span>
+                          ))}
+                        </span>
+                      )}
                       {warns.map((l, i) => (
                         <span key={`w${i}`} style={styles.reportWarn}>
                           △ {l.text}

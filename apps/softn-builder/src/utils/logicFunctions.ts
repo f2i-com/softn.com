@@ -115,3 +115,148 @@ export function handlerTarget(value: string): string | null {
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Making the function a handler names
+// ---------------------------------------------------------------------------
+
+const JS_RESERVED = new Set(
+  ('break case catch class const continue debugger default delete do else enum export extends false finally for function if ' +
+    'import in instanceof let new null return static super switch this throw true try typeof var void while with yield await async').split(' ')
+);
+const PYTHON_RESERVED = new Set(
+  ('False None True and as assert async await break class continue def del elif else except finally for from global if import ' +
+    'in is lambda nonlocal not or pass raise return try while with yield').split(' ')
+);
+
+/** Whether `name` can be the name of a function in a logic file of this language. */
+export function isFunctionName(name: string, language: LogicLanguage): boolean {
+  if (language === 'python') return /^[A-Za-z_]\w*$/.test(name) && !PYTHON_RESERVED.has(name);
+  return /^[A-Za-z_$][\w$]*$/.test(name) && !JS_RESERVED.has(name);
+}
+
+/**
+ * How many arguments a handler passes the function it calls: `save()` none,
+ * `remove(task.id, "now")` two, and a bare `save` none (the event it would
+ * be handed is not something the function was written to take).
+ */
+export function callArgumentCount(handler: string): number {
+  const text = handler.trim().replace(/^\{([\s\S]*)\}$/, '$1').trim();
+  const body = text.match(/^(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*([\s\S]+)$/)?.[1]?.trim() ?? text;
+  const open = body.indexOf('(');
+  if (open === -1) return 0;
+  let depth = 0;
+  let quote: string | null = null;
+  let count = 0;
+  let any = false;
+  for (let i = open; i < body.length; i += 1) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === '\\') i += 1;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; any = true; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') { depth += 1; if (depth > 1) any = true; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') {
+      depth -= 1;
+      if (depth === 0) return any ? count + 1 : 0;
+      continue;
+    }
+    if (depth === 1 && ch === ',') count += 1;
+    else if (!/\s/.test(ch)) any = true;
+  }
+  return 0;
+}
+
+/**
+ * Whether a logic file ends where a new top-level function can be written:
+ * not inside a string, a comment, a bracket or a block left open, where what
+ * was added would land in the middle of it. Read by scanning, since the file
+ * is often mid-edit and nothing here may run it.
+ */
+export function endsFinished(content: string, language: LogicLanguage): boolean {
+  let depth = 0;
+  let i = 0;
+  const n = content.length;
+  if (language === 'python') {
+    while (i < n) {
+      const ch = content[i];
+      if (ch === '#') {
+        while (i < n && content[i] !== '\n') i += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        const triple = content.startsWith(ch.repeat(3), i);
+        const close = triple ? ch.repeat(3) : ch;
+        i += close.length;
+        let closed = false;
+        while (i < n) {
+          if (content[i] === '\\') { i += 2; continue; }
+          if (content.startsWith(close, i)) { i += close.length; closed = true; break; }
+          // A string in one pair of quotes ends with its line.
+          if (!triple && content[i] === '\n') break;
+          i += 1;
+        }
+        if (!closed) return false;
+        continue;
+      }
+      if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+      else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+      i += 1;
+    }
+    if (depth !== 0) return false;
+    // A block with no body yet, or a line carried on to the next.
+    const last = content.split('\n').map((line) => line.replace(/#.*$/, '').trimEnd()).filter((line) => line !== '').pop() ?? '';
+    return !last.endsWith(':') && !last.endsWith('\\');
+  }
+
+  while (i < n) {
+    const ch = content[i];
+    const next = content[i + 1];
+    if (ch === '/' && next === '/') {
+      while (i < n && content[i] !== '\n') i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = content.indexOf('*/', i + 2);
+      if (end === -1) return false;
+      i = end + 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      i += 1;
+      let closed = false;
+      while (i < n) {
+        if (content[i] === '\\') { i += 2; continue; }
+        if (content[i] === ch) { i += 1; closed = true; break; }
+        if (ch !== '`' && content[i] === '\n') break;
+        i += 1;
+      }
+      if (!closed) return false;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    i += 1;
+  }
+  return depth === 0;
+}
+
+const PARAMETER_NAMES = ['first', 'second', 'third'];
+
+/**
+ * `content` with an empty function called `name` added at its end, taking
+ * `parameters` arguments; or null where that could not be right (see
+ * {@link isFunctionName} and {@link endsFinished}), or the file has one
+ * already.
+ */
+export function withNewFunction(content: string, name: string, parameters: number, language: LogicLanguage): string | null {
+  if (!isFunctionName(name, language) || !endsFinished(content, language)) return null;
+  if (logicFunctions(content, language).some((fn) => fn.name === name)) return null;
+  const params = Array.from({ length: parameters }, (_, i) => PARAMETER_NAMES[i] ?? `arg${i + 1}`).join(', ');
+  const start = content === '' || content.endsWith('\n') ? content : `${content}\n`;
+  return language === 'python'
+    ? `${start}${start === '' ? '' : '\n\n'}def ${name}(${params}):\n    pass\n`
+    : `${start}${start === '' ? '' : '\n'}function ${name}(${params}) {\n}\n`;
+}

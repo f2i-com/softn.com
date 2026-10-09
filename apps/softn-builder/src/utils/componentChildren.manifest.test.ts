@@ -25,6 +25,7 @@ import { insertFromPalette } from '../components/panels/ComponentPalette';
 import { useCanvasStore } from '../stores/canvasStore';
 import { componentRegistry } from './componentRegistry';
 import { generateSource } from './sourceGenerator';
+import { parseSource } from './sourceParser';
 
 // The scanner library needs a camera and a canvas it cannot have here.
 vi.mock('@yudiel/react-qr-scanner', () => ({
@@ -101,6 +102,43 @@ describe('the Builder registry against what each component draws', () => {
     // words; but a new one is words, edited in the panel, not a container.
     const held = ['Text', 'Heading', 'Badge', 'Tag', 'Kbd'].filter((name) => componentRegistry.find((meta) => meta.name === name)!.allowChildren);
     expect(held).toEqual([]);
+  });
+});
+
+describe('three components whose props name children and whose entries said they took none', () => {
+  const entry = (name: string) => componentRegistry.find((meta) => meta.name === name)!;
+
+  it('EmptyState is a container: what is put in it is drawn under its description', () => {
+    expect(entry('EmptyState').allowChildren).toBe(true);
+    const html = rendered('<EmptyState title="No tasks yet" description="Add the first one."><Button>Add a task</Button></EmptyState>');
+    expect(html.indexOf('Add the first one.')).toBeGreaterThan(-1);
+    expect(html.indexOf('Add a task')).toBeGreaterThan(html.indexOf('Add the first one.'));
+  });
+
+  it('CopyButton’s children are its label, so the label is its Text', () => {
+    expect(entry('CopyButton').propSchema.some((prop) => prop.name === 'children' && prop.type === 'string')).toBe(true);
+    // Its words, not a container for anything.
+    expect(entry('CopyButton').allowChildren).toBe(false);
+    const id = insertFromPalette('CopyButton')!;
+    const canvas = useCanvasStore.getState();
+    expect(canvas.elements.get(id)!.props.children).toBe('Copy');
+    const source = generateSource(canvas.elements, canvas.rootId, '');
+    expect(source).toContain('>Copy</CopyButton>');
+    expect(source).not.toContain('label=');
+    // A page's own label is read as the words it is, and drawn.
+    const parsed = parseSource('<App>\n  <CopyButton value={link}>Copy the link</CopyButton>\n</App>');
+    const button = [...parsed.elements.values()].find((el) => el.componentType === 'CopyButton')!;
+    expect(button.props.children).toBe('Copy the link');
+    expect(button.children).toEqual([]);
+    expect(rendered('<CopyButton value="x">Copy the link</CopyButton>')).toContain('Copy the link');
+  });
+
+  it('Avatar stays a leaf: what is written inside it takes the place of its picture and its initials', () => {
+    expect(entry('Avatar').allowChildren).toBe(false);
+    expect(rendered('<Avatar name="Ada Lovelace" />')).toContain('>AL<');
+    const custom = rendered('<Avatar name="Ada Lovelace"><Icon name="check" /></Avatar>');
+    expect(custom).not.toContain('>AL<');
+    expect(custom).toContain('<svg');
   });
 });
 

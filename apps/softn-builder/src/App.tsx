@@ -320,6 +320,12 @@ function App() {
   // A panel the window has no room for starts as its rail, so the canvas is
   // on the screen: at 900 pixels the three panels left it no room at all.
   const { files: dockFiles, components: dockComponents, setFiles: setDockFiles, setComponents: setDockComponents } = useSidePanels();
+  // From the empty page's own sentence: the panel opens with the focus in
+  // its search, which is where a component is looked for.
+  const showComponents = useCallback(() => {
+    setDockComponents(true);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('[aria-label="Search components"]')?.focus());
+  }, [setDockComponents]);
   const [dockInspector, setDockInspector] = useState(true);
   const [dockLogic, setDockLogic] = useState(true);
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -663,7 +669,7 @@ function App() {
                   ) : isLogicFileActive ? (
                     <LogicEditor />
                   ) : (
-                    <Canvas />
+                    <Canvas onShowComponents={dockComponents ? undefined : showComponents} />
                   )}
                 </div>
                 {hasActiveFile && !isLogicFileActive && !isAssetFileActive && dockLogic && (

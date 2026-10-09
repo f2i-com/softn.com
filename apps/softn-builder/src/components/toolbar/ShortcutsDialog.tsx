@@ -129,6 +129,17 @@ const shortcuts: { title: string; entries: ShortcutEntry[] }[] = [
       { action: 'Select (add to selection)', keys: [['Enter'], ['Shift', 'Enter']] },
     ],
   },
+  {
+    // Nothing but a drag moved an element. What is added goes where the
+    // selection is, and these move what is selected.
+    title: 'Move the selected element',
+    entries: [
+      { action: 'Up / down among its siblings', keys: [['Alt', 'Shift', '↑'], ['Alt', 'Shift', '↓']] },
+      { action: 'Into the container before it', keys: [['Alt', 'Shift', '→']] },
+      { action: 'Out of what holds it', keys: [['Alt', 'Shift', '←']] },
+      { action: 'Add from the palette at the selection', keys: [['Enter']] },
+    ],
+  },
 ];
 
 function ShortcutKeys({ keys }: { keys: string[][] }) {

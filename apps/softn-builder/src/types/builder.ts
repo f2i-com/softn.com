@@ -22,6 +22,8 @@ export interface ComponentMeta {
   childTypes?: string[];
   /** How many elements the component draws, where it draws no more: a Split has two panes. */
   maxChildren?: number;
+  /** Whether it stands in a line of words, as an Icon or a key does (componentRegistry.ts, INLINE_KINDS). */
+  inline?: boolean;
 }
 
 export type ComponentCategory =
@@ -209,6 +211,18 @@ export interface ProjectState {
   assets: AssetFile[];
 }
 
+/**
+ * Where a drag would land: at `index` among what `parentId` holds. With a
+ * `side`, it is into an element whose content is its words, before or after
+ * them; the words are not an element until something stands beside them,
+ * so there is no index to give.
+ */
+export interface DropIndicator {
+  parentId: string;
+  index: number;
+  side?: 'start' | 'end';
+}
+
 // Canvas state for drag-drop
 export interface CanvasState {
   elements: Map<string, CanvasElement>;
@@ -228,7 +242,7 @@ export interface CanvasState {
   draggedType: string | null;
   dropTargetId: string | null;
   draggedElementId: string | null;
-  dropIndicator: { parentId: string; index: number } | null;
+  dropIndicator: DropIndicator | null;
   imports?: UIImport[]; // Imports from the current file
 }
 
@@ -237,6 +251,26 @@ export interface HistoryEntry {
   elements: Map<string, CanvasElement>;
   rootId: string;
   timestamp: number;
+  /**
+   * The logic files the step also changed, each with its text in this
+   * state. A step is the canvas; one that writes a function into the logic
+   * (the panel's "Create" beside a handler) is undone whole only if the
+   * file goes back with it.
+   */
+  logic?: LogicSnapshot[];
+}
+
+/**
+ * A logic file's text at one moment of the history, and the text the file
+ * has to have now for it to be put back. A file that has been written in
+ * since the step is not that step's to take back: putting `content` over it
+ * would throw away the body just typed into a function the step made.
+ */
+export interface LogicSnapshot {
+  id: string;
+  content: string;
+  /** What the step left the file as. Absent, the file is put back whatever it holds. */
+  expects?: string;
 }
 
 export interface HistoryState {

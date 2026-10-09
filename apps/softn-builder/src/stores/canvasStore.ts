@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import { useProjectStore } from './projectStore';
-import { TEXT_NODE_TYPE, type CanvasBlock, type CanvasElement, type CanvasState, type UIImport } from '../types/builder';
+import { TEXT_NODE_TYPE, type CanvasBlock, type CanvasElement, type CanvasState, type DropIndicator, type UIImport } from '../types/builder';
 import { debug } from '../utils/debug';
 import { branchEnd, canDropInto, defaultBlock, hasTextField, isBlockHead, isContinuationType, wordsOf } from '../utils/blocks';
 import { starterProps } from '../utils/starterProps';
@@ -25,12 +25,18 @@ function generateId(): string {
  * first child kept its words on the canvas and in the panel and lost them
  * from the file. Returns whether there were words to move: they are first,
  * so a place counted before they were an element is one further on.
+ *
+ * With a `side`, the element is being put into the line of words itself,
+ * before or after them, and the words are given the space a line of words
+ * has there: `Press` and a key are `Press <Kbd />`, not `Press<Kbd />`.
  */
-function wordsBecomeElement(elements: Map<string, CanvasElement>, parentId: string): boolean {
+function wordsBecomeElement(elements: Map<string, CanvasElement>, parentId: string, side?: 'start' | 'end'): boolean {
   const parent = elements.get(parentId);
   if (!parent) return false;
-  const words = wordsOf(parent);
+  let words = wordsOf(parent);
   if (words === null) return false;
+  if (side === 'end' && !/\s$/.test(words)) words = `${words} `;
+  if (side === 'start' && !/^\s/.test(words)) words = ` ${words}`;
 
   const id = generateId();
   elements.set(id, {
@@ -60,11 +66,12 @@ interface CanvasStore extends CanvasState {
    * taken from the palette. Without, it has no props, for a caller that sets
    * its own (a project template).
    */
-  addElement: (type: string, parentId: string | null, index?: number, options?: { starter?: boolean }) => string;
+  addElement: (type: string, parentId: string | null, index?: number, options?: { starter?: boolean; side?: 'start' | 'end' }) => string;
   updateElement: (id: string, updates: Partial<CanvasElement>) => void;
   updateElementProps: (id: string, props: Record<string, unknown>) => void;
   deleteElement: (id: string) => void;
-  moveElement: (id: string, newParentId: string | null, index: number) => void;
+  /** With a `side`, into the line of words `newParentId` holds, before or after them (see DropIndicator). */
+  moveElement: (id: string, newParentId: string | null, index: number, side?: 'start' | 'end') => void;
   duplicateElement: (id: string) => string | null;
 
   // Control-flow blocks (utils/blocks.ts). None of these push history; the
@@ -99,14 +106,23 @@ interface CanvasStore extends CanvasState {
 
   // Clipboard
   copySelected: () => void;
-  paste: (parentId: string | null) => void;
+  /**
+   * Paste what was copied into `parentId` (the page when null): at `index`
+   * among what it holds, or beside its words on `side`, or at the end of
+   * its branch when neither is given. What it does not take is left out.
+   */
+  paste: (parentId: string | null, index?: number, side?: 'start' | 'end') => void;
+
+  /** What was last done that a person who cannot see the canvas should hear (a move made from the keyboard). */
+  announcement: string;
+  announce: (text: string) => void;
   cutSelected: () => void;
 
   // Drag state
   setDraggedType: (type: string | null) => void;
   setDropTargetId: (id: string | null) => void;
   setDraggedElementId: (id: string | null) => void;
-  setDropIndicator: (indicator: { parentId: string; index: number } | null) => void;
+  setDropIndicator: (indicator: DropIndicator | null) => void;
   draggedElementId: string | null;
 
   // Reset
@@ -217,14 +233,17 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       newElements.set(id, newElement);
 
       // Add to parent's children, after the words it held as its text.
-      const shift = wordsBecomeElement(newElements, parent) ? 1 : 0;
+      const side = options?.side;
+      const shift = wordsBecomeElement(newElements, parent, side) ? 1 : 0;
       const parentElement = newElements.get(parent);
       if (parentElement) {
         const newChildren = [...parentElement.children];
         // An element of a block goes in its branch, before any `#else` or
         // `#empty`: after one it would be written inside that branch.
         const end = isContinuationType(type) ? newChildren.length : branchEnd(parentElement, newElements);
-        newChildren.splice(index !== undefined && index >= 0 ? Math.min(index + shift, end) : end, 0, id);
+        // A side is a place beside the words, whatever number came with it.
+        const at = side === 'start' ? 0 : side === 'end' ? end : index !== undefined && index >= 0 ? Math.min(index + shift, end) : end;
+        newChildren.splice(at, 0, id);
         newElements.set(parent, { ...parentElement, children: newChildren });
       }
 
@@ -298,7 +317,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     });
   },
 
-  moveElement: (id, newParentId, index) => {
+  moveElement: (id, newParentId, index, side) => {
     edit((state) => {
       const element = state.elements.get(id);
       if (!element) return state;
@@ -347,11 +366,13 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
       // Add to new parent, within its own branch and after the words it
       // held as its text (see addElement).
-      if (wordsBecomeElement(newElements, targetParentId)) at += 1;
+      if (wordsBecomeElement(newElements, targetParentId, side)) at += 1;
       const newParent = newElements.get(targetParentId);
       if (newParent) {
         const newChildren = [...newParent.children];
-        newChildren.splice(Math.max(0, Math.min(at, branchEnd(newParent, newElements))), 0, id);
+        const end = branchEnd(newParent, newElements);
+        if (side) at = side === 'start' ? 0 : end;
+        newChildren.splice(Math.max(0, Math.min(at, end)), 0, id);
         newElements.set(targetParentId, { ...newParent, children: newChildren });
       }
 
@@ -610,17 +631,26 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     set({ clipboard, clipboardTree });
   },
 
-  paste: (parentId) => {
+  paste: (parentId, index, side) => {
     const state = get();
     if (state.clipboard.length === 0) return;
 
     const targetParentId = parentId || state.rootId;
+    const target = state.elements.get(targetParentId);
+    if (!target) return;
+    // Only what the target takes, asked of it as it stands: a paste used to
+    // be an append with no questions, which put a third pane in a Split and
+    // an `#else` on the page.
+    const taken = state.clipboard.filter((el) => canDropInto(target, el.componentType, { elements: state.elements }));
+    if (taken.length === 0) return;
     const newIds: string[] = [];
 
     edit((currentState) => {
       const newElements = new Map(currentState.elements);
-      // What is pasted goes after the words the target held as its text.
-      wordsBecomeElement(newElements, targetParentId);
+      // What is pasted goes after the words the target held as its text,
+      // or before them when that is the side asked for.
+      const shift = wordsBecomeElement(newElements, targetParentId, side) ? 1 : 0;
+      let at = side === 'start' ? 0 : side === 'end' || index === undefined ? Number.POSITIVE_INFINITY : index + shift;
 
       // Deep clone function to recursively clone element and children
       const deepCloneElement = (el: CanvasElement, newParentId: string): string => {
@@ -653,19 +683,22 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         return newId;
       };
 
-      currentState.clipboard.forEach((el) => {
+      taken.forEach((el) => {
+        // Asked again of the target as it is now: it may have room for one more and not two.
+        const parent = newElements.get(targetParentId);
+        if (!parent || !canDropInto(parent, el.componentType, { elements: newElements })) return;
         const newId = deepCloneElement(el, targetParentId);
         newIds.push(newId);
 
-        // Add to parent
-        const parent = newElements.get(targetParentId);
-        if (parent) {
-          newElements.set(targetParentId, {
-            ...parent,
-            children: [...parent.children, newId],
-          });
-        }
+        // In the target's own branch: after an `#else` or `#empty` it would be
+        // written inside that branch.
+        const children = [...parent.children];
+        const where = Math.max(0, Math.min(at, branchEnd(parent, newElements)));
+        children.splice(where, 0, newId);
+        newElements.set(targetParentId, { ...parent, children });
+        at = where + 1;
       });
+      if (newIds.length === 0) return currentState;
 
       return { elements: newElements, selectedIds: newIds };
     });
@@ -691,6 +724,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
   setDropIndicator: (indicator) => {
     set({ dropIndicator: indicator });
+  },
+
+  announcement: '',
+  announce: (text) => {
+    set({ announcement: text });
   },
 
   reset: () => {

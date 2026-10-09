@@ -2,7 +2,7 @@
  * CanvasElement - Draggable wrapper for components on the canvas
  */
 
-import React, { useCallback, useState, useEffect, useRef, useMemo } from 'react';
+import React, { useCallback, useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
@@ -11,11 +11,11 @@ import { useFilesStore } from '../../stores/filesStore';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
 import { blockHeaderText } from '../../utils/sourceGenerator';
-import { acceptsChildren, blockDescription, branchEnd, canDropInto, elementLabel, isTextNode } from '../../utils/blocks';
+import { acceptsChildren, blockDescription, branchEnd, canDropInto, elementLabel, isTextNode, takesInline } from '../../utils/blocks';
 import { parseStringLiteralVariables } from '../../utils/logicStringLiterals';
 import { dockLogicFile, entryFileId, logicLanguageOf } from '../../utils/logicFiles';
 import { TokenIcon } from '../icons/TokenIcon';
-import type { CanvasElement as CanvasElementType } from '../../types/builder';
+import type { CanvasElement as CanvasElementType, DropIndicator } from '../../types/builder';
 
 /**
  * The pointer events an element has already answered. An element inside
@@ -35,6 +35,62 @@ function draggedTypeOf(state: { draggedType: string | null; draggedElementId: st
 /** The place an element's wrapper draws for its own children, or null when it draws none. */
 function ownChildrenArea(wrapper: HTMLElement): HTMLElement | null {
   return wrapper.querySelector<HTMLElement>(':scope > [data-canvas-treeitem] > [data-children-area]');
+}
+
+/** How far to either side of an element's words the pointer still counts as on them: a label is a small thing to aim at. */
+const NEAR_WORDS = 16;
+
+/**
+ * Where the words of the element drawn in `item` are, as the browser laid
+ * them out, or null where that is not known (nothing is drawn, or there is
+ * no layout to ask).
+ *
+ * An element is drawn as a row of what holds it, and its words are often
+ * the left end of that row: a Button's label, a short Text. Which side of
+ * its words a drop goes was measured against the row, so every point on a
+ * label was before it, and "after" began far to the right of it.
+ */
+function wordsBox(item: Element | null | undefined): DOMRect | null {
+  const drawn = item?.querySelector(':scope > [aria-hidden="true"]')?.lastElementChild;
+  if (!drawn) return null;
+  const range = document.createRange();
+  range.selectNodeContents(drawn);
+  // Not every DOM measures a range, and one that does not has no box to give.
+  const box = range.getBoundingClientRect?.();
+  return box && box.width > 0 ? box : null;
+}
+
+const sideBarStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 4,
+  bottom: 4,
+  width: 3,
+  background: 'var(--coral)',
+  borderRadius: 2,
+  // Ringed in the colour of the page: the end of a Button's label is inside
+  // the Button, and a coral bar on a coral Button could not be seen.
+  boxShadow: '0 0 0 1.5px var(--ink)',
+  pointerEvents: 'none',
+  zIndex: 20,
+};
+
+/**
+ * The bar that shows which side of an element's words a drop would go: at
+ * that end of the words where they can be measured, and at that edge of the
+ * element where they cannot.
+ */
+function WordsSideBar({ side }: { side: 'start' | 'end' }) {
+  const bar = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const node = bar.current;
+    const item = node?.parentElement;
+    const words = wordsBox(item);
+    if (!node || !item || !words) return;
+    const origin = item.getBoundingClientRect();
+    node.style.right = 'auto';
+    node.style.left = `${Math.round((side === 'start' ? words.left - 5 : words.right + 2) - origin.left)}px`;
+  }, [side]);
+  return <div ref={bar} data-drop-side={side} style={{ ...sideBarStyle, ...(side === 'start' ? { left: 2 } : { right: 2 }) }} />;
 }
 
 /** Where among the elements drawn in `area` the height `y` falls: before the first whose middle is below it. */
@@ -148,6 +204,12 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'pre-wrap' as const,
     overflowWrap: 'anywhere' as const,
     marginBottom: 4,
+  },
+  // What a container is, where its drawing is otherwise an empty bar.
+  containerName: {
+    fontFamily: 'var(--mono)',
+    fontSize: 11,
+    color: 'var(--dim)',
   },
   // A block's header strip: the keyword and its expression, set in the
   // mono face so it reads as the source line it will be written as.
@@ -277,10 +339,18 @@ export const CanvasElement = React.memo(function CanvasElement({
       if (!state.draggedType && !state.draggedElementId) return;
 
       if (answered.has(e)) return;
-      answered.add(e);
 
-      // Don't show indicator on the element being dragged
-      if (state.draggedElementId === elementId) return;
+      // No place is shown on the element being dragged, nor on anything it
+      // holds: it does not go into itself. Its own Text offered a line
+      // inside it, where letting go moved nothing and still recorded a
+      // step to undo; and the place shown before it came back over itself
+      // stayed up, so putting it down where it was picked up moved it.
+      const moved = state.draggedElementId;
+      if (moved && (moved === elementId || isDescendantOf(state.elements, elementId, moved))) {
+        answered.add(e);
+        if (state.dropIndicator) state.setDropIndicator(null);
+        return;
+      }
 
       const rect = el.getBoundingClientRect();
       const relativeY = (e.clientY - rect.top) / rect.height;
@@ -290,7 +360,7 @@ export const CanvasElement = React.memo(function CanvasElement({
       const myIndex = parentElement.children.indexOf(elementId);
       if (myIndex === -1) return;
 
-      let indicator: { parentId: string; index: number } | null;
+      let indicator: DropIndicator | null;
 
       // What may hold what decides where a drop is offered, not only the
       // cursor: a place that is shown is a place the drop is made.
@@ -300,6 +370,16 @@ export const CanvasElement = React.memo(function CanvasElement({
       const takesIt = allowsChildren && self !== undefined && canDropInto(self, dragged, context);
       const beside = canDropInto(parentElement, dragged, context);
       const area = takesIt ? ownChildrenArea(el) : null;
+      // An element whose content is its words draws no place for children
+      // and takes what stands in a line of words, beside them.
+      const inline = !takesIt && self !== undefined && takesInline(self, dragged);
+      // On its words is into them, and the rest of the row it is drawn as
+      // is beside it, as for anything else: let go beside a small Button,
+      // an Icon went into the Button from anywhere but the top and bottom
+      // few pixels of the row. Where the words cannot be measured, the
+      // whole of the row is taken as them.
+      const words = inline ? wordsBox(el.querySelector(':scope > [data-canvas-treeitem]')) : null;
+      const onWords = inline && (!words || (e.clientX >= words.left - NEAR_WORDS && e.clientX <= words.right + NEAR_WORDS));
 
       if (area && e.target instanceof Node && area.contains(e.target)) {
         // In this element's own place for children, with none of them under
@@ -312,25 +392,42 @@ export const CanvasElement = React.memo(function CanvasElement({
         // Into this container: the middle half of it, or all of it when the
         // element may not go beside it. At the end of its own branch.
         indicator = { parentId: elementId, index: branchEnd(self, state.elements) };
+      } else if (inline && (!beside || (onWords && relativeY >= 0.25 && relativeY <= 0.75))) {
+        // Into its line of words: before them on the left half of the
+        // words, after them on the right. Their upper and lower quarters
+        // stay a drop beside it, as for a container.
+        const middle = words ? words.left + words.width / 2 : rect.left + rect.width / 2;
+        indicator = { parentId: elementId, index: 0, side: e.clientX < middle ? 'start' : 'end' };
       } else if (!beside) {
         indicator = null;
-      } else if (relativeY < (takesIt ? 0.25 : 0.5)) {
+      } else if (relativeY < (takesIt || onWords ? 0.25 : 0.5)) {
         indicator = { parentId: elementParentId, index: myIndex };
       } else {
         indicator = { parentId: elementParentId, index: myIndex + 1 };
       }
 
       if (!indicator) {
-        if (state.dropIndicator) state.setDropIndicator(null);
+        // Nowhere here for it, in this element or beside it. That is not
+        // the answer: what holds this element is asked next, and may have a
+        // place beside itself. A Card over a word in a line of words is
+        // offered a place beside the line; with this taken as the answer it
+        // was offered nothing, and landed at the end of the page.
+        //
+        // Only the last to be asked, an element of the page itself, takes
+        // the place shown away: one further in that did would have it taken
+        // away and put back on every move of the pointer.
+        if (elementParentId === state.rootId && state.dropIndicator) state.setDropIndicator(null);
         return;
       }
+      answered.add(e);
 
       // Only update if changed
       const current = state.dropIndicator;
       if (
         !current ||
         current.parentId !== indicator.parentId ||
-        current.index !== indicator.index
+        current.index !== indicator.index ||
+        current.side !== indicator.side
       ) {
         state.setDropIndicator(indicator);
       }
@@ -360,9 +457,15 @@ export const CanvasElement = React.memo(function CanvasElement({
       const state = useCanvasStore.getState();
       if (state.draggedType || state.draggedElementId) return;
 
-      // Don't start drag if clicking on children area
-      const target = e.target as HTMLElement;
-      if (target.closest('[data-children-area]')) return;
+      // A press in the place this element draws for its own children picks
+      // nothing up: that is where things are let go. It used to be any such
+      // place around the press, and everything inside a container is inside
+      // the container's: nothing that had been put in one could be dragged
+      // again. A press on something this element holds never gets here, the
+      // inner element having taken it.
+      const target = e.target as Node;
+      const ownArea = e.currentTarget.querySelector(':scope > [data-children-area]');
+      if (ownArea?.contains(target)) return;
 
       e.stopPropagation();
 
@@ -402,7 +505,7 @@ export const CanvasElement = React.memo(function CanvasElement({
         e.stopPropagation();
         const historyState = useHistoryStore.getState();
         historyState.push(state.elements, state.rootId);
-        state.addElement(state.draggedType, indicator.parentId, indicator.index, { starter: true });
+        state.addElement(state.draggedType, indicator.parentId, indicator.index, { starter: true, side: indicator.side });
         state.setDraggedType(null);
         state.setDropIndicator(null);
         return;
@@ -413,7 +516,7 @@ export const CanvasElement = React.memo(function CanvasElement({
         e.stopPropagation();
         const historyState = useHistoryStore.getState();
         historyState.push(state.elements, state.rootId);
-        state.moveElement(state.draggedElementId, indicator.parentId, indicator.index);
+        state.moveElement(state.draggedElementId, indicator.parentId, indicator.index, indicator.side);
         state.setDraggedElementId(null);
         state.setDropIndicator(null);
         return;
@@ -717,10 +820,14 @@ export const CanvasElement = React.memo(function CanvasElement({
               padding: 8,
               background: 'var(--ink)',
               borderRadius: 4,
-              minHeight: 40,
+              minHeight: 28,
             }}
           >
-            {/* Children rendered separately */}
+            {/* Its name, quietly: it was a bare grey bar, and a page is
+                mostly Stacks. Its children are drawn below. */}
+            <span style={styles.containerName} data-canvas-container-name="">
+              {props.direction === 'horizontal' ? 'Stack · horizontal' : 'Stack'}
+            </span>
           </div>
         );
 
@@ -728,12 +835,14 @@ export const CanvasElement = React.memo(function CanvasElement({
         return (
           <div
             style={{
-              padding: 12,
+              padding: 8,
               background: 'var(--ink)',
               borderRadius: 4,
-              minHeight: 40,
+              minHeight: 28,
             }}
-          />
+          >
+            <span style={styles.containerName} data-canvas-container-name="">Box</span>
+          </div>
         );
 
       case 'Image':
@@ -911,6 +1020,8 @@ export const CanvasElement = React.memo(function CanvasElement({
     zIndex: 20,
   };
 
+  const dropSide = showDropInto ? dropIndicator?.side : undefined;
+
   return (
     <div ref={wrapperRef} style={styles.wrapper}>
       {showLineBefore && <div style={{ ...indicatorLineStyle, top: -2 }} />}
@@ -938,12 +1049,15 @@ export const CanvasElement = React.memo(function CanvasElement({
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
-        {(isSelected || isHovered) && (
+        {(isSelected || isHovered || showDropInto) && (
           <span style={styles.label}>
             {isTextNode(element) ? 'words' : element.componentType}
-            {showDropInto && ' (drop here)'}
+            {/* Kept short: on a narrow page a longer one wrapped, over the element it names. */}
+            {showDropInto && (dropSide === 'start' ? ' (before its words)' : dropSide === 'end' ? ' (after its words)' : ' (drop here)')}
           </span>
         )}
+        {/* Which side of its words a drop would go: a bar at that end of them. */}
+        {showDropInto && dropSide && <WordsSideBar side={dropSide} />}
 
         <div style={styles.content} aria-hidden="true">
           {/* The author's notes on this element, as the source has them. */}
@@ -979,7 +1093,7 @@ export const CanvasElement = React.memo(function CanvasElement({
           </div>
         )}
 
-        {isSelected && <SelectionBox element={element} />}
+        {isSelected && <SelectionBox />}
       </div>
       {showLineAfter && <div style={{ ...indicatorLineStyle, bottom: -2 }} />}
     </div>

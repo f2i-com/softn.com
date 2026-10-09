@@ -190,7 +190,8 @@ const styles: Record<string, React.CSSProperties> = {
   input: { width: '100%', minWidth: 0, boxSizing: 'border-box', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--ink)', color: 'var(--paper)', fontFamily: 'inherit', fontSize: 14 },
   fieldset: { margin: 0, padding: 0, border: 0, minWidth: 0 },
   cardGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 230px), 1fr))', gap: 10 },
-  card: { display: 'flex', flexDirection: 'column', gap: 9, padding: 13, minWidth: 0, border: '1px solid var(--line)', borderRadius: 10, background: 'var(--ink)', cursor: 'pointer' },
+  // Its border as longhands: the chosen card changes the colour (see inlineStyleStates.test.ts).
+  card: { display: 'flex', flexDirection: 'column', gap: 9, padding: 13, minWidth: 0, borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--line)', borderRadius: 10, background: 'var(--ink)', cursor: 'pointer' },
   activeCard: { borderColor: 'var(--paper)', boxShadow: 'inset 0 0 0 1px var(--paper)', background: 'var(--bl-select)' },
   cardHeading: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   cardTitle: { fontSize: 13, fontWeight: 600 },

@@ -118,4 +118,12 @@ describe('adding from the palette', () => {
     });
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Nothing matches');
   });
+
+  it('says where a double-click or Enter puts what it adds: at the selection', () => {
+    // It went on saying "to add at the end" after what is added began to
+    // go into the selected element, or after it.
+    act(() => root.render(React.createElement(ComponentPalette)));
+    expect(host.textContent).not.toContain('to add at the end');
+    expect(host.textContent).toContain('to add into what is selected, or after it');
+  });
 });

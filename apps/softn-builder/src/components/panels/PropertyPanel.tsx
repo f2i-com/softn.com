@@ -10,7 +10,7 @@ import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
 import { useFilesStore } from '../../stores/filesStore';
 import { ACCESSIBILITY_PROP_NAMES, getComponentMeta } from '../../utils/componentRegistry';
 import { dockLogicFile, entryFileId, logicLanguageOf, type LogicLanguage } from '../../utils/logicFiles';
-import { callableNames, handlerFor, handlerTarget, logicFunctions, type LogicFunction } from '../../utils/logicFunctions';
+import { callArgumentCount, callableNames, endsFinished, handlerFor, handlerTarget, isFunctionName, logicFunctions, withNewFunction, type LogicFunction } from '../../utils/logicFunctions';
 import { eventKeyFor } from '../../utils/eventProps';
 import { nativeElementMeta } from '../../utils/nativeHtmlMetadata';
 import { blockHeaderText } from '../../utils/sourceGenerator';
@@ -245,6 +245,10 @@ const GENERIC_EVENTS = ['click', 'change', 'submit', 'input', 'focus', 'blur', '
  */
 interface HandlerHelp {
   logicPath: string | null;
+  /** The files-store id of that file, for writing a new function into it. */
+  logicId: string | null;
+  /** Whether the file ends where a new function can be written (utils/logicFunctions.ts, endsFinished). */
+  finished: boolean;
   language: LogicLanguage;
   functions: LogicFunction[];
   callable: Set<string>;
@@ -257,7 +261,7 @@ function useHandlerHelp(): HandlerHelp {
   const logicFiles = useFilesStore((state) => state.logicFiles);
   return useMemo(() => {
     const file = dockLogicFile(activeFileId, uiFiles, logicFiles, entryFileId(uiFiles, retainedSource));
-    if (!file) return { logicPath: null, language: 'javascript', functions: [], callable: new Set<string>() };
+    if (!file) return { logicPath: null, logicId: null, finished: false, language: 'javascript', functions: [], callable: new Set<string>() };
     const language = logicLanguageOf(file.path);
     // JavaScript logic files are composed into one scope, so a helper's
     // functions are callable too; a Python module's are callable only as
@@ -267,6 +271,8 @@ function useHandlerHelp(): HandlerHelp {
       : [...logicFiles.values()].filter((other) => logicLanguageOf(other.path) === language).map((other) => other.content);
     return {
       logicPath: file.path,
+      logicId: file.id,
+      finished: endsFinished(file.content, language),
       language,
       functions: logicFunctions(file.content, language),
       callable: callableNames(scope, language),
@@ -280,6 +286,8 @@ interface HandlerFieldProps {
   onChange: (value: string) => void;
   onBlur: () => void;
   help: HandlerHelp;
+  /** Make the function the handler names, in the logic file the page runs. */
+  onCreate: (name: string) => void;
 }
 
 /**
@@ -287,7 +295,7 @@ interface HandlerFieldProps {
  * logic file's functions offered as suggestions and a warning — never a
  * refusal — when it calls a function the file does not define.
  */
-function HandlerField({ id, value, onChange, onBlur, help }: HandlerFieldProps) {
+function HandlerField({ id, value, onChange, onBlur, help, onCreate }: HandlerFieldProps) {
   const listId = `${id}-functions`;
   const target = handlerTarget(value);
   const missing = help.logicPath && target && !help.callable.has(target) ? target : null;
@@ -317,6 +325,19 @@ function HandlerField({ id, value, onChange, onBlur, help }: HandlerFieldProps) 
           {`No function named ${missing} in ${help.logicPath}.`}
         </div>
       )}
+      {/* The way on from the warning: the function, empty, at the end of
+          the file. Not where the name is one the language cannot take, nor
+          while the file ends inside something unfinished, where what was
+          added would land in the middle of it. */}
+      {missing && isFunctionName(missing, help.language) && (help.finished ? (
+        <button type="button" className="bl-btn bl-btn-sm" style={{ marginTop: 6 }} onClick={() => onCreate(missing)} data-action="create-handler">
+          {`Create ${missing}`}
+        </button>
+      ) : (
+        <div style={styles.fieldHint} data-handler-unfinished>
+          {`${help.logicPath} ends inside something unfinished (an open bracket, string or comment). Finish it, and ${missing} can be created from here.`}
+        </div>
+      ))}
     </div>
   );
 }
@@ -546,6 +567,33 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
     [selectedElement, push, updateElement]
   );
 
+  // The function a handler names, made in the logic file the page runs: one
+  // step for Undo, the file and the canvas together (the step carries the
+  // file's text, and utils/canvasHistory.ts puts it back).
+  const createHandler = useCallback(
+    (eventName: string, name: string) => {
+      if (!selectedElement || !handlerHelp.logicId) return;
+      const files = useFilesStore.getState();
+      const file = files.logicFiles.get(handlerHelp.logicId);
+      if (!file) return;
+      const { elements, rootId } = useCanvasStore.getState();
+      const element = elements.get(selectedElement.id) ?? selectedElement;
+      const handler = element.events?.[eventName] ?? '';
+      const next = withNewFunction(file.content, name, callArgumentCount(handler), handlerHelp.language);
+      if (next === null) return;
+      endEdit();
+      push(elements, rootId, undefined, [{ id: file.id, content: file.content, expects: next }]);
+      files.updateLogicFile(file.id, next);
+      // Bound by its bare name a handler is called with the event, which a
+      // Python function taking nothing refuses: it is called through an
+      // arrow that drops the event, as one picked from the suggestions is.
+      if (handlerHelp.language === 'python' && handler.trim() === name) {
+        updateElement(element.id, { events: { ...(element.events ?? {}), [eventName]: handlerFor({ name, params: '' }, 'python') } });
+      }
+    },
+    [selectedElement, handlerHelp, push, endEdit, updateElement]
+  );
+
   const handleBindingChange = useCallback(
     (bindingName: string, expr: string) => {
       if (!selectedElement) return;
@@ -759,6 +807,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
               onChange={(value) => handleEventChange(key, value)}
               onBlur={endEdit}
               help={handlerHelp}
+              onCreate={(name) => createHandler(key, name)}
             />
           </div>
         );
@@ -781,7 +830,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
         </div>
       );
     },
-    [selectedElement, imageAssetOptions, handlePropChange, handleEventChange, endEdit, handlerHelp]
+    [selectedElement, imageAssetOptions, handlePropChange, handleEventChange, endEdit, handlerHelp, createHandler]
   );
 
   const header = (
@@ -1136,6 +1185,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
                       onChange={(next) => handleEventChange(eventName, next)}
                       onBlur={endEdit}
                       help={handlerHelp}
+                      onCreate={(name) => createHandler(eventName, name)}
                     />
                   </div>
                 );

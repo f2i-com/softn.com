@@ -11,7 +11,8 @@ import {
 import { TokenIcon } from '../icons/TokenIcon';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
-import { blockPalette, canDropInto } from '../../utils/blocks';
+import { blockPalette } from '../../utils/blocks';
+import { placeBySelection } from '../../utils/keyboardMoves';
 import type { ComponentMeta } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -146,21 +147,39 @@ interface ComponentItemProps {
 }
 
 /**
- * Add a component at the end of the page, as one undoable step, and select
- * it so its properties are in front of the creator. What a double-click and
- * Enter on a palette item do; a double-click used to add without recording
- * a step, so Undo could not take it back.
+ * Add a component where the selection is, as one undoable step, and select
+ * it so its properties are in front of the creator: into the selected
+ * element when that takes it, after it when it does not, and at the end of
+ * the page when nothing is selected (utils/keyboardMoves.ts). What a
+ * double-click and Enter on a palette item do. It used to be the end of
+ * the page every time, so nothing could be put inside a container without
+ * a drag; and a double-click used to add without recording a step, so Undo
+ * could not take it back.
  */
 export function insertFromPalette(type: string): string | null {
   const canvas = useCanvasStore.getState();
-  // The page takes what any container takes, and never another page.
-  const page = canvas.elements.get(canvas.rootId);
-  if (!page || !canDropInto(page, type, { elements: canvas.elements })) return null;
+  // What was added last is still the selection, untouched: the next thing asked for is the
+  // next element. A container added that way takes it, which is how a page is built without
+  // a mouse (Stack, Card, Heading). A line of words added that way does not take it among
+  // its words: Text and then Badge are two elements, as they were asked for, where a Badge
+  // inside the Text is what picking the Text oneself and then adding the Badge says.
+  const chained = selectionLeftByInsert !== null && canvas.selectedIds === selectionLeftByInsert;
+  // Nowhere takes another page; a container that holds one kind is passed by.
+  const place = placeBySelection(type, { besideWords: chained });
+  if (!place) return null;
   useHistoryStore.getState().push(canvas.elements, canvas.rootId);
-  const id = canvas.addElement(type, canvas.rootId, undefined, { starter: true });
+  const id = canvas.addElement(type, place.parentId, place.index, { starter: true, side: place.side });
   useCanvasStore.getState().selectElement(id);
+  selectionLeftByInsert = useCanvasStore.getState().selectedIds;
   return id;
 }
+
+/**
+ * The selection as the last insert left it. The store makes a new list
+ * whenever the selection is set, so this being the list that is selected
+ * now says nobody has picked anything since, the same element included.
+ */
+let selectionLeftByInsert: readonly string[] | null = null;
 
 function ComponentItem({ component }: ComponentItemProps) {
   const [isHovered, setIsHovered] = useState(false);
@@ -356,7 +375,8 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
           onChange={(e) => setSearchQuery(e.target.value)}
           style={styles.searchInput}
         />
-        <div style={styles.searchHint}>Drag onto the canvas, or double-click (or press Enter) to add at the end.</div>
+        {/* Where the selection is, and the end of the page with nothing selected (placeBySelection). */}
+        <div style={styles.searchHint}>Drag onto the canvas, or double-click (or press Enter) to add into what is selected, or after it.</div>
       </div>
 
       <div style={styles.list}>

@@ -123,6 +123,70 @@ describe('moving an element within its own list', () => {
   });
 });
 
+describe('picking an element up', () => {
+  // An element was not picked up when the press was inside a place for
+  // children, so that pressing a container's own empty box would not drag
+  // the container. But everything inside a Stack is inside the Stack's
+  // place for children: only an element standing directly on the page could
+  // be dragged at all, and nothing that had been put in a container could be
+  // moved again.
+  function press(id: string): void {
+    const node = host.querySelector<HTMLElement>(`[data-canvas-element-id="${id}"]`)!;
+    act(() => {
+      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 22, clientY: 10 }));
+    });
+  }
+
+  function letGo(): void {
+    act(() => {
+      window.dispatchEvent(new MouseEvent('mouseup', {}));
+    });
+    act(() => canvas().setDraggedElementId(null));
+  }
+
+  beforeEach(() => {
+    open('<App><Stack><Card><Text>Deep</Text></Card><Text>Inside</Text></Stack><Text>Loose</Text><Box></Box></App>');
+    mount();
+  });
+
+  it('picks up one that stands directly on the page', () => {
+    press(byText('Loose').id);
+    expect(canvas().draggedElementId).toBe(byText('Loose').id);
+    letGo();
+  });
+
+  it('picks up one inside a container, and one inside a container in that', () => {
+    press(byText('Inside').id);
+    expect(canvas().draggedElementId).toBe(byText('Inside').id);
+    letGo();
+    press(byText('Deep').id);
+    expect(canvas().draggedElementId).toBe(byText('Deep').id);
+    letGo();
+  });
+
+  it('picks up the innermost element under the pointer, not the one that holds it', () => {
+    press(byType('Card').id);
+    expect(canvas().draggedElementId).toBe(byType('Card').id);
+    letGo();
+  });
+
+  it('does not pick a container up by the empty place it draws for children', () => {
+    const box = host.querySelector<HTMLElement>(`[data-canvas-element-id="${byType('Box').id}"]`)!;
+    const area = [...box.children].find((child) => child.hasAttribute('data-children-area')) as HTMLElement;
+    act(() => {
+      area.firstElementChild!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 22, clientY: 10 }));
+    });
+    expect(canvas().draggedElementId).toBeNull();
+    letGo();
+  });
+});
+
 describe('the pointer over an element inside another', () => {
   beforeEach(() => {
     open('<App><Stack><Text>Top</Text><Card><Text>In the card</Text></Card><Text>Bottom</Text></Stack></App>');

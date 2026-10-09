@@ -2,7 +2,7 @@
  * Canvas - Main drop zone for visual drag-drop building
  */
 
-import React, { useCallback, useState, useEffect, useMemo } from 'react';
+import React, { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useFilesStore } from '../../stores/filesStore';
@@ -11,6 +11,8 @@ import { CanvasElement } from './CanvasElement';
 import { DragLayer } from './DragLayer';
 import { canDropInto, isPaletteType } from '../../utils/blocks';
 import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
+import { useDragAutoScroll } from '../../utils/dragScroll';
+import { pasteBySelection } from '../../utils/keyboardMoves';
 import { isDesktop } from '../../utils/desktop';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 
@@ -55,7 +57,10 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     minHeight: 300,
     padding: 24,
-    border: '1.5px dashed var(--line-strong)',
+    // Longhands: a drag over it changes the colour (see inlineStyleStates.test.ts).
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: 'var(--line-strong)',
     borderRadius: 8,
     color: 'var(--dim)',
     fontSize: 13,
@@ -70,6 +75,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     letterSpacing: '-0.02em',
     color: 'var(--paper)',
+  },
+  // The words of the sentence that open the panel it speaks of.
+  emptyButton: {
+    padding: 0,
+    border: 'none',
+    background: 'none',
+    font: 'inherit',
+    fontWeight: 600,
+    color: 'var(--paper)',
+    textDecoration: 'underline',
+    textUnderlineOffset: 3,
+    cursor: 'pointer',
   },
   emptyLink: {
     marginTop: 6,
@@ -88,11 +105,34 @@ const styles: Record<string, React.CSSProperties> = {
   dropActive: {
     boxShadow: '0 0 0 2px var(--line-strong)',
   },
+  // Read by a screen reader, seen by nobody.
+  announcement: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    margin: -1,
+    padding: 0,
+    overflow: 'hidden',
+    clipPath: 'inset(50%)',
+    whiteSpace: 'nowrap',
+  },
 };
 
-export function Canvas() {
+interface CanvasProps {
+  /**
+   * Open the Components panel. Given only while that panel is shut (in a
+   * narrow window it starts as a rail): the empty page then offers to open
+   * it, where it used to say to drag from a panel that was not there.
+   */
+  onShowComponents?: () => void;
+}
+
+export function Canvas({ onShowComponents }: CanvasProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [focusedElementId, setFocusedElementId] = useState<string | null>(null);
+  // The part of the canvas that scrolls, which a drag held at its edge moves.
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  useDragAutoScroll(scrollerRef);
 
   const rootId = useCanvasStore((s) => s.rootId);
   const elements = useCanvasStore((s) => s.elements);
@@ -124,7 +164,7 @@ export function Canvas() {
       if (parent && canDropInto(parent, state.draggedType, { elements: state.elements })) {
         const historyState = useHistoryStore.getState();
         historyState.push(state.elements, state.rootId);
-        state.addElement(state.draggedType, parent.id, indicator?.index, { starter: true });
+        state.addElement(state.draggedType, parent.id, indicator?.index, { starter: true, side: indicator?.side });
       }
       state.setDraggedType(null);
       state.setDropIndicator(null);
@@ -228,11 +268,11 @@ export function Canvas() {
       return;
     }
 
-    // Paste can work with no selection (falls back to root).
+    // Paste goes where the selection is, and to the end of the page with
+    // nothing selected (utils/keyboardMoves.ts).
     if (mod && key === 'v') {
       e.preventDefault();
-      historyState.push(canvasState.elements, canvasState.rootId);
-      canvasState.paste(null);
+      pasteBySelection();
       return;
     }
 
@@ -288,6 +328,7 @@ export function Canvas() {
   }, []);
 
   const dropIndicator = useCanvasStore((s) => s.dropIndicator);
+  const announcement = useCanvasStore((s) => s.announcement);
   const hasChildren = rootElement && rootElement.children.length > 0;
   const visibleElementIds = useMemo(() => {
     if (!rootElement) return [];
@@ -326,7 +367,7 @@ export function Canvas() {
             : `Source-only file: it has constructs the visual editor cannot write back (${summariseReasons(fidelity!.reasons)}). Canvas edits will not be saved; edit its source instead.`}
         </div>
       )}
-      <div style={styles.canvasWrapper}>
+      <div style={styles.canvasWrapper} ref={scrollerRef} data-canvas-scroller="">
         <div
           style={{
             ...styles.canvas,
@@ -382,8 +423,17 @@ export function Canvas() {
                   <>
                     <span style={styles.emptyTitle}>Start with a component</span>
                     <span style={{ maxWidth: 360 }}>
-                      Drag one from Components onto this page, or double-click it to add it here. Pick anything
-                      you add to change its properties on the right.
+                      {onShowComponents ? (
+                        <>
+                          <button type="button" style={styles.emptyButton} onClick={onShowComponents} data-action="show-components">
+                            Open Components
+                          </button>
+                          , then drag one onto this page, or double-click it to add it here.
+                        </>
+                      ) : (
+                        'Drag one from Components onto this page, or double-click it to add it here.'
+                      )}{' '}
+                      Pick anything you add to change its properties on the right.
                     </span>
                     {!isDesktop() && !isHostedEditor() && (
                       <a href={`?open=${encodeURIComponent(EXAMPLE_BUNDLE_PATH)}`} style={styles.emptyLink} data-action="open-example">
@@ -398,6 +448,11 @@ export function Canvas() {
         </div>
       </div>
       <DragLayer />
+      {/* What a move made from the keyboard did, for a person who cannot
+          see the canvas: read out, and not drawn. */}
+      <div role="status" aria-live="polite" data-canvas-announcement="" style={styles.announcement}>
+        {announcement}
+      </div>
     </div>
   );
 }

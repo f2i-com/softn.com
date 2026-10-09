@@ -40,7 +40,10 @@ const styles: Record<string, React.CSSProperties> = {
   tab: {
     padding: '5px 10px',
     background: 'transparent',
-    border: '1px solid var(--line)',
+    // Longhands: the chosen tab changes the colour (see inlineStyleStates.test.ts).
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--line)',
     borderRadius: 6,
     fontFamily: 'var(--mono)',
     fontSize: 12,

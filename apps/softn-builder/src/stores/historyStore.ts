@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import { useProjectStore } from './projectStore';
-import type { CanvasElement, HistoryEntry } from '../types/builder';
+import type { CanvasElement, HistoryEntry, LogicSnapshot } from '../types/builder';
 
 /**
  * How long a pause ends a run of edits to one field. Typing `handleSubmit()`
@@ -31,7 +31,7 @@ interface HistoryStore {
    * {@link COALESCE_MS} joins its step instead of adding one: undo returns
    * to before the run began.
    */
-  push: (elements: Map<string, CanvasElement>, rootId: string, key?: string) => void;
+  push: (elements: Map<string, CanvasElement>, rootId: string, key?: string, logic?: LogicSnapshot[]) => void;
   /** End the current run, so the next keyed edit starts a step of its own. */
   endCoalescing: () => void;
   /**
@@ -63,7 +63,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   coalesceKey: null,
   coalescedAt: 0,
 
-  push: (elements, rootId, key) => {
+  push: (elements, rootId, key, logic) => {
     const now = Date.now();
     const current = get();
     if (key !== undefined && current.coalesceKey === key && current.past.length > 0 && now - current.coalescedAt < COALESCE_MS) {
@@ -75,6 +75,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       elements: cloneElements(elements),
       rootId,
       timestamp: Date.now(),
+      ...(logic && logic.length > 0 ? { logic } : {}),
     };
 
     set((state) => {

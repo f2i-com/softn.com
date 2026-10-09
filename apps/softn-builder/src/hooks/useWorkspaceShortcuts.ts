@@ -1,6 +1,27 @@
 import { useEffect, useRef } from 'react';
 import type { ViewMode } from '../utils/openProject';
 import { ownsTextKeys, redoCanvas, undoCanvas } from '../utils/canvasHistory';
+import { moveSelected, type KeyboardMove } from '../utils/keyboardMoves';
+import { useCanvasStore } from '../stores/canvasStore';
+
+/**
+ * Move the selected element and leave the focus on it. An element moved to
+ * another container is drawn again there, and the focus it had goes to the
+ * page: the next arrow would have been pressed into nothing.
+ */
+function moveSelectedAndKeepFocus(step: KeyboardMove): void {
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const inHierarchy = active?.closest('[data-hierarchy-row]') != null;
+  moveSelected(step);
+  const [id] = useCanvasStore.getState().selectedIds;
+  if (!id) return;
+  requestAnimationFrame(() => {
+    const now = document.activeElement;
+    if (now instanceof HTMLElement && now !== document.body && now.isConnected && now === active) return;
+    const selector = inHierarchy ? `[data-hierarchy-row="${id}"]` : `[data-canvas-element-id="${id}"]`;
+    document.querySelector<HTMLElement>(selector)?.focus({ preventScroll: false });
+  });
+}
 
 export interface WorkspaceShortcutActions {
   blocked: boolean;
@@ -21,7 +42,23 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
       const current = actionsRef.current;
-      if (event.isComposing || current.blocked || event.altKey) return;
+      if (event.isComposing || current.blocked) return;
+      if (event.altKey) {
+        // Alt+Shift and an arrow moves the selected element, wherever the
+        // focus is while the canvas is on the screen: nothing but a drag
+        // did. Alt alone with Up or Down too; Alt with Left or Right is the
+        // browser's Back and Forward, and is left to it.
+        const moves: Record<string, KeyboardMove> = { ArrowUp: 'up', ArrowDown: 'down', ArrowRight: 'in', ArrowLeft: 'out' };
+        const step = moves[event.key];
+        const vertical = step === 'up' || step === 'down';
+        if (!step || event.ctrlKey || event.metaKey || !(event.shiftKey || vertical)) return;
+        if (!current.canvas || current.narrow) return;
+        const from = event.target instanceof HTMLElement ? event.target : null;
+        if (ownsTextKeys(from) || from?.closest('[role="dialog"][aria-modal="true"], select')) return;
+        event.preventDefault(); event.stopPropagation();
+        if (!event.repeat || vertical) moveSelectedAndKeepFocus(step);
+        return;
+      }
       const target = event.target instanceof HTMLElement ? event.target : null;
       const isInput = !!target?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]');
       const key = event.key.toLowerCase();

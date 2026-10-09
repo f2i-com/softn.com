@@ -174,7 +174,7 @@ function SchemaNameInput({ value, label, placeholder, disabled, onCommit }: {
             event.preventDefault(); event.stopPropagation(); setDraft(value); setError(null);
           }
         }}
-        style={{ ...styles.input, borderColor: error ? 'var(--danger)' : undefined }}
+        style={{ ...styles.input, ...(error ? { borderColor: 'var(--danger)' } : {}) }}
         placeholder={placeholder}
         disabled={disabled}
       />

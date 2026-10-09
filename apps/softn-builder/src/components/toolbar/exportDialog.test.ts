@@ -17,6 +17,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { ExportDialog } from './ExportDialog';
 import { useProjectStore } from '../../stores/projectStore';
 import { useSchemaStore } from '../../stores/schemaStore';
+import { useFilesStore } from '../../stores/filesStore';
 import * as bundle from '../../utils/buildProjectBundle';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -130,6 +131,44 @@ describe('the export dialog', () => {
       expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === label)?.disabled).toBe(true);
     }
     expect(container.textContent).not.toContain('Checking…');
+  });
+
+  it('names a page that imports or links a file the project no longer has', async () => {
+    // The check read the bundle as the directory would, which does not ask
+    // whether a page's `<import … from>` or `<logic src>` leads anywhere.
+    // A page left importing a deleted file was "Ready", and the app that
+    // ran said "Unknown component" where the file had been used.
+    vi.useFakeTimers();
+    const files = useFilesStore.getState();
+    files.reset();
+    files.createFile('ui', 'Other.ui', 'ui');
+    files.updateUIFileSource('main_ui', '<import Banner from="./Hero.ui" />\n<import Other from="./Other.ui" />\n<logic src="../logic/main.logic" />\n<App>\n  <Banner />\n  <Other />\n</App>');
+    const other = [...useFilesStore.getState().uiFiles.values()].find((file) => file.path === 'ui/Other.ui')!;
+    files.updateUIFileSource(other.id, '<logic src="../logic/gone.logic" />\n<App>\n  <Text>Other</Text>\n</App>');
+
+    render(true, () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const report = container.querySelector('[data-report="references"]')!;
+    expect(report, container.textContent ?? '').not.toBeNull();
+    const lines = [...report.querySelectorAll('span')].map((line) => line.textContent ?? '');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('ui/main.ui imports Banner from ./Hero.ui');
+    expect(lines[0]).toContain('ui/Hero.ui');
+    expect(lines[1]).toContain('ui/Other.ui links ../logic/gone.logic');
+    // The page that is there, and the logic that is, are not named.
+    expect(report.textContent).not.toContain('./Other.ui');
+    expect(report.textContent).not.toContain('main.logic');
+    // It can still be exported: the directory does not refuse it, and the file is the person's.
+    expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Export .softn')?.disabled).toBe(false);
+  });
+
+  it('says nothing of references in a project that has none dangling', async () => {
+    vi.useFakeTimers();
+    useFilesStore.getState().reset();
+    render(true, () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(container.textContent).toContain('Ready:');
+    expect(container.querySelector('[data-report="references"]')).toBeNull();
   });
 
   it('reports failed preflight checks and retries when the project details change', async () => {

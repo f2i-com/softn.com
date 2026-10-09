@@ -112,6 +112,49 @@ export function hasTextField(componentType: string): boolean {
   return getComponentMeta(componentType)?.propSchema.some((prop) => prop.name === 'children') ?? false;
 }
 
+/** Whether `componentType` is a control-flow block: `#if`, `#each` or one of their branches. */
+function isBlockType(componentType: string): boolean {
+  return defaultBlock(componentType) !== undefined;
+}
+
+/**
+ * The elements that are a button themselves. What may draw a button of its
+ * own (a Tag that can be removed does) is not put in one: a button inside a
+ * button is not a thing a browser draws.
+ */
+const BUTTON_HOSTS: ReadonlySet<string> = new Set(['Button', 'CopyButton', 'button']);
+const MAY_DRAW_A_BUTTON: ReadonlySet<string> = new Set(['Tag']);
+
+/** The component that is a run of words inside a line of them (see canDropInto). */
+const RUN_OF_WORDS = 'Text';
+
+/**
+ * Whether `target`, an element whose content is its words, takes
+ * `draggedType` beside them: `<Button><Icon name="plus" /> Add</Button>`.
+ *
+ * Such an element draws no place for children and takes nothing else (see
+ * acceptsChildren), which left the commonest pattern there is to be typed
+ * in Code. What it takes is what stands in a line of words, and the
+ * registry says which components do (componentRegistry.ts, INLINE_KINDS).
+ * Not its own kind: a Badge in a Badge is a mistake of the hand.
+ */
+export function takesInline(target: CanvasElement, draggedType: string | null): boolean {
+  if (target.block || isTextNode(target) || target.children.length > 0) return false;
+  return standsInItsWords(target, draggedType);
+}
+
+/**
+ * Whether `draggedType` is something that may stand among the words of
+ * `target`, whatever it holds now. An element with nothing in it has to be
+ * one whose words the panel edits; one that already holds a line of words
+ * need not be.
+ */
+function standsInItsWords(target: CanvasElement, draggedType: string | null, needsTextField = true): boolean {
+  if (!draggedType || (needsTextField && !hasTextField(target.componentType))) return false;
+  if (!getComponentMeta(draggedType)?.inline || draggedType === target.componentType) return false;
+  return !(BUTTON_HOSTS.has(target.componentType) && MAY_DRAW_A_BUTTON.has(draggedType));
+}
+
 /** What `canDropInto` may be told about the canvas the drop is made on. */
 export interface DropContext {
   elements: Map<string, CanvasElement>;
@@ -141,16 +184,35 @@ export function canDropInto(target: CanvasElement, draggedType: string | null, c
   if (target.block) {
     const around = context ? componentAround(target, context.elements) : undefined;
     const kinds = around ? getComponentMeta(around.componentType)?.childTypes : undefined;
-    return !kinds?.length || !draggedType || draggedType.startsWith('#') || kinds.includes(draggedType);
+    return !kinds?.length || !draggedType || isBlockType(draggedType) || kinds.includes(draggedType);
   }
 
-  if (!acceptsChildren(target)) return false;
+  // Complete as it stands, it still takes what stands in a line of words.
+  if (!acceptsChildren(target)) return takesInline(target, draggedType);
   const meta = getComponentMeta(target.componentType);
-  // One that holds elements whatever its entry says takes more of any kind.
-  if (!meta?.allowChildren) return true;
+  if (!meta?.allowChildren) {
+    // It holds elements whatever its entry says. One that is no component
+    // the registry knows (a page's own) takes more of any kind. A leaf the
+    // registry does know holds them as a line of words (a Text with a key
+    // among its words, a key holding its letter): it takes what stands in
+    // one, words, and a block, and a Card goes beside it as it would have
+    // before there was anything in it.
+    if (!meta) return true;
+    // One of its own, changing places, is in the line already: a span the
+    // author put there can be put in another place in it.
+    if (context?.draggedId && target.children.includes(context.draggedId)) return true;
+    // A Text in a line is a run of its words, set apart to be styled: the
+    // apps the directory ships do it 79 times in their 78 pages. Into a
+    // line that is already made of parts, and one the panel edits the
+    // words of; onto a Text that is only its words, another Text is the
+    // next paragraph, and goes beside it.
+    if (draggedType === RUN_OF_WORDS && hasTextField(target.componentType)) return true;
+    return !draggedType || draggedType === TEXT_NODE_TYPE || isBlockType(draggedType) || standsInItsWords(target, draggedType, false);
+  }
   // A block is not one of the kinds, and is how they are usually made:
-  // an AvatarGroup holds an `#each` around an Avatar.
-  if (meta.childTypes && meta.childTypes.length > 0 && draggedType && !draggedType.startsWith('#')) {
+  // an AvatarGroup holds an `#each` around an Avatar. A block by name, not
+  // anything that begins `#`: words are `#text`, and went in the same way.
+  if (meta.childTypes && meta.childTypes.length > 0 && draggedType && !isBlockType(draggedType)) {
     if (!meta.childTypes.includes(draggedType)) return false;
   }
   if (meta.maxChildren !== undefined && context) {

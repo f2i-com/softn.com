@@ -1392,7 +1392,10 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'animated', type: 'boolean', default: true },
       { name: 'className', type: 'string' },
     ],
-    false
+    // What is put in it is drawn under its description: the button that
+    // adds the first one. Its `action` props take an element, which a page
+    // has no way to write, so its children are where its actions go.
+    true
   ),
   comp(    'Loop',
     'Utility',
@@ -1993,10 +1996,14 @@ const baseRegistry: ComponentMeta[] = [
     'Form',
     'copy',
     'A button that copies text and says it has',
-    { value: 'Text to copy', label: 'Copy' },
+    // Its children are its label (`children ?? label ?? 'Copy'`), so its
+    // words are its Text like a Button's: a new one says "Copy" as text,
+    // where it used to be given a `label` and no Text field to change it in.
+    { value: 'Text to copy', children: 'Copy' },
     [
       { name: 'value', type: 'string', default: 'Text to copy', description: 'The text to copy; {invite} for a value from logic' },
-      { name: 'label', type: 'string', default: 'Copy' },
+      { name: 'children', type: 'string', default: 'Copy' },
+      { name: 'label', type: 'string', description: 'The same words as a property; the Text above is used when both are there' },
       { name: 'copiedLabel', type: 'string', default: 'Copied' },
       { name: 'iconOnly', type: 'boolean', default: false },
       { name: 'variant', type: 'select', options: ['primary', 'secondary', 'outline', 'danger', 'success', 'warning', 'ghost', 'link'], default: 'secondary' },
@@ -2152,11 +2159,33 @@ export const ACCESSIBILITY_PROP_NAMES: ReadonlySet<string> = new Set(['ariaLabel
  */
 const MAX_CHILDREN: Record<string, number> = { Split: 2 };
 
+/**
+ * The components that stand in a line of words: each draws a `span` or a
+ * `kbd`, or a box laid out inline, has no width of its own to fill, and
+ * does nothing when pressed. An element whose content is its words takes
+ * one of these beside the words (utils/blocks.ts, takesInline), which is
+ * how `<Button><Icon name="plus" /> Add</Button>` is made on the canvas.
+ *
+ * Read from the component sources: Icon is a `span` around its `svg`, Kbd a
+ * `kbd`, Badge and Tag a `span`, each `inline-flex`; Spinner is a `div`
+ * laid out `inline-flex`. AnimatedNumber and Typewriter (a `span` each) and
+ * Avatar (an inline box) would fit the same description and are left out
+ * until somebody wants them: each one more is one more thing a drag over a
+ * heading goes into.
+ */
+const INLINE_KINDS: ReadonlySet<string> = new Set(['Icon', 'Kbd', 'Badge', 'Tag', 'Spinner']);
+
 export const componentRegistry: ComponentMeta[] = baseRegistry.map((meta) => {
   const extra = (MANIFEST_PROPS[meta.name] ?? []).filter((prop) => !meta.propSchema.some((own) => own.name === prop.name));
   const limit = MAX_CHILDREN[meta.name];
-  if (!extra.length && limit === undefined) return meta;
-  return { ...meta, propSchema: [...meta.propSchema, ...extra], ...(limit !== undefined ? { maxChildren: limit } : {}) };
+  const inline = INLINE_KINDS.has(meta.name);
+  if (!extra.length && limit === undefined && !inline) return meta;
+  return {
+    ...meta,
+    propSchema: [...meta.propSchema, ...extra],
+    ...(limit !== undefined ? { maxChildren: limit } : {}),
+    ...(inline ? { inline: true } : {}),
+  };
 });
 
 /**
