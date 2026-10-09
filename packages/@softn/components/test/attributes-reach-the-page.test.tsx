@@ -84,6 +84,19 @@ describe('a component of the page', () => {
     unmount();
   });
 
+  it.each(TAGS)('<%s> carries a class written as class, as it does one written as className', (tag, inner) => {
+    // `class` reached a component as a prop it has no use for, so the element
+    // had no class and the page's rule for it never applied; the renderer
+    // hands it over as className now. Both spellings, on the same element.
+    for (const word of ['class', 'className']) {
+      const attributes = `${word}="mine" data-kind="wall"${EXTRA[tag] ?? ''}`;
+      const source = inner === null ? `<${tag} ${attributes} />` : `<${tag} ${attributes}>${inner}</${tag}>`;
+      const { container, unmount } = page(source);
+      expect(container.querySelector('[data-kind="wall"]')?.classList.contains('mine'), `${tag} ${word}`).toBe(true);
+      unmount();
+    }
+  });
+
   it('takes nothing else it does not know: an unknown prop is not written as an attribute', () => {
     const { container, unmount } = page('<Box data-kind="wall" madeUp="x" onclickk="y">x</Box>');
     const element = container.querySelector('[data-kind="wall"]')!;
