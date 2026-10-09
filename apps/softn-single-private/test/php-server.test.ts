@@ -71,6 +71,16 @@ return [
 `;
 }
 
+/**
+ * The tests rewrite `serve.config.php` and ask again at once. PHP's opcache
+ * keeps a compiled file for `opcache.revalidate_freq` seconds (two by
+ * default) once the file is two seconds old, so a run that took longer than
+ * that was answered from the settings of the test before: five tests failed
+ * on a busy machine and none on an idle one. The servers here run without
+ * it; what the host does with its settings is the same either way.
+ */
+const FRESH = ['-d', 'opcache.enable=0'];
+
 let root: string;
 let server: ChildProcess | undefined;
 let origin: string;
@@ -79,7 +89,7 @@ let cookie = '';
 async function start(): Promise<void> {
   for (let attempt = 0; attempt < 8; attempt++) {
     const port = 20000 + Math.floor(Math.random() * 20000);
-    const child = spawn(php, ['-S', `127.0.0.1:${port}`, '-t', join(root, 'webroot')], {
+    const child = spawn(php, [...FRESH, '-S', `127.0.0.1:${port}`, '-t', join(root, 'webroot')], {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
     let exited = false;
@@ -545,4 +555,213 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
   it('keeps the generated secret in the private directory', () => {
     expect(readFileSync(join(root, 'private/secret.key'), 'utf8').trim()).toMatch(/^[a-f0-9]{64}$/);
   });
+
+  it('cuts the short name and the description by characters, whatever bytes they take', async () => {
+    // Twenty two-byte and twenty four-byte characters: forty characters in
+    // the 120 bytes a title may be. The short name is its first thirty.
+    const title = 'é'.repeat(20) + '😀'.repeat(20);
+    // A bundle whose own description runs past the 300 characters a page
+    // carries, in characters of three bytes.
+    const described = zipSync({
+      'manifest.json': strToU8(JSON.stringify({ ...manifest, icon: undefined, description: '☃'.repeat(400) })),
+      'ui/main.ui': strToU8('<App><Text>Hi</Text></App>'),
+    });
+    writeFileSync(join(root, 'private/long.softn'), described);
+    const settings = (lines: string) =>
+      `<?php\nreturn [\n  'id' => 'served-test',\n  'bundle' => __DIR__ . '/long.softn',\n  ${lines}\n];\n`;
+    try {
+      writeFileSync(join(root, 'private/serve.config.php'), settings(`'title' => '${title}',`));
+      let response = await fetch(`${origin}/index.php?manifest`);
+      expect(response.status).toBe(200);
+      let served = await response.json();
+      expect(served.name).toBe(title);
+      expect(served.short_name).toBe('é'.repeat(20) + '😀'.repeat(10));
+      expect([...served.description]).toHaveLength(300);
+      expect(served.description).toBe('☃'.repeat(300));
+      expect(await (await fetch(`${origin}/`)).text()).toContain(
+        `<meta name="description" content="${'☃'.repeat(300)}">`
+      );
+      // A short name of thirty characters is taken, however many bytes; one more is refused.
+      writeFileSync(
+        join(root, 'private/serve.config.php'),
+        settings(`'title' => 'T', 'pwa' => ['shortName' => '${'😀'.repeat(30)}'],`)
+      );
+      expect((await (await fetch(`${origin}/index.php?manifest`)).json()).short_name).toBe('😀'.repeat(30));
+      writeFileSync(
+        join(root, 'private/serve.config.php'),
+        settings(`'title' => 'T', 'pwa' => ['shortName' => '${'😀'.repeat(31)}'],`)
+      );
+      response = await fetch(`${origin}/`);
+      expect(response.status).toBe(503);
+      expect(await response.text()).toBe('pwa.shortName must be 1 to 30 characters.');
+      // Bytes that are no text become U+FFFD, on the page and in the manifest
+      // alike, and are cut as the one character each then is.
+      writeFileSync(
+        join(root, 'private/serve.config.php'),
+        settings(`'title' => "Caf\\xC3\\xA9 \\xFF\\xFE " . str_repeat("\\xE2\\x98\\x83", 30),`)
+      );
+      served = await (await fetch(`${origin}/index.php?manifest`)).json();
+      expect(served.name).toBe('Café \uFFFD\uFFFD ' + '☃'.repeat(30));
+      expect(served.short_name).toBe('Café \uFFFD\uFFFD ' + '☃'.repeat(22));
+      expect(await (await fetch(`${origin}/`)).text()).toContain(
+        `<meta name="application-name" content="${'Café \uFFFD\uFFFD ' + '☃'.repeat(22)}">`
+      );
+    } finally {
+      writeFileSync(join(root, 'private/serve.config.php'), config());
+      rmSync(join(root, 'private/long.softn'), { force: true });
+    }
+  });
+
+  /**
+   * A second PHP over the same deployment, started with settings of its own:
+   * `-n` reads no php.ini, so it has only what is built in and what is named.
+   */
+  async function serve(args: string[]): Promise<{ origin: string; stop: () => void }> {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const port = 20000 + Math.floor(Math.random() * 20000);
+      const child = spawn(php, [...args, ...FRESH, '-S', `127.0.0.1:${port}`, '-t', join(root, 'webroot')], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let exited = false;
+      child.on('exit', () => (exited = true));
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline && !exited) {
+        try {
+          await fetch(`http://127.0.0.1:${port}/no-such-page`);
+          return { origin: `http://127.0.0.1:${port}`, stop: () => child.kill() };
+        } catch {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+      child.kill();
+    }
+    throw Error('PHP built-in server did not start');
+  }
+  /** What a PHP started with `args` has, of the things this host has ever asked for. */
+  const has = (args: string[]) =>
+    spawnSync(
+      php,
+      [...args, '-r', 'echo json_encode(["zip"=>class_exists("ZipArchive"),"mbstring"=>function_exists("mb_substr")]);'],
+      { encoding: 'utf8' }
+    );
+  // zip alone, added to a PHP that reads no php.ini. Where zip is a shared
+  // extension it has to be named (and found: Windows builds look in C:\php\ext
+  // unless told); where it is built in, `-n` leaves it there.
+  const extensionDir = spawnSync(php, ['-r', 'echo ini_get("extension_dir");'], { encoding: 'utf8' }).stdout.trim();
+  const zipOnly = [['-n'], ['-n', '-d', `extension_dir=${extensionDir}`, '-d', 'extension=zip']].find((args) => {
+    const probe = has(args);
+    return probe.status === 0 && probe.stdout.includes('"zip":true');
+  });
+
+  it.skipIf(!zipOnly)(
+    'serves on a PHP with the zip extension and no other, where the host disables ini_set, set_time_limit and ctype',
+    async () => {
+      // A stock Debian or Ubuntu PHP has no mbstring: this host answered every
+      // request "503 Enable the PHP mbstring extension" there, for a short name
+      // and a description. A shared host that disables ini_set or
+      // set_time_limit got a blank 500 from the unguarded calls at the top of
+      // the file, and one without ctype a fatal error wherever the viewer
+      // cookie was read.
+      const bare = await serve([...zipOnly!, '-d', 'disable_functions=ini_set,set_time_limit,ctype_digit']);
+      try {
+        const page = await fetch(`${bare.origin}/`);
+        expect(page.status).toBe(200);
+        expect(await page.text()).toContain('<title>Served &lt;Title&gt; &amp; &quot;Co&quot;</title>');
+        const viewer = (page.headers.get('set-cookie') ?? '').split(';')[0];
+        expect(viewer).toMatch(/^softn_viewer=1\./);
+        const installable = await fetch(`${bare.origin}/index.php?manifest`);
+        expect(installable.status).toBe(200);
+        expect((await installable.json()).short_name).toBe('Served <Title> & "Co"');
+        // The cookie is read here: its expiry was checked with ctype_digit().
+        const pack = await fetch(`${bare.origin}/index.php?source`, { headers: { Cookie: viewer } });
+        expect(pack.status).toBe(200);
+        expect(Object.keys((await pack.json()).text)).toContain('ui/main.ui');
+        const image = await fetch(`${bare.origin}/index.php?entry=images/pixel.png`, { headers: { Cookie: viewer } });
+        expect(image.status).toBe(200);
+        expect(new Uint8Array(await image.arrayBuffer())).toEqual(pixel);
+        // A cookie whose expiry is no number is still refused, by the same check.
+        const forged = viewer.replace(/^softn_viewer=1\.\d+\./, 'softn_viewer=1.12x4.');
+        expect((await fetch(`${bare.origin}/index.php?source`, { headers: { Cookie: forged } })).status).toBe(403);
+      } finally {
+        bare.stop();
+      }
+    }
+  );
+
+  const noZip = has(['-n']);
+  it.skipIf(noZip.status !== 0 || !noZip.stdout.includes('"zip":false'))(
+    'says which extension is missing, and which package has it, on a PHP without zip',
+    async () => {
+      // The one extension this host cannot do without. The message named the
+      // extension; on the stock PHP that lacks it the operator needs the package.
+      const bare = await serve(['-n']);
+      try {
+        const response = await fetch(`${bare.origin}/`);
+        expect(response.status).toBe(503);
+        const said = await response.text();
+        expect(said).toMatch(/^Enable the PHP zip extension/);
+        expect(said).toContain('php-zip');
+      } finally {
+        bare.stop();
+      }
+    }
+  );
+
+  // php-cgi, the SAPI a web server hands requests to, takes what the server
+  // says of the request from its environment; `php -S` decides it all itself.
+  const cgiAvailable = (() => {
+    const probe = spawnSync('php-cgi', ['-m'], { encoding: 'utf8' });
+    return probe.status === 0 && /^zip$/m.test(probe.stdout.replace(/\r/g, ''));
+  })();
+  it.skipIf(!cgiAvailable)(
+    'refuses a private directory beside the page whatever the server calls its document root',
+    () => {
+      // A site mounted with Alias, or a user directory: DOCUMENT_ROOT is the
+      // main site's, somewhere else. Only DOCUMENT_ROOT was looked at, so a
+      // private directory put beside index.php passed the check, with the
+      // archive and the cookie secret on a URL wherever .htaccess is not read.
+      const site = mkdtempSync(join(tmpdir(), 'softn-serve-mounted-'));
+      try {
+        mkdirSync(join(site, 'elsewhere'));
+        mkdirSync(join(site, 'mounted/private'), { recursive: true });
+        cpSync(fileURLToPath(new URL('../php/softn-serve.php', import.meta.url)), join(site, 'mounted/softn-serve.php'));
+        writeFileSync(
+          join(site, 'mounted/index.php'),
+          "<?php\n$private = __DIR__ . '/private';\nrequire __DIR__ . '/softn-serve.php';\n"
+        );
+        writeFileSync(join(site, 'mounted/private/app.softn'), bundle);
+        writeFileSync(
+          join(site, 'mounted/private/shell.html'),
+          shellTemplate('<script type="module" crossorigin src="./assets/index-test.js"></script>')
+        );
+        const ask = (extra = '') => {
+          writeFileSync(join(site, 'mounted/private/serve.config.php'), config(extra));
+          const r = spawnSync('php-cgi', [], {
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              REQUEST_METHOD: 'GET',
+              REQUEST_URI: '/~someone/index.php',
+              SCRIPT_NAME: '/~someone/index.php',
+              SCRIPT_FILENAME: join(site, 'mounted/index.php'),
+              DOCUMENT_ROOT: join(site, 'elsewhere'),
+              REDIRECT_STATUS: '200',
+              GATEWAY_INTERFACE: 'CGI/1.1',
+              SERVER_PROTOCOL: 'HTTP/1.1',
+              HTTP_HOST: 'site.example',
+            },
+          });
+          const [head, body = ''] = r.stdout.split(/\r?\n\r?\n/, 2);
+          return { status: Number(head.match(/^Status: (\d+)/m)?.[1] ?? '200'), body };
+        };
+        const refused = ask();
+        expect(refused.status).toBe(503);
+        expect(refused.body).toBe('The private directory must be outside the public document root.');
+        // The operator who means it says so, as before.
+        expect(ask(`'allowPrivateInWebroot' => true,`).status).toBe(200);
+      } finally {
+        rmSync(site, { recursive: true, force: true });
+      }
+    }
+  );
 });

@@ -30,10 +30,16 @@ if (!isset($private) || !is_string($private)) {
     http_response_code(404);
     exit;
 }
-ini_set('display_errors', '0');
-ini_set('zlib.output_compression', '0');
-ini_set('memory_limit', '256M');
-set_time_limit(60);
+// Shared hosts disable either of these, and a disabled function is a fatal
+// error in PHP 8: called unguarded, they made every request a blank 500 on
+// such a host. Each is called only when present, as the backend's http.php
+// calls them.
+if (function_exists('ini_set')) {
+    ini_set('display_errors', '0');
+    ini_set('zlib.output_compression', '0');
+    ini_set('memory_limit', '256M');
+}
+if (function_exists('set_time_limit')) set_time_limit(60);
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: strict-origin-when-cross-origin');
 // The same cross-origin isolation softn.com sends (SharedArrayBuffer for the
@@ -42,15 +48,6 @@ header('Referrer-Policy: strict-origin-when-cross-origin');
 // no .htaccess (nginx, the PHP development server) serves the app the same.
 header('Cross-Origin-Opener-Policy: same-origin');
 header('Cross-Origin-Embedder-Policy: credentialless');
-
-// The page and the manifest cut text with mbstring; without it every request
-// would be a blank 500 with display_errors off. Say which extension instead.
-if (!function_exists('mb_substr')) {
-    header('Content-Type: text/plain; charset=utf-8');
-    http_response_code(503);
-    echo 'Enable the PHP mbstring extension.';
-    exit;
-}
 
 const SOFTN_COOKIE = 'softn_viewer';
 /** Mirrors the per-entry bound of the core archive reader. */
@@ -126,6 +123,44 @@ function softn_fail(int $status, string $message): never
     http_response_code($status);
     echo $message;
     exit;
+}
+
+/**
+ * Text as valid UTF-8, with U+FFFD where it was not. JSON is part of every
+ * PHP 8; nothing here needs an extension a server may be without.
+ */
+function softn_utf8(string $text): string
+{
+    $clean = json_decode((string)json_encode($text, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE));
+    return is_string($clean) ? $clean : '';
+}
+
+/**
+ * How many characters (code points) a text has, and its first `$max` of
+ * them. This is all the page needs of mbstring, which a stock Debian or
+ * Ubuntu PHP does not have: the host answered 503 "Enable the PHP mbstring
+ * extension" there until a package was added, for a short name and a
+ * description. In valid UTF-8 a character starts at every byte that is not a
+ * continuation byte (10xxxxxx), so counting those is counting characters.
+ */
+function softn_text_length(string $text): int
+{
+    $text = softn_utf8($text);
+    $count = 0;
+    for ($i = 0, $bytes = strlen($text); $i < $bytes; $i++) {
+        if ((ord($text[$i]) & 0xC0) !== 0x80) $count++;
+    }
+    return $count;
+}
+
+function softn_text_cut(string $text, int $max): string
+{
+    $text = softn_utf8($text);
+    $count = 0;
+    for ($i = 0, $bytes = strlen($text); $i < $bytes; $i++) {
+        if ((ord($text[$i]) & 0xC0) !== 0x80 && ++$count > $max) return substr($text, 0, $i);
+    }
+    return $text;
 }
 
 /** @return array{0: string, 1: string} MIME type and kind */
@@ -250,8 +285,8 @@ function softn_pwa_config(mixed $raw, string $title, string $theme): ?array
         if (!in_array($key, $known, true)) softn_fail(503, 'Unknown pwa setting in serve.config.php: ' . $key);
     }
     $dark = $theme === 'dark';
-    $shortName = $raw['shortName'] ?? mb_substr($title, 0, 30);
-    if (!is_string($shortName) || trim($shortName) === '' || mb_strlen($shortName) > 30) softn_fail(503, 'pwa.shortName must be 1 to 30 characters.');
+    $shortName = $raw['shortName'] ?? softn_text_cut($title, 30);
+    if (!is_string($shortName) || trim($shortName) === '' || softn_text_length($shortName) > 30) softn_fail(503, 'pwa.shortName must be 1 to 30 characters.');
     $colour = static function (mixed $value, string $default, string $name): string {
         if ($value === null) return $default;
         if (!is_string($value) || !preg_match('/^#[0-9a-fA-F]{6}$/', $value)) softn_fail(503, $name . ' must be a #rrggbb colour.');
@@ -393,7 +428,7 @@ function softn_webmanifest(array $config, string $private): never
     $manifest = softn_manifest($zip);
     $zip->close();
     $base = softn_cookie_path();
-    $description = $config['description'] ?? (is_string($manifest['description'] ?? null) ? mb_substr($manifest['description'], 0, 300) : null);
+    $description = $config['description'] ?? (is_string($manifest['description'] ?? null) ? softn_text_cut($manifest['description'], 300) : null);
     $icons = [];
     foreach ($pwa['icons'] as $icon) {
         $icon['src'] = softn_pwa_url($icon['src'], $base);
@@ -416,7 +451,9 @@ function softn_webmanifest(array $config, string $private): never
 
 function softn_open(array $config): ZipArchive
 {
-    if (!class_exists('ZipArchive')) softn_fail(503, 'Enable the PHP zip extension.');
+    // The one extension this host cannot do without, and one a stock Debian
+    // or Ubuntu PHP does not have: say which package, not only which extension.
+    if (!class_exists('ZipArchive')) softn_fail(503, 'Enable the PHP zip extension for the web server\'s PHP (Debian/Ubuntu: install the php-zip package, then restart the web server or PHP-FPM).');
     $zip = new ZipArchive();
     if ($zip->open($config['bundle'], ZipArchive::RDONLY) !== true) softn_fail(503, 'Application bundle is unavailable.');
     return $zip;
@@ -484,7 +521,10 @@ function softn_token_issue(string $secret, int $lifetime): string
 function softn_token_valid(string $token, string $secret): bool
 {
     $parts = explode('.', $token);
-    if (count($parts) !== 4 || $parts[0] !== '1' || !ctype_digit($parts[1]) || !preg_match('/^[a-f0-9]{16}$/', $parts[2])) return false;
+    // Digits by PCRE, which no PHP is without. ctype is an extension of its
+    // own on some systems (Alpine's php-ctype), and without it ctype_digit()
+    // was a fatal error on every request that carries the cookie.
+    if (count($parts) !== 4 || $parts[0] !== '1' || !preg_match('/^[0-9]{1,18}$/D', $parts[1]) || !preg_match('/^[a-f0-9]{16}$/D', $parts[2])) return false;
     if ((int)$parts[1] <= time()) return false;
     $body = $parts[0] . '.' . $parts[1] . '.' . $parts[2];
     return hash_equals(substr(hash_hmac('sha256', $body, $secret), 0, 32), $parts[3]);
@@ -579,7 +619,7 @@ function softn_shell(array $config, string $private): never
     $zip->close();
     $endpoint = softn_endpoint();
     $escape = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
-    $description = $config['description'] ?? (is_string($manifest['description'] ?? null) ? mb_substr($manifest['description'], 0, 300) : null);
+    $description = $config['description'] ?? (is_string($manifest['description'] ?? null) ? softn_text_cut($manifest['description'], 300) : null);
     $dark = $config['theme'] === 'dark';
     $boot = json_encode(
         ['version' => 1, 'endpoint' => $endpoint, 'loadingText' => $config['loadingText']],
@@ -790,6 +830,34 @@ function softn_stream($stream, int $offset, int $length): void
     fclose($stream);
 }
 
+/**
+ * Whether the private directory is somewhere the web server serves files
+ * from: inside the directory this page is in, or inside the document root.
+ * The page's own directory is public whatever DOCUMENT_ROOT says; a site
+ * mounted with Alias or as a user directory has the main site's there, and
+ * Apache names the mounted one CONTEXT_DOCUMENT_ROOT. Only DOCUMENT_ROOT
+ * was looked at, so on such a site a private directory beside index.php
+ * passed this check with the archive and the cookie secret on a URL.
+ *
+ * @param array<string, mixed> $server
+ */
+function softn_private_is_public(string $private, array $server): bool
+{
+    $flat = static fn(string $path): string => rtrim(str_replace('\\', '/', $path), '/');
+    $private = $flat($private);
+    $roots = [__DIR__];
+    foreach (['DOCUMENT_ROOT', 'CONTEXT_DOCUMENT_ROOT'] as $key) {
+        if (is_string($server[$key] ?? null) && $server[$key] !== '') $roots[] = $server[$key];
+    }
+    foreach ($roots as $root) {
+        $public = realpath($root);
+        if ($public === false) continue;
+        $public = $flat($public);
+        if ($private === $public || str_starts_with($private, $public . '/')) return true;
+    }
+    return false;
+}
+
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if ($method !== 'GET' && $method !== 'HEAD') {
     header('Allow: GET, HEAD');
@@ -805,9 +873,8 @@ if (!is_string($requestPath) || ($requestPath !== softn_endpoint() && $requestPa
 }
 $config = softn_config($private);
 $privateReal = realpath($private);
-$public = realpath((string)($_SERVER['DOCUMENT_ROOT'] ?? __DIR__));
 if ($privateReal === false) softn_fail(503, 'The private directory is missing.');
-if (!$config['allowPrivateInWebroot'] && $public !== false && ($privateReal === $public || str_starts_with($privateReal, $public . DIRECTORY_SEPARATOR))) {
+if (!$config['allowPrivateInWebroot'] && softn_private_is_public($privateReal, $_SERVER)) {
     softn_fail(503, 'The private directory must be outside the public document root.');
 }
 if (array_key_exists('manifest', $_GET)) {
