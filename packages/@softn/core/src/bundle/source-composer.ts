@@ -6,9 +6,19 @@
  * block, so loaders must combine those inputs before parsing. This module keeps
  * that operation identical across hosts and canonicalizes relative imports
  * while each fragment's real source path is still known.
+ *
+ * An imported page is an include, not a component. `<import Header
+ * from="./header.ui" />` puts header.ui's markup wherever `<Header />` is
+ * written, as text, in the importing page's scope: it reads that page's state
+ * and calls its functions, and its `<logic>` joins the page's one block.
+ * Nothing is passed to it — attributes and children written on the tag are
+ * dropped, and said so. What a page carries only when it stands on its own,
+ * an `<App>` wrapper and `<data>` declarations, is handed to the document
+ * instead of being pasted inside it (see page-include.ts).
  */
 
 import { PYTHON_PACKAGES, readPythonPackages } from './inspect';
+import { declareCollections, placeInclude, readInclude, type IncludedCollection } from './page-include';
 
 export interface ComposedBundleSource {
   source: string;
@@ -208,13 +218,32 @@ export function rewriteBundleLogicImports(source: string, basePath: string): str
   );
 }
 
-/** Escape a component name before embedding it in a regular expression. */
+/** Escape a name before embedding it in a regular expression. */
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
- * Inline a bundle's UI component graph and combine every discovered logic
+ * How a page imports another: `<import Header from="./header.ui" />`. Group 1
+ * is the name it is used by, group 2 the path as written.
+ *
+ * The `=` may be left out. The parser reads `from "./header.ui"` as the same
+ * import, and the composer used to look for the first spelling only, so a
+ * page written the second way parsed cleanly and then had none of its
+ * imports placed. Every place that looks for an import builds on this one
+ * pattern, so the two cannot come apart again.
+ */
+export const UI_IMPORT_PATTERN = /<import\s+(\w+)\s+from\s*=?\s*["']([^"']+)["']\s*\/>/;
+
+/** What a use of an imported page carried that an include cannot take, as a sentence. */
+function describeIgnored(attributes: readonly string[], children: boolean): string {
+  const written = attributes.length > 0 ? `attributes (${attributes.join(', ')})` : '';
+  if (written && children) return `${written} and children`;
+  return written || 'children';
+}
+
+/**
+ * Inline a bundle's imported pages and combine every discovered logic
  * fragment into the document's single final <logic> block.
  */
 export function composeBundleSource(
@@ -235,6 +264,9 @@ export function composeBundleSource(
   const mainFragments: LogicFragment[] = [];
   const supplementalFragments: LogicFragment[] = [];
   const externalFragments = new Map<string, LogicFragment>();
+  // The collections imported pages declare, with the page each came from.
+  // Like their logic, they belong to the document: see declareCollections.
+  const includedCollections: Array<IncludedCollection & { from: string }> = [];
   let firstFragment: LogicFragment | undefined;
   let sawExternalLogic = false;
 
@@ -304,7 +336,7 @@ export function composeBundleSource(
     main: boolean
   ): string => {
     let nextSource = collectLogic(source, basePath, main);
-    const importRegex = /<import\s+(\w+)\s+from=["']([^"']+)["']\s*\/>/g;
+    const importRegex = new RegExp(UI_IMPORT_PATTERN.source, 'g');
     const imports: Array<{ name: string; path: string; content: string }> = [];
 
     let match: RegExpExecArray | null;
@@ -336,14 +368,43 @@ export function composeBundleSource(
       imports.push({ name: componentName, path: resolvedPath, content: inlined });
     }
 
-    nextSource = nextSource.replace(/<import\s+\w+\s+from=["'][^"']+["']\s*\/>\n?/g, '');
+    nextSource = nextSource.replace(new RegExp(`${UI_IMPORT_PATTERN.source}\\n?`, 'g'), '');
+
+    if (main) {
+      // Every imported page has been read by now, so this is where what they
+      // declared is declared: on the page that is the document.
+      const declared = declareCollections(nextSource, includedCollections);
+      nextSource = declared.source;
+      for (const { declaration, holder } of declared.refused) {
+        console.warn(
+          `[SoftN] ${declaration.from}: <collection name="${declaration.name}" as="${declaration.as}"> is not declared, because this app already reads "${holder}" as ${declaration.as}.`
+        );
+      }
+    } else {
+      // An imported page is placed inside another, so what only a whole page
+      // carries comes off it here, once, however often the page is used.
+      const include = readInclude(nextSource);
+      nextSource = include.markup;
+      for (const collection of include.collections) {
+        includedCollections.push({ ...collection, from: basePath });
+      }
+      for (let i = 0; i < include.unusable; i++) {
+        console.warn(
+          `[SoftN] ${basePath}: a <collection> in its <data> block has no usable name and is not declared.`
+        );
+      }
+    }
+
     for (const imported of imports) {
       const template = imported.content.replace(/^\/\/[^\n]*\n/gm, '').trim();
-      const name = escapeRegex(imported.name);
-      const selfClosing = new RegExp(`<${name}(?:\\s[^>]*?)?\\s*/>`, 'g');
-      const paired = new RegExp(`<${name}(?:\\s[^>]*?)?>.*?</${name}\\s*>`, 'gs');
-      nextSource = nextSource.replace(selfClosing, () => template);
-      nextSource = nextSource.replace(paired, () => template);
+      nextSource = placeInclude(nextSource, imported.name, template, ({ attributes, children }) => {
+        // Dropped, as they always were: the language has no properties or
+        // events for an imported page. Said, because dropping them silently
+        // reads as a page that was passed its data and ignored it.
+        console.warn(
+          `[SoftN] ${basePath}: <${imported.name}> is an imported page, so its ${describeIgnored(attributes, children)} are ignored. It is placed here as written and reads this page's state instead.`
+        );
+      });
     }
     return nextSource;
   };
