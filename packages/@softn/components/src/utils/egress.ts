@@ -30,7 +30,11 @@ export function judgeCssValue(
   value: string | undefined,
   egress: EgressConfig | null | undefined
 ): string | undefined {
-  if (typeof value !== 'string' || !egress) return value;
+  if (value === undefined || value === null || !egress) return value;
+  // What is not text cannot be read for what it loads, and React writes a
+  // list out as text: `background={["url(https://attacker.example/x)"]}` was
+  // passed on unasked and painted. Under a policy, only text is painted.
+  if (typeof value !== 'string') return undefined;
   const scan = cssResourceReferences(value);
   if (scan.opaque) return undefined;
   if (scan.urls.length === 0) return value;

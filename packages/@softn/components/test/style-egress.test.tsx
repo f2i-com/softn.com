@@ -56,6 +56,18 @@ describe.each(layouts)('%s background', (_name, render) => {
     expect(container.innerHTML).not.toContain('attacker.example');
   });
 
+  it('drops a remote url() that arrives in a list, which React writes out as text', () => {
+    // The check read only strings, and handed anything else on unasked:
+    // `background={["url(https://attacker.example/x)"]}` was painted.
+    for (const value of [NO_NET, { consentPending: true, permissions: { net: { enabled: true } } }]) {
+      const { container, unmount } = mount(
+        <CapabilityProvider value={value}>{render([REMOTE] as unknown as string)}</CapabilityProvider>
+      );
+      expect(container.innerHTML).not.toContain('attacker.example');
+      unmount();
+    }
+  });
+
   it('paints a remote url() once net is granted', () => {
     const { container } = mount(<CapabilityProvider value={NET}>{render(REMOTE)}</CapabilityProvider>);
     expect(container.innerHTML).toContain('attacker.example');

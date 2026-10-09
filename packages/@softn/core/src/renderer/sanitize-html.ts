@@ -34,8 +34,17 @@ const SAFE_DATA_URL = /^data:(?:image|audio|video|font)\//i;
 // eslint-disable-next-line no-control-regex
 const URL_IGNORED = /[\u0000-\u0020\u00a0\u1680\u2000-\u200f\u2028\u2029\u202f\u205f\u3000\ufeff]/g;
 
-/** Whether a URL is safe to hand to the DOM. */
+/**
+ * Whether a URL is safe to hand to the DOM.
+ *
+ * What is not text is not a URL, and is not safe: this used to throw for it
+ * (`value.replace` of a number), and the callers that guarded with
+ * `typeof value === 'string'` let it through unasked, which is worse. React
+ * writes a list into an attribute as its entries joined, so a list holding
+ * one `javascript:` URL is that URL once it is on the page.
+ */
 export function isSafeUrl(value: string): boolean {
+  if (typeof value !== 'string') return false;
   const probe = value.replace(URL_IGNORED, '');
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(probe);
   if (!scheme) return true; // relative, fragment, or query — same origin
@@ -64,6 +73,9 @@ export function isSafeUrl(value: string): boolean {
  * alternative is comparing against an origin this module cannot see.
  */
 export function isRemoteUrl(value: string): boolean {
+  // What is not text cannot be shown to stay on this origin, so it is held
+  // back with what leaves it.
+  if (typeof value !== 'string') return true;
   const probe = value.replace(URL_IGNORED, '').replace(/\\/g, '/');
   if (probe.startsWith('//')) return true; // protocol-relative
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(probe);
@@ -87,6 +99,7 @@ const REMOTE_URL_SCHEMES = new Set(['http', 'https', 'ftp', 'ftps', 'ws', 'wss']
  * the browser fetches whichever one it prefers.
  */
 export function hasRemoteSrcSetCandidate(value: string): boolean {
+  if (typeof value !== 'string') return true;
   return value
     .split(',')
     .some((candidate) => isRemoteUrl(candidate.trim().split(/\s+/)[0] ?? ''));

@@ -61,6 +61,9 @@ section here. Write the section before tagging. Headings are the tag
 - A list with a `null` in it (a deleted record) no longer takes `Table`, `DataGrid`, `SmartGrid`, `SmartList`, `SmartTimeline` or `SmartCards` to the error box: a hole is not a row.
 - `SmartStats` draws `stats="Users"` (a spec whose figure is not typed yet) and shows a dash for a figure that is undefined, where both used to throw. `SmartGrid` leaves the empty name in `columns="name,,team"` out.
 - `Avatar` draws no presence dot for a `status` that is `null` or not one it knows (it drew an empty ring and read out "null"), and takes a number for `name`.
+- **Security:** a URL prop that is not text is no longer passed on. `<a href={["javascript:alert(1)"]}>` reached the page with the script URL intact, because the URL check read only strings and React writes a list out as its entries joined; the same list under `src`, `srcset`, `poster`, `ping` or in an inline `style` fetched from any host before consent and without `net`. Under a URL name, text is judged, a number is its digits, and anything else is removed, on raw elements and at any depth in a component's props.
+- **Security:** a URL nested more than four levels down in a component's items is judged. The scrub used to stop at a fixed depth and hand on what lay below unchecked; a value that refers back to itself is now cut where it comes round instead.
+- `Image`, `Avatar`, `Sprite` and `TileMap` given a `src` that is not text draw without it, where the URL check threw.
 
 ## v0.0.18
 

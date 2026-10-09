@@ -7,6 +7,7 @@
 
 import React from 'react';
 import { markupUrlJudge, sanitizeSvg, useEgressConfig } from '@softn/core';
+import { named } from '../utils/choice';
 
 export interface IconProps {
   /** Built-in icon name */
@@ -120,7 +121,8 @@ export function Icon({
   }
 
   // Built-in icon
-  const iconSvg = name ? ICONS[name] : null;
+  // The table's own entries only: `name="constructor"` found a function here.
+  const iconSvg = named(ICONS, name) ?? null;
   if (!iconSvg) {
     return <span className={className} style={wrapperStyle} {...a11y} />;
   }

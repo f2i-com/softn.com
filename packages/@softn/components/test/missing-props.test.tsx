@@ -334,6 +334,20 @@ describe('a value of another shape than the prop expects', () => {
     expect(thrown('SmartCards', { data, badges: 7, meta: true })).toBeNull();
   });
 
+  it.each(['Image', 'Avatar', 'Sprite', 'TileMap'])('<%s> given a source that is not text has no source, where the URL check threw', (tag) => {
+    for (const src of [7, true, false, ['a.png'], { url: 'a.png' }]) {
+      expect(thrown(tag, { src, fallbackSrc: src, name: 'Ann' }), JSON.stringify(src)).toBeNull();
+    }
+    // A list is not a URL: joined, its entries are one, and not the one that was checked.
+    expect(markup(tag, { src: ['javascript:alert(1)'], name: 'Ann' })).not.toContain('javascript:');
+  });
+
+  it('a Breadcrumb item whose link is not text is not a link', () => {
+    const drawn = markup('Breadcrumb', { items: [{ label: 'Home', href: ['javascript:alert(1)'] }, { label: 'Docs', href: 7 }, { label: 'Now' }] });
+    expect(drawn).not.toContain('javascript:');
+    expect(drawn).toContain('Home');
+  });
+
   it('a GaugeChart takes thresholds with a hole, or none that are a list', () => {
     expect(thrown('GaugeChart', { value: 60, thresholds: [null, { value: 50, color: 'red' }] })).toBeNull();
     expect(thrown('GaugeChart', { value: 60, thresholds: 7 })).toBeNull();

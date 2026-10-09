@@ -576,21 +576,56 @@ function sanitizeUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy):
   for (const name of Object.keys(props)) {
     if (!URL_PROPS.has(urlPropName(name))) continue;
     const value = props[name];
-    const safe =
-      typeof value === 'string'
-        ? isSafeUrl(value) && !isWithheldUrl(name, value, policy)
-          ? value
-          : undefined
-        : value;
-    if (safe === undefined && props[name] !== undefined) {
-      if (isDevelopment) {
-        console.warn(
-          `[SoftN] Blocked unsafe URL in <${tag} ${name}>: ${String(props[name]).slice(0, 80)}`
-        );
+    if (value === undefined || value === null) continue;
+    const safe = judgedUrl(name, value, policy);
+    if (safe === undefined) {
+      // `href={on && url}` is false when there is nothing to link to: no
+      // attribute, and nothing worth a warning.
+      if (isDevelopment && typeof value !== 'boolean') {
+        console.warn(`[SoftN] Blocked unsafe URL in <${tag} ${name}>: ${describeUrlValue(value)}`);
       }
       delete props[name];
+    } else if (safe !== value) {
+      props[name] = safe;
     }
   }
+}
+
+/**
+ * A URL prop's value as the text the browser will be given, or `undefined`
+ * when it is not one.
+ *
+ * The check used to begin `typeof value === 'string'` and pass everything
+ * else on as it was, and React writes a list into an attribute as its
+ * entries joined: `href={["javascript:alert(1)"]}` reached the page as
+ * `href="javascript:alert(1)"`, and `src={["https://attacker.example/b"]}`
+ * was fetched while consent was pending. Only text is judged because only
+ * text can be: a list's entries can each be allowed and still join into a
+ * URL at another host (`["https://cdn.example", "@attacker.example/x"]` is
+ * user `cdn.example,` at host `attacker.example`), and an object says
+ * whatever its `toString` says on the day. A finite number is its digits.
+ */
+function urlText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+/**
+ * The text to hand on for a URL prop, or `undefined` when it must not be.
+ * What comes back is the string that was judged, never the value it was
+ * read from.
+ */
+function judgedUrl(name: string, value: unknown, policy: EgressPolicy): string | undefined {
+  const text = urlText(value);
+  if (text === undefined) return undefined;
+  return isSafeUrl(text) && !isWithheldUrl(name, text, policy) ? text : undefined;
+}
+
+/** A refused URL value for the development warning: its text, or what kind of thing it was. */
+function describeUrlValue(value: unknown): string {
+  if (typeof value === 'string') return value.slice(0, 80);
+  return Array.isArray(value) ? 'a list, where a URL is text' : `${typeof value}, where a URL is text`;
 }
 
 /**
@@ -635,7 +670,16 @@ function withholdRemoteStyleUrls(props: SoftNProps, policy: EgressPolicy): void 
 
   let copy: Record<string, unknown> | null = null;
   for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
-    if (typeof value !== 'string') continue;
+    if (typeof value !== 'string') {
+      // A number is a length or a weight, and nothing at all is nothing set.
+      // A list or an object is neither, and React writes it out as text:
+      // `backgroundImage: ["url(https://attacker.example/b)"]` was the same
+      // fetch as the string this function was written to stop.
+      if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') continue;
+      if (!copy) copy = { ...(style as Record<string, unknown>) };
+      delete copy[name];
+      continue;
+    }
     const scan = cssResourceReferences(value);
     if (!scan.opaque && scan.urls.length === 0) continue;
     const withheld =
@@ -678,13 +722,18 @@ const COMPONENT_URL_PROPS = new Set([
 ]);
 
 /**
- * How far inside a prop value the scrub descends.
+ * How far inside a prop value the scrub descends before it stops handing
+ * the value on.
  *
- * `items={[{href}]}` is already two levels down and a nested menu tree is a few
- * more, so the walk has to recurse; the cap is what keeps a state object that
- * refers back to itself from recursing forever.
+ * `items={[{href}]}` is already two levels down and every level of a tree is
+ * two more. The cap used to be 8, and what lay past it was returned as it
+ * was: a URL five levels down a tree was not judged at all. A value that
+ * refers back to itself is what the cap was for, and that is now caught as
+ * what it is (see `scrubUrlsIn`), so the cap only bounds the call stack. It
+ * is far past any tree an app draws, and what is past it is dropped, not
+ * passed: a limit on what gets checked must not be a way round the check.
  */
-const MAX_SCRUB_DEPTH = 8;
+const MAX_SCRUB_DEPTH = 512;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return false;
@@ -703,40 +752,52 @@ function scrubUrlsIn(
   value: unknown,
   depth: number,
   blocked: string[],
-  policy: EgressPolicy
+  policy: EgressPolicy,
+  within: Set<object>
 ): unknown {
-  if (depth > MAX_SCRUB_DEPTH) return value;
-
   // Elements arriving as a prop were built by `renderElement`, which already
   // sanitized them; copying one here would drop the non-enumerable bookkeeping
   // React puts on it.
   if (React.isValidElement(value)) return value;
 
-  if (Array.isArray(value)) {
-    let copy: unknown[] | null = null;
-    for (let i = 0; i < value.length; i++) {
-      const next = scrubUrlsIn(value[i], depth + 1, blocked, policy);
-      if (next !== value[i]) {
-        if (!copy) copy = value.slice();
-        copy[i] = next;
-      }
-    }
-    return copy ?? value;
-  }
+  const list = Array.isArray(value);
+  if (!list && !isPlainObject(value)) return value;
+  const holder = value as object;
 
-  if (isPlainObject(value)) {
+  // A value that holds itself: the way back up ends here, where returning
+  // the original would hand over everything in it unjudged. `within` is the
+  // values this one is inside, not every value seen, so a record that only
+  // appears twice is walked twice and kept both times.
+  if (within.has(holder) || depth > MAX_SCRUB_DEPTH) return undefined;
+
+  within.add(holder);
+  try {
+    if (list) {
+      const entries = value as unknown[];
+      let copy: unknown[] | null = null;
+      for (let i = 0; i < entries.length; i++) {
+        const next = scrubUrlsIn(entries[i], depth + 1, blocked, policy, within);
+        if (next !== entries[i]) {
+          if (!copy) copy = entries.slice();
+          copy[i] = next;
+        }
+      }
+      return copy ?? value;
+    }
+
+    const record = value as Record<string, unknown>;
     let copy: Record<string, unknown> | null = null;
-    for (const name of Object.keys(value)) {
-      const next = scrubUrlProp(name, value[name], depth + 1, blocked, policy);
-      if (next !== value[name]) {
-        if (!copy) copy = { ...value };
+    for (const name of Object.keys(record)) {
+      const next = scrubUrlProp(name, record[name], depth + 1, blocked, policy, within);
+      if (next !== record[name]) {
+        if (!copy) copy = { ...record };
         copy[name] = next;
       }
     }
     return copy ?? value;
+  } finally {
+    within.delete(holder);
   }
-
-  return value;
 }
 
 function scrubUrlProp(
@@ -744,22 +805,27 @@ function scrubUrlProp(
   value: unknown,
   depth: number,
   blocked: string[],
-  policy: EgressPolicy
+  policy: EgressPolicy,
+  within: Set<object>
 ): unknown {
-  if (COMPONENT_URL_PROPS.has(urlPropName(name)) && typeof value === 'string') {
-    if (isSafeUrl(value) && !isWithheldUrl(name, value, policy)) return value;
-    blocked.push(value);
-    return undefined;
+  if (COMPONENT_URL_PROPS.has(urlPropName(name))) {
+    if (value === undefined || value === null) return value;
+    // Text or nothing, at any depth: see `urlText`. A component that puts
+    // `item.href` into an <a> writes a list out exactly as a raw <a> does.
+    const safe = judgedUrl(name, value, policy);
+    if (safe === undefined && typeof value !== 'boolean') blocked.push(describeUrlValue(value));
+    return safe;
   }
-  return scrubUrlsIn(value, depth, blocked, policy);
+  return scrubUrlsIn(value, depth, blocked, policy, within);
 }
 
 /** Drop unsafe URLs from the props of a registered component. */
 function sanitizeComponentUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy): void {
   const blocked: string[] = [];
 
+  const within = new Set<object>();
   for (const name of Object.keys(props)) {
-    const next = scrubUrlProp(name, props[name], 0, blocked, policy);
+    const next = scrubUrlProp(name, props[name], 0, blocked, policy, within);
     if (next !== props[name]) props[name] = next;
   }
 
