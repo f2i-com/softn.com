@@ -321,6 +321,16 @@ millisecond a request for a small script and three for one of 20 KB, on one
 worker (a script with an object, an array or a class at its top level
 already paid it). Keep the top level cheap, and keep state in the database.
 
+One push is one request, however many ops it carries. The per-op sync hooks
+of a push (`onBeforeSync` for each op, and after the push is stored
+`onAfterSync` for each) run in order on one worker: the first starts from the
+script as loaded, like any request, and each of the rest finds memory as the
+one before left it, unless that one threw or was cut off, after which the next
+starts clean again. The before-hooks are one such run and the after-hooks
+another. The next push, and every HTTP request, starts clean. A thousand ops
+with both hooks take about 30 ms; a rebuild for each took 0.9 s for the
+before-hooks alone, against the five seconds a push is given.
+
 `onStart()` is one place the two hosts differ. Here it runs once, when the
 app is loaded, on one worker and outside any transaction, and a global it
 sets is discarded with that VM; an `onStart` that fails

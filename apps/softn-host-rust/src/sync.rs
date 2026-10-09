@@ -760,11 +760,8 @@ impl SyncManager {
                 tracing::warn!("onAfterSyncBatch error: {}", e);
             }
         } else if self.has_after_sync {
-            let scope = ServerRuntime::new_scope();
-            for op in accepted_ops {
-                if let Err(e) = self.call_after_sync(op, scope) {
-                    tracing::warn!("onAfterSync error: {}", e);
-                }
+            for error in self.call_after_sync_each(accepted_ops) {
+                tracing::warn!("onAfterSync error: {}", error);
             }
         }
     }
@@ -928,17 +925,18 @@ impl SyncManager {
             // again. The first op is always checked, so a push makes progress.
             let started = std::time::Instant::now();
             let budget = std::time::Duration::from_millis(self.before_hook_budget_ms.load(std::sync::atomic::Ordering::Relaxed));
+            // One client's push is one request, however many ops it carries:
+            // its hooks run in order on one worker (`ServerRuntime::call_each`).
+            let mut answers = self.call_before_sync_each(&basic_valid_ops, started + budget).into_iter();
             let mut checked = 0usize;
             let mut unchecked = Vec::new();
-            // One client's push is one request, however many ops it carries.
-            let scope = ServerRuntime::new_scope();
             for mut op in basic_valid_ops {
-                if checked > 0 && started.elapsed() >= budget {
+                let Some(answer) = answers.next() else {
                     unchecked.push(op.id.clone());
                     continue;
-                }
+                };
                 checked += 1;
-                match self.call_before_sync(&op, scope) {
+                match answer.and_then(|result| Self::read_before_sync(&op, result)) {
                     Ok((false, _)) => {
                         tracing::info!("onBeforeSync rejected op {}", op.id);
                         responses.push(ServerMessage::SyncReject {
@@ -1270,14 +1268,23 @@ impl SyncManager {
         accepted
     }
 
-    /// Per-op before-sync hook. Returns `(accepted, optional_mutated_data)`.
+    /// The per-op before-sync hook for each op of a push, in order on one
+    /// worker. One answer for each op the hook was run for: fewer than the ops
+    /// means it ran out of time and the rest were not checked. When the hook
+    /// could not be run at all, every op has the reason for its answer.
+    fn call_before_sync_each(&self, ops: &[SyncOp], deadline: std::time::Instant) -> Vec<Result<serde_json::Value, String>> {
+        let asked = match self.runtime.as_ref() {
+            Some(rt) => rt.call_each("onBeforeSync", ops.iter().map(Self::op_to_json).collect(), Some(deadline)),
+            None => Err("No runtime".into()),
+        };
+        asked.unwrap_or_else(|error| ops.iter().map(|_| Err(error.clone())).collect())
+    }
+
+    /// What a per-op before-hook's answer says of its op: `(accepted, optional_mutated_data)`.
     /// If the hook returns an object with a `data` field, that data overrides
     /// the original op's data (enabling sanitization/enrichment).
     /// An explicit `false` rejects; null/undefined/true accepts without mutation.
-    fn call_before_sync(&self, op: &SyncOp, scope: u64) -> Result<(bool, Option<serde_json::Value>), String> {
-        let rt = self.runtime.as_ref().ok_or("No runtime")?;
-        let op_json = Self::op_to_json(op);
-        let result = rt.call_within(scope, "onBeforeSync", vec![op_json])?;
+    fn read_before_sync(op: &SyncOp, result: serde_json::Value) -> Result<(bool, Option<serde_json::Value>), String> {
         match &result {
             serde_json::Value::Bool(false) => Ok((false, None)),
             // `{ data: clean(op.data) }` where `clean` falls off the end of a
@@ -1336,10 +1343,16 @@ impl SyncManager {
         rt.call("onAfterSyncBatch", vec![serde_json::Value::Array(ops_json)]).map(|_| ())
     }
 
-    fn call_after_sync(&self, op: &SyncOp, scope: u64) -> Result<(), String> {
-        let rt = self.runtime.as_ref().ok_or("No runtime")?;
-        let op_json = Self::op_to_json(op);
-        rt.call_within(scope, "onAfterSync", vec![op_json]).map(|_| ())
+    /// The per-op after-sync hook for each op, in order on one worker, and
+    /// what each failure said.
+    fn call_after_sync_each(&self, ops: &[SyncOp]) -> Vec<String> {
+        let Some(rt) = self.runtime.as_ref() else {
+            return vec!["No runtime".into()];
+        };
+        match rt.call_each("onAfterSync", ops.iter().map(Self::op_to_json).collect(), None) {
+            Ok(answers) => answers.into_iter().filter_map(Result::err).collect(),
+            Err(error) => vec![error],
+        }
     }
 
     fn op_to_json(op: &SyncOp) -> serde_json::Value {
@@ -1360,6 +1373,10 @@ mod tests {
     use super::*;
 
     fn manager(script: Option<&str>) -> (Arc<SyncManager>, ServerDb) {
+        manager_with(script, 1)
+    }
+
+    fn manager_with(script: Option<&str>, workers: usize) -> (Arc<SyncManager>, ServerDb) {
         let dir = std::env::temp_dir().join(format!("softn-sync-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("xdb.sqlite");
@@ -1369,7 +1386,7 @@ mod tests {
             let rt = ServerRuntime::new(|| crate::host::BridgeSet {
                 db: None, http: None, fs: None, env: None, sql: None, crypto: None,
                 allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
-            }, Some(1)).unwrap();
+            }, Some(workers)).unwrap();
             rt.init(source.to_string()).unwrap();
             rt
         });
@@ -1575,6 +1592,29 @@ mod tests {
         assert_eq!(data["title"], "final");
     }
 
+    /// The per-op hooks of one push run in order in one VM, whatever the size
+    /// of the worker pool, and the next push's start from the script as it
+    /// was loaded. Sent as a call each they were taken by whichever worker
+    /// was idle, so on four workers a hook that counted the ops of a push
+    /// numbered them 1, 1, 1, 1, 2, 2 and so on.
+    #[test]
+    fn the_per_op_hooks_of_one_push_run_in_order_in_one_world() {
+        let (sync, db) = manager_with(Some(
+            "var seen = 0; function onBeforeSync(op) { seen = seen + 1; return { data: { seq: seen } }; }",
+        ), 4);
+        for prefix in ["a", "b"] {
+            let ops: Vec<SyncOp> = (0..12)
+                .map(|n| op(&format!("{prefix}{n}"), "notes", "create", &format!("{prefix}-r{n}"), serde_json::json!({"n": n})))
+                .collect();
+            let responses = sync.handle_sync_push(ops, "a");
+            assert_eq!(acked(&responses).len(), 12, "{responses:?}");
+            let numbered: Vec<i64> = (0..12)
+                .map(|n| db.write().get_record(&format!("{prefix}-r{n}")).unwrap().data["seq"].as_i64().unwrap())
+                .collect();
+            assert_eq!(numbered, (1..=12).collect::<Vec<i64>>(), "push {prefix}");
+        }
+    }
+
     /// A hook may change an op's data to another object of a size a client
     /// may send, and to nothing else: a string would replace the record with
     /// that string, and more than a client may send was never checked.
@@ -1775,7 +1815,7 @@ mod tests {
         let ops = vec![op("c1", "notes", "create", "n1", serde_json::json!({}))];
         let batch = sync.call_after_sync_batch(&ops).unwrap_err();
         assert!(batch.contains("mail is down"), "{batch}");
-        let single = sync.call_after_sync(&ops[0], ServerRuntime::new_scope()).unwrap_err();
+        let single = sync.call_after_sync_each(&ops[..1]).remove(0);
         assert!(single.contains("mail is down"), "{single}");
     }
 
