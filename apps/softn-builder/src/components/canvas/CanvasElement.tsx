@@ -6,6 +6,7 @@ import React, { useCallback, useState, useEffect, useRef, useMemo } from 'react'
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
+import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
 import { useFilesStore } from '../../stores/filesStore';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
@@ -189,7 +190,7 @@ export const CanvasElement = React.memo(function CanvasElement({
   // a notice and its branch was neither drawn nor droppable.
   const allowsChildren = element ? acceptsChildren(element) : false;
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
-  const assets = useProjectStore((state) => state.assets);
+  const assets = useCurrentAssets();
   const retainedSource = useProjectStore((state) => state.source);
   const { activeFileId, uiFiles, logicFiles } = useFilesStore((state) => ({
     activeFileId: state.activeFileId,
@@ -432,7 +433,7 @@ export const CanvasElement = React.memo(function CanvasElement({
     const normalizedSrc = resolvedSrc.replace(/^\.?\//, '').replace(/^assets\//, '');
 
     const matchedAsset = assets.find((a) => {
-      const name = a.name.replace(/^assets\//, '');
+      const name = assetPath(a).replace(/^assets\//, '');
       return name === normalizedSrc || name.endsWith(`/${normalizedSrc}`);
     });
 

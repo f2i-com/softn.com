@@ -15,6 +15,7 @@
 
 import { useCanvasStore } from '../stores/canvasStore';
 import { useProjectStore } from '../stores/projectStore';
+import { currentAssets } from './projectAssets';
 import { useSchemaStore } from '../stores/schemaStore';
 import { useFilesStore } from '../stores/filesStore';
 import { exportBundle, exportMultiFileBundle, type RetainedExportSource } from './bundleExporter';
@@ -173,9 +174,7 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
     themeMode: projectState.themeMode,
     collections,
     records,
-    assets: retained.manifest !== null || filesState.assetFiles.size > 0
-      ? [...filesState.assetFiles.entries()].map(([id, asset]) => ({ ...asset, bundlePath: filesState.nodes.get(id)?.path ?? asset.bundlePath }))
-      : projectState.assets,
+    assets: currentAssets(filesState, { assets: projectState.assets, source: retained }),
     permissions: projectState.permissions,
     pythonPackages: projectState.pythonPackages,
     icon: icon?.bytes,

@@ -117,6 +117,7 @@ section here. Write the section before tagging. Headings are the tag
 - `CopyButton`, 105 tags in all: a button that copies its `value` and says "Copied" for a moment, to the eye and to a screen reader, and says so when the browser refuses. Seven of the example pages build one from a logic function, a second state variable and a timer. In an app whose manifest denies its script the clipboard, the button is disabled and says why: the renderer now tells the components below it (`AppScope.clipboard`), since a component runs in the page and not in the script's sandbox.
 - The page of a `Pagination` that was just left, a `SmartForm` field whose error was put right, and a `Tooltip` moved to another side no longer keep a border in the colour of the text. Each drew one state with `border` and another with `border` and a `borderColor`; going back, React takes the colour away by clearing it, which clears the colour the shorthand had set. The style audit holds every component to it between two states as it did within one.
 - `Pagination` goes to a second line on a narrow screen, where its row ran off the side of what held it and was cut.
+- Builder: the image picker and the canvas offer the assets the project has now. They read a list filled when a bundle was opened and never again, so an image that had been deleted was still offered, and a renamed one under its old name, while the export held neither.
 
 ## v0.0.18
 

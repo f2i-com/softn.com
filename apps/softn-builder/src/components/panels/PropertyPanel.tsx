@@ -6,6 +6,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
+import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
 import { useFilesStore } from '../../stores/filesStore';
 import { ACCESSIBILITY_PROP_NAMES, getComponentMeta } from '../../utils/componentRegistry';
 import { dockLogicFile, entryFileId, logicLanguageOf, type LogicLanguage } from '../../utils/logicFiles';
@@ -506,7 +507,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
   // Leaving a field ends its run of edits: the next edit to it is a step of its own.
   const endEdit = useHistoryStore(s => s.endCoalescing);
   const handlerHelp = useHandlerHelp();
-  const assets = useProjectStore((state) => state.assets);
+  const assets = useCurrentAssets();
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
   const meta = useMemo(() => {
@@ -666,7 +667,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
 
   const imageAssetOptions = useMemo(() => {
     const files = assets
-      .map((asset) => asset.name.replace(/^assets\//, ''))
+      .map((asset) => assetPath(asset).replace(/^assets\//, ''))
       .filter((name) => /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name))
       .sort((a, b) => a.localeCompare(b));
     return files.map((name) => `assets/${name}`);
