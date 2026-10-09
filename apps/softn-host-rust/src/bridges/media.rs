@@ -39,7 +39,26 @@ fn decode<D: ImageDecoder>(mut decoder: D) -> Result<DynamicImage, String> {
         .map_err(|_| "Invalid photo orientation metadata")?;
     let mut image = DynamicImage::from_decoder(decoder).map_err(|_| "Photo decoding failed")?;
     image.apply_orientation(orientation);
-    Ok(image)
+    Ok(if image.color().has_alpha() { on_white(image) } else { image })
+}
+
+/// A photo with transparency, laid over white: what the PHP host hands a
+/// handler for the same upload (it fills its canvas white and draws the photo
+/// on it). The JPEG written below has no alpha channel, and dropping the
+/// channel instead left whatever colour sat under the transparency, which is
+/// black for most files: a logo on a clear background came back on a black
+/// one. Done before the photo is made smaller, so that an edge is the average
+/// of what is seen and not of what was hidden.
+fn on_white(image: DynamicImage) -> DynamicImage {
+    let mut pixels = image.into_rgba8();
+    for pixel in pixels.pixels_mut() {
+        let alpha = u32::from(pixel[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = ((u32::from(*channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+        }
+        pixel[3] = 255;
+    }
+    DynamicImage::ImageRgba8(pixels)
 }
 
 fn jpeg(image: &DynamicImage, side: u32, max_bytes: usize) -> Result<String, String> {
@@ -63,23 +82,22 @@ pub fn sanitize_photo(data_url: &str) -> Result<serde_json::Value, String> {
     let (kind, encoded) = data_url
         .split_once(',')
         .ok_or("Use a JPEG, PNG or WebP photo")?;
-    let expected = match kind {
-        "data:image/jpeg;base64" => ImageFormat::Jpeg,
-        "data:image/png;base64" => ImageFormat::Png,
-        "data:image/webp;base64" => ImageFormat::WebP,
-        _ => return Err("Use a still JPEG, PNG or WebP photo".into()),
-    };
+    if !matches!(kind, "data:image/jpeg;base64" | "data:image/png;base64" | "data:image/webp;base64") {
+        return Err("Use a still JPEG, PNG or WebP photo".into());
+    }
     let bytes = STANDARD
         .decode(encoded)
         .map_err(|_| "Invalid photo encoding")?;
     if bytes.len() > MAX_PHOTO_BYTES {
         return Err("Use a photo smaller than 4 MB".into());
     }
-    if image::guess_format(&bytes).map_err(|_| "Invalid photo")? != expected {
-        return Err("Photo content does not match its declared image type".into());
-    }
+    // What the photo is, is what its bytes say, as on the PHP host. The label
+    // comes from the browser, which goes by the file's extension: a PNG saved
+    // as `photo.jpg` arrives as `image/jpeg`, and used to be refused here for
+    // not being what it was called.
+    let format = image::guess_format(&bytes).map_err(|_| "Invalid photo")?;
     let input = Cursor::new(&bytes);
-    let image = match expected {
+    let image = match format {
         ImageFormat::Jpeg => decode(JpegDecoder::new(input).map_err(|_| "Invalid JPEG photo")?)?,
         ImageFormat::Png => {
             let decoder =
@@ -99,7 +117,7 @@ pub fn sanitize_photo(data_url: &str) -> Result<serde_json::Value, String> {
             }
             decode(decoder)?
         }
-        _ => return Err("Unsupported photo format".into()),
+        _ => return Err("Use a still JPEG, PNG or WebP photo".into()),
     };
     Ok(serde_json::json!({"sanitized":true,
         "image":jpeg(&image, 960, 400_000)?,
@@ -168,6 +186,74 @@ mod tests {
             }
         }
     }
+    fn url(mime: &str, bytes: &[u8]) -> String {
+        format!("data:image/{mime};base64,{}", STANDARD.encode(bytes))
+    }
+
+    fn encoded(image: &DynamicImage, format: ImageFormat) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, format).unwrap();
+        bytes.into_inner()
+    }
+
+    /// What shows through a transparent photo is white, as the PHP host
+    /// paints it. The alpha channel used to be dropped, which left whatever
+    /// colour lay under the transparency: black, as a rule, so a logo on a
+    /// clear background came back on a black one from this host.
+    #[test]
+    fn transparency_is_painted_white() {
+        let mut picture = image::RgbaImage::new(64, 64);
+        for (x, _, pixel) in picture.enumerate_pixels_mut() {
+            // Left half solid red, right half clear, and a half-clear blue stripe between.
+            *pixel = match x {
+                0..=27 => image::Rgba([255, 0, 0, 255]),
+                28..=35 => image::Rgba([0, 0, 255, 128]),
+                _ => image::Rgba([0, 0, 0, 0]),
+            };
+        }
+        let png = encoded(&DynamicImage::ImageRgba8(picture), ImageFormat::Png);
+        let result = sanitize_photo(&url("png", &png)).unwrap();
+        let jpeg = STANDARD.decode(result["image"].as_str().unwrap().split_once(',').unwrap().1).unwrap();
+        let shown = image::load_from_memory(&jpeg).unwrap().to_rgb8();
+        let at = |x: u32| shown.get_pixel(x, 32).0;
+        assert!(at(52).iter().all(|channel| *channel > 240), "clear came out as {:?}", at(52));
+        assert!(at(10)[0] > 200 && at(10)[1] < 60 && at(10)[2] < 60, "solid red came out as {:?}", at(10));
+        // Half-clear blue over white: pale blue, not dark blue.
+        assert!(at(32)[0] > 90 && at(32)[2] > 200, "half-clear blue came out as {:?}", at(32));
+    }
+
+    /// The bytes say what a photo is, as on the PHP host; the label only has
+    /// to name one of the three types taken. A PNG a browser labelled
+    /// `image/jpeg` (it goes by the file's extension) used to be refused here
+    /// and taken there.
+    #[test]
+    fn the_type_is_read_from_the_bytes_not_the_label() {
+        let picture = DynamicImage::new_rgb8(64, 64);
+        let png = encoded(&picture, ImageFormat::Png);
+        let jpeg = encoded(&picture, ImageFormat::Jpeg);
+        assert_eq!(sanitize_photo(&url("jpeg", &png)).unwrap()["sanitized"], true);
+        assert_eq!(sanitize_photo(&url("webp", &jpeg)).unwrap()["sanitized"], true);
+        assert_eq!(sanitize_photo(&url("png", &jpeg)).unwrap()["sanitized"], true);
+        // Still one of the three, in the label and in the bytes.
+        assert!(sanitize_photo(&url("gif", &png)).is_err());
+        assert!(sanitize_photo(&url("png", b"GIF89a not one of them")).is_err());
+        // Animation is read from the PNG's chunks on both hosts: the letters
+        // `acTL` in a comment are a comment (the PHP host looked for the four
+        // bytes anywhere in the file).
+        let comment = b"Comment\0made with an acTL-free tool";
+        let mut chunk = (comment.len() as u32).to_be_bytes().to_vec();
+        chunk.extend_from_slice(b"tEXt");
+        chunk.extend_from_slice(comment);
+        chunk.extend_from_slice(&[0, 0, 0, 0]);
+        let mut commented = png[..33].to_vec();
+        commented.extend_from_slice(&chunk);
+        commented.extend_from_slice(&png[33..]);
+        assert!(sanitize_photo(&url("png", &commented)).is_ok());
+        // And an animated one is refused whatever it is called.
+        let animated = include_bytes!("../../tests/fixtures/animated.png");
+        assert!(sanitize_photo(&url("jpeg", animated)).unwrap_err().contains("Animated"));
+    }
+
     #[test]
     fn rejects_unsupported_malformed_and_oversized_photos() {
         assert!(sanitize_photo("data:image/svg+xml;base64,PHN2Zy8+").is_err());

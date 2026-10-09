@@ -37,6 +37,14 @@ limits on the client's address, so who may assert it matters:
   to the first address that is not one; a client cannot choose its identity,
   because whatever it prepends sits to the left of the entry the edge
   appended. This is the same rule as the directory API's `trustedProxies`.
+  The list is every `X-Forwarded-For` line of the request, in order, so a
+  proxy that adds a line of its own instead of appending to the client's
+  (HAProxy's `option forwardfor`) is read as it means; an entry that carries
+  a port (`198.51.100.1:5555`, `[2001:db8::5]:443`) is its address; and an
+  IPv4 client that reaches a dual-stack listener as `::ffff:a.b.c.d` is
+  `a.b.c.d`, in the limits and in `req.client_ip`. All three as on the PHP
+  host. (Only the first line used to be read, which let a client behind
+  such a proxy name itself, and a port made every visitor the proxy.)
 - Bare `--trusted-proxy` trusts whatever connects and takes the rightmost
   entry, as earlier releases did. Use it only for a listener no client can
   reach directly (a Unix socket, a loopback port behind the proxy).
@@ -153,6 +161,14 @@ Sync is on unless the manifest turns it off, so who may open `/sync` matters:
   site used to run the handler. Same-origin pages are unaffected; behind a
   proxy that rewrites `Host`, forward it (`proxy_set_header Host $host`) or
   send `X-Forwarded-Host` from a `--trusted-proxy` peer.
+- A page on a listed origin is answered for its browser as it is served. A
+  preflight is told the header names it asked for are allowed, as the PHP
+  host tells it (the answer used to be `*`, which browsers do not take to
+  cover `Authorization`, the header a session and the `/sync/ticket` token
+  travel in), and `Access-Control-Allow-Origin` goes to the origins the
+  check above lets through, compared the same way: an entry written
+  `https://App.example/` used to run the handler and send its answer back
+  without the header, so the page saw a failure for a request that worked.
 
 The sync protocol's answers are now honoured by the SoftN client: an op stays
 queued until the host's `sync_ack`; `sync_retry` (storage quota, a failing
@@ -193,9 +209,8 @@ Supported script bindings:
 flags the operator owns set over it: an app key named `development` or `photos`
 is replaced, so a bundle cannot turn development mode on for itself. The PHP
 host gives a script the same settings under the same two flags (there
-`photos` also needs PHP's GD). The object is frozen all the way down,
-because it outlives the request: a handler cannot change a setting for the
-ones that follow. `config` is part of the manifest every client is served, so
+`photos` also needs PHP's GD). The object is frozen all the way down: a
+handler reads its settings and cannot change them. `config` is part of the manifest every client is served, so
 nothing in it is a secret; keys and tokens belong in `backend.json`.
 
 `db.query(collection, filter)`, on the document store (which the PHP host
@@ -207,12 +222,33 @@ oldest 10,000 records of the collection, and the log says so (at most once a
 minute) when either stops there. A filter of more than 16 fields is applied
 by the script alone, to the oldest 10,000.
 
-`softn.time.age(date, timezone)` accepts a `YYYY-MM-DD` date and an optional IANA
-zone (default `UTC`); specify the application's calendar zone explicitly.
-`parseZoned(date, time, timezone)` accepts a `HH:MM` time and requires a zone.
-`format(epochSeconds, timezone)` also requires a zone. The bridge supports all
-IANA zones bundled with chrono-tz, including UTC. Invalid dates and daylight-saving
-gaps/folds are rejected; an invalid birth date returns `-1`.
+`softn.sql.execute` answers `{changes, lastInsertRowid}`. `lastInsertRowid` is
+the id of a row that statement inserted, and 0 when it inserted none: an
+`INSERT OR IGNORE` that was ignored, an upsert that updated, an `UPDATE`, a
+`DELETE`. On both hosts. SQLite itself keeps the last id a connection
+inserted, and a worker keeps its connection, so such a statement used to
+answer with a row an earlier request had made.
+
+An object keeps the order of its keys across the host, as on the PHP host:
+the body and query a handler receives, the columns of a row, and the body it
+returns. (They used to be sorted by name on this host.)
+
+`softn.time.age(date, timezone)` accepts a `YYYY-MM-DD` date and an optional
+zone; none, `null` or `""` is `UTC`. Specify the application's calendar zone
+explicitly. `parseZoned(date, time, timezone)` accepts a `HH:MM` time and
+requires a zone. `format(epochSeconds, timezone)` also requires a zone, drops
+any fraction of a second, and writes `Thu, 1 Jan, 11:00 pm · Melbourne`: the
+weekday, the day and month (`June` and `July` in full, `Sept`), the hour by
+a twelve-hour clock, and the last part of the zone as the caller spelt it.
+A zone is an IANA name in any case (`australia/melbourne`), or an offset
+from UTC written `+10:00`, `+1000` or `+10`. Invalid dates and
+daylight-saving gaps/folds are rejected; an invalid birth date returns `-1`.
+All of this is the PHP host's, and the two are held to one list of calls
+(`apps/softn-host-php/tests/time-parity.json`); this host used to write
+`Thu, 1 Jan 2026, 11:00 PM AEDT` and to take only a zone spelt exactly as
+the IANA list spells it. `softn.crypto.randomInt(bound)` and
+`randomHex(bytes)` take a whole number or text that spells one, the bound
+up to 2^53-1, on both hosts (`tests/crypto-parity.json` beside it).
 
 Crypto subkeys are HMAC-SHA256 of the master key and separate domain strings.
 Defaults are `softn:hmac:v1` for HMAC and `softn:seal:v1` for encryption. Operators
@@ -255,6 +291,9 @@ answers an invalid response 500 `host_error`; the 503s are retryable. Retry
 the same action with the same idempotency key.
 
 API v1 requires object JSON bodies and `application/json` for nonempty bodies.
+A body may nest 62 levels deep, the body itself the first, which is as deep
+as a handler can be handed; one level more is 400 `invalid_request`, on both
+hosts (it used to be a 500 here, and on the PHP host a `null` in the handler).
 A route accepts the smaller of its own `maxBodySize` and
 `config.server.maxBodySize` when either is declared (1 byte to 16 MiB), else
 2 MiB (5,600,100 bytes on an `upload: "photo"` route). The app's value used to
@@ -269,11 +308,24 @@ A bundle's own files carry neither. On API v1 `req.headers.authorization` and
 when the host kept `Authorization` for itself on a host-token route), again
 as on the PHP host.
 
+Every request runs in a VM of its own, as on the PHP host: nothing a handler
+leaves in memory is there for the next request, on the same worker or
+another. The VM that served a request is thrown away and the script compiled
+and run again before that worker's next one, so the script's top level runs
+once for each request. A VM used to be kept when every top-level variable
+was a number, a string or the like, and only those variables were put back:
+what a handler had hung on a function (`h.cache = …`), on `JSON`, on
+`Object.prototype`, on `console`, or on a global it never declared, was read
+by whoever that worker served next. The price is the compile: about a
+millisecond a request for a small script and three for one of 20 KB, on one
+worker (a script with an object, an array or a class at its top level
+already paid it). Keep the top level cheap, and keep state in the database.
+
 `onStart()` is one place the two hosts differ. Here it runs once, when the
 app is loaded, on one worker and outside any transaction, and a global it
-sets is discarded by the isolation between requests; an `onStart` that fails
-stops the app from starting. On the PHP host every request is a new VM, so
-the script's top level and `onStart()` run for each one, inside that
+sets is discarded with that VM; an `onStart` that fails
+stops the app from starting. On the PHP host `onStart()` runs for each
+request as well, inside that
 request's transaction. Write `onStart` to check what it needs and to create
 nothing a request depends on being in memory, and both hosts run it alike.
 
@@ -301,6 +353,23 @@ with the date/time functions (`datetime`, `date`, `time`, `strftime`,
 host; triggers, views, virtual tables and arbitrary PRAGMAs are not supported.
 Missing handlers and failed `onStart()` also prevent readiness.
 
+A migration file may be 1,000,000 bytes, as on the PHP host (it was 262,144
+here). Two things about migrations differ between the hosts, and a bundle
+meant for both should stay inside each:
+
+- This host knows a migration by its file name, the PHP host by its path in
+  the manifest. Here every migration must be a `.sql` file with a name no
+  other has (`server/a/001.sql` and `server/b/001.sql` are refused), and a
+  file may move to another folder; there two files may share a name, and
+  moving one that has been applied stops the app (`database_migrations`).
+  Give each file its own name and leave applied ones where they are.
+- This host stops a migration after 5,000,000 SQLite steps or ten seconds
+  and does not start; the PHP host has no step limit (its runner's twenty
+  seconds bound it). A `CREATE INDEX` or a backfill costs about ten steps a
+  row, so on a table past roughly half a million rows such a migration
+  needs splitting (several files, each within the limit), or the work done
+  with the server stopped.
+
 A handler's request carries `client_ip` only when the app requires the
 `trusted-client-ip` capability (legacy bundles always get it), as on the PHP
 host.
@@ -311,7 +380,12 @@ The photo bridge accepts still JPEG, PNG and WebP files up to 4 MB and 16
 megapixels, with dimensions between 32 and 8,192 pixels and at most 64 MiB of
 decoded pixels. It rejects PNG/WebP animation, applies EXIF orientation, and
 re-encodes a 960-pixel JPEG (maximum 400 KB) plus a 240-pixel thumbnail (maximum
-60 KB). Original EXIF/GPS/text metadata is not copied. It neither reads nor
+60 KB). What a photo is, is read from its bytes; the label on the upload only
+has to name one of the three types (a browser writes it from the file's
+extension, and a PNG labelled `image/jpeg` used to be refused here).
+Transparency is painted white (it used to come out as whatever lay under
+it, black as a rule). Both as on the PHP host.
+Original EXIF/GPS/text metadata is not copied. It neither reads nor
 writes files. The application authenticates and enforces its upload quotas before
 invoking the sanitizer, then stores the results in private SQL.
 
@@ -381,7 +455,9 @@ The PHP host leaves body reading to its web server (Apache's `mod_reqtimeout`,
 nginx's `client_body_timeout`), so set a comparable limit there. An idle
 keep-alive connection is closed after 30 seconds, so a proxy that pools
 upstream connections should idle them out sooner. Unknown paths and methods
-answer JSON 404/405, and a body over the limit JSON 413. A handler's status
+answer JSON 404/405, and a body over the limit JSON 413. HEAD on a GET route
+is that GET with the body left off the answer: the handler is told the
+method is `GET` (it used to be told `HEAD`), as on the PHP host. A handler's status
 must be 200-599 (anything else is a 500), as on the PHP host.
 
 A request is judged on its headers before its body is read: a name the host

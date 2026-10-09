@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use zipp_vm::embed::{compile_script, HostValue, ScriptState, SymbolScope};
+use zipp_vm::embed::{compile_script, HostValue, ScriptState};
 
 use crate::host;
 use crate::bundle::TransactionMode;
@@ -20,65 +20,18 @@ pub use crate::host::BridgeSet;
 /// Host bridge definitions prepended to every script. See `preamble.js`.
 const PREAMBLE: &str = include_str!("preamble.js");
 
-/// How a worker returns to pristine globals between handler calls, so one
-/// request's side-effects cannot bleed into the next on the same worker.
-///
-/// The engine hands globals over as `HostValue`, a *projection*: it carries data
-/// faithfully but loses everything else. Writing such a projection back rebuilds
-/// a plain object, which silently drops a class instance's prototype, breaks
-/// aliasing and cycles, and cannot touch a `Map`/`Set`/`Date`/`RegExp` at all
-/// (the engine refuses to overwrite an opaque slot, so its contents survive into
-/// the next request). Restoring is therefore only sound for globals that are
-/// pure primitives.
-enum Isolation {
-    /// Every top-level variable is a primitive. Restoring is exact and cheap.
-    Restore(PrimitiveSnapshot),
-    /// At least one global holds an object, array or opaque value. Nothing that
-    /// reads back through `HostValue` can restore those faithfully, so the VM is
-    /// rebuilt after any call that ran. Scripts are told not to keep state in
-    /// globals; this makes that guidance enforceable rather than advisory.
-    Rebuild,
-}
-
-/// Slot indices and their post-init primitive values, kept apart so a handler
-/// that touched nothing compares equal and writes nothing back.
-struct PrimitiveSnapshot {
-    indices: Vec<u32>,
-    values: Vec<HostValue>,
-}
-
-/// Whether `source` declares a class at the start of a line.
-///
-/// Deliberately textual and deliberately loose. The engine reports a class in
-/// the same symbol scope as a function, so there is nothing to inspect after
-/// compilation, and erring towards the sound-but-slower path is the right way
-/// to be wrong. A `class` inside a string or comment costs that script a
-/// rebuild per request; missing a real one would leak its statics.
-fn declares_class(source: &str) -> bool {
-    source
-        .lines()
-        .any(|l| l.trim_start().starts_with("class ") || l.trim_start().starts_with("class	"))
-}
-
-/// Whether a value survives the `HostValue` round trip unchanged.
-fn is_primitive(v: &HostValue) -> bool {
-    matches!(
-        v,
-        HostValue::Undefined | HostValue::Null | HostValue::Bool(_)
-            | HostValue::Number(_) | HostValue::String(_)
-    )
-}
-
-/// Whether a global-mutation warning has already been logged for this worker.
-/// Set once per worker thread to avoid log spam — developers used to Node.js
-/// will often try global caching, and we want to warn them exactly once.
-struct MutationWarned(bool);
-
-/// Warn if the globals snapshot exceeds this many slots after init.
-/// The snapshot is re-read and compared before every handler call, so an
-/// excessive number of globals usually indicates a script anti-pattern (loading
-/// large data structures into module-level variables instead of using db.* APIs).
-const MAX_GLOBALS_SNAPSHOT_SLOTS: usize = 5_000;
+// How a worker keeps one request's world from the next: it does not keep the
+// world. A VM that has run a handler is thrown away and built again from the
+// script before the next call (`isolate`), as the PHP host builds one for
+// every request.
+//
+// A VM used to be kept when every top-level variable was a primitive, and
+// those variables alone were put back. That was only ever true of the
+// variables. A handler can hang what it likes on a function (`h.cache = …`),
+// on a builtin (`JSON.seen`), on `Object.prototype`, on the host's own
+// `console` and `db` objects, or on a global it never declared, and none of
+// those is a top-level variable: the next request that worker took read it.
+// Nothing the engine offers can show a kept VM to be clean, so none is kept.
 
 /// Bytecode instructions one handler call may execute before the engine stops
 /// it with an uncaught `RangeError` the script cannot catch.
@@ -339,7 +292,8 @@ impl CallGuard {
 enum ScriptRequest {
     Init {
         source: String,
-        reply: std::sync::mpsc::Sender<Result<(Vec<String>, usize), String>>,
+        /// The script's top-level names, when it loaded.
+        reply: std::sync::mpsc::Sender<Result<Vec<String>, String>>,
     },
     Call {
         name: String,
@@ -357,17 +311,16 @@ struct Worker {
     state: ScriptState,
     /// Top-level name → global slot, for calls by name.
     slots: HashMap<String, u32>,
-    isolation: Isolation,
     /// Shared with the VM's host closure so rebuilding the VM does not rebuild
     /// the bridges — a fresh `ureq` agent and DB handle per request would cost
     /// far more than the recompile.
     bridges: Rc<RefCell<BridgeSet>>,
     /// The script this worker runs, so it can rebuild itself.
     source: Rc<str>,
-    /// Whether a handler has run since the globals were last known clean. A
-    /// rebuild re-executes the script's top level — including any `db.create`
-    /// or `http.get` written there — so it must not happen on a worker that has
-    /// not run anything since the last one.
+    /// Whether a handler has run in this VM. One that has is rebuilt before
+    /// the next call. A rebuild re-executes the script's top level — including
+    /// any `db.create` or `http.get` written there — so it must not happen on
+    /// a worker that has not run anything since the last one.
     dirty: bool,
 }
 
@@ -386,13 +339,12 @@ struct Worker {
 /// should replace per-runtime pools to prevent thread exhaustion (e.g.
 /// 10 apps × 50 threads = 500 OS threads).
 ///
-/// **Important for script authors:** Worker threads maintain independent global
-/// state. Consecutive requests from the same user may hit different workers, so
-/// global variables will appear to "reset" unpredictably between calls. Workers
-/// also re-initialize after panics, discarding all in-memory state. **Never use
-/// global variables as an in-memory cache or session store.** Always persist
-/// state to the database (via `db.*` APIs) and treat each handler call as
-/// stateless.
+/// **Important for script authors:** every handler call starts from the script
+/// as it was loaded. Nothing a handler leaves in memory, in a global or
+/// anywhere else, is there for the next call, on this worker or another, and
+/// the script's top level runs again for each one. **Never use global
+/// variables as an in-memory cache or session store.** Always persist state to
+/// the database (via `db.*` APIs) and treat each handler call as stateless.
 ///
 /// **Thread lifecycle:** Workers are tied to the channels owned by this struct.
 /// When `ServerRuntime` is dropped (e.g. if `init()` fails), `work_tx` and
@@ -601,7 +553,6 @@ impl ServerRuntime {
     {
         let mut worker: Option<Worker> = None;
         let mut init_source: Option<String> = None;
-        let mut mutation_warned = MutationWarned(false);
 
         // Phase 1: Wait for Init on dedicated channel (guaranteed 1:1 delivery).
         match init_rx.recv() {
@@ -610,7 +561,7 @@ impl ServerRuntime {
                     init_source = Some(source.clone());
                 }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    Self::handle_request(req, &mut worker, &mut mutation_warned, bridge_factory, guard);
+                    Self::handle_request(req, &mut worker, bridge_factory, guard);
                 }));
                 if let Err(panic_info) = result {
                     Self::log_panic(&panic_info);
@@ -651,7 +602,7 @@ impl ServerRuntime {
             };
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::handle_request(req, &mut worker, &mut mutation_warned, bridge_factory, guard);
+                Self::handle_request(req, &mut worker, bridge_factory, guard);
             }));
 
             // The watchdog gave up on this thread mid-call and started a
@@ -751,18 +702,17 @@ impl ServerRuntime {
         guard.arm();
         let built = Self::build_state(&source, &bridges, guard);
         guard.disarm();
-        let (state, slots, isolation) = built?;
-        Ok(Worker { state, slots, isolation, bridges, source, dirty: false })
+        let (state, slots) = built?;
+        Ok(Worker { state, slots, bridges, source, dirty: false })
     }
 
-    /// Compile and run the script, returning the live VM, its symbol table and
-    /// the isolation strategy its globals permit. Used for the first init and
-    /// for every rebuild.
+    /// Compile and run the script, returning the live VM and its symbol table.
+    /// Used for the first init and for every rebuild.
     fn build_state(
         source: &str,
         bridges: &Rc<RefCell<BridgeSet>>,
         guard: &CallGuard,
-    ) -> Result<(ScriptState, HashMap<String, u32>, Isolation), String> {
+    ) -> Result<(ScriptState, HashMap<String, u32>), String> {
         let full = format!("{PREAMBLE}\n{source}");
         let mut state = compile_script(&full)?;
 
@@ -786,34 +736,18 @@ impl ServerRuntime {
 
         let preamble = preamble_names();
         let mut slots = HashMap::new();
-        let mut var_indices = Vec::new();
         for s in state.symbols() {
             if preamble.contains(&s.name) {
                 continue;
             }
-            if s.scope == SymbolScope::Variable {
-                var_indices.push(s.index);
-            }
             slots.insert(s.name, s.index);
         }
-
-        let values: Vec<HostValue> = var_indices.iter().map(|&i| state.get_slot(i)).collect();
-        // A class lives in a *function* slot, and the host cannot write those at
-        // all — so `class Cache { static items = {} }` would keep whatever a
-        // handler hung on it into the next request, invisibly. Restoring cannot
-        // reach that, so a script declaring a class rebuilds instead.
-        let isolation = if values.iter().all(is_primitive) && !declares_class(source) {
-            Isolation::Restore(PrimitiveSnapshot { indices: var_indices, values })
-        } else {
-            Isolation::Rebuild
-        };
-        Ok((state, slots, isolation))
+        Ok((state, slots))
     }
 
     fn handle_request<F>(
         req: ScriptRequest,
         worker: &mut Option<Worker>,
-        mutation_warned: &mut MutationWarned,
         bridge_factory: &F,
         guard: &CallGuard,
     )
@@ -825,12 +759,8 @@ impl ServerRuntime {
                 match Self::init_worker(&source, bridge_factory, guard) {
                     Ok(w) => {
                         let globals: Vec<String> = w.slots.keys().cloned().collect();
-                        let snapshot_slots = match &w.isolation {
-                            Isolation::Restore(snap) => snap.indices.len(),
-                            Isolation::Rebuild => 0,
-                        };
                         *worker = Some(w);
-                        let _ = reply.send(Ok((globals, snapshot_slots)));
+                        let _ = reply.send(Ok(globals));
                     }
                     Err(e) => {
                         let _ = reply.send(Err(e));
@@ -840,7 +770,7 @@ impl ServerRuntime {
             ScriptRequest::Call { name, args, transaction, cancellation, started, reply } => {
                 started.store(true, Ordering::Relaxed);
                 let result = match worker.as_mut() {
-                    Some(w) => Self::call_handler(w, &name, args, transaction, cancellation, mutation_warned, guard),
+                    Some(w) => Self::call_handler(w, &name, args, transaction, cancellation, guard),
                     None => Err("Runtime not initialized".into()),
                 };
                 let _ = reply.send(result);
@@ -854,7 +784,6 @@ impl ServerRuntime {
         args: Vec<serde_json::Value>,
         transaction: TransactionMode,
         cancellation: Arc<AtomicBool>,
-        mutation_warned: &mut MutationWarned,
         guard: &CallGuard,
     ) -> Result<serde_json::Value, String> {
         guard.arm();
@@ -862,7 +791,7 @@ impl ServerRuntime {
             if cancellation.load(Ordering::Relaxed) { return Err("Request cancelled".into()); }
             // Rebuilding executes script initialization. Keep SQL unavailable
             // until initialization is complete, just as it is at first startup.
-            Self::isolate(w, name, mutation_warned, guard)?;
+            Self::isolate(w, guard)?;
             if let Some(sql) = w.bridges.borrow_mut().sql.as_mut() {
                 sql.begin(transaction, cancellation.clone())?;
             } else if transaction != TransactionMode::None {
@@ -924,70 +853,26 @@ impl ServerRuntime {
         host_to_json(&value, 0)
     }
 
-    /// Return the worker's globals to their post-init state.
+    /// Give the call a VM no handler has run in.
     ///
-    /// Primitives are restored in place. Anything else cannot be restored
-    /// faithfully through `HostValue` — see [`Isolation`] — so the VM is rebuilt
-    /// instead, which is the only way to guarantee the next request cannot see
-    /// the previous one's data.
-    fn isolate(
-        w: &mut Worker,
-        name: &str,
-        mutation_warned: &mut MutationWarned,
-        guard: &CallGuard,
-    ) -> Result<(), String> {
-        // Nothing has run since the globals were last clean, so there is nothing
-        // to undo. This is what keeps a rebuild off the first request after init
-        // and off a worker that has been idle.
+    /// The VM that served the last call is dropped and the script compiled and
+    /// run again, which is the only way to be sure the next request cannot
+    /// see the previous one's data (see the note under `PREAMBLE`).
+    /// It re-runs the script's top level, so that is run once for each
+    /// request, as on the PHP host.
+    fn isolate(w: &mut Worker, guard: &CallGuard) -> Result<(), String> {
+        // Nothing has run in this VM, so there is nothing to undo. This is
+        // what keeps a rebuild off the first request after init and off a
+        // worker that has been idle.
         if !w.dirty {
             return Ok(());
         }
-
-        let mut mutated = false;
-        let mut unrestorable = false;
-        if let Isolation::Restore(snap) = &w.isolation {
-            for (i, &index) in snap.indices.iter().enumerate() {
-                if w.state.get_slot(index) == snap.values[i] {
-                    continue;
-                }
-                mutated = true;
-                // A refused write means the slot now holds something the host
-                // cannot overwrite — a Map, Set, Date, or a closure the handler
-                // assigned. The value stays live into the next request, so this
-                // worker can no longer isolate by restoring.
-                if !w.state.set_slot(index, &snap.values[i]) {
-                    unrestorable = true;
-                    break;
-                }
-            }
-        }
-
-        if unrestorable || matches!(w.isolation, Isolation::Rebuild) {
-            if unrestorable {
-                tracing::warn!(
-                    handler = %name,
-                    "A global now holds a value that cannot be restored (Map, Set, Date                      or a function). Rebuilding this worker's VM between requests from                      here on — note that re-runs the script's top level each time."
-                );
-            }
-            let source = Rc::clone(&w.source);
-            let bridges = Rc::clone(&w.bridges);
-            let (state, slots, isolation) = Self::build_state(&source, &bridges, guard)?;
-            w.state = state;
-            w.slots = slots;
-            w.isolation = isolation;
-            w.dirty = false;
-            return Ok(());
-        }
-
+        let source = Rc::clone(&w.source);
+        let bridges = Rc::clone(&w.bridges);
+        let (state, slots) = Self::build_state(&source, &bridges, guard)?;
+        w.state = state;
+        w.slots = slots;
         w.dirty = false;
-        if mutated && !mutation_warned.0 {
-            mutation_warned.0 = true;
-            tracing::warn!(
-                handler = %name,
-                "A handler modified global variables before '{}'. These changes are                  discarded between requests (each call starts with clean state).                  Use db.* APIs for persistence instead of global variables.",
-                name
-            );
-        }
         Ok(())
     }
 
@@ -1016,19 +901,9 @@ impl ServerRuntime {
         let init_timeout = Duration::from_secs(30);
         for (i, reply_rx) in reply_rxs.iter().enumerate() {
             match reply_rx.recv_timeout(init_timeout) {
-                Ok(Ok((globals, snapshot_slots))) => {
-                    // Log snapshot size once (first worker that sets known_globals)
-                    if self.known_globals.set(globals.into_iter().collect()).is_ok()
-                        && snapshot_slots > MAX_GLOBALS_SNAPSHOT_SLOTS
-                    {
-                        tracing::warn!(
-                            slots = snapshot_slots,
-                            "Large globals snapshot ({} slots). This is compared before \
-                             each handler call. Keep global variables light — use db.* APIs \
-                             for large data instead of global variables.",
-                            snapshot_slots
-                        );
-                    }
+                Ok(Ok(globals)) => {
+                    // Every worker runs the same script; the first to answer names it.
+                    let _ = self.known_globals.set(globals.into_iter().collect());
                 }
                 Ok(Err(e)) => errors.push(format!("Worker {}: {}", i, e)),
                 Err(_) => errors.push(format!("Worker {} died during init", i)),
@@ -1314,6 +1189,22 @@ mod host_json_tests {
         assert!(validate_private_response(&serde_json::json!({"status": 200})).is_err());
     }
 
+    /// What a handler returns is written out with its keys in the order the
+    /// handler gave them, and what it is handed keeps the order it arrived
+    /// in: JSON read here used to come back out sorted by key.
+    #[test]
+    fn an_objects_keys_cross_in_the_order_they_were_written() {
+        let returned = HostValue::Object(vec![
+            ("zebra".into(), HostValue::Number(1.0)),
+            ("apple".into(), HostValue::Object(vec![("y".into(), HostValue::Null), ("x".into(), HostValue::Bool(true))])),
+        ]);
+        assert_eq!(host_to_json(&returned, 0).unwrap().to_string(), r#"{"zebra":1,"apple":{"y":null,"x":true}}"#);
+        let received: serde_json::Value = serde_json::from_str(r#"{"zebra":1,"apple":{"y":1,"x":2}}"#).unwrap();
+        let HostValue::Object(pairs) = json_to_host(received, 0).unwrap() else { panic!("an object") };
+        assert_eq!(pairs.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(), ["zebra", "apple"]);
+        assert!(matches!(&pairs[1].1, HostValue::Object(inner) if inner[0].0 == "y" && inner[1].0 == "x"));
+    }
+
     #[test]
     fn utf16_json_preserves_pairs_nul_and_nested_text() {
         let value = HostValue::Object(vec![("body".into(), HostValue::Array(vec![
@@ -1381,29 +1272,6 @@ mod host_json_tests {
         let wide = HostValue::Float32Array(vec![1.2345678e-38; MAX_STRING_VALUE_LEN / 8]);
         assert!(serde_json::to_vec(&serde_json::json!(f64::from(1.2345678e-38f32))).unwrap().len() > 16);
         assert!(host_to_json(&wide, 0).unwrap_err().contains("exceeds host limit"));
-    }
-
-    // A Float32Array global is not a primitive, so a script holding one at the
-    // top level rebuilds its VM between requests — as it did on ZIPP 0.0.18,
-    // where the same global read back as Opaque. Restore mode therefore never
-    // snapshots one (so `NaN != NaN` cannot make a snapshot disagree with
-    // itself), and a primitive slot a handler fills with one is either put back
-    // or refused, which the caller answers with a rebuild; never left as it was.
-    #[test]
-    fn a_float32_array_global_is_not_primitive_and_a_slot_filled_with_one_restores_or_refuses() {
-        let mut state = compile_script("var buf = new Float32Array(4); var n = 1; function h() { n = new Float32Array([2, 3]); return 0; }").unwrap();
-        state.run_init().unwrap();
-        let symbols = state.symbols();
-        let slot = |name: &str| symbols.iter().find(|symbol| symbol.name == name).unwrap().index;
-        let buf = state.get_slot(slot("buf"));
-        assert!(matches!(&buf, HostValue::Float32Array(values) if values.len() == 4), "{buf:?}");
-        assert!(!is_primitive(&buf), "a typed array cannot be restored through HostValue");
-        assert!(is_primitive(&state.get_slot(slot("n"))));
-
-        state.call_slot(slot("h"), &[]).unwrap();
-        assert_eq!(state.get_slot(slot("n")), HostValue::Float32Array(vec![2.0, 3.0]));
-        let restored = state.set_slot(slot("n"), &HostValue::Number(1.0));
-        assert_eq!(restored, state.get_slot(slot("n")) == HostValue::Number(1.0), "a refused write leaves the slot as the handler left it, and isolate() rebuilds");
     }
 }
 
@@ -1486,6 +1354,47 @@ mod abandonment_tests {
         assert!(!tried);
         assert!(!late.abandoned.load(Ordering::Relaxed));
         assert_eq!(abandonment.live(), MAX_ABANDONED_WORKERS);
+    }
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::*;
+
+    fn one_worker(source: &str) -> Arc<ServerRuntime> {
+        let runtime = ServerRuntime::new(|| BridgeSet {
+            db: None, http: None, fs: None, env: None, sql: None, crypto: None,
+            allow_time: false, development: false, allow_photos: false, app_config: serde_json::Value::Null,
+        }, Some(1)).unwrap();
+        runtime.init(source.to_string()).unwrap();
+        runtime
+    }
+
+    /// Nothing one request leaves in the script's world is there for the next
+    /// request the same worker takes. A script whose top-level variables were
+    /// all primitives (or that had none) kept its VM, and only those variables
+    /// were put back: what a handler hung on a function, on a builtin, on
+    /// `Object.prototype`, on the host's own `console`, or on a global it never
+    /// declared was read by whoever that worker served next.
+    #[test]
+    fn what_a_request_leaves_behind_is_not_there_for_the_next() {
+        let runtime = one_worker(r#"
+            var LIMIT = 5;
+            function onFunction(req) { onFunction.seen = (onFunction.seen || []); onFunction.seen.push(req.user); return {status: 200, body: onFunction.seen}; }
+            function onBuiltin(req) { JSON.seen = (JSON.seen || []); JSON.seen.push(req.user); return {status: 200, body: JSON.seen}; }
+            function onPrototype(req) { var had = ({}).marker; Object.prototype.marker = req.user; return {status: 200, body: [had === undefined ? null : had]}; }
+            function onPlumbing(req) { var had = console.last; console.last = req.user; return {status: 200, body: [had === undefined ? null : had]}; }
+            function onUndeclared(req) { var had = (typeof leaked === 'undefined') ? null : leaked; leaked = req.user; return {status: 200, body: [had]}; }
+            // A declared variable too, whatever a handler puts in it: a typed
+            // array is one of the values the old restore could not always undo.
+            function onVariable(req) { var had = LIMIT; LIMIT = req.user === 'alice' ? new Float32Array([2, 3]) : req.user; return {status: 200, body: [typeof had === 'number' ? had : 'alice left: ' + typeof had]}; }
+        "#);
+        for handler in ["onFunction", "onBuiltin", "onPrototype", "onPlumbing", "onUndeclared", "onVariable"] {
+            let call = |user: &str| runtime.call(handler, vec![serde_json::json!({"user": user})]).unwrap();
+            call("alice");
+            let second = serde_json::to_string(&call("bob")["body"]).unwrap();
+            assert!(!second.contains("alice"), "{handler}: the second request saw the first's: {second}");
+        }
     }
 }
 

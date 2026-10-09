@@ -89,6 +89,10 @@ fn shared_sql_parity_fixture() {
         let (root, path) = fresh(schema);
         let mut bridge = NativeSql::new(path);
         bridge.begin(mode, Arc::new(AtomicBool::new(false))).unwrap();
+        // `before`: an execute the same request made first.
+        if let Some(before) = case["before"].as_str() {
+            bridge.call("sql.execute", before, "[]").unwrap();
+        }
         let outcome = bridge.call(&kind, sql, &params.to_string());
         let _ = bridge.finish(false);
         drop(bridge);

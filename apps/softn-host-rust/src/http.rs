@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowHeaders, AllowOrigin, Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
@@ -424,9 +424,9 @@ where
 // ── Single-tenant router ──
 
 fn build_single_tenant_router(ctx: Arc<AppContext>, options: &ServeOptions, conn_tx: tokio::sync::mpsc::Sender<()>) -> Router {
-    // CORS: restrict origins if config.server.allowedOrigins is set.
-    let cors = build_cors(&ctx.manifest, options.dev_mode);
+    // CORS answers for the origins the policy lets through, and no others.
     let policy = RequestPolicy::from_manifest(&ctx.manifest, options);
+    let cors = build_cors(&policy);
 
     let mut router = Router::new()
         .route("/health", get(health))
@@ -543,8 +543,8 @@ fn build_multi_tenant_router(
 
         // The same rule as a single app: a tenant's own list is honoured in
         // --dev too, and --dev opens only a tenant that lists nothing.
-        let cors = build_cors(&tenant.manifest, options.dev_mode);
         let policy = RequestPolicy::from_manifest(&tenant.manifest, options);
+        let cors = build_cors(&policy);
         let max_body = max_body_size(&tenant.manifest);
 
         let mut tenant_router: Router<Arc<TenantContext>> = Router::new()
@@ -642,6 +642,9 @@ fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bun
 
         tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
 
+        // A GET route answers HEAD too (axum's `get`), and the handler is then
+        // asked exactly what it is asked for a GET: see `asked_method`.
+        let declares_get = method == "GET";
         let make_handler = |name: String, is_public: bool, options: ApiRouteOptions| {
             move |
                 State(ctx): State<Arc<AppContext>>,
@@ -651,7 +654,7 @@ fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bun
                 method: axum::http::Method,
                 uri: axum::http::Uri,
                 headers: axum::http::HeaderMap,
-                query: axum::extract::Query<HashMap<String, String>>,
+                query: axum::extract::Query<Vec<(String, String)>>,
                 request: axum::extract::Request,
             | async move {
                 // Who may ask comes before what they sent: the Host was held
@@ -672,6 +675,7 @@ fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bun
                     Err(rejection) => return body_rejection(rejection),
                 };
                 let if_none_match = headers.get(axum::http::header::IF_NONE_MATCH).cloned();
+                let method = asked_method(method, declares_get);
                 let (status, Json(value)) = api_handler_single(ctx, name, is_public, options, client_ip, method, uri, headers, query, body).await;
                 api_response(options.poll, if_none_match.as_ref(), status, value)
             }
@@ -724,6 +728,9 @@ fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[
 
         tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
 
+        // A GET route answers HEAD too (axum's `get`), and the handler is then
+        // asked exactly what it is asked for a GET: see `asked_method`.
+        let declares_get = method == "GET";
         let make_handler = |name: String, is_public: bool, options: ApiRouteOptions| {
             move |
                 State(tenant): State<Arc<TenantContext>>,
@@ -733,7 +740,7 @@ fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[
                 method: axum::http::Method,
                 uri: axum::http::Uri,
                 headers: axum::http::HeaderMap,
-                query: axum::extract::Query<HashMap<String, String>>,
+                query: axum::extract::Query<Vec<(String, String)>>,
                 request: axum::extract::Request,
             | async move {
                 // Who may ask comes before what they sent: the Host was held
@@ -754,6 +761,7 @@ fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[
                     Err(rejection) => return body_rejection(rejection),
                 };
                 let if_none_match = headers.get(axum::http::header::IF_NONE_MATCH).cloned();
+                let method = asked_method(method, declares_get);
                 let (status, Json(value)) = api_handler_tenant(tenant, name, is_public, options, client_ip, method, uri, headers, query, body).await;
                 api_response(options.poll, if_none_match.as_ref(), status, value)
             }
@@ -764,6 +772,19 @@ fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[
     }
 
     router
+}
+
+/// The method a handler is told. HEAD on a route declared for GET is that
+/// GET with the body left off the answer, so the handler is told "GET": it
+/// used to be told "HEAD", and one that looks at `req.method` then answered
+/// something other than what a GET gets. The PHP host hands its runner "GET"
+/// for the same request. A route declared for HEAD itself is told "HEAD".
+fn asked_method(method: axum::http::Method, route_declares_get: bool) -> axum::http::Method {
+    if route_declares_get && method == axum::http::Method::HEAD {
+        axum::http::Method::GET
+    } else {
+        method
+    }
 }
 
 /// Spend one request of the client's allowance for the app's routes, or
@@ -933,34 +954,37 @@ const POLL_HEADERS: [axum::http::HeaderName; 2] = [
     axum::http::HeaderName::from_static("x-softn-poll-interval"),
 ];
 
-fn build_cors(manifest: &crate::bundle::ServerManifest, dev_mode: bool) -> CorsLayer {
-    let allowed_origins: Option<Vec<String>> = manifest.config.as_ref()
-        .and_then(|c| c.get("server"))
-        .and_then(|s| s.get("allowedOrigins"))
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
-
-    if let Some(origins) = allowed_origins.filter(|o| !o.is_empty()) {
-        let parsed: Vec<axum::http::HeaderValue> = origins.iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-        if parsed.is_empty() {
-            let invalid: Vec<&str> = origins.iter().map(String::as_str).collect();
-            tracing::error!(
-                "config.server.allowedOrigins contains no valid origins — \
-                 rejecting all cross-origin requests. Invalid entries: {:?}.",
-                invalid
-            );
-            CorsLayer::new()
-        } else {
-            tracing::info!("CORS restricted to {} origin(s)", parsed.len());
-            CorsLayer::new().allow_origin(parsed).allow_methods(Any).allow_headers(Any).expose_headers(POLL_HEADERS)
-        }
-    } else if dev_mode {
+/// What a browser is told about a page on another origin, decided by the
+/// policy that decides whether that page's request is served at all.
+///
+/// The two used to be worked out apart. The request check compared a listed
+/// origin trimmed and in lower case; this layer compared the manifest's bytes
+/// with the header's. An entry written `https://App.example/` therefore let
+/// the page's request run its handler and commit, and sent the answer back
+/// without `Access-Control-Allow-Origin`: the browser reported a failure for a
+/// request that had worked, and a page that retried wrote twice.
+///
+/// A preflight is answered with the header names it asked for, as the PHP
+/// host answers it (`softn_preflight_headers`). The answer used to be `*`,
+/// which the Fetch standard does not let stand for `Authorization`: the
+/// header an app's session travels in, and the one the client sends to
+/// `/sync/ticket` with the host's token.
+fn build_cors(policy: &RequestPolicy) -> CorsLayer {
+    let open = CorsLayer::new()
+        .allow_methods(Any)
+        .allow_headers(AllowHeaders::mirror_request())
+        .expose_headers(POLL_HEADERS);
+    if policy.any_origin {
         tracing::warn!("Dev mode: CORS open to all origins");
-        CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any).expose_headers(POLL_HEADERS)
-    } else {
+        open.allow_origin(Any)
+    } else if policy.allowed_origins.is_empty() {
         CorsLayer::new()
+    } else {
+        tracing::info!("CORS restricted to {} origin(s)", policy.allowed_origins.len());
+        let policy = policy.clone();
+        open.allow_origin(AllowOrigin::predicate(move |origin, _request| {
+            origin.to_str().is_ok_and(|origin| policy.origin_listed(origin))
+        }))
     }
 }
 
@@ -1041,18 +1065,24 @@ impl RequestPolicy {
             || self.allowed_hosts.contains(&name)
     }
 
+    /// Whether `origin` is a page of another site the app lets in: one of
+    /// `allowedOrigins`, compared trimmed and in lower case as the list was
+    /// read, or any origin under `--dev` with no list. The CORS answer asks
+    /// this same question (`build_cors`), so a page this lets through is one
+    /// its browser is told to accept.
+    fn origin_listed(&self, origin: &str) -> bool {
+        self.any_origin || self.allowed_origins.contains(&origin.trim().trim_end_matches('/').to_ascii_lowercase())
+    }
+
     /// Whether a request carrying `origin` may proceed. `hosts` are the names
     /// this request was addressed to (its `Host`, and a trusted proxy's
     /// `X-Forwarded-Host`): an origin naming one of them is the host's own
     /// page. The guard has already held `Host` to [`Self::host_allowed`].
     fn origin_allowed(&self, origin: &str, hosts: &[&str]) -> bool {
-        if self.any_origin {
+        if self.origin_listed(origin) {
             return true;
         }
         let origin = origin.trim().trim_end_matches('/').to_ascii_lowercase();
-        if self.allowed_origins.contains(&origin) {
-            return true;
-        }
         let Some((scheme, authority)) = origin.split_once("://") else { return false };
         if (scheme != "http" && scheme != "https") || authority.is_empty() || authority.contains('/') {
             return false;
@@ -1332,7 +1362,7 @@ async fn api_handler_single(
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
-    query: axum::extract::Query<HashMap<String, String>>,
+    query: axum::extract::Query<Vec<(String, String)>>,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<serde_json::Value>) {
     // Auth check
@@ -1417,7 +1447,7 @@ async fn api_handler_tenant(
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
-    query: axum::extract::Query<HashMap<String, String>>,
+    query: axum::extract::Query<Vec<(String, String)>>,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_public {
@@ -1589,7 +1619,7 @@ async fn execute_api_handler(
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
-    query: axum::extract::Query<HashMap<String, String>>,
+    query: axum::extract::Query<Vec<(String, String)>>,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let input_limit = options.input_limit;
@@ -1608,7 +1638,7 @@ async fn execute_api_handler(
                 return (StatusCode::UNSUPPORTED_MEDIA_TYPE, Json(serde_json::json!({"error":"Use application/json","code":"unsupported_media_type"})));
             }
             let parsed = std::str::from_utf8(&body).ok()
-                .and_then(|text| util::parse_json_bounded(text, util::MAX_JSON_DEPTH).ok());
+                .and_then(|text| util::parse_json_bounded(text, util::MAX_BODY_DEPTH).ok());
             match parsed {
                 Some(value) if value.is_object() => Some(value),
                 _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Request body must be a JSON object","code":"invalid_request"}))),
@@ -1640,7 +1670,12 @@ async fn execute_api_handler(
     };
 
     let headers_json = script_headers(&headers, options.host_auth, options.private_api);
-    let query_json = serde_json::to_value(&query.0).unwrap_or_default();
+    // In the order the names first appear, the last of a repeated name kept:
+    // what the PHP host hands over (`softn_query`).
+    let mut query_json = serde_json::Map::new();
+    for (name, value) in query.0 {
+        query_json.insert(name, serde_json::Value::String(value));
+    }
     let method_str = method.to_string();
     let path_str = uri.path().to_string();
 
@@ -1655,7 +1690,9 @@ async fn execute_api_handler(
                 serde_json::Value::Null
             } else {
                 match std::str::from_utf8(&body) {
-                    Ok(text) => util::parse_json_bounded(text, util::MAX_JSON_DEPTH)
+                    // A legacy route's body that does not read as JSON, or
+                    // nests deeper than a handler can be handed, is its text.
+                    Ok(text) => util::parse_json_bounded(text, util::MAX_BODY_DEPTH)
                         .unwrap_or_else(|_| serde_json::Value::String(text.to_string())),
                     Err(_) => serde_json::json!({ "__binary": true, "size": body.len() }),
                 }
@@ -1874,27 +1911,56 @@ impl TrustedProxy {
 /// appended. With the bare flag the rightmost entry is the client, as it
 /// always was. An entry that is not an address stops the walk at the last
 /// good hop (the proxy itself when there is none).
+///
+/// The list is every `X-Forwarded-For` line the request carries, in order,
+/// which is what one comma-separated line means and what Apache hands the
+/// PHP host. Reading the first line alone believed the client wherever a
+/// proxy adds a line of its own instead of appending to the one it was sent:
+/// the client's line comes first. The answer is always in canonical form, an
+/// IPv4-mapped address as its IPv4 address, because it is handed to a handler
+/// as `req.client_ip` and the PHP host hands over `1.2.3.4`, not
+/// `::ffff:1.2.3.4`.
 fn extract_client_ip(
     headers: &axum::http::HeaderMap,
     socket_ip: std::net::IpAddr,
     trusted_proxy: &TrustedProxy,
 ) -> std::net::IpAddr {
+    let socket_ip = canonical_ip(socket_ip);
     if !trusted_proxy.is_proxy(socket_ip) {
         return socket_ip;
     }
-    let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) else {
-        return socket_ip;
-    };
+    // A line that is not text is one entry that is not an address: the walk
+    // stops there if it gets that far.
+    let entries: Vec<&str> = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .flat_map(|line| line.to_str().unwrap_or("").split(','))
+        .collect();
     let mut client = socket_ip;
-    for entry in xff.rsplit(',') {
-        let Ok(ip) = entry.trim().parse::<std::net::IpAddr>() else { break };
-        let ip = canonical_ip(ip);
+    for entry in entries.into_iter().rev() {
+        let Some(ip) = forwarded_address(entry) else { break };
         client = ip;
         if matches!(trusted_proxy, TrustedProxy::Anyone) || !trusted_proxy.is_proxy(ip) {
             break;
         }
     }
     client
+}
+
+/// One `X-Forwarded-For` entry as an address. Some proxies write the port
+/// they saw (`198.51.100.1:5555`, `[2001:db8::5]:443`) and some bracket an
+/// IPv6 address; the address is what names the client, as the PHP host reads
+/// it (`softn_ip_strip_port`). An entry with a port used to be no address at
+/// all, which ended the walk at the proxy: every visitor behind such a proxy
+/// was one client, with one rate-limit bucket between them.
+fn forwarded_address(entry: &str) -> Option<std::net::IpAddr> {
+    let entry = entry.trim();
+    let ip = entry
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .or_else(|| entry.parse::<SocketAddr>().ok().map(|with_port| with_port.ip()))
+        .or_else(|| entry.strip_prefix('[')?.strip_suffix(']')?.parse().ok())?;
+    Some(canonical_ip(ip))
 }
 
 #[cfg(test)]
@@ -1942,6 +2008,54 @@ mod trusted_proxy_tests {
         // IPv6 range and an IPv4-mapped IPv6 peer on a dual-stack listener.
         assert_eq!(extract_client_ip(&headers("1.2.3.4"), ip("2001:db8:1::9"), &policy), ip("1.2.3.4"));
         assert_eq!(extract_client_ip(&headers("1.2.3.4"), ip("::ffff:10.0.0.5"), &policy), ip("1.2.3.4"));
+    }
+
+    /// The same request names the same client here as on the PHP host
+    /// (apps/softn-host-php/tests/client-ip.test.mjs holds that one to these
+    /// cases). Only the first `X-Forwarded-For` line used to be read, so behind
+    /// a proxy that adds a line of its own (HAProxy's `option forwardfor`) the
+    /// client's line was the one believed: any address it cared to write, and
+    /// a fresh rate-limit bucket for each. An entry carrying a port (Azure's
+    /// gateway, IIS) ended the walk at the proxy, so every visitor was the
+    /// proxy and shared one bucket.
+    #[test]
+    fn every_forwarded_line_is_one_list_and_an_entry_with_a_port_is_its_address() {
+        let policy = TrustedProxy::parse(Some("10.0.0.0/8,2001:db8::/48")).unwrap();
+        let lines = |values: &[&str]| {
+            let mut h = axum::http::HeaderMap::new();
+            for value in values {
+                h.append("x-forwarded-for", value.parse().unwrap());
+            }
+            h
+        };
+        // The client's own line, then the line the proxy added.
+        assert_eq!(extract_client_ip(&lines(&["6.6.6.6", "198.51.100.1"]), ip("10.0.0.7"), &policy), ip("198.51.100.1"));
+        assert_eq!(extract_client_ip(&lines(&["6.6.6.6, 7.7.7.7", "198.51.100.1, 10.0.0.8"]), ip("10.0.0.7"), &policy), ip("198.51.100.1"));
+        // The bare flag takes the rightmost entry of the whole list too.
+        assert_eq!(extract_client_ip(&lines(&["6.6.6.6", "198.51.100.1"]), ip("203.0.113.7"), &TrustedProxy::Anyone), ip("198.51.100.1"));
+        // A port is dropped, with or without brackets, and brackets alone.
+        assert_eq!(extract_client_ip(&headers("198.51.100.1:5555"), ip("10.0.0.7"), &policy), ip("198.51.100.1"));
+        assert_eq!(extract_client_ip(&headers("[2001:db8:1234::5]:443, 2001:db8::11"), ip("2001:db8::10"), &policy), ip("2001:db8:1234::5"));
+        assert_eq!(extract_client_ip(&headers("[2001:db8:1234::5]"), ip("10.0.0.7"), &policy), ip("2001:db8:1234::5"));
+        // A hop with a port is still a hop to walk past.
+        assert_eq!(extract_client_ip(&headers("198.51.100.1, 10.0.0.8:4000"), ip("10.0.0.7"), &policy), ip("198.51.100.1"));
+        // An IPv4-mapped entry is the IPv4 address.
+        assert_eq!(extract_client_ip(&headers("::ffff:198.51.100.1"), ip("10.0.0.7"), &policy), ip("198.51.100.1"));
+    }
+
+    /// On a dual-stack listener (`--host ::`) an IPv4 client arrives as
+    /// `::ffff:a.b.c.d`. That text was what a handler read as `req.client_ip`,
+    /// where the PHP host hands it `a.b.c.d`.
+    #[test]
+    fn an_ipv4_mapped_peer_is_its_ipv4_address() {
+        let none = axum::http::HeaderMap::new();
+        assert_eq!(extract_client_ip(&none, ip("::ffff:203.0.113.9"), &TrustedProxy::Nobody), ip("203.0.113.9"));
+        assert_eq!(extract_client_ip(&none, ip("::ffff:203.0.113.9"), &TrustedProxy::Anyone), ip("203.0.113.9"));
+        let policy = TrustedProxy::parse(Some("10.0.0.0/8")).unwrap();
+        assert_eq!(extract_client_ip(&headers("1.2.3.4"), ip("::ffff:203.0.113.9"), &policy), ip("203.0.113.9"));
+        // A listed proxy that sent no header is itself, folded as well.
+        assert_eq!(extract_client_ip(&none, ip("::ffff:10.0.0.7"), &policy), ip("10.0.0.7"));
+        assert_eq!(extract_client_ip(&none, ip("2001:db8::1"), &TrustedProxy::Nobody), ip("2001:db8::1"));
     }
 
     #[test]
@@ -2015,7 +2129,7 @@ mod private_api_tests {
                 transaction: TransactionMode::None, input_limit, private_api: true, host_auth: false, client_ip: true, poll: false, upload: false,
             }, "127.0.0.1".parse().unwrap(), axum::http::Method::POST,
                 "/api/attachments".parse().unwrap(), headers,
-                axum::extract::Query(HashMap::new()), body.into())
+                axum::extract::Query(Vec::new()), body.into())
         };
         assert_eq!(invoke(b"{}".to_vec(), "text/plain", 100).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
         for invalid in [b"[]".as_slice(), b"null", b"{bad", &[0xff]] {
@@ -2036,6 +2150,43 @@ mod private_api_tests {
         assert_eq!(invoke(answer_of(4), "application/json", MAX_JSON_PARSE_SIZE).await.0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    /// A body nests 62 levels deep and no deeper, on both hosts. The engine
+    /// hands a handler nothing below that: one level more and this host
+    /// answered 500 for a body it had just accepted, while the PHP host ran
+    /// the handler with `null` where the innermost object had been.
+    #[tokio::test]
+    async fn a_body_nested_past_what_a_handler_can_be_handed_is_refused_not_failed() {
+        let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
+            db: None, http: None, fs: None, env: None, sql: None, crypto: None,
+            allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
+        }, Some(1)).unwrap();
+        runtime.init("function depth(req) { var levels = 0, value = req.body; while (value !== null && typeof value === 'object') { value = value.a; levels++; } return {status: 200, body: {levels: levels, leaf: value === undefined ? 'missing' : value}}; }".into()).unwrap();
+        let nested = |levels: usize, leaf: &str| format!("{}{leaf}{}", "{\"a\":".repeat(levels), "}".repeat(levels)).into_bytes();
+        let invoke = |body: Vec<u8>, private_api: bool| {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("content-type", "application/json".parse().unwrap());
+            execute_api_handler(runtime.clone(), "depth".into(), ApiRouteOptions {
+                transaction: TransactionMode::None, input_limit: 100_000, private_api, host_auth: false, client_ip: false, poll: false, upload: false,
+            }, "127.0.0.1".parse().unwrap(), axum::http::Method::POST, "/api/depth".parse().unwrap(), headers,
+                axum::extract::Query(Vec::new()), body.into())
+        };
+        // As deep as a body goes, and all of it arrives: the leaf, and an empty object in its place.
+        let (status, Json(seen)) = invoke(nested(62, "\"leaf\""), true).await;
+        assert_eq!((status, &seen), (StatusCode::OK, &serde_json::json!({"levels": 62, "leaf": "leaf"})));
+        let (status, Json(seen)) = invoke(nested(61, "{}"), true).await;
+        assert_eq!((status, &seen), (StatusCode::OK, &serde_json::json!({"levels": 62, "leaf": "missing"})));
+        // One level more is the client's mistake, and says so.
+        for levels in [63, 64, 65, 200] {
+            let (status, Json(refused)) = invoke(nested(levels, "1"), true).await;
+            assert_eq!((status, refused["code"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_request")), "{levels} levels");
+        }
+        // A legacy route takes a body it cannot read as JSON for text, as it always has.
+        for levels in [63, 64] {
+            let (status, Json(seen)) = invoke(nested(levels, "1"), false).await;
+            assert_eq!((status, &seen), (StatusCode::OK, &serde_json::json!({"levels": 0, "leaf": String::from_utf8(nested(levels, "1")).unwrap()})), "{levels} levels");
+        }
+    }
+
     #[tokio::test]
     async fn a_script_never_sees_cookies_or_the_host_token() {
         let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
@@ -2053,7 +2204,7 @@ mod private_api_tests {
                 transaction: TransactionMode::None, input_limit: 100, private_api: false, host_auth, client_ip: true, poll: false, upload: false,
             }, "127.0.0.1".parse().unwrap(), axum::http::Method::GET,
                 "/api/headers".parse().unwrap(), headers,
-                axum::extract::Query(HashMap::new()), Vec::new().into())
+                axum::extract::Query(Vec::new()), Vec::new().into())
         };
         let (status, Json(seen)) = invoke(true).await;
         assert_eq!(status, StatusCode::OK);

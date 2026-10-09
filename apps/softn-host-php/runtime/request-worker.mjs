@@ -152,6 +152,13 @@ try {
     const perMinute=Number.isInteger(declaredLimit)&&declaredLimit>=0?declaredLimit:120;
     if(perMinute>0&&count>perMinute){markLimited(minute,ip);emit({status:429,body:{error:'Too many requests.',code:'rate_limited'}});process.exit(0);}
   } catch(e){try{db.exec('ROLLBACK');}catch{}throw e;}
+  // An upload http.php would not take (photos.php) comes here only to be
+  // counted, which has just been done, and to be answered: no handler runs.
+  // http.php used to answer it itself and no runner was started, so a refused
+  // upload was never counted, however many a client sent. The flag is
+  // http.php's own, never the caller's: it builds this request field by field.
+  // The answer and its code are the Rust host's for a bad photo (http.rs).
+  if(request.refused==='photo'){emit({status:400,body:{error:'Photo rejected. Use a still JPEG, PNG or WebP under 4 MB, 16 megapixels and 8192 pixels a side.',code:'photo_rejected'}});process.exit(0);}
   startupStage='record_events';
   const recordSubscriptions=config.enableHostContext===true?JSON.parse(process.env.SOFTN_RECORD_EVENTS||'[]'):[];
   const authorizeRecordEvent=configureRecordEvents(db,recordSubscriptions);

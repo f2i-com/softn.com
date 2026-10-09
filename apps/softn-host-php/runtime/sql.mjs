@@ -131,6 +131,21 @@ function resultRow(row) {
 }
 
 const QUERY=new Set(['SELECT','WITH','VALUES']),EXECUTE=new Set(['INSERT','UPDATE','DELETE','REPLACE','WITH']);
+/**
+ * Run before an execute, so that the lastInsertRowid it reports is its own:
+ * the id of a row this statement inserted, and 0 when it inserted none (an
+ * INSERT OR IGNORE that was ignored, an upsert that updated, an UPDATE, a
+ * DELETE). SQLite keeps the last id a connection inserted until its next
+ * insert, whoever made it: the host's own row in _request_limits, written
+ * on this connection before the handler runs, or an earlier statement of
+ * the handler's. A statement that inserted nothing answered with that id.
+ * SQLite has no statement that clears it, so the host inserts row 0 of a
+ * table of its own in the connection's temporary schema, which no app SQL
+ * can name (the authorizer refuses everything outside `main`). The same on
+ * the Rust host (bridges/sql.rs forget_last_insert), which keeps a
+ * connection from one request to the next.
+ */
+const FORGET_LAST_INSERT='CREATE TEMP TABLE IF NOT EXISTS _softn_last_insert(id INTEGER PRIMARY KEY); INSERT OR REPLACE INTO temp._softn_last_insert(id) VALUES(0);';
 
 /**
  * The request-time SQL bridge. `sql(kind, text, params, writable)`: `query`
@@ -170,6 +185,8 @@ export function createSql(db,{authorizeRecordEvent=()=>false}={}) {
     try{statement=db.prepare(text);}finally{db.setAuthorizer(null);}
     // A query that would write was denied at prepare; an execute must write and return no rows.
     if(kind==='execute'&&(!wrote||statement.columns().length!==0))throw new Error('execute requires a DML statement without returned rows');
+    // The host's own statement, while no authorizer is set.
+    if(kind==='execute')db.exec(FORGET_LAST_INSERT);
     db.setAuthorizer(authorize);
     try {
       if(kind==='execute') {

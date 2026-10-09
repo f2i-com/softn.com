@@ -242,6 +242,9 @@ pub struct NativeSql {
     connection: Option<Connection>,
     failed: bool,
     active: bool,
+    /// Whether the open transaction is a write, which is what its
+    /// authorizer was installed with (and is installed with again).
+    writable: bool,
     cancellation: Arc<AtomicBool>,
     deadline: Instant,
 }
@@ -259,6 +262,7 @@ impl NativeSql {
             connection: None,
             failed: false,
             active: false,
+            writable: false,
             cancellation: Arc::new(AtomicBool::new(false)),
             deadline: Instant::now(),
         }
@@ -294,6 +298,7 @@ impl NativeSql {
             .map_err(|_| "Private database is busy; retry the same action")?;
         self.active = true;
         let writable = mode == TransactionMode::Write;
+        self.writable = writable;
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
             authorize(ctx, false, writable)
         }));
@@ -343,6 +348,33 @@ impl NativeSql {
         result
     }
 
+    /// Run before an `execute`, so that the `lastInsertRowid` it reports is
+    /// its own: the id of a row this statement inserted, and 0 when it
+    /// inserted none (an `INSERT OR IGNORE` that was ignored, an upsert that
+    /// updated, an `UPDATE`, a `DELETE`).
+    ///
+    /// SQLite keeps the last id a connection inserted until its next insert,
+    /// and a worker keeps its connection: a statement that inserted nothing
+    /// answered with the row an earlier request had made, another client's
+    /// as likely as not. SQLite has no statement that clears it, so the host
+    /// inserts row 0 of a table of its own in the connection's temporary
+    /// schema, which no app SQL can name. The authorizer refuses everything
+    /// outside `main`, the host's statement included, so it is taken off for
+    /// that statement and put back. The same on the PHP host
+    /// (runtime/sql.mjs FORGET_LAST_INSERT).
+    fn forget_last_insert(&self, conn: &Connection) -> Result<(), String> {
+        clear_authorizer(conn);
+        let forgotten = conn.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS _softn_last_insert(id INTEGER PRIMARY KEY); \
+             INSERT OR REPLACE INTO temp._softn_last_insert(id) VALUES(0);",
+        );
+        let writable = self.writable;
+        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            authorize(ctx, false, writable)
+        }));
+        forgotten.map_err(|_| "SQL write failed".into())
+    }
+
     fn run(&self, kind: &str, sql: &str, binds: &str) -> Result<Value, String> {
         if !self.active {
             return Err("SQL requires a host-scoped request transaction".into());
@@ -387,6 +419,7 @@ impl NativeSql {
             if stmt.readonly() || stmt.column_count() != 0 {
                 return Err("execute requires a DML statement without returned rows".into());
             }
+            self.forget_last_insert(conn)?;
             let changes = stmt
                 .execute(params_from_iter(params))
                 .map_err(|_| "SQL write failed")?;
@@ -546,5 +579,49 @@ mod tests {
         a.call("sql.execute", "DELETE FROM records", "[]").unwrap();
         cancellation.store(true, Ordering::Relaxed);
         assert!(a.finish(true).is_err());
+    }
+
+    /// A row's columns come back in the order the statement names them, as on
+    /// the PHP host. They used to be sorted by name.
+    #[test]
+    fn a_row_keeps_the_order_of_its_columns() {
+        let (_path, mut bridge) = fixture();
+        bridge.begin(TransactionMode::Read, Arc::new(AtomicBool::new(false))).unwrap();
+        let row = bridge.call("sql.first", "SELECT 1 AS zz, 'b' AS aa, 3 AS mm", "[]").unwrap();
+        assert_eq!(row.to_string(), r#"{"zz":1,"aa":"b","mm":3}"#);
+        bridge.finish(false).unwrap();
+    }
+
+    /// `lastInsertRowid` is the id of a row the statement inserted, and 0
+    /// when it inserted none. A worker keeps its connection, and SQLite keeps
+    /// the last id a connection inserted until its next insert: a statement
+    /// that inserted nothing answered with the row an earlier request had
+    /// made, and a handler that took it for its own linked a stranger's row.
+    #[test]
+    fn a_statement_that_inserts_nothing_has_no_last_insert_rowid() {
+        let (_path, mut bridge) = fixture();
+        let begin = |bridge: &mut NativeSql| bridge.begin(TransactionMode::Write, Arc::new(AtomicBool::new(false))).unwrap();
+        // One client's request makes row 1234.
+        begin(&mut bridge);
+        let made = bridge.call("sql.execute", "INSERT INTO records VALUES(1234,'alice')", "[]").unwrap();
+        assert_eq!(made, json!({"changes": 1, "lastInsertRowid": 1234}));
+        bridge.finish(true).unwrap();
+        // The next request on that worker inserts nothing.
+        begin(&mut bridge);
+        for (sql, changes) in [
+            ("INSERT OR IGNORE INTO records VALUES(1234,'bob')", 0),
+            ("UPDATE records SET value = 'bob' WHERE id = 1234", 1),
+            ("INSERT INTO records VALUES(1234,'bob') ON CONFLICT(id) DO UPDATE SET value = excluded.value", 1),
+            ("DELETE FROM records WHERE id = 1234", 1),
+        ] {
+            assert_eq!(bridge.call("sql.execute", sql, "[]").unwrap(), json!({"changes": changes, "lastInsertRowid": 0}), "{sql}");
+        }
+        // And one that does insert still says which row, in a transaction
+        // that is rolled back as well: nothing is left behind for the next.
+        assert_eq!(bridge.call("sql.execute", "INSERT INTO records(value) VALUES('bob')", "[]").unwrap()["lastInsertRowid"], 1);
+        bridge.finish(false).unwrap();
+        begin(&mut bridge);
+        assert_eq!(bridge.call("sql.execute", "UPDATE records SET value = 'x'", "[]").unwrap()["lastInsertRowid"], 0);
+        bridge.finish(true).unwrap();
     }
 }

@@ -1,5 +1,5 @@
 {
-  "about": "The SQL an app's server/ code and migrations may run, as both SoftN backend hosts must answer it. Each case runs on a fresh database built from `schema` (without an authorizer). `migration` cases are one migration script applied inside BEGIN IMMEDIATE; `runtime` cases are one softn.sql call (`kind` query, first or execute) inside the route's transaction (`mode` write unless read). `allow` is the contract; `result`, when present, is what `first` returns. `rust` names a case the Rust host (apps/softn-host-rust/src/bridges/sql.rs, private_backend.rs) answers differently today and why. Read by apps/softn-host-php/tests/sql-parity.test.mjs.",
+  "about": "The SQL an app's server/ code and migrations may run, as both SoftN backend hosts must answer it. Each case runs on a fresh database built from `schema` (without an authorizer). `migration` cases are one migration script applied inside BEGIN IMMEDIATE; `runtime` cases are one softn.sql call (`kind` query, first or execute) inside the route's transaction (`mode` write unless read). `allow` is the contract; `result`, when present, is what the call returns. `before`, when present, is an `execute` the same request made first, on the same connection. `rust` names a case the Rust host (apps/softn-host-rust/src/bridges/sql.rs, private_backend.rs) answers differently today and why. Read by apps/softn-host-php/tests/sql-parity.test.mjs and apps/softn-host-rust/src/sql_parity_tests.rs.",
   "schema": "CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0); CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT, note TEXT); INSERT INTO items(name, note) VALUES('a', 'x'); CREATE TABLE _private(secret TEXT); INSERT INTO _private VALUES('host-only');",
   "migration": [
     {"sql": "CREATE TABLE users(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, created INTEGER DEFAULT (unixepoch())) STRICT; INSERT INTO users(name) VALUES('u');", "allow": true},
@@ -58,6 +58,12 @@
     {"kind": "execute", "sql": "WITH n AS (SELECT 'z' AS v) INSERT INTO items(name) SELECT v FROM n", "allow": true},
     {"kind": "execute", "sql": "UPDATE counter SET value = value + 1;", "allow": true},
     {"kind": "execute", "sql": "DELETE FROM items WHERE name = ?", "params": ["a"], "allow": true},
+    {"kind": "execute", "before": "INSERT INTO items(name) VALUES('earlier')", "sql": "INSERT INTO items(name) VALUES('new')", "allow": true, "result": {"changes": 1, "lastInsertRowid": 3}},
+    {"kind": "execute", "before": "INSERT INTO items(name) VALUES('earlier')", "sql": "INSERT OR IGNORE INTO items(id, name) VALUES(1, 'ignored')", "allow": true, "result": {"changes": 0, "lastInsertRowid": 0}},
+    {"kind": "execute", "before": "INSERT INTO items(name) VALUES('earlier')", "sql": "UPDATE counter SET value = value + 1", "allow": true, "result": {"changes": 1, "lastInsertRowid": 0}},
+    {"kind": "execute", "before": "INSERT INTO items(name) VALUES('earlier')", "sql": "DELETE FROM items WHERE name = 'a'", "allow": true, "result": {"changes": 1, "lastInsertRowid": 0}},
+    {"kind": "execute", "before": "INSERT INTO items(name) VALUES('earlier')", "sql": "INSERT INTO items(id, name) VALUES(1, 'kept') ON CONFLICT(id) DO UPDATE SET name = excluded.name", "allow": true, "result": {"changes": 1, "lastInsertRowid": 0}},
+    {"kind": "execute", "before": "INSERT INTO items(name) VALUES('earlier')", "sql": "INSERT INTO items(id, name) VALUES(9, 'made') ON CONFLICT(id) DO UPDATE SET name = excluded.name", "allow": true, "result": {"changes": 1, "lastInsertRowid": 9}},
     {"kind": "query", "sql": "SELECT 1; SELECT 2", "allow": false},
     {"kind": "query", "sql": "SELECT 'a;b'; DELETE FROM items", "allow": false},
     {"kind": "query", "sql": "SELECT 1; /* ; */ SELECT 2", "allow": false},

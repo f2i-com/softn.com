@@ -12,7 +12,7 @@
  */
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readdirSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readdirSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -45,7 +45,24 @@ function sneak(req){softn.sql.execute("UPDATE counter SET value=value+7",[]);ret
 function big(req){var s=new Array((req.query.n|0)+1).join("x");return {status:200,body:softn.sql.first("SELECT length(?) AS n",[s])};}
 function text(req){return {status:200,body:{text:req.body.text}};}
 function age(req){return {status:200,body:{plain:softn.time.age("2000-01-01"),zoned:softn.time.age("2000-01-01","UTC"),bad:softn.time.age("not a date")}};}
+function bump(req){return {status:200,body:softn.sql.execute("UPDATE counter SET value=value+1",[])};}
+function reasons(req){var said={};
+  try{softn.time.parseZoned("2026-10-04","02:30","Australia/Melbourne");}catch(e){said.gap=e.message;said.isError=e instanceof Error;}
+  try{softn.time.parseZoned("2026-04-05","02:30","Australia/Melbourne");}catch(e){said.fold=e.message;}
+  try{softn.time.parseZoned("2026-01-01","12:00","Mars/Phobos");}catch(e){said.zone=e.message;}
+  try{softn.sql.query("SELECT 1; SELECT 2",[]);}catch(e){said.two=e.message;}
+  try{softn.sql.execute("INSERT INTO no_such_table VALUES(1)",[]);}catch(e){said.table=e.message;}
+  try{softn.sql.first("SELECT value FROM _migrations",[]);}catch(e){said.host=e.message;}
+  try{softn.crypto.sha256("x");}catch(e){said.denied=e.message;}
+  return {status:422,rollback:true,body:said};}
+function depth(req){var levels=0,value=req.body;while(value!==null&&typeof value==='object'){value=value.a;levels++;}return {status:200,body:{levels:levels,leaf:value===undefined?'missing':value}};}
+function ordered(req){return {status:200,body:{zebra:Object.keys(req.body),apple:Object.keys(req.query),mango:req.body,kiwi:softn.sql.first("SELECT 1 AS zz, 'b' AS aa, 3 AS mm",[])}};}
 `;
+
+/** softn.time as both hosts answer it; its `script` is one more handler here. */
+const timeParity=JSON.parse(readFileSync(join(here,'time-parity.json'),'utf8'));
+/** And the arguments softn.crypto's random calls take. */
+const cryptoParity=JSON.parse(readFileSync(join(here,'crypto-parity.json'),'utf8'));
 
 /** A backend root holding this checkout's runtime and the given manifest. */
 function backend(manifest,{capabilities=['sql']}={}){
@@ -57,7 +74,7 @@ function backend(manifest,{capabilities=['sql']}={}){
   mkdirSync(join(root,'app/server/migrations'),{recursive:true});
   mkdirSync(join(root,'private/data'),{recursive:true});
   writeFileSync(join(root,'app/manifest.json'),JSON.stringify(manifest));
-  writeFileSync(join(root,'app/server/main.logic'),SOURCE);
+  writeFileSync(join(root,'app/server/main.logic'),SOURCE+timeParity.script+'\n'+cryptoParity.script+'\n');
   writeFileSync(join(root,'app/server/migrations/001.sql'),'CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0);');
   writeFileSync(join(root,'private/config.json'),JSON.stringify({appId:manifest.id,development:false,keyHex:'ab'.repeat(32),capabilities,cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'}}));
   const run=(request)=>{
@@ -206,6 +223,75 @@ test('a host call that fails rolls the request back, even when the handler catch
   assert.equal(value(),10);
 });
 
+test('a body 62 levels deep reaches the handler whole, which is why http.php takes none deeper',t=>{
+  // The limit softn_request_body holds a body to (request.test.mjs), and the
+  // Rust host's MAX_BODY_DEPTH. One level more, which http.php used to let
+  // through, and the engine hands the handler null where the innermost
+  // object was, with nothing to say so.
+  const b=backend(manifest([{method:'POST',path:'/api/depth',handler:'depth'}]));
+  t.after(b.close);
+  const nested=(levels,leaf)=>JSON.parse('{"a":'.repeat(levels)+leaf+'}'.repeat(levels));
+  const seen=body=>b.invoke({method:'POST',path:'/api/depth',body}).body;
+  assert.deepEqual(seen(nested(62,'"leaf"')),{levels:62,leaf:'leaf'});
+  assert.deepEqual(seen(nested(61,'{}')),{levels:62,leaf:'missing'});
+  assert.deepEqual(seen(nested(63,'"leaf"')),{levels:62,leaf:null},'what the runner would be handed if http.php let it through');
+});
+
+test('object keys keep their order in and out, which the Rust host is held to as well',t=>{
+  // The reference for apps/softn-host-rust (http_hardening_tests.rs
+  // object_keys_keep_their_order_in_and_out, bridges/sql.rs
+  // a_row_keeps_the_order_of_its_columns): that host used to sort every
+  // object it handed over or sent out.
+  const b=backend(manifest([{method:'POST',path:'/api/ordered',handler:'ordered'}]));
+  t.after(b.close);
+  const raw=b.raw({method:'POST',path:'/api/ordered',body:{zebra:1,apple:{y:1,x:2},mango:3},query:{zebra:'3',apple:'2'}});
+  assert.equal(raw,'{"status":200,"body":{"zebra":["zebra","apple","mango"],"apple":["zebra","apple"],"mango":{"zebra":1,"apple":{"y":1,"x":2},"mango":3},"kiwi":{"zz":1,"aa":"b","mm":3}}}');
+});
+
+test('a statement that inserts nothing has no lastInsertRowid, whatever the host itself inserted first',t=>{
+  const b=backend(manifest([{method:'POST',path:'/api/bump',handler:'bump'}]));
+  t.after(b.close);
+  // The first request from an address has the host insert that address's row
+  // in its own _request_limits table, on the connection the handler then
+  // uses. SQLite keeps the last id a connection inserted, so the handler's
+  // UPDATE answered with the host's row id (1, 2, 3 as addresses arrived):
+  // an id the handler never made, where 0 says "nothing inserted".
+  for(const [client_ip,changes] of [['10.9.9.1',1],['10.9.9.2',1],['10.9.9.3',1],['10.9.9.3',1]]) {
+    assert.deepEqual(b.invoke({method:'POST',path:'/api/bump',client_ip}).body,{changes,lastInsertRowid:0},client_ip);
+  }
+});
+
+test('a handler that catches a failed host call is told why, as on the Rust host',t=>{
+  // Whatever failed, `e.message` was "host bridge call failed": the engine
+  // replaces anything a host function throws. So the reasons written here
+  // for a person ("…Choose another time.") reached only the log, and a
+  // handler could not tell a time the clocks skip from a zone that does not
+  // exist. A failed call now answers the script with its reason and the
+  // script's own softn.* function throws it.
+  const timed=manifest([{method:'POST',path:'/api/reasons',handler:'reasons'},{method:'POST',path:'/api/fail',handler:'creditThenFail'}]);
+  timed.server.requires.capabilities=['sql','time'];
+  const b=backend(timed,{capabilities:['sql','time']});
+  t.after(b.close);
+  const r=b.logged({method:'POST',path:'/api/reasons'});
+  assert.equal(r.status,422,JSON.stringify(r));
+  assert.deepEqual(r.body,{
+    gap:'That local time does not exist during daylight saving. Choose another time.',isError:true,
+    fold:'That local time occurs twice during daylight saving. Choose another time.',
+    zone:'Invalid time zone',
+    two:'Only one SQL statement is allowed',
+    // What SQLite itself said stays in the operator's log: the script is
+    // told which kind of call failed, as the Rust host tells it.
+    table:'SQL write failed',host:'SQL query failed',
+    denied:'Host capability denied: crypto.sha256',
+  });
+  // The handler dealt with them and asked for the rollback: nothing to log.
+  assert.equal(r.stderr,'');
+  // One it did not deal with is logged as before, in SQLite's words.
+  const failed=b.logged({method:'POST',path:'/api/fail'});
+  assert.equal(failed.status,500);
+  assert.match(failed.stderr,/^softn: handler creditThenFail: no such table: no_such_table\n$/);
+});
+
 test('softn.time.age takes UTC when no zone is given',t=>{
   const timed=manifest([{method:'GET',path:'/api/age',handler:'age'}]);
   timed.server.requires.capabilities=['sql','time'];
@@ -216,6 +302,55 @@ test('softn.time.age takes UTC when no zone is given',t=>{
   assert.ok(Number.isInteger(r.body.plain)&&r.body.plain>=26,JSON.stringify(r.body));
   assert.equal(r.body.plain,r.body.zoned);
   assert.equal(r.body.bad,-1);
+});
+
+test('softn.time answers the shared list as the Rust host does',t=>{
+  // tests/time-parity.json, which apps/softn-host-rust/src/bridges/time.rs
+  // runs too. The two hosts wrote format() differently ("Thu, 1 Jan, 11:00 pm
+  // · Melbourne" here, "Thu, 1 Jan 2026, 11:00 PM AEDT" there), that one took
+  // only a zone spelt exactly as the IANA list spells it, and age() with an
+  // empty zone was a failed call here and UTC there (with a null one, the
+  // other way round).
+  const timed=manifest([{method:'POST',path:'/api/time',handler:'timeCases'}]);
+  timed.server.requires.capabilities=['sql','time'];
+  const b=backend(timed,{capabilities:['sql','time']});
+  t.after(b.close);
+  // A case that names `same` arguments is asked twice, the second time with those.
+  const cases=timeParity.cases,asked=[...cases,...cases.filter(c=>c.same).map(c=>({call:c.call,args:c.same}))];
+  const r=b.invoke({method:'POST',path:'/api/time',body:{cases:asked}});
+  assert.equal(r.status,200,JSON.stringify(r));
+  const wrong=[];let twin=cases.length;
+  cases.forEach((c,i)=>{
+    const got=r.body[i],label=`${c.call}(${JSON.stringify(c.args).slice(1,-1)})`;
+    if(c.throws){if(!got.threw)wrong.push(`${label} answered ${JSON.stringify(got.ok)}`);}
+    else if(got.threw)wrong.push(`${label} threw`);
+    else if(c.same){const other=r.body[twin++];if(other.threw||other.ok!==got.ok)wrong.push(`${label} is ${JSON.stringify(got.ok)}, and with ${JSON.stringify(c.same)} ${JSON.stringify(other.ok)}`);}
+    else if(got.ok!==c.result)wrong.push(`${label} is ${JSON.stringify(got.ok)}, not ${JSON.stringify(c.result)}`);
+  });
+  assert.deepEqual(wrong,[]);
+});
+
+test('softn.crypto\'s random calls take the shared list of arguments as the Rust host does',t=>{
+  // tests/crypto-parity.json, which apps/softn-host-rust/src/bridges/crypto.rs
+  // runs too. Here a bound had to be a number and under 2^48 (Node's own
+  // rule) and a byte count a number; there text that spells a whole number
+  // is that number (`softn.crypto.randomInt(req.query.sides)`) and the bound
+  // goes to 2^53-1. A handler written on that host was a 500 on this one.
+  const random=manifest([{method:'POST',path:'/api/random',handler:'cryptoCases'}]);
+  random.server.requires.capabilities=['sql','crypto'];
+  const b=backend(random,{capabilities:['sql','crypto']});
+  t.after(b.close);
+  const r=b.invoke({method:'POST',path:'/api/random',body:{cases:cryptoParity.cases}});
+  assert.equal(r.status,200,JSON.stringify(r));
+  const wrong=[];
+  cryptoParity.cases.forEach((c,i)=>{
+    const got=r.body[i],label=`${c.call}(${JSON.stringify(c.args).slice(1,-1)})`;
+    if(c.throws){if(!got.threw)wrong.push(`${label} answered ${JSON.stringify(got.ok)}`);}
+    else if(got.threw)wrong.push(`${label} threw`);
+    else if(c.below!==undefined&&!(Number.isInteger(got.ok)&&got.ok>=0&&got.ok<c.below))wrong.push(`${label} is ${JSON.stringify(got.ok)}`);
+    else if(c.length!==undefined&&!(typeof got.ok==='string'&&/^[0-9a-f]+$/.test(got.ok)&&got.ok.length===c.length))wrong.push(`${label} is ${JSON.stringify(got.ok)}`);
+  });
+  assert.deepEqual(wrong,[]);
 });
 
 test('softn.config is the app\'s settings under the two flags the host owns',t=>{
@@ -336,6 +471,38 @@ test('config.server.requestsPerMinute sets the rate limit, and 0 turns it off',t
   const odd=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}],{config:{server:{requestsPerMinute:'2'}}}));
   t.after(odd.close);
   assert.deepEqual([ping(odd),ping(odd),ping(odd)],[200,200,200]);
+});
+
+test('an upload the host refused is counted against the rate limit like any other request',t=>{
+  // http.php used to answer a photo it would not take by itself, after taking
+  // a worker slot and decoding the image: the runner, which is where requests
+  // are counted, was never started. So refused uploads were never counted,
+  // and one client sending them could keep every slot busy for as long as it
+  // liked. http.php now hands the refusal to the runner (`refused`), which
+  // counts it and answers it without running the handler.
+  const uploads=manifest([{method:'POST',path:'/api/photo',handler:'count',upload:'photo'},{method:'GET',path:'/api/value',handler:'value'}],{config:{server:{requestsPerMinute:2}}});
+  uploads.server.requires.capabilities=['sql','photos'];
+  const b=backend(uploads,{capabilities:['sql','photos']});
+  t.after(b.close);
+  const refused=ip=>b.invoke({method:'POST',path:'/api/photo',client_ip:ip,refused:'photo'});
+  const minute=()=>Math.floor(Date.now()/60000);
+  // Judged only when one minute held all three, as the test above explains.
+  let burst=null,last=null;
+  for(let attempt=0;burst===null&&attempt<3;attempt++){
+    const started=minute(),ip='203.0.113.'+(40+attempt);
+    const got=[refused(ip),refused(ip),refused(ip)];
+    if(minute()===started){burst=got.map(r=>r.status);last={ip,minute:started,first:got[0]};}
+  }
+  assert.deepEqual(burst,[400,400,429]);
+  assert.match(last.first.body.error,/^Photo rejected\./);
+  // With the code the Rust host answers a bad photo with, and its document
+  // says both do: this host's refusal had no code at all.
+  assert.equal(last.first.body.code,'photo_rejected');
+  // The handler never ran for any of them.
+  assert.equal(b.invoke({method:'GET',path:'/api/value',client_ip:'203.0.113.99'}).body.value,0);
+  // And the refusal is noted, so http.php answers the rest of the minute
+  // before it reads a body, takes a slot or decodes anything.
+  assert.ok(existsSync(join(b.root,'private/limited',String(last.minute),createHash('sha256').update(last.ip).digest('hex'))),'the refused bucket is noted');
 });
 
 test('a database another request holds is a retryable busy answer, not a configuration fault',async t=>{

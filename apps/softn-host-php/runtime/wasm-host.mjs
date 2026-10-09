@@ -9,7 +9,7 @@ let initialized=false;
 const MAX_CALL_BYTES=2*1024*1024+20_000;
 const SHIM=`
 var softn={serverApiVersion:1,config:{development:false},sql:{},crypto:{},time:{}};
-function __softnCall(op,args){return db.query(op,args);}
+function __softnCall(op,args){var r=db.query(op,args);if(r!==null&&typeof r==='object'&&r.__softnHostError===true)throw new Error(r.message);return r;}
 softn.sql.query=function(s,p){return __softnCall('sql.query',[s,p||[]]);};
 softn.sql.first=function(s,p){return __softnCall('sql.first',[s,p||[]]);};
 softn.sql.execute=function(s,p){return __softnCall('sql.execute',[s,p||[]]);};
@@ -47,6 +47,29 @@ export function logFailure(what, error) {
 }
 
 /**
+ * What a script is told when a host call fails: the `e.message` its
+ * `catch (e)` reads. The engine replaces whatever a host function throws
+ * with "host bridge call failed", so a failed call does not throw across the
+ * bridge: it answers with this reason under a mark no result can carry (SQL
+ * has no `true`), and the script's own softn.* function throws it
+ * (`__softnCall` in the shim). The Rust host's scripts are told the reason
+ * the same way round.
+ *
+ * A reason the host wrote itself (a plain Error from sql.mjs, time.mjs or
+ * crypto.mjs, or a refusal made here) is told as it is. What a library said
+ * is not: SQLite's own words can name the host's tables, so the script is
+ * told only which kind of call failed, as the Rust host tells it, and the
+ * operator's log keeps the rest (logFailure).
+ */
+function scriptReason(op, error) {
+  if(error instanceof Error&&error.constructor===Error&&error.code===undefined&&error.errcode===undefined)
+    return String(error.message).replace(/[\x00-\x1f\x7f]+/g,' ').slice(0,300);
+  if(op==='sql.execute')return 'SQL write failed';
+  if(op==='sql.query'||op==='sql.first')return 'SQL query failed';
+  return 'Host call failed';
+}
+
+/**
  * softn.config: the app's own settings (manifest config.app) under the two
  * flags the host owns. An app key named `development` or `photos` is
  * replaced, as on the Rust host: `photos` used to pass straight through, so a
@@ -76,8 +99,8 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
     age:(birth,zone)=>{
       // An omitted zone crosses the bridge as null, which a default parameter
       // leaves alone: softn.time.age("2000-01-01") answered 500 here and 26
-      // on the Rust host.
-      zone??='UTC';
+      // on the Rust host. An empty one is UTC as well, as it is there.
+      if(zone==null||zone==='')zone='UTC';
       if(typeof birth!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(birth))return -1;
       const d=new Date(birth+'T00:00:00Z');if(!Number.isFinite(d.getTime())||d.toISOString().slice(0,10)!==birth)return -1;
       const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now()*1000).map(v=>[v.type,v.value]));
@@ -108,7 +131,8 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
           if(Buffer.byteLength(JSON.stringify(args))>MAX_CALL_BYTES)throw new Error('Host call arguments exceed '+MAX_CALL_BYTES+' bytes: '+String(op).slice(0,40));
           if(route.transaction==='read'&&op==='sql.execute')throw new Error('Read-only transaction');
           return operations[op](...args);
-        } catch(e){failed=true;failure??=e;throw e;}
+        // Answered, not thrown: see scriptReason. The request is marked all the same.
+        } catch(e){failed=true;failure??=e;return {__softnHostError:true,message:scriptReason(op,e)};}
       }});
       // The answer /api/meta gives: granted, and GD is there to do it.
       engine.initScript(SHIM+'\nsoftn.config='+scriptConfig(appConfig,development,capabilities.includes('photos')&&request.photos===true)+';\n'+source);

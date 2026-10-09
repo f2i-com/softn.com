@@ -4,6 +4,14 @@
 /// for defense in depth against malicious payloads.
 pub const MAX_JSON_DEPTH: usize = 64;
 
+/// How deep a request body may nest: 62 objects and arrays, the body itself
+/// the first. It is what a handler can be handed. The request carries the
+/// body one level down, and the engine passes a script nothing below that
+/// (it puts `null` there), so a body one level deeper used to be accepted
+/// here and then fail on its way to the handler, a 500 for what is the
+/// client's mistake. The PHP host has the same limit and the same 400.
+pub const MAX_BODY_DEPTH: usize = 62;
+
 /// Parse JSON with explicit depth protection against stack overflow.
 /// Performs a fast O(n) linear pre-scan to reject payloads that exceed
 /// `max_depth` nesting levels before handing off to serde_json.

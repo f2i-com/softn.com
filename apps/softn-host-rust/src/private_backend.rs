@@ -153,8 +153,17 @@ fn reserved_names(conn: &rusqlite::Connection) -> Result<HashSet<String>, String
     Ok(names?)
 }
 
+/// The most one migration file may be: what the PHP host takes
+/// (runtime/migrations.mjs). It was 256 KiB here, so a bundle that host
+/// deployed could stop this one at start.
+const MAX_MIGRATION_BYTES: usize = 1_000_000;
+
 fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<(), String> {
     let conn = sql::open_connection(path)?;
+    // A request's statement is held to 256 KiB of SQL (`open_connection`); a
+    // migration is handed to SQLite whole, so this connection takes a file's
+    // worth. It is opened for the migrations and closed after them.
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, MAX_MIGRATION_BYTES as i32);
     conn.execute_batch("CREATE TABLE IF NOT EXISTS _migrations(name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at INTEGER NOT NULL) STRICT;")
         .map_err(|_| "Cannot open migration ledger")?;
     let mut migrations = server.database.as_ref().unwrap().migrations.clone();
@@ -176,7 +185,7 @@ fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<
                 return Err("Migration filenames must be unique .sql files".into());
             }
             let bytes = std::fs::read(&full).map_err(|_| "Cannot read declared migration")?;
-            if bytes.len() > 256 * 1024 {
+            if bytes.len() > MAX_MIGRATION_BYTES {
                 return Err("Migration exceeds byte limit".into());
             }
             let script = std::str::from_utf8(&bytes).map_err(|_| "Migration must be UTF-8")?;
@@ -355,6 +364,36 @@ mod tests {
             assert_eq!(schema(&conn), before, "{bad}");
         }
         assert!(apply_migrations(&path, &root, &server(&["server/001.sql", "server/002.sql"])).is_ok());
+    }
+
+    /// A migration may be as large as the PHP host takes: 1,000,000 bytes.
+    /// The limit here was 262,144, so a bundle whose seed data ran to 300 KB
+    /// deployed on that host and stopped this one at start.
+    #[test]
+    fn a_migration_may_be_as_large_as_the_php_host_takes() {
+        let root = std::env::temp_dir().join(format!("softn-migrations-large-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("server")).unwrap();
+        let path = root.join("application.sqlite");
+        let server = |file: &str| -> ServerBlock {
+            serde_json::from_value(serde_json::json!({"database":{"kind":"private-sqlite","migrations":[file]}})).unwrap()
+        };
+        let row = format!("INSERT INTO seeds(note) VALUES('{}');\n", "x".repeat(200));
+        let seeds = |bytes: usize| {
+            let mut script = String::from("CREATE TABLE IF NOT EXISTS seeds(id INTEGER PRIMARY KEY, note TEXT);\n");
+            while script.len() + row.len() <= bytes {
+                script.push_str(&row);
+            }
+            script.push_str(&" ".repeat(bytes - script.len()));
+            script
+        };
+        std::fs::write(root.join("server/001.sql"), seeds(1_000_000)).unwrap();
+        apply_migrations(&path, &root, &server("server/001.sql")).unwrap();
+        let conn = sql::open_connection(&path).unwrap();
+        assert!(conn.query_row("SELECT COUNT(*) FROM seeds", [], |r| r.get::<_, i64>(0)).unwrap() > 4000);
+        // One byte more is too large, there and here.
+        std::fs::write(root.join("server/002.sql"), seeds(1_000_001)).unwrap();
+        let both: ServerBlock = serde_json::from_value(serde_json::json!({"database":{"kind":"private-sqlite","migrations":["server/001.sql","server/002.sql"]}})).unwrap();
+        assert!(apply_migrations(&path, &root, &both).unwrap_err().contains("byte limit"));
     }
 
     #[test]

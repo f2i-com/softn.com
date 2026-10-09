@@ -64,6 +64,8 @@ test('the query string is a map of decoded strings, as the Rust host gives it',(
     ['softn_query',Array.from({length:300},(_,i)=>'k'+i+'=1').join('&')],
   ]);
   assert.deepEqual(q,{'a[]':'1','b.c':'2',d:'y',e:'',sp:'a b c','':'v',u:'\ufffd'});
+  // In the order the names first appear, which the Rust host keeps too.
+  assert.deepEqual(Object.keys(q),['a[]','b.c','d','e','sp','','u']);
   assert.deepEqual(empty,[]);
   assert.equal(Object.keys(many).length,256);
 });
@@ -138,7 +140,7 @@ test('a preflight approves the header names asked for, and nothing that is not o
  */
 const cgiSkip=skip||(spawnSync('php-cgi',['-v']).status===0?false:'php-cgi is not on PATH (it ships with PHP; Debian/Ubuntu: php-cgi)');
 if(cgiSkip&&!skip)console.warn('WARNING: tests/request.test.mjs OPTIONS test skipped: '+cgiSkip);
-function cgi(method,origin,t,{routes=[],prepare=()=>{},remote='127.0.0.1'}={}) {
+function cgi(method,origin,t,{routes=[],prepare=()=>{},remote='127.0.0.1',uri='/api/ping'}={}) {
   const root=mkdtempSync(join(tmpdir(),'softn-cgi-'));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   mkdirSync(join(root,'webroot'));mkdirSync(join(root,'backend/app'),{recursive:true});
@@ -146,7 +148,7 @@ function cgi(method,origin,t,{routes=[],prepare=()=>{},remote='127.0.0.1'}={}) {
   for(const name of ['http.php','request.php','client-ip.php'])copyFileSync(runtime+name,join(root,'backend',name));
   writeFileSync(join(root,'backend/app/manifest.json'),JSON.stringify({id:'cgi',config:{server:{allowedOrigins:['https://app.example']}},server:{routes}}));
   prepare(join(root,'backend'));
-  const env={...process.env,REQUEST_METHOD:method,REQUEST_URI:'/api/ping',SCRIPT_FILENAME:join(root,'webroot/api.php'),REDIRECT_STATUS:'200',
+  const env={...process.env,REQUEST_METHOD:method,REQUEST_URI:uri,SCRIPT_FILENAME:join(root,'webroot/api.php'),REDIRECT_STATUS:'200',
     HTTP_HOST:'site.example',REMOTE_ADDR:remote,GATEWAY_INTERFACE:'CGI/1.1',SERVER_PROTOCOL:'HTTP/1.1',...(origin?{HTTP_ORIGIN:origin}:{})};
   const r=spawnSync('php-cgi',[],{env,encoding:'utf8'});
   assert.equal(r.status,0,r.stderr);
@@ -176,6 +178,38 @@ nodeTest('OPTIONS is always a 204, as on the Rust host, and only an allowed Orig
   assert.equal(JSON.parse(post.body).code,'origin_not_allowed');
 });
 
+nodeTest('a method a path does not declare is 405, a path nobody declared is 404, and HEAD is its GET, as on the Rust host',{skip:cgiSkip},t=>{
+  const routes=[{method:'GET',path:'/api/ping',handler:'ping'},{method:'POST',path:'/api/save',handler:'save'},{method:'PUT',path:'/api/save',handler:'save'}];
+  const ask=(method,uri)=>cgi(method,null,t,{routes,uri});
+  // A path that is declared, asked with a method it is not declared for. It
+  // was 404 "Endpoint not found", as though the path were not there.
+  const wrong=ask('POST','/api/ping');
+  assert.equal(wrong.status,405,JSON.stringify(wrong));
+  assert.deepEqual(JSON.parse(wrong.body),{error:'Method not allowed.',code:'method_not_allowed'});
+  assert.equal(wrong.headers.allow,'GET, HEAD');
+  assert.equal(ask('DELETE','/api/save').headers.allow,'POST, PUT');
+  assert.equal(ask('PATCH','/api/ping').status,405);
+  // The host's own /api/meta is a GET.
+  assert.equal(ask('POST','/api/meta').status,405);
+  // A path nobody declared is not found, whatever the method: PATCH there was 405.
+  for(const method of ['GET','POST','PATCH','HEAD'])assert.equal(ask(method,'/api/nothing').status,404,method);
+  // HEAD on a GET route goes where its GET goes (to the runner, of which
+  // there is none here) and was 405; on a path with no GET it still is.
+  const get=ask('GET','/api/ping'),head=ask('HEAD','/api/ping');
+  assert.equal(get.status,503,JSON.stringify(get));
+  assert.equal(JSON.parse(get.body).diagnostic,'setup_required');
+  assert.equal(head.status,503,JSON.stringify(head));
+  assert.equal(ask('HEAD','/api/save').status,405);
+});
+
+test('http.php hands the runner a HEAD as the GET it is, and leaves the body off the answer',()=>{
+  // The runner (and so the handler) is asked what it is asked for the GET.
+  const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
+  assert.match(http,/\$head=\$method==='HEAD';if\(\$head\)\$method='GET';/);
+  assert.ok(http.indexOf("$head=$method==='HEAD'")<http.indexOf("'method'=>$method"));
+  assert.match(http,/if\(!\$head\)echo \$responseBody;/);
+});
+
 test('a body is a JSON object the runner can be handed, or it is refused',()=>{
   const good=['','{}','{"a":1,"nested":{"list":[1,2,{"deep":true}]}}','{"n":1.5e308,"big":12345678901234567890,"s":"x\\ud83d\\ude00"}'];
   const bad=['{"n":1e999}','{"a":[1,{"b":-1e999}]}','[1,2]','"text"','7','null','{"a":','not json','{"a":1}x','['.repeat(70)+']'.repeat(70)];
@@ -184,6 +218,13 @@ test('a body is a JSON object the runner can be handed, or it is refused',()=>{
   assert.deepEqual(got[0],{});
   assert.deepEqual(got[2],{a:1,nested:{list:[1,2,{deep:true}]}});
   bad.forEach((raw,i)=>assert.equal(got[good.length+i],null,raw.slice(0,40)));
+  // 62 levels deep, the body itself the first, and no deeper: the engine
+  // hands a handler nothing below that. A 63rd level was accepted here and
+  // reached the handler as null (the runner's half is in
+  // route-declarations.test.mjs); the Rust host has the same limit.
+  const nested=(levels,leaf)=>'{"a":'.repeat(levels)+leaf+'}'.repeat(levels);
+  const depths=php([[62,'"leaf"'],[61,'{}'],[61,'[[]]'],[63,'1'],[62,'{}'],[62,'[1]'],[64,'1']].map(([levels,leaf])=>['softn_request_body',nested(levels,leaf)]));
+  assert.deepEqual(depths.map(body=>body!==null),[true,true,false,false,false,false,false]);
   // http.php decides with it, before any runner is started.
   const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
   assert.match(http,/\$body=softn_request_body\(\$raw\);/);
@@ -214,6 +255,21 @@ nodeTest('a bucket the runner refused this minute is answered 429 before the bod
   // An IPv6 client is refused by its /64, the bucket the runner counts.
   const v6=cgi('GET',null,t,{routes,prepare:note('2001:db8:1:2::9'),remote:'2001:db8:1:2:aaaa:bbbb:cccc:dddd'});
   assert.equal(v6.status,429,JSON.stringify(v6));
+});
+
+test('http.php hands a photo it refuses to the runner to be counted, and does not answer it itself',()=>{
+  // It answered 400 on the spot, holding a worker slot and with the image
+  // already decoded, and no runner ever counted the request: refused uploads
+  // were outside the rate limit altogether. (The runner's half is in
+  // route-declarations.test.mjs.)
+  const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
+  const sanitize=http.indexOf('sanitize_photo('),spawn=http.indexOf('proc_open([');
+  assert.ok(sanitize>0&&sanitize<spawn);
+  const between=http.slice(sanitize,spawn);
+  assert.match(between,/catch\(Throwable \$e\)\{\$request\['refused'\]='photo';\}/);
+  assert.doesNotMatch(between,/reply\(400/,'the refusal is the runner\'s to answer, after it has counted it');
+  // The image itself is not sent on, taken or refused.
+  assert.match(between,/\$request\['body'\]=new stdClass\(\);/);
 });
 
 test('the marker is where the runner writes it, and Retry-After counts down the minute',()=>{

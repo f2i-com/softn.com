@@ -139,9 +139,10 @@ function __softnRpc(kind, args) {
 var __softnConfig = __softnRpc('server.config', []);
 // softn.config is the app's own settings (the manifest's config.app) with the
 // operator's two flags over them, as on the PHP host: an app key named
-// `development` cannot turn development on. It is frozen all the way down,
-// because this object outlives the request: what one handler changed in a
-// nested setting, every later one on this worker would have read.
+// `development` cannot turn development on. It is frozen all the way down:
+// settings are for reading. (It was frozen when a VM outlived its request, so
+// that one handler could not change a setting for the next; every request
+// now has a VM of its own, and the settings stay read-only.)
 function __softnFreeze(value) {
   if (value !== null && typeof value === 'object') {
     var keys = Object.keys(value);
@@ -178,7 +179,10 @@ var softn = {
   }),
   time: Object.freeze({
     now: function() { return __softnRpc('time.now', []); },
-    age: function(date, zone) { return __softnRpc('time.age', [date, zone === undefined ? 'UTC' : zone]); },
+    // No zone, a null one or an empty one is UTC, as on the PHP host. A null
+    // (a column with nothing in it, say) used to cross as the text "null",
+    // which is no zone, and the call failed.
+    age: function(date, zone) { return __softnRpc('time.age', [date, zone === undefined || zone === null || zone === '' ? 'UTC' : zone]); },
     parseZoned: function(date, time, zone) { return __softnRpc('time.parseZoned', [date, time, zone]); },
     format: function(epoch, zone) { return __softnRpc('time.format', [epoch, zone]); }
   })

@@ -149,6 +149,46 @@ mod tests {
             .is_err());
     }
 
+    /// The arguments `randomInt` and `randomHex` take, as both hosts take
+    /// them: the list in apps/softn-host-php/tests/crypto-parity.json, which
+    /// that host's route-declarations.test.mjs runs too, each case called from
+    /// a handler by the fixture's own script. That host used to want a number,
+    /// and a bound under 2^48, where this one takes text that spells a whole
+    /// number and a bound up to 2^53-1.
+    #[test]
+    fn the_random_calls_take_the_shared_list_of_arguments_as_the_php_host_does() {
+        let parity: serde_json::Value = serde_json::from_str(include_str!("../../../softn-host-php/tests/crypto-parity.json")).unwrap();
+        let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
+            db: None, http: None, fs: None, env: None, sql: None,
+            crypto: Some(NativeCrypto::from_hex(&"11".repeat(32), &CryptoDomains::default()).unwrap()),
+            allow_time: false, development: false, allow_photos: false, app_config: serde_json::Value::Null,
+        }, Some(1)).unwrap();
+        runtime.init(parity["script"].as_str().unwrap().to_string()).unwrap();
+        let cases = parity["cases"].as_array().unwrap();
+        let answer = runtime.call("cryptoCases", vec![serde_json::json!({"body": {"cases": cases}})]).unwrap();
+        let mut wrong = Vec::new();
+        for (case, got) in cases.iter().zip(answer["body"].as_array().unwrap()) {
+            let label = format!("{}({})", case["call"].as_str().unwrap(), case["args"]);
+            let threw = got.get("threw").is_some();
+            if case.get("throws").is_some() {
+                if !threw {
+                    wrong.push(format!("{label} answered {}", got["ok"]));
+                }
+            } else if threw {
+                wrong.push(format!("{label} threw"));
+            } else if let Some(below) = case.get("below").and_then(|b| b.as_u64()) {
+                if !got["ok"].as_u64().is_some_and(|n| n < below) {
+                    wrong.push(format!("{label} is {}", got["ok"]));
+                }
+            } else if let Some(length) = case.get("length").and_then(|l| l.as_u64()) {
+                if !got["ok"].as_str().is_some_and(|hex| hex.len() as u64 == length && hex.bytes().all(|b| b.is_ascii_hexdigit())) {
+                    wrong.push(format!("{label} is {}", got["ok"]));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     #[test]
     fn operator_domains_are_validated_and_separate_keys() {
         let key = "11".repeat(32);

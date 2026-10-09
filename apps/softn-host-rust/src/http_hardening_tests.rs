@@ -6,19 +6,71 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// A legacy bundle with one public route whose handler answers the status it
 /// is asked for.
 fn legacy_app(server: serde_json::Value) -> Arc<AppContext> {
+    legacy_app_running(server, "function echo(req) { return { status: (req.body && req.body.status) || 200, body: { ok: true } }; }")
+}
+
+/// The same bundle with a script of the test's own behind `/api/echo`.
+fn legacy_app_running(server: serde_json::Value, script: &str) -> Arc<AppContext> {
+    legacy_app_serving(server, serde_json::json!([{"method":"POST","path":"/api/echo","handler":"echo","public":true}]), script)
+}
+
+/// And with routes of the test's own.
+fn legacy_app_serving(server: serde_json::Value, routes: serde_json::Value, script: &str) -> Arc<AppContext> {
     let root = std::env::temp_dir().join(format!("softn-hardening-{}", uuid::Uuid::new_v4()));
     let bundle = root.join("bundle");
     std::fs::create_dir_all(bundle.join("server")).unwrap();
     let manifest = serde_json::json!({"id":"com.example.hardening","name":"Hardening","version":"1",
         "config":{"server":server},
-        "server":{"routes":[{"method":"POST","path":"/api/echo","handler":"echo","public":true}]}});
+        "server":{"routes":routes}});
     std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-    std::fs::write(
-        bundle.join("server/main.logic"),
-        "function echo(req) { return { status: (req.body && req.body.status) || 200, body: { ok: true } }; }",
-    )
-    .unwrap();
+    std::fs::write(bundle.join("server/main.logic"), script).unwrap();
     AppContext::load(bundle, Some(root.join("data")), Some(1), false).unwrap()
+}
+
+/// HEAD on a GET route is the GET without its body, on both hosts: the
+/// handler is asked what it is asked for a GET, and answers as it does. It
+/// was told the method was "HEAD" here, so one that looks at `req.method`
+/// answered something else (and the PHP host refused HEAD outright, 405).
+#[tokio::test]
+async fn head_on_a_get_route_is_the_get_without_its_body() {
+    let addr = serve(legacy_app_serving(
+        serde_json::json!({}),
+        serde_json::json!([
+            {"method":"GET","path":"/api/thing","handler":"thing","public":true},
+            {"method":"POST","path":"/api/only-post","handler":"thing","public":true},
+        ]),
+        "function thing(req) { return req.method === 'GET' ? { status: 200, body: { ok: true } } : { status: 418, body: { method: req.method } }; }",
+    )).await;
+    let host = addr.to_string();
+    let ask = |method: &str, path: &str| format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    let (status, _, body) = send(addr, ask("GET", "/api/thing")).await;
+    assert_eq!((status, body.as_str()), (200, r#"{"ok":true}"#));
+    let (status, head, body) = send(addr, ask("HEAD", "/api/thing")).await;
+    assert_eq!(status, 200, "the handler was asked for something other than a GET: {head}");
+    assert_eq!(body, "");
+    // A path that declares no GET has no HEAD either.
+    assert_eq!(send(addr, ask("HEAD", "/api/only-post")).await.0, 405);
+    assert_eq!(send(addr, ask("HEAD", "/api/nothing")).await.0, 404);
+}
+
+/// An object's keys keep the order they were written in, on the way in and
+/// on the way out, as on the PHP host (which passes the handler's JSON on
+/// untouched). They used to be sorted: a body's keys reached the handler in
+/// alphabetical order, the query's too, and whatever the handler returned
+/// went out sorted again, so a page that drew its columns from the first
+/// row's keys drew them in another order on this host.
+#[tokio::test]
+async fn object_keys_keep_their_order_in_and_out() {
+    let addr = serve(legacy_app_running(serde_json::json!({}), r#"function echo(req) {
+        return { status: 200, body: { zebra: Object.keys(req.body), apple: Object.keys(req.query), mango: req.body, kiwi: req.query } };
+    }"#)).await;
+    let body = r#"{"zebra":1,"apple":{"y":1,"x":2},"mango":3}"#;
+    let (status, _, answer) = send(addr, post(&addr.to_string(), "/api/echo?zebra=1&apple=2&zebra=3", None, body, "application/json")).await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        answer,
+        r#"{"zebra":["zebra","apple","mango"],"apple":["zebra","apple"],"mango":{"zebra":1,"apple":{"y":1,"x":2},"mango":3},"kiwi":{"zebra":"3","apple":"2"}}"#
+    );
 }
 
 async fn serve(ctx: Arc<AppContext>) -> SocketAddr {
@@ -130,6 +182,51 @@ async fn a_foreign_origin_cannot_run_a_handler_or_take_a_ticket() {
         200
     );
     assert_eq!(send(addr, post(&host, "/sync/ticket", Some("https://evil.example"), "", "application/json")).await.0, 403);
+}
+
+/// A page on a listed origin can use the API from a browser. Its preflight
+/// used to be told `Access-Control-Allow-Headers: *`, which by the Fetch
+/// standard never covers `Authorization`: the header every app's session
+/// travels in, and the one the client sends to `/sync/ticket`. And an origin
+/// listed as `https://App.example/` passed the host's own check, which
+/// compares it trimmed and in lower case, while the CORS answer compared
+/// bytes: the handler ran and its answer went back with no
+/// `Access-Control-Allow-Origin`, so the page was told the request had failed.
+#[tokio::test]
+async fn a_listed_origin_passes_its_preflight_and_may_read_the_answer() {
+    let addr = serve(legacy_app(serde_json::json!({"allowedOrigins":["https://plain.example", "https://App.example/"]}))).await;
+    let host = addr.to_string();
+    let preflight = |path: &str, origin: &str, headers: &str| {
+        format!("OPTIONS {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: {headers}\r\nConnection: close\r\n\r\n")
+    };
+    let header = |head: &str, name: &str| -> Option<String> {
+        head.lines().find_map(|line| line.strip_prefix(&format!("{name}:")).map(|value| value.trim().to_string()))
+    };
+    let names = |head: &str| -> Vec<String> {
+        header(head, "access-control-allow-headers").unwrap_or_default().split(',').map(|name| name.trim().to_string()).collect()
+    };
+
+    // The headers a preflight asks for are the ones it is told it may send.
+    for path in ["/api/echo", "/sync/ticket"] {
+        let (status, head, _) = send(addr, preflight(path, "https://plain.example", "authorization, content-type")).await;
+        assert_eq!(status, 200, "{path}");
+        assert_eq!(header(&head, "access-control-allow-origin").as_deref(), Some("https://plain.example"), "{path}");
+        assert_eq!(names(&head), ["authorization", "content-type"], "{path}: {head}");
+    }
+
+    // The origin the host's check lets through is one the browser is told to accept.
+    let (_, head, _) = send(addr, preflight("/api/echo", "https://app.example", "authorization")).await;
+    assert_eq!(header(&head, "access-control-allow-origin").as_deref(), Some("https://app.example"), "{head}");
+    let (status, head, _) = send(addr, post(&host, "/api/echo", Some("https://app.example"), "{}", "application/json")).await;
+    assert_eq!(status, 200);
+    assert_eq!(header(&head, "access-control-allow-origin").as_deref(), Some("https://app.example"), "the handler ran and the page may not read its answer: {head}");
+
+    // A page nobody listed is told nothing, before and after.
+    let (_, head, _) = send(addr, preflight("/api/echo", "https://evil.example", "authorization")).await;
+    assert_eq!(header(&head, "access-control-allow-origin"), None, "{head}");
+    let (status, head, _) = send(addr, post(&host, "/api/echo", Some("https://evil.example"), "{}", "application/json")).await;
+    assert_eq!(status, 403);
+    assert_eq!(header(&head, "access-control-allow-origin"), None, "{head}");
 }
 
 #[tokio::test]
@@ -293,7 +390,7 @@ async fn a_handler_without_the_grant_sees_no_client_ip() {
         let (status, Json(body)) = execute_api_handler(runtime.clone(), "ip".into(), ApiRouteOptions {
             transaction: TransactionMode::None, input_limit: 100, private_api: true, host_auth: false, client_ip: granted, poll: false, upload: false,
         }, "203.0.113.9".parse().unwrap(), axum::http::Method::GET, "/api/ip".parse().unwrap(),
-            axum::http::HeaderMap::new(), axum::extract::Query(HashMap::new()), Vec::new().into()).await;
+            axum::http::HeaderMap::new(), axum::extract::Query(Vec::new()), Vec::new().into()).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, expected);
     }
@@ -365,7 +462,7 @@ async fn a_photo_upload_route_hands_the_handler_a_sanitized_photo() {
         headers.insert("content-type", "application/json".parse().unwrap());
         execute_api_handler(runtime.clone(), "photo".into(), options, "127.0.0.1".parse().unwrap(),
             axum::http::Method::POST, "/api/photo".parse().unwrap(), headers,
-            axum::extract::Query(HashMap::new()), serde_json::to_vec(&body).unwrap().into())
+            axum::extract::Query(Vec::new()), serde_json::to_vec(&body).unwrap().into())
     };
     let (status, Json(body)) = call(serde_json::json!({"data_url": data_url})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -387,7 +484,7 @@ async fn failures_answer_with_the_php_hosts_codes() {
         transaction: TransactionMode::None, input_limit: 100, private_api: true, host_auth: false,
         client_ip: false, poll: false, upload: false,
     }, "127.0.0.1".parse().unwrap(), axum::http::Method::GET, "/api/boom".parse().unwrap(),
-        axum::http::HeaderMap::new(), axum::extract::Query(HashMap::new()), Vec::new().into()).await;
+        axum::http::HeaderMap::new(), axum::extract::Query(Vec::new()), Vec::new().into()).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["code"], "host_error");
     assert!(!body.to_string().contains("private detail"));
@@ -924,7 +1021,7 @@ async fn a_scripts_filter_is_applied_by_the_store_and_again_by_the_script() {
     let (status, Json(body)) = execute_api_handler(runtime.clone(), "counts".into(), ApiRouteOptions {
         transaction: TransactionMode::None, input_limit: 100, private_api: false, host_auth: false, client_ip: false, poll: false, upload: false,
     }, "127.0.0.1".parse().unwrap(), axum::http::Method::GET, "/api/counts".parse().unwrap(),
-        axum::http::HeaderMap::new(), axum::extract::Query(HashMap::new()), Vec::new().into()).await;
+        axum::http::HeaderMap::new(), axum::extract::Query(Vec::new()), Vec::new().into()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // The store answered the filtered read with both people; the script kept the one that matches.
     assert_eq!(body, serde_json::json!({"ann": 1, "all": 2, "empty": 2, "none": 2, "odd": 2, "absent": 0}));

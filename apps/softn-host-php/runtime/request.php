@@ -54,9 +54,29 @@ function softn_request_headers(array $server): array {
 }
 
 /**
+ * What a 405 says may be asked of a path: the methods declared for it that
+ * this host serves, HEAD beside GET, each once and in the order declared.
+ * @param list<string> $declared
+ */
+function softn_allowed_methods(array $declared): string {
+    $allow=[];
+    foreach($declared as $method) {
+        if(!in_array($method,['GET','POST','PUT','DELETE'],true)||in_array($method,$allow,true))continue;
+        $allow[]=$method;if($method==='GET')$allow[]='HEAD';
+    }
+    return implode(', ',$allow);
+}
+
+/**
  * The request body as the handler receives it: a JSON object, `{}` when
  * nothing was sent (as on the Rust host, so `req.body.x` never throws), or
- * null when the bytes are not one. Depth 64 is that host's MAX_JSON_DEPTH.
+ * null when the bytes are not one.
+ *
+ * It may nest 62 levels deep, the body itself the first (json_decode's depth
+ * 63 counts the values inside the last one), which is that host's
+ * MAX_BODY_DEPTH. That is what a handler can be handed: the engine passes a
+ * script nothing below it. One level more used to be accepted here, and the
+ * handler found null where the innermost object had been.
  *
  * A number past the range of a double is refused here as well. PHP decodes
  * `1e999` to INF, which cannot be written back as JSON, so the request failed
@@ -66,7 +86,7 @@ function softn_request_headers(array $server): array {
 function softn_request_body(string $raw): ?object {
     if($raw==='')return new stdClass();
     try {
-        $body=json_decode($raw,false,64,JSON_THROW_ON_ERROR);
+        $body=json_decode($raw,false,63,JSON_THROW_ON_ERROR);
         if(!is_object($body))return null;
         json_encode($body,JSON_THROW_ON_ERROR|JSON_INVALID_UTF8_SUBSTITUTE);
         return $body;

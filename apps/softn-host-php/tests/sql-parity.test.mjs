@@ -53,13 +53,30 @@ test('request-time SQL: the shared list is allowed and refused as the contract s
     let error=null,result;
     try {
       db.exec(c.mode==='read'?'BEGIN':'BEGIN IMMEDIATE');
-      try{result=createSql(db)(c.kind,c.sql,c.params??[],c.mode!=='read');}catch(e){error=e;}
+      // `before`: an execute the same request made first. What it inserted
+      // used to be the lastInsertRowid of a later statement that inserted nothing.
+      try{const sql=createSql(db);if(c.before)sql('execute',c.before,[],true);result=sql(c.kind,c.sql,c.params??[],c.mode!=='read');}catch(e){error=e;}
       db.exec('ROLLBACK');
     } finally {db.close();}
     if((error===null)!==c.allow)wrong.push(`${c.allow?'refused':'allowed'}: ${c.kind} ${JSON.stringify(c.sql)}${error?` (${error.message})`:''}`);
     else if(c.result!==undefined){try{assert.deepEqual(plain(result),c.result);}catch{wrong.push(`result of ${c.sql}: ${JSON.stringify(result)}`);}}
   }
   assert.deepEqual(wrong,[]);
+});
+
+test('a migration may be 1,000,000 bytes and no more, which the Rust host takes too',()=>{
+  // The reference for apps/softn-host-rust (private_backend.rs
+  // a_migration_may_be_as_large_as_the_php_host_takes): its limit was 256 KiB.
+  const row="INSERT INTO seeds(note) VALUES('"+'x'.repeat(200)+"');\n";
+  const seeds=bytes=>{let script='CREATE TABLE IF NOT EXISTS seeds(id INTEGER PRIMARY KEY, note TEXT);\n';while(script.length+row.length<=bytes)script+=row;return script+' '.repeat(bytes-script.length);};
+  const db=database();
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    applyMigration(db,seeds(1_000_000));
+    assert.ok(db.prepare('SELECT count(*) AS n FROM seeds').get().n>4000);
+    assert.throws(()=>applyMigration(db,seeds(1_000_001)),/Migration size/);
+    db.exec('ROLLBACK');
+  } finally {db.close();}
 });
 
 test('a migration that renames into the host namespace is caught after the fact, and its transaction is the caller\'s to roll back',()=>{

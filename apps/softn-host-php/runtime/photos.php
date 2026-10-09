@@ -57,13 +57,35 @@ function photo_upright(GdImage $image, int $orientation): GdImage {
     return $image;
 }
 
+/**
+ * Whether a PNG is an animated one: it carries an `acTL` chunk, which APNG
+ * puts among the chunks before the image data.
+ *
+ * The check used to be "the bytes acTL anywhere in the file". A still photo
+ * with those letters in a comment was refused as animated, and so was about
+ * one 4 MB PNG in a thousand, whose compressed pixels spell them by chance.
+ * The Rust host reads the chunks, and takes both.
+ */
+function png_is_animated(string $data): bool {
+    $length=strlen($data);
+    for($at=8;$at+8<=$length;) {
+        $type=substr($data,$at+4,4);
+        if($type==='acTL')return true;
+        if($type==='IDAT'||$type==='IEND')return false;
+        $at+=12+unpack('N',$data,$at)[1];
+    }
+    return false;
+}
+
 function sanitize_photo(mixed $url): array {
     if(!is_string($url)||strlen($url)>5600000||!preg_match('~^data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$~D',$url,$match))throw new RuntimeException('format');
     $data=base64_decode($match[2],true);
     if($data===false||strlen($data)>4000000)throw new RuntimeException('size');
     $size=@getimagesizefromstring($data);
     if(!$size||$size[0]<32||$size[1]<32||$size[0]>8192||$size[1]>8192||$size[0]*$size[1]>16000000||!in_array($size[2],[IMAGETYPE_JPEG,IMAGETYPE_PNG,IMAGETYPE_WEBP],true))throw new RuntimeException('dimensions');
-    if(($size[2]===IMAGETYPE_PNG&&str_contains($data,'acTL'))||($size[2]===IMAGETYPE_WEBP&&str_contains($data,'ANIM')))throw new RuntimeException('animation');
+    // $size[2] is what the bytes are, whatever the label called them: a PNG a
+    // browser labelled image/jpeg (it goes by the file's extension) is a PNG.
+    if(($size[2]===IMAGETYPE_PNG&&png_is_animated($data))||($size[2]===IMAGETYPE_WEBP&&str_contains($data,'ANIM')))throw new RuntimeException('animation');
     $image=@imagecreatefromstring($data);if(!$image)throw new RuntimeException('decode');
     $orientation=$size[2]===IMAGETYPE_JPEG?photo_orientation($data):1;
     try {

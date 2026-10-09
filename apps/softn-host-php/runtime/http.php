@@ -45,10 +45,25 @@ if ($method==='OPTIONS') {
 }
 if(!$originAllowed)reply(403,['error'=>'Origin not allowed.','code'=>'origin_not_allowed']);
 header('Access-Control-Expose-Headers: ETag, X-SoftN-Poll-Interval');
-if (!in_array($method,['GET','POST','PUT','DELETE'],true)) reply(405,['error'=>'Method not allowed.']);
+// HEAD on a GET route is that GET with the body left off the answer, as on
+// the Rust host: the runner is asked for the GET. It was refused here, 405.
+$head=$method==='HEAD';if($head)$method='GET';
 $routes=$manifest['server']['routes']??[];
-$route=null;foreach(is_array($routes)?$routes:[] as $r)if(is_array($r)&&($r['path']??null)===$path&&($r['method']??null)===$method){$route=$r;break;}
-if($route===null && !($path==='/api/meta'&&$method==='GET'))reply(404,['error'=>'Endpoint not found.']);
+// A path nobody declared is not found, whatever the method; a declared path
+// asked with a method it does not declare is 405, as the Rust host answers
+// it. That used to be 404 here, as though the path were not there, and a
+// method this host does not serve was 405 even where there was no such path.
+$route=null;$declared=$path==='/api/meta'?['GET']:[];
+foreach(is_array($routes)?$routes:[] as $r) {
+    if(!is_array($r)||($r['path']??null)!==$path||!is_string($r['method']??null))continue;
+    $declared[]=$r['method'];
+    if($route===null&&$r['method']===$method)$route=$r;
+}
+if($declared===[])reply(404,['error'=>'Endpoint not found.']);
+if(!in_array($method,['GET','POST','PUT','DELETE'],true)||($route===null&&!($path==='/api/meta'&&$method==='GET'))) {
+    $allow=softn_allowed_methods($declared);if($allow!=='')header('Allow: '.$allow);
+    reply(405,['error'=>'Method not allowed.','code'=>'method_not_allowed']);
+}
 // Only HTTP metadata from Apache is trusted. Never accept a caller's client_ip,
 // upload flags, executable path or script source. X-Forwarded-For is read only
 // from a peer the operator listed in private/config.json trustedProxies
@@ -93,8 +108,14 @@ $request=['path'=>$path,'method'=>$method,'query'=>(object)softn_query((string)(
 if($upload) {
     if(!extension_loaded('gd'))reply(503,['error'=>'Enable PHP GD for photo uploads.']);
     require_once $backend.'/photos.php';
-    try{$request['upload']=sanitize_photo($body->data_url??null);$request['body']=new stdClass();}
-    catch(Throwable $e){reply(400,['error'=>'Photo rejected. Use a still JPEG, PNG or WebP under 4 MB, 16 megapixels and 8192 pixels a side.']);}
+    // A photo this host will not take is still a request the caller made: the
+    // runner counts it against their rate limit and answers the refusal. It
+    // was answered here, with a worker slot held and the image decoded, and
+    // never counted, so refused uploads could keep every slot busy for ever.
+    try{$request['upload']=sanitize_photo($body->data_url??null);}
+    catch(Throwable $e){$request['refused']='photo';}
+    // The image itself is not sent on, taken or refused.
+    $request['body']=new stdClass();
 }
 $process=null;$pipes=[];$errors='';$exitCode=null;
 try {
@@ -160,4 +181,4 @@ if(($route['poll']??false)===true && $method==='GET' && $result['status']===200)
     header('ETag: '.$etag);header('X-SoftN-Poll-Interval: 5000');
     if(softn_etag_matches((string)($_SERVER['HTTP_IF_NONE_MATCH']??''),$etag)){http_response_code(304);exit;}
 }
-http_response_code($result['status']);echo $responseBody;
+http_response_code($result['status']);if(!$head)echo $responseBody;
