@@ -214,7 +214,7 @@ final class Apps
     }
 
     /** @param array<string, mixed> $row @return array<string, mixed> */
-    public static function detail(array $row): array
+    public static function detail(array $row, bool $withStorage = true): array
     {
         $slug = (string) $row['slug'];
         $doc=Catalog::doc($slug);
@@ -254,12 +254,17 @@ final class Apps
         $card['lineage'] = $lineage;
         // An app's page is not its storage: a store that will not open
         // (see Db::open) is reported here as unavailable rather than taking
-        // the app's detail, and the page built on it, down with it.
-        try {
-            $card['storage'] = Storage::summary($slug);
-        } catch (ApiError | PDOException $e) {
-            error_log("softn-api: the storage of $slug could not be summarised: " . $e->getMessage());
-            $card['storage'] = ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0, 'diskBytes' => 0, 'unavailable' => true];
+        // the app's detail, and the page built on it, down with it. The page
+        // route reads it after the catalogue is let go and passes false.
+        if (!$withStorage) {
+            $card['storage'] = null;
+        } else {
+            try {
+                $card['storage'] = Storage::summary($slug);
+            } catch (ApiError | PDOException $e) {
+                error_log("softn-api: the storage of $slug could not be summarised: " . $e->getMessage());
+                $card['storage'] = ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0, 'diskBytes' => 0, 'unavailable' => true];
+            }
         }
         $card['manifest'] = $card['external'] ? null : self::manifestSummary($slug, (int) $row['latest_version']);
         return $card;

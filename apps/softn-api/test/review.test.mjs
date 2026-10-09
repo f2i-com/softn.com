@@ -25,9 +25,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { apiDir, startServer, runPhp, makeBundle, skip } from './helpers/harness.mjs';
+import { apiDir, startServer, runPhp, startPhp, makeBundle, skip } from './helpers/harness.mjs';
 
-const { zipSync, strToU8 } = createRequire(import.meta.url)('fflate');
+const { zipSync, unzipSync, strToU8 } = createRequire(import.meta.url)('fflate');
 
 let s = null;
 
@@ -72,6 +72,133 @@ test('a slow JSON body is read before the catalogue lock is taken, on every rout
     }
   }
   assert.equal((await s.api('GET', '/api/apps')).status, 200);
+});
+
+/** How storage.lock is held right now, as another process finds it: free, shared, or exclusive. */
+function storageLock(dataDir) {
+  const r = runPhp({
+    dataDir,
+    script: `$f = fopen($argv[1] . '/storage.lock', 'c');
+echo flock($f, LOCK_EX | LOCK_NB) ? 'free' : (flock($f, LOCK_SH | LOCK_NB) ? 'shared' : 'exclusive');`,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.trim();
+}
+
+/** A process that does `script` and says "holding" when it is in the middle of it. Resolves when it says so. */
+async function holding(dataDir, script, args) {
+  const held = startPhp({ dataDir, script, args });
+  await new Promise((resolve, reject) => {
+    let seen = '';
+    held.process.stdout.on('data', (chunk) => { seen += chunk; if (seen.includes('holding')) resolve(); });
+    held.process.on('exit', () => reject(new Error('the holder ended before it held anything: ' + seen)));
+  });
+  return held;
+}
+
+const storagePermission = { storage: { enabled: true, collections: { '*': 'public' } } };
+
+test('a storage request works in the app\'s database without the directory-wide lock', skip, async () => {
+  const { app } = await s.publish('Busy Store', { permissions: storagePermission });
+  const uri = `/api/apps/${app.slug}/storage`;
+  assert.equal((await s.api('POST', uri, { body: { op: 'insert', collection: 'log', data: { n: 0 } } })).status, 200);
+
+  // Another connection holds the store's write lock for a while, as a long
+  // write by another visitor would: the request below has to wait inside SQLite.
+  const writer = await holding(s.dataDir, `
+$pdo = new PDO('sqlite:' . $argv[1] . '/apps/' . $argv[2] . '/storage.sqlite');
+$pdo->exec('BEGIN IMMEDIATE');
+echo "holding\n";
+usleep(2500000);
+$pdo->exec('ROLLBACK');`, [app.slug]);
+  const body = JSON.stringify({ op: 'insert', collection: 'log', data: { n: 1 } });
+  const child = spawn('php', ['-d', 'error_log=', path.join(s.root, 'api/index.php')], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, SOFTN_DATA_DIR: s.dataDir, REQUEST_METHOD: 'POST', REQUEST_URI: uri, CONTENT_TYPE: 'application/json', CONTENT_LENGTH: String(body.length), REMOTE_ADDR: '198.51.100.41' },
+  });
+  let out = '';
+  child.stdout.on('data', (chunk) => { out += chunk; });
+  const ended = new Promise((resolve) => child.on('exit', resolve));
+  try {
+    child.stdin.end(body);
+    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(child.exitCode, null, 'the request is waiting for the store: ' + out);
+    assert.equal(catalogueFree(s.dataDir), true, 'the whole directory waited behind one app\'s store');
+    assert.equal(storageLock(s.dataDir), 'shared', 'and the request is known to be in a store');
+    await writer.done;
+    await ended;
+    assert.match(out, /"ok":true/, out);
+  } finally {
+    child.kill();
+    writer.process.kill();
+  }
+  assert.equal(storageLock(s.dataDir), 'free');
+  assert.equal((await s.api('POST', uri, { body: { op: 'count', collection: 'log' } })).json.result.count, 2);
+
+  // The app's page reads its store the same way, and still reports it.
+  const page = runPhp({
+    dataDir: s.dataDir,
+    args: [app.slug],
+    script: `
+Catalog::boot();
+$app = Apps::detail(Apps::row($argv[2]), false);
+$probe = fn() => flock(fopen($argv[1] . '/catalog.lock', 'c'), LOCK_EX | LOCK_NB);
+$during = $probe();
+$app['storage'] = Storage::summaryOutsideCatalogue($argv[2]);
+echo json_encode(['heldWhileListing' => !$during, 'freeForTheStore' => $probe(), 'storage' => $app['storage'], 'keys' => array_keys($app)]);`,
+  });
+  assert.equal(page.status, 0, page.stderr);
+  const seen = JSON.parse(page.stdout);
+  assert.equal(seen.heldWhileListing, true);
+  assert.equal(seen.freeForTheStore, true, 'the store was read under the catalogue lock');
+  assert.equal(seen.storage.records, 2);
+  const served = (await s.api('GET', `/api/apps/${app.slug}`)).json.app;
+  assert.deepEqual(Object.keys(served), seen.keys, 'the page has the fields it had, in their order');
+  assert.equal(served.storage.records, 2);
+  assert.equal((await s.api('GET', `/api/apps/${app.slug}/storage`)).json.storage.records, 2);
+});
+
+test('an export and an unpublish wait for a storage request in flight', skip, async () => {
+  const { app } = await s.publish('Quiet Store', { permissions: storagePermission });
+  const uri = `/api/apps/${app.slug}/storage`;
+  assert.equal((await s.api('POST', uri, { body: { op: 'insert', collection: 'log', data: { n: 0 } } })).status, 200);
+  // A storage request in the middle of its work: it holds storage.lock
+  // shared, as Storage::leaveCatalogue takes it, and writes a second later.
+  const inFlight = (marker) => holding(s.dataDir, `
+$lock = fopen($argv[1] . '/storage.lock', 'c');
+flock($lock, LOCK_SH);
+echo "holding\n";
+usleep(1500000);
+if ($argv[3] !== '') {
+  $pdo = new PDO('sqlite:' . $argv[1] . '/apps/' . $argv[2] . '/storage.sqlite');
+  $pdo->exec('PRAGMA busy_timeout=5000');
+  $pdo->prepare("INSERT INTO records (collection, id, data, created_at, updated_at) VALUES ('log', ?, ?, 1, 1)")->execute([$argv[3], json_encode(['marker' => $argv[3]])]);
+}
+flock($lock, LOCK_UN);`, [app.slug, marker]);
+
+  const marker = 'written-while-the-export-waited';
+  const request = await inFlight(marker);
+  const archive = path.join(s.tmp, 'quiet.zip');
+  const exported = spawnSync('php', ['-d', 'error_log=', path.join(apiDir, 'backup.php'), 'export', archive, '--data', s.dataDir], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  await request.done;
+  assert.equal(exported.status, 0, exported.stderr);
+  const store = unzipSync(fs.readFileSync(archive))[`apps/${app.slug}/storage.sqlite`];
+  assert.ok(Buffer.from(store).includes(marker), 'the export copied the store while a request was still writing to it');
+  const verified = spawnSync('php', ['-d', 'error_log=', path.join(apiDir, 'backup.php'), 'verify', archive], { encoding: 'utf8' });
+  assert.equal(verified.status, 0, verified.stderr + verified.stdout);
+  fs.rmSync(archive, { force: true });
+
+  // Unpublishing waits the same way, and then the folder goes whole.
+  const busy = await inFlight('');
+  const began = Date.now();
+  const gone = await s.api('DELETE', `/api/apps/${app.slug}?purge=1`, { headers: { 'X-Admin-Key': s.adminKey } });
+  const waited = Date.now() - began;
+  await busy.done;
+  assert.equal(gone.status, 204, gone.text);
+  assert.ok(waited >= 900, `the folder was removed ${waited} ms into a request that had a second and a half to run`);
+  assert.equal(fs.existsSync(path.join(s.dataDir, 'apps', app.slug)), false);
+  assert.equal((await s.api('POST', uri, { body: { op: 'count', collection: 'log' } })).status, 404);
+  assert.equal(storageLock(s.dataDir), 'free');
 });
 
 test('a new version uploaded with the edit key drops the operator\'s trust; one the admin uploads keeps it', skip, async () => {

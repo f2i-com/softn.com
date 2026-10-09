@@ -381,7 +381,12 @@ function handle(string $handler, array $args, Request $req): Response
         case 'appDetail': {
             Seed::ifEmpty();
             $slug = Apps::resolveSlug($args[0]);
-            return Response::json(['ok' => true, 'app' => Apps::detail(Apps::row($slug))]);
+            $app = Apps::detail(Apps::row($slug), false);
+            // The app's own database is read once the catalogue is let go
+            // (Storage::leaveCatalogue): a count over a large store used to
+            // hold the directory's one lock for every app page.
+            $app['storage'] = Storage::summaryOutsideCatalogue($slug);
+            return Response::json(['ok' => true, 'app' => $app]);
         }
 
         case 'patchApp': {
@@ -560,6 +565,7 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'storageSummary': {
             $slug = storage_app($args[0]);
+            Storage::leaveCatalogue();
             return Response::json(['ok' => true, 'storage' => Storage::summary($slug)]);
         }
 

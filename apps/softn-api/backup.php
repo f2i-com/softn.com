@@ -53,7 +53,7 @@ final class Backup
      * note beside it) and the lock files a first request leaves. A restore
      * replaces the ones the archive also holds and keeps the rest.
      */
-    private const HARMLESS = ['catalog.lock', 'config.lock', 'ratelimits.lock', 'seed.lock', 'README.txt', '.htaccess'];
+    private const HARMLESS = ['catalog.lock', 'config.lock', 'storage.lock', 'ratelimits.lock', 'seed.lock', 'README.txt', '.htaccess'];
 
     // ── Command line ───────────────────────────────────────────────────────
 
@@ -181,12 +181,16 @@ final class Backup
         throw new RuntimeException('the archive name must end in .tar or .zip');
     }
 
-    /** @return array{0: resource, 1: resource} the catalogue lock and the configuration lock */
+    /** @return list<resource> the catalogue lock, the configuration lock and the storage lock */
     private static function lock(string $dataDir): array
     {
         if (!is_dir($dataDir) && !mkdir($dataDir, 0775, true)) throw new RuntimeException("cannot create $dataDir");
         $out = [];
-        foreach (['catalog.lock', 'config.lock'] as $name) {
+        // storage.lock last, and exclusively: storage requests hold it shared
+        // while they work in an app's database, which they do after letting
+        // the catalogue go (Storage::leaveCatalogue). With it, no store is
+        // written or read while it is checkpointed and copied.
+        foreach (['catalog.lock', 'config.lock', 'storage.lock'] as $name) {
             $f = fopen("$dataDir/$name", 'c');
             if (!$f || !flock($f, LOCK_EX)) throw new RuntimeException("cannot take $name in $dataDir");
             $out[] = $f;
@@ -201,8 +205,8 @@ final class Backup
 
     /**
      * Fold each app database's WAL into its main file, so the copy of the
-     * main file is the whole database. Under the catalogue lock no request
-     * is writing, so the checkpoint completes; a database that will not
+     * main file is the whole database. Under the catalogue lock and
+     * storage.lock no request is in a store, so the checkpoint completes; a database that will not
      * open is copied as it is, WAL beside it.
      */
     private static function checkpointDatabases(string $dataDir): void
@@ -223,7 +227,7 @@ final class Backup
     /** What an export leaves out, by top-level or basename. */
     private static function excluded(string $rel, string $name, bool $isDir): bool
     {
-        if ($rel === 'catalog.lock' || $rel === 'config.lock' || $rel === self::MANIFEST) return true;
+        if ($rel === 'catalog.lock' || $rel === 'config.lock' || $rel === 'storage.lock' || $rel === self::MANIFEST) return true;
         // The other locks, the seeding flag and the rate-limit counters: none
         // is data, and the counters are rewritten outside the catalogue lock
         // (Db::rateLimit has its own), so a request arriving during an export

@@ -277,8 +277,18 @@ final class Catalog
     /** Atomically retire the entire directory, listed or not; recovery never rediscovers it. */
     public static function retire(string $slug): void {
         $from = self::path($slug); $trash = Config::dataDir() . '/.retired-' . $slug . '-' . bin2hex(random_bytes(6));
-        if (!rename($from, $trash)) throw new ApiError(503, 'Cannot retire app folder.');
-        self::removeTree($trash);
+        // Storage requests work in an app's database after they have let the
+        // catalogue go (Storage::leaveCatalogue). The ones in flight finish
+        // first and no other begins while the folder goes: none is left
+        // writing into a store that is being deleted under it.
+        $quiet = @fopen(Config::dataDir() . '/storage.lock', 'c');
+        if ($quiet !== false) flock($quiet, LOCK_EX);
+        try {
+            if (!rename($from, $trash)) throw new ApiError(503, 'Cannot retire app folder.');
+            self::removeTree($trash);
+        } finally {
+            if ($quiet !== false) { flock($quiet, LOCK_UN); fclose($quiet); }
+        }
     }
     /** Delete a retired folder and everything under it. A leftover is logged, not thrown over: the app is already gone from the catalogue. */
     private static function removeTree(string $dir): void {

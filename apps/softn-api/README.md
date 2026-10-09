@@ -32,6 +32,7 @@ data/
   ratelimits.json        expiring visitor action windows
   cache/bundles.json     disposable bundle inspection cache
   catalog.lock           stable process lock; never delete it while serving
+  storage.lock           held by requests working in an app's storage; see Concurrency
   config.json            private site configuration and keys
 ```
 
@@ -129,7 +130,21 @@ serialized, including ratings, comments and plays. The rate limits have a
 lock of their own (`ratelimits.lock`), held for the counter update alone:
 a limit is checked before an upload is read, and the catalogue must not be
 held while a slow body arrives. The upload routes read their body before
-they open the catalogue for the same reason. A write uses
+they open the catalogue for the same reason.
+
+An app's own storage is not the directory's business either. A storage
+request (`POST .../storage`, the two storage listings) and the storage
+summary on an app's page take from the catalogue what they need (which app,
+what it declared, whose key the request carries) and then let the catalogue
+lock go before the app's `storage.sqlite` is opened. They used to hold it to
+the end: a query over a large store, or a write waiting on SQLite, held the
+one lock every other request needs, and a single visitor inside the storage
+rate limit could keep the whole directory waiting. What that lock also did
+was keep an export and an unpublish out of a store in use. `storage.lock`
+does that now: a request in a store holds it shared until it ends, and an
+export (`backup.php`) and the removal of an app's folder take it exclusively
+while they hold the catalogue lock, so they wait for the requests in flight
+and no new one begins until they are done. A write uses
 a unique sibling temporary file, flush/fsync, and rename; it never truncates
 the live JSON file. Counter plus history updates for one app are in the same
 JSON replacement. The OS releases the lock if a worker exits or is killed.
@@ -404,7 +419,8 @@ php apps/softn-api/backup.php restore /backups/softn-2026-09-11.tar --into /srv/
 The data directory is `SOFTN_DATA_DIR`, else `data/` beside `api/`; `--data`
 names another for an export. Export takes the catalogue lock — the same
 `flock` every request takes, so requests wait while the snapshot is made
-and nothing is half-committed in it — checkpoints each app's
+and nothing is half-committed in it — and `storage.lock`, so no request is
+inside an app's store either, checkpoints each app's
 `storage.sqlite` so its WAL is folded into the main file, and writes every
 metadata file, bundle, picture and database into the archive. It leaves out
 what is not data: the lock files, the rate-limit counters
@@ -718,7 +734,7 @@ whose `make.mjs` regenerates `expected.json` from a known-good revision);
 `publishing-integrity.test.mjs` policies a new version may not change, a
 publish or remix whose picture is refused creating nothing, `?v=`, the
 storage quota in bytes, a storage file that is not a database, and the demo
-sync leaving a visitor's app alone; `review.test.mjs` a slow body holding no catalogue lock,
+sync leaving a visitor's app alone; `review.test.mjs` a slow body holding no catalogue lock, a storage request holding none while it works (and an export and an unpublish waiting for it),
 trust dropped by a publisher's new version, one rating per /64, duplicate
 archive entries, the extension report, and no file in `api/` or a dotfile
 served as itself; `user-content.test.mjs` the SVG icon check against

@@ -54,7 +54,55 @@ final class Storage
 
     private static function path(string $slug): string
     {
-        return Apps::dir($slug) . '/storage.sqlite';
+        // The folder as it is, never made here: a storage request reaches
+        // this after it has let the catalogue go.
+        return Catalog::path($slug) . '/storage.sqlite';
+    }
+
+    /** @var resource|null This request's shared hold on storage.lock. */
+    private static $busy = null;
+
+    /**
+     * Let the catalogue go: from here the request works in one app's own
+     * database and has nothing more to ask of the directory.
+     *
+     * The catalogue lock is one lock for the whole directory, and it used to
+     * be held to the end of every storage request and every app page: a
+     * query over a large store, a write waiting on SQLite, a full-table
+     * count. One visitor inside the storage rate limit could ask for more
+     * than a minute of that lock a minute, and every other request, the
+     * listing included, queued behind it.
+     *
+     * What the catalogue lock also did was keep an export and an unpublish
+     * away from a store in use. `storage.lock` does that now: held shared
+     * here until the request ends, and taken exclusively by an export
+     * (backup.php) and by the removal of an app's folder (Catalog::retire),
+     * each while it holds the catalogue lock. It is taken here before the
+     * catalogue is released, so neither can come between the two.
+     */
+    public static function leaveCatalogue(): void
+    {
+        if (self::$busy === null) {
+            $lock = @fopen(Config::dataDir() . '/storage.lock', 'c');
+            if ($lock === false || !flock($lock, LOCK_SH)) throw new ApiError(503, 'The directory is busy.');
+            self::$busy = $lock;
+        }
+        Catalog::release();
+    }
+
+    /** An app's storage summary, read after the catalogue has been let go. */
+    public static function summaryOutsideCatalogue(string $slug): array
+    {
+        self::leaveCatalogue();
+        // An app's page is not its storage: a store that will not open
+        // (see Db::open) is reported as unavailable rather than taking the
+        // app's detail, and the page built on it, down with it.
+        try {
+            return self::summary($slug);
+        } catch (ApiError | PDOException $e) {
+            error_log("softn-api: the storage of $slug could not be summarised: " . $e->getMessage());
+            return ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0, 'diskBytes' => 0, 'unavailable' => true];
+        }
     }
 
     private static function open(string $slug): PDO
@@ -213,10 +261,14 @@ SQL);
         $op = is_string($body['op'] ?? null) ? $body['op'] : '';
         $writes = ['insert', 'update', 'set', 'remove', 'clear', 'kvSet', 'kvRemove'];
         Db::rateLimit(in_array($op, $writes, true) ? 'storageWrite' : 'storageRead', Config::limitKey($req->ip) . "|$slug");
-        $pdo = self::open($slug);
         $limits = Config::get('storage');
-        // The quota is checked by each write, inside its transaction: see assertQuota.
+        // Everything the catalogue has to say: whose app, what it declared,
+        // and whether this request carries its key. Then the catalogue is
+        // let go, before the app's database is so much as opened.
         $ctx = self::actor($req, $slug);
+        self::leaveCatalogue();
+        $pdo = self::open($slug);
+        // The quota is checked by each write, inside its transaction: see assertQuota.
         return match ($op) {
             'insert' => self::insert($pdo, $body, $limits, $ctx),
             'get' => self::get($pdo, $body, $ctx),
@@ -226,7 +278,7 @@ SQL);
             'query' => self::query($pdo, $body, $limits, $ctx),
             'count' => self::count($pdo, $body, $ctx),
             'collections' => self::collections($pdo, $ctx),
-            'clear' => self::clear($req, $slug, $pdo, $body),
+            'clear' => self::clear($ctx, $pdo, $body),
             'kvGet' => self::kvGet($pdo, $body),
             'kvSet' => self::kvSet($pdo, $body, $limits),
             'kvRemove' => self::kvRemove($pdo, $body),
@@ -633,9 +685,10 @@ SQL);
         return ['collections' => $out];
     }
 
-    private static function clear(Request $req, string $slug, PDO $pdo, array $body): array
+    private static function clear(array $ctx, PDO $pdo, array $body): array
     {
-        Apps::requireOwner($req, $slug);
+        // Decided while the catalogue was open (actor): the edit key, or the admin key.
+        if (!$ctx['publisher']) throw new ApiError(403, 'That needs the edit key this app was published with.');
         $c = self::collection($body);
         $stmt = $pdo->prepare('DELETE FROM records WHERE collection = ?');
         $stmt->execute([$c]);
