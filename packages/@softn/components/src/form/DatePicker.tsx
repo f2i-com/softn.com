@@ -13,9 +13,9 @@ export interface DatePickerProps {
   /** Input id (generated when omitted) */
   id?: string;
   /** Current date value (ISO string or Date object) */
-  value?: string | Date;
+  value?: string | Date | number;
   /** Default value */
-  defaultValue?: string | Date;
+  defaultValue?: string | Date | number;
   /** Input name */
   name?: string;
   /** Label text */
@@ -29,9 +29,9 @@ export interface DatePickerProps {
   /** Whether required */
   required?: boolean;
   /** Minimum date */
-  min?: string | Date;
+  min?: string | Date | number;
   /** Maximum date */
-  max?: string | Date;
+  max?: string | Date | number;
   /** Size */
   size?: 'sm' | 'md' | 'lg';
   /** Full width */
@@ -78,9 +78,17 @@ const MONTHS = [
  * was given, and a controlled field that echoed its own onChange back walked
  * one day earlier on every pick.
  */
-function parseDate(value: string | Date | undefined | null): Date | null {
+function parseDate(value: string | Date | number | undefined | null): Date | null {
   if (!value) return null;
   if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+  // A date kept as a timestamp (`value={task.dueAt}`, milliseconds since
+  // 1970, as `Date.now()` and most stores give it) is that moment; it used
+  // to throw (`value.trim` of a number). What is neither is no date.
+  if (typeof value === 'number') {
+    const moment = new Date(value);
+    return isNaN(moment.getTime()) ? null : moment;
+  }
+  if (typeof value !== 'string') return null;
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
   if (dateOnly) {
     const [, y, m, d] = dateOnly;

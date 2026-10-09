@@ -15,6 +15,7 @@
 import React from 'react';
 import { cssColumnCount, cssPaint } from '../utils/egress';
 import { choice } from '../utils/choice';
+import { commaList, commaSlots, recordRows } from '../utils/rows';
 
 export interface StatItem {
   label: string;
@@ -204,7 +205,12 @@ const TrendDown = () => (
 
 // Format value for display
 function formatValue(value: number | string, prefix?: string, suffix?: string): string {
-  if (typeof value === 'string') return `${prefix || ''}${value}${suffix || ''}`;
+  // A figure that has not arrived (`{ label: 'Users', value: stats.users }`,
+  // undefined) is a dash, where `.toFixed` of it threw.
+  if (value === null || value === undefined || (typeof value === 'number' && !Number.isFinite(value))) {
+    return `${prefix || ''}\u2014${suffix || ''}`;
+  }
+  if (typeof value !== 'number') return `${prefix || ''}${String(value)}${suffix || ''}`;
 
   let formatted: string;
   if (value >= 1000000) {
@@ -242,8 +248,10 @@ function humanize(str: string): string {
 
 // Parse stats from string
 function parseStats(statsStr: string): StatItem[] {
-  return statsStr.split(',').map((stat) => {
-    const [label, value] = stat.split(':').map((s) => s.trim());
+  return commaList(statsStr).map((stat) => {
+    // "Users" with its figure still to be typed has no value, and
+    // `parseFloat(undefined)` left one that could not be formatted.
+    const [label, value = ''] = stat.split(':').map((s) => s.trim());
     const numValue = parseFloat(value);
     return {
       label: humanize(label),
@@ -274,13 +282,13 @@ export function SmartStats({
   style,
 }: SmartStatsProps): React.ReactElement {
   // Parse stats
-  const parsedStats: StatItem[] = Array.isArray(stats) ? stats : stats ? parseStats(stats) : [];
+  const parsedStats: StatItem[] = Array.isArray(stats) ? recordRows<StatItem>(stats) : typeof stats === 'string' ? parseStats(stats) : [];
 
   // Parse icons
-  const iconList = icons?.split(',').map((i) => i.trim()) || [];
+  const iconList = commaSlots(icons);
 
   // Parse trends
-  const trendList = trends?.split(',').map((t) => parseTrend(t)) || [];
+  const trendList = commaSlots(trends).map((t) => parseTrend(t));
 
   // Size styles
   const sizeStyles = {

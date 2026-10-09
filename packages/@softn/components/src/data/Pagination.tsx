@@ -5,6 +5,7 @@
  */
 
 import * as React from 'react';
+import { choice } from '../utils/choice';
 
 export interface PaginationProps {
   currentPage: number;
@@ -53,7 +54,7 @@ export function Pagination({
   className = '',
   style,
 }: PaginationProps) {
-  const sizes = sizeStyles[size] ?? sizeStyles.md;
+  const sizes = choice(sizeStyles, size, 'md');
   // Page counts arrive from data: zero, negative, fractional or not a number
   // at all. Read them as a whole count and a page inside it, so Next is not
   // left enabled past the last page and the page list never gets a negative

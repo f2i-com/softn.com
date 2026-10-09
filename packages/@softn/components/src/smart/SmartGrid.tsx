@@ -9,6 +9,7 @@
  */
 
 import React, { useState, useMemo, useCallback, useEffect, useId, useRef } from 'react';
+import { commaList, recordRows } from '../utils/rows';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -277,14 +278,14 @@ export function SmartGrid<T extends Record<string, unknown>>({
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Ensure data is an array
-  const safeData = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const safeData = useMemo(() => recordRows<T>(data), [data]);
   const safePageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 10;
 
   // Infer columns from data or parse from prop
   const columns = useMemo<ColumnConfig[]>(() => {
-    if (columnsProp) {
-      return columnsProp.split(',').map((col) => {
-        const key = col.trim();
+    const asked = commaList(columnsProp);
+    if (asked.length > 0) {
+      return asked.map((key) => {
         const sampleValue = safeData[0] ? getFieldValue(safeData[0], key) : undefined;
         return {
           key,

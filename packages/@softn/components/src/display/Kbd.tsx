@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { choice } from '../utils/choice';
 
 export interface KbdProps {
   /** The key or combination: "Enter", "Ctrl+K", or a list of keys */
@@ -56,7 +57,7 @@ export function Kbd({
   style,
   children,
 }: KbdProps): React.ReactElement {
-  const config = sizeConfig[size] ?? sizeConfig.md;
+  const config = choice(sizeConfig, size, 'md');
 
   const keyStyle: React.CSSProperties = {
     display: 'inline-flex',

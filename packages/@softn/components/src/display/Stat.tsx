@@ -9,6 +9,7 @@
 
 import React from 'react';
 import { getVariantColors } from '../theme/variants';
+import { choice } from '../utils/choice';
 
 export interface StatProps {
   /** What the figure is */
@@ -93,7 +94,7 @@ export function Stat({
   style,
   children,
 }: StatProps): React.ReactElement {
-  const config = sizeConfig[size] ?? sizeConfig.md;
+  const config = choice(sizeConfig, size, 'md');
   const direction = trend ?? directionOf(change);
   const hasChange = change !== undefined && change !== '';
   // Good news, bad news or neither: colour follows the meaning, not the arrow.
@@ -108,7 +109,7 @@ export function Stat({
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
-    alignItems: alignItems[align] ?? alignItems.left,
+    alignItems: choice(alignItems, align, 'left'),
     textAlign: align,
     gap: config.gap,
     minWidth: 0,

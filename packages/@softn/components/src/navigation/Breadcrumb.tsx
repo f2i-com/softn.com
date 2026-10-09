@@ -6,6 +6,7 @@
 
 import React from 'react';
 import { isSafeUrl } from '@softn/core';
+import { choice } from '../utils/choice';
 
 export interface BreadcrumbItem {
   /** Item label */
@@ -53,7 +54,7 @@ export function Breadcrumb({
   className,
   style,
 }: BreadcrumbProps): React.ReactElement {
-  const sizes = sizeStyles[size] ?? sizeStyles.md;
+  const sizes = choice(sizeStyles, size, 'md');
   const trail = Array.isArray(items) ? items.filter(Boolean) : [];
 
   const containerStyle: React.CSSProperties = {

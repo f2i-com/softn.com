@@ -9,6 +9,7 @@
 
 import React, { useRef, useState } from 'react';
 import { focusRing, isFocusVisible } from './focus';
+import { choice } from '../utils/choice';
 
 export interface SegmentedOption {
   /** What choosing the option gives */
@@ -79,7 +80,7 @@ export function SegmentedControl({
   style,
 }: SegmentedControlProps): React.ReactElement {
   const items = normalise(options);
-  const config = sizeConfig[size] ?? sizeConfig.md;
+  const config = choice(sizeConfig, size, 'md');
   // Any value at all is the app's to hold: `:bind` hands an unset state in
   // as "", which is nothing chosen, not leave to keep a choice of its own
   // (an app that cleared its state would go on seeing the old one chosen).

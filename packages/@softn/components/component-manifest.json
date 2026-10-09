@@ -2876,7 +2876,7 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "string | Date"
+              "text": "string | Date | number"
             },
             "doc": "Current date value (ISO string or Date object)"
           },
@@ -2885,7 +2885,7 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "string | Date"
+              "text": "string | Date | number"
             },
             "doc": "Default value"
           },
@@ -2942,7 +2942,7 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "string | Date"
+              "text": "string | Date | number"
             },
             "doc": "Minimum date"
           },
@@ -2951,7 +2951,7 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "string | Date"
+              "text": "string | Date | number"
             },
             "doc": "Maximum date"
           },

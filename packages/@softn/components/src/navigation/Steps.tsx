@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { choice } from '../utils/choice';
 
 export interface StepItem {
   /** What the step is called when chosen; its position is used when omitted */
@@ -95,7 +96,7 @@ export function Steps({
   style,
 }: StepsProps): React.ReactElement {
   const steps = normalise(items);
-  const config = sizeConfig[size] ?? sizeConfig.md;
+  const config = choice(sizeConfig, size, 'md');
   const vertical = orientation === 'vertical';
   // `:bind` hands the state in as `value`; an unset one arrives as "".
   const active = indexOfCurrent(steps, value !== undefined && value !== '' ? value : current);

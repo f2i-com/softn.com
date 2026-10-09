@@ -9,6 +9,7 @@
 
 import React from 'react';
 import { getVariantColors } from '../theme/variants';
+import { choice } from '../utils/choice';
 
 export interface TimelineItem {
   /** Identifies the entry when the list changes */
@@ -66,7 +67,7 @@ export function Timeline({
   className,
   style,
 }: TimelineProps): React.ReactElement | null {
-  const config = sizeConfig[size] ?? sizeConfig.md;
+  const config = choice(sizeConfig, size, 'md');
   const entries = normalise(items);
   if (reverse) entries.reverse();
 

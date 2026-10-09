@@ -15,6 +15,8 @@
  */
 
 import React from 'react';
+import { choice } from '../utils/choice';
+import { recordRows } from '../utils/rows';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -309,7 +311,7 @@ export function SmartTimeline<T extends Record<string, unknown>>({
   style,
 }: SmartTimelineProps<T>): React.ReactElement {
   // Ensure data is array
-  const safeData = Array.isArray(data) ? data : [];
+  const safeData = recordRows<T>(data);
 
   // Limit items if maxItems set
   const displayData = maxItems ? safeData.slice(0, maxItems) : safeData;
@@ -352,7 +354,7 @@ export function SmartTimeline<T extends Record<string, unknown>>({
           : 'default';
         const actorValue = actor ? getFieldValue(item, actor) : null;
 
-        const config = statusConfig[statusValue] || statusConfig.default;
+        const config = choice(statusConfig, statusValue, 'default');
         const isLast = index === displayData.length - 1;
 
         return (

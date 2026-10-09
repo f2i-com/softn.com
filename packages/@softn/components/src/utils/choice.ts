@@ -11,5 +11,10 @@
  * not an answer.
  */
 export function choice<T>(table: Record<string, T>, name: unknown, fallback: string): T {
-  return typeof name === 'string' && Object.prototype.hasOwnProperty.call(table, name) ? table[name] : table[fallback];
+  return named(table, name) ?? table[fallback];
+}
+
+/** The table's own entry of that name, or nothing: for a prop with a value that means "none". */
+export function named<T>(table: Record<string, T>, name: unknown): T | undefined {
+  return typeof name === 'string' && Object.prototype.hasOwnProperty.call(table, name) ? table[name] : undefined;
 }

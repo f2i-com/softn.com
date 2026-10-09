@@ -8,6 +8,7 @@
 import React from 'react';
 import { getVariantColors, getStyleForVariantStyle } from '../theme/variants';
 import { badgeSizeConfig } from '../theme/sizes';
+import { choice } from '../utils/choice';
 
 export interface BadgeProps {
   /** Badge variant */
@@ -59,7 +60,7 @@ export function Badge({
   let displayContent = content ?? children;
   // Fall back to 'default' if variant is invalid
   const colors = getVariantColors(variant);
-  const sizeStyles = badgeSizeConfig[size] ?? badgeSizeConfig.md;
+  const sizeStyles = choice(badgeSizeConfig, size, 'md');
 
   if (typeof displayContent === 'number' && max !== undefined && displayContent > max) {
     displayContent = `${max}+`;

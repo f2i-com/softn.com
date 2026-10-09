@@ -18,6 +18,7 @@
 import React, { useState, useMemo, useCallback, useId } from 'react';
 import { describeMarkupEgress, isSafeUrl, useEgressConfig } from '@softn/core';
 import { cssColumnCount } from '../utils/egress';
+import { commaList, recordRows } from '../utils/rows';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -167,7 +168,7 @@ export function SmartCards<T extends Record<string, unknown>>({
   const egress = useEgressConfig();
 
   // Ensure data is array
-  const safeData = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const safeData = useMemo(() => recordRows<T>(data), [data]);
   const canSelect = selectable && typeof onSelect === 'function';
 
   const selectItem = useCallback(
@@ -193,8 +194,8 @@ export function SmartCards<T extends Record<string, unknown>>({
   );
 
   // Parse field lists
-  const badgeFields = badges?.split(',').map((b) => b.trim()) || [];
-  const metaFields = meta?.split(',').map((m) => m.trim()) || [];
+  const badgeFields = commaList(badges);
+  const metaFields = commaList(meta);
 
   // Filter data by search
   const filteredData = useMemo(() => {

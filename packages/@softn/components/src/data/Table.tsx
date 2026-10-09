@@ -5,6 +5,8 @@
  */
 
 import React from 'react';
+import { choice } from '../utils/choice';
+import { presentRows, recordRows } from '../utils/rows';
 
 export interface Column<T> {
   /** Column key (maps to data property) */
@@ -158,10 +160,10 @@ export function Table<T extends Record<string, unknown>>({
   className,
   style,
 }: TableProps<T>): React.ReactElement {
-  const sizes = sizeStyles[size] ?? sizeStyles.md;
+  const sizes = choice(sizeStyles, size, 'md');
   // Bound to rows that have not arrived, the table is empty, not an error.
-  const data = Array.isArray(rawData) ? rawData : [];
-  const columns = Array.isArray(rawColumns) ? rawColumns : [];
+  const data = presentRows<T>(rawData);
+  const columns = recordRows<Column<T>>(rawColumns);
   const captionId = React.useId();
 
   const getRowKey = (row: T, index: number): string => {

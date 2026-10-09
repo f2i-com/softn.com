@@ -16,6 +16,7 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react';
+import { recordRows } from '../utils/rows';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -250,7 +251,7 @@ export function SmartList<T extends Record<string, unknown>>({
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   // Ensure data is array
-  const safeData = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const safeData = useMemo(() => recordRows<T>(data), [data]);
   const canSelect = selectable && typeof onSelect === 'function';
 
   const selectItem = useCallback(

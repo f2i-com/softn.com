@@ -5,6 +5,8 @@
  * Uses CSS variables for theming support with fallback values.
  */
 
+import { choice } from '../utils/choice';
+
 /**
  * Basic variant colors used by Badge and Tag components
  */
@@ -128,5 +130,5 @@ export function getStyleForVariantStyle(
  * Get variant colors with fallback to default
  */
 export function getVariantColors(variant: string): VariantColors {
-  return variantColors[variant] ?? variantColors.default;
+  return choice(variantColors, variant, 'default');
 }

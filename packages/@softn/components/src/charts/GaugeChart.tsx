@@ -111,12 +111,14 @@ function getColorForValue(
   value: number,
   thresholds?: GaugeThreshold[]
 ): string {
-  if (!thresholds || thresholds.length === 0) {
+  // Thresholds that are not a list, or a hole in the list, used to throw.
+  const given = Array.isArray(thresholds) ? thresholds.filter((t) => t !== null && typeof t === 'object') : [];
+  if (given.length === 0) {
     return DEFAULT_COLOR;
   }
 
   // Sort ascending by threshold value
-  const sorted = [...thresholds].sort((a, b) => a.value - b.value);
+  const sorted = [...given].sort((a, b) => a.value - b.value);
 
   let color = DEFAULT_COLOR;
   for (const t of sorted) {

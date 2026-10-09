@@ -10,6 +10,7 @@
 
 import * as React from 'react';
 import { usePrefersReducedMotion } from '../utils/motion';
+import { choice } from '../utils/choice';
 
 /**
  * The "from" state has to be on the element before the browser paints it:
@@ -165,7 +166,7 @@ export function AnimatedBox({
 
   const isHover = trigger === 'hover';
   const presets = isHover ? HOVER_PRESETS : ENTRANCE_PRESETS;
-  const preset = presets[animation] || presets.fadeIn;
+  const preset = choice(presets, animation, 'fadeIn');
 
   // Build the transition CSS value
   const bounceEasing = 'cubic-bezier(0.175, 0.885, 0.32, 1.275)';

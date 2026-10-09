@@ -8,6 +8,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
+import { choice } from '../utils/choice';
 
 export interface NumberInputProps {
   /** The number */
@@ -91,7 +92,7 @@ export function NumberInput({
   className,
   style,
 }: NumberInputProps): React.ReactElement {
-  const config = sizeConfig[size] ?? sizeConfig.md;
+  const config = choice(sizeConfig, size, 'md');
   const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
   const low = Number.isFinite(min as number) ? (min as number) : undefined;
   const high = Number.isFinite(max as number) ? (max as number) : undefined;

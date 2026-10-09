@@ -2,9 +2,9 @@
  * No built-in component may throw for what a page has not given it yet.
  *
  * Two things an author does before anything else: writes the bare tag
- * (`<DataGrid />`, which is also what Builder drops on the canvas for a
- * component whose descriptor has no defaults), and binds a prop to state that
- * starts as `null` and is filled in when the data arrives. A default
+ * (`<DataGrid />`, which is also what Builder writes for every component
+ * dropped from its palette: a new element has no props), and binds a prop to
+ * state that starts as `null` and is filled in when the data arrives. A default
  * parameter covers the first and not the second: `items = []` is still
  * `null` when `null` is passed. Either way the component threw in its render
  * and the page showed the renderer's red error box where an empty grid, an
@@ -254,6 +254,95 @@ describe('what they draw in that state', () => {
     expect(markup('LineChart', { series, padding: { left: 80 } })).toContain('x="72"');
     expect(markup('LineChart', { series, padding: 30 })).toContain('x="22"');
     expect(markup('LineChart', { series, padding: null })).toContain('x="42"');
+  });
+});
+
+/**
+ * A page is not typed: a date is kept as a timestamp, an id is a number, a
+ * list from a store has a hole where a record was deleted, and a spec string
+ * is half typed. Each of these threw.
+ */
+describe('a value of another shape than the prop expects', () => {
+  const rows = [null, { id: 1, name: 'Ann', title: 'Ann', status: 'done' }, undefined];
+
+  it.each(['Table', 'DataGrid', 'SmartGrid', 'SmartList', 'SmartTimeline', 'SmartCards'])('<%s> draws the records of a list that has holes', (tag) => {
+    const props: Record<string, unknown> = { data: rows, primary: 'name', title: 'name' };
+    if (tag === 'Table') props.columns = [null, { key: 'name', header: 'Name' }];
+    expect(thrown(tag, props)).toBeNull();
+    expect(markup(tag, props)).toContain('Ann');
+  });
+
+  it.each(['SmartGrid', 'SmartList', 'SmartTimeline', 'SmartCards'])('<%s> given a list of plain text has no records to draw, and does not throw', (tag) => {
+    expect(thrown(tag, { data: ['Ann', 'Ben'] })).toBeNull();
+    expect(thrown(tag, { data: [7, true] })).toBeNull();
+  });
+
+  it('a DatePicker given a timestamp shows that day', () => {
+    const day = new Date(2024, 2, 9, 15, 30).getTime();
+    const picker = mount(React.createElement(components.DatePicker, { value: day }));
+    try {
+      const shown = picker.container.querySelector('input')?.value ?? picker.container.textContent ?? '';
+      expect(shown).toMatch(/2024/);
+      expect(shown).toMatch(/0?9/);
+    } finally {
+      picker.unmount();
+    }
+    for (const wrong of [true, {}, [], Number.NaN, 'not a date']) {
+      expect(thrown('DatePicker', { value: wrong, min: wrong, max: wrong, defaultValue: wrong }), JSON.stringify(wrong)).toBeNull();
+    }
+  });
+
+  it('a TextArea whose value goes back to null is emptied', () => {
+    const TextArea = components.TextArea;
+    const field = mount(<TextArea value="a draft" />);
+    try {
+      const textarea = field.container.querySelector('textarea');
+      expect(textarea?.value).toBe('a draft');
+      field.rerender(<TextArea value={null} />);
+      expect(textarea?.value).toBe('');
+    } finally {
+      field.unmount();
+    }
+  });
+
+  it('an Avatar whose presence is null or not one it knows has no presence dot, and a number is a name', () => {
+    const dot = (props: Record<string, unknown>) => /<span[^>]*aria-hidden="true"><\/span>/.test(markup('Avatar', props));
+    expect(dot({ name: 'Ann', status: 'online' })).toBe(true);
+    for (const status of [null, 'none', 'asleep', 'constructor']) expect(dot({ name: 'Ann', status }), String(status)).toBe(false);
+    expect(markup('Avatar', { name: 'Ann', status: null })).not.toContain('null');
+    expect(markup('Avatar', { name: 7 })).toContain('>7<');
+  });
+
+  it('SmartStats draws a spec whose figure is not typed yet, and keeps icons in their places', () => {
+    expect(markup('SmartStats', { stats: 'Users' })).toContain('Users');
+    expect(thrown('SmartStats', { stats: 'Users:10,,Orders' })).toBeNull();
+    // A figure that has not arrived is a dash, not the word "undefined".
+    const waiting = markup('SmartStats', { stats: [null, { label: 'Users', value: undefined }] });
+    expect(waiting).toContain('—');
+    expect(waiting).not.toContain('undefined');
+    expect(thrown('SmartStats', { stats: 7, icons: 7, trends: true })).toBeNull();
+    // The third stat's icon is the third in the list, not the second: the
+    // empty place between them is the second stat's, which has none.
+    const cards = markup('SmartStats', { stats: 'A:1, B:2, C:3', icons: 'users,,cart' }).split('padding:1.25rem').slice(1);
+    expect(cards.map((card) => card.includes('<svg'))).toEqual([true, false, true]);
+  });
+
+  it('SmartGrid leaves an empty name out of its columns, and SmartCards out of its badges', () => {
+    const data = [{ id: 1, name: 'Ann', team: 'Blue' }];
+    expect((markup('SmartGrid', { data, columns: 'name,,team' }).match(/<th /g) ?? []).length).toBe(2);
+    expect(thrown('SmartGrid', { data, columns: 7 })).toBeNull();
+    expect(thrown('SmartCards', { data, badges: 7, meta: true })).toBeNull();
+  });
+
+  it('a GaugeChart takes thresholds with a hole, or none that are a list', () => {
+    expect(thrown('GaugeChart', { value: 60, thresholds: [null, { value: 50, color: 'red' }] })).toBeNull();
+    expect(thrown('GaugeChart', { value: 60, thresholds: 7 })).toBeNull();
+  });
+
+  it('a name every object has is not one of a component’s sizes', () => {
+    for (const tag of ['Badge', 'Kbd', 'Tag', 'Progress', 'Rating', 'Steps']) {
+      expect(markup(tag, { size: 'constructor' }), tag).toBe(markup(tag, { size: 'no-such-size' }));
+    }
   });
 });
 

@@ -5,6 +5,7 @@
  */
 
 import * as React from 'react';
+import { presentRows } from '../utils/rows';
 
 /**
  * A row, when nothing more specific is known about it. The grid is usually fed
@@ -131,10 +132,7 @@ export function DataGrid<T = Row>({
   // A grid is routinely bound to rows that have not arrived: `data.length`
   // of undefined threw into the error boundary where an empty grid belonged.
   // A row that is not there (a hole in the list) is not a row.
-  const data = React.useMemo(
-    () => (Array.isArray(rawData) ? (rawData.some((row) => row === null || row === undefined) ? rawData.filter((row) => row !== null && row !== undefined) : rawData) : []),
-    [rawData]
-  );
+  const data = React.useMemo(() => presentRows<T>(rawData), [rawData]);
   const columns = React.useMemo(() => gridColumns<T>(rawColumns, data), [rawColumns, data]);
   const filters = rawFilters !== null && typeof rawFilters === 'object' ? rawFilters : {};
   const containerRef = React.useRef<HTMLDivElement>(null);

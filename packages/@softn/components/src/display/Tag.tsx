@@ -8,6 +8,7 @@
 import React from 'react';
 import { getVariantColors, getStyleForVariantStyle } from '../theme/variants';
 import { tagSizeConfig, getGapValue } from '../theme/sizes';
+import { choice } from '../utils/choice';
 
 export interface TagProps {
   /** Tag variant */
@@ -58,7 +59,7 @@ export function Tag({
 }: TagProps): React.ReactElement {
   // Fall back to 'default' if variant is invalid
   const colors = getVariantColors(variant);
-  const config = tagSizeConfig[size] ?? tagSizeConfig.md;
+  const config = choice(tagSizeConfig, size, 'md');
   const styleProps = getStyleForVariantStyle(tagStyle, colors);
 
   const handleRemove = (e: React.MouseEvent | React.KeyboardEvent) => {

@@ -10,6 +10,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { cssPaint } from '../utils/egress';
 import { focusRing, isFocusVisible } from './focus';
+import { choice } from '../utils/choice';
 
 export interface RatingProps {
   /** The score */
@@ -78,7 +79,7 @@ export function Rating({
   const [hovered, setHovered] = useState(0);
   const [focused, setFocused] = useState(0);
   const stars = useRef<Array<HTMLButtonElement | null>>([]);
-  const config = sizeConfig[size] ?? sizeConfig.md;
+  const config = choice(sizeConfig, size, 'md');
 
   const score = controlled ? clampScore(value, count) : Math.min(internal, count);
 

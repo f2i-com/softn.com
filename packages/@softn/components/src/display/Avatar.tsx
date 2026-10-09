@@ -9,7 +9,7 @@ import React from 'react';
 import { isSafeUrl } from '@softn/core';
 import { cssPaint } from '../utils/egress';
 import { usePrefersReducedMotion } from '../utils/motion';
-import { choice } from '../utils/choice';
+import { named } from '../utils/choice';
 
 export interface AvatarProps {
   /** Image source */
@@ -115,15 +115,17 @@ const statusConfigs: Record<string, StatusConfig> = {
   },
 };
 
-function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/);
+function getInitials(given: string): string {
+  // `name={user.id}` is a number for some stores; `.trim` of one threw.
+  const parts = String(given).trim().split(/\s+/);
   if (parts.length === 1) {
     return parts[0].charAt(0).toUpperCase();
   }
   return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
 }
 
-function stringToColor(str: string): string {
+function stringToColor(given: string): string {
+  const str = String(given);
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = str.charCodeAt(i) + ((hash << 5) - hash);
@@ -245,7 +247,11 @@ export function Avatar({
     'bottom-left': { bottom: statusOffset, left: statusOffset },
   };
 
-  const statusConfig = choice(statusConfigs, status, 'none');
+  // A presence that has not loaded (`status={user.presence}`, null) or is
+  // not one of the four is no presence: it used to be drawn as an empty
+  // ring, and read out as "null".
+  const statusConfig = named(statusConfigs, status);
+  const hasStatus = statusConfig !== undefined;
   const statusStyle: React.CSSProperties = {
     position: 'absolute',
     width: statusSize,
@@ -306,11 +312,11 @@ export function Avatar({
       : typeof badge === 'number'
         ? `${badge > 99 ? '99+' : badge} ${badge === 1 ? 'notification' : 'notifications'}`
         : String(badge);
-  const spokenName = [ariaLabel ?? name ?? alt ?? 'Avatar', status !== 'none' ? status : '', badgeText]
+  const spokenName = [ariaLabel ?? name ?? alt ?? 'Avatar', hasStatus ? status : '', badgeText]
     .filter(Boolean)
     .join(', ');
 
-  const showPulseAnimation = status !== 'none' && statusConfig?.pulse && !prefersReducedMotion;
+  const showPulseAnimation = hasStatus && statusConfig.pulse && !prefersReducedMotion;
 
   return (
     <>
@@ -354,7 +360,7 @@ export function Avatar({
             />
           )}
         </div>
-        {status !== 'none' && <span style={statusStyle} aria-hidden="true" />}
+        {hasStatus && <span style={statusStyle} aria-hidden="true" />}
         {badge !== undefined && (
           <span style={badgeStyle} aria-hidden={onClick || !children ? true : undefined}>
             {typeof badge === 'number' && badge > 99 ? '99+' : badge}

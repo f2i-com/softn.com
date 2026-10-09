@@ -7,6 +7,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { cssPaint } from '../utils/egress';
+import { choice } from '../utils/choice';
 
 export interface CardProps {
   /** Card title (shown in header) */
@@ -165,7 +166,7 @@ export function Card({
 }: CardProps): React.ReactElement {
   const [isHovered, setIsHovered] = useState(false);
   const isInteractive = hover || interactive || onClick;
-  const variantStyle = variantStyles[variant] || variantStyles.default;
+  const variantStyle = choice(variantStyles, variant, 'default');
 
   const handleMouseEnter = useCallback(() => isInteractive && setIsHovered(true), [isInteractive]);
   const handleMouseLeave = useCallback(() => setIsHovered(false), []);

@@ -56,6 +56,11 @@ section here. Write the section before tagging. Headings are the tag
 - `TileMap` given only its `layers` is the size they cover. Without `mapWidth` and `mapHeight` its canvas was sized NaN and the map was cut off at 300 by 150.
 - `Scene3D` in a browser that gives no WebGL says so in its own box, where it used to throw into the page's error box.
 - `SmartStats` reads `columns="3"` as three; it read any string as the default four.
+- `TextArea` is emptied when the value it is bound to goes back to `null`. It used to keep the old text on screen after a form was reset, while the state behind it was empty.
+- `DatePicker` takes a timestamp (milliseconds, as `Date.now()` gives it) for `value`, `defaultValue`, `min` and `max`, where a number used to throw.
+- A list with a `null` in it (a deleted record) no longer takes `Table`, `DataGrid`, `SmartGrid`, `SmartList`, `SmartTimeline` or `SmartCards` to the error box: a hole is not a row.
+- `SmartStats` draws `stats="Users"` (a spec whose figure is not typed yet) and shows a dash for a figure that is undefined, where both used to throw. `SmartGrid` leaves the empty name in `columns="name,,team"` out.
+- `Avatar` draws no presence dot for a `status` that is `null` or not one it knows (it drew an empty ring and read out "null"), and takes a number for `name`.
 
 ## v0.0.18
 

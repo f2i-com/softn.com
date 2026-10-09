@@ -259,7 +259,11 @@ export function TextArea({
       id={textareaId}
       ref={textareaRef}
       name={name}
-      value={value}
+      // A value that goes back to null (the form was reset) is an empty
+      // field. Handed to React as it was, null means "not controlled": the
+      // field kept the old text on screen while the state behind it was
+      // empty, which is the one thing a reset must not do.
+      value={value === null ? '' : value}
       // Both at once is a React warning and a field that ignores one of them.
       defaultValue={value === undefined ? defaultValue : undefined}
       placeholder={placeholder}

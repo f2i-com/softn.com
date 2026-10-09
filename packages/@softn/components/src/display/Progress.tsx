@@ -7,6 +7,7 @@
 
 import React from 'react';
 import { cssPaint } from '../utils/egress';
+import { choice } from '../utils/choice';
 
 export interface ProgressProps {
   /** Progress value (0-100) */
@@ -121,7 +122,7 @@ export function Progress({
   const safeMax = Number.isFinite(max) && max > 0 ? max : 100;
   const safeValue = Number.isFinite(value) ? Math.min(safeMax, Math.max(0, value)) : 0;
   const percentage = (safeValue / safeMax) * 100;
-  const colorConfig = colorValues[variant] ?? colorValues.primary;
+  const colorConfig = choice(colorValues, variant, 'primary');
   // Both land in `background`, which would fetch a `url()` the bundle wrote
   // as a "colour"; a value that is not a colour falls back to the variant.
   const paint = cssPaint(color);
@@ -129,8 +130,8 @@ export function Progress({
   const barGradient = paint ? undefined : colorConfig.gradient;
   const barGlow = paint ? undefined : colorConfig.glow;
   const bgColor = cssPaint(backgroundColor) ?? 'var(--color-gray-200, #3f3f46)';
-  const radius = radiusValues[borderRadius] ?? radiusValues.full;
-  const sizeConfig = sizeValues[size] ?? sizeValues.md;
+  const radius = choice(radiusValues, borderRadius, 'full');
+  const sizeConfig = choice(sizeValues, size, 'md');
   const labelId = React.useId();
 
   const defaultLabel = formatLabel ? formatLabel(safeValue, safeMax) : `${Math.round(percentage)}%`;
