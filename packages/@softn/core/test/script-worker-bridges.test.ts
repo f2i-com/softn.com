@@ -50,7 +50,7 @@ describe('SnapshotDBBridge', () => {
     expect(bridge.prune('log', 1)).toBe(2);
     expect(bridge.query('log').map((r) => r.id)).toEqual(['c']);
     expect(bridge.get('log', 'a')).toBeNull();
-    expect(bridge.update('a', { n: 'x' })).toBeNull();
+    expect(() => bridge.update('a', { n: 'x' })).toThrow('Record not found: a');
     expect(bridge.flushMutations()).toEqual<DBMutation[]>([{ type: 'prune', collection: 'log', maxRecords: 1 }]);
   });
 

@@ -2741,7 +2741,7 @@
                 },
                 {
                   "term": "db.update(id, patch)",
-                  "description": "Merges the patch into the record and returns the result."
+                  "description": "Merges the patch into the record and returns the result. A record that is not there, deleted or never created, is an error the script can catch, on the page’s thread and in a worker alike; `db.get` first if it may be gone."
                 },
                 {
                   "term": "db.delete(id)",

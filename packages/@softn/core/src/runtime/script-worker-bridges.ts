@@ -172,9 +172,17 @@ export class SnapshotDBBridge {
     return record;
   }
 
-  update(id: string, data: Record<string, unknown>): WorkerXDBRecord | null {
+  /**
+   * Merge `data` into a record. A record that is not there, deleted or never
+   * created, is an error and not a null answer, as it is on the main thread
+   * (script-runtime.ts createDBNamespace): this used to answer null, so the
+   * same bundle threw or carried on depending on `config.execution`, and
+   * `try { db.update(...) } catch { db.create(...) }` never created here.
+   * Nothing is queued for the main thread: there is no write to apply.
+   */
+  update(id: string, data: Record<string, unknown>): WorkerXDBRecord {
     const existing = this.allRecords.get(id);
-    if (!existing) return null;
+    if (!existing) throw new Error(`Record not found: ${id}`);
     const updated: WorkerXDBRecord = {
       ...existing,
       data: { ...existing.data, ...data },

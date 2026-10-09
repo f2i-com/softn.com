@@ -67,6 +67,7 @@ section here. Write the section before tagging. Headings are the tag
 - Directory: a storage request that has let the catalogue lock go is refused if it asks for it again, where it could have deadlocked with a backup or the removal of an app.
 - **Security:** `dangerouslySetInnerHTML` is dropped wherever a bundle puts it. On a plain element only React's own refusal stopped it (and took the document down); a host-registered component that spreads its props onto its root set the markup as given. No built-in component does.
 - `db.update` of a record that has been deleted is refused in the browser as it is on the desktop. The browser's store patched the deleted record, announced the update and answered as though it had worked, on a record the script could no longer read.
+- `db.update` of a record that is not there, deleted or never created, is an error in a worker (`config.execution: "worker"`) as it is on the page's thread. The worker answered `null`, so `try { db.update(…) } catch { db.create(…) }` never created there and a script that ignored the answer carried on as though its write had landed.
 
 ## v0.0.18
 

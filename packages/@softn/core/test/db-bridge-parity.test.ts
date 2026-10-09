@@ -8,19 +8,15 @@
  * does to the snapshot. This runs the calls a script makes, in order, through
  * both, and holds every answer the two give to be the same.
  *
- * One thing is not answered the same, and is written down here as it is
- * rather than changed: `db.update` of a record the script cannot get, one
- * that was never there or one that has been deleted. The main thread throws
- * (`Record not found: <id>`) and the worker answers null, as the server
- * hosts do. A script written against one is wrong on the other
- * (`try { db.update(...) } catch { db.create(...) }` never creates in the
- * worker; `if (!db.update(...)) db.create(...)` throws on the main thread).
- *
- * Which it should be is a decision about every app already written, so this
- * pins both answers, for both kinds of record, until it is made; a change
- * to any has to come through here. (The main thread used to patch a deleted
- * record and answer with it. That was the browser store's mistake and is
- * gone: see xdb-update-deleted.test.ts.)
+ * Every answer is the same, the refusals included: `db.update` of a record
+ * that is not there, deleted or never created, throws `Record not found:
+ * <id>` from both. It used to throw on the main thread and answer null in
+ * the worker, so `try { db.update(...) } catch { db.create(...) }` never
+ * created in the worker; the main thread is the default and what apps are
+ * written against, and the worker now does as it does
+ * (db-update-missing.test.ts runs that through the engine). The server
+ * hosts answer null for it and offer `db.updateIf` to ask first: that is a
+ * separate API with deployments of its own, and is not held to this.
  *
  * Two more differences exist between the objects and are not in the
  * sequence, because no script can reach them. `create` with no data at all
@@ -91,7 +87,6 @@ function answers(db: Db): Record<string, string> {
   step('get through the wrong collection', () => call('get', 'other', a.id));
   step('delete', () => call('delete', a.id));
   step('get after delete', () => call('get', 'notes', a.id));
-  // Answered differently by the two, as the last step is; see the note at the top.
   step('update what was deleted', () => call('update', a.id, { n: 9 }));
   step('query after delete', () => titles(call('query', 'notes')));
   step('delete again', () => call('delete', a.id));
@@ -111,7 +106,6 @@ function answers(db: Db): Record<string, string> {
   step('clear', () => call('clearCollection', 'notes'));
   step('query after clear', () => call('query', 'notes'));
   step('clear a collection that is not there', () => call('clearCollection', 'nope'));
-  // Answered differently by the two; see the note at the top.
   step('update what is not there', () => call('update', 'missing-id', { n: 1 }));
   return out;
 }
@@ -126,18 +120,15 @@ describe('the worker db bridge and the main thread db namespace', () => {
     const onMain = answers(main as unknown as Db);
     const inWorker = answers(bridge as unknown as Db);
 
-    const { 'update what is not there': missingOnMain, 'update what was deleted': deletedOnMain, ...restOnMain } = onMain;
-    const { 'update what is not there': missingInWorker, 'update what was deleted': deletedInWorker, ...restInWorker } = inWorker;
-    expect(restInWorker).toEqual(restOnMain);
-    expect(Object.keys(restOnMain).length).toBe(34);
+    expect(inWorker).toEqual(onMain);
+    expect(Object.keys(onMain).length).toBe(36);
+    const restOnMain = onMain;
     // Not a hollow agreement: the calls did what their names say.
     expect(restOnMain['query by a field']).toBe('["B"]');
     expect(restOnMain['prune to one']).toBe('2');
     expect(restOnMain['get after delete']).toBe('null');
 
-    expect(missingOnMain).toBe('throws: Record not found: missing-id');
-    expect(missingInWorker).toBe('null');
-    expect(deletedOnMain).toBe('throws: Record not found: <A>');
-    expect(deletedInWorker).toBe('null');
+    expect(onMain['update what is not there']).toBe('throws: Record not found: missing-id');
+    expect(onMain['update what was deleted']).toBe('throws: Record not found: <A>');
   });
 });
