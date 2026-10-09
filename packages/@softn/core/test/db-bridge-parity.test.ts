@@ -8,15 +8,29 @@
  * does to the snapshot. This runs the calls a script makes, in order, through
  * both, and holds every answer the two give to be the same.
  *
- * One answer is not the same, and is written down here as it is rather than
- * changed: `db.update` of a record that is not there throws on the main
- * thread (`Record not found: <id>`) and answers null in the worker, as it
- * does on the server hosts. A script written against one is wrong on the
- * other (`try { db.update(...) } catch { db.create(...) }` never creates in
- * the worker; `if (!db.update(...)) db.create(...)` throws on the main
- * thread). Which of the two it should be is a decision about every app
- * already written, so this pins both until it is made; a change to either
- * has to come through here.
+ * Two answers are not the same, and are written down here as they are
+ * rather than changed. Both are `db.update` of a record the script cannot
+ * get:
+ *
+ * - one that is not there: the main thread throws (`Record not found:
+ *   <id>`) and the worker answers null, as the server hosts do. A script
+ *   written against one is wrong on the other (`try { db.update(...) }
+ *   catch { db.create(...) }` never creates in the worker;
+ *   `if (!db.update(...)) db.create(...)` throws on the main thread).
+ * - one that was deleted: the main thread patches the deleted record and
+ *   answers with it, `deleted: true`, where the worker answers null.
+ *
+ * Which it should be is a decision about every app already written, so this
+ * pins all four answers until it is made; a change to any has to come
+ * through here.
+ *
+ * Two more differences exist between the objects and are not in the
+ * sequence, because no script can reach them. `create` with no data at all
+ * gives a record with no `data` on the main thread and `data: {}` in the
+ * worker, but both script engines send `{}` for missing data before either
+ * is called. And the worker hands back its own record where the main thread
+ * hands back a copy, but a record crosses into either engine as a copy, so
+ * a script cannot change the snapshot by changing what it was given.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -77,6 +91,8 @@ function answers(db: Db): Record<string, string> {
   step('get through the wrong collection', () => call('get', 'other', a.id));
   step('delete', () => call('delete', a.id));
   step('get after delete', () => call('get', 'notes', a.id));
+  // The second of the two answered differently; see the note at the top.
+  step('update what was deleted', () => call('update', a.id, { n: 9 }));
   step('query after delete', () => titles(call('query', 'notes')));
   step('delete again', () => call('delete', a.id));
   step('delete what is not there', () => call('delete', 'missing-id'));
@@ -95,7 +111,7 @@ function answers(db: Db): Record<string, string> {
   step('clear', () => call('clearCollection', 'notes'));
   step('query after clear', () => call('query', 'notes'));
   step('clear a collection that is not there', () => call('clearCollection', 'nope'));
-  // The one the two answer differently; see the note at the top.
+  // The first of the two answered differently; see the note at the top.
   step('update what is not there', () => call('update', 'missing-id', { n: 1 }));
   return out;
 }
@@ -110,9 +126,10 @@ describe('the worker db bridge and the main thread db namespace', () => {
     const onMain = answers(main as unknown as Db);
     const inWorker = answers(bridge as unknown as Db);
 
-    const { 'update what is not there': missingOnMain, ...restOnMain } = onMain;
-    const { 'update what is not there': missingInWorker, ...restInWorker } = inWorker;
+    const { 'update what is not there': missingOnMain, 'update what was deleted': deletedOnMain, ...restOnMain } = onMain;
+    const { 'update what is not there': missingInWorker, 'update what was deleted': deletedInWorker, ...restInWorker } = inWorker;
     expect(restInWorker).toEqual(restOnMain);
+    expect(Object.keys(restOnMain).length).toBe(34);
     // Not a hollow agreement: the calls did what their names say.
     expect(restOnMain['query by a field']).toBe('["B"]');
     expect(restOnMain['prune to one']).toBe('2');
@@ -120,5 +137,7 @@ describe('the worker db bridge and the main thread db namespace', () => {
 
     expect(missingOnMain).toBe('throws: Record not found: missing-id');
     expect(missingInWorker).toBe('null');
+    expect(deletedOnMain).toBe('{"id":"<A>","collection":"notes","data":{"title":"A","n":9,"tags":["x"]},"created_at":"<time>","updated_at":"<time>","deleted":true}');
+    expect(deletedInWorker).toBe('null');
   });
 });

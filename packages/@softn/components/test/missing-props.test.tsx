@@ -348,6 +348,13 @@ describe('a value of another shape than the prop expects', () => {
     expect(drawn).toContain('Home');
   });
 
+  it('an Icon named like something every object has is an icon with no drawing, as any unknown name is', () => {
+    // `ICONS["constructor"]` is a function, and `.includes` of it threw.
+    expect(thrown('Icon', { name: 'constructor' })).toBeNull();
+    expect(markup('Icon', { name: 'constructor' })).toBe(markup('Icon', { name: 'no-such-icon' }));
+    expect(markup('Icon', { name: 'check' })).toContain('<svg');
+  });
+
   it('a GaugeChart takes thresholds with a hole, or none that are a list', () => {
     expect(thrown('GaugeChart', { value: 60, thresholds: [null, { value: 50, color: 'red' }] })).toBeNull();
     expect(thrown('GaugeChart', { value: 60, thresholds: 7 })).toBeNull();
