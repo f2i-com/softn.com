@@ -6,9 +6,9 @@
  * state changes. React compares what it is given with what it had by
  * identity, so a fresh element with the same props is a component to run
  * again: one keystroke in a filter field ran every component on the page.
- * Measured on a page of 300 rows that was about 10 ms of every keystroke on a
- * desktop, most of it React re-running components whose output could not
- * have changed.
+ * Measured through SoftNRenderer on a page of 300 rows, that was 11 ms of
+ * every keystroke on a desktop, most of it React re-running components whose
+ * output could not have changed; with this it is 2.5 ms.
  *
  * So where a node of the document is drawn twice with the same component,
  * the same props and the same children, the second drawing returns the

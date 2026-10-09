@@ -1525,8 +1525,12 @@ function renderElement(
   // them crashed the render of any `.ui` that used the plain HTML tag. The
   // demos only reach them through wrapper components like `<Image>`, which
   // is why it went unnoticed.
+  //
+  // The same goes for a tag whose contents all come to nothing: an `#if`
+  // that does not hold, an `#each` with nothing to go through. A list of
+  // nothings is as much a yes to "was I given children?" as an empty one.
   const isVoid = typeof FinalComponent === 'string' && VOID_ELEMENTS.has(node.tag.toLowerCase());
-  const childless = isVoid || (children as React.ReactNode[]).length === 0;
+  const childless = isVoid || (children as React.ReactNode[]).every(isNothingDrawn);
 
   // With everything this element would be made from in hand, see whether it
   // is what this place was made from last time; see reuse.ts.
@@ -1577,6 +1581,11 @@ function renderElement(
 }
 
 const NO_CHILDREN: readonly React.ReactNode[] = [];
+
+/** What a condition that does not hold, or a list with nothing in it, draws. */
+function isNothingDrawn(child: React.ReactNode): boolean {
+  return child === null || child === undefined || child === false;
+}
 
 /**
  * Extract slot content from children

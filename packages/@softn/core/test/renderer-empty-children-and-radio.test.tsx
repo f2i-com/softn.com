@@ -104,6 +104,27 @@ describe('a tag with nothing inside it', () => {
     expect(seen[0].children).not.toBeUndefined();
   });
 
+  it('is the same for a tag whose contents all come to nothing', () => {
+    // `<Alert title="Saved">#if (detail) … #end</Alert>` with no detail has
+    // nothing inside it either: a condition that does not hold and a list
+    // with nothing in it draw nothing, and a list of nothings is still a
+    // yes to "was I given children?".
+    const { registry, seen } = probe();
+    mount(
+      '<Probe fallback="a">\n#if (show)\n<i>x</i>\n#end\n</Probe>\n<Probe fallback="b">\n#each (row in rows)\n<i>{row}</i>\n#end\n#if (show)\n<b>y</b>\n#end\n</Probe>',
+      { show: false, rows: [] },
+      registry
+    );
+    expect(seen.map((s) => s.children)).toEqual([undefined, undefined]);
+    expect(Array.from(container!.querySelectorAll('span')).map((s) => s.textContent)).toEqual(['a', 'b']);
+  });
+
+  it('gives what the contents come to once they come to something', () => {
+    const { registry } = probe();
+    mount('<Probe fallback="a">\n#if (show)\n<i>x</i>\n#end\n</Probe>\n<Probe fallback="b">\n#each (row in rows)\n<i>{row}</i>\n#end\n</Probe>', { show: true, rows: ['r'] }, registry);
+    expect(Array.from(container!.querySelectorAll('span')).map((s) => s.textContent)).toEqual(['x', 'r']);
+  });
+
   it('draws an empty plain element as an empty element', () => {
     mount('<div class="spacer"></div>\n<section />', {}, new ComponentRegistry());
     expect(container!.innerHTML).toBe('<div class="spacer"></div><section></section>');
