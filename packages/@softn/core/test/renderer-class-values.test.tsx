@@ -71,3 +71,43 @@ describe('a class that is text', () => {
     expect(html('<div className={none}>x</div>', state)).toBe('<div>x</div>');
   });
 });
+
+describe('class written on a component', () => {
+  // A component reads `className` and nothing else, so `class="title"` on a
+  // Heading reached it as a prop it has no use for: the element was drawn
+  // with no class, the rule written for it never applied, and nothing said
+  // so. The same word on a `<div>` works, and it is the word HTML teaches.
+  it('is its className', () => {
+    expect(html('<Card class="card">x</Card>')).toBe('<section class="card">x</section>');
+    expect(html('<Card class={on ? "card live" : "card"}>x</Card>', state)).toBe('<section class="card live">x</section>');
+  });
+
+  it('as a list, a record, or with class:name beside it', () => {
+    expect(html('<Card class={["card", on && "is-on", off && "is-off"]}>x</Card>', state)).toBe('<section class="card is-on">x</section>');
+    expect(html('<Card class={{ card: true, "is-off": off }}>x</Card>', state)).toBe('<section class="card">x</section>');
+    expect(html('<Card class="card" class:extra={on} class:never={off}>x</Card>', state)).toBe('<section class="card extra">x</section>');
+    expect(html('<Card class:extra={on}>x</Card>', state)).toBe('<section class="extra">x</section>');
+  });
+
+  it('is added to a className written beside it', () => {
+    expect(html('<Card className="card" class="wide">x</Card>')).toBe('<section class="card wide">x</section>');
+  });
+
+  it('is not handed to the component as a prop of its own', () => {
+    const registry = new ComponentRegistry();
+    let given: SoftNProps = {};
+    registry.register('Probe', (props: SoftNProps) => {
+      given = props;
+      return null;
+    });
+    const doc = parse('<Probe class="a" />');
+    const context = { state: {}, setState: () => {}, data: {}, props: {}, functions: {}, asyncFunctions: {}, computed: {} } as unknown as SoftNRenderContext;
+    renderToStaticMarkup(React.createElement(React.Fragment, null, renderDocument(doc, context, registry)));
+    expect(given.className).toBe('a');
+    expect('class' in given).toBe(false);
+  });
+
+  it('and a plain element keeps the word it was written with', () => {
+    expect(html('<div class="card">x</div>')).toBe('<div class="card">x</div>');
+  });
+});

@@ -2014,7 +2014,7 @@
             },
             {
               "type": "paragraph",
-              "text": "A class can also be written as a list or as a record of conditions: `className={[\"card\", selected && \"is-selected\"]}` and `className={{ card: true, \"is-selected\": selected }}` both give the element `card`, and `is-selected` while `selected` holds. A list keeps its entries that are text; a record keeps its keys whose values hold."
+              "text": "A class can also be written as a list or as a record of conditions: `className={[\"card\", selected && \"is-selected\"]}` and `className={{ card: true, \"is-selected\": selected }}` both give the element `card`, and `is-selected` while `selected` holds. A list keeps its entries that are text; a record keeps its keys whose values hold. `class` and `className` are one word, on a component as on a plain tag: `<Heading class=\"title\">` and `<Heading className=\"title\">` give the heading the same class."
             }
           ]
         },

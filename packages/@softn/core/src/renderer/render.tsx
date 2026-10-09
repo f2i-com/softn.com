@@ -1335,6 +1335,16 @@ function renderElement(
     props[key] = [base, ...classToggles].filter(Boolean).join(' ');
   }
 
+  // On a component `class` is its `className`. A component reads only the
+  // second, so `<Heading class="title">` was drawn with no class and the
+  // rule written for it never applied, with nothing to say so; on a `<div>`
+  // the same word worked. A plain element keeps the word it was written with.
+  if (typeof FinalComponent !== 'string' && 'class' in props) {
+    const written = [props.className, props.class].filter((value) => typeof value === 'string' && value !== '');
+    if (written.length > 0) props.className = written.join(' ');
+    delete props.class;
+  }
+
   // Bindings
   for (const binding of node.bindings) {
     let value: unknown;

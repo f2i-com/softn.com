@@ -333,9 +333,10 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 - Every other prop is one-way: \`value={x}\` or \`checked={x}\` only shows \`x\`. A controlled component needs its event too: \`<Tabs activeKey={tab} @change={(key) => tab = key} … />\`.
 
 ### Classes and styles
-- On components write \`className="card"\`; \`class:selected={isSelected}\` adds a class when true, hyphens included (\`class:is-active={on}\`). A class may also be a list or a record of conditions: \`className={["card", selected && "is-selected"]}\`, \`className={{ card: true, "is-selected": selected }}\`. (\`class="…"\` only styles plain HTML tags.)
+- \`className="card"\` puts a class on a component or a plain tag (\`class="card"\` is the same word); \`class:selected={isSelected}\` adds a class when true, hyphens included (\`class:is-active={on}\`). A class may also be a list or a record of conditions: \`className={["card", selected && "is-selected"]}\`, \`className={{ card: true, "is-selected": selected }}\`.
 - \`id\`, \`data-…\` and \`aria-…\` written on Box, Stack, Grid, Card, Container, Center, Text, Heading, Button, Badge, Tag, Icon or Image reach the element, so a \`<style>\` rule can select by them: \`<Box className="tool" data-on={tool === "wall"}>\` with \`.tool[data-on="true"]\`. On other components they are dropped; wrap the component in a \`<div>\` that carries them.
 - \`style:color={accent}\` sets one style property and leaves the rest of \`style\` alone: \`style:font-size="1.25rem"\`, \`style:--accent={colour}\` for a CSS variable, \`style:opacity={busy && 0.5}\` (a false or empty value sets nothing).
+- **A component draws its own look with inline styles, and an inline style outranks a class rule.** For a property the component sets itself (a Heading's colour, for one), \`<Heading className="title">\` with \`.title { color: red }\` changes nothing and reports no error: write \`<Heading style:color="red">\`, or mark the rule \`!important\`. A class rule does apply to what the component leaves unset.
 - A \`<style>\` block is global to the page, not scoped: give your classes distinctive names.
 
 ### Control flow
