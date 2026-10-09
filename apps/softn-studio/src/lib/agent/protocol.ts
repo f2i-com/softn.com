@@ -125,6 +125,41 @@ export function streamFallback(err: unknown): 'plain' | 'off' | null {
   return null;
 }
 
+/** Whether a failure is the provider refusing the output cap the request asked for. */
+export function isOutputLimitRejection(err: unknown): boolean {
+  if (!(err instanceof AIProviderError) || err.kind !== 'http') return false;
+  if (err.status !== undefined && ![400, 422].includes(err.status)) return false;
+  return /\bmax[_ ]?(completion[_ ]?|output[_ ]?)?tokens\b|\b(output|completion) tokens\b/i.test(err.detail ?? '');
+}
+
+/** No reply's allowance is smaller than this: the least Max output tokens can be set to. */
+const SMALLEST_OUTPUT_LIMIT = 256;
+
+/**
+ * The most output tokens the model allows, read from the provider's refusal
+ * of a request that asked for `sent`, or null when its words name no such
+ * number. Providers say it differently ("max_tokens: 32768 > 8192, which is
+ * the maximum allowed number of output tokens for …", "This model supports at
+ * most 16384 completion tokens, whereas you provided 32768"), so the limit is
+ * taken to be the largest whole number in the refusal that is under what was
+ * sent. A number that is part of a name (a model id) is not one, and neither
+ * is one too small to be a reply's allowance (an error code, "at least 1").
+ *
+ * A refusal that speaks of the context window or the prompt's size names
+ * those, not a limit on output ("This model's maximum context length is 8192
+ * tokens and your request has 7232 input tokens"): no number is read from it.
+ * The cap that would fit changes with every request, so there is nothing to
+ * keep, and one kept would cut every later reply short.
+ */
+export function outputLimitFrom(err: unknown, sent: number): number | null {
+  if (!(err instanceof AIProviderError) || !isOutputLimitRejection(err)) return null;
+  if (/context (length|window|size)|\b(input|prompt) tokens\b/i.test(err.detail ?? '')) return null;
+  const numbers = [...(err.detail ?? '').matchAll(/(?<![\w.-])\d[\d,]*(?![\w-])/g)]
+    .map((match) => Number(match[0].replace(/,/g, '')))
+    .filter((n) => Number.isInteger(n) && n >= SMALLEST_OUTPUT_LIMIT && n < sent);
+  return numbers.length > 0 ? Math.max(...numbers) : null;
+}
+
 export async function sendAgentRequest(provider: ProviderConfig, request: AgentRequest): Promise<AgentReply> {
   if (isHosted(provider)) return sendHosted(request);
   const url = providerEndpoints(provider).chat;

@@ -90,10 +90,21 @@ export function describeTree(files: Map<string, VFSFile>, prefix = ''): string {
     .join('\n');
 }
 
+/**
+ * A path as the model wrote it, without the "./" some models put before a
+ * path from the project root. Every tool that takes a path reads it this way:
+ * the tools that name an existing file did, and the two that name a new one
+ * (write_file, rename_file's `to`) refused the same spelling as "not a
+ * project path", as did a folder given to list_files or search_files.
+ */
+function fromRoot(raw: string): string {
+  return raw.trim().replace(/^\.\//, '');
+}
+
 /** Resolve a path the model wants to write, or say why it may not. */
 function resolveWritable(raw: string | undefined, files: Map<string, VFSFile>, text: boolean): { ok: true; path: string } | { ok: false; reason: string } {
   if (!raw) return { ok: false, reason: 'A path is required.' };
-  const verdict = resolveProjectPath(raw.trim());
+  const verdict = resolveProjectPath(fromRoot(raw));
   if (!verdict.ok) return { ok: false, reason: `${raw} is not a project path: ${verdict.reason}.` };
   if (verdict.private) return { ok: false, reason: `${verdict.path} is private editor state (builder/), which you do not write.` };
   const alias = findAlias(verdict.path, files.keys());
@@ -116,7 +127,7 @@ function resolveWritable(raw: string | undefined, files: Map<string, VFSFile>, t
 /** Resolve a path the model wants to read or act on; it must exist. */
 function resolveExisting(raw: string | undefined, files: Map<string, VFSFile>): { ok: true; path: string; file: VFSFile } | { ok: false; reason: string } {
   if (!raw) return { ok: false, reason: 'A path is required.' };
-  const verdict = resolveProjectPath(raw.trim().replace(/^\.\//, ''));
+  const verdict = resolveProjectPath(fromRoot(raw));
   if (!verdict.ok) return { ok: false, reason: `${raw} is not a project path: ${verdict.reason}.` };
   if (verdict.private) return { ok: false, reason: `${verdict.path} is private editor state, not part of the app.` };
   const file = files.get(verdict.path);
@@ -215,7 +226,7 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
 
   switch (call.name) {
     case 'list_files': {
-      const prefix = str(input, 'prefix') ?? '';
+      const prefix = fromRoot(str(input, 'prefix') ?? '');
       return { content: describeTree(files, prefix), isError: false, subject: prefix || 'project' };
     }
 
@@ -286,7 +297,7 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       } catch (err) {
         return fail(pattern, `The pattern is not a valid regular expression: ${err instanceof Error ? err.message : String(err)}. Pass regex: false to search for plain text.`);
       }
-      const prefix = str(input, 'path_prefix') ?? '';
+      const prefix = fromRoot(str(input, 'path_prefix') ?? '');
       const hits: string[] = [];
       let more = 0;
       for (const [path, file] of [...files].sort(([a], [b]) => a.localeCompare(b))) {

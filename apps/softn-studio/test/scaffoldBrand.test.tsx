@@ -1,0 +1,141 @@
+/** @vitest-environment jsdom */
+/**
+ * The page Studio writes itself wears the colour it says it wears.
+ *
+ * The scaffold of a new app and both bundled examples gave their heading a
+ * colour with `<Heading class="brand">` and a `.brand { color: … }` rule.
+ * `class` on a component is dropped, so the class never reached the page; and
+ * had it been written `className`, a Heading sets its own colour inline, which
+ * a class rule does not outrank. The heading was drawn in the theme's text
+ * colour, the rule was dead, and these are the first pages the agent reads:
+ * they showed it a way of styling that its own guide says does not work. The
+ * colour is set with `style:color`, which reaches the element.
+ */
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it } from 'vitest';
+import { registerAllBuiltins } from '@softn/components';
+import { SoftNRenderer, configureZippWasmSource } from '@softn/core';
+import { EXAMPLES } from '../src/examples';
+import { buildGuide } from '../src/lib/agent/guide';
+import { buildPreviewXDBState, composePreviewProject } from '../src/lib/previewProject';
+import { generateBlueprintFromBrief, scaffoldProjectFiles } from '../src/lib/studioProject';
+import type { ProjectBrief, VFSFile } from '../src/types/studio';
+
+configureZippWasmSource(readFileSync(resolve(process.cwd(), '../../packages/@softn/core/wasm-zipp/zipp_wasm_bg.wasm')));
+registerAllBuiltins();
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
+
+afterEach(async () => {
+  const current = root;
+  await act(async () => {
+    current?.unmount();
+  });
+  root = null;
+  container?.remove();
+  container = null;
+});
+
+const vfs = (entries: Array<{ path: string; content: string }>) =>
+  new Map<string, VFSFile>(entries.map(({ path, content }) => [path, { path, content, mimeType: 'text/plain', lastModified: 0, lastModifiedBy: 'user', version: 1 }]));
+
+/** The first heading of the project's main page, rendered as the preview renders it. */
+async function mainHeading(files: Map<string, VFSFile>, appId: string): Promise<HTMLElement> {
+  const result = composePreviewProject(files, 'ui/main.ui');
+  if (!result.ok) throw new Error(result.error);
+  const { composition } = result;
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  await act(async () => {
+    root = createRoot(container!);
+    root.render(
+      <SoftNRenderer
+        source={composition.source}
+        python={composition.python}
+        logicBasePath={composition.logicBasePath}
+        importResolver={composition.importResolver}
+        preIncludedLogicPaths={composition.preIncludedLogicPaths}
+        initialData={buildPreviewXDBState(files).initialData}
+        appId={appId}
+        scriptExecutionMode="main"
+        resumeSavedSyncRoom={false}
+      />,
+    );
+  });
+  // The name is state the logic holds: the heading is there before its text is.
+  for (let i = 0; i < 50 && !container.querySelector('h1')?.textContent; i++) {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+  }
+  const heading = container.querySelector('h1');
+  if (!heading) throw new Error(`No heading rendered: ${container.textContent}`);
+  return heading;
+}
+
+const BRIEF: ProjectBrief = {
+  appName: 'Counter Club',
+  description: 'A counter with a button that adds one.',
+  target: 'web',
+  pages: [],
+  collections: [],
+  authNeeded: false,
+  style: 'clean',
+  logicLanguage: 'javascript',
+  referenceImages: [],
+};
+
+describe('the pages Studio writes', () => {
+  it('draws a new app’s name in its style’s accent', async () => {
+    const files = vfs(scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)));
+    const heading = await mainHeading(files, 'scaffold-brand');
+    expect(heading.textContent).toBe('Counter Club');
+    expect(heading.style.color).toBe('rgb(20, 184, 166)');
+  });
+
+  it('draws the JavaScript example’s name in its brand colour', async () => {
+    const example = EXAMPLES.find((e) => e.files.some((f) => f.path.endsWith('.logic')))!;
+    const heading = await mainHeading(vfs(example.files), 'example-brand');
+    expect(heading.style.color).toBe('rgb(37, 99, 235)');
+  });
+
+  // What the guide tells the agent about this, and that it is so: a model that gives a
+  // Heading a class and a colour rule sees a clean check and a heading that has not changed.
+  it('is what the guide teaches: a class rule does not recolour a Heading, and style:color does', async () => {
+    const guide = buildGuide({ python: false, torch: false, style: 'clean' });
+    expect(guide).toMatch(/an inline style outranks a class rule/);
+    const page = [
+      '<App>',
+      '  <Heading level={1} className="title">Ruled</Heading>',
+      '  <Heading level={2} style:color="#2563eb">Styled</Heading>',
+      '</App>',
+      '',
+      '<style>',
+      '  .title { color: #2563eb; }',
+      '</style>',
+    ].join('\n');
+    const files = vfs([
+      { path: 'manifest.json', content: JSON.stringify({ name: 'Colours', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] } }) },
+      { path: 'ui/main.ui', content: page },
+    ]);
+    const ruled = await mainHeading(files, 'guide-class-rule');
+    // The class is on the element, and the Heading's own inline colour is what a rule would have to beat.
+    expect(ruled.className).toBe('title');
+    expect(ruled.style.color).not.toBe('');
+    expect(ruled.style.color).not.toBe('rgb(37, 99, 235)');
+    expect(container!.querySelector('h2')!.style.color).toBe('rgb(37, 99, 235)');
+  });
+
+  it('styles no component with class=, which only plain HTML tags take, in the scaffold or either example', () => {
+    const python = scaffoldProjectFiles({ ...BRIEF, logicLanguage: 'python' }, generateBlueprintFromBrief(BRIEF));
+    const pages = [...scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)), ...python, ...EXAMPLES.flatMap((e) => e.files)].filter((f) => f.path.endsWith('.ui'));
+    expect(pages.length).toBeGreaterThan(4);
+    for (const page of pages) expect(page.content, page.path).not.toMatch(/<[A-Z]\w*[^>]*\sclass=/);
+  });
+});

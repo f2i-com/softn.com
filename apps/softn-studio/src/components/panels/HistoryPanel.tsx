@@ -67,7 +67,7 @@ export function describeUnit(unit: HistoryUnit): { title: string; detail: string
  * touched its files; Revert AI changes takes back every AI turn.
  */
 export const HistoryPanel: React.FC = () => {
-  const { history, revertAIChanges, undoLast, revertTransaction } = useVFSStore();
+  const { history, undoStack, revertAIChanges, undoLast, redoLast, revertTransaction } = useVFSStore();
   const [notice, setNotice] = useState<string | null>(null);
 
   const units = useMemo(() => groupHistory(history), [history]);
@@ -79,13 +79,24 @@ export const HistoryPanel: React.FC = () => {
     setNotice(result.ok ? `Reverted ${result.paths.length} file${result.paths.length === 1 ? '' : 's'}.` : result.reason);
   };
 
+  // What Undo last and Revert AI changes took can be put back until the next change is made.
+  // The store always could; nothing here asked it to, so one press too many was final, and
+  // when the press took the last unit the panel had only "No changes yet" to say.
+  const redo = undoStack.length > 0 && (
+    <button type="button" className="st-btn st-btn-sm" onClick={() => { setNotice(null); redoLast(); }} title="Put back the unit that was undone last">
+      <Icon name="redo" size={14} />
+      Redo
+    </button>
+  );
+
   if (history.length === 0) {
     return (
       <div className="st-history">
+        {redo && <div className="st-history-actions">{redo}</div>}
         <div className="st-panel-empty">
           <Icon name="clock" size={22} />
-          <strong>No changes yet</strong>
-          <span>Every edit, import and AI turn is kept here, so any of them can be undone.</span>
+          <strong>{redo ? 'Everything here was undone' : 'No changes yet'}</strong>
+          <span>{redo ? 'Redo puts it back, one unit at a time, until the next change is made.' : 'Every edit, import and AI turn is kept here, so any of them can be undone.'}</span>
         </div>
       </div>
     );
@@ -98,6 +109,7 @@ export const HistoryPanel: React.FC = () => {
           <Icon name="undo" size={14} />
           Undo last
         </button>
+        {redo}
         {aiUnits.length > 0 && (
           <button type="button" className="st-btn st-btn-sm st-btn-ghost" onClick={() => { setNotice(null); revertAIChanges(); }} title="Take back every change the AI made">
             Revert AI changes

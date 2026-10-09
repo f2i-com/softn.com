@@ -63,7 +63,7 @@ export const READING_LIST_PYTHON: ExampleProject = {
   <Container size="lg">
     <Stack direction="vertical" gap="lg" padding="xl">
       <Stack direction="horizontal" gap="md" align="center" wrap>
-        <Heading level={1} class="brand">{appName}</Heading>
+        <Heading level={1} style:color="#2563eb">{appName}</Heading>
         <Spacer />
         #each (item in pages)
           <Button variant={page === item.id ? "primary" : "ghost"} size="sm" @click={() => go(item.id)}>{item.label}</Button>
@@ -79,10 +79,6 @@ export const READING_LIST_PYTHON: ExampleProject = {
     </Stack>
   </Container>
 </App>
-
-<style>
-  .brand { color: #2563eb; }
-</style>
 `,
     },
     {

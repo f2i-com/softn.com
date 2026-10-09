@@ -219,11 +219,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
   // of the tab order and the accessibility tree in one go.
   const lockedRef = useRef<HTMLDivElement>(null);
   const homeRef = useRef<HTMLDivElement>(null);
+  const startRef = useRef<HTMLButtonElement>(null);
+  const wasGated = useRef(gated);
   useEffect(() => {
     lockedRef.current?.toggleAttribute('inert', gated);
     // Leaving the step (connected or skipped) starts the page from its top,
     // not wherever the setup's last step had scrolled it.
     if (!gated) homeRef.current?.scrollTo?.({ top: 0 });
+    // The step leaves the page with the button that ended it, and the focus that button
+    // held would fall to the page: it goes to what the step was in the way of.
+    const lifted = wasGated.current && !gated;
+    wasGated.current = gated;
+    if (lifted && (!document.activeElement || document.activeElement === document.body)) startRef.current?.focus();
   }, [gated]);
   const aiReady = useAIReadiness().state === 'ready';
 
@@ -267,7 +274,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               shows it running as it goes, and exports a <code>.softn</code> bundle you can run or publish.
             </p>
             <div className="st-hero-actions">
-              <button type="button" className="st-btn st-btn-primary st-btn-lg" onClick={() => onNewProject()}>
+              <button ref={startRef} type="button" className="st-btn st-btn-primary st-btn-lg" onClick={() => onNewProject()}>
                 <Icon name="sparkles" size={16} />
                 Start a new app
               </button>

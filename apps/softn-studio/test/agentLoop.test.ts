@@ -281,6 +281,25 @@ describe('the changeset rules, as tool errors', () => {
     expect(toolEntries().filter((e) => e.name === 'write_file').every((e) => e.status === 'error')).toBe(true);
   });
 
+  // read_file, edit_file and delete_file took a path written from the root with "./"; the two
+  // tools that name a new path refused the same spelling as "not a project path".
+  it('takes a path written with a leading ./ wherever a path is given, to write and rename as to read', async () => {
+    const seen: SuppliedFiles = new Map();
+    const ctx = { seen, env: nodeEnvironment, blueprint: null, newTransactionId: () => `t-${Math.random()}` };
+    const call = (name: string, input: Record<string, unknown>) => executeTool({ id: `c-${Math.random()}`, name, input }, ctx);
+
+    expect((await call('read_file', { path: './ui/main.ui' })).isError).toBe(false);
+    const written = await call('write_file', { path: './ui/pages/about.ui', content: '<Text>About</Text>' });
+    expect(written.content).toBe('Created ui/pages/about.ui (1 lines, +1 −0).');
+    expect(text('ui/pages/about.ui')).toBe('<Text>About</Text>');
+    const renamed = await call('rename_file', { from: './ui/pages/about.ui', to: './ui/pages/team.ui' });
+    expect(renamed.isError).toBe(false);
+    expect(text('ui/pages/team.ui')).toBe('<Text>About</Text>');
+    expect((await call('list_files', { prefix: './ui/pages/' })).content).toContain('ui/pages/team.ui');
+    // A path that leaves the project is still refused.
+    expect((await call('write_file', { path: './../escape.ui', content: '<App/>' })).isError).toBe(true);
+  });
+
   it('writes an SVG, a CSV and a file with no extension as the text they are, and refuses only what is kept as bytes', async () => {
     // Whatever core's registry does not list as text was refused as "a binary format": a .csv, a
     // README, and an .svg too — in a message that ended "or use an SVG or text format".
@@ -715,6 +734,125 @@ describe('stopping and limits', () => {
     await startAgentRun();
     expect(lastRun().run.status).toBe('finished');
     expect(provider.count()).toBe(2);
+  });
+
+  // Every request reserves Max output tokens as the provider's output cap, and the default is
+  // above what many models allow. Those providers answer 400 before reading anything else, so
+  // with the settings as they come the first request of every run was refused, and the reason
+  // ended "Check your API key and provider settings", which the connection test had just passed.
+  it('asks again with the most the model allows when the provider says the output limit set is over it, and remembers it for that model', async () => {
+    const provider = fakeProvider('anthropic', [
+      { error: { status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'max_tokens: 4096 > 2048, which is the maximum allowed number of output tokens for model-under-test' } } } },
+      { calls: [{ name: 'finish', input: { summary: 'ok' } }] },
+    ]);
+    say('Go');
+    await startAgentRun();
+    const { run } = lastRun();
+    expect(run.status).toBe('finished');
+    expect(provider.bodies.map((b) => b.max_tokens)).toEqual([4_096, 2_048]);
+    // The person is told, since the setting they see is no longer the number in use.
+    expect(run.entries.some((e) => e.kind === 'text' && /at most 2,048 output tokens/.test(e.text))).toBe(true);
+
+    // The next run starts at the model's limit instead of being refused once more.
+    const next = fakeProvider('anthropic', [{ calls: [{ name: 'finish', input: { summary: 'ok' } }] }]);
+    say('Again');
+    await startAgentRun();
+    expect(next.bodies.map((b) => b.max_tokens)).toEqual([2_048]);
+  });
+
+  it('reads the limit from an OpenAI-compatible refusal too, whichever field carried the cap', async () => {
+    resetAgent(OPENAI);
+    seedApp();
+    const provider = fakeProvider('openai', [
+      { error: { status: 400, body: { error: { message: 'max_completion_tokens is too large: 4096. This model supports at most 1024 completion tokens, whereas you provided 4096.', type: 'invalid_request_error' } } } },
+      { calls: [{ name: 'finish', input: { summary: 'ok' } }] },
+    ]);
+    say('Go');
+    await startAgentRun();
+    expect(lastRun().run.status).toBe('finished');
+    expect(provider.bodies.map((b) => b.max_completion_tokens)).toEqual([4_096, 1_024]);
+  });
+
+  it('points at the setting, not the API key, when a refused output limit names no number to use, and asks once only', async () => {
+    const refusal = { error: { status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'max_tokens is larger than this model allows' } } } };
+    const provider = fakeProvider('anthropic', [refusal]);
+    say('Go');
+    await startAgentRun();
+    const { run } = lastRun();
+    expect(provider.count()).toBe(1);
+    expect(run.status).toBe('failed');
+    expect(run.reason).toContain('max_tokens is larger than this model allows');
+    expect(run.reason).toMatch(/Max output tokens \(Settings → Agent runs\)/);
+    expect(run.reason).not.toMatch(/API key/);
+  });
+
+  it('says the limit is the model’s own when a reply is cut at a limit the provider named, where raising the setting would change nothing', async () => {
+    const cut = { calls: [{ name: 'write_file', input: { path: 'ui/cut.ui', content: '<App>' } }], stop: 'max_tokens' };
+    fakeProvider('anthropic', [
+      { error: { status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'max_tokens: 4096 > 2048, which is the maximum allowed number of output tokens for model-under-test' } } } },
+      cut,
+      cut,
+    ]);
+    say('Go');
+    await startAgentRun();
+    const { run } = lastRun();
+    expect(run.status).toBe('failed');
+    expect(run.reason).toMatch(/cut off at the output limit \(2,048 tokens\) again/);
+    expect(run.reason).toMatch(/the most this model allows in one reply/);
+    expect(run.reason).not.toMatch(/Raise Max output tokens/);
+  });
+
+  // A server that counts the prompt and the reply against one context window refuses the same
+  // field in words that name the window and the prompt's size. Neither is the model's output
+  // limit: read as one, it was asked for again, refused again, and kept for the page, so every
+  // later reply on that model was cut short at a number the provider never set.
+  it('does not take a context-window refusal for the model’s output limit', async () => {
+    resetAgent(LOCAL);
+    seedApp();
+    const provider = fakeProvider('openai', [
+      { error: { status: 400, body: { error: { message: '\'max_tokens\' or \'max_completion_tokens\' is too large: 4096. This model\'s maximum context length is 3000 tokens and your request has 2500 input tokens (4096 > 3000 - 2500).' } } } },
+    ]);
+    say('Go');
+    await startAgentRun();
+    const { run } = lastRun();
+    expect(provider.count()).toBe(1);
+    expect(run.status).toBe('failed');
+    expect(useAIStore.getState().outputLimits).toEqual({});
+    expect(run.reason).toContain('maximum context length is 3000 tokens');
+    expect(run.reason).not.toMatch(/API key/);
+  });
+
+  // An overloaded or unreachable upstream is the provider's "try again in a moment", which a
+  // streamed reply already got (an overloaded error event is retried as a rate limit): the
+  // same answer as a status ended the run, with a reason that sent the person to their API key.
+  it('waits and asks again when the provider’s server is overloaded, as it does for a rate limit', async () => {
+    const provider = fakeProvider('anthropic', [
+      { error: { status: 529, body: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } } },
+      { error: { status: 503, body: { type: 'error', error: { type: 'api_error', message: 'Service unavailable' } } } },
+      { calls: [{ name: 'finish', input: { summary: 'Back.' } }] },
+    ]);
+    say('Go');
+    await startAgentRun();
+    expect(lastRun().run.status).toBe('finished');
+    expect(provider.count()).toBe(3);
+  });
+
+  it('pauses, with Resume and no word about the API key, when the provider’s server stays overloaded', async () => {
+    const overloaded = { error: { status: 529, body: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } } };
+    const provider = fakeProvider('anthropic', [overloaded, overloaded, overloaded, overloaded, { calls: [{ name: 'finish', input: { summary: 'Back.' } }] }]);
+    say('Go');
+    await startAgentRun();
+    let { run } = lastRun();
+    expect(provider.count()).toBe(4);
+    expect(run.status).toBe('paused');
+    expect(run.reason).toMatch(/had an error of its own \(529\)\. Try again in a moment\./);
+    expect(run.reason).toMatch(/Resume sends the request again/);
+    expect(run.reason).not.toMatch(/API key/);
+    await continueAgentRun(run.id);
+    ({ run } = lastRun());
+    expect(run.status).toBe('finished');
+    // Resumed, not told anything new: the request that was refused is the request sent again.
+    expect(provider.bodies[4].messages).toEqual(provider.bodies[0].messages);
   });
 
   it('stops after the same tool call fails three times in a row', async () => {

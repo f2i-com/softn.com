@@ -19,12 +19,7 @@ import { FilesPanel } from './components/panels/FilesPanel';
 import { MobileProjectMenu } from './components/mobile/MobileProjectMenu';
 import { SaveStatusIndicator } from './components/common/SaveStatus';
 import { exportCurrentProject } from './components/common/ProjectActions';
-import {
-  inferBlueprintFromFiles,
-  inferBriefFromBlueprint,
-  generateTaskGraph,
-  projectLogicLanguage,
-} from './lib/studioProject';
+import { openImportedInStores } from './lib/importedProject';
 import { validateProject } from './lib/validator';
 import { openExampleInStores, type ExampleProject } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
@@ -58,7 +53,6 @@ import {
   ownsWorkspace,
   readOpenLink,
   releaseWorkspace,
-  resetProjectSessionForImport,
   restoreSession,
   startProjectAutosave,
   type AutosaveController,
@@ -245,38 +239,7 @@ const App: React.FC = () => {
       // so any failure above leaves the current project intact — and only if
       // nothing took the workspace while the decode ran.
       if (!ownsWorkspace(generation)) return { ok: true };
-      resetProjectSessionForImport();
-      useVFSStore.getState().batchCreateFiles(batch, 'user');
-
-      const importedProjectName = file.name.replace(/\.(softn|zip|json)$/i, '');
-      const importedWorkspace = useWorkspaceStore.getState();
-      const importedVFS = useVFSStore.getState();
-      importedWorkspace.setProjectName(importedProjectName);
-      const importedSnapshot = importedVFS.getSnapshot();
-      const inferredBlueprint = inferBlueprintFromFiles(importedProjectName, importedSnapshot);
-      const inferredBrief = inferBriefFromBlueprint(inferredBlueprint, projectLogicLanguage(importedSnapshot));
-      importedWorkspace.setBrief(inferredBrief);
-      importedWorkspace.setBlueprint(inferredBlueprint);
-      importedWorkspace.setBlueprintApproved(true);
-      importedWorkspace.setTaskGraph(generateTaskGraph(inferredBlueprint));
-      importedWorkspace.setActivePage(inferredBlueprint.pages[0]?.id ?? null);
-      // Open AI first so imported bundles are ready for AI-guided editing
-      importedWorkspace.setLeftPanel('ai');
-      importedWorkspace.setMode('design');
-      // Log to console output for user visibility
-      importedWorkspace.addConsoleOutput(`Imported ${batch.length} file(s) from ${file.name}`);
-      for (const entry of batch.slice(0, 10)) {
-        importedWorkspace.addConsoleOutput(`  + ${entry.path}`);
-      }
-      if (batch.length > 10) {
-        importedWorkspace.addConsoleOutput(`  ... and ${batch.length - 10} more`);
-      }
-      useAIStore.getState().addMessage({
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: `Imported \`${file.name}\` and mapped ${inferredBlueprint.pages.length} page(s). Ask me to restyle screens, reorganize flows, improve data bindings, or prepare the bundle for export.`,
-        timestamp: Date.now(),
-      });
+      openImportedInStores(file.name, batch);
       setView('editor');
       void refreshRecent();
       return { ok: true };

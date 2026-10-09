@@ -144,6 +144,19 @@ describe('failures are distinct and recoverable', () => {
     expect(err.retryAfterMs).toBe(7000);
   });
 
+  // The reason a run pauses on is this message, and it ended with the response body as it
+  // came: braces, quotes and field names, up to five hundred characters of them.
+  it('says a rate limit in the provider’s words, not its JSON', async () => {
+    const body = { type: 'error', error: { type: 'rate_limit_error', message: 'This request would exceed your organization’s rate limit of 50,000 input tokens per minute.' } };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 429, headers: { 'retry-after': '7' } }));
+    const err = await failure(sendAIRequest(anthropic, request));
+    expect(err.kind).toBe('rate-limited');
+    expect(err.message).toBe('The provider is rate-limiting requests; it asked for a wait of 7 s. The provider said: “This request would exceed your organization’s rate limit of 50,000 input tokens per minute.”');
+    // A body that says nothing readable adds nothing.
+    fetchMock.mockResolvedValueOnce(new Response('{"status":429}', { status: 429 }));
+    expect((await failure(sendAIRequest(anthropic, request))).message).toBe('The provider is rate-limiting requests.');
+  });
+
   it('reports another HTTP failure with its status, and an unparseable body as an invalid response', async () => {
     fetchMock.mockResolvedValueOnce(new Response('{"error":"boom"}', { status: 500 }));
     const err = await failure(sendAIRequest(anthropic, request));

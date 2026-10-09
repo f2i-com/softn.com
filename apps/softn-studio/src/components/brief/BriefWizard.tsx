@@ -40,7 +40,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   const setupOpen = useAIStore((st) => st.setupDialog !== null);
   const readiness = useAIReadiness();
   const hosted = isHostedEditor();
-  const { reset: resetVFS, batchCreateFiles } = useVFSStore();
+  const { reset: resetVFS, hydrateFiles } = useVFSStore();
 
   const [brief, updateBrief] = useState<ProjectBrief>(() => existingBrief
     ? {
@@ -106,8 +106,12 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
     const tasks = generateTaskGraph(blueprint);
     const starterFiles = scaffoldProjectFiles(brief, blueprint);
 
+    // The scaffold is where the project starts, not something the AI did to it: the files are
+    // placed, as a restored project's are, and the history begins empty. Recorded as an AI
+    // turn, it was the oldest row of the History panel, and Revert AI changes, pressed to
+    // take back a run, took the whole project with it.
     resetVFS();
-    batchCreateFiles(starterFiles, 'ai');
+    hydrateFiles(starterFiles);
     setProjectName(brief.appName);
     setBrief(brief);
     setBlueprint(blueprint);
@@ -117,7 +121,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
     addConsoleOutput(`[Architect] Blueprint generated for ${brief.appName}`);
     addConsoleOutput(`[Builder] Scaffolded ${starterFiles.length} starter file(s)`);
     onSubmit?.();
-  }, [brief, canSubmit, resetVFS, batchCreateFiles, setProjectName, setBrief, setBlueprint, setTaskGraph, setActivePage, setMode, addConsoleOutput, onSubmit]);
+  }, [brief, canSubmit, resetVFS, hydrateFiles, setProjectName, setBrief, setBlueprint, setTaskGraph, setActivePage, setMode, addConsoleOutput, onSubmit]);
 
   const handleNext = () => {
     if (isLast) {
@@ -327,6 +331,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                 <label htmlFor="brief-app-name" style={s.label}>App name <span style={s.req}>*</span></label>
                 <input
                   id="brief-app-name"
+                  type="text"
                   style={s.input}
                   value={brief.appName}
                   onChange={(e) => set('appName', e.target.value)}

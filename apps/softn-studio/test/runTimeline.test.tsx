@@ -141,4 +141,24 @@ describe('the run timeline', () => {
     await flush();
     expect(lastRun().run.status).toBe('finished');
   });
+
+  // Stop is taken off the page the moment it is pressed, and the focus it held fell to the
+  // page with it: from the keyboard, the Continue that had just appeared was a walk through
+  // every control above it away.
+  it('moves the keyboard from Stop to Continue, which takes Stop’s place', async () => {
+    const provider = fakeProvider('anthropic', [{ calls: [{ name: 'list_files', input: {} }] }]);
+    say('Go');
+    const gate = provider.hold();
+    let running!: Promise<void>;
+    await act(async () => { running = startAgentRun(); });
+    await flush();
+    const stop = buttons('Stop')[0];
+    stop.focus();
+    expect(document.activeElement).toBe(stop);
+    act(() => stop.click());
+    gate.release();
+    await act(async () => { await running; });
+    expect(buttons('Stop')).toHaveLength(0);
+    expect(document.activeElement).toBe(buttons('Continue')[0]);
+  });
 });

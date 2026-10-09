@@ -179,6 +179,27 @@ describe('a name that is only punctuation', () => {
     const pages = files.filter((f) => f.path.startsWith('ui/pages/')).map((f) => f.path);
     expect(new Set(pages).size).toBe(2);
   });
+
+  // The second "Home" was numbered home-2 without a look at whether a page called "Home 2"
+  // already had that slug: two pages, one file.
+  it('gives every page its own file when a name repeats beside one that already carries its number', () => {
+    expect(pageSlugs([{ name: 'Home' }, { name: 'Home 2' }, { name: 'Home' }, { name: 'home' }])).toEqual(['home', 'home-2', 'home-3', 'home-4']);
+    const files = scaffold({ pages: ['Home', 'Home 2', 'Home'] });
+    const pages = files.filter((f) => f.path.startsWith('ui/pages/')).map((f) => f.path);
+    expect(new Set(pages).size).toBe(3);
+  });
+
+  // Two names for one collection are one collection: the directory keys it by one name, a
+  // <data> alias is one name, and both wrote the same .xdb file. The scaffold named that path
+  // twice, in its files and in the manifest, and a project cannot hold one path twice.
+  it('scaffolds a collection named twice once, with no path written or listed twice', () => {
+    const files = scaffold({ collections: ['Tasks', 'tasks', 'Notes', ' TASKS '] });
+    const paths = files.map((f) => f.path);
+    expect(new Set(paths.map((p) => p.toLowerCase())).size).toBe(paths.length);
+    expect(paths.filter((p) => p.startsWith('xdb/'))).toEqual(['xdb/tasks.xdb', 'xdb/notes.xdb']);
+    const manifest = JSON.parse(String(files.find((f) => f.path === 'manifest.json')!.content)) as { files: { xdb: string[] } };
+    expect(manifest.files.xdb).toEqual(['xdb/tasks.xdb', 'xdb/notes.xdb']);
+  });
 });
 
 describe('exporting a project saved in the old shape', () => {

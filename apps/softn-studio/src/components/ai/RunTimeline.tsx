@@ -283,6 +283,15 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
   const revertable = revertState.available;
   const plan = run.plan;
   const done = plan.filter((p) => p.status === 'done').length;
+  // Stop leaves the page as it is pressed, and the focus it held would fall to the page: it
+  // goes to Continue, the control that takes Stop's place.
+  const resumeRef = useRef<HTMLButtonElement>(null);
+  const stoppedHere = useRef(false);
+  useEffect(() => {
+    if (!stoppedHere.current || !canContinue) return;
+    stoppedHere.current = false;
+    resumeRef.current?.focus();
+  }, [canContinue]);
   const reason = interrupted ? `${interruptionReason(run)} Continue starts a new run from its request, its plan and the files as they are now.` : run.reason;
 
   return (
@@ -360,12 +369,12 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
       {(running || canContinue || revertable) && (
         <div className="st-run-actions">
           {running && (
-            <button type="button" className="st-btn st-btn-sm" onClick={() => stopAgentRun(run.id)}>
+            <button type="button" className="st-btn st-btn-sm" onClick={() => { stoppedHere.current = true; stopAgentRun(run.id); }}>
               <Icon name="pause" size={13} /> Stop
             </button>
           )}
           {canContinue && (
-            <button type="button" className="st-btn st-btn-primary st-btn-sm" onClick={() => void (interrupted ? continueInterruptedRun(message.id) : continueAgentRun(run.id))}>
+            <button ref={resumeRef} type="button" className="st-btn st-btn-primary st-btn-sm" onClick={() => void (interrupted ? continueInterruptedRun(message.id) : continueAgentRun(run.id))}>
               <Icon name="play" size={13} /> {status === 'paused' ? 'Resume' : 'Continue'}
             </button>
           )}

@@ -88,6 +88,13 @@ interface AIState {
   toolProtocols: ToolProtocolMemory;
   /** Per `providerId:model`, how far streaming works; learned, and kept with the settings. */
   streamModes: StreamModeMemory;
+  /**
+   * Per `providerId:model`, the most output tokens the provider said the model
+   * allows, learned when it refused a request for asking for more. Kept for the
+   * life of the page only: a model's limit is the provider's to change, and a
+   * number saved from an old refusal would cap replies with nothing to raise it.
+   */
+  outputLimits: Record<string, number>;
 
   // Chat
   messages: ChatMessage[];
@@ -129,6 +136,7 @@ interface AIState {
   updateAgentSettings(patch: Partial<AgentSettings>): void;
   rememberToolProtocol(key: string, protocol: 'native' | 'text'): void;
   rememberStreamMode(key: string, mode: 'plain' | 'off'): void;
+  rememberOutputLimit(key: string, limit: number): void;
   addMessage(message: ChatMessage): void;
   /** Replace one message by id, if it is still there. */
   replaceMessage(id: string, update: (message: ChatMessage) => ChatMessage): void;
@@ -162,6 +170,7 @@ export const useAIStore = create<AIState>((set) => ({
   agentSettings: DEFAULT_AGENT_SETTINGS,
   toolProtocols: {},
   streamModes: {},
+  outputLimits: {},
 
   messages: [],
   draftMessage: '',
@@ -230,6 +239,8 @@ export const useAIStore = create<AIState>((set) => ({
     set((s) => (s.toolProtocols[key] === protocol ? s : { toolProtocols: { ...s.toolProtocols, [key]: protocol } })),
   rememberStreamMode: (key, mode) =>
     set((s) => (s.streamModes[key] === mode ? s : { streamModes: { ...s.streamModes, [key]: mode } })),
+  rememberOutputLimit: (key, limit) =>
+    set((s) => (s.outputLimits[key] === limit ? s : { outputLimits: { ...s.outputLimits, [key]: limit } })),
   addMessage: (message) =>
     set((s) => {
       const next = [...s.messages, message];

@@ -23,6 +23,7 @@
  */
 
 import { AIProviderError, resolveModel } from '../aiProvider';
+import { kindForStatus } from '../providerConnection';
 import { useAIStore } from '../../stores/aiStore';
 import { useVFSStore } from '../../stores/vfsStore';
 import { undoState, undoUnavailableReason, type UndoEntry, type UndoState } from '../undoJournal';
@@ -37,8 +38,10 @@ import { buildAgentSystemPrompt, buildProjectContext } from './prompt';
 import {
   canStream,
   encodeText,
+  isOutputLimitRejection,
   isToolsRejection,
   nativeProtocol,
+  outputLimitFrom,
   parseTextToolCalls,
   sendAgentRequest,
   streamFallback,
@@ -273,10 +276,35 @@ function describeFailure(err: unknown): AIFailure {
       case 'no-model':
         return { kind: 'setup', message: err.message, at };
       default:
-        return { kind: 'provider', message: `${err.message} Check your API key and provider settings.`, at };
+        return { kind: 'provider', message: `${err.message}${providerAdvice(err)}`, at };
     }
   }
   return { kind: 'provider', message: err instanceof Error ? err.message : String(err), at };
+}
+
+/**
+ * Whether a failure is the provider's server saying it cannot answer just now:
+ * overloaded (529), unavailable (503), or a gateway that could not reach or
+ * wait for what is behind it (502, 504). Not 500: that is what a server
+ * answers when it trips over the request itself, a `tools` field it does not
+ * take among them, and asking again would only put that answer off.
+ */
+function isBusy(err: unknown): boolean {
+  return err instanceof AIProviderError && err.kind === 'http' && err.status !== undefined && [502, 503, 504, 529].includes(err.status);
+}
+
+/**
+ * What to do about a provider's HTTP failure, where the failure's own words do
+ * not say already. Every such reason used to end "Check your API key and
+ * provider settings": after "had an error of its own (529). Try again in a
+ * moment" that contradicts the sentence before it, and after a refused output
+ * limit it sends the person to a key the provider had just accepted.
+ */
+function providerAdvice(err: AIProviderError): string {
+  if (isOutputLimitRejection(err)) return ' Set Max output tokens (Settings → Agent runs) to what this model allows, then Continue.';
+  // A key that was refused, an address nothing answers at, a server that failed: each of those says what to do.
+  if (err.status !== undefined && kindForStatus(err.status) !== 'http') return '';
+  return ' Check your API key and provider settings.';
 }
 
 export interface StartOptions {
@@ -464,6 +492,16 @@ function protocolFor(provider: ProviderConfig, model: string): ToolProtocol {
   const native = nativeProtocol(provider);
   if (native === 'text') return 'text';
   return useAIStore.getState().toolProtocols[protocolKey(provider, model)] === 'text' ? 'text' : native;
+}
+
+/**
+ * The output allowance a request to `model` goes out with, and the budget
+ * reserves for its reply: Max output tokens, or the model's own limit where
+ * the provider has said that is lower (see outputLimitFrom).
+ */
+function outputAllowance(provider: ProviderConfig, model: string): number {
+  const ai = useAIStore.getState();
+  return Math.min(ai.maxOutputTokens, ai.outputLimits[protocolKey(provider, model)] ?? Infinity);
 }
 
 // ---------------------------------------------------------------------------
@@ -960,9 +998,11 @@ async function request(ctl: RunController, system: string, model: string, protoc
   let stream: StreamMode = canStream(ctl.provider) ? (settings.streamModes[key] ?? 'on') : 'off';
   let attempt = 0;
   let stripThinking = false;
+  let loweredOutput = false;
   for (;;) {
     ctl.abort = new AbortController();
     const sink = stream === 'off' ? undefined : startLive(ctl, protocol);
+    const maxOutputTokens = outputAllowance(ctl.provider, model);
     try {
       const turns = stripThinking ? ctl.turns.map((t) => (t.role === 'assistant' ? { ...t, anthropicContent: undefined } : t)) : ctl.turns;
       const reply = await sendAgentRequest(ctl.provider, {
@@ -972,7 +1012,7 @@ async function request(ctl: RunController, system: string, model: string, protoc
         model,
         signal: ctl.abort.signal,
         timeoutMs: settings.requestTimeoutMs,
-        maxOutputTokens: settings.maxOutputTokens,
+        maxOutputTokens,
         stream,
         sink,
       });
@@ -998,10 +1038,31 @@ async function request(ctl: RunController, system: string, model: string, protoc
         stripThinking = true;
         continue;
       }
-      if (err instanceof AIProviderError && err.kind === 'rate-limited' && attempt < RATE_LIMIT_RETRIES) {
+      // The output cap is over what this model allows, and the provider said what it does
+      // allow: ask again with that, once, and keep it for this provider and model. Max output
+      // tokens is one setting for every model and its default is above many models' limits,
+      // so without this the first request of every run on such a model was refused.
+      const limit = loweredOutput ? null : outputLimitFrom(err, maxOutputTokens);
+      if (limit !== null) {
+        loweredOutput = true;
+        useAIStore.getState().rememberOutputLimit(key, limit);
+        addEntry(ctl, {
+          kind: 'text',
+          id: newId(),
+          text: `${model} allows at most ${limit.toLocaleString()} output tokens in a reply, so Studio asks for that instead of the ${maxOutputTokens.toLocaleString()} set as Max output tokens.`,
+          at: Date.now(),
+        });
+        continue;
+      }
+      // A rate limit, and a server that is overloaded or cannot reach its upstream: both are
+      // the provider's "try again in a moment", so both are waited out and asked again. An
+      // overloaded error arriving inside a stream always was (stream.ts makes it a rate
+      // limit); the same answer arriving as a status ended the run on its first refusal.
+      const busy = isBusy(err);
+      if (err instanceof AIProviderError && (err.kind === 'rate-limited' || busy) && attempt < RATE_LIMIT_RETRIES) {
         attempt++;
         const wait = Math.min(err.retryAfterMs ?? 5_000 * attempt, 60_000);
-        useAIStore.getState().setCurrentStep(`Rate limited; retrying in ${Math.ceil(wait / 1000)} s…`);
+        useAIStore.getState().setCurrentStep(`${busy ? 'The provider is busy' : 'Rate limited'}; retrying in ${Math.ceil(wait / 1000)} s…`);
         await sleep(wait, ctl.abort?.signal);
         if (controllerStopped(ctl)) throw new AIProviderError('cancelled', 'The run was stopped.');
         continue;
@@ -1235,7 +1296,7 @@ async function drive(ctl: RunController): Promise<void> {
     }
 
     // Reserve before sending: the request as it stands, and a reply as long as a reply may be.
-    const estimate = requestEstimate(ctl, contextSize(ctl, system)) + ai.maxOutputTokens;
+    const estimate = requestEstimate(ctl, contextSize(ctl, system)) + outputAllowance(ctl.provider, model);
     const spent = runEffective(run.tokens);
     if (spent + estimate > run.tokenBudget) {
       end(ctl, 'failed', `The run's token budget would be exceeded: ${spent.toLocaleString()} of ${run.tokenBudget.toLocaleString()} tokens used, and the next request needs about ${estimate.toLocaleString()}. Continue to allow another ${ai.agentSettings.runTokenBudget.toLocaleString()}, or raise the per-run budget in Settings.`);
@@ -1270,7 +1331,9 @@ async function drive(ctl: RunController): Promise<void> {
       if (!ctl.alive) return;
       if (err instanceof AIProviderError && err.kind === 'cancelled') return;
       const failure = describeFailure(err);
-      if (failure.kind === 'network' || failure.kind === 'timeout' || failure.kind === 'rate-limited') {
+      // A provider still busy after the retries is waited for like one still rate-limiting:
+      // the run pauses with its request as it was, where it used to end as failed.
+      if (failure.kind === 'network' || failure.kind === 'timeout' || failure.kind === 'rate-limited' || isBusy(err)) {
         setStatus(ctl, 'paused', `${failure.message} Nothing was lost: Resume sends the request again.`);
         useAIStore.getState().setLastFailure(failure);
         return;
@@ -1315,13 +1378,19 @@ async function drive(ctl: RunController): Promise<void> {
       // spend most of the allowance thinking before it writes a call, so one
       // cut reply is not a failure: the step is asked for again, once, with
       // a note to think less and do less per reply.
+      // The limit the reply met: the setting, or the model's own where that is lower, and then
+      // raising the setting changes nothing.
+      const allowance = outputAllowance(ctl.provider, model);
       if (ctl.truncations > TRUNCATION_RETRIES) {
-        end(ctl, 'failed', `The model's reply was cut off at the output limit (${ai.maxOutputTokens.toLocaleString()} tokens) again after it was asked to keep its reasoning short and split the work. Raise Max output tokens in Settings → Agent runs, or ask for a smaller change.`);
+        const remedy = allowance < ai.maxOutputTokens
+          ?'That is the most this model allows in one reply: ask for a smaller change, or choose a model that allows longer replies in AI setup.'
+          : 'Raise Max output tokens in Settings → Agent runs, or ask for a smaller change.';
+        end(ctl, 'failed', `The model's reply was cut off at the output limit (${allowance.toLocaleString()} tokens) again after it was asked to keep its reasoning short and split the work. ${remedy}`);
         return;
       }
       ctl.turns.push({
         role: 'user',
-        text: `Your reply was cut off at the output limit (${ai.maxOutputTokens.toLocaleString()} tokens) before it was finished, so none of its tool calls were run. Thinking counts toward that limit. Try this step again: keep your reasoning short, and split the work — one small call at a time; change existing files with edit_file, and write a large new file in parts (write the first part, then add to it with edit_file).`,
+        text: `Your reply was cut off at the output limit (${allowance.toLocaleString()} tokens) before it was finished, so none of its tool calls were run. Thinking counts toward that limit. Try this step again: keep your reasoning short, and split the work — one small call at a time; change existing files with edit_file, and write a large new file in parts (write the first part, then add to it with edit_file).`,
       });
       addEntry(ctl, { kind: 'text', id: newId(), text: 'A reply was cut off at the output limit; nothing from it was applied. The step is being tried again, with the agent asked to keep its reasoning short and split the work.', at: Date.now() });
       continue;

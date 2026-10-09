@@ -414,15 +414,17 @@ async function providerRequest<T>(
     if (!resp.ok) {
       const text = (await resp.text()).slice(0, 500);
       controller.signal.throwIfAborted();
+      const detail = providerMessage(text);
       if (resp.status === 429) {
         const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'));
+        // The provider's words, as every other failure quotes them. This ended with the body
+        // as it came: a person read braces, quotes and field names after the sentence.
         throw new AIProviderError(
           'rate-limited',
-          `The provider is rate-limiting requests${retryAfterMs !== undefined ? `; it asked for a wait of ${Math.ceil(retryAfterMs / 1000)} s` : ''}. ${text}`.trim(),
+          `The provider is rate-limiting requests${retryAfterMs !== undefined ? `; it asked for a wait of ${Math.ceil(retryAfterMs / 1000)} s` : ''}.${detail ? ` The provider said: “${detail}”` : ''}`,
           { status: 429, retryAfterMs },
         );
       }
-      const detail = providerMessage(text);
       throw new AIProviderError(
         'http',
         describeConnectionError(kindForStatus(resp.status), { type: provider.type, serverKind: provider.serverKind, url, detail }, resp.status),
@@ -452,8 +454,10 @@ function providerMessage(text: string): string | undefined {
   try {
     const body: unknown = JSON.parse(text);
     const error = isRecord(body) ? body.error : undefined;
-    const message = isRecord(error) ? error.message : typeof error === 'string' ? error : undefined;
+    const message = isRecord(error) ? error.message : typeof error === 'string' ? error : isRecord(body) ? body.message ?? body.detail : undefined;
     if (typeof message === 'string' && message.trim()) return message.trim().slice(0, 240);
+    // A JSON body that names no message is fields, not words: nothing to quote to a person.
+    if (isRecord(body) || Array.isArray(body)) return undefined;
   } catch {
     // Not JSON.
   }

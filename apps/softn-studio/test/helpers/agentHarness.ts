@@ -279,6 +279,7 @@ export function resetAgent(provider: ProviderConfig = ANTHROPIC, env: AgentEnvir
     agentSettings: { maxSteps: 40, runTokenBudget: 2_000_000, autoCheck: true, confirmDeletes: true },
     toolProtocols: {},
     streamModes: {},
+    outputLimits: {},
   });
 }
 

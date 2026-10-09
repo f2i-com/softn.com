@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { runAgentTurn } from '../../lib/agentOrchestrator';
+import { buildFromBrief } from '../../lib/agent/buildFromBrief';
 import { activeAgentRunId, answerAgentQuestion, isRunLive, revertChatTurn, stopAgentRun, turnRevertState } from '../../lib/agent/runAgent';
 import { isReadableRun, RunTimeline } from './RunTimeline';
 import type { ChatMessage } from '../../types/studio';
@@ -74,12 +75,28 @@ export const AIChat: React.FC = () => {
     runAgentTurn();
   };
 
+  // The box is disabled while the agent works, and a browser takes the focus from a control
+  // that becomes disabled: after a message sent with Enter the focus fell to the page and
+  // stayed there, so the next message began with finding the box again. When the run that
+  // Enter started stops working, the box takes the focus back, unless the person has put it
+  // somewhere in the meantime, or is on a touch screen, where focus would raise the keyboard
+  // over the result they are waiting to see.
+  const sentFromKeyboard = useRef(false);
+  useEffect(() => {
+    if (agentState !== 'idle' || !sentFromKeyboard.current) return;
+    sentFromKeyboard.current = false;
+    const active = document.activeElement;
+    const touch = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+    if (!touch && (!active || active === document.body)) inputRef.current?.focus();
+  }, [agentState]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Enter also commits an IME candidate. Safari can report composition as
     // finished on that keydown but still marks it with the IME key code.
     if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      sentFromKeyboard.current = Boolean(input.trim()) && agentState === 'idle';
       handleSend();
     }
   };
@@ -102,6 +119,18 @@ export const AIChat: React.FC = () => {
     addMessage(msg);
     setInput('');
     runAgentTurn();
+  };
+
+  // A project laid out from the brief and not built yet: the build is the run the brief
+  // wizard's approval starts, with the brief as its request, not an edit run that happens to
+  // say "build". Without a provider it waits as the draft, and the setup opens.
+  const buildOffer = brief ? `Build ${brief.appName} as the brief describes` : '';
+  const buildTheBrief = () => {
+    if (agentState !== 'idle') return;
+    if (!hasProvider) { setInput(buildOffer); openSettings(); return; }
+    if (!buildFromBrief()) sendSuggestedPrompt(buildOffer);
+    // The offer may be waiting in the box from a press made before there was a provider.
+    else if (input === buildOffer) setInput('');
   };
 
   return (
@@ -189,12 +218,16 @@ export const AIChat: React.FC = () => {
             <div style={styles.emptyIcon}>
               <Icon name="ai" size={32} color="var(--studio-accent)" />
             </div>
+            {/* A brief and a plan with nothing said yet is a project the brief wizard has just laid
+                out. It used to be greeted as an import ("Imported app ready: this bundle is loaded
+                into Studio"), which it never is: an import and an example each open with a message
+                of their own, so they never reach this state. */}
             <p style={styles.emptyTitle}>
-              {brief && blueprint ? 'Imported app ready' : brief ? 'Ready to generate' : 'Describe your app'}
+              {brief && blueprint ? 'Ready to build' : brief ? 'Ready to generate' : 'Describe your app'}
             </p>
             <p style={styles.emptyDesc}>
               {brief && blueprint
-                ? 'This bundle is loaded into Studio. Use AI to update pages, improve the design, change flows, or prepare the app for export.'
+                ? 'The pages are laid out and waiting for their content. Ask the AI to build the app, or tell it what to change.'
                 : brief
                 ? 'Your brief is loaded. Send a message to start generating, or refine the details.'
                 : 'Tell the AI what you want to build, or use the guided brief wizard for a structured approach.'
@@ -226,9 +259,13 @@ export const AIChat: React.FC = () => {
             )}
             {blueprint && messages.length === 0 && (
               <div style={styles.suggestions}>
+                {brief && (
+                  <button onClick={buildTheBrief} style={styles.suggestionBtn}>
+                    {buildOffer}
+                  </button>
+                )}
                 {[
-                  'Refresh the styling of this imported app',
-                  'Summarize the structure of this bundle before editing',
+                  'Summarize how this app is put together before changing it',
                   'Improve the main page and make it feel more polished',
                 ].map((s) => (
                   <button

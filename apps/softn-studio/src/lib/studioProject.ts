@@ -154,7 +154,17 @@ function buildPages(brief: ProjectBrief): BlueprintPage[] {
 }
 
 function buildCollections(brief: ProjectBrief): BlueprintCollection[] {
-  return brief.collections.map((name) => ({
+  // Two names with one key ("Tasks", "tasks") are one collection: the key is what the
+  // directory stores it under, what a <data> alias is, and the name of its .xdb file, so a
+  // second one would write a path the project already has.
+  const keys = new Set<string>();
+  const names = brief.collections.filter((name) => {
+    const key = collectionKey(name);
+    if (keys.has(key)) return false;
+    keys.add(key);
+    return true;
+  });
+  return names.map((name) => ({
     id: `${slugify(name)}-collection`,
     name: titleCase(name),
     fields: [
@@ -283,12 +293,15 @@ function uiText(value: unknown): string {
  * found nothing and did nothing.
  */
 export function pageSlugs(pages: readonly Pick<BlueprintPage, 'name'>[]): string[] {
-  const seen = new Map<string, number>();
+  // The number is counted up until the slug is one no page has: a second "Home" was given
+  // home-2 whether or not a page named "Home 2" already had it.
+  const taken = new Set<string>();
   return pages.map((page) => {
     const base = slugify(page.name);
-    const n = seen.get(base) ?? 0;
-    seen.set(base, n + 1);
-    return n === 0 ? base : `${base}-${n + 1}`;
+    let slug = base;
+    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
+    taken.add(slug);
+    return slug;
   });
 }
 
@@ -346,7 +359,7 @@ ${buildDataBlock(blueprint)}<logic src="../${logicPath}" />
   <Container size="lg">
     <Stack direction="vertical" gap="lg" padding="xl">
       <Stack direction="horizontal" gap="md" align="center" wrap>
-        <Heading level={1} class="brand">{appName}</Heading>
+        <Heading level={1} style:color="${accentFor(brief.style)}">{appName}</Heading>
         <Spacer />
         #each (item in pages)
           <Button variant={page === item.id ? "primary" : "ghost"} size="sm" @click={() => go(item.id)}>{item.label}</Button>
@@ -357,10 +370,6 @@ ${switches}
     </Stack>
   </Container>
 </App>
-
-<style>
-  .brand { color: ${accentFor(brief.style)}; }
-</style>
 `;
 }
 

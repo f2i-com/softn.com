@@ -40,6 +40,39 @@ describe('chat composition', () => {
     expect(runAgentTurn).toHaveBeenCalledOnce();
   });
 
+  // The box is disabled while the agent works, and a browser takes the focus from a control
+  // that becomes disabled: it fell to the page, and stayed there when the run ended. Someone
+  // working from the keyboard sent one message and then had to find the box again for the next.
+  it('gives the keyboard back to the box when the run a message started with Enter ends', () => {
+    input.focus();
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    expect(runAgentTurn).toHaveBeenCalledOnce();
+    act(() => useAIStore.getState().setAgentState('building'));
+    expect(input.disabled).toBe(true);
+    // jsdom leaves the focus on a control that was disabled, and will not blur it; a browser
+    // drops the focus to the page, which is done here through another control.
+    const other = document.createElement('button');
+    document.body.appendChild(other);
+    other.focus();
+    other.blur();
+    other.remove();
+    expect(document.activeElement).toBe(document.body);
+    act(() => useAIStore.getState().setAgentState('idle'));
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('leaves the focus where the person put it while the agent worked', () => {
+    const elsewhere = document.createElement('button');
+    document.body.appendChild(elsewhere);
+    input.focus();
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    act(() => useAIStore.getState().setAgentState('building'));
+    elsewhere.focus();
+    act(() => useAIStore.getState().setAgentState('idle'));
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
   it('keeps Shift+Enter available for a newline', () => {
     const event = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true });
     act(() => input.dispatchEvent(event));

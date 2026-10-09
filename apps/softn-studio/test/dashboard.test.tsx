@@ -87,6 +87,29 @@ describe('Dashboard recent projects', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  // The first-visit step is taken off the page when it is done or skipped, and the button
+  // that was pressed goes with it: the focus fell to the page, and a person at the keyboard
+  // was left above the site's own links with the page they had just unlocked far below.
+  it('puts the keyboard on Start a new app when the AI step is done or skipped', () => {
+    const named = (name: string) => [...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === name)!;
+    root = createRoot(container);
+    const draw = (gate: boolean) => act(() => root.render(
+      <Dashboard onNewProject={() => {}} recentProjects={[]} ai={{ gate, onSkip: () => draw(false) }} />,
+    ));
+    draw(true);
+    const skip = named('Explore examples without AI');
+    skip.focus();
+    expect(document.activeElement).toBe(skip);
+    act(() => skip.click());
+    expect(named('Explore examples without AI')).toBeUndefined();
+    expect(document.activeElement).toBe(named('Start a new app'));
+  });
+
+  it('leaves the keyboard alone on a visit that never had the AI step', () => {
+    mount({ ai: { gate: false, onSkip: () => {} } });
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('opens a project from a focused row button', async () => {
     const onOpenRecent = vi.fn(async () => ({ ok: true as const }));
     mount({ onOpenRecent });

@@ -116,6 +116,51 @@ describe('HistoryPanel', () => {
     expect(container.querySelector('li[data-history-unit="turn-1"]')).toBeNull();
   });
 
+  // Undo last and Revert AI changes had no way back: the store could redo, and nothing in
+  // Studio asked it to. One press too many took an import, or everything a run had built,
+  // and with the last unit gone the panel said "No changes yet".
+  it('puts back with Redo what Undo last took, also when the undo left nothing to list', () => {
+    store().applyTransaction(
+      [
+        { op: 'create', path: 'ui/main.ui', content: '<App/>' },
+        { op: 'create', path: 'logic/main.logic', content: 'let x = 1' },
+      ],
+      'ai',
+      'turn-1',
+    );
+    mount();
+    const named = (name: string) => Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === name);
+    expect(named('Redo')).toBeUndefined();
+
+    act(() => named('Undo last')!.click());
+    expect(store().files.size).toBe(0);
+    expect(rows()).toHaveLength(0);
+
+    act(() => named('Redo')!.click());
+    expect(store().readFile('ui/main.ui')).toBe('<App/>');
+    expect(store().readFile('logic/main.logic')).toBe('let x = 1');
+    expect(rows()).toHaveLength(1);
+    // Nothing more was undone, so there is nothing more to redo.
+    expect(named('Redo')).toBeUndefined();
+  });
+
+  it('puts back with Redo, one turn at a time, what Revert AI changes took', () => {
+    store().createFile('ui/main.ui', '<App/>');
+    store().applyTransaction([{ op: 'update', path: 'ui/main.ui', content: '<App theme="dark"/>' }], 'ai', 'turn-1');
+    store().applyTransaction([{ op: 'create', path: 'logic/main.logic', content: 'let x = 1' }], 'ai', 'turn-2');
+    mount();
+    const named = (name: string) => Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === name);
+    act(() => named('Revert AI changes')!.click());
+    expect(store().readFile('ui/main.ui')).toBe('<App/>');
+    expect(store().files.has('logic/main.logic')).toBe(false);
+
+    act(() => named('Redo')!.click());
+    expect(store().readFile('ui/main.ui')).toBe('<App theme="dark"/>');
+    expect(store().files.has('logic/main.logic')).toBe(false);
+    act(() => named('Redo')!.click());
+    expect(store().readFile('logic/main.logic')).toBe('let x = 1');
+  });
+
   it('describes an import of many files as one import', () => {
     store().batchCreateFiles([
       { path: 'a.ui', content: 'a' },

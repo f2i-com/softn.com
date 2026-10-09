@@ -126,7 +126,9 @@ export const AGENT_TOOLS: ToolSpec[] = [
   {
     name: 'read_docs',
     description:
-      'Read one of SoftN\'s published guides as text, by its slug from the guide index in your instructions, optionally narrowed to one section with "slug#section" (e.g. "xdb-data" or "language-support#state").',
+      // The examples are a guide and a section that exist, in every project's index: a model
+      // copies what it is shown, and this once showed a section its guide does not have.
+      'Read one of SoftN\'s published guides as text, by its slug from the guide index in your instructions, optionally narrowed to one section by adding # and the section\'s name (e.g. "xdb-data" or "ui-language#bindings").',
     inputSchema: { type: 'object', properties: { topic: str('A guide slug, optionally with #section.') }, required: ['topic'] },
   },
   {
