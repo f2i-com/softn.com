@@ -81,7 +81,7 @@ try {
   if(new Set(declared.map(r=>r.method+' '+r.path)).size!==declared.length)throw new Error('Duplicate route');
   if(routes.some(r=>r.poll!==undefined&&(typeof r.poll!=='boolean'||r.poll&&(r.method!=='GET'||r.transaction!=='read'))))throw new Error('Invalid polling route');
   startupStage='application_source';
-  validateWasmSource(readFileSync(inside(manifest.server.entry),'utf8'),manifest.config?.app||{},config.development,declared);
+  validateWasmSource(readFileSync(inside(manifest.server.entry),'utf8'),manifest.config?.app||{},config.development,declared,required.capabilities.includes('photos'));
   startupStage='data_directory';
   const data=realpathSync(join(root,'private/data'));
   if(lstatSync(join(root,'private/data')).isSymbolicLink()||!contained(realpathSync(join(root,'private')),data))throw new Error('Invalid data path');

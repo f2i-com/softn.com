@@ -37,6 +37,7 @@ function value(req){return {status:200,body:softn.sql.first("SELECT value FROM c
 function creditThenFail(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);try{softn.sql.execute("INSERT INTO no_such_table VALUES(1)",[]);}catch(e){return {status:400,body:{error:'refused'}};}return {status:200,body:{}};}
 function creditThenUndo(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);try{softn.sql.execute("INSERT INTO no_such_table VALUES(1)",[]);}catch(e){return {status:409,rollback:true,body:{error:'undone'}};}return {status:200,body:{}};}
 function creditThenRefuse(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);return {status:422,body:{error:'counted'}};}
+function settings(req){return {status:200,body:softn.config};}
 function age(req){return {status:200,body:{plain:softn.time.age("2000-01-01"),zoned:softn.time.age("2000-01-01","UTC"),bad:softn.time.age("not a date")}};}
 `;
 
@@ -206,6 +207,26 @@ test('softn.time.age takes UTC when no zone is given',t=>{
   assert.ok(Number.isInteger(r.body.plain)&&r.body.plain>=26,JSON.stringify(r.body));
   assert.equal(r.body.plain,r.body.zoned);
   assert.equal(r.body.bad,-1);
+});
+
+test('softn.config is the app\'s settings under the two flags the host owns',t=>{
+  // config.app reaches the script key for key, but `development` and
+  // `photos` are the host's to say, as on the Rust host: the app's own
+  // `photos: true` used to pass straight through with no grant behind it.
+  const app={plan:'pro',limits:{notes:3},development:true,photos:true};
+  const routes=[{method:'GET',path:'/api/settings',handler:'settings'}];
+  const ungranted=backend(manifest(routes,{config:{app}}));
+  t.after(ungranted.close);
+  assert.deepEqual(ungranted.invoke({method:'GET',path:'/api/settings',photos:true}).body,{plan:'pro',limits:{notes:3},development:false,photos:false});
+  // Granted, and GD there to do the work, which is what /api/meta reports.
+  const granting=manifest(routes,{config:{app}});
+  granting.server.requires.capabilities=['sql','photos'];
+  const granted=backend(granting,{capabilities:['sql','photos']});
+  t.after(granted.close);
+  assert.equal(granted.invoke({method:'GET',path:'/api/settings',photos:true}).body.photos,true);
+  assert.equal(granted.invoke({method:'GET',path:'/api/meta',photos:true}).body.photos,true);
+  assert.equal(granted.invoke({method:'GET',path:'/api/settings',photos:false}).body.photos,false);
+  assert.equal(granted.invoke({method:'GET',path:'/api/meta',photos:false}).body.photos,false);
 });
 
 test('config.server.requestsPerMinute sets the rate limit, and 0 turns it off',t=>{

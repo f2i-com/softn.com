@@ -32,13 +32,23 @@ function initialize() {
 }
 
 /** Compile declarations before a deployment's migrations touch its database. */
-export function validateWasmSource(source, appConfig = {}, development = false, routes = []) {
+/**
+ * softn.config: the app's own settings (manifest config.app) under the two
+ * flags the host owns. An app key named `development` or `photos` is
+ * replaced, as on the Rust host: `photos` used to pass straight through, so a
+ * bundle could tell its own script it had a grant the operator never gave.
+ */
+function scriptConfig(appConfig, development, photos) {
+  return JSON.stringify({...appConfig,development:development===true,photos:photos===true});
+}
+
+export function validateWasmSource(source, appConfig = {}, development = false, routes = [], photos = false) {
   initialize();
   const engine = new Engine();
   try {
     engine.setInstructionBudget(5_000_000);
     // No host bridge: validation cannot perform database, filesystem or network IO.
-    engine.initScript(SHIM+'\nsoftn.config='+JSON.stringify({...appConfig,development})+';\n'+source);
+    engine.initScript(SHIM+'\nsoftn.config='+scriptConfig(appConfig,development,photos)+';\n'+source);
     for (const route of routes) {
       if (!/^[$A-Z_a-z][$\w]*$/.test(route.handler) || engine.evalInContext('typeof '+route.handler+' === "function"') !== true) throw new Error('Missing route handler');
     }
@@ -82,7 +92,8 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
           return operations[op](...args);
         } catch(e){failed=true;throw e;}
       }});
-      engine.initScript(SHIM+'\nsoftn.config='+JSON.stringify({...appConfig,development})+';\n'+source);
+      // The answer /api/meta gives: granted, and GD is there to do it.
+      engine.initScript(SHIM+'\nsoftn.config='+scriptConfig(appConfig,development,capabilities.includes('photos')&&request.photos===true)+';\n'+source);
       engine.evalInContext('typeof onStart === "function" ? onStart() : null');
       const result=engine.callFunction(route.handler,[{...request,context}]);
       if(!result||!Number.isInteger(result.status)||result.status<200||result.status>599||!Object.hasOwn(result,'body')||Buffer.byteLength(JSON.stringify(result))>3*1024*1024)throw new Error('Invalid response');
