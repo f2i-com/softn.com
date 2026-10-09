@@ -5,9 +5,16 @@ DirectoryIndex index.html
 </FilesMatch>
 AddType application/wasm .wasm
 AddType text/javascript .mjs
-RewriteEngine On
-RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-RewriteRule ^api(?:/.*)?$ api.php [END]
+# The optional backend: /api/... is answered by api.php once backend/ is set
+# up, and the Authorization header reaches PHP under CGI and FastCGI. Inside
+# IfModule: without mod_rewrite the backend has no routes (/api/meta is
+# Apache's own 404), but the application itself, which needs none, still
+# loads instead of every request answering 500.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+    RewriteRule ^api(?:/.*)?$ api.php [END]
+</IfModule>
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
     # Only this site may frame the app, so another page cannot overlay it and

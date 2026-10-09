@@ -57,6 +57,7 @@ function reasons(req){var said={};
   return {status:422,rollback:true,body:said};}
 function depth(req){var levels=0,value=req.body;while(value!==null&&typeof value==='object'){value=value.a;levels++;}return {status:200,body:{levels:levels,leaf:value===undefined?'missing':value}};}
 function ordered(req){return {status:200,body:{zebra:Object.keys(req.body),apple:Object.keys(req.query),mango:req.body,kiwi:softn.sql.first("SELECT 1 AS zz, 'b' AS aa, 3 AS mm",[])}};}
+function inspect(req){var b=req.body;return {status:200,body:{body:b,keys:Object.keys(b),request:Object.keys(req),negative:1/b.z<0,negativeFloat:1/b.zf<0,types:[typeof b.one,typeof b.big,typeof b.text,typeof b.n,typeof b.list]}};}
 `;
 
 /** softn.time as both hosts answer it; its `script` is one more handler here. */
@@ -84,9 +85,11 @@ function backend(manifest,{capabilities=['sql']}={}){
   };
   const raw=request=>run(request).stdout;
   const invoke=request=>JSON.parse(raw(request));
+  /** The runner fed text as it stands, with any Node flags: what http.php writes, byte for byte. */
+  const fed=(input,flags=['--disable-proto=throw'])=>spawnSync(process.execPath,[...flags,join(root,'runner.mjs')],{input,encoding:'utf8',timeout:30000,maxBuffer:64*1024*1024,env:{...process.env,SOFTN_BACKEND_ROOT:root,NODE_NO_WARNINGS:'1'}});
   /** The answer, and what the runner wrote for the operator's log. */
   const logged=request=>{const r=run(request);return {...JSON.parse(r.stdout),stderr:r.stderr};};
-  return {root,raw,invoke,logged,close:()=>rmSync(root,{recursive:true,force:true})};
+  return {root,raw,invoke,logged,fed,close:()=>rmSync(root,{recursive:true,force:true})};
 }
 
 const manifest=(routes,extra={})=>({id:'route-schema',version:'1.0.0',main:'ui/main.ui',server:{entry:'server/main.logic',requires:{apiVersion:1,capabilities:['sql']},database:{kind:'private-sqlite',migrations:['server/migrations/001.sql']},routes},...extra});
@@ -560,4 +563,76 @@ WITH RECURSIVE n(x) AS (SELECT 2 UNION ALL SELECT x + 1 FROM n WHERE x < 3) INSE
   // A CTE, a ';' in a literal, LIKE, and 5 bound as the INTEGER 5 (5 / 2 is 2, not 2.5), in a read transaction.
   const year=String(new Date().getUTCFullYear());
   assert.deepEqual(r.body,[{label:'a',tag:year,half:2,s:'a;b'},{label:'n2',tag:'',half:2,s:'a;b'},{label:'n3',tag:'',half:2,s:'a;b'}]);
+});
+
+test('started as http.php starts it, the runner compiles nothing that outlives its answer',t=>{
+  // The flags a request's Node is given, read from where the command is
+  // written (request.php softn_runner_command; it was in http.php), so that
+  // what is tested is what is run.
+  const written=['request.php','http.php'].map(name=>readFileSync(join(runtime,name),'utf8')).join('\n').match(/\[\$backend\.'\/bin\/node',([^\]]+)\]/);
+  assert.ok(written,'the command that starts the runner');
+  const flags=[...written[1].matchAll(/'(--[a-z0-9=-]+)'/g)].map(m=>m[1]);
+  assert.ok(flags.includes('--disable-proto=throw'),flags.join(' '));
+  const b=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}]));
+  t.after(b.close);
+  const input=JSON.stringify({path:'/api/ping',method:'GET',query:{},headers:{},body:{},client_ip:'127.0.0.1',photos:false});
+  assert.equal(JSON.parse(b.fed(input).stdout).status,200);
+  // V8 says what it compiles and with which compiler, on stdout beside the answer.
+  const traced=with_=>{
+    const r=b.fed(input,[...with_,'--trace-wasm-compilation-times']);
+    return {answered:r.status===0&&r.stdout.includes('{"status":200,"body":{"ok":true,"path":"/api/ping"}}'),baseline:(r.stdout.match(/using Liftoff/g)??[]).length,optimized:(r.stdout.match(/using TurboFan/g)??[]).length};
+  };
+  const plain=traced(['--disable-proto=throw']);
+  if(!plain.answered||plain.baseline===0){t.skip('this Node does not trace wasm compilation (--trace-wasm-compilation-times)');return;}
+  const started=traced(flags);
+  assert.ok(started.answered,'the runner answers with the flags a request is started with');
+  assert.ok(started.baseline>0,'the engine is compiled by the baseline compiler');
+  // The engine's dispatch loop is one function of 280 KB. Left to itself V8
+  // starts optimizing it while the handler runs, which takes about 450 ms
+  // and over 100 MB, and a process cannot end while that is going on: every
+  // request waited a third of a second after its answer was written, for
+  // code that process would never run.
+  assert.equal(started.optimized,0,'no optimizing compile is started for a process that lives for one request');
+  if(plain.optimized===0)t.diagnostic('this Node did not optimize the engine during a request even without the flags');
+});
+
+const phpSkip=skip||(spawnSync('php',['-v']).status===0?false:'php is not on PATH (install PHP 8.1+ to run this test)');
+if(phpSkip&&!skip)console.warn('WARNING: tests/route-declarations.test.mjs body-text test skipped: '+phpSkip);
+nodeTest('a body handed on as the client\'s text is the body a handler was handed before, but for the sign of -0',{skip:phpSkip},t=>{
+  const b=backend(manifest([{method:'POST',path:'/api/inspect',handler:'inspect'}]));
+  t.after(b.close);
+  // Every spelling PHP wrote differently from the client: exponents, a
+  // fraction of zero, integers past 2^53 and past 2^64, escapes it did not
+  // need, a key sent twice, names a JavaScript object treats specially,
+  // and as deep as a body may go.
+  const deep='{"a":'.repeat(60)+'"leaf"'+'}'.repeat(60);
+  const text='{"z":-0,"zf":-0.0,"one":1.0,"e":1e2,"exp":1E+2,"tiny":1e-7,"safe":9007199254740991,"big":9007199254740993,"huge":12345678901234567890,"neg":-12345678901234567890,"tenth":0.1,'
+    +'"long":3.141592653589793238462643383279,"wide":1e16,"dup":1,"text":"café ☃ \\ud83d\\ude00 a\\/b \\u0041 \\\\ \\" \\n","empty":"","nul":"a\\u0000b","dup":2,'
+    +'"__proto__":{"x":1},"constructor":"c","toString":"t","list":[1,[2,[3,{}]],[]],"obj":{},"t":true,"f":false,"n":null,"deep":'+deep+'}';
+  JSON.parse(text);
+  // Both ways of writing the runner's input, by the PHP that writes it:
+  // the body decoded and written again, as http.php did, and its own text.
+  const script=`require ${JSON.stringify(join(runtime,'request.php'))};$raw=stream_get_contents(STDIN);
+    $request=['path'=>'/api/inspect','method'=>'POST','query'=>new stdClass(),'headers'=>new stdClass(),'body'=>null,'client_ip'=>'127.0.0.1','rate_key'=>'127.0.0.1','photos'=>false];
+    $body=softn_request_body($raw);if($body===null){fwrite(STDERR,'refused');exit(1);}
+    $rewritten=json_encode(array_merge($request,['body'=>$body]),JSON_THROW_ON_ERROR|JSON_INVALID_UTF8_SUBSTITUTE|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+    echo json_encode(['rewritten'=>$rewritten,'text'=>softn_runner_input($request,$raw)],JSON_UNESCAPED_UNICODE);`;
+  const written=spawnSync('php',['-d','display_errors=stderr','-r',script],{input:text,encoding:'utf8'});
+  assert.equal(written.status,0,written.stderr);assert.equal(written.stderr,'');
+  const inputs=JSON.parse(written.stdout);
+  assert.notEqual(inputs.rewritten,inputs.text);
+  const answer=input=>{const r=b.fed(input);assert.equal(r.status,0,r.stderr);const out=JSON.parse(r.stdout);assert.equal(out.status,200,r.stdout+r.stderr);return out.body;};
+  const before=answer(inputs.rewritten),now=answer(inputs.text);
+  // The one thing a handler can tell: PHP read `-0` as the integer 0 and
+  // wrote that; the text keeps the sign, as JSON.parse and the Rust host do.
+  assert.equal(before.negative,false);
+  assert.equal(now.negative,true);
+  assert.deepEqual({...now,negative:false},before);
+  // And what that body is, so that "the same" is not "the same mistake".
+  assert.deepEqual(now.keys,['z','zf','one','e','exp','tiny','safe','big','huge','neg','tenth','long','wide','dup','text','empty','nul','__proto__','constructor','toString','list','obj','t','f','n','deep']);
+  assert.deepEqual(now.request,['path','method','query','headers','body','photos','context']);
+  assert.equal(now.negativeFloat,true);
+  assert.deepEqual(now.types,['number','number','string','object','object']);
+  assert.equal(now.body.dup,2);assert.equal(now.body.text,'café ☃ \u{1F600} a/b A \\ " \n');assert.equal(now.body.nul,'a\u0000b');
+  assert.equal(now.body.big,9007199254740992);assert.equal(now.body.huge,12345678901234567000);assert.equal(now.body.wide,1e16);
 });

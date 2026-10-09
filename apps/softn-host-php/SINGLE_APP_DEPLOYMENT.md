@@ -14,13 +14,20 @@ softn-app-static-vVERSION.zip, the separate static-only distribution.
 ## Enable a private application backend
 
 Requirements: Linux Intel/AMD x86-64, glibc 2.28+, Apache mod_rewrite and PHP 8.1+
-with process execution enabled. PHP GD is optional, required only for photo routes.
+with process execution enabled (proc_open, proc_get_status, proc_terminate and
+proc_close not in disable_functions). The backend needs no PHP extension beyond a
+stock PHP. PHP GD is optional, required only for photo routes (Debian/Ubuntu: the
+php-gd package; a stock install does not have it).
 The ZIP includes Node with SQLite and the ZIPP WASM engine; no npm install, PHP FFI,
 separate listening server or systemd service is required.
 
 1. Put backend/ outside every public document root and Apache Alias. Put webroot/
-   contents in your site's document root, including .htaccess. Configure Apache
-   to honor its rewrite/header/MIME rules and keep your existing HTTPS/PHP setup.
+   contents in your site's document root, including .htaccess: the API is served
+   at /api/ from the site's root, not from a subdirectory. Configure Apache
+   to honor its rewrite/header/MIME rules (AllowOverride All, or FileInfo, Options,
+   Indexes and AuthConfig) and keep your existing HTTPS/PHP setup. Nginx, and an
+   Apache with AllowOverride None, read no .htaccess: README-RUNTIME.md has the
+   rules to write into the server's own configuration instead.
 2. Install your expanded PRIVATE server API v1 bundle at backend/app/, with its
    manifest.json, server logic and SQL migrations. Put its separate PUBLIC client
    at webroot/app.softn and update runtime.config.json. Never publish server source.
@@ -35,14 +42,31 @@ separate listening server or systemd service is required.
    Substitute your actual PHP user. Setup creates private/config.json and data;
    it preserves existing settings. Keep these private and back them up securely.
    It then checks PHP, that the bundled Node runs on this server, and that the
-   app answers /api/meta; any problem is a WARNING line and a non-zero exit.
+   app answers /api/meta; any problem is a WARNING line and a non-zero exit,
+   with the reason an app does not start beside it. If setup cannot go on (the
+   folder is not this account's to write in, the manifest is not JSON, part of
+   the upload is missing) it says which in one line. It checks the command-line
+   PHP, which is often configured apart from the web server's: step 7 checks
+   that one.
 6. Review private/config.json: appId must match the PRIVATE manifest ID; retain
    the generated keyHex and cryptoDomains. Grant only the capabilities the app
    needs. Configure any trusted operator integrations separately. Do not put
    provider credentials in runtime.config.json or the public client bundle.
 7. Visit /api/meta. A configured host reports runtime:zipp-wasm-on-demand. If it
    fails, its static diagnostic label identifies the failing startup check without
-   exposing secrets. Uploading the files alone does not initialize the backend.
+   exposing secrets (README-RUNTIME.md lists them: backend_public means backend/
+   is somewhere the web server serves, private_permissions that setup was run
+   as another account than the web server's PHP, open_basedir that PHP may not
+   read the backend directory). Uploading the files alone does not initialize
+   the backend. A 404 page of the web server's own for /api/meta means the
+   rewrite rule is not in effect (mod_rewrite off, or .htaccess not read).
+8. Check from outside that nothing private has a URL. Each of these must answer
+   403 or 404, never 200:
+   `curl -s -o /dev/null -w "%{http_code}\n" https://your.site/backend/private/config.json`
+   and the same for /backend/private/data/application.sqlite,
+   /backend/app/manifest.json and /.htaccess. On a server that reads no
+   .htaccess, a backend/ uploaded into the document root is served to anyone
+   who asks: README-RUNTIME.md, Security checklist.
 
 ## Compatibility and updates
 
@@ -58,7 +82,9 @@ and optional photos. It does not replace the native Rust host's persistent
 connections or XDB synchronization. Existing native databases and encryption keys
 require an explicit migration; do not point this host at native state automatically.
 
-To update, preserve backend/private/ and your edited api.php, then run setup again.
+To update, preserve backend/private/, backend/app/ (your application) and your
+$backend line in api.php (take the new api.php and set the line again),
+replace the rest of backend/ together, then run setup again.
 README-RUNTIME.md covers backup/restore, upgrade notes, Nginx and a security checklist. Do not replace your
 application with the example client. A backend packaged for Linux x64 will not run
 on ARM or Windows. The static browser assets remain portable.

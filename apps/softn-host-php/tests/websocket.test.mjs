@@ -33,6 +33,34 @@ test('optional WebSocket bridge checks auth on every poll, delivers changes and 
   const invalid=new WebSocket(url,{origin:'https://app.example'});await once(invalid,'open');invalid.send(JSON.stringify({type:'subscribe',path:'/api/private',authorization:'Bearer fixture'}));const [code]=await once(invalid,'close');assert.equal(code,1008);
   await new Promise((resolve,reject)=>{const foreign=new WebSocket(url,{origin:'https://evil.example'});foreign.on('unexpected-response',(req,res)=>{assert.equal(res.statusCode,403);req.destroy();resolve();});foreign.on('error',()=>{});setTimeout(()=>reject(Error('Origin check timeout')),1000).unref();});
 });
+test('the bridge takes the polling routes the runner serves: a GET declared `none` or not at all is a read',{timeout:10000},async t=>{
+  const upstream=http.createServer((req,res)=>{res.writeHead(200,{'Content-Type':'application/json',ETag:'"one"'});res.end(JSON.stringify({path:req.url}));});
+  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>upstream.close());
+  // `none` is the Rust host's word for "no transaction declared", and the
+  // runner reads both as `read` for a GET. The bridge read only `read` and
+  // an absent one, so a route that polled over HTTP was "Invalid
+  // subscription" over the socket.
+  const routes=[
+    {path:'/api/feed',method:'GET',transaction:'none',poll:true},
+    {path:'/api/plain',method:'GET',poll:true},
+    {path:'/api/read',method:'GET',transaction:'read',poll:true},
+    // Not polling routes, on either transport.
+    {path:'/api/write',method:'GET',transaction:'write',poll:true},
+    {path:'/api/post',method:'POST',transaction:'none',poll:true},
+    {path:'/api/quiet',method:'GET',transaction:'none'},
+  ];
+  const live=createLiveServer({upstream:'http://127.0.0.1:'+upstream.address().port,origins:['https://app.example'],routes,intervalMs:1000,maxPerClient:8});
+  live.server.listen(0,'127.0.0.1');await once(live.server,'listening');t.after(()=>live.close());
+  const url='ws://127.0.0.1:'+live.server.address().port+'/events';
+  const subscribe=async path=>{
+    const socket=new WebSocket(url,{origin:'https://app.example'});await once(socket,'open');
+    const answer=new Promise(resolve=>{socket.once('message',bytes=>resolve(JSON.parse(bytes)));socket.once('close',code=>resolve({closed:code}));});
+    socket.send(JSON.stringify({type:'subscribe',path,authorization:'Bearer fixture'}));
+    const got=await answer;socket.terminate();return got;
+  };
+  for(const path of ['/api/feed','/api/plain','/api/read'])assert.deepEqual(await subscribe(path),{type:'update',body:{path}},path);
+  for(const path of ['/api/write','/api/post','/api/quiet','/api/nothing'])assert.deepEqual(await subscribe(path),{closed:1008},path);
+});
 test('WebSocket upstream refuses remote plaintext and embedded credentials',()=>{
   for(const upstream of ['http://example.com','https://user:secret@example.com','https://example.com/path'])assert.throws(()=>createLiveServer({upstream,origins:[],routes:[]}));
 });

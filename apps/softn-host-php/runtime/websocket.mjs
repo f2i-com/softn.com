@@ -11,8 +11,13 @@ export {clientKey};
 export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxClients=8,maxPerClient=2,fetchImpl=fetch}) {
   const target=new URL(upstream);
   if(target.username||target.password||target.search||target.hash||target.pathname!=='/'||!(target.protocol==='https:'||target.protocol==='http:'&&['127.0.0.1','[::1]','localhost'].includes(target.hostname)))throw Error('Use an HTTPS origin or loopback HTTP upstream');
+  // A GET with no transaction declared, or the Rust host's `none`, is a read:
+  // the runner serves it as a polling route (request-worker.mjs), so the
+  // bridge does too. `none` was refused here as "Invalid subscription" for a
+  // route that polled over HTTP.
+  const read=r=>r.transaction===undefined||r.transaction==='none'||r.transaction==='read';
   // The site's own HTTPS origin needs no listing, as PHP accepts it (runtime/request.php).
-  const allowed=new Set([...origins,...(target.protocol==='https:'?[target.origin]:[])]),paths=new Set(routes.filter(r=>r.poll===true&&r.method==='GET'&&(r.transaction??'read')==='read'&&/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path)).map(r=>r.path));
+  const allowed=new Set([...origins,...(target.protocol==='https:'?[target.origin]:[])]),paths=new Set(routes.filter(r=>r.poll===true&&r.method==='GET'&&read(r)&&/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path)).map(r=>r.path));
   const server=http.createServer((req,res)=>{res.writeHead(404);res.end();});
   const sockets=new WebSocketServer({noServer:true,maxPayload:8192,perMessageDeflate:false});
   // Connections per visitor, so one visitor cannot hold every slot.

@@ -94,6 +94,101 @@ function softn_request_body(string $raw): ?object {
 }
 
 /**
+ * The command that starts the runner, for a request (http.php) and for
+ * setup's check of one (setup.php): one definition, so that a Node which
+ * will not take a flag fails setup and not every request after it. No
+ * request data becomes an argument.
+ *
+ * The two wasm flags keep V8's optimizing compiler off the engine. A process
+ * lives for one request, and the engine's dispatch loop is one function of
+ * 280 KB: V8 starts optimizing it as soon as it runs hot, which takes about
+ * 450 ms and over 100 MB, far longer than the request, and a process cannot
+ * end while that compile is running. So every request waited about a third
+ * of a second after its answer was written, burning a core, for code nothing
+ * would ever run. The baseline compiler's code is what a request ran on for
+ * its first half second anyway; only one that moves hundreds of megabytes
+ * through the engine lives long enough to miss the optimized code (measured
+ * at the most a request may do: 4.0 s for 3.3 s; the README has the rest).
+ * Both flags are needed: without tier-up alone V8 still tiers up
+ * dynamically, and without dynamic tiering alone it optimizes everything.
+ * @return list<string>
+ */
+function softn_runner_command(string $backend): array {
+    return [$backend.'/bin/node','--max-old-space-size=128','--disable-proto=throw','--no-wasm-tier-up','--no-wasm-dynamic-tiering',$backend.'/runner.mjs'];
+}
+
+/**
+ * What the runner reads on stdin: the request as JSON, in the order of
+ * `$request`, with the body's own text set in where `body` is.
+ *
+ * The body is the text the client sent (softn_request_body has already found
+ * it to be a JSON object this host takes) and is never decoded and written
+ * again on its way to the handler. Written again, a number came out in PHP's
+ * spelling: `1e16` is `1.0e+16` and `1e14` is `100000000000000`, so a 2 MiB
+ * body of them was 7.5 MB by the time the runner measured it. The runner
+ * refuses input past 6 MB before it has counted the request, so the client
+ * was told 503 "please retry" for a body no retry could mend, at the cost of
+ * a Node process each time and outside the rate limit altogether. `-0` also
+ * arrived as `0`, where the Rust host and JSON.parse keep the sign.
+ * @param array<string,mixed> $request `body` marks the place; its value is not used
+ */
+function softn_runner_input(array $request, string $bodyJson): string {
+    $flags=JSON_THROW_ON_ERROR|JSON_INVALID_UTF8_SUBSTITUTE|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES;
+    $members=[];
+    foreach($request as $key=>$value)
+        $members[]=json_encode((string)$key,$flags).':'.($key==='body'?$bodyJson:json_encode($value,$flags));
+    return '{'.implode(',',$members).'}';
+}
+
+/**
+ * Whether the private backend is somewhere the web server serves files from:
+ * inside the document root, or inside the directory api.php itself is in.
+ * That one is public whatever DOCUMENT_ROOT says, and is all there is to go
+ * on when the server passes none (the fallback used to be this file's own
+ * directory, the backend itself, so such a server was always refused).
+ * CONTEXT_DOCUMENT_ROOT is Apache's name for the directory an Alias or a
+ * user directory maps to, where DOCUMENT_ROOT is still the main site's.
+ * @param array<string,mixed> $server
+ */
+function softn_backend_is_public(string $backend, array $server): bool {
+    $flat=fn(string $path)=>rtrim(str_replace('\\','/',$path),'/');
+    $backend=$flat($backend);
+    $roots=[];
+    foreach(['DOCUMENT_ROOT','CONTEXT_DOCUMENT_ROOT'] as $key)
+        if(isset($server[$key])&&is_string($server[$key])&&$server[$key]!=='')$roots[]=$server[$key];
+    if(isset($server['SCRIPT_FILENAME'])&&is_string($server['SCRIPT_FILENAME'])&&$server['SCRIPT_FILENAME']!=='')$roots[]=dirname($server['SCRIPT_FILENAME']);
+    foreach($roots as $root) {
+        $public=realpath($root);
+        if($public===false)continue;
+        $public=$flat($public);
+        if($backend===$public||str_starts_with($backend,$public.'/'))return true;
+    }
+    return false;
+}
+
+/**
+ * A worker slot: the first of `private/slot-N.lock` nobody holds, locked,
+ * or null when every one is held. `usable` says whether any of them could
+ * be opened at all. When none can, nobody is holding them: this account may
+ * not write in private/ (setup was run as another), and "the server is
+ * busy, please retry" was the answer to that for ever.
+ * @return array{slot:mixed,usable:bool}
+ */
+function softn_worker_slot(string $private, int $workers): array {
+    $usable=false;
+    for($i=0;$i<$workers;$i++) {
+        // 'e': not inherited by the runner, which would otherwise keep the slot
+        // locked for as long as it lived, after this request had gone.
+        $candidate=@fopen($private.'/slot-'.$i.'.lock','ce');
+        if(!$candidate)continue;
+        $usable=true;
+        if(flock($candidate,LOCK_EX|LOCK_NB))return ['slot'=>$candidate,'usable'=>true];
+        fclose($candidate);
+    }
+    return ['slot'=>null,'usable'=>$usable];
+}
+
+/**
  * Where the runner notes that a rate bucket is over its limit for the
  * current minute (request-worker.mjs markLimited): one directory a minute,
  * one empty file a bucket, named by the SHA-256 the runner counts it under.

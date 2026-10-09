@@ -1,6 +1,9 @@
 # Optional live updates
 
-Declare an application GET route with `"transaction":"read"` and `"poll":true`.
+Declare an application GET route with `"poll":true` whose transaction is a read:
+`"transaction":"read"`, none declared, or the Rust host's `"none"`, which this
+host reads as a read for a GET (the bridge below used to refuse a `"none"`
+route that polled over HTTP).
 Its handler must authenticate and authorize every request and return only that
 user's permitted data. Both transports below invoke this same handler. These are
 application-data updates, not the native XDB sync_push/sync_pull replication protocol.
@@ -39,10 +42,30 @@ ProxyPass /events ws://127.0.0.1:8788/events
 ProxyPassReverse /events ws://127.0.0.1:8788/events
 ```
 
+The bridge tells one visitor from another by the last `X-Forwarded-For` address
+of a request that reaches it from loopback. Apache's mod_proxy adds that header
+by default (`ProxyAddHeaders`). Behind nginx it has to be asked for, or every
+visitor is the proxy and two connections are all there are (reasoned from the
+bridge's code; neither proxy is run in the test suite):
+
+```nginx
+location = /events {
+    proxy_pass http://127.0.0.1:8788;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_read_timeout 1h;
+}
+```
+
 Keep /api/* served by PHP. Clients connect to wss://app.example/events. The bridge
 checks the handshake Origin against the private manifest's allowedOrigins (an HTTPS
---upstream origin is accepted without listing) and
-refuses routes not marked poll:true. Supply the bearer credential in the first
+--upstream origin is accepted without listing; with a loopback --upstream the
+site's own origin must be listed, because PHP then sees the poll arrive for
+`127.0.0.1` and not for the site) and
+refuses routes not marked poll:true. A connection that has not subscribed within
+ten seconds is closed. Supply the bearer credential in the first
 frame, never a URL:
 
 ```json
@@ -59,8 +82,13 @@ The initial bridge supports one exact route per connection, eight clients (at
 most two from one visitor — the last `X-Forwarded-For` address the proxy
 appends, IPv6 by /64 — so one visitor cannot hold every slot),
 five-second polling, ten-second upstream deadlines, an 8 KiB incoming frame cap,
-3 MiB upstream response cap and slow-client disconnection. Eight polling clients
-stay below the PHP host's default shared-IP request limit. It is a small-deployment
+3 MiB upstream response cap and slow-client disconnection. Every poll the bridge
+makes comes from one address (the server's own, or loopback), so all its clients
+share one bucket of the PHP host's rate limit: eight clients are 96 requests a
+minute, under the default 120. An app that sets `config.server.requestsPerMinute`
+below that starves the bridge: its polls are answered 429 and its clients are
+sent `{"type":"error","status":429}` until the minute turns. It is a small-deployment
 transport, not a high-concurrency replacement for the native server. An optional
-service must remain running for WebSocket connections to remain open; PHP polling
-continues to work without it.
+service must remain running for WebSocket connections to remain open: while it
+is down the proxy answers /events with 502 or 503 and nothing else is affected;
+PHP polling continues to work without it.

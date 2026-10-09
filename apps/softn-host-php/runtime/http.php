@@ -84,29 +84,35 @@ if ($raw===false || strlen($raw)>$limit) reply(413,['error'=>'Request too large.
 if ($raw!=='' && strtolower(trim(explode(';',$_SERVER['CONTENT_TYPE']??'')[0]))!=='application/json') reply(415,['error'=>'Use application/json','code'=>'unsupported_media_type']);
 $body=softn_request_body($raw);
 if ($body===null) reply(400,['error'=>'Request body must be a JSON object','code'=>'invalid_request']);
-if (!function_exists('proc_open') || !function_exists('proc_get_status') || !function_exists('proc_terminate')) reply(503,['error'=>'This host must enable PHP process execution (proc_open, proc_get_status, proc_terminate).','code'=>'backend_unavailable','diagnostic'=>'php_process_functions']);
+// proc_close as well: with it alone disabled the request ran, and then died
+// in the clean-up below with its answer unsent.
+foreach(['proc_open','proc_get_status','proc_terminate','proc_close'] as $needed)
+    if (!function_exists($needed)) reply(503,['error'=>'This host must enable PHP process execution (proc_open, proc_get_status, proc_terminate, proc_close).','code'=>'backend_unavailable','diagnostic'=>'php_process_functions']);
 $backend=realpath($backend);
+// Before anything is said about setup: an operator told to run setup first
+// did, and so made the key and the database in a directory the web server
+// serves, to be told only afterwards that the directory had to move.
+if ($backend && softn_backend_is_public($backend,$_SERVER)) reply(503,['error'=>'The backend must be outside the public document root.','code'=>'backend_unavailable','diagnostic'=>'backend_public']);
+// A private/ this account cannot look into was made by another one (setup
+// run as root, say). "Run setup first" was the answer, to an operator who had.
+if ($backend && is_dir($backend.'/private') && !is_readable($backend.'/private')) reply(503,['error'=>'The private backend folder belongs to another account than the one this web server runs PHP as. Run setup as that account.','code'=>'backend_unavailable','diagnostic'=>'private_permissions']);
 if (!$backend || !is_file($backend.'/private/config.json') || !is_executable($backend.'/bin/node')) reply(503,['error'=>'Run the private backend setup first.','code'=>'backend_unavailable','diagnostic'=>'setup_required']);
-$public=realpath($_SERVER['DOCUMENT_ROOT']??__DIR__);
-if ($public && ($backend===$public || str_starts_with($backend,rtrim($public,'/').'/'))) reply(503,['error'=>'The backend must be outside the public document root.','code'=>'backend_unavailable','diagnostic'=>'backend_public']);
 // How many requests may run at once, each a Node process: config.server.workers
 // in the manifest, four when unset, at most sixteen on this host. A slot file
 // setup did not make is made here.
 $workers=(int)($manifest['config']['server']['workers']??4);$workers=max(1,min(16,$workers));
-$slot=null;
-for($i=0;$i<$workers;$i++) {
-    // 'e': not inherited by the runner, which would otherwise keep the slot
-    // locked for as long as it lived, after this request had gone.
-    $candidate=@fopen($backend.'/private/slot-'.$i.'.lock','ce');
-    if($candidate && flock($candidate,LOCK_EX|LOCK_NB)){$slot=$candidate;break;}
-    if($candidate)fclose($candidate);
-}
+['slot'=>$slot,'usable'=>$slotsUsable]=softn_worker_slot($backend.'/private',$workers);
+if(!$slot&&!$slotsUsable)reply(503,['error'=>'The private backend folder is not writable by the account this web server runs PHP as. Run setup as that account.','code'=>'backend_unavailable','diagnostic'=>'private_permissions']);
 if(!$slot)reply(503,['error'=>'The server is busy. Please retry.','code'=>'database_busy']);
+// `body` marks where the body's own text goes (softn_runner_input); the
+// decoded copy is only for the photo adapter below.
 $request=['path'=>$path,'method'=>$method,'query'=>(object)softn_query((string)($_SERVER['QUERY_STRING']??'')),
-    'headers'=>(object)softn_request_headers($_SERVER),'body'=>$body,
+    'headers'=>(object)softn_request_headers($_SERVER),'body'=>null,
     'client_ip'=>$clientIp,'rate_key'=>$rateKey,'photos'=>extension_loaded('gd')];
+$bodyJson=$raw===''?'{}':$raw;
 if($upload) {
-    if(!extension_loaded('gd'))reply(503,['error'=>'Enable PHP GD for photo uploads.']);
+    // A stock Debian or Ubuntu PHP has no GD: say which package, and give the answer a code like every other.
+    if(!extension_loaded('gd'))reply(503,['error'=>'Enable the PHP GD extension for photo uploads (Debian/Ubuntu: the php-gd package).','code'=>'backend_unavailable','diagnostic'=>'php_gd']);
     require_once $backend.'/photos.php';
     // A photo this host will not take is still a request the caller made: the
     // runner counts it against their rate limit and answers the refusal. It
@@ -115,12 +121,12 @@ if($upload) {
     try{$request['upload']=sanitize_photo($body->data_url??null);}
     catch(Throwable $e){$request['refused']='photo';}
     // The image itself is not sent on, taken or refused.
-    $request['body']=new stdClass();
+    $bodyJson='{}';
 }
 $process=null;$pipes=[];$errors='';$exitCode=null;
 try {
     // Array command bypasses the shell; no request data becomes an argument.
-    $process=proc_open([$backend.'/bin/node','--max-old-space-size=128','--disable-proto=throw',$backend.'/runner.mjs'],
+    $process=proc_open(softn_runner_command($backend),
         [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,$backend,
         ['PATH'=>'/usr/bin:/bin','TZ'=>'UTC','NODE_NO_WARNINGS'=>'1']);
     if(!is_resource($process))throw new RuntimeException('spawn');
@@ -128,8 +134,9 @@ try {
     // Invalid UTF-8 in a header or the query becomes U+FFFD rather than failing the request.
     // Text goes through as itself: escaped to \uXXXX, a 2 MiB body of
     // two-byte characters was 6 MB by the time the runner measured it, and
-    // was refused there with "please retry".
-    $input=json_encode($request,JSON_THROW_ON_ERROR|JSON_INVALID_UTF8_SUBSTITUTE|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);$offset=0;$output='';$errorBytes=0;
+    // was refused there with "please retry". The body goes through as the
+    // text the client sent, for the same reason (softn_runner_input).
+    $input=softn_runner_input($request,$bodyJson);$offset=0;$output='';$errorBytes=0;
     $deadline=hrtime(true)+25_000_000_000;
     while(true) {
         if(hrtime(true)>$deadline)throw new RuntimeException('timeout');

@@ -1,0 +1,150 @@
+/**
+ * One request the whole way on this host: php-cgi (the SAPI a web server
+ * hands a request to) -> api.php -> http.php -> the runner -> the engine and
+ * SQLite, and the answer back. The other suites stop at one side of the
+ * process http.php starts: request.test.mjs before it, and
+ * route-declarations.test.mjs after it. What goes wrong between the two was
+ * only seen by tests/apache-smoke.py, which needs Apache and a packaged
+ * archive:
+ *
+ * - a 2 MiB body of numbers was 7.5 MB by the time PHP had decoded it and
+ *   written it again, the runner refused it unread and uncounted, and the
+ *   client was told 503 "please retry";
+ * - a server that passes no DOCUMENT_ROOT was refused as though the backend
+ *   were public (the fallback compared the backend with itself);
+ * - slot files nobody could open were "the server is busy", for ever;
+ * - setup.php threw away what the runner said when the app did not start.
+ *
+ * The backend is assembled from this checkout: the runtime files, the ZIPP
+ * release installed in packages/@softn/core/wasm-zipp, and `bin/node` a link
+ * to the Node this test runs under. It needs a POSIX system: http.php starts
+ * the runner with an environment of its own (PATH, TZ, NODE_NO_WARNINGS),
+ * under which a Windows Node does not start. Skipped, visibly, otherwise.
+ */
+import nodeTest from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readdirSync,symlinkSync,realpathSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {spawnSync} from 'node:child_process';
+
+const here=dirname(fileURLToPath(import.meta.url));
+const runtime=join(here,'../runtime');
+const wasmDir=join(here,'../../../packages/@softn/core/wasm-zipp');
+const [major,minor]=process.versions.node.split('.').map(Number);
+const skip=process.platform==='win32'?'needs a POSIX system (http.php starts Node with an environment a Windows Node does not start under); run it on Linux'
+  :spawnSync('php-cgi',['-v']).status!==0?'php-cgi is not on PATH (it ships with PHP; Debian/Ubuntu: php-cgi)'
+  :!existsSync(join(wasmDir,'zipp_wasm_bg.wasm'))?'packages/@softn/core/wasm-zipp is not installed (npm run fetch:zipp)'
+  :major<24||major===24&&minor<19?'Node 24.19 or newer (node:sqlite)':false;
+if(skip)console.warn(`WARNING: tests/http-runner.test.mjs skipped: ${skip}. See apps/softn-host-php/README.md, Validation.`);
+const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
+
+const SOURCE=`
+function ping(req){return {status:200,body:{ok:true}};}
+function count(req){var a=req.body.a;return {status:200,body:{n:a?a.length:0,first:a?a[0]:null,last:a?a[a.length-1]:null}};}
+function signs(req){return {status:200,body:{negative:1/req.body.z<0,text:req.body.s,keys:Object.keys(req.body)}};}
+`;
+const ROUTES=[
+  {method:'GET',path:'/api/ping',handler:'ping'},
+  {method:'POST',path:'/api/count',handler:'count',maxBodySize:2097152},
+  {method:'POST',path:'/api/signs',handler:'signs'},
+];
+
+/** webroot/ beside backend/, as the archive lays them out, set up as setup.php leaves it. */
+function deployment(t,{appId='http-runner',ownNode=false}={}) {
+  const root=realpathSync(mkdtempSync(join(tmpdir(),'softn-http-runner-')));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const backend=join(root,'backend');
+  mkdirSync(join(root,'webroot'));mkdirSync(join(backend,'wasm'),{recursive:true});
+  copyFileSync(join(here,'../api.php'),join(root,'webroot/api.php'));
+  for(const name of readdirSync(runtime))copyFileSync(join(runtime,name),join(backend,name));
+  copyFileSync(join(wasmDir,'zipp_wasm.js'),join(backend,'wasm/zipp_wasm.mjs'));
+  copyFileSync(join(wasmDir,'zipp_wasm_bg.wasm'),join(backend,'wasm/zipp_wasm_bg.wasm'));
+  // A link, except where setup.php will run: setup makes bin/node 0700, and
+  // through a link that would be the mode of the Node this machine runs.
+  mkdirSync(join(backend,'bin'));
+  if(ownNode)copyFileSync(process.execPath,join(backend,'bin/node'));else symlinkSync(process.execPath,join(backend,'bin/node'));
+  mkdirSync(join(backend,'app/server'),{recursive:true});mkdirSync(join(backend,'private/data'),{recursive:true});
+  writeFileSync(join(backend,'app/manifest.json'),JSON.stringify({id:'http-runner',version:'1.0.0',main:'ui/main.ui',server:{entry:'server/main.logic',requires:{apiVersion:1,capabilities:['sql']},routes:ROUTES}}));
+  writeFileSync(join(backend,'app/server/main.logic'),SOURCE);
+  writeFileSync(join(backend,'private/config.json'),JSON.stringify({appId,development:false,keyHex:'ab'.repeat(32),capabilities:['sql'],cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'},trustedProxies:[]}));
+  /** What the web server tells PHP; `server` adds to it or, with undefined, leaves a name out. */
+  const ask=(method,uri,{body='',server={}}={})=>{
+    const env={PATH:process.env.PATH,REQUEST_METHOD:method,REQUEST_URI:uri,QUERY_STRING:uri.split('?')[1]??'',SCRIPT_FILENAME:join(root,'webroot/api.php'),SCRIPT_NAME:'/api.php',
+      DOCUMENT_ROOT:join(root,'webroot'),REDIRECT_STATUS:'200',HTTP_HOST:'site.example',REMOTE_ADDR:'203.0.113.10',GATEWAY_INTERFACE:'CGI/1.1',SERVER_PROTOCOL:'HTTP/1.1',
+      ...(body!==''?{CONTENT_TYPE:'application/json',CONTENT_LENGTH:String(Buffer.byteLength(body))}:{}),...server};
+    for(const name of Object.keys(env))if(env[name]===undefined)delete env[name];
+    const r=spawnSync('php-cgi',[],{env,input:body,encoding:'utf8',maxBuffer:64*1024*1024,timeout:60000});
+    assert.equal(r.status,0,r.stderr);
+    const at=r.stdout.search(/\r?\n\r?\n/),head=r.stdout.slice(0,at),text=r.stdout.slice(at).replace(/^\r?\n\r?\n/,''),headers={};
+    for(const line of head.split(/\r?\n/)){const i=line.indexOf(':');headers[line.slice(0,i).toLowerCase()]=line.slice(i+1).trim();}
+    // PHP's error log is php-cgi's stderr here: what an operator would read.
+    return {status:Number((headers.status??'200').split(' ')[0]),headers,text,log:r.stderr};
+  };
+  return {root,backend,ask};
+}
+
+test('a body of numbers reaches the handler as the text the client sent',t=>{
+  const d=deployment(t);
+  const ping=d.ask('GET','/api/ping');
+  assert.equal(ping.status,200,JSON.stringify(ping));
+  assert.equal(ping.text,'{"ok":true}');
+  assert.equal(ping.log,'','a request that succeeds logs nothing');
+  // As large as the route allows, of a number PHP spells longer than the
+  // client did (`1.0e+16`). It was answered 503 runner_unavailable: no retry
+  // could mend it, each one cost a Node process, and none was counted
+  // against the rate limit, since the runner died before it counted.
+  const body='{"a":['+Array.from({length:419428},()=>'1e16').join(',')+']}';
+  assert.ok(Buffer.byteLength(body)<=2097152);
+  const counted=d.ask('POST','/api/count',{body});
+  assert.equal(counted.status,200,counted.text+counted.log);
+  assert.deepEqual(JSON.parse(counted.text),{n:419428,first:1e16,last:1e16});
+  // The text is what the handler is handed: `-0` keeps its sign, as on the
+  // Rust host (PHP wrote it back as `0`), non-ASCII is itself, and the keys
+  // are in the client's order.
+  const signs=d.ask('POST','/api/signs',{body:'{"z":-0,"s":"café \\ud83d\\ude00","b":1.0,"a":[]}'});
+  assert.equal(signs.status,200,signs.text+signs.log);
+  assert.deepEqual(JSON.parse(signs.text),{negative:true,text:'café \u{1F600}',keys:['z','s','b','a']});
+  // One byte more than the route takes is still refused before a runner is started.
+  assert.equal(d.ask('POST','/api/count',{body:body.slice(0,-2)+' '.repeat(40)+']}'}).status,413);
+});
+
+test('a server that passes no DOCUMENT_ROOT is served, and a backend beside api.php is still refused',t=>{
+  const d=deployment(t);
+  // The fallback for a missing DOCUMENT_ROOT was http.php's own directory,
+  // which is the backend: compared with itself, it was always "public".
+  const bare=d.ask('GET','/api/ping',{server:{DOCUMENT_ROOT:undefined}});
+  assert.equal(bare.status,200,bare.text+bare.log);
+  // Told the site's root is the folder above both: that is a public backend.
+  const inside=d.ask('GET','/api/ping',{server:{DOCUMENT_ROOT:d.root}});
+  assert.equal(inside.status,503);
+  assert.equal(JSON.parse(inside.text).diagnostic,'backend_public');
+});
+
+test('slot files nobody can open are a fault of the installation, not a busy server',t=>{
+  const d=deployment(t);
+  // private/ this account may not write in (setup run as another account),
+  // stood in for by directories where the four slot files would be.
+  for(let i=0;i<4;i++)mkdirSync(join(d.backend,'private/slot-'+i+'.lock'));
+  const r=d.ask('GET','/api/ping');
+  assert.equal(r.status,503);
+  // It was `database_busy`, "please retry", however long the client retried.
+  assert.deepEqual(JSON.parse(r.text),{error:'The private backend folder is not writable by the account this web server runs PHP as. Run setup as that account.',code:'backend_unavailable',diagnostic:'private_permissions'});
+});
+
+test('setup.php starts the runner as a request does and says why an app does not start',t=>{
+  // A configuration left from another app: the runner refuses it at the
+  // application_identity stage and says why on stderr, which setup sent to
+  // /dev/null. The operator was given the label and nothing else.
+  const wrong=deployment(t,{appId:'another-app',ownNode:true});
+  const failed=spawnSync('php',[join(wrong.backend,'setup.php')],{encoding:'utf8',timeout:60000});
+  assert.equal(failed.status,1,failed.stdout+failed.stderr);
+  assert.match(failed.stderr,/WARNING: The application does not start: application_identity \(see README-RUNTIME\.md, Startup diagnostics\)\. It said: softn: startup stage application_identity: Operator configuration belongs to another app/);
+  // And one that starts is said to answer, by a runner started with the flags a request gets.
+  const right=deployment(t,{ownNode:true});
+  const ready=spawnSync('php',[join(right.backend,'setup.php')],{encoding:'utf8',timeout:60000});
+  assert.equal(ready.status,0,ready.stdout+ready.stderr);
+  assert.match(ready.stdout,/Application http-runner 1\.0\.0 answers \/api\/meta\./);
+  assert.doesNotMatch(ready.stderr,/WARNING/);
+});
