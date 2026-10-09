@@ -900,7 +900,11 @@ test('storage collection policies: who may do what, per collection', skip, async
   assert.equal((await S({ op: 'count', collection: 'notes' }, bob)).json.result.count, 1);
   assert.equal((await S({ op: 'get', collection: 'notes', id: n1.json.result.id }, bob)).json.result, null, "Bob cannot see Ann's");
   assert.equal((await S({ op: 'update', collection: 'notes', id: n1.json.result.id, data: { text: 'x' } }, bob)).status, 404);
-  assert.equal((await S({ op: 'remove', collection: 'notes', id: n1.json.result.id }, bob)).status, 404);
+  // An id is each visitor's own under `private`: removing one Bob has no
+  // record under is what removing any absent record is, and no longer says
+  // (with a 404) that someone else holds it.
+  assert.deepEqual((await S({ op: 'remove', collection: 'notes', id: n1.json.result.id }, bob)).json.result, { removed: 0 });
+  assert.equal((await S({ op: 'get', collection: 'notes', id: n1.json.result.id }, ann)).json.result.data.text, "Ann's");
   const ownerReads = await S({ op: 'query', collection: 'notes' }, owner);
   assert.equal(ownerReads.status, 403, 'the edit key is not a visitor');
   const browse = await api('GET', '/api/apps/policy-board/storage/notes');

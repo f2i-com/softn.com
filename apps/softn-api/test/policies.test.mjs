@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startServer, skip } from './helpers/harness.mjs';
+import { startServer, skip, runPhp } from './helpers/harness.mjs';
 
 const permissions = {
   storage: {
@@ -79,7 +79,13 @@ const matrix = {
     insert: { anon: 403, ann: 200, bob: 200, owner: 403 },
     read: { anon: 403, ann: 200, bob: 200, owner: 403 },
     updateOther: { anon: 403, bob: 404, owner: 403, ann: 200 },
-    removeOther: { anon: 403, bob: 404, owner: 403, ann: 200 },
+    // An id is each visitor's own here: Bob's `set` of the id Ann used makes
+    // his record, not a change to hers, and his `remove` takes his own. Both
+    // were 404 while ids were one namespace, which also told him the id was
+    // taken.
+    setOther: { anon: 403, bob: 200, owner: 403, ann: 200 },
+    removeOther: { anon: 403, bob: 200, owner: 403, ann: 200 },
+    ownRecords: true,
     clear: { anon: 403, ann: 403, bob: 403, owner: 200 },
   },
   publisher: {
@@ -135,7 +141,7 @@ for (const [policy, spec] of Object.entries(matrix)) {
       const r = await S({ op: 'update', collection: c, id: 'theirs', data: { text: `changed by ${actor}` } }, actors[actor]);
       assert.equal(r.status, status, `${policy} update by ${actor}: ${r.text}`);
       const setR = await S({ op: 'set', collection: c, id: 'theirs', data: { text: `set by ${actor}` } }, actors[actor]);
-      assert.equal(setR.status, status, `${policy} set by ${actor}: ${setR.text}`);
+      assert.equal(setR.status, (spec.setOther ?? spec.updateOther)[actor], `${policy} set by ${actor}: ${setR.text}`);
     }
     const after = await S({ op: 'get', collection: c, id: 'theirs' }, actors[spec.seededBy]);
     const lastAllowed = Object.entries(spec.updateOther).filter(([, st]) => st === 200).pop()?.[0];
@@ -144,7 +150,8 @@ for (const [policy, spec] of Object.entries(matrix)) {
       const r = await S({ op: 'remove', collection: c, id: 'theirs' }, actors[actor]);
       assert.equal(r.status, status, `${policy} remove by ${actor}: ${r.text}`);
       if (status === 200) {
-        const gone = actor === Object.entries(spec.removeOther).find(([, st]) => st === 200)[0];
+        // One shared record goes once; where each has their own, each removes theirs.
+        const gone = spec.ownRecords || actor === Object.entries(spec.removeOther).find(([, st]) => st === 200)[0];
         assert.equal(r.json.result.removed, gone ? 1 : 0, `${actor} removed it${gone ? '' : ' (already gone)'}`);
       }
     }
@@ -161,6 +168,80 @@ for (const [policy, spec] of Object.entries(matrix)) {
 /** N requests at once; the built-in server queues them, independent workers race them — either way the outcome is what is asserted. */
 const parallel = (n, fn) => Promise.all(Array.from({ length: n }, (_, i) => fn(i)));
 const N = 12;
+
+/** Run SQL against the app's storage file, as PHP opens it: [statement, parameters] pairs, the last one's rows returned. */
+function storageSql(statements) {
+  const r = runPhp({
+    dataDir: s.dataDir,
+    args: [slug, JSON.stringify(statements)],
+    script: `
+$pdo = new PDO('sqlite:' . $argv[1] . '/apps/' . $argv[2] . '/storage.sqlite');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('PRAGMA busy_timeout=3000');
+$rows = [];
+foreach (json_decode($argv[3], true) as [$sql, $params]) { $q = $pdo->prepare($sql); $q->execute($params); $rows = $q->fetchAll(PDO::FETCH_ASSOC); }
+echo json_encode($rows);`,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+
+test('in a private collection an id is the visitor\'s own, and a record from before that is still theirs', skip, async () => {
+  const notes = (body, who) => S({ collection: 'notes', ...body }, actors[who]);
+  const name = async (who, id = 'profile') => (await notes({ op: 'get', id }, who)).json.result?.data.name ?? null;
+
+  // Two visitors, one fixed id. The second was told "No such record" by set,
+  // nothing by get, and by insert that a record with that id exists.
+  assert.equal((await notes({ op: 'set', id: 'profile', data: { name: 'Ann' } }, 'ann')).status, 200);
+  const second = await notes({ op: 'set', id: 'profile', data: { name: 'Bob' } }, 'bob');
+  assert.equal(second.status, 200, second.text);
+  assert.equal(second.json.result.id, 'profile');
+  assert.deepEqual([await name('ann'), await name('bob')], ['Ann', 'Bob']);
+  assert.equal((await notes({ op: 'insert', id: 'draft', data: { name: 'A' } }, 'ann')).status, 200);
+  const other = await notes({ op: 'insert', id: 'draft', data: { name: 'B' } }, 'bob');
+  assert.equal(other.status, 200, 'another visitor\'s private record was reported as existing: ' + other.text);
+  assert.equal((await notes({ op: 'insert', id: 'draft', data: { name: 'again' } }, 'bob')).status, 409, 'his own is still a conflict');
+
+  // Each changes and removes only their own.
+  const changed = await notes({ op: 'update', id: 'profile', data: { name: 'Bobby' } }, 'bob');
+  assert.equal(changed.status, 200, changed.text);
+  assert.equal(changed.json.result.id, 'profile');
+  assert.deepEqual([await name('ann'), await name('bob')], ['Ann', 'Bobby']);
+  // The id an app sees is the one it gave, in every reply and in a query on it.
+  const listed = (await notes({ op: 'query', where: { _id: { in: ['draft', 'profile'] } }, orderBy: '_id' }, 'bob')).json.result;
+  assert.deepEqual(listed.records.map((r) => [r.id, r.data.name]), [['draft', 'B'], ['profile', 'Bobby']]);
+  const byId = (await notes({ op: 'query', where: { _id: 'profile' } }, 'bob')).json.result;
+  assert.deepEqual(byId.records.map((r) => r.data.name), ['Bobby']);
+  assert.equal((await notes({ op: 'count', where: { _id: 'profile' } }, 'ann')).json.result.count, 1);
+  assert.equal((await notes({ op: 'remove', id: 'profile' }, 'bob')).json.result.removed, 1);
+  assert.deepEqual([await name('ann'), await name('bob')], ['Ann', null]);
+
+  // A record Ann added before ids were scoped: under its bare id, hers by
+  // the owner column, written here as that version of the API left it.
+  const [{ owner: annId }] = storageSql([["SELECT owner FROM records WHERE collection = 'notes' AND id LIKE '%|profile'", []]]);
+  storageSql([['INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, 1, 1, ?)', ['notes', 'legacy', JSON.stringify({ name: 'Old Ann' }), annId]]]);
+  const stored = () => storageSql([["SELECT id FROM records WHERE collection = 'notes' AND (id = 'legacy' OR id LIKE '%|legacy') ORDER BY id", []]]).map((r) => r.id);
+  assert.equal(await name('ann', 'legacy'), 'Old Ann', 'she can no longer read her own record');
+  assert.equal(await name('bob', 'legacy'), null);
+  // Bob may have a record of that name; it is not hers and does not hide hers.
+  assert.equal((await notes({ op: 'set', id: 'legacy', data: { name: 'Bob\'s' } }, 'bob')).status, 200);
+  assert.deepEqual([await name('ann', 'legacy'), await name('bob', 'legacy')], ['Old Ann', 'Bob\'s']);
+  // Her writes change that record where it is; they do not make a second one.
+  assert.equal((await notes({ op: 'set', id: 'legacy', data: { name: 'Set' } }, 'ann')).status, 200);
+  assert.equal((await notes({ op: 'update', id: 'legacy', data: { extra: 1 } }, 'ann')).json.result.data.name, 'Set');
+  assert.equal((await notes({ op: 'insert', id: 'legacy', data: { name: 'twin' } }, 'ann')).status, 409);
+  assert.equal(stored().filter((id) => id === 'legacy' || id === `${annId}|legacy`).join(), 'legacy', 'a second record was made beside the one she had');
+  assert.equal(stored().length, 2, 'hers and Bob\'s');
+  const hers = (await notes({ op: 'query', where: { _id: 'legacy' } }, 'ann')).json.result.records;
+  assert.deepEqual(hers.map((r) => [r.id, r.data.name, r.mine]), [['legacy', 'Set', true]]);
+  assert.equal((await notes({ op: 'remove', id: 'legacy' }, 'ann')).json.result.removed, 1);
+  assert.deepEqual([await name('ann', 'legacy'), await name('bob', 'legacy')], [null, 'Bob\'s']);
+
+  // Nothing of this reaches a collection that is not private: ids there are shared, as before.
+  assert.equal((await S({ op: 'insert', collection: 'posts', id: 'shared', data: { t: 1 } }, actors.ann)).status, 200);
+  assert.equal((await S({ op: 'insert', collection: 'posts', id: 'shared', data: { t: 2 } }, actors.bob)).status, 409);
+  assert.equal((await S({ op: 'remove', collection: 'posts', id: 'shared' }, actors.ann)).json.result.removed, 1);
+});
 
 test('concurrent writes: the unauthorised are all refused and the authorised commit exactly once', skip, async () => {
   // Twelve inserts of one id into an append-only collection, from every kind of visitor: one record.
@@ -201,10 +282,13 @@ test('concurrent writes: the unauthorised are all refused and the authorised com
   );
 
   // Twelve of Bob's removals of Ann's private note: none; it is still hers.
+  // Each is told what a removal of an id nobody has is told, so the answer
+  // does not say the id is in use (it was 404 for hers, 200 for no record).
   const secret = await S({ op: 'insert', collection: 'notes', id: 'secret', data: { text: 'mine alone' } }, actors.ann);
   assert.equal(secret.status, 200);
   const prying = await parallel(N, () => S({ op: 'remove', collection: 'notes', id: 'secret' }, actors.bob));
-  assert.ok(prying.every((r) => r.status === 404), prying.map((r) => r.status).join(','));
+  assert.ok(prying.every((r) => r.status === 200 && r.json.result.removed === 0), prying.map((r) => r.status).join(','));
+  assert.deepEqual((await S({ op: 'remove', collection: 'notes', id: 'nobody-has-this' }, actors.bob)).json.result, { removed: 0 });
   assert.equal((await S({ op: 'get', collection: 'notes', id: 'secret' }, actors.ann)).json.result.data.text, 'mine alone');
 });
 

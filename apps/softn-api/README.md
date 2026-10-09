@@ -653,6 +653,17 @@ collection needs the edit key under every policy. The key-value store has no
 policies and is always public. Records carry `mine: true` when the visitor
 asking added them, which is what an owner-write interface needs to know.
 
+In a `private` collection a record id belongs to the visitor who uses it:
+two visitors may each keep a record called `profile`, and neither can tell
+that the other has one. (Ids used to be one namespace per collection, so a
+fixed id worked for the first visitor only and the next was told the id was
+taken, or that there was no such record.) The record is stored under the
+visitor's identity and the id together; every reply and every query on `_id`
+uses the id the app gave. A record added before this, under its bare id,
+stays where it is and stays its owner's to read, change and remove. Other
+policies keep one namespace per collection, since their records are there
+for everyone to read.
+
 "Whoever added it" is a **visitor token**: a random string the runtime mints
 once per browser, keeps in local storage, and sends as `X-Visitor-Token`.
 The server keeps only a salted hash of it bound to the app, so the token is

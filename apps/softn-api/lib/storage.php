@@ -334,6 +334,54 @@ SQL);
         return $c;
     }
 
+    /**
+     * The id a record is stored under. In a `private` collection that is the
+     * visitor's own: `<owner>|<id>`.
+     *
+     * The table's key is (collection, id), so ids were one namespace shared
+     * by every visitor of a collection none of them can see into. A fixed id
+     * (`profile`, `settings`) worked for whoever used it first: the next
+     * visitor's `get` found nothing, their `set` was told "No such record",
+     * and their `insert` was told a record with that id exists, which is the
+     * existence of someone else's private record, told. `|` is outside the
+     * characters an id may have, so a client cannot name another's record.
+     */
+    private static function storedId(array $ctx, string $c, string $id): string
+    {
+        return self::policy($ctx, $c) === 'private' && $ctx['owner'] !== null ? $ctx['owner'] . '|' . $id : $id;
+    }
+
+    /** A stored id as the app gave it. */
+    private static function shownId(string $stored): string
+    {
+        $bar = strpos($stored, '|');
+        return $bar === false ? $stored : substr($stored, $bar + 1);
+    }
+
+    /** The same, in SQL, for a query that names or orders by `_id`. */
+    private const SHOWN_ID = "(CASE WHEN instr(id, '|') > 0 THEN substr(id, instr(id, '|') + 1) ELSE id END)";
+
+    /**
+     * The row a request means by an id, or false. In a private collection:
+     * the visitor's own record of that name, or the one they added under the
+     * bare id before ids were scoped, which stays theirs to read, change and
+     * remove, where it is. Never anyone else's.
+     *
+     * @return array<string, mixed>|false
+     */
+    private static function find(PDO $pdo, string $c, string $id, array $ctx, string $columns = '*'): array|false
+    {
+        $stored = self::storedId($ctx, $c, $id);
+        if ($stored === $id) {
+            $stmt = $pdo->prepare("SELECT $columns FROM records WHERE collection = ? AND id = ?");
+            $stmt->execute([$c, $id]);
+            return $stmt->fetch();
+        }
+        $stmt = $pdo->prepare("SELECT $columns FROM records WHERE collection = ? AND (id = ? OR (id = ? AND owner = ?)) ORDER BY (id = ?) DESC LIMIT 1");
+        $stmt->execute([$c, $stored, $id, $ctx['owner'], $stored]);
+        return $stmt->fetch();
+    }
+
     private static function id(array $body): string
     {
         $id = $body['id'] ?? null;
@@ -365,7 +413,7 @@ SQL);
     {
         $owner = $row['owner'] ?? null;
         return [
-            'id' => $row['id'],
+            'id' => self::shownId((string) $row['id']),
             'data' => self::obj(Json::decode((string) $row['data'])),
             'createdAt' => (int) $row['created_at'],
             'updatedAt' => (int) $row['updated_at'],
@@ -396,12 +444,15 @@ SQL);
         $id = isset($body['id']) ? self::id($body) : self::newId();
         $encoded = json_encode($data, JSON_UNESCAPED_UNICODE);
         $now = time();
-        return self::write($pdo, function () use ($pdo, $c, $id, $encoded, $now, $limits, $ctx, $data) {
+        $stored = self::storedId($ctx, $c, $id);
+        return self::write($pdo, function () use ($pdo, $c, $id, $stored, $encoded, $now, $limits, $ctx, $data) {
             self::assertRoom($pdo, $c, $limits);
-            self::assertQuota($pdo, $limits, strlen($c) + strlen($id) + strlen($encoded));
+            self::assertQuota($pdo, $limits, strlen($c) + strlen($stored) + strlen($encoded));
+            // Theirs already, under the bare id from before ids were scoped.
+            if ($stored !== $id && self::find($pdo, $c, $id, $ctx, 'id') !== false) throw new ApiError(409, 'A record with that id already exists.');
             try {
                 $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)')
-                    ->execute([$c, $id, $encoded, $now, $now, $ctx['owner']]);
+                    ->execute([$c, $stored, $encoded, $now, $now, $ctx['owner']]);
             } catch (PDOException $e) {
                 if (str_contains($e->getMessage(), 'UNIQUE')) throw new ApiError(409, 'A record with that id already exists.');
                 throw $e;
@@ -414,10 +465,9 @@ SQL);
     {
         $c = self::collection($body);
         self::allowRead($ctx, $c);
-        [$ownSql, $ownParams] = self::own($ctx, $c);
-        $stmt = $pdo->prepare("SELECT * FROM records WHERE collection = ? AND id = ?$ownSql");
-        $stmt->execute(array_merge([$c, self::id($body)], $ownParams));
-        $row = $stmt->fetch();
+        $row = self::find($pdo, $c, self::id($body), $ctx);
+        // Under `private`, a row that is not this visitor's is not there.
+        if ($row && self::policy($ctx, $c) === 'private' && !hash_equals((string) ($row['owner'] ?? ''), (string) $ctx['owner'])) $row = false;
         return $row ? self::record($row, $ctx) : null;
     }
 
@@ -433,11 +483,13 @@ SQL);
         $c = self::collection($body);
         $id = self::id($body);
         $patch = self::data($body, $limits, 'data');
+        // Without an identity there is no record to name under `private`:
+        // the refusal says a token is missing, whatever ids exist.
+        if (self::policy($ctx, $c) === 'private' && $ctx['owner'] === null) throw self::noToken($c);
         return self::write($pdo, function () use ($pdo, $c, $id, $patch, $limits, $ctx) {
-            $stmt = $pdo->prepare('SELECT * FROM records WHERE collection = ? AND id = ?');
-            $stmt->execute([$c, $id]);
-            $row = $stmt->fetch();
+            $row = self::find($pdo, $c, $id, $ctx);
             if (!$row) throw new ApiError(404, 'No such record.');
+            $id = (string) $row['id'];
             $owner = $row['owner'] ?? null;
             self::allowModify($ctx, $c, $owner);
             $existing = Json::decode((string) $row['data']);
@@ -462,22 +514,23 @@ SQL);
         $encoded = json_encode($data, JSON_UNESCAPED_UNICODE);
         $now = time();
         return self::write($pdo, function () use ($pdo, $c, $id, $data, $encoded, $now, $limits, $ctx) {
-            $stmt = $pdo->prepare('SELECT created_at, owner, LENGTH(CAST(data AS BLOB)) AS bytes FROM records WHERE collection = ? AND id = ?');
-            $stmt->execute([$c, $id]);
-            $existing = $stmt->fetch();
+            $existing = self::find($pdo, $c, $id, $ctx, 'id, created_at, owner, LENGTH(CAST(data AS BLOB)) AS bytes');
             if ($existing === false) {
                 self::allowAdd($ctx, $c);
+                $stored = self::storedId($ctx, $c, $id);
                 self::assertRoom($pdo, $c, $limits);
-                self::assertQuota($pdo, $limits, strlen($c) + strlen($id) + strlen($encoded));
+                self::assertQuota($pdo, $limits, strlen($c) + strlen($stored) + strlen($encoded));
                 $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)')
-                    ->execute([$c, $id, $encoded, $now, $now, $ctx['owner']]);
+                    ->execute([$c, $stored, $encoded, $now, $now, $ctx['owner']]);
                 return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $now, 'updatedAt' => $now, 'mine' => $ctx['owner'] !== null];
             }
             $owner = $existing['owner'] ?? null;
             self::allowModify($ctx, $c, $owner);
             self::assertQuota($pdo, $limits, strlen($encoded), (int) $existing['bytes']);
             // The record keeps whoever added it: replacing its fields is not adopting it.
-            self::changeOne($pdo, 'UPDATE records SET data = ?, updated_at = ? WHERE collection = ? AND id = ? AND owner IS ?', [$encoded, $now, $c, $id, $owner]);
+            // And it stays where it is: a record from before ids were scoped is
+            // changed under its bare id, not given a scoped twin.
+            self::changeOne($pdo, 'UPDATE records SET data = ?, updated_at = ? WHERE collection = ? AND id = ? AND owner IS ?', [$encoded, $now, $c, (string) $existing['id'], $owner]);
             return ['id' => $id, 'data' => self::obj($data), 'createdAt' => (int) $existing['created_at'], 'updatedAt' => $now,
                 'mine' => is_string($owner) && $ctx['owner'] !== null && hash_equals($owner, $ctx['owner'])];
         });
@@ -487,14 +540,13 @@ SQL);
     {
         $c = self::collection($body);
         $id = self::id($body);
+        if (self::policy($ctx, $c) === 'private' && $ctx['owner'] === null) throw self::noToken($c);
         return self::write($pdo, function () use ($pdo, $c, $id, $ctx) {
-            $stmt = $pdo->prepare('SELECT owner FROM records WHERE collection = ? AND id = ?');
-            $stmt->execute([$c, $id]);
-            $row = $stmt->fetch();
+            $row = self::find($pdo, $c, $id, $ctx, 'id, owner');
             if (!$row) return ['removed' => 0];
             $owner = $row['owner'] ?? null;
             self::allowModify($ctx, $c, $owner);
-            self::changeOne($pdo, 'DELETE FROM records WHERE collection = ? AND id = ? AND owner IS ?', [$c, $id, $owner]);
+            self::changeOne($pdo, 'DELETE FROM records WHERE collection = ? AND id = ? AND owner IS ?', [$c, (string) $row['id'], $owner]);
             return ['removed' => 1];
         });
     }
@@ -593,7 +645,7 @@ SQL);
     private static function column(string $field): string
     {
         return match ($field) {
-            '_id' => 'id',
+            '_id' => self::SHOWN_ID,
             '_created' => 'created_at',
             '_updated' => 'updated_at',
             default => "json_extract(data, '$." . $field . "')",
