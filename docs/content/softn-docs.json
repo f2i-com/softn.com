@@ -2430,11 +2430,11 @@
                 ],
                 [
                   "Text and status",
-                  "Text, Heading, Badge, Tag, Progress, Spinner, Skeleton, Image, Icon, Kbd"
+                  "Text, Heading, Badge, Tag, TagGroup, Avatar, AvatarGroup, Progress, Spinner, Skeleton, Image, Icon, Kbd"
                 ],
                 [
                   "Input and actions",
-                  "Button, Input, NumberInput, TextArea, Select, SegmentedControl, Checkbox, Radio, Switch, Rating, Form, Slider"
+                  "Button, ButtonGroup, Input, NumberInput, TextArea, Select, SegmentedControl, Checkbox, Radio, Switch, Rating, Form, Field, Slider"
                 ],
                 [
                   "Dates, colours and files",
@@ -2446,7 +2446,7 @@
                 ],
                 [
                   "Feedback",
-                  "Alert, Modal, Toast, Drawer, Popover, EmptyState"
+                  "Alert, Modal, Confirm, Toast, Drawer, Popover, EmptyState"
                 ]
               ],
               "caption": "A starting selection from the component library."
@@ -2471,6 +2471,10 @@
                 [
                   "Lists and tables",
                   "List, ListItem, Table, DataGrid, TreeView, Pagination"
+                ],
+                [
+                  "The facts about one record",
+                  "DescriptionList"
                 ],
                 [
                   "Data-oriented forms and views",
@@ -2525,6 +2529,43 @@
                 {
                   "term": "Steps",
                   "description": "Progress through a sequence. `current` is the step in progress, by position or by key; with `:bind` or `@change` the steps are buttons."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "ready-made-pieces",
+          "title": "Pieces you would otherwise lay out by hand",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<DescriptionList items={[{ label: \"Customer\", value: order.name }, { label: \"Paid\", value: order.paid }]} columns={2} />\n\n<Field label=\"Volume\" hint=\"Applies to every sound.\" error={volumeError}>\n  <Slider :bind={volume} />\n</Field>\n\n<ButtonGroup ariaLabel=\"Range\">\n  <Button @click={() => range = \"day\"}>Day</Button>\n  <Button @click={() => range = \"week\"}>Week</Button>\n</ButtonGroup>\n\n<Confirm open={asking} title=\"Delete this note?\" message=\"This cannot be undone.\"\n         confirmText=\"Delete\" variant=\"danger\"\n         @confirm={() => remove()} @cancel={() => asking = false} />\n\n<AvatarGroup max={3}>\n  #each (person in people) key={person.id}\n    <Avatar name={person.name} />\n  #end\n</AvatarGroup>",
+              "caption": "Each of these replaces a layout that is otherwise written out again in every app."
+            },
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": "DescriptionList",
+                  "description": "The facts about one thing as labels and values. `items` is a list of `{ label, value, hint? }` or the record itself, whose keys become the labels. A value that is missing is shown as a dash, `true` and `false` as Yes and No, and `columns` falls to fewer on a narrow screen."
+                },
+                {
+                  "term": "Field",
+                  "description": "A label, a hint and an error around any control. Input, Select and TextArea carry their own; use Field for a Slider, a Rating, a SegmentedControl, a group of checkboxes or a control of your own. An `error` is shown in place of the hint and announced."
+                },
+                {
+                  "term": "ButtonGroup",
+                  "description": "Buttons that belong together, joined edge to edge, or kept apart with `attached={false}`. For one choice of a few, SegmentedControl is the control."
+                },
+                {
+                  "term": "Confirm",
+                  "description": "A question with two answers, asked before something is done. The app keeps `open`: `@confirm` and `@cancel` tell it the answer, and it closes the dialog by changing `open`, so a failed action can leave the question up. `loading` holds both answers while the action runs."
+                },
+                {
+                  "term": "AvatarGroup and TagGroup",
+                  "description": "A row of overlapping avatars with a count of those past `max`, and a row of tags that wraps. Put the Avatar or Tag tags inside, written out or from an `#each`."
                 }
               ]
             }
@@ -2924,6 +2965,16 @@
                 "Check how charts and tables behave when their container shrinks.",
                 "Test the actual interaction after a theme or viewport change."
               ]
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<Grid columns={3} gap=\"md\" collapseOnMobile>…</Grid>\n<Grid columns={{ sm: 1, md: 2, lg: 4 }} gap=\"md\">…</Grid>\n<Grid minColumnWidth=\"220px\" gap=\"md\">…</Grid>\n<Stack direction=\"horizontal\" gap=\"md\" mobileVertical>…</Stack>",
+              "caption": "Layouts that change with the width of the screen, without a stylesheet."
+            },
+            {
+              "type": "paragraph",
+              "text": "A Grid with a plain `columns={3}` keeps three columns at every width, which is what a keypad or a game board needs. `collapseOnMobile` makes it one column below 768 pixels, a `columns` object names a count for each width, and `minColumnWidth` fits as many columns as have that much room. A horizontal Stack with `mobileVertical` becomes a column on a phone."
             }
           ]
         },

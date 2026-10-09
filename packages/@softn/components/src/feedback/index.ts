@@ -8,3 +8,4 @@ export * from './Toast';
 export * from './Drawer';
 export * from './Popover';
 export * from './EmptyState';
+export * from './Confirm';

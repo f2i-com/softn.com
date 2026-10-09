@@ -2,7 +2,7 @@
  * The components every app is likely to use and no app is hurt by: layout,
  * forms, display, feedback, navigation, the data views and the light
  * utilities. Measured with esbuild, minified, dependencies external: about
- * 265 KB together, and nothing beyond React and @softn/core in their import
+ * 270 KB together, and nothing beyond React and @softn/core in their import
  * graphs. Everything heavier — Three.js behind Scene3D, the QR scanner and
  * the camera and microphone behind the media group, the editors, the charts,
  * the Smart family, the animation primitives — lives in its own entry and
@@ -60,11 +60,13 @@ import { FileChooser } from '../form/FileChooser';
 import { NumberInput } from '../form/NumberInput';
 import { Rating } from '../form/Rating';
 import { SegmentedControl } from '../form/SegmentedControl';
+import { ButtonGroup } from '../form/ButtonGroup';
+import { Field } from '../form/Field';
 import { Text } from '../display/Text';
 import { Heading } from '../display/Heading';
 import { Badge } from '../display/Badge';
-import { Tag } from '../display/Tag';
-import { Avatar } from '../display/Avatar';
+import { Tag, TagGroup } from '../display/Tag';
+import { Avatar, AvatarGroup } from '../display/Avatar';
 import { Progress } from '../display/Progress';
 import { Spinner } from '../display/Spinner';
 import { Image } from '../display/Image';
@@ -72,12 +74,14 @@ import { Icon } from '../display/Icon';
 import { Skeleton } from '../display/Skeleton';
 import { Stat } from '../display/Stat';
 import { Kbd } from '../display/Kbd';
+import { DescriptionList } from '../display/DescriptionList';
 import { Alert } from '../feedback/Alert';
 import { Modal } from '../feedback/Modal';
 import { Toast } from '../feedback/Toast';
 import { Drawer } from '../feedback/Drawer';
 import { Popover } from '../feedback/Popover';
 import { EmptyState } from '../feedback/EmptyState';
+import { Confirm } from '../feedback/Confirm';
 import { List, ListItem } from '../data/List';
 import { Table } from '../data/Table';
 import { TreeView } from '../data/TreeView';
@@ -135,13 +139,17 @@ export const minimalComponents = {
   NumberInput,
   Rating,
   SegmentedControl,
+  ButtonGroup,
+  Field,
 
   // Display
   Text,
   Heading,
   Badge,
   Tag,
+  TagGroup,
   Avatar,
+  AvatarGroup,
   Progress,
   Spinner,
   Image,
@@ -149,6 +157,7 @@ export const minimalComponents = {
   Skeleton,
   Stat,
   Kbd,
+  DescriptionList,
 
   // Feedback
   Alert,
@@ -157,6 +166,7 @@ export const minimalComponents = {
   Drawer,
   Popover,
   EmptyState,
+  Confirm,
 
   // Data
   List,

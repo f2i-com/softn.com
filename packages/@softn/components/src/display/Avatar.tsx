@@ -150,12 +150,38 @@ function stringToColor(given: string): string {
 }
 
 function getSizeValue(size: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | number): number {
-  return typeof size === 'number' ? size : sizeValues[size];
+  // A size that is not one of the names, or not a size at all (state that
+  // has not loaded), is the middle one: a group works its own width out of
+  // this, and NaN is not a width.
+  if (typeof size === 'number') return Number.isFinite(size) && size > 0 ? size : sizeValues.md;
+  return sizeValues[size] ?? sizeValues.md;
 }
 
 const DEFAULT_BADGE_COLOR = 'var(--color-error-500, #ef4444)';
 
-export function Avatar({
+/**
+ * What a group asks of the avatars in it: one size, and a border the colour
+ * of the page so that each stands clear of the one it overlaps.
+ *
+ * Context, because a group cannot reach its avatars any other way once they
+ * are drawn from a page: each arrives inside the renderer's error boundary,
+ * and props cloned onto that land on the boundary.
+ */
+const AvatarGroupContext = React.createContext<{
+  size: NonNullable<AvatarProps['size']>;
+  borderColor: string;
+} | null>(null);
+
+export function Avatar(props: AvatarProps): React.ReactElement {
+  const group = React.useContext(AvatarGroupContext);
+  return group ? (
+    <AvatarFace {...props} size={group.size} border borderColor={group.borderColor} />
+  ) : (
+    <AvatarFace {...props} />
+  );
+}
+
+function AvatarFace({
   src,
   alt,
   name,
@@ -383,9 +409,13 @@ export function AvatarGroup({
   style,
   children,
 }: AvatarGroupProps): React.ReactElement {
-  const childArray = React.Children.toArray(children);
-  const visibleChildren = childArray.slice(0, max);
-  const remainingCount = childArray.length - max;
+  // A page's `#each` hands its rows over inside fragments; counted as one
+  // child, a list of twenty people was one avatar to this and `max` did
+  // nothing.
+  const childArray = avatarsIn(children);
+  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : childArray.length;
+  const visibleChildren = childArray.slice(0, limit);
+  const remainingCount = childArray.length - limit;
 
   const sizeValue = getSizeValue(size);
 
@@ -409,32 +439,43 @@ export function AvatarGroup({
     borderRadius: '50%',
     backgroundColor: 'var(--color-gray-200, #3f3f46)',
     color: 'var(--color-gray-600, #4b5563)',
-    fontSize: typeof size === 'number' ? `${size * 0.35}px` : fontSizes[size],
+    fontSize: typeof size === 'number' ? `${sizeValue * 0.35}px` : (fontSizes[size] ?? fontSizes.md),
     fontWeight: 600,
     border: `2px solid ${borderColor}`,
     marginLeft: spacing,
   };
 
   return (
-    <div className={className} style={containerStyle}>
-      {remainingCount > 0 && (
-        <span style={remainingStyle} role="img" aria-label={`${remainingCount} more`}>
-          +{remainingCount}
-        </span>
-      )}
-      {visibleChildren.reverse().map((child, index) => (
-        <div key={index} style={index > 0 ? itemStyle : undefined}>
-          {React.isValidElement(child)
-            ? React.cloneElement(child as React.ReactElement<AvatarProps>, {
-                size,
-                border: true,
-                borderColor,
-              })
-            : child}
-        </div>
-      ))}
-    </div>
+    <AvatarGroupContext.Provider value={{ size, borderColor }}>
+      <div className={className} style={containerStyle}>
+        {remainingCount > 0 && (
+          <span style={remainingStyle} role="img" aria-label={`${remainingCount} more`}>
+            +{remainingCount}
+          </span>
+        )}
+        {visibleChildren.reverse().map((child, index) => (
+          <div key={index} style={index > 0 ? itemStyle : undefined}>
+            {child}
+          </div>
+        ))}
+      </div>
+    </AvatarGroupContext.Provider>
   );
+}
+
+/** The avatars among a group's children, out of whatever fragments a page's loops and conditions left them in. */
+function avatarsIn(children: React.ReactNode): React.ReactNode[] {
+  const found: React.ReactNode[] = [];
+  React.Children.forEach(children, (child) => {
+    if (React.isValidElement(child) && child.type === React.Fragment) {
+      found.push(...avatarsIn((child.props as { children?: React.ReactNode }).children));
+    } else if (React.isValidElement(child)) {
+      found.push(child);
+    } else if ((typeof child === 'string' && child.trim() !== '') || typeof child === 'number') {
+      found.push(child);
+    }
+  });
+  return found;
 }
 
 export default Avatar;

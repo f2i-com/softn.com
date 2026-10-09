@@ -1744,6 +1744,76 @@
       }
     },
     {
+      "name": "ButtonGroup",
+      "source": "src/form/ButtonGroup.tsx",
+      "props": {
+        "interface": "ButtonGroupProps",
+        "members": [
+          {
+            "name": "orientation",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "horizontal",
+                "vertical"
+              ]
+            },
+            "doc": "Side by side, or one above the other"
+          },
+          {
+            "name": "attached",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Joined edge to edge. False keeps them apart with a small gap"
+          },
+          {
+            "name": "fullWidth",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Fill the width, each button taking an equal share"
+          },
+          {
+            "name": "ariaLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "What the group is for, read by a screen reader"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          },
+          {
+            "name": "children",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "The buttons"
+          }
+        ]
+      }
+    },
+    {
       "name": "Camera",
       "source": "src/utility/Camera.tsx",
       "props": {
@@ -2536,6 +2606,131 @@
       }
     },
     {
+      "name": "Confirm",
+      "source": "src/feedback/Confirm.tsx",
+      "props": {
+        "interface": "ConfirmProps",
+        "members": [
+          {
+            "name": "open",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Whether the question is being asked"
+          },
+          {
+            "name": "title",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "The question"
+          },
+          {
+            "name": "message",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "What will happen, under the question. Content inside the tag is shown after it"
+          },
+          {
+            "name": "confirmText",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "The answer that goes ahead"
+          },
+          {
+            "name": "cancelText",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "The answer that does not"
+          },
+          {
+            "name": "variant",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "primary",
+                "danger",
+                "warning",
+                "success"
+              ]
+            },
+            "doc": "How the go-ahead button looks: `danger` for something that cannot be undone"
+          },
+          {
+            "name": "loading",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "The action is under way: both answers are held and the go-ahead button shows it"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Dialog size"
+          },
+          {
+            "name": "onConfirm",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called when the person goes ahead"
+          },
+          {
+            "name": "onCancel",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called when they do not: the other button, Escape, or a click outside"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          },
+          {
+            "name": "children",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "More to say, after the message"
+          }
+        ]
+      }
+    },
+    {
       "name": "Container",
       "source": "src/layout/Container.tsx",
       "props": {
@@ -3005,6 +3200,98 @@
               "kind": "function"
             },
             "doc": "Change handler"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DescriptionList",
+      "source": "src/display/DescriptionList.tsx",
+      "props": {
+        "interface": "DescriptionListProps",
+        "members": [
+          {
+            "name": "items",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "DescriptionItem[] | Record<string, unknown>"
+            },
+            "doc": "The fields: a list of { label, value, hint? }, or a record whose keys are the labels"
+          },
+          {
+            "name": "columns",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "Fields side by side, 1 to 4. They fall to fewer where there is not the room"
+          },
+          {
+            "name": "layout",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "stacked",
+                "inline"
+              ]
+            },
+            "doc": "Label above its value, or beside it"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "sm",
+                "md",
+                "lg"
+              ]
+            },
+            "doc": "Size"
+          },
+          {
+            "name": "dividers",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "A line between one field and the next"
+          },
+          {
+            "name": "emptyText",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "What stands in for a value that is not there"
+          },
+          {
+            "name": "labelWidth",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Width of the label column in the inline layout, as CSS"
           },
           {
             "name": "className",
@@ -3518,6 +3805,101 @@
               "kind": "node"
             },
             "doc": "Children (additional content)"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Field",
+      "source": "src/form/Field.tsx",
+      "props": {
+        "interface": "FieldProps",
+        "members": [
+          {
+            "name": "label",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "What the control is for"
+          },
+          {
+            "name": "hint",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "A note under the control"
+          },
+          {
+            "name": "error",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.ReactNode | boolean"
+            },
+            "doc": "What is wrong, shown in place of the hint. `true` marks the field without a message"
+          },
+          {
+            "name": "required",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Mark the label as required"
+          },
+          {
+            "name": "layout",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "vertical",
+                "horizontal"
+              ]
+            },
+            "doc": "Label above the control, or beside it"
+          },
+          {
+            "name": "labelWidth",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Width of the label in the horizontal layout, as CSS"
+          },
+          {
+            "name": "disabled",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Dim the label and notes with the control"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          },
+          {
+            "name": "children",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "The control"
           }
         ]
       }
@@ -12354,11 +12736,15 @@
       "NumberInput",
       "Rating",
       "SegmentedControl",
+      "ButtonGroup",
+      "Field",
       "Text",
       "Heading",
       "Badge",
       "Tag",
+      "TagGroup",
       "Avatar",
+      "AvatarGroup",
       "Progress",
       "Spinner",
       "Image",
@@ -12366,12 +12752,14 @@
       "Skeleton",
       "Stat",
       "Kbd",
+      "DescriptionList",
       "Alert",
       "Modal",
       "Toast",
       "Drawer",
       "Popover",
       "EmptyState",
+      "Confirm",
       "List",
       "ListItem",
       "Table",

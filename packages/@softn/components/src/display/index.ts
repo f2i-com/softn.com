@@ -14,3 +14,4 @@ export * from './Skeleton';
 export * from './Tag';
 export * from './Stat';
 export * from './Kbd';
+export * from './DescriptionList';

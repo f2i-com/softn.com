@@ -48,6 +48,8 @@ export const CATEGORIES: Category[] = [
       'NumberInput',
       'Rating',
       'SegmentedControl',
+      'ButtonGroup',
+      'Field',
     ],
   },
   {
@@ -65,11 +67,14 @@ export const CATEGORIES: Category[] = [
       'Skeleton',
       'Stat',
       'Kbd',
+      'DescriptionList',
+      'AvatarGroup',
+      'TagGroup',
     ],
   },
   {
     name: 'Feedback',
-    components: ['Alert', 'Modal', 'Toast', 'Drawer', 'Popover', 'EmptyState'],
+    components: ['Alert', 'Modal', 'Toast', 'Drawer', 'Popover', 'EmptyState', 'Confirm'],
   },
   {
     name: 'Data',

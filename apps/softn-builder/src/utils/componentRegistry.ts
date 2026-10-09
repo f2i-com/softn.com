@@ -1916,6 +1916,117 @@ const baseRegistry: ComponentMeta[] = [
     ],
     false
   ),
+
+  // ==================== THE PIECES APPS LAID OUT BY HAND ====================
+  comp(
+    'DescriptionList',
+    'Display',
+    'list',
+    'The facts about one thing: labels and their values',
+    {
+      items: [
+        { label: 'Status', value: 'Shipped' },
+        { label: 'Customer', value: 'Ada Lovelace' },
+        { label: 'Total', value: '$48.00' },
+      ],
+      columns: 1,
+    },
+    [
+      { name: 'items', type: 'json', description: '[{ label, value, hint? }], or a record whose keys are the labels' },
+      { name: 'columns', type: 'number', default: 1, description: '1 to 4; fewer where there is not the room' },
+      { name: 'layout', type: 'select', options: ['stacked', 'inline'], default: 'stacked' },
+      { name: 'size', type: 'select', options: ['sm', 'md', 'lg'], default: 'md' },
+      { name: 'dividers', type: 'boolean', default: false },
+      { name: 'emptyText', type: 'string', default: '—', description: 'Shown for a value that is not there' },
+      { name: 'labelWidth', type: 'string', description: 'Width of the labels in the inline layout' },
+      { name: 'className', type: 'string' },
+    ],
+    false
+  ),
+  comp(
+    'Field',
+    'Form',
+    'input',
+    'A label, a hint and an error around any control',
+    { label: 'Label', hint: 'A note about this field' },
+    [
+      { name: 'label', type: 'string', default: 'Label' },
+      { name: 'hint', type: 'string', default: 'A note about this field' },
+      { name: 'error', type: 'expression', description: 'Text shown in place of the hint; true marks the field without a message' },
+      { name: 'required', type: 'boolean', default: false },
+      { name: 'layout', type: 'select', options: ['vertical', 'horizontal'], default: 'vertical' },
+      { name: 'labelWidth', type: 'string', description: 'Width of the label in the horizontal layout' },
+      { name: 'disabled', type: 'boolean', default: false },
+      { name: 'className', type: 'string' },
+    ],
+    true
+  ),
+  comp(
+    'ButtonGroup',
+    'Form',
+    'button',
+    'Buttons that belong together, joined edge to edge',
+    {},
+    [
+      { name: 'orientation', type: 'select', options: ['horizontal', 'vertical'], default: 'horizontal' },
+      { name: 'attached', type: 'boolean', default: true, description: 'Off keeps the buttons apart with a small gap' },
+      { name: 'fullWidth', type: 'boolean', default: false },
+      { name: 'className', type: 'string' },
+    ],
+    true,
+    ['Button']
+  ),
+  comp(
+    'Confirm',
+    'Feedback',
+    'square',
+    'A question with two answers, asked before something is done',
+    { title: 'Are you sure?', message: 'This cannot be undone.', confirmText: 'Confirm', cancelText: 'Cancel' },
+    [
+      { name: 'open', type: 'expression', description: 'Whether the question is being asked' },
+      { name: 'title', type: 'string', default: 'Are you sure?' },
+      { name: 'message', type: 'string', default: 'This cannot be undone.' },
+      { name: 'confirmText', type: 'string', default: 'Confirm' },
+      { name: 'cancelText', type: 'string', default: 'Cancel' },
+      { name: 'variant', type: 'select', options: ['primary', 'danger', 'warning', 'success'], default: 'primary' },
+      { name: 'loading', type: 'expression', description: 'While true both answers are held' },
+      { name: 'size', type: 'select', options: ['sm', 'md', 'lg'], default: 'sm' },
+      { name: 'onConfirm', type: 'event' },
+      { name: 'onCancel', type: 'event', description: 'The other button, Escape, or a click outside' },
+      { name: 'className', type: 'string' },
+    ],
+    true
+  ),
+  comp(
+    'AvatarGroup',
+    'Display',
+    'user',
+    'Avatars overlapping in a row, with a count of the rest',
+    { max: 4, size: 'md' },
+    [
+      { name: 'max', type: 'number', default: 4, description: 'How many to show before "+N"' },
+      { name: 'size', type: 'select', options: ['xs', 'sm', 'md', 'lg', 'xl'], default: 'md' },
+      { name: 'spacing', type: 'number', description: 'Pixels between avatars; negative overlaps them (default -8)' },
+      { name: 'borderColor', type: 'color', description: 'The ring that parts each from the next; the page colour by default' },
+      { name: 'className', type: 'string' },
+    ],
+    true,
+    ['Avatar']
+  ),
+  comp(
+    'TagGroup',
+    'Display',
+    'tag',
+    'A row of tags that wraps',
+    { gap: 'sm' },
+    [
+      { name: 'gap', type: 'select', options: ['xs', 'sm', 'md', 'lg'], default: 'sm' },
+      { name: 'wrap', type: 'boolean', default: true },
+      { name: 'className', type: 'string' },
+    ],
+    true,
+    ['Tag']
+  ),
 ];
 
 /**
@@ -1942,6 +2053,7 @@ const MANIFEST_PROPS: Record<string, PropSchema[]> = {
   Avatar: [ariaLabel('Accessible label, for an interactive avatar')],
   BarChart: [ariaLabel(CHART_ALTERNATIVE)],
   CodeEditor: [ariaLabel('Accessible name for the text field, when no visible label names it')],
+  ButtonGroup: [ariaLabel('What the group of buttons is for')],
   DPad: [ariaLabel('Accessible name for the pad as a whole')],
   DataGrid: [ariaLabel('Accessible name for the grid')],
   Drawer: [ariaLabel('Accessible name for the drawer when it has no title')],
