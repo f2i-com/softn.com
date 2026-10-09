@@ -1,88 +1,116 @@
-<!-- Main UI - Todo Application Entry Point -->
+<!-- The to-do app's page: the file manifest.json names as "main". -->
 
-<import Header from "./components/header.ui" />
-<import TodoItem from "./components/todo-item.ui" />
-<import Footer from "./components/footer.ui" />
+<!--
+  An import is an include. Wherever the Header, TodoItem or Footer tag is
+  written below, that file's markup is put in its place, as if it had been
+  typed here. It reads this page's state and calls this page's functions, so
+  nothing is passed to it: no attributes, no events, no children.
+-->
+<import Header from="./components/header.ui" />
+<import TodoItem from="./components/todo-item.ui" />
+<import Footer from="./components/footer.ui" />
 
-<!-- Link to app logic -->
+<!-- The state and the functions every name below refers to. -->
 <logic src="./app.logic" />
 
-<div class="app">
-  <Header title="My Todos" />
+<App>
+  <div className="app">
+    <Header />
 
-  <main class="main-content">
-    <!-- Add new todo form -->
-    <form class="add-todo-form" @submit={handleAddTodo}>
-      <Input
-        type="text"
-        placeholder="What needs to be done?"
-        :value={newTodoText}
-        class="todo-input"
-      />
-      <Button type="submit" variant="primary">Add</Button>
-    </form>
-
-    <!-- Filter tabs -->
-    <div class="filter-tabs">
-      <Button
-        variant={filter === 'all' ? 'primary' : 'ghost'}
-        @click={() => setFilter('all')}
-      >
-        All ({count(todos)})
-      </Button>
-      <Button
-        variant={filter === 'active' ? 'primary' : 'ghost'}
-        @click={() => setFilter('active')}
-      >
-        Active ({count(activeTodos)})
-      </Button>
-      <Button
-        variant={filter === 'completed' ? 'primary' : 'ghost'}
-        @click={() => setFilter('completed')}
-      >
-        Completed ({count(completedTodos)})
-      </Button>
-    </div>
-
-    <!-- Todo list -->
-    <div class="todo-list">
-      #each (todo in filteredTodos)
-        <TodoItem
-          todo={todo}
-          @toggle={() => toggleTodo(todo.id)}
-          @delete={() => deleteTodo(todo.id)}
-          @edit={(newText) => editTodo(todo.id, newText)}
+    <main className="main-content">
+      <!-- :bind writes what is typed back to newTodoText; .prevent keeps the
+           form from reloading the page. -->
+      <form className="add-todo-form" @submit.prevent={() => addTodo()}>
+        <Input
+          type="text"
+          placeholder="What needs to be done?"
+          :bind={newTodoText}
+          flex={1}
         />
-      #empty
-        <div class="empty-state">
-          <p>No todos yet!</p>
-          <p class="hint">Add one above to get started.</p>
-        </div>
-      #end
-    </div>
-  </main>
+        <Button type="submit" variant="primary">Add</Button>
+      </form>
 
-  <Footer
-    totalCount={count(todos)}
-    completedCount={count(completedTodos)}
-    @clearCompleted={clearCompleted}
-  />
-</div>
+      <div className="filter-tabs">
+        <Button
+          variant={filter === "all" ? "primary" : "ghost"}
+          @click={() => setFilter("all")}
+        >
+          All ({count(todos)})
+        </Button>
+        <Button
+          variant={filter === "active" ? "primary" : "ghost"}
+          @click={() => setFilter("active")}
+        >
+          Active ({count(activeTodos)})
+        </Button>
+        <Button
+          variant={filter === "completed" ? "primary" : "ghost"}
+          @click={() => setFilter("completed")}
+        >
+          Completed ({count(completedTodos)})
+        </Button>
+      </div>
 
+      <div className="todo-list">
+        <!-- The row is placed inside the loop, so it reads the loop's `todo`. -->
+        #each (todo in filteredTodos) key={todo.id}
+          <TodoItem />
+        #empty
+          <div className="empty-state">
+            <p>Nothing here.</p>
+            <p className="hint">Add a todo above, or choose another filter.</p>
+          </div>
+        #end
+      </div>
+    </main>
+
+    <Footer />
+  </div>
+</App>
+
+<!--
+  The app's one style block, here in the main page. Like the logic link above
+  it is a declaration of the whole document, and it is not read as one from
+  inside an imported page. The colours are the theme's, so the app follows
+  light and dark.
+-->
 <style>
   .app {
-    min-height: 100vh;
+    min-height: 100%;
     display: flex;
     flex-direction: column;
-    background: var(--bg-color, #f5f5f5);
+    background: var(--color-bg);
+    color: var(--color-text);
   }
 
+  /* components/header.ui */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.5rem;
+    background: var(--color-primary);
+    color: var(--color-primary-text);
+  }
+
+  .header .title {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+  }
+
+  .header .remaining {
+    font-size: 0.875rem;
+    opacity: 0.85;
+  }
+
+  /* This page */
   .main-content {
     flex: 1;
+    width: 100%;
     max-width: 600px;
     margin: 0 auto;
     padding: 1.5rem;
-    width: 100%;
   }
 
   .add-todo-form {
@@ -91,16 +119,12 @@
     margin-bottom: 1.5rem;
   }
 
-  .todo-input {
-    flex: 1;
-  }
-
   .filter-tabs {
     display: flex;
     gap: 0.5rem;
     margin-bottom: 1rem;
     padding-bottom: 1rem;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .todo-list {
@@ -110,9 +134,9 @@
   }
 
   .empty-state {
-    text-align: center;
     padding: 3rem 1rem;
-    color: #6b7280;
+    text-align: center;
+    color: var(--color-text-muted);
   }
 
   .empty-state p {
@@ -120,7 +144,74 @@
   }
 
   .empty-state .hint {
-    font-size: 0.875rem;
     margin-top: 0.5rem;
+    font-size: 0.875rem;
+  }
+
+  /* components/todo-item.ui */
+  .todo-item {
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface);
+  }
+
+  .todo-item.completed {
+    opacity: 0.7;
+  }
+
+  .view-mode,
+  .edit-mode {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .todo-text {
+    flex: 1;
+    cursor: pointer;
+  }
+
+  .todo-item.completed .todo-text {
+    text-decoration: line-through;
+    color: var(--color-text-muted);
+  }
+
+  .todo-meta {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+  }
+
+  .todo-actions {
+    display: flex;
+    gap: 0.25rem;
+  }
+
+  /* components/footer.ui */
+  .footer {
+    padding: 1rem 1.5rem;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
+  }
+
+  .footer-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .footer .stats {
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+  }
+
+  .footer-meta {
+    max-width: 600px;
+    margin: 0.5rem auto 0;
+    font-size: 0.75rem;
+    text-align: center;
+    color: var(--color-text-muted);
   }
 </style>

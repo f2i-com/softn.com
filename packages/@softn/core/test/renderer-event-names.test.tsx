@@ -53,7 +53,8 @@ describe('reactEventProp', () => {
   });
 
   it('leaves COMPONENT callbacks alone, which is why this is a table and not a rule', () => {
-    // DPad hands `@press` the direction pressed; a bundle emits `@clearCompleted`.
+    // DPad hands `@press` the direction pressed, and a component may call an
+    // event anything it likes — `@clearCompleted`, say.
     // Neither is a DOM event and neither must be rewritten.
     expect(reactEventProp('press')).toBe('onPress');
     expect(reactEventProp('clearCompleted')).toBe('onClearCompleted');

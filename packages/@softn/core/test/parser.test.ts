@@ -423,7 +423,9 @@ describe('Keyword names in event and binding positions', () => {
   // A component decides its own event names, and nothing stops one being spelled
   // the same as a language keyword. `@delete` on a to-do row is the obvious case
   // and it is the one that bit: the bundled demo-bundle/main.ui — the worked
-  // example the bundler CLI's own help points at — did not parse.
+  // example the bundler CLI's own help points at — wrote one then, and did not
+  // parse. (The example has since stopped writing it, for another reason: its
+  // row is an imported page, and an imported page takes no events.)
   //
   // The failure was also badly placed. The keyword was left unconsumed, so the
   // error surfaced one token later as `expected EQUALS`, naming the token after

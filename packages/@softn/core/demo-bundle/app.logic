@@ -1,8 +1,10 @@
 /**
- * App Logic - Todo Application Business Logic
+ * The to-do app's logic: its state and its functions.
  *
- * This file contains all the state and functions for the todo app.
- * It's separate from the UI for better organization and reusability.
+ * Every top-level `let` here is state a page can read, and every function is
+ * one a page can call. main.ui links this file, and the pages it imports
+ * (components/*.ui) are placed inside it, so they read the same state and
+ * call the same functions. Nothing is passed from page to page.
  */
 
 import "./utils.logic"
@@ -11,17 +13,27 @@ import "./utils.logic"
 // State
 // ============================================================================
 
-// Current todos (loaded from XDB)
+// The header's words
+let title = "My Todos"
+
+// The records of the "todos" collection, as the database gives them:
+// { id, data: { text, completed, createdAt } }
 let todos = []
 
-// Input for new todo
+// What is typed in the "add" field
 let newTodoText = ""
 
-// Current filter
-let filter = "all"  // "all" | "active" | "completed"
+// Which todos the list shows: "all" | "active" | "completed"
+let filter = "all"
+
+// The todo being edited, and what is typed in its field. One pair for the
+// whole page: a row is markup placed once for each todo, with no state of its
+// own, so which row is open is kept here, by id.
+let editingId = ""
+let editText = ""
 
 // ============================================================================
-// Computed Values
+// Computed values
 // ============================================================================
 
 // A computed value is a `$:` declaration. The runtime finds these by name,
@@ -30,109 +42,132 @@ let filter = "all"  // "all" | "active" | "completed"
 // defines any more, so it reached the browser as
 // "ReferenceError: $computed is not defined".
 
-// Active todos (not completed)
+// Todos still to do
 $: activeTodos = todos.filter(t => !t.data.completed)
 
-// Completed todos
+// Todos that are done
 $: completedTodos = todos.filter(t => t.data.completed)
 
-// Filtered todos based on the current filter
+// The todos the current filter shows.
+// Worked out from `todos`, not from the two values above. A page reads a `$:`
+// value live; logic does not. Inside another `$:` expression, or a function,
+// the name holds what the expression gave when the script first ran (an empty
+// list here), so one `$:` cannot be built on another.
 // One line: the extractor reads `$:` declarations a line at a time, so a
 // wrapped expression is truncated at the newline and fails to compile.
-$: filteredTodos = filter === "active" ? activeTodos : filter === "completed" ? completedTodos : todos
+$: filteredTodos = todos.filter(t => filter === "all" || t.data.completed === (filter === "completed"))
 
 // ============================================================================
 // Actions
 // ============================================================================
 
-/**
- * Handle form submission to add new todo
- */
-async function handleAddTodo(event) {
-  event.preventDefault()
+// `db` is the app's local database. Its calls return at once, and each
+// function reads the collection again afterwards so the page shows the change.
 
+/**
+ * Add what was typed as a new todo
+ */
+function addTodo() {
   const text = newTodoText.trim()
   if (!text) return
 
-  // Create todo in XDB
-  await xdb.create("todos", {
+  db.create("todos", {
     text: text,
     completed: false,
     createdAt: new Date().toISOString()
   })
 
-  // Clear input
   newTodoText = ""
-
-  // Refresh list
-  await refreshTodos()
+  refreshTodos()
 }
 
 /**
- * Toggle todo completion status
+ * Mark a todo done, or not done
  */
-async function toggleTodo(id) {
+function toggleTodo(id) {
   const todo = todos.find(t => t.id === id)
   if (!todo) return
 
-  await xdb.update(id, {
-    completed: !todo.data.completed,
-    completedAt: !todo.data.completed ? new Date().toISOString() : null
-  })
-
-  await refreshTodos()
+  db.update(id, { completed: !todo.data.completed })
+  refreshTodos()
 }
 
 /**
  * Delete a todo
  */
-async function deleteTodo(id) {
-  await xdb.delete(id)
-  await refreshTodos()
+function deleteTodo(id) {
+  db.delete(id)
+  if (editingId === id) cancelEdit()
+  refreshTodos()
 }
 
 /**
- * Edit a todo's text
+ * Open a todo's edit field, holding its text
  */
-async function editTodo(id, newText) {
+function startEdit(id) {
+  const todo = todos.find(t => t.id === id)
+  if (!todo) return
+
+  editingId = id
+  editText = todo.data.text
+}
+
+/**
+ * Keep what was typed in the open edit field, and close it
+ */
+function saveEdit() {
+  if (editingId) editTodo(editingId, editText)
+  cancelEdit()
+}
+
+/**
+ * Close the edit field without keeping what was typed
+ */
+function cancelEdit() {
+  editingId = ""
+  editText = ""
+}
+
+/**
+ * Change a todo's text. An empty text changes nothing.
+ */
+function editTodo(id, newText) {
   const text = newText.trim()
   if (!text) return
 
-  await xdb.update(id, {
-    text: text,
-    updatedAt: new Date().toISOString()
-  })
-
-  await refreshTodos()
+  db.update(id, { text: text })
+  refreshTodos()
 }
 
 /**
- * Clear all completed todos
+ * Delete every todo that is done
  */
-async function clearCompleted() {
-  for (const todo of completedTodos) {
-    await xdb.delete(todo.id)
+function clearCompleted() {
+  for (const todo of todos) {
+    if (todo.data.completed) db.delete(todo.id)
   }
-  await refreshTodos()
+  refreshTodos()
 }
 
 /**
- * Set the current filter
+ * Choose which todos the list shows
  */
 function setFilter(newFilter) {
   filter = newFilter
 }
 
 /**
- * Refresh todos from XDB
+ * Read the collection again, oldest first
  */
-async function refreshTodos() {
-  todos = xdb.getAll("todos")
+function refreshTodos() {
+  todos = db.query("todos").sort((a, b) => a.data.createdAt < b.data.createdAt ? -1 : 1)
 }
 
 // ============================================================================
-// Initialize
+// Start
 // ============================================================================
 
-// Load todos on startup
-refreshTodos()
+// The runtime calls _init() once, when the app has loaded.
+function _init() {
+  refreshTodos()
+}

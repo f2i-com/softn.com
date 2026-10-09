@@ -1311,7 +1311,9 @@ export class Parser {
     // IDENTIFIER left the keyword unconsumed and the error surfaced one token
     // later as `expected EQUALS`, pointing at the name and saying nothing about
     // it. The bundled demo-bundle/main.ui, which the CLI's own help offers as
-    // the worked example, failed to parse on its `@delete` handler.
+    // the worked example, wrote `@delete` on a to-do row then, and failed to
+    // parse there. (It no longer does: the row is an imported page, which
+    // takes no events, and calls deleteTodo() itself.)
     let name = '';
     if (this.isPropertyName()) {
       name = this.curToken.literal;

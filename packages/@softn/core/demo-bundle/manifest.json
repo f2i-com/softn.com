@@ -11,13 +11,7 @@
     "ui": ["main.ui", "components/header.ui", "components/todo-item.ui", "components/footer.ui"],
     "logic": ["app.logic", "utils.logic"],
     "xdb": ["todos.xdb"],
-    "assets": ["assets/icon.svg", "assets/styles.css"]
-  },
-  "imports": {
-    "Header": "components/header.ui",
-    "TodoItem": "components/todo-item.ui",
-    "Footer": "components/footer.ui",
-    "utils": "utils.logic"
+    "assets": ["assets/icon.svg"]
   },
   "config": {
     "window": {
@@ -29,16 +23,6 @@
     "theme": {
       "primary": "#3b82f6",
       "mode": "system"
-    },
-    "xdb": {
-      "sync": true,
-      "collections": ["todos"]
     }
-  },
-  "permissions": {
-    "filesystem": false,
-    "network": true,
-    "clipboard": true,
-    "notifications": true
   }
 }
