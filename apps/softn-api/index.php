@@ -447,7 +447,7 @@ function handle(string $handler, array $args, Request $req): Response
         }
 
         case 'thumbnail':
-            return Apps::thumbnailResponse(Apps::resolveSlug($args[0]));
+            return Apps::thumbnailResponse(Apps::resolveSlug($args[0]), $req);
 
         case 'setThumbnail': {
             // The upload is read before the catalogue is opened, as a new
@@ -461,7 +461,7 @@ function handle(string $handler, array $args, Request $req): Response
         }
 
         case 'icon':
-            return Apps::iconResponse(Apps::resolveSlug($args[0]));
+            return Apps::iconResponse(Apps::resolveSlug($args[0]), $req);
 
         case 'source': {
             $slug = Apps::resolveSlug($args[0]);

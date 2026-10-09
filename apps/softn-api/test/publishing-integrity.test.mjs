@@ -262,3 +262,118 @@ test('the demo sync leaves an app it did not create alone', skip, async () => {
   assert.deepEqual(after.versions.map((v) => v.sha256), before.versions.map((v) => v.sha256), 'its bundle was replaced');
   assert.equal(after.source, before.source);
 });
+
+test('a name that spells no slug is nobody else\'s app or category', skip, async () => {
+  const s = await server({ config: { limits: { suggest: [50, 60] } } });
+  const suggest = async (name) => {
+    const r = await s.api('POST', '/api/categories', { body: { name, description: 'suggested by a visitor', emoji: '' } });
+    assert.equal(r.status, 201, r.text);
+    return r.json.category;
+  };
+  assert.equal((await s.publish('Before')).app.category, 'other');
+  // A visitor suggests a category called "App": its id is the fallback every
+  // empty or unspellable name used to slugify to.
+  assert.equal((await suggest('App')).id, 'app');
+  assert.equal((await s.publish('After')).app.category, 'other', 'an app published with no category was filed under the visitor\'s');
+  assert.equal((await s.publish('Named', {}, { category: 'App' })).app.category, 'app', 'asked for by name, it is still found');
+
+  // Two names in scripts a slug cannot hold are two categories.
+  const first = await suggest('日本語');
+  const second = await suggest('中文');
+  assert.match(first.id, /^c-[0-9a-f]{12}$/);
+  assert.notEqual(second.id, first.id, 'the second was answered with the first one\'s category');
+  assert.equal((await suggest('日本語')).id, first.id, 'the same name is the same category');
+  assert.equal((await s.publish('Filed', {}, { category: '中文' })).app.category, second.id);
+
+  // And an address a slug cannot hold is not the app whose slug is `app`.
+  assert.equal((await s.publish('App')).app.slug, 'app');
+  assert.equal((await s.api('GET', '/api/apps/app')).status, 200);
+  assert.equal((await s.api('GET', `/api/apps/${encodeURIComponent('日本語')}`)).status, 404);
+});
+
+test('the demo sync compares a demo with the version it wrote, and leaves a later version\'s app alone', skip, async () => {
+  const s = await server({ config: { seedDemos: true } });
+  const demos = path.join(s.root, 'demos');
+  fs.mkdirSync(demos, { recursive: true });
+  const demo = path.join(demos, 'SyncDemo.softn');
+  fs.writeFileSync(demo, makeBundle('Sync Demo', { description: 'As shipped' }));
+  fs.writeFileSync(path.join(demos, 'index.json'), JSON.stringify([{ id: 'sync-demo', name: 'Sync Demo', description: 'As shipped', file: 'SyncDemo.softn' }]));
+  const list = () => s.api('GET', '/api/apps?perPage=48');
+  const detail = async () => (await s.api('GET', '/api/apps/sync-demo')).json.app;
+  const v1 = (app) => app.versions.find((v) => v.version === 1);
+  assert.equal((await list()).status, 200);
+  const seeded = await detail();
+  assert.equal(seeded.source, 'seed');
+
+  // The site owner publishes a second version, which declares storage.
+  const next = await addVersion(s, 'sync-demo', null, 'Sync Demo', storage({ '*': 'public' }), { admin: true });
+  assert.equal(next.status, 201, next.text);
+  const published = await detail();
+  assert.ok(published.capabilities.includes('storage'));
+  await new Promise((r) => setTimeout(r, 1100));
+  for (let i = 0; i < 3; i++) assert.equal((await list()).status, 200);
+  const later = await detail();
+  assert.deepEqual(later.capabilities, published.capabilities, 'version 1\'s capabilities were written over the app');
+  assert.equal(later.updatedAt, published.updatedAt, 'every request moved the app\'s date');
+  assert.deepEqual(v1(later), v1(published), 'every request rewrote version 1');
+
+  // What each file hashed to is on record, and believed while the file is
+  // as it was: with a wrong hash recorded, the demo is taken to have changed.
+  const stampFile = path.join(s.dataDir, 'cache/seed.json');
+  const stamps = JSON.parse(fs.readFileSync(stampFile, 'utf8'));
+  const key = Object.keys(stamps).find((k) => k.replaceAll('\\', '/').endsWith('/demos/SyncDemo.softn'));
+  assert.ok(key, JSON.stringify(Object.keys(stamps)));
+  assert.equal(stamps[key][3], v1(later).sha256);
+  stamps[key][3] = '0'.repeat(64);
+  fs.writeFileSync(stampFile, JSON.stringify(stamps));
+  assert.equal((await list()).status, 200);
+  const trusted = await detail();
+  assert.notEqual(v1(trusted).createdAt, v1(later).createdAt, 'the file was hashed again although nothing about it had changed');
+  assert.deepEqual(trusted.capabilities, published.capabilities, 'and the later version\'s app is still left alone');
+
+  // A demo that does change on disk is picked up, as version 1.
+  fs.writeFileSync(demo, makeBundle('Sync Demo', { description: 'As shipped, second printing with more in it' }));
+  assert.equal((await list()).status, 200);
+  const replaced = await detail();
+  assert.notEqual(v1(replaced).sha256, v1(later).sha256);
+  assert.deepEqual(replaced.capabilities, published.capabilities);
+  assert.equal(replaced.versions.length, 2);
+});
+
+test('a picture the client already holds is answered 304', skip, async () => {
+  const s = await server();
+  const pub = await s.publish('Pictured', { icon: { path: 'assets/icon.png', bytes: PNG_1x1 } });
+  const slug = pub.app.slug;
+  for (const which of ['thumbnail', 'icon']) {
+    const url = `${s.base}/api/apps/${slug}/${which}`;
+    const first = await fetch(url);
+    assert.equal(first.status, 200, which);
+    assert.equal(first.headers.get('content-type'), 'image/png', which);
+    const etag = first.headers.get('etag');
+    assert.match(etag ?? '', /^"[0-9a-f]{32}"$/, which);
+    assert.equal((await first.arrayBuffer()).byteLength, PNG_1x1.length);
+    const again = await fetch(url, { headers: { 'If-None-Match': etag } });
+    assert.equal(again.status, 304, `${which}: the picture was sent again`);
+    assert.equal(again.headers.get('etag'), etag);
+    assert.equal(again.headers.get('content-type'), 'image/png');
+    assert.equal((await again.arrayBuffer()).byteLength, 0);
+    // Another tag, or none, is answered with the picture.
+    assert.equal((await fetch(url, { headers: { 'If-None-Match': '"0"' } })).status, 200);
+  }
+});
+
+test('an app keeps ninety days of daily run counts, not every day it ever ran', skip, async () => {
+  const s = await server({ config: { limits: { run: [50, 60] } } });
+  const pub = await s.publish('Counted');
+  const file = path.join(s.dataDir, 'apps', pub.app.slug, 'app.json');
+  const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const today = Math.floor(Date.now() / 86400000);
+  // Three years of days, one run each.
+  doc.runsDaily = Array.from({ length: 1000 }, (_, i) => ({ slug: pub.app.slug, day: today - 1000 + i, count: 1 }));
+  fs.writeFileSync(file, JSON.stringify(doc));
+  assert.equal((await s.api('POST', `/api/apps/${pub.app.slug}/runs`)).status, 204);
+  const kept = JSON.parse(fs.readFileSync(file, 'utf8')).runsDaily;
+  assert.equal(kept.length, 90, `${kept.length} days kept`);
+  assert.deepEqual(kept.at(-1), { slug: pub.app.slug, day: today, count: 1 });
+  assert.equal(kept[0].day, today - 89);
+});

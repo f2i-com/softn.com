@@ -95,6 +95,10 @@ test('export, restore into a fresh directory, serve: the same inventory, bytes, 
   assert.ok(entries.includes('config.json'), 'the configuration with its keys');
   assert.ok(entries.includes(`apps/${a.app.slug}/v2.softn`) && entries.includes(`apps/${b.app.slug}/storage.sqlite`));
   assert.ok(!entries.some((e) => e.startsWith('cache/') || e === 'catalog.lock' || e === 'config.lock'), 'not the cache or the locks');
+  // Nor the rate-limit counters, which a request rewrites outside the
+  // catalogue lock an export holds, or the files that go with them.
+  assert.ok(fs.existsSync(path.join(s.dataDir, 'ratelimits.json')), 'the served folder has counters to leave out');
+  assert.deepEqual(entries.filter((e) => ['ratelimits.json', 'ratelimits.lock', 'seed.lock', 'seeded'].includes(e)), []);
   const manifest = JSON.parse(Buffer.from(unzipSync(fs.readFileSync(archive))['softn-backup.json']).toString());
   assert.equal(manifest.schemaVersion, 1);
   assert.deepEqual(manifest.apps.map((x) => x.slug).sort(), [...slugs].sort());

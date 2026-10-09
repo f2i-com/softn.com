@@ -25,7 +25,23 @@ final class Apps
 
     // ── Slugs ──────────────────────────────────────────────────────────────
 
+    /** The slug for a name; `app` when the name has nothing a slug can hold. */
     public static function slugify(string $name): string
+    {
+        $s = self::slugOf($name);
+        return $s === '' ? 'app' : $s;
+    }
+
+    /**
+     * The slug a name spells, or '' when it spells none (an empty name, or
+     * one with no ASCII letters or digits). `slugify` answers `app` for
+     * those, which is right for naming a new app and wrong for looking one
+     * up: every such name then meant whatever held the id `app`. One visitor
+     * suggesting a category called "App" was thereafter the category of
+     * every app published with none, and any address in another script was
+     * the app whose slug is `app`.
+     */
+    public static function slugOf(string $name): string
     {
         $s = strtolower(trim($name));
         if (function_exists('iconv')) {
@@ -33,9 +49,7 @@ final class Apps
             if (is_string($t) && $t !== '') $s = $t;
         }
         $s = preg_replace('/[^a-z0-9]+/', '-', $s) ?? '';
-        $s = trim($s, '-');
-        if ($s === '') $s = 'app';
-        return substr($s, 0, 48);
+        return substr(trim($s, '-'), 0, 48);
     }
 
     private static function uniqueSlug(string $base): string {
@@ -54,7 +68,7 @@ final class Apps
      */
     public static function resolveSlug(string $given): string {
         $given=trim($given); $rows=Catalog::all();
-        foreach ([$given,self::slugify($given)] as $slug) if (isset($rows[$slug])) return $slug;
+        foreach ([$given,self::slugOf($given)] as $slug) if ($slug!=='' && isset($rows[$slug])) return $slug;
         throw new ApiError(404,'No app is published under that name.');
     }
 
@@ -444,6 +458,12 @@ final class Apps
         $now = time();
 
         $doc=Catalog::doc($slug);
+        // The seed owns version 1. Once a later version has been published
+        // (the site owner's, with the admin key), the app's own fields
+        // describe that one: writing version 1's capabilities and storage
+        // policies over them made the play page set the app up without the
+        // storage its current version declares.
+        if((int)($doc['app']['latest_version']??1)===1)
         $doc['app']=array_replace($doc['app'],['name'=>$name,'description'=>$description,'category'=>$category,'tags'=>json_encode($tags),'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon??$doc['app']['icon'],'primary_color'=>$primary,'size'=>$info['size'],'updated_at'=>$now]);
         foreach($doc['versions'] as &$v)if((int)$v['version']===1)$v=array_replace($v,['file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'created_at'=>$now]);
         unset($v);Catalog::put($slug,$doc);
@@ -571,30 +591,40 @@ final class Apps
 
     // ── Images ─────────────────────────────────────────────────────────────
 
-    public static function thumbnailResponse(string $slug): Response
+    public static function thumbnailResponse(string $slug, ?Request $req = null): Response
     {
         $row = self::row($slug);
         $dir = Catalog::path($slug);
         $cache = ['Cache-Control' => 'public, max-age=600'] + Response::USER_CONTENT;
         foreach ([$row['thumb'], $row['icon']] as $file) {
-            if (self::servableImage($dir, $file)) {
-                $ext = pathinfo($file, PATHINFO_EXTENSION);
-                return Response::file("$dir/$file", Images::mimeForExtension($ext), $cache + ['ETag' => '"' . md5_file("$dir/$file") . '"']);
-            }
+            if (self::servableImage($dir, $file)) return self::picture("$dir/$file", $cache, $req);
         }
         return Response::bytes(self::placeholderSvg((string) $row['name'], $row['primary_color'] ?: null), 'image/svg+xml', $cache);
     }
 
-    public static function iconResponse(string $slug): Response
+    public static function iconResponse(string $slug, ?Request $req = null): Response
     {
         $row = self::row($slug);
         $dir = Catalog::path($slug);
         $file = $row['icon'];
         $headers = ['Cache-Control' => 'public, max-age=600'] + Response::USER_CONTENT;
-        if (self::servableImage($dir, $file)) {
-            return Response::file("$dir/$file", Images::mimeForExtension(pathinfo($file, PATHINFO_EXTENSION)), $headers);
-        }
+        if (self::servableImage($dir, $file)) return self::picture("$dir/$file", $headers, $req);
         return Response::bytes(self::placeholderSvg((string) $row['name'], $row['primary_color'] ?: null, true), 'image/svg+xml', $headers);
+    }
+
+    /**
+     * A stored picture, or a 304 when the client already holds it. The tag
+     * was computed for every request and compared with nothing, so a picture
+     * a browser had was sent again each time its ten minutes were up.
+     *
+     * @param array<string, string> $headers
+     */
+    private static function picture(string $path, array $headers, ?Request $req): Response
+    {
+        $type = Images::mimeForExtension(pathinfo($path, PATHINFO_EXTENSION));
+        $headers += ['ETag' => '"' . md5_file($path) . '"'];
+        if ($req !== null && $req->ifNoneMatch($headers['ETag'])) return Response::notModified($headers + ['Content-Type' => $type]);
+        return Response::file($path, $type, $headers);
     }
 
     /**
@@ -697,8 +727,10 @@ final class Categories
 
     /** A category id the visitor gave, or 'other'. */
     public static function resolve(string $given): string {
-        self::ensure();$id=Apps::slugify($given);
-        foreach(Catalog::categories() as $r)if($r['status']!=='hidden' && ($r['id']===$id || mb_strtolower($r['name'])===mb_strtolower($given)))return $r['id'];
+        self::ensure();$id=Apps::slugOf($given);$name=mb_strtolower(trim($given));
+        // Nothing given is `other`, whatever categories there are.
+        if($name==='')return 'other';
+        foreach(Catalog::categories() as $r)if($r['status']!=='hidden' && (($id!=='' && $r['id']===$id) || mb_strtolower($r['name'])===$name))return $r['id'];
         return 'other';
     }
 
@@ -714,7 +746,12 @@ final class Categories
         self::ensure();
         $name = Text::clean($name, 32);
         if (mb_strlen($name) < 2) throw new ApiError(400, 'A category name needs at least two characters.');
-        $id = Apps::slugify($name);
+        // A name with nothing a slug can hold (one not in Latin letters)
+        // gets an id of its own, from the name: they all used to share `app`,
+        // so a second such suggestion was answered with the first one's
+        // category.
+        $id = Apps::slugOf($name);
+        if ($id === '') $id = 'c-' . substr(hash('sha256', mb_strtolower($name)), 0, 12);
         $rows=Catalog::categories();
         foreach($rows as $r)if($r['id']===$id||mb_strtolower($r['name'])===mb_strtolower($name))return self::one($r['id']);
         if(count($rows)>=200)throw new ApiError(400,'There are already as many categories as the directory will hold.');

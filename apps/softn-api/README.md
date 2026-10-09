@@ -407,9 +407,11 @@ names another for an export. Export takes the catalogue lock — the same
 and nothing is half-committed in it — checkpoints each app's
 `storage.sqlite` so its WAL is folded into the main file, and writes every
 metadata file, bundle, picture and database into the archive. It leaves out
-what is not data: `catalog.lock`, `config.lock`, the rebuildable
-`cache/`, the temp siblings a killed writer leaves (`.json-…`,
-`.upload-…`), retired folders and SQLite's `-shm`. Inside the archive,
+what is not data: the lock files, the rate-limit counters
+(`ratelimits.json`, which requests rewrite under a lock of their own while an
+export runs) and the seeding flag, the rebuildable `cache/`, the temp
+siblings a killed writer leaves (`.json-…`, `.upload-…`), retired folders
+and SQLite's `-shm`. Inside the archive,
 `softn-backup.json` lists every file with its size and SHA-256, every app
 with its versions' files and digests, and a digest of that list. Export
 reads its own archive back and verifies it before reporting success.
@@ -504,7 +506,7 @@ Nothing else about a visitor is kept.
 | `POST /api/apps/{slug}/storage` | The app's own storage, see below |
 | `GET /api/apps/{slug}/storage`, `/storage/{collection}` | What an app has stored: collection names and counts, then a page of one collection |
 | `GET /api/README.md` | This file |
-| `POST /api/categories` | `{name, description, emoji}` (admin) |
+| `POST /api/categories` | `{name, description, emoji}`: a suggestion, from anyone (five an hour from one address). It is usable at once, marked as suggested; the site owner approves, renames or hides it with the admin key. A name a slug cannot hold (one not in Latin letters) gets an id of its own |
 | `GET /api/health` | Folder catalogue/cache backend, ZIP support, whether `data/` is writable, `siteOrigin`, the proxy settings and `warnings` an operator should read before the site is public |
 
 `/app/{slug}` (no `api`) is a share page: the listing rendered as HTML with

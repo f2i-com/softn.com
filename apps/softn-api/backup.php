@@ -12,7 +12,8 @@
  * writes every metadata file, bundle, picture and per-app database under
  * data/ into one archive, after checkpointing each SQLite file so its WAL
  * is folded in. It leaves out what is not data: the lock files, the
- * rebuildable bundle cache, the temp siblings a killed writer leaves
+ * rate-limit counters and the seeding flag, the rebuildable cache, the
+ * temp siblings a killed writer leaves
  * (`.json-…`, `.upload-…`), retired folders, and SQLite's shared memory.
  * The archive carries `softn-backup.json`: an inventory of every file with
  * its size and SHA-256, the apps and versions the metadata named, and a
@@ -223,6 +224,11 @@ final class Backup
     private static function excluded(string $rel, string $name, bool $isDir): bool
     {
         if ($rel === 'catalog.lock' || $rel === 'config.lock' || $rel === self::MANIFEST) return true;
+        // The other locks, the seeding flag and the rate-limit counters: none
+        // is data, and the counters are rewritten outside the catalogue lock
+        // (Db::rateLimit has its own), so a request arriving during an export
+        // could change one between its being listed and its being copied.
+        if (in_array($rel, ['ratelimits.json', 'ratelimits.lock', 'seed.lock', 'seeded'], true)) return true;
         if ($rel === 'cache' && $isDir) return true;
         if (preg_match('/^\.(json|upload|retired)-/', $name)) return true;
         if (str_ends_with($name, '-shm') || str_ends_with($name, '-journal')) return true;

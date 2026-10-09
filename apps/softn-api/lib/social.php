@@ -102,6 +102,9 @@ final class Social
      * counted the open as well, so every Play from the directory was two. A
      * request naming no stage is an open, which is what the count always meant.
      */
+    /** How many days of an app's daily run counts are kept. */
+    public const RUN_DAYS = 90;
+
     public static function recordRun(Request $req, string $slug, string $stage = 'open'): void {
         Db::rateLimit('run',Config::limitKey($req->ip));$doc=Catalog::doc($slug);
         if($stage==='launch')$doc['app']['launches']++;
@@ -111,6 +114,9 @@ final class Social
             $doc['app']['runs']++;$day=(int)floor(time()/86400);$found=false;
             foreach($doc['runsDaily'] as &$r)if((int)$r['day']===$day){$r['count']++;$found=true;}unset($r);
             if(!$found)$doc['runsDaily'][]=['slug'=>$slug,'day'=>$day,'count'=>1];
+            // Ninety days of history: the listing reads the last seven, and a
+            // day was added here for ever, to a file every request parses.
+            $doc['runsDaily']=array_values(array_filter($doc['runsDaily'],fn($r)=>(int)$r['day']>$day-self::RUN_DAYS));
         }
         Catalog::put($slug,$doc);
     }

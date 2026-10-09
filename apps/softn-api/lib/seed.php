@@ -10,6 +10,54 @@ declare(strict_types=1);
 
 final class Seed
 {
+    /**
+     * What each file hashed to when it was last hashed, by its size and
+     * times, kept in cache/seed.json: `path => [size, mtime, ctime, sha256]`.
+     * @var array<string, array{0:int,1:int,2:int,3:string}>
+     */
+    private static array $stamps = [];
+    private static bool $stampsDirty = false;
+
+    /**
+     * A file's SHA-256, read from the file only when the file has changed
+     * since it was last read (its size and times, as the catalogue judges a
+     * bundle). Every demo and both copies of every screenshot were hashed in
+     * full on each request to a seeded route, under the catalogue lock: some
+     * twenty megabytes to learn that nothing had changed.
+     */
+    private static function sha(string $file): string
+    {
+        clearstatcache(true, $file);
+        $stat = @stat($file);
+        if ($stat === false) return '';
+        $print = [(int) $stat['size'], (int) $stat['mtime'], (int) $stat['ctime']];
+        $known = self::$stamps[$file] ?? null;
+        if (is_array($known) && array_slice($known, 0, 3) === $print && is_string($known[3] ?? null)) return $known[3];
+        $sha = (string) hash_file('sha256', $file);
+        self::$stamps[$file] = [...$print, $sha];
+        self::$stampsDirty = true;
+        return $sha;
+    }
+
+    private static function loadStamps(string $dir): void
+    {
+        $read = json_decode((string) @file_get_contents("$dir/cache/seed.json"), true);
+        self::$stamps = is_array($read) ? $read : [];
+        self::$stampsDirty = false;
+    }
+
+    private static function saveStamps(string $dir): void
+    {
+        if (!self::$stampsDirty) return;
+        // Only files that are still there: the cache does not grow with every
+        // picture a demo ever had.
+        $keep = array_filter(self::$stamps, fn($path) => is_file($path), ARRAY_FILTER_USE_KEY);
+        if (!is_dir("$dir/cache")) @mkdir("$dir/cache", 0700, true);
+        $tmp = "$dir/cache/.seed-" . bin2hex(random_bytes(4));
+        if (@file_put_contents($tmp, json_encode($keep, JSON_UNESCAPED_SLASHES)) === false || !@rename($tmp, "$dir/cache/seed.json")) @unlink($tmp);
+        self::$stampsDirty = false;
+    }
+
     private const CATEGORY = [
         'snake-game' => 'games', 'pocket' => 'games', 'maze-escape-3d' => 'games', 'texas-holdem' => 'games',
         'promptly-unemployed' => 'games', 'the-office' => 'games', 'blockscape' => 'games', 'dead-hours' => 'games', 'twenty48' => 'games', 'blockfall' => 'games',
@@ -76,7 +124,15 @@ final class Seed
         // A linked app (play_url, no bundle) has no version to compare and is
         // never an index entry; asking it for one threw, and one such folder
         // took every seeded route down with "That version does not exist".
-        foreach($existing as &$r){if(Apps::playUrl($r)!==null){$r['size']=0;$r['sha256']='';continue;}$v=Apps::version($r['slug']);$r['size']=$v['size'];$r['sha256']=$v['sha256'];}unset($r);
+        // Version 1 is the one the seed wrote and the one a demo is compared
+        // with. Compared with the latest, a demo whose owner had published a
+        // version 2 never matched: every request replaced v1.softn, moved the
+        // app's dates and wrote version 1's capabilities over the app.
+        foreach($existing as &$r){
+            if(Apps::playUrl($r)!==null){$r['size']=0;$r['sha256']='';continue;}
+            try{$v=Apps::version($r['slug'],1);}catch(ApiError){$v=Apps::version($r['slug']);}
+            $r['size']=$v['size'];$r['sha256']=$v['sha256'];
+        }unset($r);
 
         $existingMap = [];
         foreach ($existing as $r) {
@@ -91,6 +147,7 @@ final class Seed
         // A second request arriving while this one seeds must not seed too.
         $lock = fopen("$dir/seed.lock", 'c');
         if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) return;
+        self::loadStamps($dir);
         try {
             foreach ($index as $entry) {
                 if (!is_array($entry) || !is_string($entry['file'] ?? null)) continue;
@@ -124,7 +181,7 @@ final class Seed
                     $diskSize = filesize($file);
                     $dbSize = (int) ($existingMap[$id]['size'] ?? 0);
                     $dbSha = (string) ($existingMap[$id]['sha256'] ?? '');
-                    if ($diskSize !== $dbSize || hash_file('sha256', $file) !== $dbSha) {
+                    if ($diskSize !== $dbSize || self::sha($file) !== $dbSha) {
                         try {
                             Apps::updateSeedApp($id, $file, $currentMeta);
                         } catch (Throwable $e) {
@@ -164,6 +221,7 @@ final class Seed
             }
             @touch($flag);
         } finally {
+            self::saveStamps($dir);
             flock($lock, LOCK_UN);
             fclose($lock);
         }
@@ -182,7 +240,7 @@ final class Seed
             $shot = "$demos/thumbs/$base.$ext";
             if (!is_file($shot)) continue;
             $current = glob(Apps::dir($slug) . '/thumb.*') ?: [];
-            if ($current !== [] && hash_file('sha256', $current[0]) === hash_file('sha256', $shot)) return;
+            if ($current !== [] && self::sha($current[0]) === self::sha($shot)) return;
             try {
                 $bytes = (string) file_get_contents($shot);
                 $mime = Images::sniff($bytes);
