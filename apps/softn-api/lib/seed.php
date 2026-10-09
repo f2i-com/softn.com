@@ -117,7 +117,15 @@ final class Seed
             // Seeded rows only: a visitor's app that happens to hold one of
             // these slugs keeps the category its publisher chose.
             $row=Catalog::all()[$slug]??null;
-            if($row!==null && $row['source']==='seed' && $row['category']!==$cat)Catalog::patch($slug,['category'=>$cat]);
+            if($row===null || $row['source']!=='seed')continue;
+            // And only a filing that is the seed's own. The operator files a
+            // demo elsewhere with the admin key, and it was put back here on
+            // the next request; `seed_category` is where the seed last put
+            // it, and a category that differs from that is theirs. A demo
+            // from before this was recorded was held to the table on every
+            // request, so the category it has is the seed's.
+            if(($row['seed_category']??$row['category'])!==$row['category'])continue;
+            if($row['category']!==$cat || !isset($row['seed_category']))Catalog::patch($slug,['category'=>$cat,'seed_category'=>$cat]);
         }
 
         $existing=array_values(Catalog::all());
@@ -232,6 +240,13 @@ final class Seed
      * picture: a card with the app on it, not an icon. It is stored when the
      * app is seeded and again whenever the file beside the bundle changes, so
      * a retaken screenshot shows up without the bundle having to change.
+     *
+     * Only over a picture the seed itself stored. The operator gives a demo
+     * a picture of their own with the admin key, and the screenshot was put
+     * back over it on the next request; `seed_thumb` is the digest of what
+     * the seed last stored, and a picture that is not that one is theirs. A
+     * demo from before this was recorded had the screenshot put back on every
+     * request, so the picture it has is the seed's.
      */
     private static function refreshThumbnail(string $slug, string $demos, string $bundleFile): void
     {
@@ -240,11 +255,23 @@ final class Seed
             $shot = "$demos/thumbs/$base.$ext";
             if (!is_file($shot)) continue;
             $current = glob(Apps::dir($slug) . '/thumb.*') ?: [];
-            if ($current !== [] && self::sha($current[0]) === self::sha($shot)) return;
+            $shipped = self::sha($shot);
+            $stored = Catalog::all()[$slug]['seed_thumb'] ?? null;
+            if ($current !== []) {
+                $have = self::sha($current[0]);
+                if ($stored !== null && $have !== $stored) return;
+                if ($have === $shipped) {
+                    if ($stored !== $shipped) Catalog::patch($slug, ['seed_thumb' => $shipped]);
+                    return;
+                }
+            }
             try {
                 $bytes = (string) file_get_contents($shot);
                 $mime = Images::sniff($bytes);
-                if ($mime !== null) Apps::setThumbnail($slug, [$bytes, $mime]);
+                if ($mime !== null) {
+                    Apps::setThumbnail($slug, [$bytes, $mime]);
+                    Catalog::patch($slug, ['seed_thumb' => $shipped]);
+                }
             } catch (Throwable $e) {
                 error_log("softn-api: could not store the screenshot for $slug: " . $e->getMessage());
             }

@@ -166,7 +166,7 @@ try {
     // Only a body held to the JSON limit: the bundle and image routes read
     // theirs before the catalogue themselves, after their own checks.
     // A storage body is decoded here the way its handler needs it (the text
-    // is not kept to decode twice): `{}` stays apart from `[]`. See Json.
+    // is not kept to decode twice): an object stays an object. See Json.
     if ($req->method !== 'GET' && $req->method !== 'HEAD' && $req->contentType() === 'application/json' && $req->bodyLimit() === Limits::json()) $req->json($handler === 'storage');
     $response = handle($handler, $args, $req);
     Catalog::release();
@@ -384,8 +384,9 @@ function handle(string $handler, array $args, Request $req): Response
             $app = Apps::detail(Apps::row($slug), false);
             // The app's own database is read once the catalogue is let go
             // (Storage::leaveCatalogue): a count over a large store used to
-            // hold the directory's one lock for every app page.
-            $app['storage'] = Storage::summaryOutsideCatalogue($slug);
+            // hold the directory's one lock for every app page. Who is
+            // asking is settled first, since that is the catalogue's to say.
+            $app['storage'] = Storage::summaryOutsideCatalogue($slug, Storage::actor($req, $slug));
             return Response::json(['ok' => true, 'app' => $app]);
         }
 
@@ -565,8 +566,9 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'storageSummary': {
             $slug = storage_app($args[0]);
+            $viewer = Storage::actor($req, $slug);
             Storage::leaveCatalogue();
-            return Response::json(['ok' => true, 'storage' => Storage::summary($slug)]);
+            return Response::json(['ok' => true, 'storage' => Storage::summary($slug, $viewer)]);
         }
 
         case 'storageList': {

@@ -192,7 +192,10 @@ client sees a 200 with a warning in the body instead.
 Per-app storage queries are bounded rather than indexed on their fields: at
 most ten conditions, `in` lists of fifty, `offset` up to 10 000 and `limit`
 up to `maxQueryLimit`, on a `(collection, owner)` index with the JSON fields
-read by `json_extract`. A hostile app author can still make the server work
+read by `json_extract`. A query past the first three is refused with a 400
+that names the bound (an `offset` past 10 000 used to be answered with the
+page at 10 000); a larger `limit` is brought down to `maxQueryLimit`, and the
+reply says which `limit` it used. A hostile app author can still make the server work
 for a query, but only that much of it. SQLite through PDO has no statement
 timeout: what bounds a runaway is the five-second busy timeout each database
 is opened with and PHP's own `max_execution_time` for the request, so keep
@@ -664,10 +667,21 @@ publisher may re-spell the declaration but not change what any collection
 comes to, named or through `*`: people stored records under the policy they
 were shown, so `POST .../versions` answers 400 naming the collections that
 differ. An app that had no storage may add it, and the operator's upload
-(`X-Admin-Key`) may change anything. Clearing a whole
+(`X-Admin-Key`) may change anything. A version that switches storage off
+(`"enabled": false`) does not lift this: the policies in force are
+remembered (`storage_promised` in the app's `app.json`), and a later version
+that switches storage on again is held to them. Clearing a whole
 collection needs the edit key under every policy. The key-value store has no
 policies and is always public. Records carry `mine: true` when the visitor
 asking added them, which is what an owner-write interface needs to know.
+
+`GET .../storage`, and the `storage` summary on an app's listing, count for
+each caller what the collection listing would show them: a visitor's totals
+leave out the publisher's collections and other people's private records,
+and `diskBytes`, the size of the files, is 0 for them. The edit key and the
+admin key are shown the whole store. A visitor who may not change a
+collection is told so before any record is looked up, so the answer does
+not say whether an id is there.
 
 In a `private` collection a record id belongs to the visitor who uses it:
 two visitors may each keep a record called `profile`, and neither can tell
@@ -705,8 +719,10 @@ the play page (`dist/play/` must exist: `build:site` puts the shell there), and 
 file is served with the cross-origin isolation headers the runtime's worker
 mode depends on. New folders under `data/apps/` are discovered automatically.
 The optional demo seeder also refreshes bundles and pictures when its index
-changes; keep `seedDemos` enabled to use that workflow. Do not delete the live
-app folders or lock files to refresh demos.
+changes; keep `seedDemos` enabled to use that workflow. It puts back only what
+it last wrote itself (`seed_category` and `seed_thumb` in a demo's `app.json`
+record that): a category or a picture the operator gave a demo with the admin
+key is kept. Do not delete the live app folders or lock files to refresh demos.
 
 ## Tests
 

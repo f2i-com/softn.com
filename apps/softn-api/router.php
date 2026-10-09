@@ -34,6 +34,18 @@ if (preg_match('#(^|/)\.(?!\.?(/|$))(?!well-known(/|$))#', $path)) {
     return true;
 }
 
+// Nothing the site serves has a colon in its path, and on NTFS a colon names
+// a stream: `data::$INDEX_ALLOCATION` is the data folder itself. That
+// spelling is not `/data/` to the refusals below and realpath() leaves it as
+// it was sent, so config.json and every app's database were served as files
+// of the site. No such path gets as far as the filesystem.
+if (str_contains($path, ':')) {
+    http_response_code(404);
+    header('Content-Type: text/plain');
+    echo 'Not found';
+    return true;
+}
+
 // /play/<slug> is a page the API renders — unless it names a real file in
 // the shell's directory, which the shell's own chunks do (/play/GLTFLoader-….js).
 if (preg_match('#^/api(/|$)#', $path) || preg_match('#^/app/[^/]+/?$#', $path)

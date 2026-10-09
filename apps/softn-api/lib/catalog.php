@@ -252,16 +252,19 @@ final class Catalog
     public static function all(): array {
         self::boot();
         if (self::$rows !== null) return self::$rows;
-        $remixes = [];
-        foreach (self::$docs as $doc) { $p = $doc['app']['parent_slug'] ?? null; if (is_string($p)) $remixes[$p] = ($remixes[$p] ?? 0) + 1; }
         $out = [];
         foreach (self::$docs as $slug => $doc) {
             // A doc with no versions is a folder still being filled, unless it names an address to play at.
             if (!$doc['versions'] && empty($doc['app']['play_url'])) continue;
-            $row = $doc['app'];
-            $row['remixes'] = $remixes[$slug] ?? 0;
-            $out[$slug] = $row;
+            $out[$slug] = $doc['app'];
         }
+        // A remix counts for its parent while a visitor can open it. Every
+        // folder naming the parent used to be counted, so an app kept the
+        // remixes their owners had unpublished: a count, and a place in the
+        // "most remixed" order, with nothing in the list beside it.
+        $remixes = [];
+        foreach ($out as $row) { $p = $row['parent_slug'] ?? null; if (is_string($p) && !$row['hidden']) $remixes[$p] = ($remixes[$p] ?? 0) + 1; }
+        foreach ($out as $slug => $row) $out[$slug]['remixes'] = $remixes[$slug] ?? 0;
         return self::$rows = $out;
     }
     public static function doc(string $slug): array {
@@ -282,6 +285,17 @@ final class Catalog
         self::doc($slug);
         self::retire($slug);
         unset(self::$docs[$slug]); self::$rows = null;
+        // What was remixed from it has no parent now. Left naming the slug,
+        // those remixes were handed to whichever app was published under it
+        // next, as that app's own: its count, its list, its lineage.
+        foreach (self::$docs as $other => $doc) {
+            $orphaned = false;
+            foreach (['parent_slug', 'root_slug'] as $field) if (($doc['app'][$field] ?? null) === $slug) { $doc['app'][$field] = null; $orphaned = true; }
+            if (!$orphaned) continue;
+            // The key is a slug, and text: PHP makes a number of one that is all digits.
+            try { self::put((string) $other, $doc); }
+            catch (Throwable $e) { error_log("softn-api: $other could not be told its parent $slug is gone: " . $e->getMessage()); self::$docs[$other] = $doc; }
+        }
     }
     /** Atomically retire the entire directory, listed or not; recovery never rediscovers it. */
     public static function retire(string $slug): void {

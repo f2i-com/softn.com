@@ -280,8 +280,8 @@ final class Request
     /** @var array<string, mixed>|null */
     private ?array $jsonBody = null;
     private bool $jsonParsed = false;
-    /** Whether that decoding kept `{}` apart from `[]` (see Json). */
-    private bool $jsonKeepsEmptyObjects = false;
+    /** Whether that decoding kept each field's objects as objects (see Json). */
+    private bool $jsonKeepsObjects = false;
 
     public static function fromGlobals(): self
     {
@@ -508,24 +508,25 @@ final class Request
      * already copied into the array, and holding both is what brought the
      * peak close to memory_limit.
      *
-     * `$keepEmptyObjects` is for a body whose values are stored and handed
-     * back (see Json): an object with no members then stays an object.
+     * `$keepObjects` is for a body whose values are stored and handed back
+     * (see Json): the body's own fields are an array as ever, and inside
+     * each of them an object stays an object, whatever its keys.
      *
      * @return array<string, mixed>
      */
-    public function json(bool $keepEmptyObjects = false): array
+    public function json(bool $keepObjects = false): array
     {
         if (!$this->jsonParsed) {
             $this->jsonParsed = true;
-            $this->jsonKeepsEmptyObjects = $keepEmptyObjects;
+            $this->jsonKeepsObjects = $keepObjects;
             if ($this->contentType() === 'application/json') {
                 if ($this->bodyConsumed && $this->rawBody === null) throw new ApiError(400, 'The request body was already read as a bundle.');
                 $body = $this->body();
                 $this->rawBody = null;
-                $decoded = $keepEmptyObjects ? Json::decode($body, 64) : json_decode($body, true, 64);
+                $decoded = $keepObjects ? Json::decode($body, 64) : json_decode($body, true, 64);
                 unset($body);
-                // `{}` is a body with no fields, as it always was.
-                if ($decoded instanceof stdClass) $decoded = [];
+                // The body itself is its fields by name; `{}` is a body with none.
+                if ($decoded instanceof stdClass) $decoded = get_object_vars($decoded);
                 if (!is_array($decoded)) throw new ApiError(400, 'The request body is not valid JSON.');
                 $this->jsonBody = $decoded;
             } else {
@@ -533,8 +534,8 @@ final class Request
             }
         }
         // The text is gone by now, so a body decoded the plain way cannot be
-        // decoded again: say so, rather than hand back `[]` for a stored `{}`.
-        if ($keepEmptyObjects && !$this->jsonKeepsEmptyObjects) throw new LogicException('The body was decoded before its handler asked for empty objects to be kept.');
+        // decoded again: say so, rather than hand back a list for a stored object.
+        if ($keepObjects && !$this->jsonKeepsObjects) throw new LogicException('The body was decoded before its handler asked for objects to be kept.');
         return $this->jsonBody ?? [];
     }
 
@@ -569,6 +570,11 @@ final class Request
     {
         $v = $this->header($header);
         if ($v !== null) return $v;
+        // A GET has no body to carry one. The app's listing asks who is
+        // reading it (the storage summary depends on that), and must not
+        // answer "not valid JSON" to a client that names a content type on a
+        // request that sends nothing.
+        if ($this->method === 'GET' || $this->method === 'HEAD') return null;
         $json = $this->json();
         if (is_string($json[$field] ?? null)) return $json[$field];
         if (isset($_POST[$field]) && is_string($_POST[$field])) return $_POST[$field];
@@ -711,43 +717,63 @@ final class Request
  * compared as the bytes inet_pton gives.
  */
 /**
- * JSON for what an app stores, where `{}` and `[]` are different values.
+ * JSON for what an app stores, where an object is an object and a list is a
+ * list.
  *
- * `json_decode($text, true)` makes both the same empty array, and an empty
- * array is written back as `[]`. An app that stored `{"prefs":{}}` therefore
- * read `{"prefs":[]}`, set `prefs.theme` on what was now a JavaScript array,
- * and saved it: JSON.stringify drops a named property of an array, so the
- * record went back as `[]` and the setting was never kept.
+ * `json_decode($text, true)` makes one PHP array of both, and an array is
+ * written back as a list whenever its keys run 0, 1, 2 and so on, which
+ * they do when there are none. An app that stored `{"prefs":{}}` therefore
+ * read `{"prefs":[]}`, and one that stored `{"votes":{"0":3,"1":5}}` read
+ * `{"votes":[3,5]}`; each then set a named property on what was now a
+ * JavaScript array and saved it, and JSON.stringify drops a named property
+ * of an array, so the setting was never kept. A record whose own fields
+ * were numbered was refused as "not an object".
  */
 final class Json
 {
-    /** JSON text as PHP arrays, except that an object with no members stays an object. */
+    /** JSON text as PHP values in which every object is an object, whatever its keys, and every list a list. */
     public static function decode(string $json, int $depth = 64): mixed
     {
         $value = json_decode($json, false, $depth);
         // A member name PHP cannot hold on an object (one starting with NUL)
         // is still a key an array can have: such text is read as it was.
         if ($value === null && json_last_error() !== JSON_ERROR_NONE) return json_decode($json, true, $depth);
-        return self::arrays($value);
+        return $value;
     }
 
-    /** The same value with each empty object as the empty array the request checks expect. */
+    /** The same value as plain arrays throughout, which is what the request checks expect of everything that is not stored. */
     public static function plain(mixed $value): mixed
     {
-        if ($value instanceof stdClass) return [];
+        if ($value instanceof stdClass) $value = get_object_vars($value);
         if (is_array($value)) foreach ($value as $k => $v) $value[$k] = self::plain($v);
         return $value;
     }
 
-    private static function arrays(mixed $value): mixed
+    /**
+     * An object's fields by name, or null for a value that is not an object.
+     * A map built in PHP is one, and so is `[]`: an object with no fields,
+     * as PHP spells it and as records stored before objects were kept have it.
+     *
+     * @return array<int|string, mixed>|null
+     */
+    public static function fields(mixed $value): ?array
     {
-        if ($value instanceof stdClass) {
-            $out = [];
-            foreach (get_object_vars($value) as $k => $v) $out[$k] = self::arrays($v);
-            return $out === [] ? new stdClass() : $out;
-        }
-        if (is_array($value)) foreach ($value as $k => $v) $value[$k] = self::arrays($v);
-        return $value;
+        if ($value instanceof stdClass) return get_object_vars($value);
+        return is_array($value) && ($value === [] || !array_is_list($value)) ? $value : null;
+    }
+
+    /**
+     * Fields as the object they are, whatever they are called:
+     * `{"0":"a","1":"b"}` is written back as that, not as a list.
+     *
+     * @param array<int|string, mixed> $fields
+     */
+    public static function object(array $fields): stdClass|array
+    {
+        // A name starting with NUL cannot be put on a PHP object; a map
+        // holding one is not a list either, and is written as it is.
+        foreach ($fields as $name => $_) if (is_string($name) && str_starts_with($name, "\0")) return $fields;
+        return (object) $fields;
     }
 }
 

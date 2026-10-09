@@ -76,7 +76,8 @@ final class Apps
     public static function resolveParent(string $given): string {
         try { return self::resolveSlug($given); } catch (ApiError) { /* not a slug; a name, perhaps */ }
         $given=mb_strtolower(trim($given)); $matches=[];
-        foreach (Catalog::all() as $slug=>$r) if (!$r['hidden'] && mb_strtolower($r['name'])===$given) $matches[]=$slug;
+        // As text: PHP hands back a key that is all digits (the slug of an app called "2048") as a number.
+        foreach (Catalog::all() as $slug=>$r) if (!$r['hidden'] && mb_strtolower($r['name'])===$given) $matches[]=(string)$slug;
         if (count($matches)===1) return $matches[0];
         if (count($matches)>1) throw new ApiError(404,'More than one app is published under that name; name the parent by its slug.');
         throw new ApiError(404,'No app is published under that name.');
@@ -153,9 +154,12 @@ final class Apps
         $external = $playUrl === null ? null : ['url' => $playUrl, 'host' => (string) (parse_url($playUrl, PHP_URL_HOST) ?: '')];
         $count = (int) $row['rating_count'];
         $parent = null;
-        if (!empty($row['parent_slug'])) {
+        // Any slug, `0` included, which `empty` takes for none. And only a
+        // parent a visitor can open: one its owner unpublished was still
+        // named here, on every remix of it.
+        if (is_string($row['parent_slug'] ?? null) && $row['parent_slug'] !== '') {
             $pr = ($rows ?? Catalog::all())[$row['parent_slug']] ?? null;
-            if ($pr) $parent = ['slug' => $pr['slug'], 'name' => $pr['name']];
+            if ($pr && !$pr['hidden']) $parent = ['slug' => $pr['slug'], 'name' => $pr['name']];
         }
         return [
             'slug' => $slug,
@@ -245,7 +249,9 @@ final class Apps
         while (is_string($cur) && $cur !== '' && $hops++ < 8) {
             $pr = $rows[$cur] ?? null;
             if (!$pr) break;
-            $lineage[] = ['slug' => $pr['slug'], 'name' => $pr['name'], 'author' => $pr['author']];
+            // An ancestor nobody can open is passed over, not named; what it
+            // came from is still part of this app's line.
+            if (!$pr['hidden']) $lineage[] = ['slug' => $pr['slug'], 'name' => $pr['name'], 'author' => $pr['author']];
             $cur = $pr['parent_slug'];
         }
         $card['versions'] = $versions;
@@ -359,7 +365,7 @@ final class Apps
         $rootSlug = null;
         if ($parentSlug !== null) {
             $parent = self::row($parentSlug);
-            $rootSlug = $parent['root_slug'] ?: $parent['slug'];
+            $rootSlug = is_string($parent['root_slug']) && $parent['root_slug'] !== '' ? $parent['root_slug'] : $parent['slug'];
         }
         $editKey = $source === 'seed' ? null : bin2hex(random_bytes(20));
         $dir = self::dir($slug);
@@ -373,6 +379,8 @@ final class Apps
                 'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),
                 'icon'=>$icon,'primary_color'=>$primary,'edit_key_hash'=>$editKey===null?null:hash('sha256',$editKey),'source'=>$source,'size'=>$info['size'],'created_at'=>$now,'updated_at'=>$now
             ]);
+            // Where the seed filed its demo, so that the sync can tell its own filing from the operator's later one: see Seed::ifEmpty.
+            if ($source === 'seed') $app['seed_category'] = $category;
             Catalog::put($slug,['app'=>$app,'versions'=>[['slug'=>$slug,'version'=>1,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>$notes,'created_at'=>$now]],'comments'=>[],'ratings'=>[],'runsDaily'=>[]]);
         } catch (Throwable $e) {
             // A folder with a bundle and no app.json is discovered on the
@@ -397,15 +405,14 @@ final class Apps
      * `owner-write` into `public`. The comparison is of what each collection
      * comes to, named or through `*`, so re-spelling the same rules is not a
      * change. An app that had no storage made no promise and may add it; the
-     * operator may change anything.
+     * operator may change anything. `$before` is what was promised: see
+     * `promisedPolicies`.
      *
-     * @param array<string, mixed> $row
+     * @param array<string, string> $before
      * @param array<string, mixed> $info
      */
-    private static function refuseChangedPolicies(array $row,array $info): void {
-        $had=json_decode((string)($row['capabilities']??'[]'),true);
-        if(!is_array($had)||!in_array('storage',$had,true))return;
-        $before=Storage::policiesOf($row);$after=is_array($info['storagePolicies']??null)?$info['storagePolicies']:[];
+    private static function refuseChangedPolicies(array $before,array $info): void {
+        $after=is_array($info['storagePolicies']??null)?$info['storagePolicies']:[];
         $effective=fn(array $policies,string $name):string=>$policies[$name]??$policies['*']??'public';
         $changed=[];
         foreach(array_unique(array_merge(array_keys($before),array_keys($after),['*'])) as $name){
@@ -413,6 +420,35 @@ final class Apps
             if($effective($before,$name)!==$effective($after,$name))$changed[]=$name==='*'?'every other collection (*)':$name;
         }
         if($changed)throw new ApiError(400,'This version changes the storage policy of '.implode(', ',$changed).'. A collection\'s policy is fixed when the app is published, because people have stored records under it; keep the policies as they are, or publish the change as a new app.');
+    }
+
+    /**
+     * The policies people have stored records under, which a publisher's
+     * next version is held to; null for an app that has never had storage.
+     *
+     * While the app declares storage, that is its row's declaration. Once a
+     * version has switched storage off the row says "no storage", which the
+     * check used to read as "made no promise": a version with the same
+     * collections and `enabled: false` passed, and the one after it could
+     * declare anything over the records still in the store. So what was in
+     * force is remembered (`storage_promised`, written by addVersion). An app
+     * whose storage was switched off before anything was remembered is known
+     * by the records in its store: they were stored under the declaration
+     * the app was left with, which is the one that was in force when it was
+     * switched off. A store with no record in it is no promise to anyone, and
+     * such a file can sit in the folder of an app that never had storage
+     * (asking for a listing used to make one), which may still add it. A
+     * store that cannot be read is taken to hold records.
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, string>|null
+     */
+    private static function promisedPolicies(array $row): ?array {
+        $caps=json_decode((string)($row['capabilities']??'[]'),true);
+        if(is_array($caps)&&in_array('storage',$caps,true))return Storage::policiesOf($row);
+        if(is_array($row['storage_promised']??null))return array_filter($row['storage_promised'],fn($policy)=>in_array($policy,Storage::POLICIES,true));
+        try{$kept=Storage::summary((string)$row['slug'])['records']>0;}catch(ApiError|PDOException){$kept=true;}
+        return $kept?Storage::policiesOf($row):null;
     }
 
     /**
@@ -429,12 +465,19 @@ final class Apps
         $row=self::row($slug,true);$info=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);
         $next=(int)$row['latest_version']+1;
         if($next>(int)Config::get('maxVersionsPerApp',50))throw new ApiError(400,'This app has reached its version limit.');
-        if(!$byAdmin)self::refuseChangedPolicies($row,$info);
+        $promised=self::promisedPolicies($row);
+        if(!$byAdmin&&$promised!==null)self::refuseChangedPolicies($promised,$info);
         $dir=self::dir($slug);$file="v$next.softn";
         self::copyBundle($bundlePath,"$dir/$file");
         $icon=self::storeIcon($dir,$info['icon'])??$row['icon'];$now=time();
         $doc['versions'][]=['slug'=>$slug,'version'=>$next,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>Text::clean($notes,400,true),'created_at'=>$now];
         $doc['app']=array_replace($doc['app'],['latest_version'=>$next,'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon,'size'=>$info['size'],'updated_at'=>$now]);
+        // What the versions after this one are held to: this version's own
+        // declaration while it has storage (the same rules, or the operator's
+        // new ones), and otherwise what was in force before it, which a
+        // version without storage does not erase.
+        $remembered=in_array('storage',$info['capabilities'],true)?$info['storagePolicies']:$promised;
+        if($remembered!==null)$doc['app']['storage_promised']=$remembered;
         if(!$byAdmin && array_key_exists('trusted',$doc['app'])){unset($doc['app']['trusted']);error_log("softn-api: $slug has a new version from its publisher; it is no longer trusted until the operator sets trusted again");}
         Catalog::put($slug,$doc);
         return self::detail(self::row($slug,true));
@@ -468,8 +511,11 @@ final class Apps
         // describe that one: writing version 1's capabilities and storage
         // policies over them made the play page set the app up without the
         // storage its current version declares.
+        // The demo is filed where its index says unless the operator has
+        // filed it elsewhere since the seed last did: that filing is theirs.
+        $refiled=isset($doc['app']['seed_category'])&&$doc['app']['seed_category']!==$doc['app']['category'];
         if((int)($doc['app']['latest_version']??1)===1)
-        $doc['app']=array_replace($doc['app'],['name'=>$name,'description'=>$description,'category'=>$category,'tags'=>json_encode($tags),'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon??$doc['app']['icon'],'primary_color'=>$primary,'size'=>$info['size'],'updated_at'=>$now]);
+        $doc['app']=array_replace($doc['app'],['name'=>$name,'description'=>$description,'category'=>$refiled?$doc['app']['category']:$category,'seed_category'=>$refiled?$doc['app']['seed_category']:$category,'tags'=>json_encode($tags),'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon??$doc['app']['icon'],'primary_color'=>$primary,'size'=>$info['size'],'updated_at'=>$now]);
         foreach($doc['versions'] as &$v)if((int)$v['version']===1)$v=array_replace($v,['file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'created_at'=>$now]);
         unset($v);Catalog::put($slug,$doc);
     }
@@ -478,6 +524,11 @@ final class Apps
     public static function patch(string $slug, array $fields): array
     {
         $row = self::row($slug, true);
+        // Text, before it is read as text: a list or an object in one of
+        // these was "Array to string conversion", which is a 500 to the caller.
+        foreach (['name', 'description', 'author', 'category', 'primary'] as $f) {
+            if (isset($fields[$f]) && !is_scalar($fields[$f])) throw new ApiError(400, "$f must be text.");
+        }
         $sets = [];
         $params = [':slug' => $slug];
         if (isset($fields['name'])) {
@@ -779,7 +830,7 @@ final class Categories
     public static function update(string $id, array $fields): array {
         self::one($id);$rows=Catalog::categories();$r=$rows[$id];
         if(isset($fields['status'])&&in_array($fields['status'],['core','approved','suggested','hidden'],true))$r['status']=$fields['status'];
-        foreach(['name'=>32,'description'=>120,'emoji'=>4] as $k=>$max)if(isset($fields[$k])){$v=Text::clean((string)$fields[$k],$max);if($k!=='name'||$v!=='')$r[$k]=$v;}
+        foreach(['name'=>32,'description'=>120,'emoji'=>4] as $k=>$max)if(isset($fields[$k])){if(!is_scalar($fields[$k]))throw new ApiError(400,"$k must be text.");$v=Text::clean((string)$fields[$k],$max);if($k!=='name'||$v!=='')$r[$k]=$v;}
         if(isset($fields['sort']))$r['sort']=(int)$fields['sort'];
         $rows[$id]=$r;Catalog::saveCategories($rows);return self::one($id);
     }

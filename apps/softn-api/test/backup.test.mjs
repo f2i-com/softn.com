@@ -329,3 +329,23 @@ test('a tar archive round-trips the same way, and a byte flipped inside it is re
   assert.equal(backup(['restore', bad, '--into', dest]).status, 2);
   assert.ok(!fs.existsSync(dest));
 });
+
+test('an app whose slug is all digits is restored and reported like any other', skip, async () => {
+  // PHP keeps an array key that is all digits as a number, and the report
+  // handed that key to a function that takes a slug as text. The restore of
+  // any catalogue holding an app called "2048" moved every file in and then
+  // exited 1 with "failed", its inventory never compared.
+  const s = await startServer({ prefix: 'softn-backup-digits-' });
+  servers.push(s);
+  assert.equal((await s.publish('2048')).app.slug, '2048');
+  await s.publish('Beside It');
+  const work = scratch();
+  const archive = path.join(work, 'backup.zip');
+  const exported = backup(['export', archive, '--data', s.dataDir]);
+  assert.equal(exported.status, 0, exported.stderr);
+  const restored = path.join(work, 'restored');
+  const r = backup(['restore', archive, '--into', restored]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /rebuilt: 2 apps listed, 2 versions, 0 folders skipped/);
+  assert.match(r.stdout, /inventory matches the archive/);
+});

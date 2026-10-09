@@ -580,6 +580,47 @@ test('per-app storage: records, queries, the key-value store, and the limits', s
   assert.equal(listed.total, 1);
 });
 
+test('a query offset past its bound is refused, as too many conditions are', skip, async () => {
+  // An offset past 10,000 was quietly read as 10,000: the reply was that
+  // page again, under an `offset` the caller had not asked for, and a client
+  // paging until a short page never reached one.
+  const S = (body) => api('POST', '/api/apps/score-board/storage', { body });
+  const last = await S({ op: 'query', collection: 'profile', offset: 10000 });
+  assert.equal(last.status, 200, last.text);
+  assert.equal(last.json.result.offset, 10000);
+  const past = await S({ op: 'query', collection: 'profile', offset: 10001 });
+  assert.equal(past.status, 400, past.text);
+  assert.match(past.json.error, /offset/);
+  assert.match(past.json.error, /10,000/);
+  assert.equal((await api('GET', '/api/apps/score-board/storage/profile?offset=20000')).status, 400);
+});
+
+test('a JSON value of the wrong type is refused by name, never a 500', skip, async () => {
+  // Text was made of whatever arrived. A list where a direction or a name
+  // belongs is "Array to string conversion" to PHP, which the API answers
+  // as a 500 with nothing to say what was wrong.
+  const S = (body) => api('POST', '/api/apps/score-board/storage', { body });
+  for (const direction of [['desc'], { desc: true }, 1]) {
+    const order = await S({ op: 'query', collection: 'profile', orderBy: [['colour', direction]] });
+    assert.equal(order.status, 400, order.text);
+    assert.match(order.json.error, /orderBy/);
+  }
+  const admin = { 'X-Admin-Key': adminKey };
+  for (const field of ['name', 'description', 'author', 'category', 'primary']) {
+    for (const value of [['x'], { a: 1 }]) {
+      const r = await api('PATCH', '/api/apps/score-board', { body: { [field]: value }, headers: admin });
+      assert.equal(r.status, 400, `${field}: ${r.text}`);
+      assert.match(r.json.error, new RegExp(`\\b${field}\\b`));
+    }
+  }
+  const card = (await api('GET', '/api/apps/score-board')).json.app;
+  assert.deepEqual([card.name, card.author, card.category], ['Score Board', 'Anonymous', 'other'], 'a refused change changed nothing');
+  // The operator's own route for a category makes its text the same way.
+  const renamed = await api('POST', '/api/admin/categories/games', { body: { name: ['x'] }, headers: admin });
+  assert.equal(renamed.status, 400, renamed.text);
+  assert.match(renamed.json.error, /\bname\b/);
+});
+
 test('a visitor can suggest a category and use it at once; the admin approves it', skip, async () => {
   const s = await api('POST', '/api/categories', { body: { name: 'Music Toys', description: 'Things that make noise', emoji: '🎵' } });
   assert.equal(s.status, 201, JSON.stringify(s.json));
@@ -627,6 +668,55 @@ test('hiding an app takes it out of the directory; the admin can purge it', skip
   // A seeded app has no edit key; the admin key manages it.
   assert.equal((await api('PATCH', '/api/apps/snake-game', { body: { description: 'x' }, headers: { 'X-Edit-Key': editKey } })).status, 403);
   assert.equal((await api('PATCH', '/api/apps/snake-game', { body: { tags: ['arcade', 'classic', 'seeded'] }, headers: { 'X-Admin-Key': adminKey } })).status, 200);
+});
+
+test('remix counts and lineage count and name only apps a visitor can open', skip, async () => {
+  // Every folder naming an app as its parent was counted, unpublished ones
+  // too, beside a list that left them out; a remix went on naming a parent
+  // its owner had unpublished; and an app given the slug of one that was
+  // purged was handed the purged app's remixes.
+  resetRateLimits();
+  const publish = async (name) => {
+    const r = await api('POST', '/api/apps', { raw: makeBundle(name), headers: { 'Content-Type': 'application/octet-stream' } });
+    assert.equal(r.status, 201, JSON.stringify(r.json));
+    return r.json;
+  };
+  const remix = async (slug, name) => {
+    const r = await api('POST', `/api/apps/${slug}/remix`, { body: { name, author: `${name} Author` } });
+    assert.equal(r.status, 201, JSON.stringify(r.json));
+    return r.json;
+  };
+  const detail = async (slug) => (await api('GET', `/api/apps/${slug}`)).json.app;
+  await publish('Lineage Root');
+  const middle = await remix('lineage-root', 'Lineage Middle');
+  await remix('lineage-middle', 'Lineage Leaf');
+  assert.equal((await detail('lineage-root')).remixes, 1);
+  assert.deepEqual((await detail('lineage-leaf')).lineage.map((l) => l.slug), ['lineage-middle', 'lineage-root']);
+
+  // The one in the middle is unpublished by its owner.
+  assert.equal((await api('DELETE', '/api/apps/lineage-middle', { headers: { 'X-Edit-Key': middle.editKey } })).status, 204);
+  const root = await detail('lineage-root');
+  assert.equal(root.remixes, root.remixList.length, 'a remix nobody can open is still counted');
+  assert.equal(root.remixes, 0);
+  const leaf = await detail('lineage-leaf');
+  assert.equal(leaf.parent, null, 'a parent nobody can open is still named');
+  assert.deepEqual(leaf.lineage.map((l) => l.slug), ['lineage-root'], 'the lineage names what can be opened, and goes on past what cannot');
+  const listed = (await api('GET', '/api/apps?q=Lineage&perPage=48')).json.apps;
+  assert.equal(listed.find((a) => a.slug === 'lineage-leaf').parent, null);
+  assert.equal(listed.find((a) => a.slug === 'lineage-root').remixes, 0);
+
+  // The root is purged with a remix still pointing at it, and somebody else
+  // publishes under its name.
+  await remix('lineage-root', 'Lineage Twig');
+  assert.equal((await detail('lineage-root')).remixes, 1);
+  assert.equal((await api('DELETE', '/api/apps/lineage-root?purge=1', { headers: { 'X-Admin-Key': adminKey } })).status, 204);
+  assert.equal((await publish('Lineage Root')).app.slug, 'lineage-root');
+  const newcomer = await detail('lineage-root');
+  assert.equal(newcomer.remixes, 0, 'the purged app\'s remixes passed to the app that took its slug');
+  assert.deepEqual(newcomer.remixList, []);
+  assert.equal((await detail('lineage-twig')).parent, null, 'a remix of the purged app names the newcomer as its parent');
+  assert.deepEqual((await detail('lineage-leaf')).lineage, []);
+  resetRateLimits();
 });
 
 test('the share page carries the app into its meta tags', skip, async () => {
@@ -955,6 +1045,33 @@ test('a collection listing shows each visitor what they may read', skip, async (
   assert.ok(!names(annSees).includes('config'));
 });
 
+test('the storage summary counts for each caller what the collection listing shows them', skip, async () => {
+  // The summary, on its own route and on the app's page, counted the whole
+  // store for everyone: beside a listing that names two collections it said
+  // four, and so how many records the ones a visitor may not read hold.
+  const ann = { 'X-Visitor-Token': 'ann-token-0123456789abcdef' };
+  const S = (body, headers = {}) => api('POST', '/api/apps/policy-board/storage', { body, headers });
+  const summary = async (headers) => (await api('GET', '/api/apps/policy-board/storage', { headers })).json.storage;
+  const seen = {};
+  for (const [who, headers] of Object.entries({ anon: {}, ann })) {
+    const listed = (await S({ op: 'collections' }, headers)).json.result.collections;
+    const shown = { collections: listed.length, records: listed.reduce((n, c) => n + c.records, 0) };
+    seen[who] = await summary(headers);
+    const page = (await api('GET', '/api/apps/policy-board', { headers })).json.app.storage;
+    assert.deepEqual({ collections: seen[who].collections, records: seen[who].records }, shown, `${who}, on the storage route`);
+    assert.deepEqual({ collections: page.collections, records: page.records }, shown, `${who}, on the app's page`);
+  }
+  assert.equal(seen.ann.records, seen.anon.records + 2, 'her own two notes, and nobody else\'s');
+  assert.ok(seen.ann.bytes > seen.anon.bytes && seen.anon.bytes > 0, 'the bytes are of what was counted');
+  // The operator, like the publisher, is shown the whole store; the reply has the same fields either way.
+  const whole = await summary({ 'X-Admin-Key': adminKey });
+  assert.deepEqual([whole.collections, whole.records], [4, 6], 'scores, notes, config and the guestbook');
+  assert.ok(whole.bytes > seen.ann.bytes && whole.diskBytes > 0);
+  assert.deepEqual(Object.keys(seen.anon).sort(), Object.keys(whole).sort());
+  // Asking who is reading does not read a body: a GET that names a content type and sends nothing is still answered.
+  assert.equal((await api('GET', '/api/apps/policy-board', { headers: { 'Content-Type': 'application/json' } })).status, 200);
+});
+
 test('a write lands on the record the check saw, or not at all', skip, async () => {
   const ann = { 'X-Visitor-Token': 'ann-token-0123456789abcdef' };
   const bob = { 'X-Visitor-Token': 'bob-token-0123456789abcdef' };
@@ -1178,6 +1295,18 @@ test('the dev router keeps data/ and the api/ files unserved however the path is
   assert.match(await rawGet('/./api/README.md'), /^HTTP\/1\.[01] 404/);
   // A real file still is one.
   assert.match(await rawGet('/./demos/index.json'), /^HTTP\/1\.[01] 200/);
+});
+
+test('the dev router refuses a path with a colon in it, which on NTFS is one more spelling of data/', skip, async () => {
+  // `data::$INDEX_ALLOCATION` is the data folder under its stream name on
+  // Windows. It is not `/data/` to the refusals and realpath() leaves it
+  // spelt that way, so config.json, the admin key in it, was served as a
+  // file of the site; the API's own files were reached the same way.
+  for (const target of ['/data::$INDEX_ALLOCATION/config.json', '/data:$I30:$INDEX_ALLOCATION/config.json', '/api::$INDEX_ALLOCATION/README.md', '/api::$INDEX_ALLOCATION/lib/http.php', '/demos/index.json::$DATA']) {
+    const reply = await rawGet(target);
+    assert.match(reply, /^HTTP\/1\.[01] 404/, target);
+    assert.doesNotMatch(reply, /adminKey/, target);
+  }
 });
 
 test('a data directory PHP cannot use is a 503 with JSON and CORS headers, not a bare fatal', skip, async () => {

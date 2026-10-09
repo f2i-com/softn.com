@@ -516,7 +516,10 @@ final class Backup
             }
         }
         $versions = 0;
-        foreach ($rows as $slug => $row) $versions += count(Catalog::doc($slug)['versions']);
+        // The key as text: PHP hands back a slug that is all digits ("2048") as a
+        // number, and a restore holding such an app stopped here, files already
+        // moved in, with "failed" and its inventory never compared.
+        foreach ($rows as $slug => $row) $versions += count(Catalog::doc((string) $slug)['versions']);
         Catalog::release();
         self::say(sprintf('rebuilt: %d apps listed, %d versions, %d folders skipped', count($rows), $versions, count($skipped)));
         foreach ($problems as $p) fwrite(STDERR, "inventory: $p\n");

@@ -200,6 +200,28 @@ test('an address names a slug, never a name; a parent may be a name exactly one 
   assert.equal((await s.api('GET', '/api/apps/child-of-which')).status, 404, 'nothing was published');
 });
 
+test('a slug that is all digits is a slug like any other: a parent found by name, a parent called 0', skip, async () => {
+  // PHP keeps an array key that is all digits as a number. The parent a
+  // publish names by its name was read from such a key and handed back where
+  // text is required, which was a 500; and a parent whose slug is `0` was
+  // taken for no parent at all, so its remix named none.
+  const game = await s.publish('2048');
+  assert.equal(game.app.slug, '2048');
+  assert.equal((await s.api('PATCH', '/api/apps/2048', { body: { name: 'Sliding Tiles' }, headers: { 'X-Edit-Key': game.editKey } })).status, 200);
+  const child = await s.api('POST', '/api/apps', { raw: makeBundle('Tiles Remix'), headers: { 'Content-Type': 'application/octet-stream', 'X-Admin-Key': s.adminKey }, query: 'parent=Sliding%20Tiles' });
+  assert.equal(child.status, 201, child.text);
+  assert.deepEqual(child.json.app.parent, { slug: '2048', name: 'Sliding Tiles' });
+
+  assert.equal((await s.publish('0')).app.slug, '0');
+  const remix = await s.api('POST', '/api/apps/0/remix', { body: { name: 'Zero Remix' } });
+  assert.equal(remix.status, 201, remix.text);
+  assert.deepEqual(remix.json.app.parent, { slug: '0', name: '0' });
+  const grand = await s.api('POST', `/api/apps/${remix.json.app.slug}/remix`, { body: { name: 'Zero Remix Again' } });
+  assert.equal(grand.status, 201, grand.text);
+  assert.deepEqual((await s.api('GET', `/api/apps/${grand.json.app.slug}`)).json.app.lineage.map((l) => l.slug), [remix.json.app.slug, '0']);
+  assert.equal((await s.api('GET', '/api/apps/0')).json.app.remixes, 1);
+});
+
 test('a purged app leaves nothing behind, subfolders included', skip, async () => {
   const { app, editKey } = await s.publish('Purged With Extras');
   const folder = path.join(s.dataDir, 'apps', app.slug);

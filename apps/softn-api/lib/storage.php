@@ -51,6 +51,10 @@ final class Storage
     private const TOKEN = '/^[A-Za-z0-9_-]{16,128}$/';
     /** The policies a collection may declare; the same list as the schema's STORAGE_POLICIES. */
     public const POLICIES = ['public', 'append-only', 'owner-write', 'private', 'publisher'];
+    /** How far into a collection a query may start; the README's Limits section says so. */
+    private const MAX_OFFSET = 10000;
+    /** One record's bytes, in SQL: see `usedBytes` for why each column is cast. */
+    private const RECORD_BYTES = 'LENGTH(CAST(collection AS BLOB)) + LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(data AS BLOB))';
 
     private static function path(string $slug): string
     {
@@ -96,15 +100,15 @@ final class Storage
         Catalog::release();
     }
 
-    /** An app's storage summary, read after the catalogue has been let go. */
-    public static function summaryOutsideCatalogue(string $slug): array
+    /** An app's storage summary as `$viewer` (see `actor`) may see it, read after the catalogue has been let go. */
+    public static function summaryOutsideCatalogue(string $slug, ?array $viewer = null): array
     {
         self::leaveCatalogue();
         // An app's page is not its storage: a store that will not open
         // (see Db::open) is reported as unavailable rather than taking the
         // app's detail, and the page built on it, down with it.
         try {
-            return self::summary($slug);
+            return self::summary($slug, $viewer);
         } catch (ApiError | PDOException $e) {
             error_log("softn-api: the storage of $slug could not be summarised: " . $e->getMessage());
             return ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0, 'diskBytes' => 0, 'unavailable' => true];
@@ -123,6 +127,7 @@ CREATE TABLE IF NOT EXISTS records (
   data TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  owner TEXT,
   PRIMARY KEY (collection, id)
 );
 CREATE INDEX IF NOT EXISTS records_updated ON records(collection, updated_at);
@@ -132,11 +137,22 @@ CREATE TABLE IF NOT EXISTS kv (
   updated_at INTEGER NOT NULL
 );
 SQL);
-        // Who added a record. Absent on records from before policies existed;
-        // under a policy that asks, such a record belongs to nobody, so only
-        // the edit key can change it.
+        // `owner` is who added a record. A store from before policies existed
+        // was made without the column and gains it here; its records belong
+        // to nobody, so under a policy that asks, only the edit key changes
+        // them. Every store used to be made without it and altered at once,
+        // and two requests opening a new app's store together both found it
+        // missing: the second ALTER was a 500 for one of the app's first
+        // requests. An older store's first requests can still meet that way,
+        // and the one that comes second has what it wanted.
         $columns = array_column($pdo->query('PRAGMA table_info(records)')->fetchAll(PDO::FETCH_ASSOC), 'name');
-        if (!in_array('owner', $columns, true)) $pdo->exec('ALTER TABLE records ADD COLUMN owner TEXT');
+        if (!in_array('owner', $columns, true)) {
+            try {
+                $pdo->exec('ALTER TABLE records ADD COLUMN owner TEXT');
+            } catch (PDOException $e) {
+                if (!str_contains($e->getMessage(), 'duplicate column name')) throw $e;
+            }
+        }
         $pdo->exec('CREATE INDEX IF NOT EXISTS records_owner ON records(collection, owner)');
         return $open[$slug] = $pdo;
     }
@@ -147,19 +163,42 @@ SQL);
      * database, its write-ahead log and its shared-memory index take on disk,
      * which is the operator's number and can be larger or, after deletions,
      * smaller.
+     *
+     * `$viewer` is who is asking (see `actor`). The publisher and the
+     * operator are shown the whole store, as is a caller inside the API that
+     * names nobody. A visitor is shown what the collection listing would show
+     * them: the summary used to count every record for everyone, so beside a
+     * listing that withheld the publisher's collection and other people's
+     * private notes it said how many of each there were. The files' size is
+     * a figure for the whole store, and a visitor is not given it.
      */
-    public static function summary(string $slug): array
+    public static function summary(string $slug, ?array $viewer = null): array
     {
         $path = self::path($slug);
         if (!is_file($path)) return ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0, 'diskBytes' => 0];
         $pdo = self::open($slug);
-        return [
-            'collections' => (int) $pdo->query('SELECT COUNT(DISTINCT collection) FROM records')->fetchColumn(),
-            'records' => (int) $pdo->query('SELECT COUNT(*) FROM records')->fetchColumn(),
-            'keys' => (int) $pdo->query('SELECT COUNT(*) FROM kv')->fetchColumn(),
-            'bytes' => self::usedBytes($pdo),
-            'diskBytes' => self::diskBytes($path),
-        ];
+        $keys = (int) $pdo->query('SELECT COUNT(*) FROM kv')->fetchColumn();
+        if ($viewer === null || $viewer['publisher']) {
+            return [
+                'collections' => (int) $pdo->query('SELECT COUNT(DISTINCT collection) FROM records')->fetchColumn(),
+                'records' => (int) $pdo->query('SELECT COUNT(*) FROM records')->fetchColumn(),
+                'keys' => $keys,
+                'bytes' => self::usedBytes($pdo),
+                'diskBytes' => self::diskBytes($path),
+            ];
+        }
+        $listed = self::collections($pdo, $viewer)['collections'];
+        $records = 0;
+        // The key-value store is public: all of it is theirs to read.
+        $bytes = self::kvBytes($pdo);
+        foreach ($listed as $c) {
+            $records += $c['records'];
+            [$ownSql, $ownParams] = self::own($viewer, $c['name']);
+            $size = $pdo->prepare('SELECT COALESCE(SUM(' . self::RECORD_BYTES . "), 0) FROM records WHERE collection = ?$ownSql");
+            $size->execute(array_merge([$c['name']], $ownParams));
+            $bytes += (int) $size->fetchColumn();
+        }
+        return ['collections' => count($listed), 'records' => $records, 'keys' => $keys, 'bytes' => $bytes, 'diskBytes' => 0];
     }
 
     /**
@@ -174,9 +213,14 @@ SQL);
      */
     private static function usedBytes(PDO $pdo): int
     {
-        $records = (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(CAST(collection AS BLOB)) + LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(data AS BLOB))), 0) FROM records')->fetchColumn();
-        $kv = (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(CAST(key AS BLOB)) + LENGTH(CAST(value AS BLOB))), 0) FROM kv')->fetchColumn();
-        return $records + $kv;
+        $records = (int) $pdo->query('SELECT COALESCE(SUM(' . self::RECORD_BYTES . '), 0) FROM records')->fetchColumn();
+        return $records + self::kvBytes($pdo);
+    }
+
+    /** The bytes of the key-value store: every key and its value. */
+    private static function kvBytes(PDO $pdo): int
+    {
+        return (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(CAST(key AS BLOB)) + LENGTH(CAST(value AS BLOB))), 0) FROM kv')->fetchColumn();
     }
 
     /** What the database takes on disk: the main file, the write-ahead log and the shared-memory index. */
@@ -261,7 +305,7 @@ SQL);
      */
     public static function run(Request $req, string $slug, array $body): mixed
     {
-        // What is stored keeps `{}` apart from `[]` (see Json). The rest of
+        // What is stored keeps its objects as objects (see Json). The rest of
         // the request (`where`, `orderBy`, ...) is read as plain arrays.
         $body = array_replace(Json::plain($body), array_intersect_key($body, ['data' => true, 'value' => true]));
         $op = is_string($body['op'] ?? null) ? $body['op'] : '';
@@ -299,11 +343,13 @@ SQL);
      * sent a token; whether it carries the edit key or the admin key; and the
      * app's declared policies. The identity is the token hashed with the
      * site's salt and this app's slug, so one app's owners cannot be matched
-     * with another's and the token itself is never written down.
+     * with another's and the token itself is never written down. It is read
+     * from the catalogue, so a route that goes on to let the catalogue go
+     * (the summaries do) asks for it first.
      *
      * @return array{owner: ?string, publisher: bool, policies: array<string, string>}
      */
-    private static function actor(Request $req, string $slug): array
+    public static function actor(Request $req, string $slug): array
     {
         $token = $req->header('x-visitor-token');
         $owner = is_string($token) && preg_match(self::TOKEN, $token) ? Config::visitorHash("storage|$slug|$token") : null;
@@ -368,6 +414,24 @@ SQL);
                 if ($rowOwner === null || !hash_equals($rowOwner, $ctx['owner'])) throw new ApiError(404, 'No such record.');
                 return;
         }
+    }
+
+    /**
+     * Refuse, before any record is looked up, an actor who could change or
+     * remove nothing in the collection whoever had added it: no edit key
+     * where one is needed, no token where a record is its adder's. The record
+     * used to be looked up first, so in the publisher's collection a
+     * visitor's `update` was 404 for an id that is not there and 403 for one
+     * that is, and their `remove` `{removed: 0}` or 403: which ids exist, in
+     * a collection they may not read.
+     */
+    private static function allowChange(array $ctx, string $c): void
+    {
+        $policy = self::policy($ctx, $c);
+        $needsKey = ($policy === 'append-only' || $policy === 'publisher') && !$ctx['publisher'];
+        $needsToken = ($policy === 'private' || ($policy === 'owner-write' && !$ctx['publisher'])) && $ctx['owner'] === null;
+        // What `allowModify` says of every record alike, said now.
+        if ($needsKey || $needsToken) self::allowModify($ctx, $c, null);
     }
 
     /**
@@ -448,22 +512,22 @@ SQL);
         return $id;
     }
 
-    /** @return array<string, mixed> */
-    private static function data(array $body, array $limits, string $field = 'data'): array
+    /** A record's fields as sent: an object, whatever its keys are called. A list is not one. */
+    private static function data(array $body, array $limits, string $field = 'data'): array|stdClass
     {
-        $d = $body[$field] ?? null;
-        if ($d instanceof stdClass) $d = []; // `{}`: an object with no fields
-        if (!is_array($d) || array_is_list($d) && $d !== []) throw new ApiError(400, "$field must be an object.");
+        $fields = Json::fields($body[$field] ?? null);
+        if ($fields === null) throw new ApiError(400, "$field must be an object.");
+        $d = Json::object($fields);
         $encoded = json_encode($d, JSON_UNESCAPED_UNICODE);
         if ($encoded === false) throw new ApiError(400, "$field cannot be stored as JSON.");
         if (strlen($encoded) > (int) $limits['maxRecordBytes']) throw new ApiError(413, 'A record is at most ' . (int) ($limits['maxRecordBytes'] / 1024) . ' KB.');
         return $d;
     }
 
-    /** A record's fields as a JSON object even when there are none: `{}`, never `[]`. */
+    /** A record's fields as a JSON object whatever they are called, and when there are none: `{}`, never `[]`. */
     private static function obj(mixed $data): array|stdClass
     {
-        return is_array($data) && $data !== [] ? $data : new stdClass();
+        return Json::object(Json::fields($data) ?? []);
     }
 
     /** A row as the app sees it. `mine` says whether this visitor added it, which is what an owner-write UI needs to know. */
@@ -541,17 +605,16 @@ SQL);
         $c = self::collection($body);
         $id = self::id($body);
         $patch = self::data($body, $limits, 'data');
-        // Without an identity there is no record to name under `private`:
-        // the refusal says a token is missing, whatever ids exist.
-        if (self::policy($ctx, $c) === 'private' && $ctx['owner'] === null) throw self::noToken($c);
+        // Whoever could change nothing here is told so, whatever ids exist.
+        self::allowChange($ctx, $c);
         return self::write($pdo, function () use ($pdo, $c, $id, $patch, $limits, $ctx) {
             $row = self::find($pdo, $c, $id, $ctx);
             if (!$row) throw new ApiError(404, 'No such record.');
             $id = (string) $row['id'];
             $owner = $row['owner'] ?? null;
             self::allowModify($ctx, $c, $owner);
-            $existing = Json::decode((string) $row['data']);
-            $merged = array_replace(is_array($existing) ? $existing : [], $patch);
+            // The patch's fields laid over the record's, one name at a time.
+            $merged = Json::object(array_replace(Json::fields(Json::decode((string) $row['data'])) ?? [], Json::fields($patch) ?? []));
             $encoded = json_encode($merged, JSON_UNESCAPED_UNICODE);
             if ($encoded === false || strlen($encoded) > (int) $limits['maxRecordBytes']) {
                 throw new ApiError(413, 'The updated record would be larger than a record may be.');
@@ -598,7 +661,7 @@ SQL);
     {
         $c = self::collection($body);
         $id = self::id($body);
-        if (self::policy($ctx, $c) === 'private' && $ctx['owner'] === null) throw self::noToken($c);
+        self::allowChange($ctx, $c);
         return self::write($pdo, function () use ($pdo, $c, $id, $ctx) {
             $row = self::find($pdo, $c, $id, $ctx, 'id, owner');
             if (!$row) return ['removed' => 0];
@@ -640,7 +703,11 @@ SQL);
         [$whereSql, $params] = self::where($body['where'] ?? null);
         $order = self::orderBy($body['orderBy'] ?? null);
         $limit = max(1, min((int) $limits['maxQueryLimit'], (int) ($body['limit'] ?? 50)));
-        $offset = max(0, min(10000, (int) ($body['offset'] ?? 0)));
+        // Past its bound an offset is refused. It used to be read as the bound
+        // itself: the reply was the page at 10,000 again, and a client paging
+        // until a short page never reached one.
+        $offset = max(0, (int) ($body['offset'] ?? 0));
+        if ($offset > self::MAX_OFFSET) throw new ApiError(400, 'offset is at most ' . number_format(self::MAX_OFFSET) . ': a query starts no further into a collection than that. Narrow it with where, or order the other way to reach the rest.');
         $count = $pdo->prepare("SELECT COUNT(*) FROM records WHERE collection = ?$ownSql $whereSql");
         $count->execute(array_merge([$c], $ownParams, $params));
         $total = (int) $count->fetchColumn();
@@ -796,7 +863,9 @@ SQL);
         foreach ($list as $pair) {
             if (is_string($pair)) $pair = [$pair, 'asc'];
             if (!is_array($pair) || !is_string($pair[0] ?? null)) throw new ApiError(400, 'orderBy entries are [field, direction] pairs.');
-            $dir = strtolower((string) ($pair[1] ?? 'asc')) === 'desc' ? 'DESC' : 'ASC';
+            // Text, before it is read as text: a list here was a 500 from the cast.
+            if (!is_string($pair[1] ?? 'asc')) throw new ApiError(400, 'orderBy: a direction is "asc" or "desc".');
+            $dir = strtolower($pair[1] ?? 'asc') === 'desc' ? 'DESC' : 'ASC';
             $parts[] = self::column(self::field($pair[0])) . " $dir";
             if (count($parts) >= 3) break;
         }

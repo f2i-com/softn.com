@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startServer, makeBundle, skip, PNG_1x1 } from './helpers/harness.mjs';
+import { startServer, makeBundle, skip, PNG_1x1, pngDeclaring } from './helpers/harness.mjs';
 
 const servers = [];
 after(() => servers.forEach((s) => s.stop()));
@@ -77,11 +77,54 @@ test("a publisher's new version cannot change a collection's storage policy", sk
 test('an app that had no storage may add it in a later version', skip, async () => {
   const s = await server();
   const pub = await s.publish('Plain App');
+  // A store with nothing in it is no promise to anyone: asking for a listing
+  // used to leave one in the folder of an app that had no storage at all.
+  fs.writeFileSync(path.join(s.dataDir, 'apps', pub.app.slug, 'storage.sqlite'), '');
   const added = await addVersion(s, pub.app.slug, pub.editKey, 'Plain App', storage({ notes: 'private', '*': 'publisher' }));
   assert.equal(added.status, 201, added.text);
   // From then on those policies are the promise.
   const changed = await addVersion(s, pub.app.slug, pub.editKey, 'Plain App', storage({ notes: 'public', '*': 'publisher' }));
   assert.equal(changed.status, 400, changed.text);
+});
+
+test('a version that switches storage off does not lift the freeze on its policies', skip, async () => {
+  // The check asked whether the app's newest version declared storage. A
+  // version with the same collections and `enabled: false` passed it, the app
+  // then "had no storage", and the version after that could declare anything
+  // over the records still in the store: every private note, public.
+  const s = await server({ config: { limits: { storageWrite: [500, 60], storageRead: [500, 60] } } });
+  const promised = { notes: 'private', '*': 'public' };
+  const off = { storage: { enabled: false, collections: promised } };
+  const ann = { 'X-Visitor-Token': 'ann-token-0123456789abcdef' };
+  const note = (slug) => s.api('POST', `/api/apps/${slug}/storage`, { body: { op: 'insert', collection: 'notes', id: 'diary', data: { text: 'for my eyes' } }, headers: ann });
+  const anonymous = (slug) => s.api('POST', `/api/apps/${slug}/storage`, { body: { op: 'query', collection: 'notes' } });
+
+  const pub = await s.publish('Switched Off', { permissions: storage(promised) });
+  const slug = pub.app.slug;
+  assert.equal((await note(slug)).status, 200);
+  // Storage off, the collections as they were: nothing changes, so it is taken.
+  const closed = await addVersion(s, slug, pub.editKey, 'Switched Off', off);
+  assert.equal(closed.status, 201, closed.text);
+  // On again with `notes` public: the change the freeze is there to refuse.
+  const opened = await addVersion(s, slug, pub.editKey, 'Switched Off', storage({ notes: 'public', '*': 'public' }));
+  assert.equal(opened.status, 400, opened.text);
+  assert.match(opened.json.error, /storage policy of notes/);
+  // On again as it was promised: taken, and the note is still Ann's alone.
+  const back = await addVersion(s, slug, pub.editKey, 'Switched Off', storage(promised));
+  assert.equal(back.status, 201, back.text);
+  assert.equal((await anonymous(slug)).status, 403);
+
+  // An app whose storage was switched off before anything was remembered
+  // (here, by a bundle put in its folder) still has its store, and the
+  // records in it are held to what its declaration says.
+  const old = await s.publish('Switched Off Before', { permissions: storage(promised) });
+  assert.equal((await note(old.app.slug)).status, 200);
+  fs.writeFileSync(path.join(s.dataDir, 'apps', old.app.slug, 'v2.softn'), makeBundle('Switched Off Before', { version: '2.0.0', permissions: off }));
+  assert.deepEqual((await s.api('GET', `/api/apps/${old.app.slug}`)).json.app.capabilities, []);
+  const reopened = await addVersion(s, old.app.slug, old.editKey, 'Switched Off Before', storage({ notes: 'public', '*': 'public' }));
+  assert.equal(reopened.status, 400, reopened.text);
+  assert.equal((await addVersion(s, old.app.slug, old.editKey, 'Switched Off Before', storage(promised))).status, 201);
+  assert.equal((await anonymous(old.app.slug)).status, 403);
 });
 
 test('a publish whose picture is refused publishes nothing', skip, async () => {
@@ -215,6 +258,41 @@ test('an empty object an app stores comes back as an object, not a list', skip, 
   assert.equal((await S({ op: 'count', collection: 'profiles', where: {} })).json.result.count, 2);
 });
 
+test('an object whose keys are numbers comes back as an object, not a list', skip, async () => {
+  // PHP holds `{"0":3,"1":5}` and `[3,5]` as the same array and wrote both
+  // back as the list. `votes[i] = n` on an object is exactly that; read back
+  // as a list, the next named property set on it is dropped when it is
+  // saved. A record whose own fields were numbered was refused outright.
+  const s = await server({ config: { limits: { storageWrite: [500, 60], storageRead: [500, 60] } } });
+  const pub = await s.publish('Numbered Keys', { permissions: storage({ '*': 'public' }) });
+  const S = (body) => s.api('POST', `/api/apps/${pub.app.slug}/storage`, { body });
+  const data = { votes: { 0: 3, 1: 5 }, byId: { 7: 'x' }, list: [3, 5], deep: { 0: { 0: [{ 0: 'a' }, ['b']] } }, empty: {} };
+  const made = await S({ op: 'insert', collection: 'polls', id: 'p1', data });
+  assert.equal(made.status, 200, made.text);
+  assert.deepEqual(made.json.result.data, data);
+  assert.deepEqual((await S({ op: 'get', collection: 'polls', id: 'p1' })).json.result.data, data);
+  assert.deepEqual((await S({ op: 'query', collection: 'polls' })).json.result.records.map((r) => r.data), [data]);
+  // A record whose own fields are numbered is an object like any other.
+  const numbered = await S({ op: 'set', collection: 'polls', id: 'p2', data: { 0: 'a', 1: 'b' } });
+  assert.equal(numbered.status, 200, numbered.text);
+  assert.deepEqual(numbered.json.result.data, { 0: 'a', 1: 'b' });
+  assert.deepEqual((await S({ op: 'get', collection: 'polls', id: 'p2' })).json.result.data, { 0: 'a', 1: 'b' });
+  // A patch lays its numbered fields over the record's, and stays an object.
+  const patched = await S({ op: 'update', collection: 'polls', id: 'p2', data: { 1: 'c', 2: { 0: 'z' } } });
+  assert.equal(patched.status, 200, patched.text);
+  assert.deepEqual(patched.json.result.data, { 0: 'a', 1: 'c', 2: { 0: 'z' } });
+  assert.deepEqual((await S({ op: 'get', collection: 'polls', id: 'p2' })).json.result.data, { 0: 'a', 1: 'c', 2: { 0: 'z' } });
+  // Key-value: an object is an object and a list a list, at every depth.
+  for (const value of [{ 0: 'a', 1: 'b' }, ['a', 'b'], { 0: { 0: 1 } }, [{ 0: 1 }, [1]]]) {
+    const set = await S({ op: 'kvSet', key: 'k', value });
+    assert.equal(set.status, 200, set.text);
+    assert.deepEqual(set.json.result.value, value, JSON.stringify(value));
+    assert.deepEqual((await S({ op: 'kvGet', key: 'k' })).json.result.value, value, JSON.stringify(value));
+  }
+  // A list is still not a record.
+  assert.equal((await S({ op: 'insert', collection: 'polls', data: ['a', 'b'] })).status, 400);
+});
+
 test('a storage file that is not a database is a 503 for storage and leaves the app\'s page up', skip, async () => {
   const s = await server();
   const pub = await s.publish('Broken Store', { permissions: storage({ '*': 'public' }) });
@@ -338,6 +416,48 @@ test('the demo sync compares a demo with the version it wrote, and leaves a late
   assert.notEqual(v1(replaced).sha256, v1(later).sha256);
   assert.deepEqual(replaced.capabilities, published.capabilities);
   assert.equal(replaced.versions.length, 2);
+});
+
+test('the demo sync keeps what the operator set on a demo, and still brings its own up to date', skip, async () => {
+  // A seeded demo has no edit key; the admin key changes it. The sync put its
+  // category back to the built-in table's and its picture back to the shipped
+  // screenshot on the next request, whatever the operator had just set.
+  const s = await server({ config: { seedDemos: true } });
+  const admin = { 'X-Admin-Key': s.adminKey };
+  const demos = path.join(s.root, 'demos');
+  fs.mkdirSync(path.join(demos, 'thumbs'), { recursive: true });
+  // Three pictures of three sizes: the sync takes a file of the same size and time for the same file.
+  const [shipped, retaken, own] = [0, 8, 16].map((padding) => Buffer.concat([pngDeclaring(4, 4), Buffer.alloc(padding)]));
+  // Two demos the built-in table files under Games, each with a screenshot.
+  for (const name of ['Twenty48', 'Blockfall']) {
+    fs.writeFileSync(path.join(demos, `${name}.softn`), makeBundle(name));
+    fs.writeFileSync(path.join(demos, `thumbs/${name}.png`), shipped);
+  }
+  fs.writeFileSync(path.join(demos, 'index.json'), JSON.stringify([{ id: 'twenty48', name: 'Twenty48', file: 'Twenty48.softn' }, { id: 'blockfall', name: 'Blockfall', file: 'Blockfall.softn' }]));
+  const list = () => s.api('GET', '/api/apps?perPage=48');
+  const category = async (slug) => (await s.api('GET', `/api/apps/${slug}`)).json.app.category;
+  const picture = async (slug) => Buffer.from(await (await fetch(`${s.base}/api/apps/${slug}/thumbnail`)).arrayBuffer());
+  assert.equal((await list()).status, 200);
+  assert.equal(await category('twenty48'), 'games');
+  assert.ok((await picture('twenty48')).equals(shipped));
+
+  // The operator files one of them elsewhere and gives it a picture.
+  const filed = await s.api('PATCH', '/api/apps/twenty48', { body: { category: 'tools' }, headers: admin });
+  assert.equal(filed.status, 200, filed.text);
+  const fd = new FormData();
+  fd.append('thumbnail', new Blob([own], { type: 'image/png' }), 'thumb.png');
+  assert.equal((await s.api('POST', '/api/apps/twenty48/thumbnail', { body: fd, headers: admin })).status, 200);
+  for (let i = 0; i < 2; i++) assert.equal((await list()).status, 200);
+  assert.equal(await category('twenty48'), 'tools', 'the sync filed the demo back where the table has it');
+  assert.ok((await picture('twenty48')).equals(own), 'the sync put the shipped screenshot back');
+
+  // A retaken screenshot still reaches the demo nobody touched, and only that one.
+  for (const name of ['Twenty48', 'Blockfall']) fs.writeFileSync(path.join(demos, `thumbs/${name}.png`), retaken);
+  assert.equal((await list()).status, 200);
+  assert.ok((await picture('blockfall')).equals(retaken), 'the retaken screenshot did not reach the demo');
+  assert.ok((await picture('twenty48')).equals(own), 'a retaken screenshot replaced the operator\'s picture');
+  assert.equal(await category('blockfall'), 'games');
+  assert.equal(await category('twenty48'), 'tools');
 });
 
 test('a picture the client already holds is answered 304', skip, async () => {

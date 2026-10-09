@@ -12,10 +12,11 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startServer, skip, runPhp } from './helpers/harness.mjs';
+import { startServer, skip, runPhp, startPhp } from './helpers/harness.mjs';
 
 const permissions = {
   storage: {
@@ -292,42 +293,76 @@ test('concurrent writes: the unauthorised are all refused and the authorised com
   assert.equal((await S({ op: 'get', collection: 'notes', id: 'secret' }, actors.ann)).json.result.data.text, 'mine alone');
 });
 
-test('independent PHP processes racing on one record: one insert wins, every unauthorised change is refused', skip, async () => {
-  // Separate PHP processes, started together, each taking SQLite's write
-  // lock and the catalogue lock for one storage operation.
-  const { spawn } = await import('node:child_process');
-  const launch = (job) =>
-    new Promise((resolve) => {
-      const file = path.join(s.dataDir, `race-${crypto.randomUUID()}.php`);
-      const libs = path.resolve(s.root, 'api').replace(/\\/g, '/');
-      const server = {
-        REQUEST_METHOD: 'POST',
-        REQUEST_URI: `/api/apps/${slug}/storage`,
-        REMOTE_ADDR: job.ip ?? '127.0.0.1',
-        ...(job.token ? { HTTP_X_VISITOR_TOKEN: job.token } : {}),
-        ...(job.key ? { HTTP_X_EDIT_KEY: job.key } : {}),
-      };
-      fs.writeFileSync(
-        file,
-        `<?php
+test('a visitor who may not change a collection is told so whether or not the id is there', skip, async () => {
+  // The record was looked up before the policy was asked. In the publisher's
+  // collection a visitor's `update` was 404 for an id that is not there and
+  // 403 for one that is, and their `remove` 200 or 403: which ids exist, in
+  // a collection they may not read.
+  assert.equal((await S({ op: 'set', collection: 'config', id: 'held', data: { secret: 1 } }, actors.owner)).status, 200);
+  for (const who of ['anon', 'ann']) {
+    for (const op of ['update', 'remove']) {
+      const there = await S({ op, collection: 'config', id: 'held', data: { x: 1 } }, actors[who]);
+      const absent = await S({ op, collection: 'config', id: 'never-held', data: { x: 1 } }, actors[who]);
+      assert.equal(there.status, 403, `${op} by ${who}: ${there.text}`);
+      assert.deepEqual([absent.status, absent.json], [there.status, there.json], `${op} by ${who} tells an id that is not there from one that is`);
+    }
+  }
+  // The same wherever the visitor could change no record at all: one only
+  // the edit key changes, and one that needs a token they did not send.
+  for (const op of ['update', 'remove']) {
+    assert.equal((await S({ op, collection: 'scores', id: 'never-held', data: {} }, actors.ann)).status, 403, `${op} in an append-only collection`);
+    assert.equal((await S({ op, collection: 'posts', id: 'never-held', data: {} })).status, 403, `${op} in an owner-write collection, without a token`);
+  }
+  // Where they may change records, one that is not there is simply not there.
+  assert.equal((await S({ op: 'update', collection: 'posts', id: 'never-held', data: {} }, actors.bob)).status, 404);
+  assert.deepEqual((await S({ op: 'remove', collection: 'posts', id: 'never-held' }, actors.bob)).json.result, { removed: 0 });
+  assert.deepEqual((await S({ op: 'remove', collection: 'guestbook', id: 'never-held' })).json.result, { removed: 0 });
+  assert.equal((await S({ op: 'remove', collection: 'config', id: 'held' }, actors.owner)).json.result.removed, 1);
+});
+
+/**
+ * One storage operation in a PHP process of its own, taking SQLite's write
+ * lock and the catalogue lock as a request does. `job.app` names another app
+ * than the matrix's.
+ */
+function launch(job) {
+  return new Promise((resolve) => {
+    const app = job.app ?? slug;
+    const file = path.join(s.dataDir, `race-${crypto.randomUUID()}.php`);
+    const libs = path.resolve(s.root, 'api').replace(/\\/g, '/');
+    const server = {
+      REQUEST_METHOD: 'POST',
+      REQUEST_URI: `/api/apps/${app}/storage`,
+      REMOTE_ADDR: job.ip ?? '127.0.0.1',
+      ...(job.token ? { HTTP_X_VISITOR_TOKEN: job.token } : {}),
+      ...(job.key ? { HTTP_X_EDIT_KEY: job.key } : {}),
+    };
+    fs.writeFileSync(
+      file,
+      `<?php
 putenv('SOFTN_DATA_DIR=' . $argv[1]);
 foreach (['http', 'db', 'catalog', 'bundle', 'apps', 'storage', 'social'] as $lib) require ${JSON.stringify(libs)} . '/lib/' . $lib . '.php';
 foreach (json_decode(${JSON.stringify(JSON.stringify(server))}, true) as $k => $v) $_SERVER[$k] = $v;
 $job = json_decode(${JSON.stringify(JSON.stringify(job))}, true);
 $r = Request::fromGlobals();
-try { echo json_encode(['status' => 200, 'result' => Storage::run($r, ${JSON.stringify(slug)}, $job['body'])]); }
+try { echo json_encode(['status' => 200, 'result' => Storage::run($r, ${JSON.stringify(app)}, $job['body'])]); }
 catch (ApiError $e) { echo json_encode(['status' => $e->status, 'error' => $e->getMessage()]); }`
-      );
-      const p = spawn('php', ['-d', 'error_log=', file, s.dataDir], { stdio: ['ignore', 'pipe', 'pipe'] });
-      let out = '';
-      let err = '';
-      p.stdout.on('data', (d) => (out += d));
-      p.stderr.on('data', (d) => (err += d));
-      p.on('exit', (code) => {
-        fs.unlinkSync(file);
-        resolve(code === 0 && out ? JSON.parse(out) : { status: -1, error: err });
-      });
+    );
+    const p = spawn('php', ['-d', 'error_log=', file, s.dataDir], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    p.stdout.on('data', (d) => (out += d));
+    p.stderr.on('data', (d) => (err += d));
+    p.on('exit', (code) => {
+      fs.unlinkSync(file);
+      resolve(code === 0 && out ? JSON.parse(out) : { status: -1, error: err });
     });
+  });
+}
+
+test('independent PHP processes racing on one record: one insert wins, every unauthorised change is refused', skip, async () => {
+  // Separate PHP processes, started together, each taking SQLite's write
+  // lock and the catalogue lock for one storage operation.
   const P = 8;
   const ips = (i) => `10.9.0.${i + 1}`;
   const inserts = await Promise.all(
@@ -346,6 +381,60 @@ catch (ApiError $e) { echo json_encode(['status' => $e->status, 'error' => $e->g
   assert.equal(typeof record.data.edit, 'number', 'one of the owner edits is the record');
   assert.notEqual(record.data.i, 'hijacked');
   assert.equal((await S({ op: 'count', collection: 'scores' })).json.result.count, 2, 'race and proc-race');
+});
+
+test('a new store has its owner column from the start, and an older one\'s first request may lose the race to add it', skip, async () => {
+  // Every store was created without `owner` and altered straight after. Two
+  // requests opening an app's store for the first time both found the column
+  // missing, both added it, and the second was a 500 ("duplicate column
+  // name: owner") for one of the app's first requests.
+  const declared = (app) => {
+    const r = runPhp({
+      dataDir: s.dataDir,
+      args: [app],
+      script: `
+$pdo = new PDO('sqlite:' . $argv[1] . '/apps/' . $argv[2] . '/storage.sqlite');
+echo $pdo->query('SELECT sql FROM sqlite_master WHERE name = ' . $pdo->quote('records'))->fetchColumn();`,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout;
+  };
+  // A store from before the column, as it was declared then, holding a
+  // record. The one request that can still lose the race is such a store's
+  // first, and here it is made to: another connection has added the column
+  // and not yet committed, so the request finds it missing, waits for the
+  // write lock to add it, and has it by the time the lock is free.
+  const older = (await s.publish('Older Store', { permissions })).app.slug;
+  const ahead = startPhp({
+    dataDir: s.dataDir,
+    args: [older],
+    script: `
+$pdo = new PDO('sqlite:' . $argv[1] . '/apps/' . $argv[2] . '/storage.sqlite');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('PRAGMA journal_mode=WAL');
+$pdo->exec('CREATE TABLE records (collection TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (collection, id))');
+$pdo->exec('CREATE INDEX records_updated ON records(collection, updated_at)');
+$pdo->exec('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)');
+$pdo->prepare('INSERT INTO records VALUES (?, ?, ?, 1, 1)')->execute(['guestbook', 'before', json_encode(['text' => 'from before'])]);
+$pdo->exec('BEGIN IMMEDIATE');
+$pdo->exec('ALTER TABLE records ADD COLUMN owner TEXT');
+echo 'adding';
+usleep(2500000);
+$pdo->exec('COMMIT');`,
+  });
+  await new Promise((resolve) => ahead.process.stdout.on('data', (d) => String(d).includes('adding') && resolve()));
+  const first = await launch({ app: older, body: { op: 'query', collection: 'guestbook' } });
+  assert.equal((await ahead.done).code, 0);
+  assert.equal(first.status, 200, JSON.stringify(first));
+  assert.deepEqual(first.result.records.map((r) => [r.id, r.data, r.mine]), [['before', { text: 'from before' }, false]], 'the record from before is there, and nobody\'s');
+  assert.match(declared(older), /owner TEXT/);
+
+  // A new store has no such race to lose. SQLite writes a column added later
+  // onto the line of the last column the table was declared with; one the
+  // table was declared with has a line of its own.
+  const fresh = (await s.publish('Fresh Store', { permissions })).app.slug;
+  assert.equal((await s.api('POST', `/api/apps/${fresh}/storage`, { body: { op: 'kvGet', key: 'settings' } })).status, 200);
+  assert.match(declared(fresh), /\n\s*owner TEXT,/, 'the column was added to a table declared without it');
 });
 
 test('the edit key appears in the publish reply and nowhere else — not in listings, search, comments, pages or storage', skip, async () => {
