@@ -1058,7 +1058,11 @@ export class XDBService {
 
     for (const collection of allKeys) {
       const records = this.getAllCollectionData(collection);
-      const index = records.findIndex((r) => r.id === id);
+      // A deleted record is kept here for sync and is not there to update,
+      // as `get`, `delete`, `updateInCollection` and the desktop branch above
+      // all have it. This one did not ask: it patched the deleted record,
+      // announced the update and answered with it.
+      const index = records.findIndex((r) => r.id === id && !r.deleted);
 
       if (index !== -1) {
         const record = records[index];

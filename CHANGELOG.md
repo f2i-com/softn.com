@@ -66,6 +66,7 @@ section here. Write the section before tagging. Headings are the tag
 - `Image`, `Avatar`, `Sprite` and `TileMap` given a `src` that is not text draw without it, where the URL check threw.
 - Directory: a storage request that has let the catalogue lock go is refused if it asks for it again, where it could have deadlocked with a backup or the removal of an app.
 - **Security:** `dangerouslySetInnerHTML` is dropped wherever a bundle puts it. On a plain element only React's own refusal stopped it (and took the document down); a host-registered component that spreads its props onto its root set the markup as given. No built-in component does.
+- `db.update` of a record that has been deleted is refused in the browser as it is on the desktop. The browser's store patched the deleted record, announced the update and answered as though it had worked, on a record the script could no longer read.
 
 ## v0.0.18
 

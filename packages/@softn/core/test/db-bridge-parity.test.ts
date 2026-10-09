@@ -8,21 +8,19 @@
  * does to the snapshot. This runs the calls a script makes, in order, through
  * both, and holds every answer the two give to be the same.
  *
- * Two answers are not the same, and are written down here as they are
- * rather than changed. Both are `db.update` of a record the script cannot
- * get:
- *
- * - one that is not there: the main thread throws (`Record not found:
- *   <id>`) and the worker answers null, as the server hosts do. A script
- *   written against one is wrong on the other (`try { db.update(...) }
- *   catch { db.create(...) }` never creates in the worker;
- *   `if (!db.update(...)) db.create(...)` throws on the main thread).
- * - one that was deleted: the main thread patches the deleted record and
- *   answers with it, `deleted: true`, where the worker answers null.
+ * One thing is not answered the same, and is written down here as it is
+ * rather than changed: `db.update` of a record the script cannot get, one
+ * that was never there or one that has been deleted. The main thread throws
+ * (`Record not found: <id>`) and the worker answers null, as the server
+ * hosts do. A script written against one is wrong on the other
+ * (`try { db.update(...) } catch { db.create(...) }` never creates in the
+ * worker; `if (!db.update(...)) db.create(...)` throws on the main thread).
  *
  * Which it should be is a decision about every app already written, so this
- * pins all four answers until it is made; a change to any has to come
- * through here.
+ * pins both answers, for both kinds of record, until it is made; a change
+ * to any has to come through here. (The main thread used to patch a deleted
+ * record and answer with it. That was the browser store's mistake and is
+ * gone: see xdb-update-deleted.test.ts.)
  *
  * Two more differences exist between the objects and are not in the
  * sequence, because no script can reach them. `create` with no data at all
@@ -57,7 +55,9 @@ function answers(db: Db): Record<string, string> {
     try {
       out[name] = text(fn());
     } catch (error) {
-      out[name] = `throws: ${(error as Error).message}`;
+      let message = (error as Error).message;
+      for (const [id, label] of ids) message = message.split(id).join(label);
+      out[name] = `throws: ${message}`;
     }
   };
   const titles = (rows: unknown) => (rows as Row[]).map((row) => row.data.title);
@@ -91,7 +91,7 @@ function answers(db: Db): Record<string, string> {
   step('get through the wrong collection', () => call('get', 'other', a.id));
   step('delete', () => call('delete', a.id));
   step('get after delete', () => call('get', 'notes', a.id));
-  // The second of the two answered differently; see the note at the top.
+  // Answered differently by the two, as the last step is; see the note at the top.
   step('update what was deleted', () => call('update', a.id, { n: 9 }));
   step('query after delete', () => titles(call('query', 'notes')));
   step('delete again', () => call('delete', a.id));
@@ -111,7 +111,7 @@ function answers(db: Db): Record<string, string> {
   step('clear', () => call('clearCollection', 'notes'));
   step('query after clear', () => call('query', 'notes'));
   step('clear a collection that is not there', () => call('clearCollection', 'nope'));
-  // The first of the two answered differently; see the note at the top.
+  // Answered differently by the two; see the note at the top.
   step('update what is not there', () => call('update', 'missing-id', { n: 1 }));
   return out;
 }
@@ -137,7 +137,7 @@ describe('the worker db bridge and the main thread db namespace', () => {
 
     expect(missingOnMain).toBe('throws: Record not found: missing-id');
     expect(missingInWorker).toBe('null');
-    expect(deletedOnMain).toBe('{"id":"<A>","collection":"notes","data":{"title":"A","n":9,"tags":["x"]},"created_at":"<time>","updated_at":"<time>","deleted":true}');
+    expect(deletedOnMain).toBe('throws: Record not found: <A>');
     expect(deletedInWorker).toBe('null');
   });
 });
