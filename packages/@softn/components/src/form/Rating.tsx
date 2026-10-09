@@ -69,9 +69,11 @@ export function Rating({
   style,
 }: RatingProps): React.ReactElement {
   const count = Number.isFinite(max) && max >= 1 ? Math.min(20, Math.floor(max)) : 5;
-  // `:bind` hands an unset state in as "", which is no score yet, not a
-  // controlled zero the app has to answer for.
-  const controlled = value !== undefined && value !== '';
+  // Any value at all is the app's to hold, an empty one included: `:bind`
+  // hands an unset state in as "", and that is a score of nothing. Treating
+  // "" as "not held by the app" let the control keep a score of its own, so
+  // an app that set its state back to null still showed the old stars.
+  const controlled = value !== undefined;
   const [internal, setInternal] = useState(() => clampScore(defaultValue, count));
   const [hovered, setHovered] = useState(0);
   const [focused, setFocused] = useState(0);
@@ -86,7 +88,9 @@ export function Rating({
   }, [controlled, internal, count]);
 
   const filled = cssPaint(color) ?? 'var(--color-warning-500, rgb(245, 158, 11))';
-  const empty = 'var(--color-border, currentColor)';
+  // A grey that is seen: an empty star is still a target. Not the border
+  // colour, which is close to the page's on purpose.
+  const empty = 'var(--color-gray-300, var(--color-border, currentColor))';
 
   const containerStyle: React.CSSProperties = {
     display: 'inline-flex',

@@ -485,7 +485,10 @@ export function DatePicker({
       ? `0 0 0 3px ${hasError ? 'rgba(239, 68, 68, 0.35)' : 'rgba(99, 102, 241, 0.35)'}`
       : undefined,
     width: fullWidth ? '100%' : '200px',
-    paddingRight: selectedDate && interactive ? '2rem' : undefined,
+    // Room for the clear button, when there is one. Not `: undefined`: that
+    // is an empty value, which removed the right padding the size's
+    // `padding` had set whenever no date was chosen.
+    ...(selectedDate && interactive ? { paddingRight: '2rem' } : {}),
     cursor: interactive ? 'pointer' : undefined,
     opacity: disabled ? 0.6 : undefined,
   };

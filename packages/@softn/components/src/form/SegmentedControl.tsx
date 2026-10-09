@@ -80,8 +80,10 @@ export function SegmentedControl({
 }: SegmentedControlProps): React.ReactElement {
   const items = normalise(options);
   const config = sizeConfig[size] ?? sizeConfig.md;
-  // `:bind` hands an unset state in as "": nothing chosen yet.
-  const controlled = value !== undefined && value !== '';
+  // Any value at all is the app's to hold: `:bind` hands an unset state in
+  // as "", which is nothing chosen, not leave to keep a choice of its own
+  // (an app that cleared its state would go on seeing the old one chosen).
+  const controlled = value !== undefined;
   const [internal, setInternal] = useState<string | number | undefined>(defaultValue);
   const [focused, setFocused] = useState(-1);
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
@@ -143,10 +145,13 @@ export function SegmentedControl({
     gap: '0.125rem',
     padding: '0.1875rem',
     boxSizing: 'border-box',
-    width: fullWidth ? '100%' : undefined,
+    // Its own width unless asked to fill: as a flex item in a column it
+    // would otherwise be stretched, a track far wider than its options.
+    width: fullWidth ? '100%' : 'fit-content',
     maxWidth: '100%',
     borderRadius: 'var(--radius-lg, 0.5rem)',
-    backgroundColor: 'var(--color-surface-hover, transparent)',
+    // The track and the raised option are the ones the default Tabs use.
+    backgroundColor: 'var(--color-gray-100, var(--color-surface-hover, transparent))',
     border: '1px solid var(--color-border, currentColor)',
     opacity: disabled ? 0.5 : 1,
     ...style,
@@ -193,9 +198,13 @@ export function SegmentedControl({
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               color: selected ? 'var(--color-text, inherit)' : 'var(--color-text-muted, inherit)',
-              backgroundColor: selected ? 'var(--color-bg, Canvas)' : 'transparent',
+              backgroundColor: selected ? 'var(--color-surface, Canvas)' : 'transparent',
               boxShadow:
-                focused === index ? focusRing : selected ? 'var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.12))' : 'none',
+                focused === index
+                  ? focusRing
+                  : selected
+                    ? '0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06)'
+                    : 'none',
               cursor: unavailable ? 'not-allowed' : 'pointer',
               opacity: item.disabled && !disabled ? 0.5 : 1,
               outline: 'none',

@@ -176,6 +176,23 @@ describe('Rating', () => {
     expect(seen).toEqual([['score', 4], ['note', 4]]);
     expect(stars(container)[3].getAttribute('aria-checked')).toBe('true');
   });
+
+  it('binds: an app that clears its state clears the stars', () => {
+    // The first click happened while the state was unset. A control that
+    // took the empty state as leave to keep its own score went on showing
+    // four stars after the app had set the score back to nothing.
+    const { container } = mountSource(
+      '<Rating :bind={score} /><button id="reset" @click={() => score = null}>Reset</button>',
+      {}
+    );
+    click(stars(container)[3]);
+    expect(stars(container)[3].getAttribute('aria-checked')).toBe('true');
+    click(container.querySelector('#reset'));
+    expect(stars(container).some((s) => s.getAttribute('aria-checked') === 'true')).toBe(false);
+    // And it can be scored again from nothing.
+    click(stars(container)[1]);
+    expect(stars(container).map((s) => s.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false', 'false', 'false']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -262,6 +279,17 @@ describe('SegmentedControl', () => {
     click(options(container)[1]);
     expect(seen).toEqual([['view', 'Board'], ['note', 'Board']]);
     expect(checked(container)).toEqual([false, true]);
+  });
+
+  it('binds: an app that clears its state clears the choice', () => {
+    const { container } = mountSource(
+      '<SegmentedControl :bind={view} options={["List", "Board"]} /><button id="reset" @click={() => view = null}>Reset</button>',
+      {}
+    );
+    click(options(container)[1]);
+    expect(checked(container)).toEqual([false, true]);
+    click(container.querySelector('#reset'));
+    expect(checked(container)).toEqual([false, false]);
   });
 });
 

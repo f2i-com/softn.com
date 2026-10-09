@@ -141,17 +141,23 @@ export function Accordion({
   };
 
   const getItemStyle = (index: number): React.CSSProperties => {
-    if (variant === 'bordered' || variant === 'separated') {
+    // Each key is present only when it has something to say. Written as
+    // `borderTop: cond ? 'none' : undefined` after `border`, the undefined
+    // was an empty value that removed the top edge the shorthand had drawn
+    // (and four undefined corners removed `borderRadius`): the first item of
+    // a bordered accordion had no top border and a separated one was
+    // neither closed at the top nor rounded.
+    const border = '1px solid var(--color-border, rgba(255, 255, 255, 0.08))';
+    if (variant === 'separated') {
+      return { border, borderRadius: '0.5rem' };
+    }
+    if (variant === 'bordered') {
+      const first = index === 0;
+      const last = index === items.length - 1;
       return {
-        border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
-        borderRadius: variant === 'separated' ? '0.5rem' : undefined,
-        borderTop: variant === 'bordered' && index > 0 ? 'none' : undefined,
-        borderTopLeftRadius: variant === 'bordered' && index === 0 ? '0.5rem' : undefined,
-        borderTopRightRadius: variant === 'bordered' && index === 0 ? '0.5rem' : undefined,
-        borderBottomLeftRadius:
-          variant === 'bordered' && index === items.length - 1 ? '0.5rem' : undefined,
-        borderBottomRightRadius:
-          variant === 'bordered' && index === items.length - 1 ? '0.5rem' : undefined,
+        border,
+        ...(first ? { borderTopLeftRadius: '0.5rem', borderTopRightRadius: '0.5rem' } : { borderTop: 'none' }),
+        ...(last ? { borderBottomLeftRadius: '0.5rem', borderBottomRightRadius: '0.5rem' } : {}),
       };
     }
     return {

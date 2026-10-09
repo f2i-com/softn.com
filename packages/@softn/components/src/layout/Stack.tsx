@@ -145,7 +145,11 @@ export function Stack({
     width,
     maxWidth,
     margin,
-    paddingTop,
+    // Only when given. React writes an undefined style value as an empty
+    // one, and an empty `padding-top` after `padding` takes the top edge
+    // back out of it: every Stack with padding was drawn with none above
+    // its content.
+    ...(paddingTop !== undefined && paddingTop !== '' ? { paddingTop } : {}),
     ...style,
   };
 

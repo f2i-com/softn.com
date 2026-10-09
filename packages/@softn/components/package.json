@@ -73,7 +73,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "generate:manifest": "node scripts/generate-manifest.mjs",
-    "generate:hex-baseline": "node scripts/hex-literal-baseline.mjs"
+    "generate:hex-baseline": "node scripts/hex-literal-baseline.mjs",
+    "audit:styles": "node scripts/style-shorthand-audit.mjs"
   },
   "dependencies": {
     "@rc-component/qrcode": "^1.1.1",

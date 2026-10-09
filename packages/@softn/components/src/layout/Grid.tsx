@@ -159,8 +159,12 @@ export function Grid({
     gridTemplateColumns,
     gridTemplateRows: typeof rows === 'number' ? `repeat(${rows}, 1fr)` : rows,
     gap: gapValues[gap] ?? gap,
-    columnGap: columnGap ? (gapValues[columnGap] ?? columnGap) : undefined,
-    rowGap: rowGap ? (gapValues[rowGap] ?? rowGap) : undefined,
+    // Only when given: an undefined `columnGap` or `rowGap` is written as an
+    // empty one, which clears what `gap` just set. Left in the object
+    // unconditionally, they meant a Grid never had a gap unless both were
+    // passed.
+    ...(columnGap ? { columnGap: gapValues[columnGap] ?? columnGap } : {}),
+    ...(rowGap ? { rowGap: gapValues[rowGap] ?? rowGap } : {}),
     alignItems,
     justifyItems,
     padding: paddingValues[padding] ?? padding,

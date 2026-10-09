@@ -25,6 +25,7 @@ const darkThemeVars = `
   --color-text: #ececf0;
   --color-text-muted: #8b8b96;
   --color-text-faint: #5a5a66;
+  --color-text-disabled: var(--color-text-faint);
   --color-surface: #16161a;
   --color-surface-hover: #1e1e23;
   --color-surface-raised: #1e1e23;
@@ -105,6 +106,7 @@ const lightThemeVars = `
   --color-text: #1a1a2e;
   --color-text-muted: #6b6b80;
   --color-text-faint: #9b9bac;
+  --color-text-disabled: var(--color-text-faint);
   --color-surface: #ffffff;
   --color-surface-hover: #f3f3f6;
   --color-surface-raised: #ffffff;
