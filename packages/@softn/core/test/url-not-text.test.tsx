@@ -296,3 +296,30 @@ describe('the URL questions asked of something that is not text', () => {
     expect(isRemoteUrl('/ok')).toBe(false);
   });
 });
+
+describe('a URL spelled with entities in a quoted attribute', () => {
+  // A quoted attribute's entities are read by the parser, so the value the
+  // renderer judges is the value the browser would act on. Were the check
+  // made on the spelling, `java&#115;cript:` would pass it and be decoded
+  // afterwards.
+  it.each([
+    ['<a href="java&#115;cript:alert(1)">x</a>'],
+    ['<a href="&#106;avascript:alert(1)">x</a>'],
+    ['<a href="javascript&#58;alert(1)">x</a>'],
+    ['<a href="javascript&#x3A;alert(1)">x</a>'],
+    ['<form action="&#x6A;avascript:alert(1)">x</form>'],
+  ])('%s is not written', (source) => {
+    const out = html(source);
+    expect(out).not.toMatch(/javascript/i);
+    expect(out).not.toContain('alert');
+  });
+
+  it('a remote picture spelled with entities is withheld while consent is pending', () => {
+    const out = html('<img src="https&#58;//evil.example/b?d=1" /><Box style="background: url(&quot;https://evil.example/b&quot;)" />', {}, pending);
+    expect(out).not.toContain('evil.example');
+  });
+
+  it('an ordinary address with &amp; in it is the address', () => {
+    expect(html('<a href="/search?q=tea&amp;page=2">x</a>')).toBe('<a href="/search?q=tea&amp;page=2">x</a>');
+  });
+});

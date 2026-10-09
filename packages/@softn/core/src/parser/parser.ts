@@ -39,6 +39,7 @@ import {
   createDocument,
   createElementNode,
   createTextNode,
+  decodeHtmlEntities,
   createIdentifier,
   createLiteral,
   isEventModifier,
@@ -317,6 +318,18 @@ export class Parser {
       loc: { line: 1, column: 1, start: 0, end: this.source.length },
     });
 
+    // A space on one line between two things is content between two template
+    // nodes and nothing beside a declaration (`<logic src="…" /> <App>`), so
+    // one is held until what follows it is known.
+    let heldSpace: SourceLocation | null = null;
+    let afterTemplateNode = false;
+    const pushTemplate = (node: TemplateNode): void => {
+      if (heldSpace && afterTemplateNode) doc.template.push(createTextNode(' ', heldSpace));
+      heldSpace = null;
+      afterTemplateNode = true;
+      doc.template.push(node);
+    };
+
     while (!this.curTokenIs(TokenType.EOF)) {
       this.skipComments();
 
@@ -326,6 +339,10 @@ export class Parser {
         // Parse top-level elements
         if (this.curTokenIs(TokenType.TAG_OPEN)) {
           const element = this.parseTopLevelElement();
+          if (element && !isTemplateNode(element)) {
+            heldSpace = null;
+            afterTemplateNode = false;
+          }
           if (element) {
             if (isImportDeclaration(element)) {
               doc.imports.push(element);
@@ -340,22 +357,27 @@ export class Parser {
             } else if (isStyleBlock(element)) {
               doc.style = element;
             } else if (isTemplateNode(element)) {
-              doc.template.push(element);
+              pushTemplate(element);
             }
           }
         } else if (this.curTokenIs(TokenType.HASH)) {
           // Control flow at top level
           const controlFlow = this.parseControlFlow();
           if (controlFlow) {
-            doc.template.push(controlFlow);
+            pushTemplate(controlFlow);
           }
         } else if (this.curTokenIs(TokenType.TEXT)) {
-          const text = createTextNode(this.curToken.literal, this.currentLoc());
-          doc.template.push(text);
+          if (this.curToken.literal.trim() === '') {
+            heldSpace = this.currentLoc();
+          } else {
+            // Words after a declaration begin the template: the space they
+            // were given for following a tag is not theirs.
+            const literal = afterTemplateNode ? this.curToken.literal : this.curToken.literal.replace(/^\s+/, '');
+            pushTemplate(createTextNode(literal, this.currentLoc()));
+          }
           this.nextToken();
         } else if (this.curTokenIs(TokenType.EXPR_START)) {
-          const expr = this.parseExpressionNode();
-          doc.template.push(expr);
+          pushTemplate(this.parseExpressionNode());
         } else {
           this.nextToken();
         }
@@ -452,6 +474,11 @@ export class Parser {
 
     // Expect 'from'
     this.expectToken(TokenType.FROM);
+
+    // `from="./Header.ui"` is how an import is written; the `=` was not
+    // stepped over, so the path that follows it was never read and every
+    // import's source was the empty string.
+    if (this.curTokenIs(TokenType.EQUALS)) this.nextToken();
 
     // Get source path
     let source = '';
@@ -1089,6 +1116,7 @@ export class Parser {
 
     while (!this.curTokenIs(TokenType.EOF)) {
       this.skipComments();
+      const passStart = this.curToken.start;
 
       // Check for closing tag
       if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
@@ -1143,6 +1171,13 @@ export class Parser {
         // Record the error and skip to the next child or closing tag
         this.addDiagnostic(error);
         this.skipToChildRecoveryPoint(parentTag);
+        // The recovery point may be the token that has just failed: text and
+        // `{` are both places to resume and places a child can fail. Reading
+        // it again fails the same way, for ever, so a pass that threw where
+        // it began steps over that token.
+        if (this.curToken.start === passStart && !this.curTokenIs(TokenType.EOF)) {
+          this.nextToken();
+        }
       }
     }
 
@@ -1230,8 +1265,10 @@ export class Parser {
       this.nextToken();
 
       if (this.curTokenIs(TokenType.STRING)) {
-        // Quoted string: prop="value"
-        value = { type: 'static', value: this.curToken.literal };
+        // Quoted string: prop="value". Its entities are read as text's are:
+        // `&quot;` is the only way to write the quote the value is closed
+        // by, and it used to arrive as six characters.
+        value = { type: 'static', value: decodeHtmlEntities(this.curToken.literal) };
         this.nextToken();
       } else if (this.curTokenIs(TokenType.EXPR_START)) {
         // Expression: prop={expression}
@@ -2784,4 +2821,9 @@ export function parse(source: string): SoftNDocument {
 //    as the variable of an `#each`; computed keys (`{ [name]: value }`);
 //    `#if` and `#each` inside `#empty`, which used to be read as text; and
 //    diagnostics for `(a, b)` without an arrow and for `else` as an attribute.
-export const PARSER_VERSION = 6;
+// 7: Entities in a quoted attribute are read (`title="&quot;x&quot;"`), and a
+//    numeric reference that names no character is U+FFFD instead of a throw.
+//    Whitespace after an element is read as whitespace after an expression
+//    is: `<b>bold</b> and more` keeps its space, and on one line between two
+//    elements, or an element and an expression, it is a text node of one space.
+export const PARSER_VERSION = 7;

@@ -674,11 +674,23 @@ const htmlEntities: Record<string, string> = {
   '&star;': '\u2605', '&hearts;': '\u2665', '&infin;': '\u221E',
 };
 
-function decodeHtmlEntities(text: string): string {
+/**
+ * The character a numeric reference names. A number that names none (past
+ * U+10FFFF, half of a surrogate pair, zero) is U+FFFD, as HTML reads it:
+ * `String.fromCodePoint` throws for the first of those, and a throw here
+ * is a throw out of the parser.
+ */
+function referencedCharacter(code: number): string {
+  if (!(code > 0 && code <= 0x10ffff) || (code >= 0xd800 && code <= 0xdfff)) return '\uFFFD';
+  return String.fromCodePoint(code);
+}
+
+/** `text` with its entities read: in text between tags, and in a quoted attribute. */
+export function decodeHtmlEntities(text: string): string {
   if (!text.includes('&')) return text;
   return text.replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|(\w+));/g, (match, decimal, hex, named) => {
-    if (decimal) return String.fromCodePoint(parseInt(decimal, 10));
-    if (hex) return String.fromCodePoint(parseInt(hex, 16));
+    if (decimal) return referencedCharacter(parseInt(decimal, 10));
+    if (hex) return referencedCharacter(parseInt(hex, 16));
     if (named) return htmlEntities[`&${named};`] ?? match;
     return match;
   });

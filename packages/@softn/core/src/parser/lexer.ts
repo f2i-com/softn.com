@@ -34,6 +34,17 @@ export class Lexer {
    * "12days" and "xy".
    */
   private afterContentExpression: boolean = false;
+  /**
+   * Whether the last token ended an element in content: `/>`, or the `>` of
+   * a closing tag. What follows one is read as what follows an expression is:
+   * `<b>Total:</b> {total}` and `<b>bold</b> and more` keep their space. It
+   * was skipped, and the words ran into the element before them.
+   */
+  private afterContentElement: boolean = false;
+  /** Whether the tag being read began `</`, so its `>` ends an element. */
+  private readingClosingTag: boolean = false;
+  /** Whether the `>` just read ended a closing tag. */
+  private closedAnElement: boolean = false;
 
   // Context tracking for different parsing modes
   private inTag: boolean = false;
@@ -97,8 +108,14 @@ export class Lexer {
       );
     }
     this.lastTokenStart = token.start;
-    this.afterContentExpression =
-      token.type === TokenType.EXPR_END && !this.inTag && this.inExpression === 0 && this.inControlFlow === 0;
+    const inContent = !this.inTag && this.inExpression === 0 && this.inControlFlow === 0;
+    this.afterContentExpression = token.type === TokenType.EXPR_END && inContent;
+    this.afterContentElement =
+      inContent &&
+      !this.inScriptBlock &&
+      !this.inLogicBlock &&
+      !this.inStyleBlock &&
+      (token.type === TokenType.TAG_SELF_CLOSE || (token.type === TokenType.TAG_CLOSE && this.closedAnElement));
     return token;
   }
 
@@ -118,8 +135,8 @@ export class Lexer {
       return this.readTemplateContent();
     }
 
-    if (this.afterContentExpression && /\s/.test(this.ch)) {
-      const inline = this.inlineWhitespaceAfterExpression();
+    if ((this.afterContentExpression || this.afterContentElement) && /\s/.test(this.ch)) {
+      const inline = this.inlineWhitespace();
       if (inline) return inline;
     }
     this.skipWhitespace();
@@ -223,6 +240,8 @@ export class Lexer {
         }
         this.readChar();
         this.inTag = false;
+        this.closedAnElement = this.readingClosingTag;
+        this.readingClosingTag = false;
         // If we just closed a script/logic/style tag, enable content mode for next token
         if (this.sawScriptKeyword) {
           this.inScriptBlock = true;
@@ -774,6 +793,7 @@ export class Lexer {
     if (this.ch === '/') {
       this.readChar();
       this.inTag = true;
+      this.readingClosingTag = true;
       return createToken(
         TokenType.TAG_END_OPEN,
         '</',
@@ -785,6 +805,7 @@ export class Lexer {
     }
 
     this.inTag = true;
+    this.readingClosingTag = false;
 
     // Check for special blocks - we'll set the content mode flag after TAG_CLOSE
     const nextWord = this.peekWord();
@@ -1021,15 +1042,16 @@ export class Lexer {
   }
 
   /**
-   * Whitespace after an expression in element content, read the way HTML reads
-   * inline text: before more text it belongs to that text (read as text, so its
-   * leading space survives the collapse to one space); between two expressions
-   * on one line it is a single space. Anything else — a line break before a
-   * tag, a comment, a control-flow block, the end — is layout, skipped as
-   * before, so no whitespace node appears between elements that did not have
-   * one. Returns null to let the caller skip it.
+   * Whitespace after an expression or an element in content, read the way
+   * HTML reads inline text: before more text it belongs to that text (read as
+   * text, so its leading space survives the collapse to one space); on one
+   * line before an expression or an opening tag it is a single space.
+   * Anything else — a line break before a tag, a closing tag, a comment, a
+   * control-flow block, the end — is layout, skipped as before, so no
+   * whitespace node appears between elements written one to a line. Returns
+   * null to let the caller skip it.
    */
-  private inlineWhitespaceAfterExpression(): Token | null {
+  private inlineWhitespace(): Token | null {
     let i = this.position;
     let sawNewline = false;
     while (i < this.source.length && /\s/.test(this.source[i])) {
@@ -1041,7 +1063,8 @@ export class Lexer {
     const startsText =
       next !== '' && next !== '<' && next !== '{' && next !== '#' && !(next === '/' && after === '/');
     if (startsText) return this.readTextContent();
-    if (next === '{' && !sawNewline) {
+    const opensTag = next === '<' && /[A-Za-z_$]/.test(after);
+    if ((next === '{' || opensTag) && !sawNewline) {
       const startLine = this.line;
       const startColumn = this.column;
       const startPos = this.position;
