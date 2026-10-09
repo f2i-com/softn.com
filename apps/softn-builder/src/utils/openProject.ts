@@ -190,8 +190,6 @@ function mimeTypeFromPath(path: string): string {
  * seed-row set that names no entity.
  */
 export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
-  const themeMode = bundle.manifest.config?.theme?.mode || 'light';
-
   const assets: AssetFile[] = Array.from(bundle.assets.entries()).map(([path, bytes]) => ({
     bundlePath: path,
     name: path.replace(/^assets\//, ''),
@@ -209,18 +207,17 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
     throw new Error(`The entry file "${mainUIFile.path}" has no root element; it did not parse as a UI file.`);
   }
 
-  // Ensure the App component's theme prop matches the project themeMode.
-  // This is the copy on open, not an edit; the file store gets the same tree
-  // (commit syncs it without marking anything dirty), so the first flush
-  // does not read the theme it put there as an edit.
-  const elements = new Map(mainUIFile.elements);
+  // The theme the preview is shown in: what the manifest says, else what the
+  // page's own `<App>` names, else light. The page is not changed to match.
+  // It used to be, on the way in: the root was given the manifest's theme
+  // (light where it named none) over whatever the page said, an expression
+  // included, and the first unrelated edit wrote that into the file.
+  const elements = mainUIFile.elements;
   const rootElement = elements.get(mainUIFile.rootId);
-  if (rootElement && rootElement.componentType === 'App' && rootElement.props.theme !== themeMode) {
-    elements.set(mainUIFile.rootId, {
-      ...rootElement,
-      props: { ...rootElement.props, theme: themeMode },
-    });
-  }
+  const authored =
+    rootElement?.componentType === 'App' && !(rootElement.expressionProps ?? []).includes('theme') ? rootElement.props.theme : undefined;
+  const themeMode: 'light' | 'dark' | 'system' =
+    bundle.manifest.config?.theme?.mode || (authored === 'dark' || authored === 'system' || authored === 'light' ? authored : 'light');
 
   for (const entityId of bundle.seedData.keys()) {
     if (!bundle.entities.some((e) => e.id === entityId)) {

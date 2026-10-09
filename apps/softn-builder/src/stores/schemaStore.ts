@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import type { EntityDef, SchemaField, RelationshipDef, RelationshipDraft } from '../types/builder';
 import { inferRelationships, prepareRelationship, validRelationships } from '../utils/schemaRelationships';
 import { useProjectStore } from './projectStore';
+import { useFilesStore } from './filesStore';
 import { ensureFieldIds } from '../utils/schemaFields';
 import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from '../utils/xdbFormat';
 import { reidentifyCollection, type RecordsSnapshot, type ReidentifyOutcome } from '../utils/reidentify';
@@ -150,6 +151,8 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
       entities: [...state.entities, entity],
       selectedEntityId: id,
     }));
+    // A page reads a collection only if it declares it.
+    useFilesStore.getState().applyCollectionChange({ kind: 'add', name: entity.name, alias: entity.alias });
 
     return id;
   },
@@ -178,11 +181,19 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
       const entities = state.entities.map((e) => (e.id === id ? { ...e, ...updates } : e));
       return { entities, relationships: validRelationships(entities, state.relationships) };
     });
+    // The pages that declare it are told, the alias under the name it has now.
+    const name = updates.name ?? entity.name;
+    if (name !== entity.name) useFilesStore.getState().applyCollectionChange({ kind: 'rename', from: entity.name, to: name });
+    if (updates.alias !== undefined && updates.alias !== entity.alias) {
+      useFilesStore.getState().applyCollectionChange({ kind: 'alias', name, from: entity.alias, to: updates.alias });
+    }
     return null;
   },
 
   deleteEntity: (id) => {
-    if (!get().entities.some(entity => entity.id === id)) return;
+    const deleted = get().entities.find(entity => entity.id === id);
+    if (!deleted) return;
+    useFilesStore.getState().applyCollectionChange({ kind: 'remove', name: deleted.name });
     edit((state) => {
       // Its seed rows went with it, and any field elsewhere pointing at it was
       // left pointing at nothing — a reference to a collection that no longer

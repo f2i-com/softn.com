@@ -377,7 +377,14 @@ const baseRegistry: ComponentMeta[] = [
     'Form',
     'chevron-down',
     'Dropdown select',
-    { placeholder: 'Select an option...' },
+    {
+      placeholder: 'Select an option...',
+      options: [
+        { value: 'one', label: 'Option one' },
+        { value: 'two', label: 'Option two' },
+        { value: 'three', label: 'Option three' },
+      ],
+    },
     [
       { name: 'placeholder', type: 'string', default: 'Select an option...' },
       { name: 'value', type: 'expression' },
@@ -413,7 +420,14 @@ const baseRegistry: ComponentMeta[] = [
     'Form',
     'circle',
     'Radio button group',
-    { name: 'radio-group' },
+    {
+      name: 'radio-group',
+      options: [
+        { value: 'one', label: 'Option one' },
+        { value: 'two', label: 'Option two' },
+        { value: 'three', label: 'Option three' },
+      ],
+    },
     [
       { name: 'name', type: 'string', default: 'radio-group' },
       { name: 'value', type: 'expression' },
@@ -639,7 +653,7 @@ const baseRegistry: ComponentMeta[] = [
     'Display',
     'user',
     'User avatar',
-    { size: 'md' },
+    { name: 'Ada Lovelace', size: 'md' },
     [
       { name: 'src', type: 'string', description: 'Image URL' },
       { name: 'name', type: 'string', description: 'Name for initials fallback' },

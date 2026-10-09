@@ -14,7 +14,31 @@
  */
 
 import type { CanvasBlock, CanvasElement, ComponentMeta } from '../types/builder';
+import { TEXT_NODE_TYPE } from '../types/builder';
 import { getComponentMeta } from './componentRegistry';
+
+/** Whether the element is words that stand beside elements (see TEXT_NODE_TYPE). */
+export function isTextNode(element: CanvasElement): boolean {
+  return element.componentType === TEXT_NODE_TYPE;
+}
+
+/** What the property panel offers for words: the words themselves. */
+export const textNodeMeta: ComponentMeta = {
+  name: 'Text',
+  category: 'Display',
+  icon: 'type',
+  description: 'Words that stand beside the elements around them. Write {name} to show a value.',
+  defaultProps: {},
+  propSchema: [{ name: 'children', type: 'string' }],
+  allowChildren: false,
+};
+
+/** What an element is called where there is room for a word or two. */
+export function elementLabel(element: CanvasElement): string {
+  if (!isTextNode(element)) return element.componentType;
+  const words = String(element.props.children ?? '').trim();
+  return words.length > 28 ? `“${words.slice(0, 27)}…”` : `“${words}”`;
+}
 
 /**
  * Whether `componentType` continues another block — `#elseif` and `#else`
@@ -48,9 +72,16 @@ export function defaultBlock(componentType: string): CanvasBlock | undefined {
   }
 }
 
-/** Whether the element can hold children on the canvas: a block always can, a component if its registry entry says so. */
+/**
+ * Whether the element can hold children on the canvas: a block always can,
+ * a component if its registry entry says so, and any element that already
+ * holds some. A `<Text>` with a `<Kbd>` among its words has children
+ * whatever its entry says, and they have to be seen to be edited.
+ */
 export function acceptsChildren(element: CanvasElement): boolean {
   if (element.block) return true;
+  if (isTextNode(element)) return false;
+  if (element.children.length > 0) return true;
   return getComponentMeta(element.componentType)?.allowChildren ?? false;
 }
 
@@ -62,12 +93,27 @@ export function acceptsChildren(element: CanvasElement): boolean {
 export function canDropInto(target: CanvasElement, draggedType: string | null): boolean {
   if (draggedType && isContinuationType(draggedType)) return false;
   if (target.block) return true;
+  if (isTextNode(target)) return false;
   const meta = getComponentMeta(target.componentType);
-  if (!meta?.allowChildren) return false;
+  if (!meta?.allowChildren) return target.children.length > 0;
   if (meta.childTypes && meta.childTypes.length > 0 && draggedType) {
     return meta.childTypes.includes(draggedType);
   }
   return true;
+}
+
+/**
+ * Where the branch of a block ends among its children: at its first
+ * `#elseif`, `#else` or `#empty`, or after its last child when it has none.
+ * In the source whatever follows one of those is inside it, so an element
+ * of the block itself goes no later than this.
+ */
+export function branchEnd(parent: CanvasElement, elements: Map<string, CanvasElement>): number {
+  const at = parent.children.findIndex((id) => {
+    const child = elements.get(id);
+    return child !== undefined && isContinuationType(child.componentType);
+  });
+  return at === -1 ? parent.children.length : at;
 }
 
 /** What the palette shows for the two blocks a creator can start with. */

@@ -65,6 +65,30 @@ export interface CanvasBlock {
 export const BLOCK_COMPONENT_TYPES = ['#if', '#elseif', '#else', '#each', '#empty'] as const;
 
 /**
+ * The `componentType` of words that stand beside elements.
+ *
+ * Words that are all a tag holds are its `children` prop, as they always
+ * were. Words with an element among them (`Press <Kbd>S</Kbd> to save`) had
+ * no place in the model, and a file with any was edited as source only. Each
+ * run of them is now an element of this type whose `children` prop is the
+ * text, `{expressions}` included, in its place among its siblings.
+ */
+export const TEXT_NODE_TYPE = '#text';
+
+/**
+ * A comment kept with the element it stands before.
+ *
+ * The parser drops comments, so the model never saw them and a file with
+ * one could not be written back: four in five of the shipped examples were
+ * edited as source only, each for the comment on its first line.
+ */
+export interface CanvasComment {
+  /** How it is written: `// text` to the end of the line, or `<!-- text -->`. */
+  form: 'line' | 'html';
+  text: string;
+}
+
+/**
  * Whether a .ui file's visual model can be written back without losing
  * anything the source holds. When it cannot, `reasons` says what — a
  * comment the parser drops, an expression the parser stops reading part
@@ -89,6 +113,13 @@ export interface CanvasElement {
   expressionProps?: string[];           // Prop names that were {expression} syntax
   /** Present when the element is a control-flow block; see CanvasBlock. */
   block?: CanvasBlock;
+  /** Comments written directly before the element, in order. */
+  leadingComments?: CanvasComment[];
+  /**
+   * Whether a space stands between this element and the sibling before it
+   * on one line (`<b>Total:</b> <span>12</span>`), which the engine draws.
+   */
+  spaceBefore?: boolean;
   children: string[];
   parentId: string | null;
   position?: { x: number; y: number };

@@ -3,32 +3,25 @@
  * losing anything the source holds?
  *
  * The builder regenerates a file's template from its canvas elements after
- * a visual edit. That model is narrower than the language: the parser
- * drops comments before the model ever sees them, text that sits between
- * child elements has no place in the model, and the header the store
- * splices back together by regular expression knows only some of the
- * blocks a file can have. Until BLD-01 the builder regenerated anyway and
- * every one of those was discarded in silence. The parser also used to
- * stop reading an expression it did not understand part way through with
- * no diagnostic — `() => count = count + 1` became `() => count` plus a
- * stray boolean attribute named `count` — which check 2 below was written
- * to catch; the parser now reads assignments and reports any `{…}` it
- * cannot read to its closing brace, so that check now fires only on an
- * expression the parser rejects outright.
+ * a visual edit, and keeps the rest of the file as it stands
+ * (sourceFrame.ts). The model is narrower than the language, so before a
+ * file is written from it the question is asked of the file itself: write
+ * it back from the elements it was just read into, and see whether what
+ * comes out is the same file to the engine.
  *
- * This module says, for a given source, whether the round trip
- * source → model → source is exact for everything the engine reads — and
- * if not, why, in words the editor can show. The checks:
- *
- *   1. the lexer's token stream has no COMMENT tokens (the parser skips
- *      them and the generator cannot print what it never saw);
+ *   1. the parser reported no diagnostics for the file;
  *   2. every `{…}` region parses as one whole expression — parsed alone,
  *      it yields exactly one attribute and no diagnostics;
- *   3. the parser reported no diagnostics for the file;
- *   4. the header holds only blocks the regenerator carries across;
- *   5. the template of the regenerated source, parsed again, is the same
- *      tree as the original's — positions, literal spellings, attribute
- *      quoting and insignificant whitespace aside.
+ *   3. nothing was met on the way into the model that it has no place for:
+ *      an expression the printer refuses, a comment that does not stand
+ *      before an element, a block between two parts of the template;
+ *   4. the file written back parses, and its template is the same tree as
+ *      the original's — positions, literal spellings, attribute quoting and
+ *      the line breaks between elements aside, and with the spaces inside a
+ *      line of words exactly as they were;
+ *   5. it declares what the original declared: the same imports, logic,
+ *      data, styles and component header;
+ *   6. it holds the same comments in the same order.
  *
  * A file that fails any of these is edited as source only: the store keeps
  * `originalSource` authoritative and refuses the visual edit with these
@@ -44,13 +37,10 @@ import type {
   Token,
 } from '@softn/core';
 import type { CanvasElement, SourceFidelity } from '../types/builder';
-import { generateSource } from './sourceGenerator';
+import { commentsOf, frameSource, writeBack } from './sourceFrame';
 
 export type { SourceFidelity } from '../types/builder';
-
-// ---------------------------------------------------------------------------
-// 1. Comments
-// ---------------------------------------------------------------------------
+export { hasSingleAppRoot } from './sourceFrame';
 
 function safeTokenize(source: string): Token[] | null {
   try {
@@ -58,15 +48,6 @@ function safeTokenize(source: string): Token[] | null {
   } catch {
     return null;
   }
-}
-
-/** Reasons for every comment the parser would drop. */
-function findDroppedComments(source: string): string[] {
-  const tokens = safeTokenize(source);
-  if (!tokens) return ['the SoftN lexer could not read this file'];
-  return tokens
-    .filter((t) => t.type === TokenType.COMMENT)
-    .map((t) => `a comment on line ${t.line} (the visual model has no place for comments)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -140,47 +121,8 @@ function findTruncatedExpressions(source: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Header blocks the regenerator carries across
-// ---------------------------------------------------------------------------
-
-/**
- * Reasons for header constructs the store's regeneration would not write
- * back. It keeps `<logic src>` or an inline `<logic>` (not both), every
- * `<import … />` tag, `<data>`, `<style>` and `<component>` blocks.
- */
-function findUnpreservedHeader(source: string, doc: SoftNDocument): string[] {
-  const reasons: string[] = [];
-  if (doc.script) {
-    reasons.push('a <script> block (only <logic> is written back)');
-  }
-  const hasLogicSrc = /<logic\s+src=["'][^"']+["']\s*\/>/i.test(source);
-  const hasInlineLogic = /<logic>[\s\S]*?<\/logic>/i.test(source);
-  if (hasLogicSrc && hasInlineLogic) {
-    reasons.push('both a <logic src> reference and an inline <logic> block (only one is written back)');
-  }
-  const importTags = source.match(
-    /<import\s+(?:\{\s*[^}]+\s*\}|\w+)\s+from=["'][^"']+["']\s*\/>/gi
-  );
-  if ((doc.imports?.length ?? 0) > (importTags?.length ?? 0)) {
-    reasons.push('an import that is not written as an <import … from="…" /> tag');
-  }
-  return reasons;
-}
-
-// ---------------------------------------------------------------------------
 // 5. Template comparison
 // ---------------------------------------------------------------------------
-
-/** The template nodes that carry content — whitespace-only text is layout. */
-function contentNodes(nodes: TemplateNode[]): TemplateNode[] {
-  return nodes.filter((n) => n.type !== 'Text' || n.content.trim() !== '');
-}
-
-/** Whether the document's template is a single `<App>` element. */
-export function hasSingleAppRoot(doc: SoftNDocument): boolean {
-  const roots = contentNodes(doc.template);
-  return roots.length === 1 && roots[0].type === 'Element' && roots[0].tag === 'App';
-}
 
 type Shape = unknown;
 
@@ -228,27 +170,50 @@ function sortedByName<T extends { name: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-function shapeText(content: string): string {
-  return content.replace(/\s+/g, ' ').trim();
-}
-
 /**
  * The template with everything that does not reach the engine removed:
- * positions, literal spellings, attribute order, whether a tag was written
- * self-closing, and whitespace at the edges of text.
+ * positions, literal spellings, attribute order and whether a tag was
+ * written self-closing.
+ *
+ * Text is compared as the engine has it. The lexer takes the layout out
+ * (the line breaks and indentation between elements are no node at all) and
+ * leaves the spaces that are drawn: `Hello ` before `<b>`, the space
+ * between two elements on one line. Those used to be trimmed away on both
+ * sides of this comparison, which called a file lossless that came back
+ * with its words run together. Neighbouring text nodes are one text: what
+ * splits them (a comment between two words) is not the engine's concern.
  */
 function shapeTemplate(nodes: TemplateNode[]): Shape[] {
   const out: Shape[] = [];
-  for (const node of contentNodes(nodes)) {
+  let text: string | null = null;
+  const flush = () => {
+    if (text !== null && text !== '') out.push({ type: 'Text', content: text });
+    text = null;
+  };
+  for (const node of nodes) {
+    if (node.type === 'Text') {
+      text = (text ?? '') + node.content;
+      continue;
+    }
+    flush();
     out.push(shapeNode(node));
   }
+  flush();
   return out;
+}
+
+/**
+ * The top of a template, where a run of whitespace on its own is the gap
+ * between two roots on one line and nothing the page shows differently for.
+ */
+function shapeRoots(nodes: TemplateNode[]): Shape[] {
+  return shapeTemplate(nodes.filter((n) => n.type !== 'Text' || n.content.trim() !== ''));
 }
 
 function shapeNode(node: TemplateNode): Shape {
   switch (node.type) {
     case 'Text':
-      return { type: 'Text', content: shapeText(node.content) };
+      return { type: 'Text', content: node.content };
     case 'Expression':
       return { type: 'Expression', expression: shapeExpression(node.expression) };
     case 'Element':
@@ -361,29 +326,66 @@ function firstDifference(a: unknown, b: unknown, path = 'template'): string | nu
   return `${path}: ${describe(a)} would become ${describe(b)}`;
 }
 
+/** What a document declares outside its template, positions aside. */
+function shapeHeader(doc: SoftNDocument): Shape {
+  return shapeAny({
+    imports: doc.imports ?? [],
+    logic: doc.logic,
+    script: doc.script,
+    data: doc.data,
+    style: doc.style,
+    component: doc.component,
+  });
+}
+
+/** How many declaring tags a source opens, whichever the parser kept of two of a kind. */
+function declarationCount(source: string): number {
+  return (source.match(/<(?:logic|script|style|data|import|component)\b/gi) ?? []).length;
+}
+
 /**
- * Compare the original template with the template the visual model would
- * write. Returns a reason when they differ.
+ * Write the file back from the model and compare what comes out with what
+ * went in. Returns every reason they are not the same file.
  */
-function templateDifference(
+function writtenBackDifferences(
+  source: string,
   original: SoftNDocument,
   elements: Map<string, CanvasElement>,
   rootId: string,
-  syntheticRoot: boolean
-): string | null {
-  const regenerated = generateSource(elements, rootId, '', [], { skipRootAppWrapper: syntheticRoot });
+  commentsPlaced: boolean
+): string[] {
+  const written = writeBack(source, original, elements, rootId);
   let doc: SoftNDocument;
   try {
-    doc = parse(regenerated);
+    doc = parse(written);
   } catch (err) {
-    return `the template the visual model writes does not parse (${err instanceof Error ? err.message : String(err)})`;
+    return [`the file the visual model writes does not parse (${err instanceof Error ? err.message : String(err)})`];
   }
   const bad = doc.diagnostics?.find((d) => d.severity === 'error');
-  if (bad) {
-    return `the template the visual model writes does not parse (${bad.message})`;
+  if (bad) return [`the file the visual model writes does not parse (${bad.message})`];
+
+  const reasons: string[] = [];
+  const difference = firstDifference(shapeRoots(original.template), shapeRoots(doc.template));
+  if (difference) reasons.push(`the visual model does not reproduce the template (${difference})`);
+
+  const header = firstDifference(shapeHeader(original), shapeHeader(doc), 'file');
+  if (header) {
+    reasons.push(`the visual model does not keep what the file declares (${header})`);
+  } else if (declarationCount(source) !== declarationCount(written)) {
+    reasons.push('the visual model does not keep every block the file declares');
   }
-  const difference = firstDifference(shapeTemplate(original.template), shapeTemplate(doc.template));
-  return difference ? `the visual model does not reproduce the template (${difference})` : null;
+
+  // A comment the model had no element for has been named already.
+  if (!commentsPlaced) return reasons;
+  const before = commentsOf(source) ?? [];
+  const after = commentsOf(written) ?? [];
+  const lost = before.find((comment, index) => after[index]?.text !== comment.text || after[index]?.form !== comment.form);
+  if (lost) {
+    reasons.push(`a comment on line ${lost.line} would not be written back where it stands`);
+  } else if (after.length !== before.length) {
+    reasons.push('the visual model would write a comment the file does not have');
+  }
+  return reasons;
 }
 
 // ---------------------------------------------------------------------------
@@ -411,12 +413,11 @@ export function computeFidelity(input: FidelityInput): SourceFidelity {
   for (const d of input.doc.diagnostics ?? []) {
     if (d.severity === 'error') reasons.push(`the parser reported "${d.message}" on line ${d.loc.line}`);
   }
-  reasons.push(...findDroppedComments(input.source));
   reasons.push(...findTruncatedExpressions(input.source));
-  reasons.push(...findUnpreservedHeader(input.source, input.doc));
+  reasons.push(...(frameSource(input.source, input.doc)?.reasons ?? []));
   reasons.push(...input.conversionReasons);
-  const difference = templateDifference(input.doc, input.elements, input.rootId, input.syntheticRoot);
-  if (difference) reasons.push(difference);
+  const commentsPlaced = !input.conversionReasons.some((reason) => reason.startsWith('a comment on line'));
+  reasons.push(...writtenBackDifferences(input.source, input.doc, input.elements, input.rootId, commentsPlaced));
   return { lossless: reasons.length === 0, reasons: dedupe(reasons) };
 }
 

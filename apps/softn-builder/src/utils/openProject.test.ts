@@ -295,3 +295,58 @@ describe('a remote open (?open=)', () => {
     expect(fingerprint()).toEqual(before);
   });
 });
+
+/**
+ * Opening an app does not change what its page says.
+ *
+ * The root `<App>` of the entry page was given the manifest's theme on the
+ * way in, "light" where the manifest named none, and the mark that says a
+ * property is an expression was left as it was. So a page whose theme
+ * followed its own state came out of the first unrelated edit as
+ * `<App theme={light}>`, a name nothing defines; `<App theme="dark">` in a
+ * bundle whose manifest said nothing became light; and a page with no theme
+ * of its own was given one.
+ */
+describe('the theme of an opened app', () => {
+  function bundleWith(ui: string, theme?: string): Uint8Array {
+    const manifest: Record<string, unknown> = { name: 'Themed', version: '1.0.0', description: '', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: [], xdb: [], assets: [] } };
+    if (theme) manifest.config = { theme: { mode: theme } };
+    return zipSync({ 'manifest.json': strToU8(JSON.stringify(manifest)), 'ui/main.ui': strToU8(ui) });
+  }
+
+  /** Open the page, change the one Text on the canvas, flush, and give back the page's source. */
+  async function openedAndEdited(ui: string, theme?: string): Promise<string> {
+    const snapshot = prepareProjectSnapshot(await loadBundle(bundleWith(ui, theme)));
+    commitProjectSnapshot(snapshot);
+    const canvas = useCanvasStore.getState();
+    const text = [...canvas.elements.values()].find((el) => el.componentType === 'Text')!;
+    canvas.updateElementProps(text.id, { children: 'Edited' });
+    const files = useFilesStore.getState();
+    const main = [...files.uiFiles.values()].find((file) => file.path === 'ui/main.ui')!;
+    files.updateUIFile(main.id, useCanvasStore.getState().elements, useCanvasStore.getState().rootId!);
+    return useFilesStore.getState().uiFiles.get(main.id)!.originalSource!;
+  }
+
+  it('stays the expression the page wrote', async () => {
+    const source = await openedAndEdited('<App theme={darkMode ? "dark" : "light"}>\n  <Text>Hi</Text>\n</App>\n');
+    expect(source).toBe('<App theme={darkMode ? "dark" : "light"}>\n  <Text>Edited</Text>\n</App>\n');
+  });
+
+  it('stays the theme the page named, whatever the manifest says or does not', async () => {
+    expect(await openedAndEdited('<App theme="dark">\n  <Text>Hi</Text>\n</App>\n')).toContain('<App theme="dark">');
+    expect(await openedAndEdited('<App theme="dark">\n  <Text>Hi</Text>\n</App>\n', 'light')).toContain('<App theme="dark">');
+  });
+
+  it('is not written into a page that names none', async () => {
+    expect(await openedAndEdited('<App>\n  <Text>Hi</Text>\n</App>\n', 'system')).toBe('<App>\n  <Text>Edited</Text>\n</App>\n');
+  });
+
+  it('is what the preview is shown in: the manifest, else the page, else light', async () => {
+    const mode = async (ui: string, theme?: string) => prepareProjectSnapshot(await loadBundle(bundleWith(ui, theme))).project.themeMode;
+    expect(await mode('<App><Text>Hi</Text></App>', 'dark')).toBe('dark');
+    expect(await mode('<App theme="dark"><Text>Hi</Text></App>')).toBe('dark');
+    expect(await mode('<App theme="system"><Text>Hi</Text></App>')).toBe('system');
+    expect(await mode('<App theme={mode}><Text>Hi</Text></App>')).toBe('light');
+    expect(await mode('<App><Text>Hi</Text></App>')).toBe('light');
+  });
+});

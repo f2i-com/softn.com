@@ -2,13 +2,15 @@
  * A visual edit never silently discards what the visual model cannot hold.
  *
  * `parseSource` reports whether its elements reproduce the source; the
- * store asks before it regenerates a file from them. A file with a
- * comment, an expression the parser stops reading part way through, text
- * between child elements or a header block the regenerator does not carry
- * is source-only: the edit is refused, the file keeps its bytes, and the
- * reasons are recorded for the editor to show. A file the model does hold
- * — nested blocks, `#empty` branches and grouped expressions included — is
- * regenerated, and what comes out renders the same in the engine.
+ * store asks before it regenerates a file from them. A file with an
+ * expression the parser stops reading part way through, or a comment that
+ * stands where there is no element to keep it with, is source-only: the
+ * edit is refused, the file keeps its bytes, and the reasons are recorded
+ * for the editor to show. A file the model does hold is regenerated, and
+ * what comes out renders the same in the engine. That is nested blocks,
+ * `#empty` branches and grouped expressions, and since the model learned to
+ * keep them, a comment before an element, words with elements among them,
+ * and everything a file holds outside its template.
  */
 
 import React from 'react';
@@ -118,15 +120,27 @@ describe('what parseSource reports', () => {
     expect(parseSource(LOSSLESS_UI).fidelity).toEqual({ lossless: true, reasons: [] });
   });
 
-  it('names a comment', () => {
-    const { lossless, reasons } = assessSourceFidelity(`<App>\n  // not kept\n  <Text>x</Text>\n</App>`);
-    expect(lossless).toBe(false);
-    expect(reasons).toEqual([expect.stringMatching(/comment on line 2/)]);
+  it('holds a comment that stands before an element, of either form', () => {
+    expect(assessSourceFidelity(`<App>\n  // kept\n  <Text>x</Text>\n</App>`)).toEqual({ lossless: true, reasons: [] });
+    expect(assessSourceFidelity(`<App>\n  <!-- kept -->\n  <Text>x</Text>\n</App>`)).toEqual({ lossless: true, reasons: [] });
+    const { elements } = parseSource(`<App>\n  // one\n  <!-- two -->\n  <Text>x</Text>\n  // three\n  #if (ok)\n    <Text>y</Text>\n  #end\n</App>`);
+    const commented = [...elements.values()].filter((el) => el.leadingComments).map((el) => [el.componentType, el.leadingComments]);
+    expect(commented).toEqual([
+      ['Text', [{ form: 'line', text: 'one' }, { form: 'html', text: 'two' }]],
+      ['#if', [{ form: 'line', text: 'three' }]],
+    ]);
   });
 
-  it('names an HTML comment too', () => {
-    const { reasons } = assessSourceFidelity(`<App>\n  <!-- not kept -->\n  <Text>x</Text>\n</App>`);
-    expect(reasons).toEqual([expect.stringMatching(/comment on line 2/)]);
+  it.each([
+    ['before a closing tag', `<App>\n  <Text>x</Text>\n  // not kept\n</App>`, 3],
+    ['before #else', `<App>\n  #if (ok)\n    <Text>x</Text>\n  // not kept\n  #else\n    <Text>y</Text>\n  #end\n</App>`, 4],
+    ['before #empty', `<App>\n  #each (t in ts)\n    <Text>x</Text>\n  // not kept\n  #empty\n    <Text>y</Text>\n  #end\n</App>`, 4],
+    ['inside braces', `<App>\n  <Text>x</Text>\n  {/* not kept */}\n</App>`, 3],
+    ['in a line of words', `<App>\n  <Text>one <!-- not kept --> two <b>x</b></Text>\n</App>`, 2],
+  ])('names a comment that stands %s', (_where, source, line) => {
+    const { lossless, reasons } = assessSourceFidelity(source);
+    expect(lossless).toBe(false);
+    expect(reasons.join('\n')).toMatch(new RegExp(`comment on line ${line}`));
   });
 
   it('calls the documented assignment handler lossless now that the parser reads it whole', () => {
@@ -144,22 +158,44 @@ describe('what parseSource reports', () => {
     expect(reasons.join('\n')).toMatch(/\{\(\) => 1 = count\} on line 2 is not fully supported/);
   });
 
-  it('names text that sits between child elements', () => {
-    const { lossless, reasons } = assessSourceFidelity(`<App>\n  <Text>Hi <Badge>x</Badge> there</Text>\n</App>`);
+  it('holds words with elements among them, each run in its place', () => {
+    const source = `<App>\n  <Text>Hi <Badge>x</Badge> there, {name}</Text>\n</App>`;
+    const parsed = parseSource(source);
+    expect(parsed.fidelity).toEqual({ lossless: true, reasons: [] });
+    const text = [...parsed.elements.values()].find((el) => el.componentType === 'Text')!;
+    expect(text.props.children).toBeUndefined();
+    expect(text.children.map((id) => parsed.elements.get(id)!).map((el) => [el.componentType, el.props.children])).toEqual([
+      ['#text', 'Hi '],
+      ['Badge', 'x'],
+      ['#text', ' there, {name}'],
+    ]);
+  });
+
+  it('holds the space between two elements on one line, with the element after it', () => {
+    const parsed = parseSource(`<App>\n  <Text><b>Total:</b> <i>12</i><u>!</u></Text>\n</App>`);
+    expect(parsed.fidelity).toEqual({ lossless: true, reasons: [] });
+    const spaced = [...parsed.elements.values()].filter((el) => el.spaceBefore).map((el) => el.componentType);
+    expect(spaced).toEqual(['i']);
+    expect([...parsed.elements.values()].some((el) => el.componentType === '#text')).toBe(false);
+  });
+
+  it('holds a file whatever stands outside its template', () => {
+    for (const source of [
+      `<script>let a = 1</script>\n<App><Text>x</Text></App>`,
+      `<logic src="./a.logic" />\n<logic>let b = 1</logic>\n<App><Text>x</Text></App>`,
+      `<style scoped>.a { color: red; }</style>\n<App><Text>x</Text></App>`,
+      `<logic lang="js">let a = 1</logic>\n<App><Text>x</Text></App>`,
+      `<logic src="../logic/main.logic"></logic>\n<App><Text>x</Text></App>`,
+      `// what this page is\n<App><Text>x</Text></App>\n<style>.a { color: red; }</style>\n// and a last word\n`,
+    ]) {
+      expect(assessSourceFidelity(source), source).toEqual({ lossless: true, reasons: [] });
+    }
+  });
+
+  it('names a block that stands between two parts of the template', () => {
+    const { lossless, reasons } = assessSourceFidelity(`<Text>one</Text>\n<style>.a { color: red; }</style>\n<Text>two</Text>`);
     expect(lossless).toBe(false);
-    expect(reasons.join('\n')).toMatch(/text "Hi there" sits between child elements of <Text>/);
-  });
-
-  it('names a <script> block, which the regenerator does not carry', () => {
-    const { reasons } = assessSourceFidelity(`<script>let a = 1</script>\n<App><Text>x</Text></App>`);
-    expect(reasons).toEqual([expect.stringMatching(/<script> block/)]);
-  });
-
-  it('names a file with both a <logic src> and an inline <logic>', () => {
-    const { reasons } = assessSourceFidelity(
-      `<logic src="./a.logic" />\n<logic>let b = 1</logic>\n<App><Text>x</Text></App>`
-    );
-    expect(reasons).toEqual([expect.stringMatching(/both a <logic src> reference and an inline <logic>/)]);
+    expect(reasons.join('\n')).toMatch(/<style> block stands between parts of the template/);
   });
 
   it('does not count layout whitespace, attribute quoting or bare numbers as loss', () => {
@@ -217,8 +253,104 @@ describe('a visual edit on a lossless file', () => {
   });
 });
 
+describe('a visual edit on a file with comments, words among elements and blocks around its template', () => {
+  const HELD_UI = `// What this page is for.
+<import Header from="./components/Header.ui" />
+<logic src="../logic/main.logic"></logic>
+<script>let legacy = 1</script>
+
+<!-- The page itself. -->
+<App theme="dark">
+  // The title row.
+  <Header title="Tasks" />
+  <Text>Press <Kbd>Ctrl</Kbd> + <Kbd>S</Kbd> to save, {name}.</Text>
+  <Text><b>Open:</b> <i>{open}</i></Text>
+  <!-- Shown to
+       a new project. -->
+  #if (tasks.length === 0)
+    <Text>Nothing yet</Text>
+  // Or the count.
+  #elseif (tasks.length === 1)
+    <Text>One task</Text>
+  #end
+  <Text>Footer</Text>
+</App>
+
+<style scoped>
+  .custom { color: rebeccapurple; }
+</style>
+// Kept to the last line.
+`;
+
+  beforeEach(() => open(HELD_UI));
+
+  it('is held by the model', () => {
+    expect(parseSource(HELD_UI).fidelity).toEqual({ lossless: true, reasons: [] });
+  });
+
+  it('changes the one element and nothing the file holds around it', () => {
+    store().updateUIFile(UI_ID, editedElements('Footer', 'Edited footer'), file().rootId);
+    const out = file().originalSource!;
+    expect(file().visualEditBlocked).toBeUndefined();
+    // What stands outside the template is the same text, in the same place.
+    const head = HELD_UI.slice(0, HELD_UI.indexOf('<App'));
+    const tail = HELD_UI.slice(HELD_UI.indexOf('</App>') + '</App>'.length);
+    expect(out.startsWith(head)).toBe(true);
+    expect(out.endsWith(tail)).toBe(true);
+    // Inside it, every comment is before the element it was before, and
+    // every line of words has the spaces it had.
+    expect(out).toContain('  // The title row.\n  <Header title="Tasks" />');
+    expect(out).toContain('  <Text>Press <Kbd>Ctrl</Kbd> + <Kbd>S</Kbd> to save, {name}.</Text>');
+    expect(out).toContain('  <Text><b>Open:</b> <i>{open}</i></Text>');
+    expect(out).toContain('  <!-- Shown to\n       a new project. -->\n  #if (tasks.length === 0)');
+    expect(out).toContain('  // Or the count.\n  #elseif (tasks.length === 1)');
+    expect(out).toContain('<Text>Edited footer</Text>');
+    expect(out.replace('Edited footer', 'Footer')).toBe(HELD_UI);
+  });
+
+  it('draws the same page as before, edit aside', () => {
+    store().updateUIFile(UI_ID, editedElements('Footer', 'Edited footer'), file().rootId);
+    const out = file().originalSource!;
+    for (const tasks of [[], [1], [1, 2]]) {
+      const state = { name: 'Ada', open: 3, tasks };
+      expect(render(out, state)).toBe(render(HELD_UI, state).replace('Footer', 'Edited footer'));
+    }
+  });
+
+  it('is still held after it, so a second edit is written as well', () => {
+    store().updateUIFile(UI_ID, editedElements('Footer', 'Edited footer'), file().rootId);
+    expect(parseSource(file().originalSource!).fidelity).toEqual({ lossless: true, reasons: [] });
+    store().updateUIFile(UI_ID, editedElements('Edited footer', 'Edited twice'), file().rootId);
+    expect(file().originalSource).toContain('Edited twice');
+    expect(file().originalSource).toContain('// The title row.');
+  });
+});
+
+describe('a file that is not an app page', () => {
+  it('with words at its top is held as those words', () => {
+    const source = `<component name="Greeting">\n  <prop name="name" />\n</component>\n\nHello, <b>{name}</b>!\n`;
+    const parsed = parseSource(source);
+    expect(parsed.fidelity).toEqual({ lossless: true, reasons: [] });
+    const root = parsed.elements.get(parsed.rootId)!;
+    expect(root.children.map((id) => parsed.elements.get(id)!).map((el) => [el.componentType, el.props.children])).toEqual([
+      ['#text', 'Hello, '],
+      ['b', '{name}'],
+      ['#text', '! '],
+    ]);
+  });
+
+  it('with its last element deleted is an empty template, not an <App />', () => {
+    const source = `<component name="Row" />\n\n<Text>only</Text>\n`;
+    open(source);
+    const root = file().elements.get(file().rootId)!;
+    const emptied = new Map([[root.id, { ...root, children: [] }]]);
+    store().updateUIFile(UI_ID, emptied, root.id);
+    expect(file().originalSource).toBe(`<component name="Row" />\n\n\n`);
+  });
+});
+
 describe('a visual edit on a source-only file', () => {
-  const LOSSY_UI = `// keep me\n<App>\n  #each (task in tasks)\n    <Text>{task}</Text>\n  #empty\n    <Text>Nothing yet</Text>\n  #end\n  <Text>Footer</Text>\n</App>\n`;
+  const LOSSY_UI = `<App>\n  #each (task in tasks)\n    <Text>{task}</Text>\n  // keep me\n  #empty\n    <Text>Nothing yet</Text>\n  #end\n  <Text>Footer</Text>\n</App>\n`;
 
   beforeEach(() => open(LOSSY_UI));
 
@@ -231,7 +363,7 @@ describe('a visual edit on a source-only file', () => {
   it('records the reason on the file for the editor to show', () => {
     store().updateUIFile(UI_ID, editedElements('Footer', 'Edited footer'), file().rootId);
     expect(file().sourceFidelity?.lossless).toBe(false);
-    expect(file().visualEditBlocked).toEqual([expect.stringMatching(/comment on line 1/)]);
+    expect(file().visualEditBlocked).toEqual([expect.stringMatching(/comment on line 4/)]);
   });
 
   it('keeps the elements the source describes, not the refused ones', () => {
@@ -246,7 +378,7 @@ describe('a visual edit on a source-only file', () => {
     expect(file().visualEditBlocked).toBeDefined();
 
     // The creator removes the comment in the source view.
-    const fixed = LOSSY_UI.replace('// keep me\n', '');
+    const fixed = LOSSY_UI.replace('  // keep me\n', '');
     open(fixed);
     expect(file().visualEditBlocked).toBeUndefined();
     expect(file().sourceFidelity).toBeUndefined();

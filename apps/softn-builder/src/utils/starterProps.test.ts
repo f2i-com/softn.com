@@ -122,6 +122,20 @@ describe('what a drop writes', () => {
     expect(rendered(source)).toContain('Click me');
   });
 
+  it('a Radio, a Select and an Avatar start with something to show', () => {
+    // Each was dropped with nothing a person could see in the running app:
+    // a radio group with no options draws nothing at all, a select opens on
+    // an empty list, and an avatar with no name is a question mark.
+    insertFromPalette('Radio');
+    insertFromPalette('Select');
+    insertFromPalette('Avatar');
+    const html = rendered(sourceOfCanvas());
+    expect(html.match(/type="radio"/g)).toHaveLength(3);
+    expect(html).toContain('Option one');
+    expect(html).toContain('>AL<');
+    expect(sourceOfCanvas()).toContain('<Select placeholder="Select an option..." options={[{ value: "one", label: "Option one" }');
+  });
+
   it('selects what was inserted, as before', () => {
     const id = insertFromPalette('Text');
     expect(useCanvasStore.getState().selectedIds).toEqual([id]);

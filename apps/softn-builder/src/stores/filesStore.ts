@@ -12,10 +12,10 @@ import type {
   CanvasElement,
 } from '../types/builder';
 import { debug } from '../utils/debug';
-import { generateSource } from '../utils/sourceGenerator';
 import { elementsEqual } from '../utils/elementsEqual';
 import { assessSourceFidelity, parseSource } from '../utils/sourceParser';
-import { hasSingleAppRoot } from '../utils/sourceFidelity';
+import { writeBack } from '../utils/sourceFrame';
+import { changeDataDeclarations, type CollectionChange } from '../utils/dataDeclarations';
 import {
   MAIN_LOGIC_PATHS,
   blankLogicFile,
@@ -27,7 +27,7 @@ import {
   type LogicLanguage,
 } from '../utils/logicFiles';
 import { applyInlineLogicMove, planInlineLogicMove, takenPaths, type InlineLogicMove } from '../utils/inlineLogic';
-import { isPythonLogicPath, parse as parseSoftN, pythonModuleName } from '@softn/core';
+import { isPythonLogicPath, parse as parseSoftN, pythonModuleName, type SoftNDocument } from '@softn/core';
 
 function generateId(): string {
   return `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -91,6 +91,9 @@ function movedPath(path: string, from: string, to: string): string {
 /** Every `<logic src="…">` in a source, with either quote. */
 const LOGIC_SRC_ATTRIBUTE = /(<logic\b[^>]*?\bsrc\s*=\s*)(["'])([^"']*)\2/gi;
 
+/** Every `<import … from="…">` in a source, with either quote. */
+const IMPORT_FROM_ATTRIBUTE = /(<import\b[^>]*?\bfrom\s*=\s*)(["'])([^"']*)\2/gi;
+
 /**
  * Keep every `<logic src>` pointing at the file it meant, after a rename or
  * a move changed where the logic file is, where the UI file holding the tag
@@ -139,17 +142,26 @@ function relinkLogicReferences(
       }
     }
 
+    // A page a file imports is found the same way and goes stale the same
+    // way: by the imported page being renamed or moved, or by this one being
+    // moved. Only `<logic src>` used to be followed.
+    if (file.imports?.some((imp) => relinked(imp.source, oldFilePath, file.path) !== null)) {
+      next.imports = file.imports.map((imp) => {
+        const source = relinked(imp.source, oldFilePath, file.path);
+        return source === null ? imp : { ...imp, source };
+      });
+      changed = true;
+    }
+
     // Multi-file bundles keep the original text and re-emit the header from
     // it, so every tag in that copy has to be repointed too or export would
     // write the stale path back out.
     if (file.originalSource) {
-      const source = file.originalSource.replace(
-        LOGIC_SRC_ATTRIBUTE,
-        (tag: string, head: string, quote: string, src: string) => {
-          const replacement = relinked(src, oldFilePath, file.path);
-          return replacement === null ? tag : `${head}${quote}${replacement}${quote}`;
-        }
-      );
+      const repoint = (tag: string, head: string, quote: string, src: string) => {
+        const replacement = relinked(src, oldFilePath, file.path);
+        return replacement === null ? tag : `${head}${quote}${replacement}${quote}`;
+      };
+      const source = file.originalSource.replace(LOGIC_SRC_ATTRIBUTE, repoint).replace(IMPORT_FROM_ATTRIBUTE, repoint);
       if (source !== file.originalSource) {
         next.originalSource = source;
         changed = true;
@@ -252,31 +264,6 @@ function deletionRefusedReason(
   return reason ? `The folder ${node.path} cannot be deleted: ${reason}` : null;
 }
 
-/**
- * Whether the file's template is a single `<App>` element, so the root the
- * canvas holds is the author's and not the wrapper parseSource adds around
- * several roots. Asked of the parser rather than a regular expression: a
- * file whose first root is `<App>` but which has a second root beside it
- * also got the wrapper, and writing `<App>` around both would nest them.
- */
-function hadSingleAppRoot(source: string): boolean {
-  try {
-    return hasSingleAppRoot(parseSoftN(source));
-  } catch {
-    const template = source
-      .replace(/<data>[\s\S]*?<\/data>/gi, '')
-      .replace(/<logic>[\s\S]*?<\/logic>/gi, '')
-      .replace(/<logic\s+[^>]*\/>/gi, '')
-      .replace(/<import\s+[^>]+\/>/gi, '')
-      .replace(/<style>[\s\S]*?<\/style>/gi, '')
-      .replace(/<component\b[^>]*>[\s\S]*?<\/component>/gi, '')
-      .replace(/^\/\/.*$/gm, '')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .trim();
-    return /^<App[\s>]/i.test(template);
-  }
-}
-
 interface FilesStore {
   // File tree structure
   nodes: Map<string, ProjectFileNode>;
@@ -330,6 +317,12 @@ interface FilesStore {
   syncUIFileElements: (id: string, elements: Map<string, CanvasElement>, rootId: string) => void;
   updateUIFileLogicSrc: (id: string, logicSrc: string | undefined) => void;
   updateUIFileSource: (id: string, source: string) => void;
+  /**
+   * A collection was added, renamed or removed in Data: say so in the
+   * `<data>` block of each page that keeps its own source. The block stands
+   * outside the template, so a page's tree is left as it is.
+   */
+  applyCollectionChange: (change: CollectionChange) => void;
   updateLogicFile: (id: string, content: string) => void;
   /**
    * Move a UI file's inline `<logic>` block into a logic file and link it
@@ -958,75 +951,30 @@ export const useFilesStore = create<FilesStore>((set, get) => {
           return { uiFiles: blockedFiles };
         }
 
-        // Detect whether the original source had an <App> root element.
-        // If not (e.g. Header.ui, Dashboard.ui), the parser added a
-        // synthetic App wrapper which we must NOT persist back.
-        const originalHadAppRoot = hadSingleAppRoot(nextOriginalSource);
-
-        // Generate template-only from the canvas elements
-        const generatedTemplate = generateSource(elements, rootId, '', [], {
-          skipRootAppWrapper: !originalHadAppRoot,
-        });
-
-        // Extract non-template header blocks from the current originalSource
-        const headerBlocks: string[] = [];
-
-        // Component declaration: <component name="…">…</component>
-        const componentBlocks = Array.from(
-          nextOriginalSource.matchAll(/<component\b[^>]*>[\s\S]*?<\/component>|<component\b[^>]*\/>/gi)
-        ).map((m) => m[0]);
-        for (const block of componentBlocks) {
-          headerBlocks.push(block);
+        // The template is written from the canvas elements; what stands
+        // before and after it in the file stays as it is (sourceFrame.ts).
+        let originalDoc: SoftNDocument | null = null;
+        try {
+          originalDoc = parseSoftN(nextOriginalSource);
+        } catch {
+          originalDoc = null;
         }
-
-        // Logic: <logic src="..." /> (external reference)
-        const logicSrcBlock = nextOriginalSource.match(
-          /<logic\s+src=["'][^"']+["']\s*\/>/i
-        );
-        // Logic: <logic>...</logic> (inline)
-        const inlineLogicBlock = nextOriginalSource.match(
-          /<logic>[\s\S]*?<\/logic>/i
-        );
-        if (logicSrcBlock) {
-          headerBlocks.push(logicSrcBlock[0]);
-        } else if (inlineLogicBlock) {
-          headerBlocks.push(inlineLogicBlock[0]);
-        } else if (file.logicSrc) {
-          headerBlocks.push(`<logic src="${file.logicSrc}" />`);
+        if (!originalDoc) {
+          // A lossless verdict means the file parsed; this is a source that
+          // changed under a cached verdict. Leave it alone and say why.
+          const blockedFiles = new Map(state.uiFiles);
+          blockedFiles.set(id, {
+            ...file,
+            sourceFidelity: undefined,
+            visualEditBlocked: ['the SoftN parser could not read this file'],
+          });
+          return { uiFiles: blockedFiles };
         }
-
-        // Imports
-        const importBlocks = Array.from(
-          nextOriginalSource.matchAll(
-            /<import\s+(?:\{\s*[^}]+\s*\}|\w+)\s+from=["'][^"']+["']\s*\/>/gi
-          )
-        ).map((m) => m[0]);
-        if (importBlocks.length > 0) {
-          headerBlocks.push(importBlocks.join('\n'));
-        }
-
-        // Data blocks
-        const dataBlocks = Array.from(
-          nextOriginalSource.matchAll(/<data>[\s\S]*?<\/data>/gi)
-        ).map((m) => m[0]);
-        for (const block of dataBlocks) {
-          headerBlocks.push(block);
-        }
-
-        // Style blocks
-        const styleBlocks = Array.from(
-          nextOriginalSource.matchAll(/<style>[\s\S]*?<\/style>/gi)
-        ).map((m) => m[0]);
-        for (const block of styleBlocks) {
-          headerBlocks.push(block);
-        }
-
-        if (headerBlocks.length > 0) {
-          nextOriginalSource = [...headerBlocks, generatedTemplate]
-            .join('\n\n')
-            .trim();
-        } else {
-          nextOriginalSource = generatedTemplate;
+        const hadLogic = /<logic[\s>]/i.test(nextOriginalSource);
+        nextOriginalSource = writeBack(nextOriginalSource, originalDoc, elements, rootId);
+        if (!hadLogic && file.logicSrc) {
+          // A logic file linked since the source was written.
+          nextOriginalSource = `<logic src="${file.logicSrc}" />\n\n${nextOriginalSource}`;
         }
       }
 
@@ -1092,6 +1040,25 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       }
 
       return { uiFiles: newUIFiles, nodes: newNodes };
+    });
+  },
+
+  applyCollectionChange: (change) => {
+    edit((state) => {
+      const entry = entryFileId(state.uiFiles, useProjectStore.getState().source);
+      let uiFiles: Map<string, UIFileState> | null = null;
+      let nodes: Map<string, ProjectFileNode> | null = null;
+      for (const [id, file] of state.uiFiles) {
+        if (file.originalSource === undefined) continue;
+        const next = changeDataDeclarations(file.originalSource, change, id === entry);
+        if (next === file.originalSource) continue;
+        uiFiles ??= new Map(state.uiFiles);
+        uiFiles.set(id, { ...file, originalSource: next, sourceFidelity: undefined });
+        nodes ??= new Map(state.nodes);
+        const node = nodes.get(id);
+        if (node) nodes.set(id, { ...node, isDirty: true });
+      }
+      return uiFiles && nodes ? { uiFiles, nodes } : state;
     });
   },
 

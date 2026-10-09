@@ -98,3 +98,58 @@ describe('moving a logic file', () => {
     expect(resolvedLogicRef()).toBe(target);
   });
 });
+
+/**
+ * An `<import … from>` follows the page it names.
+ *
+ * Only `<logic src>` was followed. A component page that was renamed, or
+ * moved to another folder, left every page that used it importing a path
+ * that no longer existed, and a page that was itself moved kept the paths
+ * it had been written with, which are relative to where it used to be.
+ */
+describe('renaming and moving pages that import one another', () => {
+  let headerId = '';
+  const importsOfMain = () => store().uiFiles.get(UI_ID)!.imports.map((imp) => `${imp.name} from ${imp.source}`);
+  const mainSource = () => store().uiFiles.get(UI_ID)!.originalSource ?? '';
+
+  beforeEach(() => {
+    headerId = store().createFile('ui/components', 'Header.ui', 'ui');
+    store().setActiveFile(UI_ID);
+    store().updateUIFileSource(
+      UI_ID,
+      '<import Header from="./components/Header.ui" />\n<import { Row } from=\'./components/Header.ui\' />\n<logic src="../logic/main.logic" />\n<App><Header /></App>'
+    );
+  });
+
+  it('the fixture imports a page that is there', () => {
+    expect(store().uiFiles.get(headerId)?.path).toBe('ui/components/Header.ui');
+  });
+
+  it('a renamed page is imported under its new name, in the source and in the list', () => {
+    store().renameFile(headerId, 'TopBar.ui');
+    expect(mainSource()).toContain('<import Header from="./components/TopBar.ui" />');
+    expect(mainSource()).toContain("<import { Row } from='./components/TopBar.ui' />");
+    expect(mainSource()).not.toContain('Header.ui');
+    expect(importsOfMain()).toEqual(['Header from ./components/TopBar.ui', 'Row from ./components/TopBar.ui']);
+  });
+
+  it('a moved page is imported from where it went', () => {
+    store().moveFile(headerId, 'ui/shared');
+    expect(mainSource()).toContain('<import Header from="./shared/Header.ui" />');
+    expect(importsOfMain()[0]).toBe('Header from ./shared/Header.ui');
+  });
+
+  it('a page that is moved still imports the same pages, and links the same logic', () => {
+    store().moveFile(UI_ID, 'ui/pages');
+    expect(store().uiFiles.get(UI_ID)?.path).toBe('ui/pages/main.ui');
+    expect(mainSource()).toContain('<import Header from="../components/Header.ui" />');
+    expect(mainSource()).toContain('<logic src="../../logic/main.logic" />');
+    expect(importsOfMain()[0]).toBe('Header from ../components/Header.ui');
+  });
+
+  it('an import of something else is left as it was written', () => {
+    store().updateUIFileSource(UI_ID, '<import Card from="./components/Card.ui" />\n<App><Card /></App>');
+    store().renameFile(headerId, 'TopBar.ui');
+    expect(mainSource()).toContain('<import Card from="./components/Card.ui" />');
+  });
+});

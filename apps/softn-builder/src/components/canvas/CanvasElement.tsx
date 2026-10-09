@@ -10,11 +10,26 @@ import { useFilesStore } from '../../stores/filesStore';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
 import { blockHeaderText } from '../../utils/sourceGenerator';
-import { acceptsChildren, blockDescription, canDropInto } from '../../utils/blocks';
+import { acceptsChildren, blockDescription, branchEnd, canDropInto, elementLabel, isTextNode } from '../../utils/blocks';
 import { parseStringLiteralVariables } from '../../utils/logicStringLiterals';
 import { dockLogicFile, entryFileId, logicLanguageOf } from '../../utils/logicFiles';
 import { TokenIcon } from '../icons/TokenIcon';
 import type { CanvasElement as CanvasElementType } from '../../types/builder';
+
+/**
+ * The pointer events an element has already answered. An element inside
+ * another is under the pointer together with it, and both hear the pointer
+ * move: the inner one hears first and its answer is the one that counts.
+ * The outer one used to hear last and overwrite it, so a drop over a Card
+ * in a Stack always went to the Stack.
+ */
+const answered = new WeakSet<Event>();
+
+/** What is being dragged, as the type the drop rules ask about. */
+function draggedTypeOf(state: { draggedType: string | null; draggedElementId: string | null; elements: Map<string, CanvasElementType> }): string | null {
+  if (state.draggedType) return state.draggedType;
+  return state.draggedElementId ? state.elements.get(state.draggedElementId)?.componentType ?? null : null;
+}
 
 // Check if an element is a descendant of another
 function isDescendantOf(
@@ -109,6 +124,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   content: {
     pointerEvents: 'none' as const,
+  },
+  comment: {
+    fontFamily: 'var(--mono)',
+    fontSize: 11,
+    color: 'var(--dim)',
+    whiteSpace: 'pre-wrap' as const,
+    overflowWrap: 'anywhere' as const,
+    marginBottom: 4,
   },
   // A block's header strip: the keyword and its expression, set in the
   // mono face so it reads as the source line it will be written as.
@@ -237,6 +260,9 @@ export const CanvasElement = React.memo(function CanvasElement({
       const state = useCanvasStore.getState();
       if (!state.draggedType && !state.draggedElementId) return;
 
+      if (answered.has(e)) return;
+      answered.add(e);
+
       // Don't show indicator on the element being dragged
       if (state.draggedElementId === elementId) return;
 
@@ -248,26 +274,30 @@ export const CanvasElement = React.memo(function CanvasElement({
       const myIndex = parentElement.children.indexOf(elementId);
       if (myIndex === -1) return;
 
-      let indicator: { parentId: string; index: number };
+      let indicator: { parentId: string; index: number } | null;
 
-      if (allowsChildren) {
-        // Container: top 25% = before, middle 50% = into, bottom 25% = after
-        if (relativeY < 0.25) {
-          indicator = { parentId: elementParentId, index: myIndex };
-        } else if (relativeY > 0.75) {
-          indicator = { parentId: elementParentId, index: myIndex + 1 };
-        } else {
-          // Drop into this container
-          const el = state.elements.get(elementId);
-          indicator = { parentId: elementId, index: el?.children.length ?? 0 };
-        }
+      // What may hold what decides where a drop is offered, not only the
+      // cursor: a place that is shown is a place the drop is made.
+      const dragged = draggedTypeOf(state);
+      const self = state.elements.get(elementId);
+      const takesIt = allowsChildren && self !== undefined && canDropInto(self, dragged);
+      const beside = canDropInto(parentElement, dragged);
+
+      if (takesIt && (!beside || (relativeY >= 0.25 && relativeY <= 0.75))) {
+        // Into this container: the middle half of it, or all of it when the
+        // element may not go beside it. At the end of its own branch.
+        indicator = { parentId: elementId, index: branchEnd(self, state.elements) };
+      } else if (!beside) {
+        indicator = null;
+      } else if (relativeY < (takesIt ? 0.25 : 0.5)) {
+        indicator = { parentId: elementParentId, index: myIndex };
       } else {
-        // Leaf: top 50% = before, bottom 50% = after
-        if (relativeY < 0.5) {
-          indicator = { parentId: elementParentId, index: myIndex };
-        } else {
-          indicator = { parentId: elementParentId, index: myIndex + 1 };
-        }
+        indicator = { parentId: elementParentId, index: myIndex + 1 };
+      }
+
+      if (!indicator) {
+        if (state.dropIndicator) state.setDropIndicator(null);
+        return;
       }
 
       // Only update if changed
@@ -554,6 +584,19 @@ export const CanvasElement = React.memo(function CanvasElement({
       );
     }
 
+    // Words beside elements: drawn as the words, with their expressions as
+    // written.
+    if (isTextNode(element)) {
+      return (
+        <span data-canvas-text-node="true" style={{ fontSize: 14, color: 'var(--paper)', overflowWrap: 'anywhere' }}>
+          {String(props.children ?? '')}
+        </span>
+      );
+    }
+    // A placeholder stands in for missing words only where there are none:
+    // an element whose words are among its children shows them below.
+    const placeholder = (word: string) => (element.children.length > 0 ? '' : word);
+
     switch (componentType) {
       case 'Button':
         return (
@@ -569,7 +612,7 @@ export const CanvasElement = React.memo(function CanvasElement({
               fontSize: 14,
             }}
           >
-            {(props.children as string) || 'Button'}
+            {(props.children as string) || placeholder('Button')}
           </button>
         );
 
@@ -611,7 +654,7 @@ export const CanvasElement = React.memo(function CanvasElement({
       case 'Text':
         return (
           <span style={{ fontSize: 14, color: 'var(--paper)' }}>
-            {(props.children as string) || 'Text'}
+            {(props.children as string) || placeholder('Text')}
           </span>
         );
 
@@ -619,7 +662,7 @@ export const CanvasElement = React.memo(function CanvasElement({
         const HeadingTag = `h${props.level || 1}` as keyof JSX.IntrinsicElements;
         return (
           <HeadingTag style={{ margin: 0, fontSize: props.level === 1 ? 24 : 18 }}>
-            {(props.children as string) || 'Heading'}
+            {(props.children as string) || placeholder('Heading')}
           </HeadingTag>
         );
       }
@@ -858,7 +901,9 @@ export const CanvasElement = React.memo(function CanvasElement({
         aria-label={
           element.block
             ? `Select ${blockHeaderText(element) ?? element.componentType} block`
-            : `Select ${element.componentType} component`
+            : isTextNode(element)
+              ? `Select the words ${elementLabel(element)}`
+              : `Select ${element.componentType} component`
         }
         onClick={handleClick}
         onKeyDown={handleKeyDown}
@@ -870,12 +915,18 @@ export const CanvasElement = React.memo(function CanvasElement({
       >
         {(isSelected || isHovered) && (
           <span style={styles.label}>
-            {element.componentType}
+            {isTextNode(element) ? 'words' : element.componentType}
             {showDropInto && ' (drop here)'}
           </span>
         )}
 
         <div style={styles.content} aria-hidden="true">
+          {/* The author's notes on this element, as the source has them. */}
+          {element.leadingComments?.map((comment, index) => (
+            <div key={index} style={styles.comment} data-canvas-comment="true">
+              {comment.form === 'html' ? `<!-- ${comment.text} -->` : `// ${comment.text}`}
+            </div>
+          ))}
           {renderComponentPreview()}
         </div>
 

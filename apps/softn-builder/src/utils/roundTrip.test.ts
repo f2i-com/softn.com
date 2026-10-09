@@ -48,6 +48,7 @@ const MAIN_UI = `// The entry file. This comment is part of the source.
       #each (tag in task.data.tags)
         <Badge>{tag}</Badge>
       #end
+    // What a new project shows.
     #empty
       <Text>Nothing yet</Text>
     #end
@@ -165,14 +166,14 @@ describe('a no-edit round trip', () => {
 });
 
 /**
- * main.ui is not something the visual model can hold: it opens with a
- * comment, which the parser drops before the model sees it. A visual edit
- * used to regenerate the file anyway, comment gone. Now the file is
- * source-only: the edit is refused, the reason is recorded on the file,
- * and the bytes stay. (Its handler `() => count = count + 1` used to be a
- * second reason — the parser stopped reading it at `count` and wrote
- * back `() => count` plus a stray `count` attribute — but the parser reads
- * assignments now, so the handler is whole and is not a reason.)
+ * main.ui is not something the visual model can hold: one of its comments
+ * stands before `#empty`, which is a branch of its block and not an element
+ * a comment can be kept with. A visual edit used to regenerate the file
+ * anyway, comments gone. Now the file is source-only: the edit is refused,
+ * the reason is recorded on the file, and the bytes stay. (The comment on
+ * its first line is not a reason: it stands before the template and is kept
+ * with the text there. Nor is the handler `() => count = count + 1`, which
+ * the parser reads whole.)
  */
 describe('a visual edit on a file the visual model cannot write back', () => {
   function mainFile() {
@@ -200,7 +201,8 @@ describe('a visual edit on a file the visual model cannot write back', () => {
     expect(file.sourceFidelity?.lossless).toBe(false);
     expect(file.visualEditBlocked).toBeDefined();
     const reasons = file.visualEditBlocked!.join('\n');
-    expect(reasons).toMatch(/comment on line 1/);
+    expect(reasons).toMatch(/comment on line 21 does not stand directly before an element/);
+    expect(reasons).not.toMatch(/line 1 /);
     // The assignment handler is read whole now; it is no longer a reason.
     expect(reasons).not.toMatch(/count = count \+ 1/);
     expect(file.visualEditBlocked).toHaveLength(1);

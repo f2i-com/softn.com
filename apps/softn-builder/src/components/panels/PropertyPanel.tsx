@@ -13,7 +13,8 @@ import { callableNames, handlerFor, handlerTarget, logicFunctions, type LogicFun
 import { eventKeyFor } from '../../utils/eventProps';
 import { nativeElementMeta } from '../../utils/nativeHtmlMetadata';
 import { blockHeaderText } from '../../utils/sourceGenerator';
-import { blockDescription, isBlockHead } from '../../utils/blocks';
+import { blockDescription, isBlockHead, isTextNode, textNodeMeta } from '../../utils/blocks';
+import { controlFor, propState, shownValue, withProp, writtenValue, type PropState } from '../../utils/propValues';
 import type { CanvasBlock, PropSchema } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -331,24 +332,76 @@ function handlerNote(help: HandlerHelp): string {
 interface PropEditorProps {
   id: string;
   propDef: PropSchema;
-  value: unknown;
-  onChange: (value: unknown) => void;
+  /** The property as the model holds it: its value, and whether that is an expression. */
+  state: PropState;
+  /** Called with the property as it should now be held. */
+  onChange: (next: PropState) => void;
 }
 
 interface PropertyPanelProps {
   onToggleDock?: () => void;
 }
 
-function PropEditor({ id, propDef, value, onChange }: PropEditorProps) {
-  switch (propDef.type) {
+/**
+ * A field for an expression. What is typed is kept in the field as it is
+ * typed and written to the element once it reads as a whole expression:
+ * `count >` on its way to `count > 0` is not something to put in a file,
+ * and throwing the keystroke away, as the list field used to, left a field
+ * that could not be typed into.
+ */
+function ExpressionField({
+  id,
+  shown,
+  multiline,
+  placeholder,
+  onInput,
+}: {
+  id: string;
+  shown: string;
+  multiline: boolean;
+  placeholder?: string;
+  /** Returns whether the text was taken. */
+  onInput: (text: string) => boolean;
+}) {
+  // What is typed and not yet written, with the written value it was typed
+  // over: when the element moves on by another route, the draft is dropped.
+  const [draft, setDraft] = useState<{ text: string; over: string } | null>(null);
+  const pending = draft !== null && draft.over === shown ? draft.text : null;
+  const handle = (text: string) => setDraft(onInput(text) ? null : { text, over: shown });
+  const common = {
+    id,
+    value: pending ?? shown,
+    placeholder,
+    'aria-invalid': pending !== null || undefined,
+    title: pending !== null ? 'Not a whole expression yet, so it is not written' : undefined,
+    spellCheck: false,
+  };
+  const style = pending !== null ? { borderColor: 'var(--coral)' } : {};
+  return multiline ? (
+    <textarea {...common} style={{ ...styles.textarea, ...style }} onChange={(e) => handle(e.target.value)} />
+  ) : (
+    <input {...common} type="text" style={{ ...styles.input, fontFamily: 'var(--mono)', ...style }} onChange={(e) => handle(e.target.value)} />
+  );
+}
+
+function PropEditor({ id, propDef, state, onChange }: PropEditorProps) {
+  const control = controlFor(propDef, state);
+  const shown = shownValue(propDef, state);
+  const write = (input: string | number | boolean): boolean => {
+    const next = writtenValue(propDef, state, input);
+    if (next) onChange(next);
+    return next !== null;
+  };
+
+  switch (control) {
     case 'string':
       return (
         <input
           id={id}
           type="text"
           style={styles.input}
-          value={(value as string) || ''}
-          onChange={(e) => onChange(e.target.value)}
+          value={shown as string}
+          onChange={(e) => write(e.target.value)}
           placeholder={propDef.description}
         />
       );
@@ -359,8 +412,8 @@ function PropEditor({ id, propDef, value, onChange }: PropEditorProps) {
           id={id}
           type="number"
           style={styles.input}
-          value={(value as number) ?? ''}
-          onChange={(e) => onChange(e.target.value ? Number(e.target.value) : undefined)}
+          value={shown as number | string}
+          onChange={(e) => write(e.target.value)}
         />
       );
 
@@ -371,10 +424,10 @@ function PropEditor({ id, propDef, value, onChange }: PropEditorProps) {
             id={id}
             type="checkbox"
             style={styles.checkboxInput}
-            checked={Boolean(value)}
-            onChange={(e) => onChange(e.target.checked)}
+            checked={shown === true}
+            onChange={(e) => write(e.target.checked)}
           />
-          <span style={{ fontSize: 12, color: 'var(--dim)' }}>{value ? 'Yes' : 'No'}</span>
+          <span style={{ fontSize: 12, color: 'var(--dim)' }}>{shown === true ? 'Yes' : 'No'}</span>
         </div>
       );
 
@@ -383,8 +436,8 @@ function PropEditor({ id, propDef, value, onChange }: PropEditorProps) {
         <select
           id={id}
           style={styles.select}
-          value={(value as string) || ''}
-          onChange={(e) => onChange(e.target.value)}
+          value={shown as string}
+          onChange={(e) => write(e.target.value)}
         >
           {/* Empty writes no attribute, so the component's own default applies. */}
           <option value="">{propDef.default !== undefined && propDef.default !== '' ? `Default (${String(propDef.default)})` : 'Default'}</option>
@@ -403,14 +456,14 @@ function PropEditor({ id, propDef, value, onChange }: PropEditorProps) {
             id={id}
             type="color"
             style={styles.colorInput}
-            value={(value as string) || '#000000'}
-            onChange={(e) => onChange(e.target.value)}
+            value={(shown as string) || '#000000'}
+            onChange={(e) => write(e.target.value)}
           />
           <input
             type="text"
             style={{ ...styles.input, flex: 1 }}
-            value={(value as string) || ''}
-            onChange={(e) => onChange(e.target.value)}
+            value={shown as string}
+            onChange={(e) => write(e.target.value)}
             placeholder="#000000"
           />
         </div>
@@ -418,49 +471,33 @@ function PropEditor({ id, propDef, value, onChange }: PropEditorProps) {
 
     case 'expression':
       return (
-        <input
+        <ExpressionField
           id={id}
-          type="text"
-          style={{ ...styles.input, fontFamily: 'var(--mono)' }}
-          value={(value as string) || ''}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="{expression}"
+          shown={shown as string}
+          multiline={false}
+          placeholder={propDef.type === 'expression' ? 'an expression, such as count > 0' : 'an expression; empty it for the usual control'}
+          onInput={write}
         />
       );
 
     case 'json':
       return (
-        <textarea
+        <ExpressionField
           id={id}
-          style={styles.textarea}
-          value={typeof value === 'object' ? JSON.stringify(value, null, 2) : (value as string) || ''}
-          onChange={(e) => {
-            try {
-              onChange(JSON.parse(e.target.value));
-            } catch {
-              // keep editing invalid JSON
-            }
-          }}
-          placeholder={propDef.description || 'JSON value'}
-        />
-      );
-
-    default:
-      return (
-        <input
-          id={id}
-          type="text"
-          style={styles.input}
-          value={String(value || '')}
-          onChange={(e) => onChange(e.target.value)}
+          shown={shown as string}
+          multiline
+          placeholder={propDef.description || 'a list, a record or a name from the logic'}
+          onInput={write}
         />
       );
   }
 }
 
+/** A plain text property, for a field that is one whatever the registry calls it. */
+const STRING_PROP: PropSchema = { name: 'src', type: 'string' };
+
 export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
   const selectedIds = useCanvasStore(s => s.selectedIds);
-  const updateElementProps = useCanvasStore(s => s.updateElementProps);
   const updateElement = useCanvasStore(s => s.updateElement);
   const selectedElement = useCanvasStore(s =>
     s.selectedIds.length === 1 ? s.elements.get(s.selectedIds[0]) ?? null : null
@@ -473,20 +510,24 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
   const meta = useMemo(() => {
+    if (selectedElement && isTextNode(selectedElement)) return textNodeMeta;
     if (selectedElement) return nativeElementMeta(selectedElement) ?? getComponentMeta(selectedElement.componentType);
     return null;
   }, [selectedElement]);
 
   const handlePropChange = useCallback(
-    (propName: string, value: unknown) => {
+    (propName: string, next: PropState) => {
       if (!selectedElement) return;
       const { elements, rootId } = useCanvasStore.getState();
       // Keyed by field, so typing into one is a single undo step, not one per
       // keystroke; the other field handlers below are keyed the same way.
       push(elements, rootId, `${selectedElement.id}:prop:${propName}`);
-      updateElementProps(selectedElement.id, { [propName]: value });
+      // The value and whether it is an expression are one change: a field
+      // that wrote only the value left text under an expression's braces.
+      const current = elements.get(selectedElement.id) ?? selectedElement;
+      updateElement(selectedElement.id, withProp(current, propName, next));
     },
-    [selectedElement, push, updateElementProps]
+    [selectedElement, push, updateElement]
   );
 
   const handleEventChange = useCallback(
@@ -640,7 +681,8 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
 
       if (isImageSrc) {
         const normalizedCurrent = String(currentValue || '').trim();
-        const selectedAssetValue = imageAssetOptions.includes(normalizedCurrent) ? normalizedCurrent : '';
+        const selectedAssetValue =
+          !propState(selectedElement, prop.name).isExpression && imageAssetOptions.includes(normalizedCurrent) ? normalizedCurrent : '';
 
         return (
           <div key={prop.name} style={styles.field}>
@@ -650,7 +692,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
               id={`panel-${selectedElement.id}-src-asset`}
               style={styles.select}
               value={selectedAssetValue}
-              onChange={(e) => handlePropChange(prop.name, e.target.value)}
+              onChange={(e) => handlePropChange(prop.name, { value: e.target.value || undefined, isExpression: false })}
             >
               <option value="">Choose an image from assets…</option>
               {imageAssetOptions.map((assetPath) => (
@@ -664,12 +706,15 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
               id={`panel-${selectedElement.id}-src-manual`}
               type="text"
               style={styles.input}
-              value={normalizedCurrent}
-              onChange={(e) => handlePropChange(prop.name, e.target.value)}
-              placeholder="https://... or appIconUrl"
+              value={shownValue(STRING_PROP, propState(selectedElement, prop.name)) as string}
+              onChange={(e) => {
+                const next = writtenValue(STRING_PROP, propState(selectedElement, prop.name), e.target.value);
+                if (next) handlePropChange(prop.name, next);
+              }}
+              placeholder="https://… or {appIconUrl}"
             />
             <div style={styles.fieldHint}>
-              Use an asset path, URL/data URI, or a logic variable name.
+              Use an asset path, a URL or data URI, or a value from the logic in braces: {'{appIconUrl}'}.
             </div>
           </div>
         );
@@ -703,8 +748,8 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
           <PropEditor
             id={`property-${selectedElement.id}-${prop.name}`}
             propDef={prop}
-            value={selectedElement.props[prop.name]}
-            onChange={(value) => handlePropChange(prop.name, value)}
+            state={propState(selectedElement, prop.name)}
+            onChange={(next) => handlePropChange(prop.name, next)}
           />
           {/* A text field shows its description as a placeholder; every
               other control would hide it, so it is said beneath. */}
@@ -770,7 +815,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
       <div style={styles.content}>
         <div style={styles.componentInfo}>
           <div style={styles.componentName}>
-            {blockHeaderText(selectedElement) ?? selectedElement.componentType}
+            {blockHeaderText(selectedElement) ?? (isTextNode(selectedElement) ? 'Words' : selectedElement.componentType)}
           </div>
           {meta && <div style={styles.componentDescription}>{meta.description}</div>}
           {selectedElement.block && (
@@ -1030,8 +1075,9 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
         )}
 
         {/* Handlers, bindings and inline directives are a component's; a
-            block has none, and its header is the Block section above. */}
-        {!selectedElement.block && (
+            block has none, and its header is the Block section above. Words
+            have none either. */}
+        {!selectedElement.block && !isTextNode(selectedElement) && (
         <>
         <div style={styles.section}>
           <button

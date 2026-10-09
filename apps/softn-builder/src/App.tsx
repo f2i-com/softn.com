@@ -44,6 +44,7 @@ import { useProjectStartup } from './hooks/useProjectStartup';
 import { useUnsavedChanges } from './hooks/useUnsavedChanges';
 import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
+import { useActiveFileOnCanvas } from './hooks/useActiveFileOnCanvas';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
 import { connectHostedEditor, isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
@@ -333,7 +334,6 @@ function App() {
   /** The part of the page that goes inert behind the export dialog. */
   const shellRef = useRef<HTMLDivElement | null>(null);
 
-  const loadCanvasState = useCanvasStore((state) => state.loadState);
   const clearHistory = useHistoryStore((state) => state.clear);
   const updateUIFile = useFilesStore((state) => state.updateUIFile);
   const selectedCount = useCanvasStore((state) => state.selectedIds.length);
@@ -537,7 +537,6 @@ function App() {
 
   // Sync active file with canvas when file selection changes
   const activeFileId = useFilesStore((state) => state.activeFileId);
-  const uiFiles = useFilesStore((state) => state.uiFiles);
   const assetFiles = useFilesStore((state) => state.assetFiles);
   const fileNodes = useFilesStore((state) => state.nodes);
   const activeNode = activeFileId ? fileNodes.get(activeFileId) : null;
@@ -587,25 +586,9 @@ function App() {
     previousActiveFileIdRef.current = activeFileId;
   }, [activeFileId, fileNodes, updateUIFile, canvasElements, canvasRootId, clearHistory]);
 
-  useEffect(() => {
-    if (!activeFileId) return;
-
-    const activeFile = uiFiles.get(activeFileId);
-    if (!activeFile) {
-      debug('[App] Active file not found:', activeFileId);
-      return;
-    }
-
-    // Only load if it's a UI file with elements
-    if (activeFile.elements && activeFile.elements.size > 0) {
-      debug('[App] Loading file into canvas:', activeFile.path, {
-        elementsCount: activeFile.elements.size,
-        rootId: activeFile.rootId,
-        imports: activeFile.imports?.length || 0,
-      });
-      loadCanvasState(activeFile.elements, activeFile.rootId, activeFile.imports || []);
-    }
-  }, [activeFileId, uiFiles, loadCanvasState]);
+  // After the flush above, so a file is left with what the canvas held
+  // before the next one is put on it.
+  useActiveFileOnCanvas();
 
   const renderMainContent = () => {
     switch (view) {

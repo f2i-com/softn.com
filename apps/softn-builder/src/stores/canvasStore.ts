@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { useProjectStore } from './projectStore';
 import type { CanvasBlock, CanvasElement, CanvasState, UIImport } from '../types/builder';
 import { debug } from '../utils/debug';
-import { defaultBlock, isBlockHead, isContinuationType } from '../utils/blocks';
+import { branchEnd, defaultBlock, isBlockHead, isContinuationType } from '../utils/blocks';
 import { starterProps } from '../utils/starterProps';
 
 function generateId(): string {
@@ -162,11 +162,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       const parentElement = newElements.get(parent);
       if (parentElement) {
         const newChildren = [...parentElement.children];
-        if (index !== undefined && index >= 0) {
-          newChildren.splice(index, 0, id);
-        } else {
-          newChildren.push(id);
-        }
+        // An element of a block goes in its branch, before any `#else` or
+        // `#empty`: after one it would be written inside that branch.
+        const end = isContinuationType(type) ? newChildren.length : branchEnd(parentElement, newElements);
+        newChildren.splice(index !== undefined && index >= 0 ? Math.min(index, end) : end, 0, id);
         newElements.set(parent, { ...parentElement, children: newChildren });
       }
 
@@ -232,8 +231,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         }
       }
 
-      // Update selection
-      const newSelectedIds = state.selectedIds.filter((sid) => sid !== id);
+      // Update selection: the element and whatever it held are gone from it.
+      const newSelectedIds = state.selectedIds.filter((sid) => newElements.has(sid));
 
       return { elements: newElements, selectedIds: newSelectedIds };
     });
@@ -244,6 +243,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       const element = state.elements.get(id);
       if (!element) return state;
       if (id === state.rootId) return state; // Cannot move root
+      // An `#else` or `#empty` is a branch of its block and has no meaning
+      // anywhere else.
+      if (isContinuationType(element.componentType)) return state;
 
       const targetParentId = newParentId || state.rootId;
 
@@ -262,6 +264,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
       const newElements = new Map(state.elements);
 
+      // `index` is a place in the target's list as it stands, the moved
+      // element included when it is already there: that is the list the
+      // canvas shows and counts in. Taking the element out moves every
+      // place after its own up by one, and it used to land one too far.
+      let at = index;
+      if (element.parentId === targetParentId) {
+        const from = state.elements.get(targetParentId)?.children.indexOf(id) ?? -1;
+        if (from !== -1 && from < at) at -= 1;
+      }
+
       // Remove from old parent
       if (element.parentId) {
         const oldParent = newElements.get(element.parentId);
@@ -273,11 +285,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         }
       }
 
-      // Add to new parent
+      // Add to new parent, within its own branch (see addElement).
       const newParent = newElements.get(targetParentId);
       if (newParent) {
         const newChildren = [...newParent.children];
-        newChildren.splice(index, 0, id);
+        newChildren.splice(Math.max(0, Math.min(at, branchEnd(newParent, newElements))), 0, id);
         newElements.set(targetParentId, { ...newParent, children: newChildren });
       }
 
@@ -492,9 +504,18 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
   copySelected: () => {
     const state = get();
+    // An element selected together with something that holds it is copied
+    // as part of that, not a second time on its own.
+    const selected = new Set(state.selectedIds);
+    const heldBySelected = (el: CanvasElement): boolean => {
+      for (let parent = el.parentId; parent; parent = state.elements.get(parent)?.parentId ?? null) {
+        if (selected.has(parent)) return true;
+      }
+      return false;
+    };
     const clipboard = state.selectedIds
       .map((id) => state.elements.get(id))
-      .filter((el): el is CanvasElement => el !== undefined);
+      .filter((el): el is CanvasElement => el !== undefined && !heldBySelected(el));
 
     // Snapshot the descendants too. paste resolves children from this rather
     // than from the live map, so a cut cannot empty the clipboard out from

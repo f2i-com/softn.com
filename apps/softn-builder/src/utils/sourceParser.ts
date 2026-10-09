@@ -13,11 +13,13 @@
 
 import type {
   CanvasBlock,
+  CanvasComment,
   CanvasElement,
   CollectionDef,
   SourceFidelity,
   UIImport,
 } from '../types/builder';
+import { TEXT_NODE_TYPE } from '../types/builder';
 import { debug } from './debug';
 import { parse as parseSoftN } from '@softn/core';
 import type {
@@ -30,7 +32,8 @@ import type {
   SoftNDocument,
 } from '@softn/core';
 import { printExpressionSafe } from './expressionPrinter';
-import { computeFidelity, hasSingleAppRoot } from './sourceFidelity';
+import { computeFidelity } from './sourceFidelity';
+import { anchorOf, commentsOf, frameSource, hasSingleAppRoot, type SourceComment } from './sourceFrame';
 
 export interface ParseResult {
   elements: Map<string, CanvasElement>;
@@ -52,6 +55,8 @@ interface ParsedNode {
   loopEach?: string;
   loopAs?: string;
   block?: CanvasBlock;
+  leadingComments?: CanvasComment[];
+  spaceBefore?: boolean;
   expressionProps: string[];
   children: (ParsedNode | string)[];
   isSelfClosing: boolean;
@@ -64,6 +69,25 @@ let idCounter = 0;
  * the printer refused, text the tree has no place for. Reset per parse.
  */
 let conversionReasons: string[] = [];
+
+/** The source being read, for finding where each node begins. */
+let sourceText = '';
+
+/**
+ * The comments of the template that have yet to be given to an element,
+ * by where the thing after them begins. Reset per parse.
+ */
+let unplacedComments = new Map<number, SourceComment[]>();
+
+/** The comments that stand directly before `node`, taken so that no other node gets them. */
+function takeComments(node: { type: string; loc: { start: number } }): CanvasComment[] | undefined {
+  if (unplacedComments.size === 0) return undefined;
+  const at = anchorOf(node, sourceText);
+  const found = unplacedComments.get(at);
+  if (!found) return undefined;
+  unplacedComments.delete(at);
+  return found.map(({ form, text }) => ({ form, text }));
+}
 
 function generateId(): string {
   return `elem_${Date.now()}_${idCounter++}`;
@@ -83,6 +107,8 @@ export function assessSourceFidelity(source: string): SourceFidelity {
 export function parseSource(source: string): ParseResult {
   idCounter = 0;
   conversionReasons = [];
+  sourceText = source;
+  unplacedComments = new Map();
 
   debug('[sourceParser] Parsing source:', source.substring(0, 500));
 
@@ -137,10 +163,23 @@ export function parseSource(source: string): ParseResult {
       }
     }
 
-    const astRoots = flattenTemplateNodesToElements(doc.template || []);
+    // The comments of the stretch the model writes, each waiting for the
+    // element it stands before. Those before and after that stretch are
+    // kept with the text around it and are not the model's to hold.
+    const frame = frameSource(source, doc);
+    if (frame) {
+      for (const comment of commentsOf(source) ?? []) {
+        if (comment.start < frame.bodyStart || comment.start >= frame.tailStart) continue;
+        const at = comment.followedAt ?? -1;
+        unplacedComments.set(at, [...(unplacedComments.get(at) ?? []), comment]);
+      }
+    }
 
-    if (astRoots.length > 0) {
-      const syntheticRoot = !hasSingleAppRoot(doc);
+    const astRoots = (doc.template || []).flatMap((node) => astNodeToChildren(node));
+    const rootElement = astRoots.find((node): node is ParsedNode => typeof node !== 'string');
+
+    if (astRoots.some((node) => typeof node !== 'string' || node.trim() !== '')) {
+      const syntheticRoot = !hasSingleAppRoot(doc) || !rootElement;
       const rootNode: ParsedNode = syntheticRoot
         ? {
             type: 'App',
@@ -151,9 +190,20 @@ export function parseSource(source: string): ParseResult {
             children: astRoots,
             isSelfClosing: false,
           }
-        : astRoots[0];
+        : rootElement;
 
       const rootId = buildElementTree(rootNode, null, elements);
+
+      // A comment nothing took stands where the model has no element to keep
+      // it with: before a closing tag, before `#else`, inside braces.
+      for (const comments of unplacedComments.values()) {
+        for (const comment of comments) {
+          conversionReasons.push(
+            `a comment on line ${comment.line} does not stand directly before an element (the visual model keeps a comment with the element that follows it)`
+          );
+        }
+      }
+      unplacedComments = new Map();
 
       return {
         elements,
@@ -322,31 +372,6 @@ function dedupeImports(imports: UIImport[]): UIImport[] {
   return result;
 }
 
-function flattenTemplateNodesToElements(nodes: AstTemplateNode[]): ParsedNode[] {
-  const result: ParsedNode[] = [];
-  for (const node of nodes) {
-    const parsed = astNodeToTopLevelElements(node);
-    result.push(...parsed);
-  }
-  return result;
-}
-
-function astNodeToTopLevelElements(node: AstTemplateNode): ParsedNode[] {
-  const converted = astNodeToChildren(node);
-  const out: ParsedNode[] = [];
-  for (const child of converted) {
-    if (typeof child === 'string') {
-      const text = child.trim();
-      if (text) {
-        out.push(createTextElement(text));
-      }
-    } else {
-      out.push(child);
-    }
-  }
-  return out;
-}
-
 function astNodeToChildren(node: AstTemplateNode): (ParsedNode | string)[] {
   switch (node.type) {
     case 'Element': {
@@ -355,9 +380,9 @@ function astNodeToChildren(node: AstTemplateNode): (ParsedNode | string)[] {
     }
     case 'Text':
       // As the lexer gives it: internal runs already collapsed, one leading
-      // or trailing space kept. Segments are concatenated as they were, so
-      // `{a}.{b}` stays `{a}.{b}` rather than `{a} . {b}`; whitespace-only
-      // text is layout and is dropped where segments are gathered.
+      // or trailing space kept where the engine draws one. Segments are
+      // concatenated as they were, so `{a}.{b}` stays `{a}.{b}` rather than
+      // `{a} . {b}`.
       return node.content ? [node.content] : [];
     case 'Expression':
       return [`{${expressionToString(node.expression)}}`];
@@ -367,7 +392,8 @@ function astNodeToChildren(node: AstTemplateNode): (ParsedNode | string)[] {
       return [eachBlockToParsedNode(node)];
     case 'Slot': {
       const slotNode: ParsedNode = {
-        type: 'Slot',
+        // The tag as it is written: `<Slot>` is some component of that name.
+        type: 'slot',
         props: node.name ? { name: node.name } : {},
         events: {},
         bindings: {},
@@ -375,6 +401,7 @@ function astNodeToChildren(node: AstTemplateNode): (ParsedNode | string)[] {
         children: [],
         isSelfClosing: !node.fallback || node.fallback.length === 0,
       };
+      slotNode.leadingComments = takeComments(node);
       if (node.fallback?.length) {
         slotNode.children = node.fallback.flatMap((n) => astNodeToChildren(n));
       }
@@ -382,7 +409,7 @@ function astNodeToChildren(node: AstTemplateNode): (ParsedNode | string)[] {
     }
     case 'TemplateSlot': {
       const slotTemplate: ParsedNode = {
-        type: 'Template',
+        type: 'template',
         props: { slot: node.name },
         events: {},
         bindings: {},
@@ -390,6 +417,7 @@ function astNodeToChildren(node: AstTemplateNode): (ParsedNode | string)[] {
         children: node.children.flatMap((n) => astNodeToChildren(n)),
         isSelfClosing: node.children.length === 0,
       };
+      slotTemplate.leadingComments = takeComments(node);
       return [slotTemplate];
     }
     default:
@@ -397,9 +425,10 @@ function astNodeToChildren(node: AstTemplateNode): (ParsedNode | string)[] {
   }
 }
 
-function createTextElement(text: string): ParsedNode {
+/** Words that stand beside elements, as an element of the model in their place. */
+function textNode(text: string): ParsedNode {
   return {
-    type: 'Text',
+    type: TEXT_NODE_TYPE,
     props: { children: text },
     events: {},
     bindings: {},
@@ -439,6 +468,7 @@ function blockNode(
 
 function ifBlockToParsedNode(node: AstIfBlock): ParsedNode {
   const head = blockNode('if', { kind: 'if', condition: expressionToString(node.condition) }, node.consequent);
+  head.leadingComments = takeComments(node);
 
   // `#elseif` chains nest in the AST (each alternate is another IfBlock);
   // they are flattened into sibling branches at the end of the block.
@@ -448,9 +478,13 @@ function ifBlockToParsedNode(node: AstIfBlock): ParsedNode {
       head.children.push(blockNode('else', { kind: 'else' }, alternate));
       break;
     }
-    head.children.push(
-      blockNode('elseif', { kind: 'elseif', condition: expressionToString(alternate.condition) }, alternate.consequent)
+    const branch = blockNode(
+      'elseif',
+      { kind: 'elseif', condition: expressionToString(alternate.condition) },
+      alternate.consequent
     );
+    branch.leadingComments = takeComments(alternate);
+    head.children.push(branch);
     alternate = alternate.alternate;
   }
 
@@ -467,6 +501,7 @@ function eachBlockToParsedNode(node: AstEachBlock): ParsedNode {
   if (node.keyExpression) block.keyExpression = expressionToString(node.keyExpression);
 
   const head = blockNode('each', block, node.body);
+  head.leadingComments = takeComments(node);
   if (node.emptyFallback) {
     head.children.push(blockNode('empty', { kind: 'empty' }, node.emptyFallback));
   }
@@ -483,6 +518,7 @@ function astElementToParsedNode(node: AstElementNode): ParsedNode {
     children: [],
     isSelfClosing: node.selfClosing,
   };
+  parsed.leadingComments = takeComments(node);
 
   for (const prop of node.props || []) {
     const { value, isExpression } = astPropValueToBuilderValue(prop.value);
@@ -953,29 +989,39 @@ function buildElementTree(
   const id = generateId();
 
   const childIds: string[] = [];
-  const textSegments: string[] = [];
+  const props: Record<string, unknown> = { ...node.props };
 
+  // Adjacent text and expressions are one run of words.
+  const runs: (ParsedNode | string)[] = [];
   for (const child of node.children) {
-    if (typeof child === 'string') {
-      textSegments.push(child);
-    } else {
-      const childId = buildElementTree(child, id, elements);
-      childIds.push(childId);
-    }
+    const last = runs[runs.length - 1];
+    if (typeof child === 'string' && typeof last === 'string') runs[runs.length - 1] = last + child;
+    else runs.push(child);
   }
 
-  // Build props
-  const props: Record<string, unknown> = { ...node.props };
-  const text = textSegments.join('').trim();
-  if (text && childIds.length === 0) {
-    props.children = text;
-  } else if (text) {
-    // Text between child elements has no place in the model; it would be
-    // dropped on regeneration, so the file is not lossless.
-    const shown = text.length > 40 ? `${text.slice(0, 37)}…` : text;
-    conversionReasons.push(
-      `the text ${JSON.stringify(shown)} sits between child elements of <${node.type}> (the visual model has no place for it)`
-    );
+  if (runs.every((run) => typeof run === 'string')) {
+    // Words are all the tag holds: they are its text, as the engine has
+    // them. Nothing is trimmed here, the lexer has already taken the
+    // layout away, and what it left (`Hello ` before `<b>`) is drawn.
+    const text = runs.join('');
+    if (text !== '') props.children = text;
+  } else {
+    runs.forEach((run, index) => {
+      if (typeof run !== 'string') {
+        childIds.push(buildElementTree(run, id, elements));
+        return;
+      }
+      if (run === ' ') {
+        // A space on one line between two elements: it goes with the one
+        // after it, so the canvas has no element that is only a space.
+        const next = runs[index + 1];
+        if (next !== undefined && typeof next !== 'string') {
+          next.spaceBefore = true;
+          return;
+        }
+      }
+      childIds.push(buildElementTree(textNode(run), id, elements));
+    });
   }
 
   const element: CanvasElement = {
@@ -995,6 +1041,12 @@ function buildElementTree(
   }
   if (node.block) {
     element.block = { ...node.block };
+  }
+  if (node.leadingComments?.length) {
+    element.leadingComments = node.leadingComments;
+  }
+  if (node.spaceBefore) {
+    element.spaceBefore = true;
   }
   if (node.conditionalIf) {
     element.conditionalIf = node.conditionalIf;

@@ -6,6 +6,7 @@ import React, { useState, useCallback } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { blockHeaderText } from '../../utils/sourceGenerator';
+import { elementLabel } from '../../utils/blocks';
 import type { CanvasElement } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -211,7 +212,7 @@ function TreeNode({ element, depth }: TreeNodeProps) {
           }}
           data-tree-label={element.block ? 'block' : 'component'}
         >
-          {blockHeaderText(element) ?? element.componentType}
+          {blockHeaderText(element) ?? elementLabel(element)}
         </span>
 
         {element.parentId && isHovered && (
@@ -221,7 +222,7 @@ function TreeNode({ element, depth }: TreeNodeProps) {
             onClick={handleDelete}
             style={deleteStyle}
             title="Delete (Del)"
-            aria-label={`Delete ${element.componentType}`}
+            aria-label={`Delete ${elementLabel(element)}`}
           >
             ×
           </button>

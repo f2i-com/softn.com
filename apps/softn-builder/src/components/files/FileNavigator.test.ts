@@ -18,7 +18,7 @@ import { useFilesStore } from '../../stores/filesStore';
 import { parseSource } from '../../utils/sourceParser';
 import { FileNavigator } from './FileNavigator';
 
-const LOSSY_UI = `// a comment the visual model cannot hold\n<App>\n  <Text>Hi</Text>\n</App>\n`;
+const LOSSY_UI = `<App>\n  <Text>Hi</Text>\n  // a comment the visual model cannot hold\n</App>\n`;
 const LOSSLESS_UI = `<App>\n  #each (task in tasks)\n    <Text>{task}</Text>\n  #empty\n    <Text>None</Text>\n  #end\n</App>\n`;
 
 const mounted: Root[] = [];
@@ -89,7 +89,7 @@ describe('the file navigator', () => {
     expect(marks).toHaveLength(1);
     expect(rowOf(host, 'main.ui').querySelector('[data-fidelity="source-only"]')).not.toBeNull();
     expect(rowOf(host, 'Other.ui').querySelector('[data-fidelity="source-only"]')).toBeNull();
-    expect(marks[0].title).toMatch(/comment on line 1/);
+    expect(marks[0].title).toMatch(/comment on line 3/);
   });
 
   it('uses the verdict the store already recorded without waiting', () => {
