@@ -91,3 +91,15 @@ describe('a component of the page', () => {
     unmount();
   });
 });
+
+describe('a Split written on one line', () => {
+  it('has the two panes it was given, not the space between them', () => {
+    // A space on one line between two elements is a space on the page, so
+    // it is one of the children a component is handed. Split takes its
+    // first two children for its panes, and took the space for the second.
+    const { container, unmount } = page('<Split><div id="left">Left</div> <div id="right">Right</div></Split>');
+    expect(container.querySelector('#left')).not.toBeNull();
+    expect(container.querySelector('#right')).not.toBeNull();
+    unmount();
+  });
+});

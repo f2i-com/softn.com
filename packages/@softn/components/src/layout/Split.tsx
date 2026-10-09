@@ -32,6 +32,15 @@ export interface SplitProps {
   style?: React.CSSProperties;
 }
 
+/** Whether a child is nothing but whitespace: as text, or as the fragment a page's text arrives in. */
+function isOnlySpace(child: React.ReactNode): boolean {
+  if (typeof child === 'string') return child.trim() === '';
+  if (React.isValidElement<{ children?: React.ReactNode }>(child) && child.type === React.Fragment) {
+    return React.Children.toArray(child.props.children).every(isOnlySpace);
+  }
+  return false;
+}
+
 export function Split({
   children,
   direction = 'horizontal',
@@ -184,7 +193,10 @@ export function Split({
     minHeight: !isHorizontal ? `${minSize}px` : undefined,
   };
 
-  const [firstChild, secondChild] = React.Children.toArray(children);
+  // The two panes are the two things given, whatever space the page wrote
+  // between them: `<Box>…</Box> <Box>…</Box>` on one line has a space there,
+  // which is a child like any other and is not a pane.
+  const [firstChild, secondChild] = React.Children.toArray(children).filter((child) => !isOnlySpace(child));
   const bound = upperBound();
 
   return (
