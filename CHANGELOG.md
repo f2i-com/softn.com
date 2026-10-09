@@ -65,6 +65,7 @@ section here. Write the section before tagging. Headings are the tag
 - **Security:** a URL nested more than four levels down in a component's items is judged. The scrub used to stop at a fixed depth and hand on what lay below unchecked; a value that refers back to itself is now cut where it comes round instead.
 - `Image`, `Avatar`, `Sprite` and `TileMap` given a `src` that is not text draw without it, where the URL check threw.
 - Directory: a storage request that has let the catalogue lock go is refused if it asks for it again, where it could have deadlocked with a backup or the removal of an app.
+- **Security:** `dangerouslySetInnerHTML` is dropped wherever a bundle puts it. On a plain element only React's own refusal stopped it (and took the document down); a host-registered component that spreads its props onto its root set the markup as given. No built-in component does.
 
 ## v0.0.18
 

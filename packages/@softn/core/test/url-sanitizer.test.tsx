@@ -230,3 +230,37 @@ describe('void HTML elements', () => {
     expect(html('<div><span>hi</span></div>')).toContain('<span>hi</span>');
   });
 });
+
+/**
+ * Markup a bundle writes as an element's HTML.
+ *
+ * `dangerouslySetInnerHTML` was not removed by anything. React refused it,
+ * because this renderer gives every element a children list and the two
+ * cannot be set together, and that refusal was an exception out of the whole
+ * document. It is dropped by name, wherever it is put.
+ */
+describe('raw markup as a prop', () => {
+  const payload = { __html: '<img src="x" onerror="alert(1)">' };
+
+  it('is not set on an element, and the element is still drawn', () => {
+    expect(html('<div dangerouslySetInnerHTML={h} />', { h: payload })).toBe('<div></div>');
+    expect(html('<div dangerouslySetInnerHTML={h}>kept</div>', { h: payload })).toBe('<div>kept</div>');
+    expect(html('<p dangerouslySetInnerHTML={{ __html: "<script>alert(1)</script>" }} />')).toBe('<p></p>');
+  });
+
+  it('nor on an element that takes no children, which React refused in its own way', () => {
+    expect(html('<img src="/logo.png" dangerouslySetInnerHTML={h} />', { h: payload })).toBe('<img src="/logo.png"/>');
+  });
+
+  it('nor handed to a registered component that passes on what it is given', () => {
+    // The usual shape of such a component: its own children handled, the
+    // rest spread onto its root. With the children out of the way React had
+    // nothing to refuse, and the markup was set: this one was a real way in
+    // for any host that registers a component written like it.
+    const registry = new ComponentRegistry();
+    registry.register('Spread', ({ children: _children, ...rest }: Record<string, unknown>) => React.createElement('section', rest));
+    const out = html('<Spread title="kept" dangerouslySetInnerHTML={h} />', { h: payload }, registry);
+    expect(out).toBe('<section title="kept"></section>');
+  });
+});
+

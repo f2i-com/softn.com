@@ -629,6 +629,25 @@ function describeUrlValue(value: unknown): string {
 }
 
 /**
+ * Drop `dangerouslySetInnerHTML`: markup a bundle writes itself, set as the
+ * element's HTML with no tag list, no attribute list and no URL check in
+ * front of it.
+ *
+ * Nothing here removed it. What stopped `<div dangerouslySetInnerHTML={x} />`
+ * from being the whole of the sanitiser's undoing was React, which refuses
+ * the prop on an element that is also given children, and this renderer
+ * happens to hand every element a children list, empty or not. That is an
+ * accident of how elements are built two screens below, and the refusal was
+ * an exception that took the document down with it. It is removed by name
+ * now, on a raw element and on a registered component alike: a component
+ * that spreads the props it does not know onto its root would set it just
+ * as a `<div>` does. React knows the prop by this spelling and no other.
+ */
+function dropRawMarkupProp(props: SoftNProps): void {
+  if ('dangerouslySetInnerHTML' in props) delete props.dangerouslySetInnerHTML;
+}
+
+/**
  * Drop the attributes that open an element in the top layer, which no
  * containment clips; see {@link TOP_LAYER_ATTRIBUTES}. On a raw element only:
  * a registered component's props are named by its author and none of the
@@ -1405,6 +1424,7 @@ function renderElement(
   } else {
     sanitizeComponentUrlProps(props, node.tag, egressPolicy);
   }
+  dropRawMarkupProp(props);
   // CSS text becomes an object first, so it is checked the way an object is
   // (see inline-style.ts for why a string reached React at all).
   if (typeof props.style === 'string') props.style = inlineStyleObject(props.style);
