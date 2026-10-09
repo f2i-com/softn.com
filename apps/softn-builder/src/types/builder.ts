@@ -24,6 +24,8 @@ export interface ComponentMeta {
   maxChildren?: number;
   /** Whether it stands in a line of words, as an Icon or a key does (componentRegistry.ts, INLINE_KINDS). */
   inline?: boolean;
+  /** Whether the canvas draws the component itself, not a card with its name (componentRegistry.ts, DRAWN_FOR_REAL). */
+  drawn?: boolean;
 }
 
 export type ComponentCategory =

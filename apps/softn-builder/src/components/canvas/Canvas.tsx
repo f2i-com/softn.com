@@ -8,10 +8,12 @@ import { useHistoryStore } from '../../stores/historyStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { useSourceFidelity, summariseReasons } from '../../utils/useSourceFidelity';
 import { CanvasElement } from './CanvasElement';
+import { DrawnThemeProvider } from './DrawnComponent';
 import { DragLayer } from './DragLayer';
 import { canDropInto, isPaletteType } from '../../utils/blocks';
 import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
 import { useDragAutoScroll } from '../../utils/dragScroll';
+import { CANVAS_THEME } from '../../utils/drawnTheme';
 import { pasteBySelection } from '../../utils/keyboardMoves';
 import { isDesktop } from '../../utils/desktop';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
@@ -387,6 +389,10 @@ export function Canvas({ onShowComponents }: CanvasProps) {
           aria-label="Component canvas"
           aria-multiselectable="true"
         >
+          {/* The app's theme for the components drawn as themselves: its
+              tokens, written once and reached by an attribute, and which
+              side of it each is drawn in. */}
+          <DrawnThemeProvider theme={CANVAS_THEME}>
           <div style={styles.canvasInner}>
             {hasChildren ? (
               rootElement.children.map((childId, idx) => {
@@ -445,6 +451,7 @@ export function Canvas({ onShowComponents }: CanvasProps) {
               </div>
             )}
           </div>
+          </DrawnThemeProvider>
         </div>
       </div>
       <DragLayer />

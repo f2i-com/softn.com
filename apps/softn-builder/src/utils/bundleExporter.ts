@@ -461,6 +461,29 @@ export function parseBundle(data: Uint8Array): {
 }
 
 /**
+ * Write a bundle where Export writes it: the browser's downloads, or on the
+ * desktop a place asked for every time. The desktop's answer is handed
+ * back as the file it wrote; a download has none to hand back.
+ */
+export async function exportBundleToFile(
+  bundleData: Uint8Array,
+  fileName: string,
+): Promise<import('./desktop').BundleFileHandle | null> {
+  const { isDesktop, saveDesktopFile } = await import('./desktop');
+  if (isDesktop()) return saveDesktopFile(bundleData, fileName);
+  const blob = new Blob([new Uint8Array(bundleData)], { type: 'application/zip' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return null;
+}
+
+/**
  * Save bundle data to a file using File System Access API (native save dialog),
  * or fall back to a blob download for unsupported browsers.
  *

@@ -19,6 +19,7 @@ import { useProjectStore } from '../../stores/projectStore';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { useFilesStore } from '../../stores/filesStore';
 import * as bundle from '../../utils/buildProjectBundle';
+import type { SaveOutcome } from '../../utils/saveProject';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -187,5 +188,63 @@ describe('the export dialog', () => {
     expect(build).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.textContent).not.toContain('Checking…');
+  });
+});
+
+describe('the Export button of the dialog', () => {
+  // It built the bundle and wrote it by its own hand, and whatever the app
+  // knew of where the project is kept played no part: "Bundle exported",
+  // and "Unsaved" as before. It asks the app to export, by a save's rule
+  // (utils/saveProject.ts), and says what that came to.
+
+  type Saved = Extract<SaveOutcome, { kind: 'saved' }>;
+  const saved = (more: Partial<Saved> = {}): Saved => ({
+    kind: 'saved', projectId: 'p', revision: 1, handle: null, stale: false, projectChanged: false, sessionStored: true, ...more,
+  });
+
+  async function exported(outcome: SaveOutcome): Promise<{ asked: number; closed: number }> {
+    vi.useFakeTimers();
+    useFilesStore.getState().reset();
+    let asked = 0;
+    let closed = 0;
+    const exportProject = async () => {
+      asked += 1;
+      return outcome;
+    };
+    act(() => root.render(React.createElement(ExportDialog, { isOpen: true, onClose: () => { closed += 1; }, exportProject })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const button = Array.from(container.querySelectorAll('button')).find((candidate) => candidate.textContent?.trim() === 'Export .softn')!;
+    await act(async () => {
+      button.click();
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    return { asked, closed };
+  }
+
+  it('says the project is saved in what it wrote, where the project had no file of its own', async () => {
+    const { asked } = await exported(saved());
+    expect(asked).toBe(1);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Exported untitled-app.softn. Your project is saved in it.');
+  });
+
+  it('says it is a copy, and that the file the project is kept in has not been saved, where it has one', async () => {
+    await exported(saved({ copy: { of: 'tasks.softn', unsaved: true } }));
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Exported a copy. tasks.softn has not been saved since your last changes.');
+  });
+
+  it('stays as it was when the place to write it was not chosen', async () => {
+    const { closed } = await exported({ kind: 'cancelled' });
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(closed).toBe(0);
+    // And can be asked again.
+    expect(Array.from(container.querySelectorAll('button')).some((candidate) => candidate.textContent?.trim() === 'Export .softn')).toBe(true);
+  });
+
+  it('says why when it could not be written', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await exported({ kind: 'failed', error: new Error('The disk is full.') });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('The disk is full.');
   });
 });

@@ -155,6 +155,73 @@ body {
   --bl-field: #ffffff;
 }
 
+/*
+ * A component of the app drawn on the canvas as itself (DrawnComponent.tsx).
+ *
+ * It is the app's, in the app's theme, inside the editor's document, so
+ * what the editor's own stylesheets would give it is taken back here and
+ * what the app's page would give it is put in its place.
+ *
+ * `all: initial` stops the editor's type and colour being inherited into
+ * it; custom properties still pass, and the project theme's are set on the
+ * same element by the attribute's value (DrawnThemeStyle). The size and
+ * face that follow are what the runtime's ThemeProvider sets on `body`.
+ *
+ * It is a picture: `inert` keeps the focus and the keys out, and no pointer
+ * event lands in it even where a component asks for them back, so a press
+ * on a drawn slider picks up the element it stands for.
+ */
+[data-softn-drawn] {
+  all: initial;
+  display: block;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: var(--text-base, 1rem);
+  line-height: 1.5;
+  color: var(--color-text, #1a1a2e);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+[data-softn-drawn],
+[data-softn-drawn] * {
+  pointer-events: none !important;
+}
+
+/*
+ * index.html clears the margin and padding of every element for the
+ * editor's chrome. The app's page does not: a list, a paragraph and a
+ * button keep the browser's own there, and a component that relies on them
+ * would be drawn tighter here than it runs. One attribute's worth of
+ * specificity: under any class of the component's own, which comes later.
+ */
+[data-softn-drawn] * {
+  margin: revert;
+  padding: revert;
+}
+
+/*
+ * The editor's own scrollbars are thin and its colours (`#root *`, above);
+ * the app's page says what its are. The colour is inherited, so the wrapper
+ * is set back too, or what is in it would take the editor's from it.
+ */
+#root [data-softn-drawn],
+#root [data-softn-drawn] * {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+/* What the runtime's ThemeProvider gives every page, at no more weight than it has there. */
+:where([data-softn-drawn]) :is(button, input, select, textarea) {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+:where([data-softn-drawn]) a {
+  color: var(--color-primary-600);
+  text-decoration: none;
+}
+
 /* ── Buttons ───────────────────────────────────────────────────── */
 
 .bl-btn {

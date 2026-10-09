@@ -29,7 +29,7 @@ import { toast } from '../../stores/notificationStore';
 import { buildProjectBundle, bundleFileName, gatherCollections } from '../../utils/buildProjectBundle';
 import type { PermissionDeclaration } from '../../utils/permissions';
 import { destinationLabel, prepareHandoff, type ReadyHandoff } from '../../utils/handoff';
-import { isDesktop, saveDesktopFile } from '../../utils/desktop';
+import { exportMessage, saveProject, type SaveOutcome } from '../../utils/saveProject';
 import { danglingReferences, describeDangling, type DanglingReference } from '../../utils/projectReferences';
 import {
   discardQuarantinedSession,
@@ -232,7 +232,17 @@ const styles: Record<string, React.CSSProperties> = {
 interface ExportDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  /**
+   * Write the project's bundle as an export, by the rule a save goes by
+   * (utils/saveProject.ts). The app gives this: it knows the file the
+   * project is kept in, which decides whether the export is its save or a
+   * copy, and keeps the place a desktop export was written. On its own the
+   * dialog exports a project that has no file.
+   */
+  exportProject?: () => Promise<SaveOutcome>;
 }
+
+const exportWithNoFile = (): Promise<SaveOutcome> => saveProject({ as: 'export', view: 'design', existingHandle: null });
 
 function readAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -243,7 +253,7 @@ function readAsDataUrl(file: File): Promise<string> {
   });
 }
 
-export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
+export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile }: ExportDialogProps) {
   const {
     name,
     version,
@@ -423,30 +433,29 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       try {
         setBusy(what);
         setError(null);
-        const bytes = await buildProjectBundle();
 
         if (what === 'export') {
-          if (isDesktop()) {
-            await saveDesktopFile(bytes, bundleFileName(name));
-          } else {
-            const blob = new Blob([new Uint8Array(bytes)], { type: 'application/zip' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = bundleFileName(name);
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+          // The same bundle a save writes, by a save's own rule: whether it
+          // leaves the project saved depends on where the project is kept.
+          const outcome = await exportProject();
+          if (outcome.kind === 'cancelled') return;
+          if (outcome.kind === 'failed') throw outcome.error;
+          const said = exportMessage(outcome, bundleFileName(name));
+          setDone(said);
+          // A copy that leaves changes unsaved is news, not a success to wave through.
+          if (outcome.copy?.unsaved || outcome.stale || outcome.projectChanged) toast.warning(said);
+          else toast.success(said);
+          if (!outcome.copy && !outcome.sessionStored && !outcome.projectChanged) {
+            toast.info('The local recovery copy could not be stored (storage full or blocked); the file itself was exported.');
           }
-          setDone('Bundle exported.');
-          toast.success('Bundle exported');
           setTimeout(() => {
             setDone(null);
             onClose();
           }, 1500);
           return;
         }
+
+        const bytes = await buildProjectBundle();
 
         // The runtime and the directory are pages of this origin; the bundle
         // is staged under an id addressed to the one chosen, and the dialog
@@ -470,7 +479,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         setBusy(null);
       }
     },
-    [name, onClose]
+    [name, onClose, exportProject]
   );
 
   if (!isOpen) return null;

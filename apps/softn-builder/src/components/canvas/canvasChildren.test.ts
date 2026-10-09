@@ -28,6 +28,7 @@ import { canDropInto } from '../../utils/blocks';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { useHistoryStore } from '../../stores/historyStore';
+import { useProjectStore } from '../../stores/projectStore';
 import type { CanvasElement as Element } from '../../types/builder';
 import { insertFromPalette } from '../panels/ComponentPalette';
 import { Canvas } from './Canvas';
@@ -423,6 +424,137 @@ describe('an element being moved, held over itself or over what it holds', () =>
     expect(byType('App').children.map((id) => canvas().elements.get(id)!.componentType)).toEqual(['Heading', 'Card']);
     expect(useHistoryStore.getState().past).toHaveLength(steps);
     act(() => canvas().setDraggedElementId(null));
+  });
+});
+
+describe('a component the canvas draws as itself', () => {
+  // Ten components were drawn by hand and every other was a card with its
+  // name on it, so a page of Badges, Tabs and form controls was a stack of
+  // grey cards. Nothing else about the element on the canvas changes with
+  // what is drawn inside it.
+
+  /** The drawing inside the element of this type: the component itself, or null where a stand-in is drawn. */
+  function drawnIn(type: string): HTMLElement | null {
+    return host.querySelector<HTMLElement>(`[data-canvas-element-id="${byType(type).id}"] > [aria-hidden="true"] > [data-softn-drawn]`);
+  }
+
+  it('is the component, where it was a card that named it', () => {
+    open('<App><Badge variant="success">Shipped</Badge><Progress value={40} /><Checkbox label="Done" /></App>');
+    mount();
+    expect(drawnIn('Badge')!.textContent).toBe('Shipped');
+    expect(drawnIn('Progress')!.querySelector('[role="progressbar"]')!.getAttribute('aria-valuenow')).toBe('40');
+    expect(drawnIn('Checkbox')!.querySelector('input[type="checkbox"]')).not.toBeNull();
+    // The card said what it was in words; the element still does, for the hierarchy and a screen reader.
+    expect(host.querySelector(`[data-canvas-element-id="${byType('Badge').id}"]`)!.getAttribute('aria-label')).toBe('Select Badge component');
+  });
+
+  it('is a picture: inert, with nothing in it that takes the focus, and the element around it is what is picked', () => {
+    open('<App><Checkbox label="Done" /><Select placeholder="Pick" /></App>');
+    mount();
+    for (const type of ['Checkbox', 'Select']) {
+      const drawing = drawnIn(type)!;
+      expect(drawing.hasAttribute('inert'), type).toBe(true);
+      const element = host.querySelector<HTMLElement>(`[data-canvas-element-id="${byType(type).id}"]`)!;
+      // One tab stop for the element, as before: the canvas item itself.
+      expect(element.getAttribute('role')).toBe('treeitem');
+      expect([...element.querySelectorAll('input, button, select, [tabindex]')].filter((node) => !node.closest('[inert]')), type).toEqual([]);
+    }
+    act(() => {
+      drawnIn('Checkbox')!.querySelector('input')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(canvas().selectedIds).toEqual([byType('Checkbox').id]);
+  });
+
+  it('is still drawn by hand where what is measured on the canvas is the drawing: a Button, a Text, a Heading', () => {
+    open('<App><Button>Save</Button><Text>Words</Text><Heading>Title</Heading><Card></Card><Stack></Stack></App>');
+    mount();
+    for (const type of ['Button', 'Text', 'Heading', 'Card', 'Stack']) expect(drawnIn(type), type).toBeNull();
+  });
+
+  it('goes back to its card when it holds an element among its words, which are then its children to pick up', () => {
+    open('<App><Badge><Icon name="check" /> Shipped</Badge></App>');
+    mount();
+    expect(drawnIn('Badge')).toBeNull();
+    expect(hasChildrenArea('Badge')).toBe(true);
+    // The Icon in it is one with no children of its own, and is drawn.
+    expect(drawnIn('Icon')).not.toBeNull();
+  });
+
+  it('goes back to its card when it holds what it would lay out itself, and is itself with a place to drop into while it holds nothing', () => {
+    // What an element holds is drawn below its drawing. Under a drawn
+    // EmptyState that is outside its box, and under a drawn Skeleton it is
+    // beside the placeholder it is shown in place of.
+    open('<App><EmptyState title="Nothing yet"><Button>Add</Button></EmptyState><Skeleton><Text>Loaded</Text></Skeleton><Stat label="Open" value="3" /></App>');
+    mount();
+    expect(drawnIn('EmptyState')).toBeNull();
+    expect(drawnIn('Skeleton')).toBeNull();
+    expect(hasChildrenArea('EmptyState')).toBe(true);
+    // Holding nothing, a container is drawn as itself, and still takes a drop.
+    expect(drawnIn('Stat')!.textContent).toContain('Open');
+    expect(hasChildrenArea('Stat')).toBe(true);
+    expect(dropFromPalette('Text', 'Stat')).toEqual(['Text']);
+    expect(drawnIn('Stat')).toBeNull();
+  });
+
+  it('is drawn light on the canvas whatever the project\'s theme, as everything else on the artboard is', () => {
+    // The artboard is paper, and the elements drawn on it by hand are
+    // light. A dark project's components drawn dark stood on it as black
+    // tiles among light ones. Preview shows the project in its own theme.
+    useProjectStore.getState().setThemeMode('dark');
+    try {
+      open('<App theme="dark"><Badge>Shipped</Badge><Progress value={40} /></App>');
+      // The whole canvas, which is what chooses the theme its elements are drawn in.
+      root = createRoot(host);
+      act(() => root!.render(React.createElement(Canvas)));
+      expect(drawnIn('Badge')!.getAttribute('data-softn-drawn')).toBe('light');
+      expect(drawnIn('Progress')!.getAttribute('data-softn-drawn')).toBe('light');
+      expect(host.querySelector('[data-softn-drawn="dark"]')).toBeNull();
+    } finally {
+      useProjectStore.getState().setThemeMode('light');
+    }
+  });
+
+  it('is not drawn for a name the page has imported over: that is the page\'s own component', () => {
+    const parsed = parseSource('<App><Badge>Mine</Badge></App>');
+    canvas().loadState(parsed.elements, parsed.rootId, [{ name: 'Badge', source: './Badge.ui' }]);
+    mount();
+    expect(drawnIn('Badge')).toBeNull();
+    expect(host.textContent).toContain('Imported');
+  });
+
+  it('is measured for a drop among its words by the component, not by the page it is drawn in', () => {
+    // The page around a drawn component is as wide as the row. Measured by
+    // that, an Icon let go anywhere on the row of a Badge went into it.
+    open('<App><Badge>Shipped</Badge></App>');
+    mount();
+    const measured: Node[] = [];
+    const ranges = Range.prototype as { getBoundingClientRect?: () => DOMRect; selectNodeContents: (node: Node) => void };
+    const select = ranges.selectNodeContents;
+    const box = ranges.getBoundingClientRect;
+    ranges.selectNodeContents = function (this: Range, node: Node) {
+      measured.push(node);
+      return select.call(this, node);
+    };
+    ranges.getBoundingClientRect = () => ({ left: 16, right: 76, width: 60, top: 230, bottom: 270, height: 40, x: 16, y: 230, toJSON: () => ({}) }) as DOMRect;
+    try {
+      placed(canvas().rootId!, 0);
+      const node = placed(byType('Badge').id, 200);
+      act(() => canvas().setDraggedType('Icon'));
+      act(() => {
+        node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 60, clientY: 250 }));
+      });
+      expect(canvas().dropIndicator).toEqual({ parentId: byType('Badge').id, index: 0, side: 'end' });
+      expect(measured.some((at) => (at as HTMLElement).hasAttribute?.('data-softn-drawn-content'))).toBe(true);
+      act(() => {
+        node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 200, clientY: 250 }));
+      });
+      expect(canvas().dropIndicator).toEqual({ parentId: canvas().rootId, index: 1 });
+    } finally {
+      ranges.selectNodeContents = select;
+      if (box) ranges.getBoundingClientRect = box;
+      else delete ranges.getBoundingClientRect;
+      act(() => canvas().setDraggedType(null));
+    }
   });
 });
 

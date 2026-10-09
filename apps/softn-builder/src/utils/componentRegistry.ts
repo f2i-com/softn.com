@@ -2175,16 +2175,59 @@ const MAX_CHILDREN: Record<string, number> = { Split: 2 };
  */
 const INLINE_KINDS: ReadonlySet<string> = new Set(['Icon', 'Kbd', 'Badge', 'Tag', 'Spinner']);
 
+/**
+ * The components the canvas draws as themselves (components/canvas/
+ * DrawnComponent.tsx), where every other is a card with its name on it. A
+ * component is here only when all of this holds for it:
+ *
+ *  - mounted with what a page can write for it and no handler, it listens
+ *    to nothing on the document or the window and starts no timer, frame or
+ *    observer (held for each one by drawnComponents.test.ts), so it cannot
+ *    take a key or a pointer from the canvas while it sits there;
+ *  - it opens nothing over the page: no dialog, drawer, toast or popup that
+ *    is laid out outside its own box;
+ *  - it asks for no device and draws from no data the canvas does not have;
+ *  - what it shows is there without its children, or its children are words:
+ *    the canvas puts an element's own children below its drawing, which is
+ *    the wrong place for a component that lays them out itself.
+ *
+ * Left out, each for one of those: Modal, Drawer, Toast, Popover, Tooltip,
+ * Menu and Confirm open over the page (and Modal, Toast and Confirm start a
+ * timer as they mount); AnimatedBox, AnimatedNumber, Sprite, GaugeChart,
+ * Typewriter, Marquee and PanView start a frame, a timer or an observer;
+ * Camera, Microphone, AudioStream, QRReader, Scene3D, TileMap and the pixel
+ * canvases ask for a device or a scene to paint; the charts, the Smart
+ * components, DataGrid and TreeView draw from data the canvas does not
+ * have, and would be a picture of numbers nobody wrote; and every layout
+ * component, the groups (TagGroup, AvatarGroup, ButtonGroup), List, Field,
+ * Accordion, Collapse and NavItem are their children laid out. Spacer is
+ * nothing to see, and its card is how it is found. The editors are whole
+ * applications. Of the ten the canvas draws by hand, Input and TextArea
+ * are drawn as themselves now (their own drawing has the label and the
+ * helper text a hand-drawn field left out, and nothing on the canvas
+ * measured the hand-drawn one); Button, Text and Heading stay, because
+ * where a drop goes among their words is measured on their drawing, and
+ * Card, Stack, Box, Image and Alert stay as they are.
+ */
+const DRAWN_FOR_REAL: ReadonlySet<string> = new Set([
+  'Badge', 'Tag', 'Kbd', 'Icon', 'Avatar', 'Divider', 'Progress', 'Skeleton', 'Stat', 'Spinner', 'DescriptionList',
+  'Breadcrumb', 'Steps', 'Tabs', 'Pagination', 'Timeline', 'Table', 'EmptyState', 'QRCode', 'CopyButton',
+  'Input', 'TextArea', 'Select', 'Checkbox', 'Radio', 'Switch', 'Slider', 'NumberInput', 'Rating', 'SegmentedControl',
+  'DatePicker', 'ColorPicker',
+]);
+
 export const componentRegistry: ComponentMeta[] = baseRegistry.map((meta) => {
   const extra = (MANIFEST_PROPS[meta.name] ?? []).filter((prop) => !meta.propSchema.some((own) => own.name === prop.name));
   const limit = MAX_CHILDREN[meta.name];
   const inline = INLINE_KINDS.has(meta.name);
-  if (!extra.length && limit === undefined && !inline) return meta;
+  const drawn = DRAWN_FOR_REAL.has(meta.name);
+  if (!extra.length && limit === undefined && !inline && !drawn) return meta;
   return {
     ...meta,
     propSchema: [...meta.propSchema, ...extra],
     ...(limit !== undefined ? { maxChildren: limit } : {}),
     ...(inline ? { inline: true } : {}),
+    ...(drawn ? { drawn: true } : {}),
   };
 });
 

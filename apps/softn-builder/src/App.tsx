@@ -511,6 +511,18 @@ function App() {
     debug('[App] Bundle saved to file');
   }, [view]);
 
+  // Export, by the rule a save goes by. Whether it is the project's save or
+  // a copy of it depends on where the project is kept, which is known here:
+  // the file it was opened from or last saved to, or FormLogic.
+  const exportCurrentProject = useCallback(async () => {
+    const outcome = await saveProject({ as: 'export', view, existingHandle: fileHandleRef.current, hosted: isHostedEditor() });
+    // An export that was the project's save, written by the desktop to a
+    // place of its own, is where the next Save goes. As for a save: not for
+    // a project opened while it was being written.
+    if (outcome.kind === 'saved' && !outcome.copy && !outcome.projectChanged) fileHandleRef.current = outcome.handle;
+    return outcome;
+  }, [view]);
+
   const { run: handleSave, isPending: isSaving } = useExclusiveAction(saveCurrentProject);
   const changeView = useCallback((next: ViewMode) => {
     flushCanvasToActiveFile();
@@ -822,7 +834,7 @@ function App() {
         </div>
       </div>
 
-      <ExportDialog isOpen={showExportDialog} onClose={() => setShowExportDialog(false)} />
+      <ExportDialog isOpen={showExportDialog} onClose={() => setShowExportDialog(false)} exportProject={exportCurrentProject} />
       <ShortcutsDialog isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
       <NewProjectDialog
         isOpen={showNewProjectDialog}

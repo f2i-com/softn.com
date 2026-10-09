@@ -8,6 +8,7 @@ import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
 import { useFilesStore } from '../../stores/filesStore';
+import { DrawnComponent } from './DrawnComponent';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
 import { blockHeaderText } from '../../utils/sourceGenerator';
@@ -51,7 +52,10 @@ const NEAR_WORDS = 16;
  * label was before it, and "after" began far to the right of it.
  */
 function wordsBox(item: Element | null | undefined): DOMRect | null {
-  const drawn = item?.querySelector(':scope > [aria-hidden="true"]')?.lastElementChild;
+  const standIn = item?.querySelector(':scope > [aria-hidden="true"]')?.lastElementChild;
+  // A component drawn as itself sits in a page of its own, as wide as the
+  // row: what is measured is the component in it.
+  const drawn = standIn?.matches('[data-softn-drawn]') ? standIn.querySelector('[data-softn-drawn-content]') ?? standIn : standIn;
   if (!drawn) return null;
   const range = document.createRange();
   range.selectNodeContents(drawn);
@@ -691,8 +695,28 @@ export const CanvasElement = React.memo(function CanvasElement({
     ...(showDropInto ? styles.childrenDragOver : {}),
   };
 
-  // Render component preview
+  // The component itself, where the registry says the canvas draws it, and
+  // what the canvas draws in its place otherwise.
   const renderComponentPreview = () => {
+    const meta = element.block || isTextNode(element) ? undefined : getComponentMeta(element.componentType);
+    // Only while it holds nothing on the canvas. What an element holds is
+    // drawn below its own drawing, where it can be picked up, and that is
+    // not where the component would draw it: a Badge's Icon stands among
+    // its words, an EmptyState's Button under its description, and what a
+    // Skeleton holds is shown in place of the Skeleton. Holding something,
+    // each is drawn as before. And a name a page has imported over is that
+    // page's component, not the library's.
+    const itself =
+      meta?.drawn === true &&
+      element.children.length === 0 &&
+      !useCanvasStore.getState().getImportSource(element.componentType);
+    if (itself) return <DrawnComponent element={element} meta={meta} fallback={renderStandIn()} />;
+    return renderStandIn();
+  };
+
+  // What the canvas draws for an element by hand: ten components as a
+  // likeness, and any other as a card with its name.
+  const renderStandIn = () => {
     const { componentType, props } = element;
 
     // A control-flow block: its header line, with the branch drawn below

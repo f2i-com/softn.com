@@ -19,7 +19,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readBundleEntries } from '@softn/core';
-import { saveProject, resetPersistedRevisions, type SaveOutcome } from './saveProject';
+import { exportMessage, saveProject, resetPersistedRevisions, type SaveOutcome } from './saveProject';
 import { SESSION_STORAGE_KEY, commitProjectSnapshot, prepareProjectSnapshot } from './openProject';
 import { loadBundle } from './bundleLoader';
 import { useProjectStore } from '../stores/projectStore';
@@ -266,5 +266,131 @@ describe('the recovery record', () => {
     expect(outcome.sessionStored).toBe(false);
     expect(JSON.parse(storage.items.get(SESSION_STORAGE_KEY)!).project.description).toBe('two');
     expect(useProjectStore.getState().isDirty).toBe(false);
+  });
+});
+
+describe('Export, which writes the same bundle Save does', () => {
+  // Export left the project "Unsaved" whatever it wrote and wherever: a
+  // person with the whole project in a file they had just been handed was
+  // warned, closing the tab, that their changes would be lost, and where
+  // the browser gives a page no file to keep (Save is a download there too)
+  // the two buttons wrote the same bytes the same way and only one of them
+  // was believed. Export goes through the rule Save goes through.
+
+  const desktopFile = (path: string) => ({ kind: 'desktop-file' as const, path, name: path.split(/[\\/]/).pop()! });
+  const browserFile = (name: string) => ({ kind: 'file', name }) as unknown as FileSystemFileHandle;
+
+  it('is the save of a project that has no file of its own: clean, with its recovery record, at the revision written', async () => {
+    useProjectStore.getState().setDescription('exported');
+    const storage = memoryStorage();
+    const written: Uint8Array[] = [];
+    const outcome = (await saveProject({
+      as: 'export', view: 'design', existingHandle: null, storage,
+      writeExport: async (bytes) => { written.push(bytes); return null; },
+    })) as Extract<SaveOutcome, { kind: 'saved' }>;
+
+    expect(outcome).toMatchObject({ kind: 'saved', stale: false, sessionStored: true, handle: null });
+    expect(outcome.copy).toBeUndefined();
+    expect(useProjectStore.getState().isDirty).toBe(false);
+    expect(JSON.parse(storage.items.get(SESSION_STORAGE_KEY)!).project.description).toBe('exported');
+    expect(manifestName(written[0])).toBe('Project A');
+    expect(exportMessage(outcome, 'project-a.softn')).toBe('Exported project-a.softn. Your project is saved in it.');
+  });
+
+  it('keeps an edit made while the export was being written unsaved, as a save does', async () => {
+    useProjectStore.getState().setDescription('first');
+    let finish: (handle: null) => void = () => {};
+    const pending = saveProject({
+      as: 'export', view: 'design', existingHandle: null, storage: memoryStorage(),
+      writeExport: () => new Promise((resolve) => { finish = resolve; }),
+    });
+    await settle();
+    useProjectStore.getState().setDescription('second');
+    finish(null);
+    const outcome = (await pending) as Extract<SaveOutcome, { kind: 'saved' }>;
+    expect(outcome.stale).toBe(true);
+    expect(useProjectStore.getState().isDirty).toBe(true);
+    expect(exportMessage(outcome, 'project-a.softn')).toContain('an earlier revision');
+  });
+
+  it('takes the place the desktop wrote it as the file the project is kept in from then on', async () => {
+    useProjectStore.getState().setDescription('on the desktop');
+    const outcome = (await saveProject({
+      as: 'export', view: 'design', existingHandle: null, storage: memoryStorage(),
+      writeExport: async () => desktopFile('C:\\Apps\\tasks.softn'),
+    })) as Extract<SaveOutcome, { kind: 'saved' }>;
+    expect(outcome.handle).toEqual(desktopFile('C:\\Apps\\tasks.softn'));
+    expect(outcome.copy).toBeUndefined();
+    expect(useProjectStore.getState().isDirty).toBe(false);
+  });
+
+  it('is a copy of a project that has a file of its own, which stays unsaved, and says so', async () => {
+    useProjectStore.getState().setDescription('not in tasks.softn yet');
+    const storage = memoryStorage();
+    const own = browserFile('tasks.softn');
+    const written: Uint8Array[] = [];
+    const outcome = (await saveProject({
+      as: 'export', view: 'design', existingHandle: own, storage,
+      writeExport: async (bytes) => { written.push(bytes); return null; },
+    })) as Extract<SaveOutcome, { kind: 'saved' }>;
+
+    expect(written).toHaveLength(1);
+    expect(outcome.copy).toEqual({ of: 'tasks.softn', unsaved: true });
+    // The file the project is kept in is still the one to save to.
+    expect(outcome.handle).toBe(own);
+    expect(useProjectStore.getState().isDirty).toBe(true);
+    expect(storage.items.has(SESSION_STORAGE_KEY)).toBe(false);
+    expect(exportMessage(outcome, 'project-a.softn')).toBe('Exported a copy. tasks.softn has not been saved since your last changes.');
+  });
+
+  it('says only that it is a copy when there was nothing unsaved', async () => {
+    const outcome = (await saveProject({
+      as: 'export', view: 'design', existingHandle: browserFile('tasks.softn'), storage: memoryStorage(),
+      writeExport: async () => null,
+    })) as Extract<SaveOutcome, { kind: 'saved' }>;
+    expect(outcome.copy).toEqual({ of: 'tasks.softn', unsaved: false });
+    expect(exportMessage(outcome, 'project-a.softn')).toBe('Exported a copy.');
+  });
+
+  it('is a save after all when the desktop writes it over the file the project is kept in', async () => {
+    useProjectStore.getState().setDescription('over itself');
+    const own = desktopFile('C:\\Apps\\tasks.softn');
+    const outcome = (await saveProject({
+      as: 'export', view: 'design', existingHandle: own, storage: memoryStorage(),
+      // The same file, as a dialog on Windows may hand it back.
+      writeExport: async () => desktopFile('c:/apps/Tasks.softn'),
+    })) as Extract<SaveOutcome, { kind: 'saved' }>;
+    expect(outcome.copy).toBeUndefined();
+    expect(useProjectStore.getState().isDirty).toBe(false);
+  });
+
+  it('is a copy of a draft that FormLogic holds, whatever it is written to', async () => {
+    // The file of a project edited there is FormLogic: a download does not give the draft back to it.
+    useProjectStore.getState().setDescription('still here');
+    const storage = memoryStorage();
+    const outcome = (await saveProject({
+      as: 'export', hosted: true, view: 'design', existingHandle: null, storage,
+      writeExport: async () => null,
+    })) as Extract<SaveOutcome, { kind: 'saved' }>;
+    expect(outcome.copy).toEqual({ of: null, unsaved: true });
+    expect(useProjectStore.getState().isDirty).toBe(true);
+    expect(storage.items.has(SESSION_STORAGE_KEY)).toBe(false);
+    expect(exportMessage(outcome, 'project-a.softn')).toBe('Exported a copy. Your last changes have not gone back to FormLogic.');
+  });
+
+  it('is quiet when the desktop dialog is cancelled, and reports a write that failed', async () => {
+    useProjectStore.getState().setDescription('kept');
+    const cancelled = await saveProject({
+      as: 'export', view: 'design', existingHandle: null, storage: memoryStorage(),
+      writeExport: async () => { throw new DOMException('Save cancelled', 'AbortError'); },
+    });
+    expect(cancelled).toEqual({ kind: 'cancelled' });
+    const error = new Error('disk full');
+    const failed = await saveProject({
+      as: 'export', view: 'design', existingHandle: null, storage: memoryStorage(),
+      writeExport: async () => { throw error; },
+    });
+    expect(failed).toEqual({ kind: 'failed', error });
+    expect(useProjectStore.getState().isDirty).toBe(true);
   });
 });
