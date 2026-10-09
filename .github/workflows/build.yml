@@ -52,7 +52,7 @@ jobs:
           npm run package:formlogic-runtime -- --tag "v$(node -p "require('./package.json').version")" --no-build-packages
 
       - name: Install Apache/PHP test dependencies
-        run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
+        run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd php-zip
 
       - name: Verify the optional backend distribution
         run: |

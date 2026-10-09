@@ -427,7 +427,7 @@ jobs:
           printf '%s\n' '' "$line" >> release/RELEASE-NOTES.md
 
       - name: Install Apache/PHP test dependencies
-        run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
+        run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd php-zip
 
       - name: Verify the optional backend distribution
         run: |
