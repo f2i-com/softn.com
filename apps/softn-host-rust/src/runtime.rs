@@ -1575,6 +1575,17 @@ mod isolation_tests {
         }
     }
 
+    /// `-0` in a body is `-0` in the handler. The PHP host hands the body to
+    /// its runner as the client's own text, so it keeps the sign too (it
+    /// used to decode the body and write `0`); this holds the two together.
+    #[test]
+    fn a_negative_zero_in_a_body_keeps_its_sign() {
+        let runtime = one_worker("function sign(req) { return {status: 200, body: {negative: 1 / req.body.a < 0, zero: req.body.a === 0, plain: 1 / req.body.b > 0}}; }");
+        let body: serde_json::Value = serde_json::from_str(r#"{"a":-0,"b":0}"#).unwrap();
+        let answer = runtime.call("sign", vec![serde_json::json!({ "body": body })]).unwrap();
+        assert_eq!(answer["body"], serde_json::json!({"negative": true, "zero": true, "plain": true}));
+    }
+
     /// The calls of one `call_each` are one request's: each may find what the
     /// one before left, in order, however many workers there are (idle
     /// workers take calls in turn, so calls sent one by one ran in as many
