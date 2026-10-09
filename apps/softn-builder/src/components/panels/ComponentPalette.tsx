@@ -13,6 +13,9 @@ import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { blockPalette } from '../../utils/blocks';
 import { placeBySelection } from '../../utils/keyboardMoves';
+import { addDropped } from '../../utils/pageDrop';
+import { importableFor, pageDragType, type Importable } from '../../utils/pageImports';
+import { useFilesStore } from '../../stores/filesStore';
 import type { ComponentMeta } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -167,8 +170,10 @@ export function insertFromPalette(type: string): string | null {
   // Nowhere takes another page; a container that holds one kind is passed by.
   const place = placeBySelection(type, { besideWords: chained });
   if (!place) return null;
-  useHistoryStore.getState().push(canvas.elements, canvas.rootId);
-  const id = canvas.addElement(type, place.parentId, place.index, { starter: true, side: place.side });
+  // A page of the project is added by the name this page uses it by, with
+  // its import; one the page cannot use is refused, and said why.
+  const id = addDropped(type, place.parentId, place.index, place.side, () => useHistoryStore.getState().push(canvas.elements, canvas.rootId));
+  if (id === null) return null;
   useCanvasStore.getState().selectElement(id);
   selectionLeftByInsert = useCanvasStore.getState().selectedIds;
   return id;
@@ -299,6 +304,92 @@ function CategorySection({ category, components, isExpanded, onToggle }: Categor
   );
 }
 
+/**
+ * A page of the project, offered beside the library's components: dragged
+ * and added the same way. It is put on the page being edited as an element
+ * of its name, with the import that binds the name written in that page's
+ * header (utils/pageImports.ts). One the page cannot use is shown, and says
+ * why, and is not picked up.
+ */
+function PageItem({ page }: { page: Importable }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const setDraggedType = useCanvasStore((state) => state.setDraggedType);
+  const draggedType = useCanvasStore((state) => state.draggedType);
+  const type = pageDragType(page.file.id);
+  const fileName = page.file.path.split('/').pop() ?? page.file.path;
+  const refused = page.refused !== undefined;
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.button !== 0 || refused) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragActivated = false;
+      const handleMouseMove = (moveEvent: MouseEvent) => {
+        if (dragActivated) return;
+        if (Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) >= 5) {
+          dragActivated = true;
+          setDraggedType(type);
+        }
+      };
+      const handleMouseUp = () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    },
+    [type, refused, setDraggedType]
+  );
+
+  const add = useCallback(() => {
+    // A refusal is said aloud by what adds it (utils/pageDrop.ts).
+    insertFromPalette(type);
+  }, [type]);
+
+  const style: React.CSSProperties = {
+    ...componentStyle,
+    ...(isHovered && !refused ? componentHoverStyle : {}),
+    ...(draggedType === type ? componentDraggingStyle : {}),
+    ...(refused ? { opacity: 0.55, cursor: 'not-allowed' } : {}),
+  };
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      data-palette-page={page.file.path}
+      aria-label={`Add ${fileName}`}
+      aria-disabled={refused}
+      aria-description={page.refused ?? `A page of this project, used here as ${page.name}`}
+      onMouseDown={handleMouseDown}
+      onDoubleClick={add}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          add();
+        }
+      }}
+      style={style}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      title={page.refused ?? `${page.file.path}, used on this page as <${page.name} />: drag onto the canvas, or double-click to add`}
+    >
+      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>
+      <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--dim)' }}>{page.name}</span>
+    </div>
+  );
+}
+
+/** The other pages of the project, as the page being edited could use them. */
+function useProjectPages(): Importable[] {
+  const activeFileId = useFilesStore((state) => state.activeFileId);
+  const uiFiles = useFilesStore((state) => state.uiFiles);
+  const imports = useCanvasStore((state) => state.imports);
+  return useMemo(() => (activeFileId && uiFiles.has(activeFileId) ? importableFor(activeFileId, uiFiles, imports) : []), [activeFileId, uiFiles, imports]);
+}
+
 interface ComponentPaletteProps {
   onToggleDock?: () => void;
 }
@@ -309,6 +400,11 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
     new Set(['Control flow', 'Layout', 'Form', 'Display'])
   );
   const componentsByCategory = useMemo(() => getComponentsByCategory(), []);
+  const projectPages = useProjectPages();
+  const [pagesExpanded, setPagesExpanded] = useState(true);
+  const matchingPages = searchQuery
+    ? projectPages.filter((page) => `${page.file.path} ${page.name}`.toLowerCase().includes(searchQuery.toLowerCase()))
+    : projectPages;
 
   // Ensure drag visuals always clear even if mouseup happens outside canvas.
   // Uses requestAnimationFrame to defer cleanup by one frame so React mouseup
@@ -382,10 +478,13 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
       <div style={styles.list}>
         {filteredComponents ? (
           <div style={styles.componentList}>
+            {matchingPages.map((page) => (
+              <PageItem key={page.file.id} page={page} />
+            ))}
             {filteredComponents.map((comp) => (
               <ComponentItem key={comp.name} component={comp} />
             ))}
-            {filteredComponents.length === 0 && (
+            {filteredComponents.length === 0 && matchingPages.length === 0 && (
               <div style={{ padding: '12px 8px', color: 'var(--dim)', fontSize: 13 }} role="status">
                 Nothing matches “{searchQuery}”. Try a shorter word, like “form” or “list”.
               </div>
@@ -393,6 +492,26 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
           </div>
         ) : (
           <>
+            {/* The project's own pages, first: what a person made is what they reach for. */}
+            {projectPages.length > 0 && (
+              <div style={styles.category} data-palette-pages="">
+                <button type="button" style={styles.categoryHeader} onClick={() => setPagesExpanded((open) => !open)} aria-expanded={pagesExpanded}>
+                  <span>
+                    This project <span style={{ color: 'var(--dimmer)', fontWeight: 400 }}>{projectPages.length}</span>
+                  </span>
+                  <span aria-hidden="true" style={{ ...styles.categoryChevron, ...(pagesExpanded ? styles.categoryChevronOpen : {}) }}>
+                    ›
+                  </span>
+                </button>
+                {pagesExpanded && (
+                  <div style={styles.componentList}>
+                    {projectPages.map((page) => (
+                      <PageItem key={page.file.id} page={page} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <CategorySection
               category="Control flow"
               components={blockPalette}

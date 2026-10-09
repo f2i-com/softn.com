@@ -3,6 +3,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { draggedLabel } from '../../utils/pageDrop';
 import { useCanvasStore } from '../../stores/canvasStore';
 
 const style: React.CSSProperties = {
@@ -44,7 +45,8 @@ export function DragLayer() {
   if (!isDragging) return null;
 
   // Get the label
-  let label = draggedType || '';
+  // A page of the project is dragged as its file, and named as one.
+  let label = draggedType ? draggedLabel(draggedType) : '';
   if (draggedElementId) {
     const element = elements.get(draggedElementId);
     if (element) {

@@ -321,6 +321,13 @@ export interface UIFileState {
   rootId: string;
   logicSrc?: string; // Reference: "./page.logic"
   imports: UIImport[]; // Component imports
+  /**
+   * The names of the imports the Builder wrote for this page, by a page
+   * dropped from the palette. Such an import is in the page while an element
+   * uses its name and no longer; one the author wrote is never taken out
+   * (utils/pageImports.ts).
+   */
+  writtenImports?: string[];
   originalSource?: string; // Original source for preview (preserves bindings, events, control flow)
   /**
    * Whether the visual model reproduces `originalSource`; computed from the

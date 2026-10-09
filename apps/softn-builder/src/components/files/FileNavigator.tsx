@@ -11,6 +11,7 @@ import { useSourceFidelity } from '../../utils/useSourceFidelity';
 import type { ProjectFileNode } from '../../types/builder';
 import { FileGlyph, type FileGlyphKind } from './fileIcons';
 import { PANEL_WIDTHS } from '../../hooks/usePanelsThatFit';
+import { COMPONENTS_FOLDER, createComponentFile } from '../../utils/componentFile';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -500,6 +501,9 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
   const [menuHoveredItem, setMenuHoveredItem] = useState<string | null>(null);
   const [quickCreateType, setQuickCreateType] = useState<'ui' | 'logic' | 'folder' | null>(null);
   const [quickCreateName, setQuickCreateName] = useState('');
+  // A new UI file is a page of its own, or a component: a page made to be
+  // used inside others, with no App around it (utils/componentFile.ts).
+  const [quickCreateAs, setQuickCreateAs] = useState<'page' | 'component'>('page');
   const [quickCreateParentPath, setQuickCreateParentPath] = useState<string | null>(null);
 
   const handleSelect = useCallback(
@@ -575,6 +579,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     setFileError(null);
     setQuickCreateType(type);
     setQuickCreateName('');
+    setQuickCreateAs('page');
     setQuickCreateParentPath(parentPath || null);
   }, []);
 
@@ -594,6 +599,9 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     const created = attempt(() => {
       if (quickCreateType === 'folder') {
         createFolder(parentPath, trimmed);
+      } else if (quickCreateType === 'ui' && quickCreateAs === 'component') {
+        // In the folder asked for from a folder's menu, and with the other components otherwise.
+        createComponentFile(trimmed, quickCreateParentPath || COMPONENTS_FOLDER);
       } else if (quickCreateType === 'ui') {
         createFile(parentPath, trimmed.endsWith('.ui') ? trimmed : `${trimmed}.ui`, 'ui');
       } else {
@@ -607,6 +615,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     handleQuickCreateCancel();
   }, [
     quickCreateType,
+    quickCreateAs,
     quickCreateName,
     resolveDefaultParentPath,
     quickCreateParentPath,
@@ -883,13 +892,33 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
               <div style={styles.quickCreateSub}>
                 {quickCreateType === 'folder'
                   ? `in ${quickCreateParentPath || resolveDefaultParentPath('folder')}/`
-                  : `in ${quickCreateParentPath || resolveDefaultParentPath(quickCreateType)}/`}
+                  : quickCreateType === 'ui' && quickCreateAs === 'component'
+                    ? `in ${quickCreateParentPath || COMPONENTS_FOLDER}/`
+                    : `in ${quickCreateParentPath || resolveDefaultParentPath(quickCreateType)}/`}
               </div>
             </div>
             <button className="bl-close" style={{ width: 28, height: 28, fontSize: 18 }} onClick={handleQuickCreateCancel} aria-label="Cancel">
               ×
             </button>
           </div>
+          {quickCreateType === 'ui' && (
+            <div role="radiogroup" aria-label="Kind of UI file" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginBottom: 8 }}>
+              {(['page', 'component'] as const).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  role="radio"
+                  aria-checked={quickCreateAs === kind}
+                  data-new-file-kind={kind}
+                  className={quickCreateAs === kind ? 'bl-btn bl-btn-sm bl-btn-primary' : 'bl-btn bl-btn-sm'}
+                  onClick={() => setQuickCreateAs(kind)}
+                  title={kind === 'page' ? 'A page of its own, with an App around what it holds' : 'A page made to be used inside other pages: no App of its own'}
+                >
+                  {kind === 'page' ? 'Page' : 'Component'}
+                </button>
+              ))}
+            </div>
+          )}
           <input
             type="text"
             aria-label={quickCreateType === 'folder' ? 'Folder name' : 'File name'}

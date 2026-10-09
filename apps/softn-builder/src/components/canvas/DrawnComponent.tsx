@@ -64,7 +64,8 @@ function tokensRule(side: ThemeSide): string {
   const declarations = Object.entries(themeToCssVariables(side === 'dark' ? darkTheme : lightTheme))
     .map(([name, value]) => `${name}:${value}`)
     .join(';');
-  return `[data-softn-drawn="${side}"]{${declarations}}`;
+  // On a wrapper, and on the artboard, whose page everything else is drawn on.
+  return `[data-softn-drawn="${side}"],[data-app-tokens="${side}"]{${declarations}}`;
 }
 
 let tokensCss: string | null = null;
@@ -85,10 +86,43 @@ function pageOf(holder: Element | null): DrawnPage | null {
     if (name === '' || value === '') continue;
     style[name.startsWith('--') ? name : name.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase())] = value;
   }
-  // The app's page is one screen high and cuts off what is below; a page
-  // around one component is as high as the component, with room for its
-  // shadow or ring and for the page's colour to show behind it.
-  return { className: container.className, style: { ...style, width: 'auto', height: 'auto', padding: 8, borderRadius: 6 } as React.CSSProperties };
+  return { className: container.className, style: style as React.CSSProperties };
+}
+
+/**
+ * The app's page is one screen high and cuts off what is below. A page
+ * around one component is as high as the component, with room for its
+ * shadow or ring. It paints no ground of its own: the artboard is the page,
+ * and a component in a Card or in what is selected stands on that.
+ */
+const AROUND_ONE: React.CSSProperties = { width: 'auto', height: 'auto', padding: 8, borderRadius: 6, background: 'transparent' };
+
+/**
+ * Of what an App makes of its container, the artboard's page takes the
+ * colours and leaves the type. What Builder draws on the canvas by hand is
+ * set in the canvas's own face, and where a drop goes among a Button's
+ * words is measured on that drawing: in the app's face and line height
+ * every such element was a few pixels another size.
+ */
+function coloursOf(style: React.CSSProperties | undefined): React.CSSProperties {
+  return Object.fromEntries(Object.entries(style ?? {}).filter(([name]) => /^(background|color)/.test(name))) as React.CSSProperties;
+}
+
+/**
+ * The artboard's page: what an `<App>` of the page's side makes of its own
+ * container, with the canvas's elements on it. Everything Builder draws on
+ * the canvas by hand reads its colours from here (builder.css,
+ * `[data-builder-page]`), so a dark project is a dark page and not dark
+ * components on paper.
+ */
+export function AppPage({ style, children }: { style?: React.CSSProperties; children?: React.ReactNode }): React.ReactElement {
+  const { theme, pages } = useContext(DrawnContext);
+  const page = pages?.[theme.page];
+  return (
+    <div data-builder-page={theme.page} className={page?.className} style={{ ...coloursOf(page?.style), ...style }}>
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -197,7 +231,7 @@ export function DrawnComponent({ element, meta, fallback }: DrawnProps): React.R
   const page = pages?.[theme.page];
   return (
     <div data-softn-drawn={theme.tokens} aria-hidden="true" {...INERT}>
-      <div className={page?.className} style={page?.style} data-theme={theme.page}>
+      <div className={page?.className} style={page ? { ...page.style, ...AROUND_ONE } : undefined} data-theme={theme.page}>
         <div ref={content} data-softn-drawn-content="" style={{ display: 'contents' }}>
           <DrawnBoundary key={attempt} failed={() => setStandIn(attempt)}>
             <Component {...props} />

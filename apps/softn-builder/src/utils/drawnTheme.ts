@@ -15,9 +15,12 @@
  *  - the page's own colours are `<App theme="light|dark">` where the page
  *    says so, and the tokens' side otherwise, as the App component decides.
  *
- * The canvas does not ask for the project's theme yet: it draws everything
- * in the light one, for the reason given at CANVAS_THEME below. What is
- * above is kept, and tested, for when the artboard follows the project.
+ * The artboard is the app's page in that theme (canvas/DrawnComponent.tsx,
+ * AppPage), and everything Builder draws on it by hand reads its colours
+ * from the page, so a dark project is a dark page on the canvas. For a
+ * while the canvas drew everything light whatever the project: the
+ * artboard was paper then, and a dark project's own components stood on it
+ * as black tiles among light ones.
  */
 
 import { useEffect, useState } from 'react';
@@ -55,18 +58,45 @@ export function drawnThemeFor(themeMode: 'light' | 'dark' | 'system', pageTheme:
   return { tokens, page };
 }
 
-/** The theme of what the canvas draws, followed as the project, the page or the device changes it. */
-export function useDrawnTheme(): DrawnTheme {
-  const themeMode = useProjectStore((state) => state.themeMode);
-  // The page's own choice, when it is written as the word and not worked out.
-  const pageTheme = useCanvasStore((state) => {
-    const page = state.elements.get(state.rootId);
-    return page && !(page.expressionProps ?? []).includes('theme') ? page.props.theme : undefined;
-  });
-  const [system, setSystem] = useState<ThemeSide>(systemSide);
+/**
+ * Which theme a page is drawn in, said in a sentence, for a person who has
+ * set the project's theme and the page's own and sees only one of them.
+ * What decides is what the App component decides (it reads the page's
+ * `theme` first, and the project's only where the page does not say light
+ * or dark).
+ */
+export function themeSentence(
+  themeMode: 'light' | 'dark' | 'system',
+  pageTheme: { value: unknown; isExpression: boolean } | undefined,
+  system: ThemeSide
+): string {
+  const project = themeMode === 'system' ? system : themeMode;
+  if (pageTheme?.isExpression) {
+    return `This page works its theme out when the app runs ({${String(pageTheme.value)}}). Until it does, it is drawn as the project is set: ${project}.`;
+  }
+  const own = pageTheme?.value;
+  if (own === 'light' || own === 'dark') {
+    if (themeMode === 'system') return `This page is ${own}: its own theme is set to ${own}, whatever a visitor's device prefers.`;
+    return own === project
+      ? `This page is ${own}: its own theme is set to ${own}, as the project's is.`
+      : `This page is ${own}: its own theme is set to ${own}, which wins over the project's ${project}.`;
+  }
+  if (typeof own === 'string' && own !== '' && own !== 'system') {
+    return `This page has a theme of its own, "${own}", drawn here over the project's ${project} colours.`;
+  }
+  return themeMode === 'system'
+    ? `This page follows the project: system, which is ${system} on this device. A visitor sees their own.`
+    : // The project's setting is the Builder's: Preview and the canvas read it,
+      // and it is saved in the app's manifest, where no runtime looks for
+      // it yet. What a running app follows is said, not left to be found.
+      `This page follows the project: ${project}, on the canvas and in Preview. A running app follows its visitor's device unless the page's own theme is set.`;
+}
 
+/** What "system" comes to on this device, followed while it is asked for. */
+export function useSystemSide(watch: boolean): ThemeSide {
+  const [system, setSystem] = useState<ThemeSide>(systemSide);
   useEffect(() => {
-    if (themeMode !== 'system' || typeof window === 'undefined') return;
+    if (!watch || typeof window === 'undefined') return;
     const update = () => setSystem(systemSide());
     const query = window.matchMedia?.('(prefers-color-scheme: dark)');
     query?.addEventListener('change', update);
@@ -79,7 +109,19 @@ export function useDrawnTheme(): DrawnTheme {
       query?.removeEventListener('change', update);
       window.removeEventListener('storage', stored);
     };
-  }, [themeMode]);
+  }, [watch]);
+  return system;
+}
+
+/** The theme of what the canvas draws, followed as the project, the page or the device changes it. */
+export function useDrawnTheme(): DrawnTheme {
+  const themeMode = useProjectStore((state) => state.themeMode);
+  // The page's own choice, when it is written as the word and not worked out.
+  const pageTheme = useCanvasStore((state) => {
+    const page = state.elements.get(state.rootId);
+    return page && !(page.expressionProps ?? []).includes('theme') ? page.props.theme : undefined;
+  });
+  const system = useSystemSide(themeMode === 'system');
 
   const { tokens, page } = drawnThemeFor(themeMode, pageTheme, system);
   // The same object while nothing has changed, so what reads it is not redrawn.
@@ -90,17 +132,3 @@ const THEMES: Record<ThemeSide, Record<ThemeSide, DrawnTheme>> = {
   light: { light: { tokens: 'light', page: 'light' }, dark: { tokens: 'light', page: 'dark' } },
   dark: { light: { tokens: 'dark', page: 'light' }, dark: { tokens: 'dark', page: 'dark' } },
 };
-
-/**
- * The theme the canvas draws in: the light one, whatever the project's.
- *
- * The artboard is paper, and the elements drawn on it by hand (a Button, a
- * Text, a Card, the name cards) are light. A dark project's components drawn
- * in its own theme stood there as black tiles among light ones: each right
- * in itself and the page a patchwork. So the canvas is one thing, the
- * structure of the page in one set of colours, and Preview is where the
- * project is seen in its own. `useDrawnTheme` above works out what Preview
- * works out and is what the canvas will ask once the artboard and the
- * hand-drawn elements follow the project too.
- */
-export const CANVAS_THEME: DrawnTheme = THEMES.light.light;

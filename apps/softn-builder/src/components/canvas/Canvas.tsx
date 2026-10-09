@@ -8,12 +8,13 @@ import { useHistoryStore } from '../../stores/historyStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { useSourceFidelity, summariseReasons } from '../../utils/useSourceFidelity';
 import { CanvasElement } from './CanvasElement';
-import { DrawnThemeProvider } from './DrawnComponent';
+import { AppPage, DrawnThemeProvider } from './DrawnComponent';
 import { DragLayer } from './DragLayer';
 import { canDropInto, isPaletteType } from '../../utils/blocks';
 import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
 import { useDragAutoScroll } from '../../utils/dragScroll';
-import { CANVAS_THEME } from '../../utils/drawnTheme';
+import { useDrawnTheme } from '../../utils/drawnTheme';
+import { addDropped } from '../../utils/pageDrop';
 import { pasteBySelection } from '../../utils/keyboardMoves';
 import { isDesktop } from '../../utils/desktop';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
@@ -37,12 +38,11 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 20,
     minHeight: 0, // Important for flex scroll
   },
-  // The artboard: always paper, in either theme, and marked so builder.css
-  // gives everything drawn on it the light tokens (see [data-builder-canvas]).
+  // The artboard: the frame the app's page is drawn in. The frame is the
+  // editor's, as the area around it is; the page inside it is the app's, in
+  // the project's theme (AppPage, and [data-builder-page] in builder.css).
   canvas: {
     minHeight: 'fit-content',
-    background: 'var(--ink-2)',
-    color: 'var(--paper)',
     borderRadius: 8,
     boxShadow: '0 1px 2px rgba(20, 24, 29, 0.08), 0 0 0 1px var(--line)',
     position: 'relative' as const,
@@ -50,6 +50,7 @@ const styles: Record<string, React.CSSProperties> = {
   canvasInner: {
     padding: 16,
     minHeight: 400,
+    borderRadius: 8,
   },
   empty: {
     display: 'flex',
@@ -135,6 +136,7 @@ export function Canvas({ onShowComponents }: CanvasProps) {
   // The part of the canvas that scrolls, which a drag held at its edge moves.
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   useDragAutoScroll(scrollerRef);
+  const drawnTheme = useDrawnTheme();
 
   const rootId = useCanvasStore((s) => s.rootId);
   const elements = useCanvasStore((s) => s.elements);
@@ -164,9 +166,7 @@ export function Canvas({ onShowComponents }: CanvasProps) {
       // What may hold what is asked here too: let go over the background,
       // a drag had nothing in its way.
       if (parent && canDropInto(parent, state.draggedType, { elements: state.elements })) {
-        const historyState = useHistoryStore.getState();
-        historyState.push(state.elements, state.rootId);
-        state.addElement(state.draggedType, parent.id, indicator?.index, { starter: true, side: indicator?.side });
+        addDropped(state.draggedType, parent.id, indicator?.index, indicator?.side, () => useHistoryStore.getState().push(state.elements, state.rootId));
       }
       state.setDraggedType(null);
       state.setDropIndicator(null);
@@ -351,12 +351,21 @@ export function Canvas({ onShowComponents }: CanvasProps) {
     ? focusedElementId
     : (selectedIds.find((id) => visibleElementIds.includes(id)) ?? visibleElementIds[0] ?? null);
 
+  // Between two elements of the page, and in nobody's way: its margins
+  // take back the room its height takes. In the flow it pushed the element
+  // below it down, out from under a pointer held at that element's top
+  // edge, which read as the pointer leaving and withdrew the place.
   const rootIndicatorLineStyle: React.CSSProperties = {
     height: 3,
     background: 'var(--coral)',
     borderRadius: 2,
     opacity: 0.8,
-    margin: '0 4px',
+    marginTop: -1.5,
+    marginBottom: -1.5,
+    marginLeft: 4,
+    marginRight: 4,
+    position: 'relative',
+    zIndex: 20,
     pointerEvents: 'none',
   };
 
@@ -385,6 +394,7 @@ export function Canvas({ onShowComponents }: CanvasProps) {
           onMouseLeave={handleMouseLeave}
           tabIndex={hasChildren ? undefined : 0}
           data-builder-canvas=""
+          data-app-tokens={drawnTheme.tokens}
           role="tree"
           aria-label="Component canvas"
           aria-multiselectable="true"
@@ -392,8 +402,8 @@ export function Canvas({ onShowComponents }: CanvasProps) {
           {/* The app's theme for the components drawn as themselves: its
               tokens, written once and reached by an attribute, and which
               side of it each is drawn in. */}
-          <DrawnThemeProvider theme={CANVAS_THEME}>
-          <div style={styles.canvasInner}>
+          <DrawnThemeProvider theme={drawnTheme}>
+          <AppPage style={styles.canvasInner}>
             {hasChildren ? (
               rootElement.children.map((childId, idx) => {
                 const showLineBefore =
@@ -403,13 +413,13 @@ export function Canvas({ onShowComponents }: CanvasProps) {
                   isLast && dropIndicator?.parentId === rootId && dropIndicator?.index === idx + 1;
                 return (
                   <React.Fragment key={childId}>
-                    {showLineBefore && <div style={rootIndicatorLineStyle} />}
+                    {showLineBefore && <div style={rootIndicatorLineStyle} data-drop-line="" />}
                     <CanvasElement
                       elementId={childId}
                       focusedElementId={effectiveFocusedElementId}
                       onTreeFocusChange={setFocusedElementId}
                     />
-                    {showLineAfter && <div style={rootIndicatorLineStyle} />}
+                    {showLineAfter && <div style={rootIndicatorLineStyle} data-drop-line="" />}
                   </React.Fragment>
                 );
               })
@@ -450,7 +460,7 @@ export function Canvas({ onShowComponents }: CanvasProps) {
                 )}
               </div>
             )}
-          </div>
+          </AppPage>
           </DrawnThemeProvider>
         </div>
       </div>

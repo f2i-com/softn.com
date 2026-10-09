@@ -47,6 +47,7 @@ import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { useActiveFileOnCanvas } from './hooks/useActiveFileOnCanvas';
 import { PANEL_WIDTHS, useSidePanels } from './hooks/usePanelsThatFit';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
+import { liveImports } from './utils/pageImports';
 import { connectHostedEditor, isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { viewsFor } from './utils/workspaceViews';
@@ -595,7 +596,10 @@ function App() {
     if (previousActiveId && previousActiveId !== activeFileId) {
       const previousNode = fileNodes.get(previousActiveId);
       if (previousNode?.type === 'file' && previousNode.fileType === 'ui') {
-        updateUIFile(previousActiveId, canvasElements, canvasRootId);
+        // With the imports the canvas holds for it: the file being left, since
+        // the next one is put on the canvas only after this.
+        const leaving = useCanvasStore.getState();
+        updateUIFile(previousActiveId, canvasElements, canvasRootId, liveImports(canvasElements, leaving.imports, leaving.writtenImports), leaving.writtenImports);
       }
       // The history is a stack of canvas snapshots with no idea which file each
       // came from, and undo loads one unconditionally. Left in place across a

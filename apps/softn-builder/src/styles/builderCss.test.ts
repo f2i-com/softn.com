@@ -1,7 +1,11 @@
 /**
- * builder.css copies the light theme's tokens onto the canvas artboard, which
- * is paper in both themes. The copy must stay the brand's: a token changed
- * in tokens.css and not here would draw the canvas in last year's colours.
+ * builder.css declares the brand's accents again for the canvas's page, the
+ * light pair for a light page and the dark pair for a dark one: the page is
+ * the app's, light or dark as the project says and not as the editor is,
+ * and the marks Builder draws on it (the outline of what is selected, the
+ * line where a drop goes) have to be the pair that shows there. The copies
+ * must stay the brand's: an accent changed in tokens.css and not here would
+ * draw the canvas's marks in last year's colours.
  */
 
 import { readFileSync } from 'node:fs';
@@ -21,12 +25,28 @@ function declarations(css: string): Map<string, string> {
 }
 
 describe('builder.css', () => {
-  it('gives the canvas the light tokens exactly as the brand declares them', () => {
-    const light = declarations(block(tokensCss, ":root[data-theme='light']"));
-    const canvas = declarations(block(builderCss, '[data-builder-canvas]'));
-    const copied = [...canvas.keys()].filter((name) => light.has(name));
-    expect(copied.length).toBeGreaterThan(10);
-    for (const name of copied) expect(canvas.get(name), name).toBe(light.get(name));
+  it.each([
+    ['light', ":root[data-theme='light']"],
+    ['dark', ':root'],
+  ])('gives a %s page on the canvas the accents exactly as the brand declares them for that side', (side, brand) => {
+    const declared = declarations(block(tokensCss, brand));
+    const page = declarations(block(builderCss, `[data-builder-page='${side}']`));
+    const accents = [...page.keys()].filter((name) => declared.has(name));
+    expect(accents.sort()).toEqual(['--coral', '--coral-glow', '--danger', '--mint', '--mint-edge', '--mint-glow', '--mint-glow-soft', '--sand', '--select', '--warn']);
+    for (const name of accents) expect(page.get(name), name).toBe(declared.get(name));
+    // And one thing of the canvas's own beside them: the ground of a block's header.
+    expect([...page.keys()].filter((name) => !declared.has(name))).toEqual(['--block-ground']);
+  });
+
+  it('takes the grounds, the text and the lines of the page on the canvas from the colours of the app, not of the editor', () => {
+    // The page was paper in both themes, with the editor's light tokens
+    // copied onto it: a dark project was dark components on a white sheet.
+    const page = declarations(block(builderCss, '[data-builder-page]'));
+    for (const name of ['--ink', '--ink-2', '--ink-3', '--paper', '--dim', '--dimmer', '--line', '--line-soft', '--line-strong']) {
+      expect(page.get(name), name).toMatch(/var\(--color-(bg|text|text-muted|surface)[,)]/);
+    }
+    // And nothing of the kind is declared for the frame around it, which is the editor's.
+    expect(builderCss).not.toContain('[data-builder-canvas] {');
   });
 
   it('keeps coral and mint to their jobs: no class paints an accent as a background', () => {

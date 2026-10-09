@@ -250,7 +250,8 @@ export function parseSource(source: string): ParseResult {
     }
   }
 
-  const xmlImportRegex = /<import\s+(?:\{\s*([^}]+)\s*\}|(\w+))\s+from=["']([^"']+)["']\s*\/>/g;
+  // With or without the `=`, as the parser and the composer read it (core, UI_IMPORT_PATTERN).
+  const xmlImportRegex = /<import\s+(?:\{\s*([^}]+)\s*\}|(\w+))\s+from\s*=?\s*["']([^"']+)["']\s*\/>/g;
   let xmlImportMatch;
   while ((xmlImportMatch = xmlImportRegex.exec(source)) !== null) {
     const namesStr = xmlImportMatch[1] || xmlImportMatch[2];

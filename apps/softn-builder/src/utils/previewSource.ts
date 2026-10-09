@@ -82,7 +82,9 @@ export function previewSourceFor(input: PreviewSourceInput): PreviewSourceResult
       const entryLogic = linkedLogicFile(mainUIFile, logicFiles);
       if (entryLogic) logicSrc = relativeImportPath(file.path, entryLogic.path);
     }
-    return generateSource(fileElements, fileRootId, '', collections, { logicSrc });
+    // With the pages it uses, as export writes them. The file's own list:
+    // the canvas is flushed into it before the view changes to Preview.
+    return generateSource(fileElements, fileRootId, '', collections, { logicSrc, imports: file.imports });
   };
 
   const resolveImportedFileSource = (file: UIFileState): string => {
@@ -94,6 +96,7 @@ export function previewSourceFor(input: PreviewSourceInput): PreviewSourceResult
     // that had a different root element (Header.ui, Dashboard.ui, etc.).
     return generateSource(file.elements, file.rootId, '', [], {
       skipRootAppWrapper: true,
+      imports: file.imports,
     });
   };
 

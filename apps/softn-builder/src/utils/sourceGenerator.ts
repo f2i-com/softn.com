@@ -23,6 +23,13 @@ interface GeneratorOptions {
    * cannot be inlined at all.
    */
   logicSrc?: string;
+  /**
+   * The pages this page uses, written first of all:
+   * `<import Row from="./row.ui" />`. A page made on the canvas has no
+   * source to keep them in, and written without them it used a page the app
+   * that ran did not know.
+   */
+  imports?: ReadonlyArray<{ name: string; source: string }>;
 }
 
 const defaultOptions: GeneratorOptions = {
@@ -43,6 +50,9 @@ export function generateSource(
   const opts = { ...defaultOptions, ...options };
   const lines: string[] = [];
 
+  for (const imported of opts.imports ?? []) {
+    lines.push(`<import ${imported.name} from="${imported.source}" />`);
+  }
   if (opts.logicSrc) {
     lines.push(`<logic src="${opts.logicSrc}" />`);
   }

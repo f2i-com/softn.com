@@ -21,6 +21,7 @@ import { useFilesStore } from '../stores/filesStore';
 import { exportBundle, exportMultiFileBundle, type RetainedExportSource } from './bundleExporter';
 import { envelopeFor, type XdbRecordEnvelope } from './xdbFormat';
 import { debug } from './debug';
+import { liveImports } from './pageImports';
 import type { CollectionDef } from '../types/builder';
 import { withBuilderSchema } from './builderSchemaMetadata';
 
@@ -103,7 +104,11 @@ export function flushCanvasToActiveFile(): void {
   if (!filesState.activeFileId) return;
   const activeNode = filesState.nodes.get(filesState.activeFileId);
   if (activeNode?.type === 'file' && activeNode.fileType === 'ui') {
-    filesState.updateUIFile(filesState.activeFileId, canvasState.elements, canvasState.rootId);
+    // With the page's imports as they stand now: one the Builder wrote is
+    // among them only while an element of the page uses it.
+    const written = canvasState.writtenImports;
+    const imports = liveImports(canvasState.elements, canvasState.imports, written);
+    filesState.updateUIFile(filesState.activeFileId, canvasState.elements, canvasState.rootId, imports, written);
   }
 }
 

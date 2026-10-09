@@ -10,11 +10,13 @@ import type {
   LogicFileState,
   AssetFile,
   CanvasElement,
+  UIImport,
 } from '../types/builder';
 import { debug } from '../utils/debug';
 import { elementsEqual } from '../utils/elementsEqual';
 import { assessSourceFidelity, parseSource } from '../utils/sourceParser';
 import { writeBack } from '../utils/sourceFrame';
+import { withImportLines } from '../utils/pageImports';
 import { changeDataDeclarations, type CollectionChange } from '../utils/dataDeclarations';
 import {
   MAIN_LOGIC_PATHS,
@@ -91,8 +93,14 @@ function movedPath(path: string, from: string, to: string): string {
 /** Every `<logic src="…">` in a source, with either quote. */
 const LOGIC_SRC_ATTRIBUTE = /(<logic\b[^>]*?\bsrc\s*=\s*)(["'])([^"']*)\2/gi;
 
-/** Every `<import … from="…">` in a source, with either quote. */
-const IMPORT_FROM_ATTRIBUTE = /(<import\b[^>]*?\bfrom\s*=\s*)(["'])([^"']*)\2/gi;
+/**
+ * Every `<import … from="…">` in a source, with either quote, and with or
+ * without the `=`: the parser and the composer read `from "./x.ui"` as the
+ * same import (core, UI_IMPORT_PATTERN), and a rename has to follow both.
+ * This one also takes the `{ A, B }` form of the names, which that pattern
+ * does not, so it is its own; the spelling of `from` is kept the same.
+ */
+const IMPORT_FROM_ATTRIBUTE = /(<import\b[^>]*?\bfrom\s*=?\s*)(["'])([^"']*)\2/gi;
 
 /**
  * Keep every `<logic src>` pointing at the file it meant, after a rename or
@@ -314,7 +322,13 @@ interface FilesStore {
    * file already holds is a flush, not an edit: nothing is regenerated,
    * nothing is marked dirty, and the original source stays as it was.
    */
-  updateUIFile: (id: string, elements: Map<string, CanvasElement>, rootId: string) => void;
+  /**
+   * With `imports`, the page's imports are written with its elements: what
+   * the canvas holds for a page that had one dropped on it from the palette
+   * (utils/pageImports.ts). `writtenImports` names those the Builder wrote,
+   * which are the only ones it takes out of the page's source again.
+   */
+  updateUIFile: (id: string, elements: Map<string, CanvasElement>, rootId: string, imports?: UIImport[], writtenImports?: string[]) => void;
   /**
    * Set the elements the canvas was given for this file without treating
    * it as an edit — for the copy the app makes on open, so the first flush
@@ -914,10 +928,13 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     });
   },
 
-  updateUIFile: (id, elements, rootId) => {
+  updateUIFile: (id, elements, rootId, imports, writtenImports) => {
     set((state) => {
       const file = state.uiFiles.get(id);
       if (!file) return state;
+      const sameImports =
+        imports === undefined ||
+        (imports.length === file.imports.length && imports.every((imp, at) => imp.name === file.imports[at].name && imp.source === file.imports[at].source));
 
       // A flush of an unchanged canvas is not an edit. Every save, export,
       // pre-flight check and tab switch flushes; before this check each one
@@ -925,7 +942,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       // opened and never touched came out rewritten — comments dropped,
       // grouped expressions flattened, nested blocks collapsed. The original
       // bytes stay authoritative until the tree actually differs.
-      if (file.rootId === rootId && elementsEqual(file.elements, elements)) return state;
+      if (file.rootId === rootId && sameImports && elementsEqual(file.elements, elements)) return state;
 
       // Only regenerate originalSource when the file already had one (loaded
       // from a bundle or set via SourceView).  For files that never had
@@ -982,6 +999,10 @@ export const useFilesStore = create<FilesStore>((set, get) => {
           // A logic file linked since the source was written.
           nextOriginalSource = `<logic src="${file.logicSrc}" />\n\n${nextOriginalSource}`;
         }
+        // The lines of the pages it uses: one for each the canvas gave it
+        // that the header has not got, and none the Builder wrote for a use
+        // that is gone.
+        if (imports !== undefined) nextOriginalSource = withImportLines(nextOriginalSource, imports, writtenImports ?? file.writtenImports ?? []);
       }
 
       const newUIFiles = new Map(state.uiFiles);
@@ -989,6 +1010,8 @@ export const useFilesStore = create<FilesStore>((set, get) => {
         ...file,
         elements,
         rootId,
+        ...(imports !== undefined ? { imports } : {}),
+        ...(writtenImports !== undefined ? { writtenImports } : {}),
         ...(nextOriginalSource !== undefined ? { originalSource: nextOriginalSource } : {}),
         ...(sourceFidelity !== undefined ? { sourceFidelity } : {}),
         visualEditBlocked: undefined,

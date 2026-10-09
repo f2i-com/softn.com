@@ -124,22 +124,52 @@ body {
 }
 
 /*
- * The canvas artboard is paper in both themes, as the app's page is. What
- * Builder draws on it — element cards, block headers, drop hints, labels —
- * reads the tokens, so here they are the light theme's (tokens.css), or
- * that ink would be near-white on white in the dark theme.
+ * The artboard's page is the app's page, in the project's theme: a dark
+ * project is a dark page on the canvas (canvas/DrawnComponent.tsx, AppPage).
+ * It was paper whatever the project, with the editor's light tokens
+ * declared for it here, and a dark project's own components stood on it as
+ * black tiles among light ones.
+ *
+ * There are two kinds of colour on the page, and they are kept apart.
+ *
+ * What stands for the app (the words, the Card, a name card, a place to
+ * drop children, a block's header) reads the brand's names, as everything
+ * Builder draws does, and on the page those names are the app's own
+ * colours: its page, its text, and lines and grounds mixed from the two, so
+ * they are there in a theme whose own border colour is next to nothing.
+ * The fallbacks are for a page drawn before the app's tokens are.
  */
-[data-builder-canvas] {
+[data-builder-page] {
+  --ink-2: var(--color-bg, #ffffff);
+  --ink: color-mix(in srgb, var(--color-text, #14181d) 6%, var(--color-bg, #ffffff));
+  --ink-3: color-mix(in srgb, var(--color-text, #14181d) 10%, var(--color-bg, #ffffff));
+  --paper: var(--color-text, #14181d);
+  /* The quieter words, mixed and not the app's own muted colour: that one
+     is made for the page, and on a bar or a card of the canvas it fell
+     short of what small words need. */
+  --dim: color-mix(in srgb, var(--color-text, #14181d) 74%, var(--color-bg, #ffffff));
+  --dimmer: color-mix(in srgb, var(--color-text, #14181d) 68%, var(--color-bg, #ffffff));
+  --line: color-mix(in srgb, var(--color-text, #14181d) 16%, transparent);
+  --line-soft: color-mix(in srgb, var(--color-text, #14181d) 10%, transparent);
+  --line-strong: color-mix(in srgb, var(--color-text, #14181d) 32%, transparent);
+  --bl-select: color-mix(in srgb, var(--color-text, #14181d) 8%, transparent);
+  --bl-hover: color-mix(in srgb, var(--color-text, #14181d) 5%, transparent);
+  --bl-field: var(--color-surface, #ffffff);
+  /* The dashed outline of a place for children: see CanvasElement.tsx, styles.children. */
+  --place-line: color-mix(in srgb, var(--color-text, #14181d) 50%, transparent);
+}
+
+/*
+ * What is the editor's own on the page (the outline of what is selected,
+ * the line where a drop would go, the bar among an element's words, a
+ * block's keyword, the ring of the focus) is the brand's two accents, as it
+ * is everywhere in Builder, in the pair made for the side the page is: the
+ * dark pair does not reach 3:1 on a light page, nor the light pair on a
+ * dark one (tokens.css). The side is the page's, not the editor's and not
+ * the project's: a dark project's page that pins light is a light page.
+ */
+[data-builder-page='light'] {
   color-scheme: light;
-  --ink: #f4f6f9;
-  --ink-2: #ffffff;
-  --ink-3: #eef1f6;
-  --line: #d5dce5;
-  --line-soft: #e4e9f0;
-  --line-strong: #bcc6d2;
-  --paper: #14181d;
-  --dim: #5a6472;
-  --dimmer: #656e7c;
   --coral: #c2410c;
   --mint: #0f766e;
   --sand: #8a5a17;
@@ -150,9 +180,24 @@ body {
   --mint-glow-soft: rgba(15, 118, 110, 0.06);
   --mint-edge: rgba(15, 118, 110, 0.4);
   --select: rgba(194, 65, 12, 0.2);
-  --bl-select: rgba(20, 24, 29, 0.07);
-  --bl-hover: rgba(20, 24, 29, 0.04);
-  --bl-field: #ffffff;
+  /* The ground of a block's header: fainter than the glow, under which the
+     keyword fell just short of what small words need on the app's light page. */
+  --block-ground: rgba(194, 65, 12, 0.04);
+}
+
+[data-builder-page='dark'] {
+  color-scheme: dark;
+  --coral: #ff8a4c;
+  --mint: #35e0c0;
+  --sand: #d8c39a;
+  --danger: #ff6b6b;
+  --warn: #e8a33d;
+  --coral-glow: rgba(255, 138, 76, 0.14);
+  --mint-glow: rgba(53, 224, 192, 0.14);
+  --mint-glow-soft: rgba(53, 224, 192, 0.05);
+  --mint-edge: rgba(53, 224, 192, 0.35);
+  --select: rgba(255, 138, 76, 0.28);
+  --block-ground: rgba(255, 138, 76, 0.14);
 }
 
 /*

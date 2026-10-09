@@ -9,7 +9,7 @@ import { useProjectStore } from '../../stores/projectStore';
 import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
 import { useFilesStore } from '../../stores/filesStore';
 import { ACCESSIBILITY_PROP_NAMES, getComponentMeta } from '../../utils/componentRegistry';
-import { dockLogicFile, entryFileId, logicLanguageOf, type LogicLanguage } from '../../utils/logicFiles';
+import { dockLogicFile, entryFileId, logicLanguageOf, resolveImportPath, type LogicLanguage } from '../../utils/logicFiles';
 import { callArgumentCount, callableNames, endsFinished, handlerFor, handlerTarget, isFunctionName, logicFunctions, withNewFunction, type LogicFunction } from '../../utils/logicFunctions';
 import { eventKeyFor } from '../../utils/eventProps';
 import { nativeElementMeta } from '../../utils/nativeHtmlMetadata';
@@ -17,6 +17,8 @@ import { blockHeaderText } from '../../utils/sourceGenerator';
 import { blockDescription, hasTextField, isBlockHead, isTextNode, textNodeMeta } from '../../utils/blocks';
 import { controlFor, propState, shownValue, withProp, writtenValue, type PropState } from '../../utils/propValues';
 import type { CanvasBlock, PropSchema } from '../../types/builder';
+import { PAGE_TYPE } from '../../types/builder';
+import { ProjectThemeField } from './ProjectThemeField';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -77,6 +79,10 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.55,
     color: 'var(--dim)',
     maxWidth: 240,
+  },
+  // Under the empty state: what is the project's and no element's.
+  projectSettings: {
+    padding: '0 12px 12px',
   },
   // The selected element: its tag in the language's colour, as the source
   // would show it, then what it is.
@@ -685,6 +691,25 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
   const wordsAmongElements =
     selectedElement !== null && !isTextNode(selectedElement) && selectedElement.children.length > 0 && hasTextField(selectedElement.componentType);
 
+  // A page of the project used on this one: the path its import is written
+  // with, where the selected element's name is one the page imports.
+  const importedSource = useCanvasStore((s) =>
+    selectedElement && !selectedElement.block ? s.imports.find((imp) => imp.name === selectedElement.componentType)?.source : undefined
+  );
+  const pagePath = useFilesStore((s) => (s.activeFileId ? s.uiFiles.get(s.activeFileId)?.path : undefined));
+  const importedPath =
+    importedSource === undefined || pagePath === undefined
+      ? undefined
+      : importedSource.startsWith('@')
+        ? importedSource
+        : resolveImportPath(pagePath.replace(/^\//, ''), importedSource);
+  const importedFileId = useFilesStore((s) =>
+    importedPath === undefined ? undefined : [...s.uiFiles.values()].find((file) => file.path.replace(/^\//, '') === importedPath)?.id
+  );
+
+  // The page itself: the root of the file, where it is an App.
+  const isPage = useCanvasStore((s) => selectedElement !== null && selectedElement.id === s.rootId && selectedElement.componentType === PAGE_TYPE);
+
   // Whether any of what it holds is words, which the note under its name
   // sends a person to; one that holds an Icon and nothing else has none.
   const holdsWords = useCanvasStore((s) =>
@@ -875,6 +900,79 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
             Pick an element on the canvas, or in the hierarchy below, and its properties appear here.
           </div>
         </div>
+        {/* What belongs to the project and to no element: with nothing
+            selected is where the panel has room for it. */}
+        <div style={styles.projectSettings}>
+          <div style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <div style={styles.sectionTitle}>Project theme</div>
+            </div>
+            <div style={styles.sectionBody}>
+              <ProjectThemeField />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // A page used inside another is an include: the app is put together by
+  // putting its content where the tag stands, in this page's own scope, and
+  // what is written on the tag is dropped (core, source-composer.ts). So it
+  // is offered no property, event or binding, which would each do nothing;
+  // it is said what it is, and its file is a press away.
+  if (importedPath !== undefined) {
+    return (
+      <div style={styles.container}>
+        {header}
+        <div style={styles.content}>
+          <div style={styles.componentInfo}>
+            <div style={styles.componentName}>{selectedElement.componentType}</div>
+            <div style={styles.componentDescription} data-imported-page="">
+              A page used inside another is its content; it reads this page’s state.
+            </div>
+            <div style={{ ...styles.componentDescription, marginTop: 6, fontFamily: 'var(--mono)', overflowWrap: 'anywhere' }}>{importedPath}</div>
+          </div>
+          <div style={styles.section}>
+            <div style={styles.sectionBody}>
+              {importedFileId ? (
+                <button
+                  type="button"
+                  className="bl-btn bl-btn-sm"
+                  data-action="open-imported-page"
+                  onClick={() => useFilesStore.getState().openFile(importedFileId)}
+                >
+                  Open {importedPath}
+                </button>
+              ) : (
+                <div style={styles.fieldHint} data-imported-missing="">
+                  The project has no {importedPath}: where this is used the app will say “Unknown component”. Make the file, or take this element out.
+                </div>
+              )}
+              <div style={{ ...styles.fieldHint, marginTop: 8 }}>
+                What is written on its tag, and anything put inside it, is dropped when the app is put together. What it shows is changed in its own file.
+              </div>
+            </div>
+          </div>
+          {selectedElement.parentId && (
+            <div style={styles.section}>
+              <div style={styles.sectionHeader}>
+                <div style={styles.sectionTitle}>Control flow</div>
+              </div>
+              <div style={styles.sectionBody}>
+                <div style={styles.actionRow}>
+                  <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => wrapSelected('if')} data-block-action="wrap-if">
+                    Wrap in #if
+                  </button>
+                  <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => wrapSelected('each')} data-block-action="wrap-each">
+                    Wrap in #each
+                  </button>
+                </div>
+                <div style={styles.fieldHint}>Puts a block around this element; its condition or list is edited on the block.</div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -903,6 +1001,20 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
             </div>
           )}
         </div>
+
+        {/* The page: the project's theme beside the page's own `theme`
+            below, since which of the two it is drawn in is a question about
+            both. */}
+        {isPage && (
+          <div style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <div style={styles.sectionTitle}>Project theme</div>
+            </div>
+            <div style={styles.sectionBody}>
+              <ProjectThemeField />
+            </div>
+          </div>
+        )}
 
         {selectedElement.block && (
           <div style={styles.section} data-block-editor={selectedElement.block.kind} onBlur={endEdit}>

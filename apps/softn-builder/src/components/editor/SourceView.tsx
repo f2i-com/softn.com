@@ -9,6 +9,7 @@ import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { generateSource } from '../../utils/sourceGenerator';
 import { logicSrcOf } from '../../utils/logicFiles';
+import { liveImports } from '../../utils/pageImports';
 import { gatherCollections } from '../../utils/buildProjectBundle';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { useSourceFidelity, summariseReasons } from '../../utils/useSourceFidelity';
@@ -82,7 +83,10 @@ export function SourceView() {
     } catch {
       // Export says why when it is asked to write the bundle.
     }
-    return generateSource(elements, rootId, '', collections, { logicSrc });
+    // With the pages it uses, as they stand on the canvas now.
+    const canvasNow = useCanvasStore.getState();
+    const imports = liveImports(elements, canvasNow.imports, canvasNow.writtenImports);
+    return generateSource(elements, rootId, '', collections, { logicSrc, imports });
     // `entities` is read through gatherCollections, and is what makes the view follow the schema.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elements, rootId, projectCollections, entities, activeFileId, uiFiles, logicFiles]);

@@ -382,7 +382,8 @@ describe('the wrapper a component is drawn in', () => {
     expect(wrapper.getAttribute('data-softn-drawn')).toBe('dark');
     expect(wrapper.querySelector('.softn-app')!.classList.contains('softn-theme-light')).toBe(true);
     const tokens = host.querySelector('style[data-softn-drawn-tokens]')!.textContent!;
-    expect(tokens).toMatch(/^\[data-softn-drawn="light"\]\{[^{}]+\}\n\[data-softn-drawn="dark"\]\{[^{}]+\}$/);
+    // One rule for each side, reached from a wrapper and from the artboard, and from nowhere else.
+    expect(tokens).toMatch(/^\[data-softn-drawn="light"\],\[data-app-tokens="light"\]\{[^{}]+\}\n\[data-softn-drawn="dark"\],\[data-app-tokens="dark"\]\{[^{}]+\}$/);
     expect(tokens).toContain('--color-primary-500:');
     expect(tokens).not.toContain(':root');
   });

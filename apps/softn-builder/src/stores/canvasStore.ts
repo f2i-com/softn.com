@@ -55,6 +55,14 @@ function wordsBecomeElement(elements: Map<string, CanvasElement>, parentId: stri
 interface CanvasStore extends CanvasState {
   // Imports tracking for current file
   imports: UIImport[];
+  /**
+   * The names among `imports` that the Builder wrote, for a page dropped
+   * from the palette. Each stays among `imports` once written, so the page
+   * it names can be drawn again when a drop is redone; whether it is
+   * written into the file is worked out from the elements (utils/
+   * pageImports.ts, liveImports).
+   */
+  writtenImports: string[];
   setImports: (imports: UIImport[]) => void;
   isImportedComponent: (componentType: string) => boolean;
   getImportSource: (componentType: string) => string | null;
@@ -66,7 +74,20 @@ interface CanvasStore extends CanvasState {
    * taken from the palette. Without, it has no props, for a caller that sets
    * its own (a project template).
    */
-  addElement: (type: string, parentId: string | null, index?: number, options?: { starter?: boolean; side?: 'start' | 'end' }) => string;
+  addElement: (
+    type: string,
+    parentId: string | null,
+    index?: number,
+    options?: {
+      starter?: boolean;
+      side?: 'start' | 'end';
+      /**
+       * The element is a page of the project, used by the name `type`: the
+       * path its import is written with, and whether the page has it already.
+       */
+      page?: { source: string; existing: boolean };
+    }
+  ) => string;
   updateElement: (id: string, updates: Partial<CanvasElement>) => void;
   updateElementProps: (id: string, props: Record<string, unknown>) => void;
   deleteElement: (id: string) => void;
@@ -127,7 +148,7 @@ interface CanvasStore extends CanvasState {
 
   // Reset
   reset: () => void;
-  loadState: (elements: Map<string, CanvasElement>, rootId: string, imports?: UIImport[]) => void;
+  loadState: (elements: Map<string, CanvasElement>, rootId: string, imports?: UIImport[], writtenImports?: string[]) => void;
   /**
    * Put back the elements of an earlier state of the same page: what undo
    * and redo do. Unlike `loadState`, which opens a page, it leaves the
@@ -192,9 +213,18 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   draggedElementId: null,
   dropIndicator: null,
   imports: [],
+  writtenImports: [],
 
   setImports: (imports) => {
-    set({ imports });
+    // What the file imports, and beside it any import the Builder wrote that
+    // the file does not hold just now because nothing uses it: the drop
+    // that used it may yet be redone.
+    set((state) => ({
+      imports: [
+        ...imports,
+        ...state.imports.filter((own) => state.writtenImports.includes(own.name) && !imports.some((imp) => imp.name === own.name)),
+      ],
+    }));
   },
 
   isImportedComponent: (componentType) => {
@@ -209,7 +239,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   addElement: (type, parentId, index, options) => {
     const id = generateId();
     const parent = parentId || get().rootId;
-    const starter = options?.starter ? starterProps(type) : null;
+    // A page of the project has nothing to start with: what is written on
+    // its tag is dropped when the app is put together.
+    const page = options?.page;
+    const starter = options?.starter && !page ? starterProps(type) : null;
 
     edit((state) => {
       const newElements = new Map(state.elements);
@@ -247,6 +280,15 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         newElements.set(parent, { ...parentElement, children: newChildren });
       }
 
+      // The import that binds its name is written with it, once.
+      if (page && !page.existing && !state.imports.some((imp) => imp.name === type)) {
+        return {
+          elements: newElements,
+          selectedIds: [id],
+          imports: [...state.imports, { name: type, source: page.source }],
+          writtenImports: state.writtenImports.includes(type) ? state.writtenImports : [...state.writtenImports, type],
+        };
+      }
       return { elements: newElements, selectedIds: [id] };
     });
 
@@ -747,7 +789,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     });
   },
 
-  loadState: (elements, rootId, imports = []) => {
+  loadState: (elements, rootId, imports = [], writtenImports = []) => {
     debug('[canvasStore] loadState called:', {
       elementsSize: elements.size,
       rootId,
@@ -762,6 +804,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       clipboard: [],
   clipboardTree: new Map(),
       imports,
+      writtenImports,
     });
   },
 

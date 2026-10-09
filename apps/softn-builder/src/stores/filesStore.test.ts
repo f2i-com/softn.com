@@ -133,6 +133,17 @@ describe('renaming and moving pages that import one another', () => {
     expect(importsOfMain()).toEqual(['Header from ./components/TopBar.ui', 'Row from ./components/TopBar.ui']);
   });
 
+  it('a page imported with the `=` left out is followed too, as the composer places it', () => {
+    // The parser and the composer read `from "./x.ui"` as the same import
+    // (core, UI_IMPORT_PATTERN). The rename looked for `from=` alone, and
+    // left a page written the other way importing a file that had gone.
+    store().updateUIFileSource(UI_ID, '<import Header from "./components/Header.ui" />\n<App><Header /></App>');
+    expect(importsOfMain()).toEqual(['Header from ./components/Header.ui']);
+    store().renameFile(headerId, 'TopBar.ui');
+    expect(mainSource()).toContain('<import Header from "./components/TopBar.ui" />');
+    expect(importsOfMain()).toEqual(['Header from ./components/TopBar.ui']);
+  });
+
   it('a moved page is imported from where it went', () => {
     store().moveFile(headerId, 'ui/shared');
     expect(mainSource()).toContain('<import Header from="./shared/Header.ui" />');

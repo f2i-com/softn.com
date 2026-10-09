@@ -9,6 +9,7 @@ import { useProjectStore } from '../../stores/projectStore';
 import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
 import { useFilesStore } from '../../stores/filesStore';
 import { DrawnComponent } from './DrawnComponent';
+import { addDropped } from '../../utils/pageDrop';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
 import { blockHeaderText } from '../../utils/sourceGenerator';
@@ -72,8 +73,8 @@ const sideBarStyle: React.CSSProperties = {
   background: 'var(--coral)',
   borderRadius: 2,
   // Ringed in the colour of the page: the end of a Button's label is inside
-  // the Button, and a coral bar on a coral Button could not be seen.
-  boxShadow: '0 0 0 1.5px var(--ink)',
+  // the Button, and the bar on the Button's own colour could not be seen.
+  boxShadow: '0 0 0 1.5px var(--ink-2)',
   pointerEvents: 'none',
   zIndex: 20,
 };
@@ -147,18 +148,19 @@ const styles: Record<string, React.CSSProperties> = {
   },
   hovered: {
     borderColor: 'var(--dimmer)',
-    background: 'rgba(148, 163, 184, 0.05)',
+    background: 'var(--bl-hover)',
   },
+  // Tints of the accent the page's side has, so they are there on a dark page too.
   selected: {
     borderColor: 'var(--coral)',
-    background: 'rgba(194, 65, 12, 0.05)',
+    background: 'color-mix(in srgb, var(--coral) 6%, transparent)',
   },
   dragging: {
     opacity: 0.5,
   },
   dragOver: {
     borderColor: 'var(--coral)',
-    background: 'rgba(194, 65, 12, 0.1)',
+    background: 'var(--coral-glow)',
   },
   label: {
     position: 'absolute' as const,
@@ -179,7 +181,12 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     borderWidth: 1,
     borderStyle: 'dashed',
-    borderColor: 'var(--line-soft)',
+    // The outline of where an element's children go. Once it holds some,
+    // the words "Drop children here" are gone and this line is all that
+    // shows the place, so it is drawn to be seen: half the page's text
+    // colour, which is 3:1 on a light page and more on a dark one. It was
+    // a tenth of that, a line that was there if one looked for it.
+    borderColor: 'var(--place-line, var(--line-strong))',
     marginTop: 8,
     transition: 'all 0.2s',
   },
@@ -193,7 +200,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   childrenDragOver: {
     borderColor: 'var(--coral)',
-    background: 'rgba(194, 65, 12, 0.05)',
+    background: 'color-mix(in srgb, var(--coral) 6%, transparent)',
   },
   notAllowed: {
     cursor: 'not-allowed',
@@ -225,7 +232,9 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     // A block is the language's own construct, so it takes the language's
     // colour; it was mint, which the brand keeps for something running.
-    background: 'var(--coral-glow)',
+    // The tint is the page side's (builder.css, --block-ground): the
+    // brand's glow where the keyword reads on it, and fainter where not.
+    background: 'var(--block-ground, var(--coral-glow))',
     border: '1px solid var(--line)',
     fontSize: 12,
   },
@@ -507,9 +516,7 @@ export const CanvasElement = React.memo(function CanvasElement({
       // Drop a new palette component
       if (state.draggedType && indicator) {
         e.stopPropagation();
-        const historyState = useHistoryStore.getState();
-        historyState.push(state.elements, state.rootId);
-        state.addElement(state.draggedType, indicator.parentId, indicator.index, { starter: true, side: indicator.side });
+        addDropped(state.draggedType, indicator.parentId, indicator.index, indicator.side, () => useHistoryStore.getState().push(state.elements, state.rootId));
         state.setDraggedType(null);
         state.setDropIndicator(null);
         return;
@@ -758,8 +765,18 @@ export const CanvasElement = React.memo(function CanvasElement({
               padding: '8px 16px',
               borderRadius: 4,
               border: 'none',
-              background: props.variant === 'secondary' ? 'var(--line-soft)' : 'var(--coral)',
-              color: props.variant === 'secondary' ? 'var(--paper)' : '#fff',
+              // The app's own button colours, where it was the editor's
+              // accent: on the canvas a primary Button is the colour it is
+              // when the app runs. Its box is what it was: where a drop
+              // goes among its words is measured on it.
+              // The primary's ground is the two-stop fall the library's
+              // Button has, so the canvas and Preview show one Button.
+              background:
+                props.variant === 'secondary'
+                  ? 'var(--btn-secondary-bg, var(--line-soft))'
+                  : 'linear-gradient(to bottom, var(--color-primary-500, var(--coral)), var(--color-primary-600, var(--coral)))',
+              color: props.variant === 'secondary' ? 'var(--btn-secondary-text, var(--paper))' : 'var(--color-primary-text, #fff)',
+              boxShadow: props.variant === 'secondary' ? 'inset 0 0 0 1px var(--btn-secondary-border, var(--line))' : undefined,
               cursor: 'pointer',
               fontSize: 14,
             }}
@@ -825,9 +842,10 @@ export const CanvasElement = React.memo(function CanvasElement({
             style={{
               padding: 16,
               borderRadius: 8,
-              background: '#fff',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-              border: '1px solid var(--line-soft)',
+              // The app's surface on the app's page: it was white whatever the page.
+              background: 'var(--color-surface, var(--ink-2))',
+              boxShadow: 'var(--shadow-md, 0 2px 8px rgba(0,0,0,0.1))',
+              border: '1px solid var(--color-border, var(--line-soft))',
             }}
           >
             Card
@@ -901,28 +919,20 @@ export const CanvasElement = React.memo(function CanvasElement({
         );
 
       case 'Alert': {
-        const alertBorderColor =
-          props.variant === 'error'
-            ? '#fecaca'
-            : props.variant === 'success'
-              ? '#bbf7d0'
-              : props.variant === 'warning'
-                ? '#fde68a'
-                : 'var(--line)';
+        // The status colour, mixed into the page as the library's Alert mixes
+        // it (feedback/Alert.tsx): a tint for the ground and a stronger one
+        // for the line, which read on a light page and on a dark one. With
+        // no variant written it is information, as the Alert itself is.
+        const status = ['error', 'success', 'warning', 'info'].includes(String(props.variant)) ? String(props.variant) : 'info';
+        const fallback = { error: '#ef4444', success: '#22c55e', warning: '#f59e0b', info: '#3b82f6' }[status];
+        const statusColor = `var(--color-${status}-500, ${fallback})`;
         return (
           <div
             style={{
               padding: '12px 16px',
               borderRadius: 4,
-              background:
-                props.variant === 'error'
-                  ? '#fef2f2'
-                  : props.variant === 'success'
-                    ? '#f0fdf4'
-                    : props.variant === 'warning'
-                      ? '#fffbeb'
-                      : 'var(--ink-3)',
-              border: `1px solid ${alertBorderColor}`,
+              background: `color-mix(in srgb, ${statusColor} 12%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${statusColor} 35%, transparent)`,
               fontSize: 14,
             }}
           >
@@ -941,9 +951,11 @@ export const CanvasElement = React.memo(function CanvasElement({
             <div
               style={{
                 padding: 12,
-                background: 'linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%)',
+                // The app's own accent, faintly: it was a fixed light purple,
+                // which a dark page had no place for.
+                background: 'var(--color-primary-50, var(--ink-3))',
                 borderRadius: 6,
-                border: '1px dashed #8b5cf6',
+                border: '1px dashed var(--color-primary-500, var(--line-strong))',
                 minHeight: 40,
               }}
             >
@@ -958,7 +970,7 @@ export const CanvasElement = React.memo(function CanvasElement({
                 <span
                   style={{
                     fontSize: 14,
-                    color: '#6d28d9',
+                    color: 'var(--paper)',
                     fontWeight: 600,
                   }}
                 >
@@ -967,8 +979,8 @@ export const CanvasElement = React.memo(function CanvasElement({
                 <span
                   style={{
                     fontSize: 10,
-                    color: '#8b5cf6',
-                    background: '#fff',
+                    color: 'var(--paper)',
+                    background: 'var(--color-primary-100, var(--ink))',
                     padding: '2px 6px',
                     borderRadius: 4,
                   }}
@@ -979,8 +991,7 @@ export const CanvasElement = React.memo(function CanvasElement({
               <div
                 style={{
                   fontSize: 10,
-                  color: '#7c3aed',
-                  opacity: 0.8,
+                  color: 'var(--dim)',
                 }}
               >
                 from {importSource}

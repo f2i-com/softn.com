@@ -38,7 +38,8 @@ export function useActiveFileOnCanvas(): void {
     // The canvas already holds this tree: it was flushed from it.
     if (useCanvasStore.getState().elements === elements) return;
     debug('[canvas] loading file', activeFileId, { elements: elements.size, rootId });
-    loadCanvasState(elements, rootId, useFilesStore.getState().uiFiles.get(activeFileId)?.imports ?? []);
+    const opened = useFilesStore.getState().uiFiles.get(activeFileId);
+    loadCanvasState(elements, rootId, opened?.imports ?? [], opened?.writtenImports ?? []);
   }, [activeFileId, elements, rootId, refused, loadCanvasState]);
 
   // What the file imports can change without its tree changing (a component

@@ -367,6 +367,8 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
       // Python entry file was exported with no logic at all.
       source = generateSource(uiFile.elements, uiFile.rootId, '', options.collections, {
         logicSrc: logicSrcOf(uiFile, options.logicFiles),
+        // And the pages it uses: a page with no source has nowhere else to keep them.
+        imports: uiFile.imports,
       });
     }
 

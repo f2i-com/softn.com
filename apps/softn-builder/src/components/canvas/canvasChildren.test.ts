@@ -496,22 +496,45 @@ describe('a component the canvas draws as itself', () => {
     expect(drawnIn('Stat')).toBeNull();
   });
 
-  it('is drawn light on the canvas whatever the project\'s theme, as everything else on the artboard is', () => {
-    // The artboard is paper, and the elements drawn on it by hand are
-    // light. A dark project's components drawn dark stood on it as black
-    // tiles among light ones. Preview shows the project in its own theme.
-    useProjectStore.getState().setThemeMode('dark');
-    try {
-      open('<App theme="dark"><Badge>Shipped</Badge><Progress value={40} /></App>');
-      // The whole canvas, which is what chooses the theme its elements are drawn in.
+  it('is drawn in the project\'s theme, on an artboard that is the app\'s page in that theme', () => {
+    // The artboard was paper whatever the project, and a dark project's
+    // components stood on it as black tiles among light ones; for a while
+    // everything was drawn light to be one thing. The artboard is the
+    // app's page now: its tokens are the project's, its colours the
+    // page's, and what is drawn on it by hand reads the same.
+    const whole = (source: string) => {
+      act(() => root?.unmount());
+      open(source);
       root = createRoot(host);
       act(() => root!.render(React.createElement(Canvas)));
-      expect(drawnIn('Badge')!.getAttribute('data-softn-drawn')).toBe('light');
-      expect(drawnIn('Progress')!.getAttribute('data-softn-drawn')).toBe('light');
-      expect(host.querySelector('[data-softn-drawn="dark"]')).toBeNull();
+      return {
+        board: host.querySelector<HTMLElement>('[data-builder-canvas]')!,
+        page: host.querySelector<HTMLElement>('[data-builder-canvas] [data-builder-page]')!,
+      };
+    };
+    useProjectStore.getState().setThemeMode('dark');
+    try {
+      const dark = whole('<App theme="system"><Badge>Shipped</Badge><Text>Words</Text></App>');
+      expect(dark.board.getAttribute('data-app-tokens')).toBe('dark');
+      expect(dark.page.getAttribute('data-builder-page')).toBe('dark');
+      // The page is what a dark App makes of its own container.
+      expect(dark.page.classList.contains('softn-theme-dark')).toBe(true);
+      expect(dark.page.style.getPropertyValue('background')).toContain('--color-bg');
+      // The hand-drawn Text and the drawn Badge are both inside it.
+      expect(dark.page.contains(host.querySelector(`[data-canvas-element-id="${byType('Text').id}"]`))).toBe(true);
+      expect(drawnIn('Badge')!.getAttribute('data-softn-drawn')).toBe('dark');
+
+      // A page that pins light is a light page, on a dark project's tokens: as it runs.
+      const pinned = whole('<App theme="light"><Badge>Shipped</Badge></App>');
+      expect(pinned.board.getAttribute('data-app-tokens')).toBe('dark');
+      expect(pinned.page.getAttribute('data-builder-page')).toBe('light');
+      expect(pinned.page.classList.contains('softn-theme-light')).toBe(true);
     } finally {
       useProjectStore.getState().setThemeMode('light');
     }
+    const light = whole('<App><Badge>Shipped</Badge></App>');
+    expect(light.board.getAttribute('data-app-tokens')).toBe('light');
+    expect(light.page.getAttribute('data-builder-page')).toBe('light');
   });
 
   it('is not drawn for a name the page has imported over: that is the page\'s own component', () => {
@@ -621,6 +644,27 @@ describe('words, moved', () => {
     const words = [...canvas().elements.values()].find((el) => el.componentType === '#text')!;
     expect(canDropInto(byType('AvatarGroup'), words.componentType, { elements: canvas().elements, draggedId: words.id })).toBe(false);
     expect(canDropInto(byType('AvatarGroup'), '#each', { elements: canvas().elements })).toBe(true);
+  });
+});
+
+describe('the line that shows where a drop would go, between two elements of the page', () => {
+  it('takes up no room, so the element under the pointer is not pushed out from under it', () => {
+    // It was three pixels of the page's flow. Held in the top few pixels of
+    // an element, a drop was offered before it, the line pushed the element
+    // down from under the pointer, which the canvas took for the pointer
+    // leaving, and the offer was withdrawn: let go there, what was dragged
+    // landed at the end of the page.
+    open('<App><Heading>One</Heading><Text>Two</Text></App>');
+    root = createRoot(host);
+    act(() => root!.render(React.createElement(Canvas)));
+    act(() => canvas().setDraggedType('Divider'));
+    act(() => canvas().setDropIndicator({ parentId: canvas().rootId!, index: 1 }));
+    const line = host.querySelector<HTMLElement>('[data-drop-line]')!;
+    expect(line).not.toBeNull();
+    const px = (value: string) => Number.parseFloat(value || '0');
+    expect(px(line.style.height) + px(line.style.marginTop) + px(line.style.marginBottom)).toBe(0);
+    act(() => canvas().setDraggedType(null));
+    act(() => canvas().setDropIndicator(null));
   });
 });
 
