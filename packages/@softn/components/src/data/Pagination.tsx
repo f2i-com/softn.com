@@ -99,7 +99,13 @@ export function Pagination({
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+    // In its parts, not as `border`: the chosen page changes the colour, and
+    // taking a colour away from a shorthand clears the colour it had set.
+    // The page that had just been left was drawn with a border in the
+    // colour of its text.
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderColor: 'var(--color-border, rgba(255, 255, 255, 0.08))',
     backgroundColor: 'var(--color-surface, #16161a)',
     color: 'var(--color-text, #ececf0)',
     cursor: 'pointer',
@@ -143,6 +149,11 @@ export function Pagination({
   const navStyle: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
+    // On a phone the row is wider than what holds it: it goes to a second
+    // line, where it used to run off the side and be cut.
+    flexWrap: 'wrap',
+    rowGap: '4px',
+    maxWidth: '100%',
   };
 
   const selectStyle: React.CSSProperties = {

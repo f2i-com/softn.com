@@ -81,6 +81,7 @@ export const PURPOSES = {
   EmptySearch: 'Preset empty state for no search results (helper; not a registered tag).',
   EmptyState: 'What to show when there is nothing yet: icon, title, description, action.',
   Field: 'A label, hint and error around any control that has none of its own (Slider, Rating, SegmentedControl, a group of checkboxes).',
+  CopyButton: 'A button that copies its value to the clipboard and says "Copied" for a moment; use it instead of a logic function and a state variable for the label.',
   FileChooser: 'Pick files from the device, as a button or a drop zone.',
   Form: 'Groups inputs and submits them together.',
   GaugeChart: 'A single value on a dial, with thresholds.',

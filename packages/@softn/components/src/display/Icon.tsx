@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 import { markupUrlJudge, sanitizeSvg, useEgressConfig } from '@softn/core';
 import { named } from '../utils/choice';
 
@@ -84,6 +85,7 @@ export function Icon({
   ariaLabel,
   className,
   style,
+  ...rest
 }: IconProps): React.ReactElement {
   const a11y = ariaLabel
     ? ({ role: 'img', 'aria-label': ariaLabel } as const)
@@ -112,6 +114,7 @@ export function Icon({
   if (svg) {
     return (
       <span
+        {...domAttributes(rest)}
         className={className}
         style={wrapperStyle}
         {...a11y}
@@ -124,14 +127,14 @@ export function Icon({
   // The table's own entries only: `name="constructor"` found a function here.
   const iconSvg = named(ICONS, name) ?? null;
   if (!iconSvg) {
-    return <span className={className} style={wrapperStyle} {...a11y} />;
+    return <span {...domAttributes(rest)} className={className} style={wrapperStyle} {...a11y} />;
   }
 
   // Determine if the icon uses fill or stroke
   const usesFill = iconSvg.includes('fill=') || name === 'send' || name === 'star' || name === 'heart';
 
   return (
-    <span className={className} style={wrapperStyle} {...a11y}>
+    <span {...domAttributes(rest)} className={className} style={wrapperStyle} {...a11y}>
       <svg
         focusable="false"
         xmlns="http://www.w3.org/2000/svg"

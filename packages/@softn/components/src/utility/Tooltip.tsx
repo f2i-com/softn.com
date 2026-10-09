@@ -461,7 +461,16 @@ export function Tooltip({
       display: 'block',
       width: 0,
       height: 0,
-      border: '6px solid transparent',
+      // Each side by name: the arrow is the one side that has a colour, and
+      // a tooltip moved to another side would otherwise have the colour of
+      // its old side taken away from a shorthand, which leaves that side
+      // the colour of the text. A second arrow.
+      borderWidth: 6,
+      borderStyle: 'solid',
+      borderTopColor: 'transparent',
+      borderRightColor: 'transparent',
+      borderBottomColor: 'transparent',
+      borderLeftColor: 'transparent',
     };
 
     const arrowColor = variantStyle.bg;

@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 
 export interface CenterProps {
   /** Whether to center inline (horizontal only) */
@@ -40,6 +41,7 @@ export function Center({
   className,
   style,
   children,
+  ...rest
 }: CenterProps): React.ReactElement {
   const computedStyle: React.CSSProperties = inline
     ? {
@@ -62,7 +64,7 @@ export function Center({
       };
 
   return (
-    <div className={className} style={computedStyle}>
+    <div {...domAttributes(rest)} className={className} style={computedStyle}>
       {children}
     </div>
   );

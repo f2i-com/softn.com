@@ -18,12 +18,67 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findShorthandConflicts } from '../scripts/style-shorthand-audit.mjs';
+import { findShorthandConflicts, findStateConflicts } from '../scripts/style-shorthand-audit.mjs';
 
 describe('style objects in src/', () => {
   it('never let a longhand that may be empty follow its shorthand', () => {
     const conflicts = findShorthandConflicts().map((c) => `${c.file}:${c.line} ${c.longhand} after ${c.shorthand}: ${c.text}`);
     expect(conflicts, 'write the key only when it has a value: ...(x ? { paddingTop: x } : {})').toEqual([]);
+  });
+
+  it('never take a longhand away from a shorthand between two states of one element', () => {
+    // `isActive ? { ...button, borderColor } : button`: going back, React
+    // clears borderColor, and with it the colour `border` had set. A
+    // browser then draws the border in the colour of the text. Seen on the
+    // page of a Pagination that had just been left.
+    const conflicts = findStateConflicts().map((c) => `${c.file}:${c.line} ${c.longhand} over ${c.shorthand}: ${c.text}`);
+    expect(conflicts, 'give both states the longhand, or write the base with longhands only').toEqual([]);
+  });
+});
+
+describe('the audit of two states', () => {
+  function audit(source: string) {
+    const dir = mkdtempSync(join(tmpdir(), 'softn-style-states-'));
+    try {
+      mkdirSync(join(dir, 'src'));
+      writeFileSync(join(dir, 'src', 'Sample.tsx'), source);
+      return findStateConflicts(join(dir, 'src')).map((c) => `${c.longhand} over ${c.shorthand}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('catches a state that adds a longhand to what the other state has (the Pagination case)', () => {
+    const found = audit(`
+      export function Sample(active: boolean) {
+        const button = { border: '1px solid grey', padding: 4 };
+        const chosen = { ...button, borderColor: 'blue', color: 'white' };
+        return <button style={active ? chosen : button} />;
+      }`);
+    expect(found).toEqual(['borderColor over border']);
+  });
+
+  it('catches it whichever branch has the longhand, and through a second spread', () => {
+    const found = audit(`
+      export function Sample(bad: boolean) {
+        const base = { border: '1px solid grey' };
+        const input = { ...base, width: '100%' };
+        const wrong = { ...input, borderColor: 'red', paddingLeft: 2 };
+        return <input style={bad ? input : wrong} />;
+      }`);
+    expect(found).toEqual(['borderColor over border']);
+  });
+
+  it('passes two states that both set the longhand, and a base written in longhands', () => {
+    const found = audit(`
+      export function Sample(active: boolean) {
+        const button = { border: '1px solid grey', borderColor: 'grey' };
+        const chosen = { ...button, borderColor: 'blue' };
+        const plain = { borderWidth: 1, borderStyle: 'solid', borderColor: 'grey' };
+        const marked = { ...plain, borderColor: 'blue' };
+        return [<button style={active ? chosen : button} />, <button style={active ? marked : plain} />];
+      }`);
+    expect(found).toEqual([]);
   });
 });
 

@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 
 export interface HeadingProps {
   /** Heading level (1-6) */
@@ -109,6 +110,7 @@ export function Heading({
   className,
   style,
   children,
+  ...rest
 }: HeadingProps): React.ReactElement {
   // `level` often comes from a `.ui` expression, so it may be 0, 7, "2" or
   // NaN; anything outside 1-6 used to crash on the missing style.
@@ -174,7 +176,7 @@ export function Heading({
 
   if (underline) {
     return (
-      <Tag className={className} style={{ ...computedStyle, ...underlineStyle }}>
+      <Tag {...domAttributes(rest)} className={className} style={{ ...computedStyle, ...underlineStyle }}>
         {content ?? children}
         <span style={underlineAfter} aria-hidden="true" />
       </Tag>
@@ -182,7 +184,7 @@ export function Heading({
   }
 
   return (
-    <Tag className={className} style={computedStyle}>
+    <Tag {...domAttributes(rest)} className={className} style={computedStyle}>
       {content ?? children}
     </Tag>
   );

@@ -8,7 +8,6 @@
  * components read and the callbacks they call, by doing what a person does.
  */
 
-import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { ComponentRegistry, parse, renderDocument, type SoftNComponent, type SoftNRenderContext } from '@softn/core';
 import { act } from 'react';

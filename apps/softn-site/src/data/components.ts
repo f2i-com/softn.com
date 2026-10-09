@@ -50,6 +50,7 @@ export const CATEGORIES: Category[] = [
       'SegmentedControl',
       'ButtonGroup',
       'Field',
+      'CopyButton',
     ],
   },
   {

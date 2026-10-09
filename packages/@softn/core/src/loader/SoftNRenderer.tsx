@@ -1705,8 +1705,8 @@ export function SoftNRenderer({
   // Which app the components below are in. One object per change of its
   // parts, for the same reason as the capability state above.
   const appScope = useMemo<AppScope>(
-    () => ({ appId, xdb: scopedXdb, active, assets: assetResolver }),
-    [appId, scopedXdb, active, assetResolver]
+    () => ({ appId, xdb: scopedXdb, active, assets: assetResolver, clipboard: runtimePermissions?.clipboard !== false }),
+    [appId, scopedXdb, active, assetResolver, runtimePermissions]
   );
 
   // Get the default registry

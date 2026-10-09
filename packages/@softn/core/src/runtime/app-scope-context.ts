@@ -35,6 +35,12 @@ export interface AppScope {
   active: boolean;
   /** How this app's markup reaches the files in its bundle. */
   assets?: AppAssetResolver;
+  /**
+   * False where the app's manifest denies its script the clipboard. A
+   * component that copies runs in the page, outside the sandbox that rule is
+   * kept by, so it has to ask.
+   */
+  clipboard?: boolean;
 }
 
 /**

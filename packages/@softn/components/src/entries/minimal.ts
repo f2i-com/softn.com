@@ -62,6 +62,7 @@ import { Rating } from '../form/Rating';
 import { SegmentedControl } from '../form/SegmentedControl';
 import { ButtonGroup } from '../form/ButtonGroup';
 import { Field } from '../form/Field';
+import { CopyButton } from '../form/CopyButton';
 import { Text } from '../display/Text';
 import { Heading } from '../display/Heading';
 import { Badge } from '../display/Badge';
@@ -141,6 +142,7 @@ export const minimalComponents = {
   SegmentedControl,
   ButtonGroup,
   Field,
+  CopyButton,
 
   // Display
   Text,

@@ -6,6 +6,7 @@
  */
 
 import React, { useId } from 'react';
+import { domAttributes } from '../utils/domAttributes';
 
 export interface StackProps {
   /** Direction of the stack */
@@ -102,6 +103,7 @@ export function Stack({
   className,
   style,
   children,
+  ...rest
 }: StackProps): React.ReactElement {
   const uniqueId = useId();
   const stackId = `softn-stack-${uniqueId.replace(/:/g, '')}`;
@@ -130,7 +132,7 @@ export function Stack({
     // `mobileVertical`, `mobileHorizontal` and `mobileReverse` did nothing.
     responsiveCSS = `
       @media (max-width: 767px) {
-        #${stackId} { flex-direction: ${mobileDirection} !important; }
+        [data-softn-stack="${stackId}"] { flex-direction: ${mobileDirection} !important; }
       }
     `;
   }
@@ -159,7 +161,7 @@ export function Stack({
   return (
     <>
       {responsiveCSS && <style>{responsiveCSS}</style>}
-      <div id={stackId} className={className} style={computedStyle}>
+      <div {...domAttributes(rest)} data-softn-stack={stackId} className={className} style={computedStyle}>
         {children}
       </div>
     </>

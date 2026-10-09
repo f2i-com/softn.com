@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 
 export interface TextProps {
   /** Text content */
@@ -117,6 +118,7 @@ export function Text({
   style,
   children,
   as = 'span',
+  ...rest
 }: TextProps): React.ReactElement {
   const Tag: 'span' | 'p' | 'div' | 'label' = TEXT_TAGS.has(as) ? as : 'span';
 
@@ -153,7 +155,7 @@ export function Text({
   };
 
   return (
-    <Tag className={className} style={computedStyle}>
+    <Tag {...domAttributes(rest)} className={className} style={computedStyle}>
       {content ?? children}
     </Tag>
   );

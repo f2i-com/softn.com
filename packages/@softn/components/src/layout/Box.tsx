@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 import { useJudgedBackground } from '../utils/egress';
 
 export interface BoxProps {
@@ -113,6 +114,7 @@ export function Box({
   className,
   style,
   children,
+  ...rest
 }: BoxProps): React.ReactElement {
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     onKeyDown?.(event);
@@ -147,6 +149,7 @@ export function Box({
 
   return (
     <div
+      {...domAttributes(rest)}
       className={className}
       style={computedStyle}
       onClick={onClick}

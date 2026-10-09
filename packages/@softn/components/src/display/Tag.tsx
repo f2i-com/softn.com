@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 import { getVariantColors, getStyleForVariantStyle } from '../theme/variants';
 import { tagSizeConfig, getGapValue } from '../theme/sizes';
 import { choice } from '../utils/choice';
@@ -56,6 +57,7 @@ export function Tag({
   className,
   style,
   children,
+  ...rest
 }: TagProps): React.ReactElement {
   // Fall back to 'default' if variant is invalid
   const colors = getVariantColors(variant);
@@ -139,7 +141,7 @@ export function Tag({
   );
 
   return (
-    <span className={className} style={computedStyle}>
+    <span {...domAttributes(rest)} className={className} style={computedStyle}>
       {onClick ? (
         <button
           type="button"

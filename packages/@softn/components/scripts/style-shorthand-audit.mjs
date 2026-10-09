@@ -219,9 +219,93 @@ export function findShorthandConflicts(srcDir = join(packageRoot, 'src')) {
   return conflicts;
 }
 
+/**
+ * Every place under `srcDir` where an element is drawn with one of two
+ * style objects and only one of them sets a longhand of a shorthand the
+ * other has, as `{ file, line, longhand, shorthand, text }`.
+ *
+ *     const button = { border: '1px solid grey' };
+ *     const active = { ...button, borderColor: 'blue' };
+ *     <button style={isActive ? active : button}>
+ *
+ * Going from `active` back to `button`, React takes `borderColor` away by
+ * setting it to nothing, which clears the colour the shorthand set: the
+ * element is left with a border in the colour of its text. The page of a
+ * Pagination that had just been left was drawn so, and a SmartForm field
+ * whose error had been put right. The same empty assignment as the rule
+ * above, made between two drawings instead of within one, so it is held
+ * the same way: both objects set the longhand, or neither does.
+ *
+ * Two names in a conditional, each an object literal declared in the same
+ * file, are what is recognised; a spread of another such object counts.
+ */
+export function findStateConflicts(srcDir = join(packageRoot, 'src')) {
+  const conflicts = [];
+  for (const file of sourceFiles(srcDir)) {
+    const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const relativePath = relative(packageRoot, file).split(sep).join('/');
+
+    const literals = new Map();
+    const collect = (node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
+        literals.set(node.name.text, node.initializer);
+      }
+      ts.forEachChild(node, collect);
+    };
+    collect(source);
+
+    /** Every key the object has, its own and those of the declared objects it spreads. */
+    const allKeys = (name, seen = new Set()) => {
+      const keys = new Set();
+      if (seen.has(name)) return keys;
+      seen.add(name);
+      for (const property of literals.get(name).properties) {
+        if (ts.isSpreadAssignment(property)) {
+          if (ts.isIdentifier(property.expression) && literals.has(property.expression.text)) {
+            for (const key of allKeys(property.expression.text, seen)) keys.add(key);
+          }
+          continue;
+        }
+        const key = propertyName(property);
+        if (key) keys.add(key);
+      }
+      return keys;
+    };
+
+    const visit = (node) => {
+      if (ts.isConditionalExpression(node) && ts.isIdentifier(node.whenTrue) && ts.isIdentifier(node.whenFalse)) {
+        const [one, other] = [node.whenTrue.text, node.whenFalse.text];
+        if (literals.has(one) && literals.has(other)) {
+          for (const [has, lacks] of [[one, other], [other, one]]) {
+            const lacking = allKeys(lacks);
+            for (const longhand of allKeys(has)) {
+              if (lacking.has(longhand)) continue;
+              const shorthand = (SHORTHANDS_OF.get(longhand) ?? []).find((candidate) => lacking.has(candidate));
+              if (!shorthand) continue;
+              conflicts.push({
+                file: relativePath,
+                line: source.getLineAndCharacterOfPosition(node.getStart()).line + 1,
+                longhand,
+                shorthand,
+                text: `${node.getText().replace(/\s+/g, ' ').slice(0, 100)}: only ${has} sets ${longhand}`,
+              });
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return conflicts;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const conflicts = findShorthandConflicts();
   for (const c of conflicts) console.log(`${c.file}:${c.line}  ${c.longhand} may be empty after ${c.shorthand}\n    ${c.text}`);
-  console.log(conflicts.length === 0 ? 'no longhand can clear a shorthand before it' : `${conflicts.length} conflict(s)`);
-  process.exit(conflicts.length === 0 ? 0 : 1);
+  const between = findStateConflicts();
+  for (const c of between) console.log(`${c.file}:${c.line}  ${c.longhand} is taken away from ${c.shorthand} between two states\n    ${c.text}`);
+  const total = conflicts.length + between.length;
+  console.log(total === 0 ? 'no longhand can clear a shorthand' : `${total} conflict(s)`);
+  process.exit(total === 0 ? 0 : 1);
 }

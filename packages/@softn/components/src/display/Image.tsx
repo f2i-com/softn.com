@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 import { isSafeUrl, useConsentPending } from '@softn/core';
 
 export interface ImageProps {
@@ -61,6 +62,7 @@ export function Image({
   onClick,
   className,
   style,
+  ...rest
 }: ImageProps): React.ReactElement {
   // Both sources are bundle-supplied — usually read out of the record being
   // displayed — so neither can be handed to the DOM unchecked. A rejected URL
@@ -141,6 +143,7 @@ export function Image({
 
   return (
     <div
+      {...domAttributes(rest)}
       className={className}
       style={containerStyle}
       onClick={onClick}

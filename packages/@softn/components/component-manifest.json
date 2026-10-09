@@ -2857,6 +2857,123 @@
       }
     },
     {
+      "name": "CopyButton",
+      "source": "src/form/CopyButton.tsx",
+      "props": {
+        "interface": "CopyButtonProps",
+        "members": [
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "string | number | null"
+            },
+            "doc": "The text to copy"
+          },
+          {
+            "name": "label",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "What the button says (default \"Copy\")"
+          },
+          {
+            "name": "copiedLabel",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "What it says once it has copied (default \"Copied\")"
+          },
+          {
+            "name": "iconOnly",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "The icon alone; the label is read out"
+          },
+          {
+            "name": "variant",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "ButtonProps['variant']"
+            },
+            "doc": "Visual style, as Button's"
+          },
+          {
+            "name": "size",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "ButtonProps['size']"
+            },
+            "doc": "Size, as Button's"
+          },
+          {
+            "name": "resetAfter",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "How long it says it has copied, in milliseconds (default 2000)"
+          },
+          {
+            "name": "disabled",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "doc": "Disabled state"
+          },
+          {
+            "name": "onCopy",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called with the text once it is on the clipboard"
+          },
+          {
+            "name": "onError",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called when the browser would not copy"
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "Additional CSS class"
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
+            },
+            "doc": "Inline styles"
+          },
+          {
+            "name": "children",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "In place of `label`"
+          }
+        ]
+      }
+    },
+    {
       "name": "DataGrid",
       "source": "src/data/DataGrid.tsx",
       "props": {
@@ -12738,6 +12855,7 @@
       "SegmentedControl",
       "ButtonGroup",
       "Field",
+      "CopyButton",
       "Text",
       "Heading",
       "Badge",

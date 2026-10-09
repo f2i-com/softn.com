@@ -485,7 +485,12 @@ export function SmartForm({
     width: '100%',
     padding: '0.625rem 0.875rem',
     borderRadius: 'var(--radius-md, 0.5rem)',
-    border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+    // In its parts, not as `border`: a field in error changes the colour,
+    // and a field whose error was put right was left with a border in the
+    // colour of its text (see the audit's rule for two states).
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderColor: 'var(--color-border, rgba(255, 255, 255, 0.08))',
     fontSize: '0.875rem',
     transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
     background: 'var(--color-surface, #16161a)',

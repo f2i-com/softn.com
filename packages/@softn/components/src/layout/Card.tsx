@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { domAttributes } from '../utils/domAttributes';
 import { cssPaint } from '../utils/egress';
 import { choice } from '../utils/choice';
 
@@ -163,6 +164,7 @@ export function Card({
   className,
   style,
   children,
+  ...rest
 }: CardProps): React.ReactElement {
   const [isHovered, setIsHovered] = useState(false);
   const isInteractive = hover || interactive || onClick;
@@ -261,6 +263,7 @@ export function Card({
 
   return (
     <div
+      {...domAttributes(rest)}
       className={className}
       style={baseStyle}
       onClick={onClick}

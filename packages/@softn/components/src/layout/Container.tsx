@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 
 export interface ContainerProps {
   /** Max width size */
@@ -46,6 +47,7 @@ export function Container({
   className,
   style,
   children,
+  ...rest
 }: ContainerProps): React.ReactElement {
   const computedStyle: React.CSSProperties = {
     maxWidth: maxWidthValues[size] ?? size,
@@ -58,7 +60,7 @@ export function Container({
   };
 
   return (
-    <div className={className} style={computedStyle}>
+    <div {...domAttributes(rest)} className={className} style={computedStyle}>
       {children}
     </div>
   );

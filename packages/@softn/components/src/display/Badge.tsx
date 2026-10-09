@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { domAttributes } from '../utils/domAttributes';
 import { getVariantColors, getStyleForVariantStyle } from '../theme/variants';
 import { badgeSizeConfig } from '../theme/sizes';
 import { choice } from '../utils/choice';
@@ -56,6 +57,7 @@ export function Badge({
   className,
   style,
   children,
+  ...rest
 }: BadgeProps): React.ReactElement {
   let displayContent = content ?? children;
   // Fall back to 'default' if variant is invalid
@@ -155,6 +157,7 @@ export function Badge({
         `}</style>
       )}
       <span
+        {...domAttributes(rest)}
         className={pulse ? (className ? `softn-badge-pulse ${className}` : 'softn-badge-pulse') : className}
         style={computedStyle}
       >

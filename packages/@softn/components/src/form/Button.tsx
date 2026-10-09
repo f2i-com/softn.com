@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { domAttributes } from '../utils/domAttributes';
 import { choice } from '../utils/choice';
 
 export interface ButtonProps {
@@ -321,6 +322,7 @@ export function Button({
   className,
   style,
   children,
+  ...rest
 }: ButtonProps): React.ReactElement {
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
@@ -427,6 +429,7 @@ export function Button({
         }
       `}</style>
       <button
+        {...domAttributes(rest)}
         type={type}
         disabled={disabled}
         aria-disabled={loading && !disabled ? true : undefined}

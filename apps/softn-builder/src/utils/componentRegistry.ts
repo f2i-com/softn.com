@@ -1976,6 +1976,27 @@ const baseRegistry: ComponentMeta[] = [
     true
   ),
   comp(
+    'CopyButton',
+    'Form',
+    'copy',
+    'A button that copies text and says it has',
+    { value: 'Text to copy', label: 'Copy' },
+    [
+      { name: 'value', type: 'string', default: 'Text to copy', description: 'The text to copy; {invite} for a value from logic' },
+      { name: 'label', type: 'string', default: 'Copy' },
+      { name: 'copiedLabel', type: 'string', default: 'Copied' },
+      { name: 'iconOnly', type: 'boolean', default: false },
+      { name: 'variant', type: 'select', options: ['primary', 'secondary', 'outline', 'danger', 'success', 'warning', 'ghost', 'link'], default: 'secondary' },
+      { name: 'size', type: 'select', options: ['xs', 'sm', 'md', 'lg', 'xl'], default: 'sm' },
+      { name: 'resetAfter', type: 'number', default: 2000, description: 'How long it says it has copied, in milliseconds' },
+      { name: 'disabled', type: 'boolean', default: false },
+      { name: 'onCopy', type: 'event' },
+      { name: 'onError', type: 'event' },
+      { name: 'className', type: 'string' },
+    ],
+    false
+  ),
+  comp(
     'ButtonGroup',
     'Form',
     'button',

@@ -19,3 +19,4 @@ export * from './Rating';
 export * from './SegmentedControl';
 export * from './ButtonGroup';
 export * from './Field';
+export * from './CopyButton';

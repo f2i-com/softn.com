@@ -6,6 +6,7 @@
  */
 
 import React, { useId } from 'react';
+import { domAttributes } from '../utils/domAttributes';
 import { cssColumnCount } from '../utils/egress';
 
 export interface ResponsiveColumns {
@@ -94,6 +95,7 @@ export function Grid({
   className,
   style,
   children,
+  ...rest
 }: GridProps): React.ReactElement {
   const uniqueId = useId();
   const gridId = `softn-grid-${uniqueId.replace(/:/g, '')}`;
@@ -122,13 +124,13 @@ export function Grid({
     gridTemplateColumns = `repeat(${sm}, 1fr)`;
     responsiveCSS = `
       @media (min-width: 640px) {
-        #${gridId} { grid-template-columns: repeat(${md}, 1fr) !important; }
+        [data-softn-grid="${gridId}"] { grid-template-columns: repeat(${md}, 1fr) !important; }
       }
       @media (min-width: 1024px) {
-        #${gridId} { grid-template-columns: repeat(${lg}, 1fr) !important; }
+        [data-softn-grid="${gridId}"] { grid-template-columns: repeat(${lg}, 1fr) !important; }
       }
       @media (min-width: 1280px) {
-        #${gridId} { grid-template-columns: repeat(${xl}, 1fr) !important; }
+        [data-softn-grid="${gridId}"] { grid-template-columns: repeat(${xl}, 1fr) !important; }
       }
     `;
   } else if (responsive && typeof columns === 'number') {
@@ -137,13 +139,13 @@ export function Grid({
     gridTemplateColumns = '1fr';
     responsiveCSS = `
       @media (min-width: 640px) {
-        #${gridId} { grid-template-columns: repeat(${Math.min(2, colCount)}, 1fr) !important; }
+        [data-softn-grid="${gridId}"] { grid-template-columns: repeat(${Math.min(2, colCount)}, 1fr) !important; }
       }
       @media (min-width: 768px) {
-        #${gridId} { grid-template-columns: repeat(${Math.min(3, colCount)}, 1fr) !important; }
+        [data-softn-grid="${gridId}"] { grid-template-columns: repeat(${Math.min(3, colCount)}, 1fr) !important; }
       }
       @media (min-width: 1024px) {
-        #${gridId} { grid-template-columns: repeat(${colCount}, 1fr) !important; }
+        [data-softn-grid="${gridId}"] { grid-template-columns: repeat(${colCount}, 1fr) !important; }
       }
     `;
   } else if (collapseOnMobile && typeof columns === 'number') {
@@ -151,7 +153,7 @@ export function Grid({
     gridTemplateColumns = '1fr';
     responsiveCSS = `
       @media (min-width: 768px) {
-        #${gridId} { grid-template-columns: repeat(${cssColumnCount(columns, 1)}, 1fr) !important; }
+        [data-softn-grid="${gridId}"] { grid-template-columns: repeat(${cssColumnCount(columns, 1)}, 1fr) !important; }
       }
     `;
   } else if (typeof columns === 'number') {
@@ -180,7 +182,7 @@ export function Grid({
   return (
     <>
       {responsiveCSS && <style>{responsiveCSS}</style>}
-      <div id={gridId} className={className} style={computedStyle}>
+      <div {...domAttributes(rest)} data-softn-grid={gridId} className={className} style={computedStyle}>
         {children}
       </div>
     </>

@@ -22,7 +22,7 @@ The project is actively developed. The examples and runtime are usable today; ho
 
 | Capability                | What it gives you                                                                                                                                                              |
 | :------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Interfaces that adapt** | 104 built-in components, themes, forms, tables, charts, dashboards and layouts for different screen sizes.                                                                      |
+| **Interfaces that adapt** | 105 built-in components, themes, forms, tables, charts, dashboards and layouts for different screen sizes.                                                                      |
 | **An editable workspace** | A visual builder, schema editor, source editor and live desktop, tablet and mobile previews. Files the canvas cannot safely rewrite remain editable in Code view.              |
 | **AI-assisted creation**  | Studio turns a brief into an app using your configured OpenAI, Anthropic or custom provider. You can also write `.ui` and `.logic` directly.                                   |
 | **Logic and data**        | JavaScript-compatible `.logic` runs in the zipp Rust/WASM engine. XDB provides app-scoped local records, with synchronization and native storage where the host supports them. |
@@ -188,7 +188,7 @@ Capabilities such as network, microphone and synchronization require support and
                                     |
                                     v
                             Component Registry
-                           (104 built-in + custom)
+                           (105 built-in + custom)
 
 .logic Source
       |
@@ -329,12 +329,12 @@ leaves the event alone. Whatever `:bind` does on the same event always runs.
 
 ---
 
-## Component Library (104 Components)
+## Component Library (105 Components)
 
 | Category   | Count | Components                                                                                                                                      |
 | ---------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Layout     | 15    | `App`, `Box`, `Stack`, `Grid`, `Card`, `Container`, `Center`, `Layout`, `Header`, `Content`, `Section`, `Sidebar`, `Split`, `Spacer`, `Divider` |
-| Form       | 17    | `Button`, `ButtonGroup`, `Input`, `NumberInput`, `TextArea`, `Select`, `SegmentedControl`, `Checkbox`, `Radio`, `Switch`, `Rating`, `Form`, `Field`, `Slider`, `DatePicker`, `ColorPicker`, `FileChooser`|
+| Form       | 18    | `Button`, `ButtonGroup`, `CopyButton`, `Input`, `NumberInput`, `TextArea`, `Select`, `SegmentedControl`, `Checkbox`, `Radio`, `Switch`, `Rating`, `Form`, `Field`, `Slider`, `DatePicker`, `ColorPicker`, `FileChooser`|
 | Display    | 15    | `Text`, `Heading`, `Badge`, `Tag`, `TagGroup`, `Avatar`, `AvatarGroup`, `Progress`, `Spinner`, `Skeleton`, `Image`, `Icon`, `Stat`, `Kbd`, `DescriptionList`|
 | Feedback   | 7     | `Alert`, `Modal`, `Confirm`, `Toast`, `Drawer`, `Popover`, `EmptyState`                                                                         |
 | Data       | 7     | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination`, `Timeline`                                                                   |

@@ -16,3 +16,6 @@ export interface ShorthandConflict {
 
 /** Every style object under `srcDir` in which a longhand that may be empty follows its shorthand. */
 export declare function findShorthandConflicts(srcDir?: string): ShorthandConflict[];
+
+/** Every element under `srcDir` drawn with one of two style objects of which only one sets a longhand of a shorthand the other has. */
+export declare function findStateConflicts(srcDir?: string): ShorthandConflict[];
