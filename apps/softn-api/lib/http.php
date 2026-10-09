@@ -280,6 +280,8 @@ final class Request
     /** @var array<string, mixed>|null */
     private ?array $jsonBody = null;
     private bool $jsonParsed = false;
+    /** Whether that decoding kept `{}` apart from `[]` (see Json). */
+    private bool $jsonKeepsEmptyObjects = false;
 
     public static function fromGlobals(): self
     {
@@ -506,24 +508,33 @@ final class Request
      * already copied into the array, and holding both is what brought the
      * peak close to memory_limit.
      *
+     * `$keepEmptyObjects` is for a body whose values are stored and handed
+     * back (see Json): an object with no members then stays an object.
+     *
      * @return array<string, mixed>
      */
-    public function json(): array
+    public function json(bool $keepEmptyObjects = false): array
     {
         if (!$this->jsonParsed) {
             $this->jsonParsed = true;
+            $this->jsonKeepsEmptyObjects = $keepEmptyObjects;
             if ($this->contentType() === 'application/json') {
                 if ($this->bodyConsumed && $this->rawBody === null) throw new ApiError(400, 'The request body was already read as a bundle.');
                 $body = $this->body();
                 $this->rawBody = null;
-                $decoded = json_decode($body, true, 64);
+                $decoded = $keepEmptyObjects ? Json::decode($body, 64) : json_decode($body, true, 64);
                 unset($body);
+                // `{}` is a body with no fields, as it always was.
+                if ($decoded instanceof stdClass) $decoded = [];
                 if (!is_array($decoded)) throw new ApiError(400, 'The request body is not valid JSON.');
                 $this->jsonBody = $decoded;
             } else {
                 $this->jsonBody = [];
             }
         }
+        // The text is gone by now, so a body decoded the plain way cannot be
+        // decoded again: say so, rather than hand back `[]` for a stored `{}`.
+        if ($keepEmptyObjects && !$this->jsonKeepsEmptyObjects) throw new LogicException('The body was decoded before its handler asked for empty objects to be kept.');
         return $this->jsonBody ?? [];
     }
 
@@ -699,6 +710,47 @@ final class Request
  * Addresses and ranges, for the trusted-proxy policy: IPv4 and IPv6 alike,
  * compared as the bytes inet_pton gives.
  */
+/**
+ * JSON for what an app stores, where `{}` and `[]` are different values.
+ *
+ * `json_decode($text, true)` makes both the same empty array, and an empty
+ * array is written back as `[]`. An app that stored `{"prefs":{}}` therefore
+ * read `{"prefs":[]}`, set `prefs.theme` on what was now a JavaScript array,
+ * and saved it: JSON.stringify drops a named property of an array, so the
+ * record went back as `[]` and the setting was never kept.
+ */
+final class Json
+{
+    /** JSON text as PHP arrays, except that an object with no members stays an object. */
+    public static function decode(string $json, int $depth = 64): mixed
+    {
+        $value = json_decode($json, false, $depth);
+        // A member name PHP cannot hold on an object (one starting with NUL)
+        // is still a key an array can have: such text is read as it was.
+        if ($value === null && json_last_error() !== JSON_ERROR_NONE) return json_decode($json, true, $depth);
+        return self::arrays($value);
+    }
+
+    /** The same value with each empty object as the empty array the request checks expect. */
+    public static function plain(mixed $value): mixed
+    {
+        if ($value instanceof stdClass) return [];
+        if (is_array($value)) foreach ($value as $k => $v) $value[$k] = self::plain($v);
+        return $value;
+    }
+
+    private static function arrays(mixed $value): mixed
+    {
+        if ($value instanceof stdClass) {
+            $out = [];
+            foreach (get_object_vars($value) as $k => $v) $out[$k] = self::arrays($v);
+            return $out === [] ? new stdClass() : $out;
+        }
+        if (is_array($value)) foreach ($value as $k => $v) $value[$k] = self::arrays($v);
+        return $value;
+    }
+}
+
 final class Net
 {
     /**

@@ -165,7 +165,9 @@ try {
     // bundle is spooled by its handler before the catalogue, likewise.
     // Only a body held to the JSON limit: the bundle and image routes read
     // theirs before the catalogue themselves, after their own checks.
-    if ($req->method !== 'GET' && $req->method !== 'HEAD' && $req->contentType() === 'application/json' && $req->bodyLimit() === Limits::json()) $req->json();
+    // A storage body is decoded here the way its handler needs it (the text
+    // is not kept to decode twice): `{}` stays apart from `[]`. See Json.
+    if ($req->method !== 'GET' && $req->method !== 'HEAD' && $req->contentType() === 'application/json' && $req->bodyLimit() === Limits::json()) $req->json($handler === 'storage');
     $response = handle($handler, $args, $req);
     Catalog::release();
     server_timing();
@@ -552,7 +554,7 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'storage': {
             $slug = storage_app($args[0]);
-            $body = $req->json();
+            $body = $req->json(true);
             return Response::json(['ok' => true, 'result' => Storage::run($req, $slug, $body)]);
         }
 

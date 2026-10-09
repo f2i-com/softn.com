@@ -185,6 +185,36 @@ test('the storage quota is counted in bytes, whatever the text is made of', skip
   assert.equal((await S({ op: 'kvSet', key: 'wide', value: text })).status, 507);
 });
 
+test('an empty object an app stores comes back as an object, not a list', skip, async () => {
+  // PHP read `{}` and `[]` as the same empty array and wrote both back as
+  // `[]`. An app that read its `{}` as `[]` and set a field on it saved `[]`
+  // again: JSON.stringify drops a named property of an array.
+  const s = await server({ config: { limits: { storageWrite: [500, 60], storageRead: [500, 60] } } });
+  const pub = await s.publish('Empty Objects', { permissions: storage({ '*': 'public' }) });
+  const S = (body) => s.api('POST', `/api/apps/${pub.app.slug}/storage`, { body });
+  const data = { prefs: {}, tags: [], nested: { deep: {}, list: [{}, []] }, name: 'x' };
+  const made = await S({ op: 'insert', collection: 'profiles', id: 'p1', data });
+  assert.equal(made.status, 200, made.text);
+  assert.deepEqual(made.json.result.data, data);
+  assert.deepEqual((await S({ op: 'get', collection: 'profiles', id: 'p1' })).json.result.data, data);
+  const listed = (await S({ op: 'query', collection: 'profiles' })).json.result.records;
+  assert.deepEqual(listed.map((r) => r.data), [data]);
+  // A patch keeps what it does not name, and its own empty object.
+  const patched = (await S({ op: 'update', collection: 'profiles', id: 'p1', data: { extra: {}, name: 'y' } })).json.result;
+  assert.deepEqual(patched.data, { ...data, extra: {}, name: 'y' });
+  // A record with no fields is still an object.
+  assert.deepEqual((await S({ op: 'set', collection: 'profiles', id: 'p2', data: {} })).json.result.data, {});
+  assert.deepEqual((await S({ op: 'get', collection: 'profiles', id: 'p2' })).json.result.data, {});
+  // Key-value: the value itself, and what is inside it.
+  for (const value of [{}, [], { a: {}, b: [] }, [{}, []], 'text', 0, null]) {
+    assert.equal((await S({ op: 'kvSet', key: 'k', value })).status, 200);
+    assert.deepEqual((await S({ op: 'kvGet', key: 'k' })).json.result.value, value, JSON.stringify(value));
+  }
+  // An empty object in the request itself still asks for nothing.
+  assert.equal((await S({ op: 'query', collection: 'profiles', where: {} })).json.result.total, 2);
+  assert.equal((await S({ op: 'count', collection: 'profiles', where: {} })).json.result.count, 2);
+});
+
 test('a storage file that is not a database is a 503 for storage and leaves the app\'s page up', skip, async () => {
   const s = await server();
   const pub = await s.publish('Broken Store', { permissions: storage({ '*': 'public' }) });

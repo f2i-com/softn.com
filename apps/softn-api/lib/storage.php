@@ -207,6 +207,9 @@ SQL);
      */
     public static function run(Request $req, string $slug, array $body): mixed
     {
+        // What is stored keeps `{}` apart from `[]` (see Json). The rest of
+        // the request (`where`, `orderBy`, ...) is read as plain arrays.
+        $body = array_replace(Json::plain($body), array_intersect_key($body, ['data' => true, 'value' => true]));
         $op = is_string($body['op'] ?? null) ? $body['op'] : '';
         $writes = ['insert', 'update', 'set', 'remove', 'clear', 'kvSet', 'kvRemove'];
         Db::rateLimit(in_array($op, $writes, true) ? 'storageWrite' : 'storageRead', Config::limitKey($req->ip) . "|$slug");
@@ -343,6 +346,7 @@ SQL);
     private static function data(array $body, array $limits, string $field = 'data'): array
     {
         $d = $body[$field] ?? null;
+        if ($d instanceof stdClass) $d = []; // `{}`: an object with no fields
         if (!is_array($d) || array_is_list($d) && $d !== []) throw new ApiError(400, "$field must be an object.");
         $encoded = json_encode($d, JSON_UNESCAPED_UNICODE);
         if ($encoded === false) throw new ApiError(400, "$field cannot be stored as JSON.");
@@ -362,7 +366,7 @@ SQL);
         $owner = $row['owner'] ?? null;
         return [
             'id' => $row['id'],
-            'data' => self::obj(json_decode((string) $row['data'], true)),
+            'data' => self::obj(Json::decode((string) $row['data'])),
             'createdAt' => (int) $row['created_at'],
             'updatedAt' => (int) $row['updated_at'],
             'mine' => is_string($owner) && $ctx['owner'] !== null && hash_equals($owner, $ctx['owner']),
@@ -436,7 +440,8 @@ SQL);
             if (!$row) throw new ApiError(404, 'No such record.');
             $owner = $row['owner'] ?? null;
             self::allowModify($ctx, $c, $owner);
-            $merged = array_replace(json_decode((string) $row['data'], true) ?: [], $patch);
+            $existing = Json::decode((string) $row['data']);
+            $merged = array_replace(is_array($existing) ? $existing : [], $patch);
             $encoded = json_encode($merged, JSON_UNESCAPED_UNICODE);
             if ($encoded === false || strlen($encoded) > (int) $limits['maxRecordBytes']) {
                 throw new ApiError(413, 'The updated record would be larger than a record may be.');
@@ -707,7 +712,7 @@ SQL);
         $stmt = $pdo->prepare('SELECT value, updated_at FROM kv WHERE key = ?');
         $stmt->execute([self::key($body)]);
         $row = $stmt->fetch();
-        return ['value' => $row ? json_decode((string) $row['value'], true) : null, 'updatedAt' => $row ? (int) $row['updated_at'] : null];
+        return ['value' => $row ? Json::decode((string) $row['value']) : null, 'updatedAt' => $row ? (int) $row['updated_at'] : null];
     }
 
     private static function kvSet(PDO $pdo, array $body, array $limits): array
