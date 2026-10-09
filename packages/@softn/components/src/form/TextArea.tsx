@@ -199,7 +199,14 @@ export function TextArea({
     background: disabled ? 'var(--color-gray-100, #27272a)' : 'var(--color-surface, #16161a)',
     color: disabled ? 'var(--color-text-disabled, #9ca3af)' : 'var(--color-text, #111827)',
     outline: 'none',
-    width: fullWidth ? '100%' : undefined,
+    // As wide as what it is in, the way an Input's field is: on its own it
+    // is as wide as its `cols`, about twenty characters, which sat narrow
+    // beside the inputs of the same form and stuck out of a narrow card.
+    // In a row it is still as wide as its own text.
+    display: 'block',
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
     resize: autoResize ? 'none' : resize,
     fontFamily: 'inherit',
     lineHeight: 1.5,

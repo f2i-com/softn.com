@@ -99,6 +99,12 @@ export function Grid({
   const gridId = `softn-grid-${uniqueId.replace(/:/g, '')}`;
 
   // Generate grid template columns
+  //
+  // The column count for the narrowest screen is the inline style, and each
+  // wider one is a media rule on this grid's id. A rule in a stylesheet does
+  // not outrank an inline style, so the rules are `!important`: without it
+  // none of them ever applied, and `responsive`, `collapseOnMobile` and a
+  // `columns` object all drew their phone layout at every width.
   let gridTemplateColumns: string | undefined;
   let responsiveCSS = '';
 
@@ -116,13 +122,13 @@ export function Grid({
     gridTemplateColumns = `repeat(${sm}, 1fr)`;
     responsiveCSS = `
       @media (min-width: 640px) {
-        #${gridId} { grid-template-columns: repeat(${md}, 1fr); }
+        #${gridId} { grid-template-columns: repeat(${md}, 1fr) !important; }
       }
       @media (min-width: 1024px) {
-        #${gridId} { grid-template-columns: repeat(${lg}, 1fr); }
+        #${gridId} { grid-template-columns: repeat(${lg}, 1fr) !important; }
       }
       @media (min-width: 1280px) {
-        #${gridId} { grid-template-columns: repeat(${xl}, 1fr); }
+        #${gridId} { grid-template-columns: repeat(${xl}, 1fr) !important; }
       }
     `;
   } else if (responsive && typeof columns === 'number') {
@@ -131,13 +137,13 @@ export function Grid({
     gridTemplateColumns = '1fr';
     responsiveCSS = `
       @media (min-width: 640px) {
-        #${gridId} { grid-template-columns: repeat(${Math.min(2, colCount)}, 1fr); }
+        #${gridId} { grid-template-columns: repeat(${Math.min(2, colCount)}, 1fr) !important; }
       }
       @media (min-width: 768px) {
-        #${gridId} { grid-template-columns: repeat(${Math.min(3, colCount)}, 1fr); }
+        #${gridId} { grid-template-columns: repeat(${Math.min(3, colCount)}, 1fr) !important; }
       }
       @media (min-width: 1024px) {
-        #${gridId} { grid-template-columns: repeat(${colCount}, 1fr); }
+        #${gridId} { grid-template-columns: repeat(${colCount}, 1fr) !important; }
       }
     `;
   } else if (collapseOnMobile && typeof columns === 'number') {
@@ -145,7 +151,7 @@ export function Grid({
     gridTemplateColumns = '1fr';
     responsiveCSS = `
       @media (min-width: 768px) {
-        #${gridId} { grid-template-columns: repeat(${cssColumnCount(columns, 1)}, 1fr); }
+        #${gridId} { grid-template-columns: repeat(${cssColumnCount(columns, 1)}, 1fr) !important; }
       }
     `;
   } else if (typeof columns === 'number') {

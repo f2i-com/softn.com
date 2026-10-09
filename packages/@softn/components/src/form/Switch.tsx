@@ -154,7 +154,10 @@ export function Switch({
     position: 'relative',
     width: sizes.track.width,
     height: sizes.track.height,
-    backgroundColor: getTrackBackground(),
+    // `background`, not `backgroundColor`: the "on" track is a gradient, and
+    // a colour property handed an image draws nothing. A switch that was on
+    // had no colour at all.
+    background: getTrackBackground(),
     borderRadius: '9999px',
     transition: 'all 200ms cubic-bezier(0.16, 1, 0.3, 1)',
     boxShadow: getTrackShadow(),

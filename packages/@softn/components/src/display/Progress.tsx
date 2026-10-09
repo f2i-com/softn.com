@@ -223,9 +223,13 @@ export function Progress({
     marginBottom: '0.375rem',
   };
 
-  const showInsideLabel =
-    showLabel && labelPosition === 'inside' && !indeterminate && size !== 'xs' && size !== 'sm';
-  const showOutsideLabel = showLabel && labelPosition === 'outside' && !indeterminate;
+  // The figure goes inside the bar only where the bar is as tall as the
+  // text. In the default bar it was 12px text clipped to 8px, and the two
+  // thinnest bars showed no figure at all; there it goes beside the bar.
+  const holdsLabel = sizeConfig === sizeValues.lg || sizeConfig === sizeValues.xl;
+  const showInsideLabel = showLabel && labelPosition === 'inside' && !indeterminate && holdsLabel;
+  const showOutsideLabel =
+    showLabel && !indeterminate && (labelPosition === 'outside' || (labelPosition === 'inside' && !holdsLabel));
   const showTopLabel = showLabel && labelPosition === 'top' && !indeterminate;
 
   return (

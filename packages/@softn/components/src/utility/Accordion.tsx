@@ -19,6 +19,16 @@ export interface AccordionItem {
   disabled?: boolean;
 }
 
+/**
+ * An item's heading. `header` is its name; `title` and `label` are read too,
+ * because that is what a card, a step, a tab and an option call theirs, and
+ * an item written with one of them drew a blank heading.
+ */
+function headingOf(item: AccordionItem): React.ReactNode {
+  const named = item as AccordionItem & { title?: React.ReactNode; label?: React.ReactNode };
+  return named.header ?? named.title ?? named.label;
+}
+
 export interface AccordionProps {
   /** Accordion items */
   items: AccordionItem[];
@@ -218,7 +228,7 @@ export function Accordion({
                 aria-expanded={isOpen}
                 aria-controls={panelId}
               >
-                <span style={{ minWidth: 0 }}>{item.header}</span>
+                <span style={{ minWidth: 0 }}>{headingOf(item)}</span>
                 <ChevronIcon isOpen={isOpen} />
               </button>
             </Heading>

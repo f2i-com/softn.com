@@ -125,9 +125,12 @@ export function Stack({
       mobileDirection = mobileDirection === 'row' ? 'row-reverse' : 'column-reverse';
     }
 
+    // `!important`, because the direction for wide screens is the inline
+    // style, which a stylesheet rule does not otherwise outrank: without it
+    // `mobileVertical`, `mobileHorizontal` and `mobileReverse` did nothing.
     responsiveCSS = `
       @media (max-width: 767px) {
-        #${stackId} { flex-direction: ${mobileDirection}; }
+        #${stackId} { flex-direction: ${mobileDirection} !important; }
       }
     `;
   }
