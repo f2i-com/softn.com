@@ -1901,7 +1901,7 @@
             },
             {
               "type": "paragraph",
-              "text": "A variable can have any name JavaScript allows, including words markup also uses, such as `data`, `style`, `from` and `end`. An arrow with a block body, `() => { … }`, a `function` expression, `async` and `await`, regular expression literals and bitwise operators are not read: the parser reports them, and the place for them is a logic function the expression calls."
+              "text": "A variable can have any name JavaScript allows, including words markup also uses, such as `data`, `style`, `from` and `end`. An arrow with a block body, `() => { … }`, a `function` expression, `async` and `await`, regular expression literals and bitwise operators are not read: the parser reports them, and the place for them is a logic function the expression calls. An assignment or `++` changes state when a handler runs it. Written in the body of the page, as in `{count++}`, it would run every time the page is drawn, so there it is worth its value and changes nothing."
             },
             {
               "type": "callout",

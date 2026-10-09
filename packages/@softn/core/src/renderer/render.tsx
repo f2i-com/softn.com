@@ -89,6 +89,41 @@ const CONSTRUCTIBLE: ReadonlySet<unknown> = new Set([Date, Array, Map, Set]);
 
 const BLOCKED_MEMBER_KEYS = new Set(['constructor', '__proto__', 'prototype']);
 
+/**
+ * How many `renderNode` calls are on the stack. Above zero the page is being
+ * drawn, and an expression evaluated now is one the page shows, not one a
+ * person triggered: see `stateWriteAllowed`.
+ */
+let renderDepth = 0;
+
+/** Expressions already reported for writing state while the page was drawn. */
+const reportedRenderWrites = new WeakSet<object>();
+
+/**
+ * Whether an assignment or `++` may write state right now.
+ *
+ * A handler runs when something happens; `{count++}` in the body of a page
+ * runs every time the page is drawn, and the write it makes causes the next
+ * drawing. With `++` readable that is a loop from one keystroke: React stops
+ * it by tearing the document down ("Too many re-renders"). So while the page
+ * is being drawn the expression is worth what it would be worth and writes
+ * nothing, and says so once. An arrow called during the drawing, such as the
+ * callback of `items.map(…)`, is the same case; an arrow called by an event
+ * is not, because by then nothing is being drawn.
+ */
+function stateWriteAllowed(expr: Expression, what: string): boolean {
+  if (renderDepth === 0) return true;
+  if (!reportedRenderWrites.has(expr)) {
+    reportedRenderWrites.add(expr);
+    console.error(
+      `[SoftN] ${what} on line ${expr.loc?.line ?? '?'} changes state while the page is being drawn, ` +
+        'which would draw it again without end, so the change was not made. ' +
+        'Change state in a handler: @click={() => count++}.'
+    );
+  }
+  return false;
+}
+
 function getSafeMemberKey(value: unknown): string | null {
   const key = String(value);
   return BLOCKED_MEMBER_KEYS.has(key) ? null : key;
@@ -238,6 +273,20 @@ export function renderNodes(
  * Render a single template node
  */
 export function renderNode(
+  node: TemplateNode,
+  context: SoftNRenderContext,
+  registry: ComponentRegistry,
+  key?: number | string
+): React.ReactNode {
+  renderDepth++;
+  try {
+    return renderNodeOfKind(node, context, registry, key);
+  } finally {
+    renderDepth--;
+  }
+}
+
+function renderNodeOfKind(
   node: TemplateNode,
   context: SoftNRenderContext,
   registry: ComponentRegistry,
@@ -1024,7 +1073,13 @@ function renderElement(
         // compute now — the same reading `@click={doThing()}` already gets from
         // the events loop below. Evaluating it here ran the handler on every
         // render and then passed its return value as the callback.
-        if (isCallbackProp && prop.value.value.type === 'CallExpression') {
+        // An assignment or `++` is the same: `onClose={open = false}` says
+        // what to do when it closes, as `@close={open = false}` does.
+        const deferred = prop.value.value.type;
+        if (
+          isCallbackProp &&
+          (deferred === 'CallExpression' || deferred === 'AssignmentExpression' || deferred === 'UpdateExpression')
+        ) {
           const callExpr = prop.value.value;
           props[prop.name] = () => evaluateExpression(callExpr, evalContext);
           continue;
@@ -1816,7 +1871,7 @@ export function evaluateExpression(
       }
       const current = Number(evalExpr(expr.argument));
       const next = expr.operator === '++' ? current + 1 : current - 1;
-      context.setState(path, next);
+      if (stateWriteAllowed(expr, `"${expr.operator}"`)) context.setState(path, next);
       return expr.prefix ? next : current;
     }
 
@@ -1889,7 +1944,7 @@ export function evaluateExpression(
                       : a % b;
         }
       }
-      context.setState(path, value);
+      if (stateWriteAllowed(expr, `The assignment "${expr.operator}"`)) context.setState(path, value);
       return value;
     }
 

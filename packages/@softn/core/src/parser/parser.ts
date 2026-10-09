@@ -124,6 +124,51 @@ const NEEDS_LEFT_OPERAND: ReadonlySet<TokenType> = new Set([
   ...ASSIGNMENT_OPERATORS.keys(),
 ]);
 
+/**
+ * Operators that need a value on their right, and the closers that can
+ * stand where that value should be: `{a + }`, `fn(x, !)`, `{ok ? "yes" : }`.
+ * The stand-in `undefined` made each of these a complete expression with
+ * nothing said, so `{total + }` rendered "NaN" or "5undefined".
+ */
+const NEEDS_RIGHT_OPERAND: ReadonlySet<TokenType> = new Set([
+  TokenType.PLUS,
+  TokenType.MINUS,
+  TokenType.ASTERISK,
+  TokenType.SLASH,
+  TokenType.PERCENT,
+  TokenType.EXPONENT,
+  TokenType.EQ,
+  TokenType.NOT_EQ,
+  TokenType.EQ_STRICT,
+  TokenType.NOT_EQ_STRICT,
+  TokenType.LT,
+  TokenType.GT,
+  TokenType.LTE,
+  TokenType.GTE,
+  TokenType.AND,
+  TokenType.OR,
+  TokenType.NULLISH_COALESCE,
+  TokenType.IN,
+  TokenType.INSTANCEOF,
+  TokenType.BANG,
+  TokenType.TYPEOF,
+  TokenType.VOID,
+  TokenType.QUESTION,
+  TokenType.COLON,
+  TokenType.ARROW,
+  TokenType.SPREAD,
+  ...ASSIGNMENT_OPERATORS.keys(),
+]);
+
+const CLOSES_EXPRESSION: ReadonlySet<TokenType> = new Set([
+  TokenType.EXPR_END,
+  TokenType.RPAREN,
+  TokenType.RBRACKET,
+  TokenType.COMMA,
+  TokenType.COLON,
+  TokenType.TEMPLATE_EXPR_END,
+]);
+
 /** A short name for what an expression is, for a diagnostic about it. */
 function describeExpression(expr: Expression): string {
   switch (expr.type) {
@@ -159,6 +204,8 @@ export class Parser {
   private source: string;
   private curToken: Token;
   private peekToken: Token;
+  /** The token before `curToken`: what a missing value would have followed. */
+  private prevToken: Token;
   /** Accumulated diagnostics during fault-tolerant parsing */
   private diagnostics: ParseDiagnostic[] = [];
   /**
@@ -171,6 +218,7 @@ export class Parser {
     this.source = source;
     this.lexer = new Lexer(source);
     this.curToken = this.pullToken();
+    this.prevToken = this.curToken;
     this.peekToken = this.pullToken();
   }
 
@@ -1877,7 +1925,11 @@ export class Parser {
           this.nextToken();
           expr = { type: 'MemberExpression', object: expr, property, computed: false, loc };
         } else {
-          // Invalid token after dot — stop parsing member chain
+          // Invalid token after dot — stop parsing member chain. `{user.}`
+          // then read as `{user}` with nothing said; a closer here means the
+          // name is missing (anything else is reported when the expression
+          // is closed).
+          this.holdMissingOperand('.');
           break;
         }
       } else if (this.curTokenIs(TokenType.OPTIONAL_CHAIN)) {
@@ -1916,6 +1968,7 @@ export class Parser {
           expr = { type: 'CallExpression', callee: expr, arguments: args, optional: true, loc };
         } else {
           // Invalid token after ?. — stop parsing member chain
+          this.holdMissingOperand('?.');
           break;
         }
       } else if (this.curTokenIs(TokenType.LBRACKET)) {
@@ -2100,8 +2153,25 @@ export class Parser {
         severity: 'error',
         loc,
       };
+    } else if (NEEDS_RIGHT_OPERAND.has(this.prevToken.type)) {
+      // The mirror case: the operator is there and what it applies to is not.
+      this.holdMissingOperand(this.prevToken.literal);
     }
     return createIdentifier('undefined', loc);
+  }
+
+  /**
+   * Hold a diagnostic for a value that should follow `after` and does not,
+   * when what stands in its place closes the expression. Held like the one
+   * above: once per expression, and dropped if the expression never closes.
+   */
+  private holdMissingOperand(after: string): void {
+    if (this.pendingOperand || !CLOSES_EXPRESSION.has(this.curToken.type)) return;
+    this.pendingOperand = {
+      message: `Nothing follows "${after}": a value was expected before "${this.curToken.literal}"`,
+      severity: 'error',
+      loc: this.currentLoc(),
+    };
   }
 
   private parseTemplateLiteral(): Expression {
@@ -2251,6 +2321,7 @@ export class Parser {
   // =========================================================================
 
   private nextToken(): void {
+    this.prevToken = this.curToken;
     this.curToken = this.peekToken;
     this.peekToken = this.pullToken();
   }

@@ -476,6 +476,54 @@ describe('an operator with nothing on its left', () => {
   it('leaves an empty expression empty', () => {
     expect(diagnostics('<Text>{}</Text>')).toEqual([]);
     expect(diagnostics('<Text>{fn()}</Text>')).toEqual([]);
+    expect(diagnostics('<Text v={[]} w={{}} x={() => undefined} />')).toEqual([]);
+    expect(diagnostics('<Text>{`${a}`}</Text>')).toEqual([]);
+  });
+
+  it('leaves a trailing comma alone, in a list, an object and a call', () => {
+    expect(diagnostics('<Text v={[1, 2, ]} w={{ a: 1, }} x={fn(a, )} />')).toEqual([]);
+  });
+});
+
+describe('an operator with nothing on its right', () => {
+  it('is reported, where it used to compute with a stand-in', () => {
+    // `{total + }` rendered "NaN", or "5undefined" for text.
+    expect(diagnostics('<Text>{total + }</Text>')).toEqual([
+      'Nothing follows "+": a value was expected before "}"',
+    ]);
+    expect(diagnostics('<Text>{a && }</Text>')).toEqual(['Nothing follows "&&": a value was expected before "}"']);
+    expect(diagnostics('<Text>{!}</Text>')).toEqual(['Nothing follows "!": a value was expected before "}"']);
+    expect(diagnostics('<Text>{max(a, -)}</Text>')).toEqual(['Nothing follows "-": a value was expected before ")"']);
+  });
+
+  it('is reported for each side of a conditional and for an assignment', () => {
+    expect(diagnostics('<Text>{ok ? : "no"}</Text>')).toEqual(['Nothing follows "?": a value was expected before ":"']);
+    expect(diagnostics('<Text>{ok ? "yes" : }</Text>')).toEqual(['Nothing follows ":": a value was expected before "}"']);
+    expect(diagnostics('<Button @click={() => count = }>x</Button>')).toEqual([
+      'Nothing follows "=": a value was expected before "}"',
+    ]);
+  });
+
+  it('is reported for an arrow with no body, a spread of nothing and an object value left out', () => {
+    expect(diagnostics('<Button @click={() => }>x</Button>')).toEqual(['Nothing follows "=>": a value was expected before "}"']);
+    expect(diagnostics('<Text v={[...]} />')).toEqual(['Nothing follows "...": a value was expected before "]"']);
+    expect(diagnostics('<Text v={{ a: }} />')).toEqual(['Nothing follows ":": a value was expected before "}"']);
+  });
+
+  it('is reported for a member access that names nothing', () => {
+    expect(diagnostics('<Text>{user.}</Text>')).toEqual(['Nothing follows ".": a value was expected before "}"']);
+    expect(diagnostics('<Text>{user?.}</Text>')).toEqual(['Nothing follows "?.": a value was expected before "}"']);
+  });
+
+  it('is reported in a control-flow header', () => {
+    expect(diagnostics('#if (count > )\n<A />\n#end')).toEqual(['Nothing follows ">": a value was expected before ")"']);
+    expect(diagnostics('#each (row in )\n<A />\n#end')).toEqual(['Nothing follows "in": a value was expected before ")"']);
+  });
+
+  it('is one diagnostic for the expression, and still keeps what was read', () => {
+    const doc = parse('<Text>{a + * }</Text><Text>after</Text>');
+    expect(doc.diagnostics).toHaveLength(1);
+    expect(doc.template).toHaveLength(2);
   });
 
   it('is not what an unclosed brace is about', () => {

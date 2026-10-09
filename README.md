@@ -304,7 +304,9 @@ markup also uses. Block-bodied arrows (`() => { … }`), `function` expressions,
 `async`/`await`, regular expression literals and bitwise operators are not
 read; the parser reports them, and the place for them is a logic function the
 expression calls. Every construct either parses to what it says or produces a
-diagnostic: `parse(source).diagnostics`.
+diagnostic: `parse(source).diagnostics`. An assignment or `++` changes state
+when a handler runs it; written in the body of the page (`{count++}`) it would
+run on every drawing, so there it is worth its value and changes nothing.
 
 ### Events
 
