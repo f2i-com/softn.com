@@ -33,7 +33,10 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
   const aiReady = useAIReadiness().state === 'ready';
   // A modal over the editor: keyboard stays inside; Escape is "Revise brief"
   // where that is offered (the only way out that is not approval).
-  const dialogRef = useModalFocus(true, onReviseBrief ?? noop);
+  // It opens on its title. The first control is the note field at the foot of the plan, and
+  // the focus went there: on a phone the dialog opened scrolled to its end with the keyboard
+  // up, and the plan it was showing out of sight above.
+  const dialogRef = useModalFocus(true, onReviseBrief ?? noop, '#blueprint-review-title');
 
   const summaryStats = useMemo(() => {
     if (!blueprint) return [];
@@ -74,8 +77,29 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
         <div style={styles.header}>
           <div>
             <span style={styles.eyebrow}>Review the plan</span>
-            <h2 id="blueprint-review-title" style={styles.title}>{blueprint.appName}</h2>
-            <p style={styles.subtitle}>Approve the AI plan before you continue deeper into the editor.</p>
+            {/* Where the dialog opens, and not one of its controls: stepping back from it goes to
+                the last control, as it does from the first, where the browser would have gone
+                out to the page behind the dialog. */}
+            <h2
+              id="blueprint-review-title"
+              tabIndex={-1}
+              style={{ ...styles.title, outline: 'none' }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Tab' || !event.shiftKey) return;
+                const controls = dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href]');
+                const last = controls?.[controls.length - 1];
+                if (!last) return;
+                event.preventDefault();
+                last.focus();
+              }}
+            >
+              {blueprint.appName}
+            </h2>
+            {/* Whose plan it is. It was "the AI plan", of pages Studio lays out from the brief
+                before any AI has run. */}
+            <p style={styles.subtitle}>
+              Studio laid out from your brief what the app will hold. {aiReady ? 'Approve it and the AI builds it' : 'Approve it to open the editor'}, or change it first.
+            </p>
           </div>
         </div>
 
@@ -211,7 +235,10 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
-    zIndex: 30,
+    // Above the product bar (z-index 50), as the AI setup's scrim is. Below it, the bar covered
+    // whatever part of the plan reached the top of the window: on a phone, where the plan is
+    // taller than the screen, that was its heading.
+    zIndex: 100,
   },
   // Same sheet the wizard hands off from: elevated ground, hairline, one radius.
   modal: {

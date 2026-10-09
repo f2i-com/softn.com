@@ -178,7 +178,8 @@ describe('the export and Python logic', () => {
     const vfs = toVfs(READING_LIST_PYTHON.files);
     const manifest = JSON.parse(normalizeManifestForBundle(vfs)!) as { files: Record<string, string[]> };
     expect(manifest.files.logic).toEqual(['logic/shelf.py', 'logic/main.py']);
-    expect(manifest.files.assets).toEqual([]);
+    // The example's icon is its one asset; no .py file is filed beside it.
+    expect(manifest.files.assets).toEqual(['assets/icon.svg']);
   });
 
   it('does not file server-side Python under server, since no backend host runs it', () => {

@@ -1,6 +1,6 @@
 import { zipSync } from 'fflate';
 import type { ValidationError, VFSFile } from '../types/studio';
-import { resolveProjectPath } from './paths';
+import { isPrivatePath, normalizeProjectPath, resolveProjectPath } from './paths';
 
 /**
  * The archive a project would become, before it becomes one.
@@ -199,6 +199,37 @@ export function planBundle(files: Map<string, VFSFile>): BundlePlan {
   const { manifest, warnings } = normalizeManifestFrom(files, collected);
   if (manifest !== null) collected.entries.set('manifest.json', encoder.encode(manifest));
   return { entries: collected.entries, sources: collected.sources, problems: [...collected.problems, ...warnings] };
+}
+
+export interface BundleSummary {
+  /** Files Export bundle will write. */
+  files: number;
+  /** Their size before compression. */
+  bytes: number;
+  /** Files of the project the export leaves out: Studio's own notes under builder/. */
+  privateFiles: number;
+}
+
+const summaries = new WeakMap<Map<string, VFSFile>, BundleSummary>();
+
+/**
+ * How many files the export of this project holds and how large they are,
+ * from the same plan the export writes — so the Files panel and the status
+ * bar say "in the bundle" of exactly what will be in it. They each counted
+ * the project's files instead, Studio's private notes among them. Kept per
+ * file map, which is replaced whenever a file changes.
+ */
+export function bundleSummary(files: Map<string, VFSFile>): BundleSummary {
+  const known = summaries.get(files);
+  if (known) return known;
+  const { entries } = planBundle(files);
+  let bytes = 0;
+  for (const entry of entries.values()) bytes += entry.length;
+  let privateFiles = 0;
+  for (const path of files.keys()) if (isPrivatePath(normalizeProjectPath(path) ?? path)) privateFiles++;
+  const summary = { files: entries.size, bytes, privateFiles };
+  summaries.set(files, summary);
+  return summary;
 }
 
 /**

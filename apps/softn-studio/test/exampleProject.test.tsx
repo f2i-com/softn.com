@@ -100,6 +100,19 @@ describe('the bundled example', () => {
       for (const group of Object.values(manifest.files)) for (const path of group) expect(paths.has(path)).toBe(true);
     }
   });
+
+  // The examples are what a first visit opens to see a finished bundle, and each opened with
+  // a warning on it: no icon.
+  it('every bundled example has its icon, and opens with nothing to warn about', () => {
+    for (const example of EXAMPLES) {
+      const manifest = JSON.parse(example.files.find((f) => f.path === 'manifest.json')!.content) as { icon?: string };
+      expect(manifest.icon, example.name).toBe('assets/icon.svg');
+      expect(example.files.find((f) => f.path === manifest.icon)?.content, example.name).toMatch(/^<svg /);
+      openExampleInStores(example);
+      const notes = validateProject(useVFSStore.getState().files, useWorkspaceStore.getState().blueprint);
+      expect(notes.filter((e) => e.level !== 'info'), example.name).toEqual([]);
+    }
+  });
 });
 
 describe('the dashboard offers the examples', () => {

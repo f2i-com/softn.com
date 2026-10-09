@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspaceStore, useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
+import { bundleSummary } from '../../lib/exportBundle';
 import type { ValidationError } from '../../types/studio';
 
 const LEVEL_ORDER: Record<ValidationError['level'], number> = { error: 0, warning: 1, info: 2 };
@@ -36,22 +37,18 @@ export const StatusBar: React.FC = () => {
     [errors],
   );
 
-  // Estimate bundle size (memoized — TextEncoder is expensive per-render)
+  // The count and the size are the bundle's: what Export bundle will write, from the export's
+  // own plan. Both were taken from every file the project holds, Studio's notes under builder/
+  // among them, so a new app read "14 files" beside "Bundle" and exported seven.
+  const bundle = useMemo(() => bundleSummary(files), [files]);
   const sizeLabel = useMemo(() => {
-    let bundleSize = 0;
-    for (const f of files.values()) {
-      if (typeof f.content === 'string') {
-        bundleSize += new TextEncoder().encode(f.content).length;
-      } else {
-        bundleSize += f.content.length;
-      }
-    }
+    const bundleSize = bundle.bytes;
     return bundleSize < 1024
       ? `${bundleSize} B`
       : bundleSize < 1024 * 1024
       ? `${(bundleSize / 1024).toFixed(1)} KB`
       : `${(bundleSize / (1024 * 1024)).toFixed(1)} MB`;
-  }, [files]);
+  }, [bundle]);
 
   useEffect(() => {
     if (!issuesOpen) return;
@@ -120,7 +117,7 @@ export const StatusBar: React.FC = () => {
 
       <div className="st-status-group">
         <span className="st-status-item">
-          <span className="num">{files.size}</span> file{files.size === 1 ? '' : 's'}
+          <span className="num">{bundle.files}</span> file{bundle.files === 1 ? '' : 's'}
         </span>
         <span className="st-status-item">
           Bundle <span className="num">{sizeLabel}</span>

@@ -258,6 +258,52 @@ describe('Settings', () => {
     expect(useAIStore.getState().activeProviderId).toBeNull();
   });
 
+  // What a run learns about a model is kept with the settings: that its tool calls travel as
+  // text, that its replies do not stream. Nothing showed it and nothing could take it back, so
+  // a model whose server had since learned tools stayed on the text protocol for good.
+  it('shows what Studio has learned about the provider’s models, and forgets it when asked', async () => {
+    fetchMock.mockImplementation(async () => json({ data: [{ id: 'model-a', created: 2 }, { id: 'model-b', created: 1 }] }));
+    useAIStore.setState({
+      providers: [{ id: 'p', type: 'local', serverKind: 'other', name: '127.0.0.1:9999', apiKey: '', baseUrl: 'http://127.0.0.1:9999/v1', modelId: 'model-a' }],
+      activeProviderId: 'p',
+      toolProtocols: { 'p:model-a': 'text', 'other:model-a': 'text' },
+      streamModes: { 'p:model-a': 'off', 'p:model-b': 'plain' },
+    });
+    render(<SettingsPanel />);
+    await settle();
+    const learned = () => [...container.querySelectorAll('.st-learned-row')].map((row) => row.textContent);
+    expect(learned()).toEqual([
+      expect.stringMatching(/^model-a.*tool calls sent as text.*replies not streamed/),
+      expect.stringMatching(/^model-b.*streamed without token counts/),
+    ]);
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Forget what was learned about model-a"]')!.click());
+    // Only that model of that provider is forgotten.
+    expect(useAIStore.getState().toolProtocols).toEqual({ 'other:model-a': 'text' });
+    expect(useAIStore.getState().streamModes).toEqual({ 'p:model-b': 'plain' });
+    expect(learned()).toHaveLength(1);
+    // The row leaves with its button: the keyboard goes to the line that says what happened.
+    expect(document.activeElement?.getAttribute('role')).toBe('status');
+    expect(document.activeElement?.textContent).toBe('Forgot what was learned about model-a. The next run finds out afresh.');
+    // And when the last row goes, that line is still there to hold it.
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Forget what was learned about model-b"]')!.click());
+    expect(learned()).toHaveLength(0);
+    expect(document.activeElement?.textContent).toBe('Forgot what was learned about model-b. The next run finds out afresh.');
+  });
+
+  it('says nothing about learning when nothing was learned', async () => {
+    fetchMock.mockImplementation(async () => json({ data: [{ id: 'model-a', created: 2 }] }));
+    useAIStore.setState({
+      providers: [{ id: 'p', type: 'local', serverKind: 'other', name: '127.0.0.1:9999', apiKey: '', baseUrl: 'http://127.0.0.1:9999/v1', modelId: 'model-a' }],
+      activeProviderId: 'p',
+      toolProtocols: {},
+      streamModes: {},
+    });
+    render(<SettingsPanel />);
+    await settle();
+    expect(container.querySelector('.st-learned-row')).toBeNull();
+    expect(container.textContent).not.toMatch(/has learned/);
+  });
+
   it('adds a provider in the same setup dialog, moving focus into it and back to the opener on Escape or Cancel', () => {
     render(<><SettingsPanel /><ProviderSetupDialog /></>);
     // The panel itself stays a compact list: no setup inline.

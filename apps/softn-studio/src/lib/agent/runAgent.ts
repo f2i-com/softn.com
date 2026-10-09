@@ -38,6 +38,7 @@ import { buildAgentSystemPrompt, buildProjectContext } from './prompt';
 import {
   canStream,
   encodeText,
+  isDefiniteToolsRejection,
   isOutputLimitRejection,
   isToolsRejection,
   nativeProtocol,
@@ -166,6 +167,12 @@ interface RunController {
   cacheSeen: boolean;
   /** The step the conversation was last compacted at. */
   compactedAt: number;
+  /**
+   * Models (`providerId:model`) moved to the text protocol for this run only: a server error
+   * that read like refused `tools`, which is reason enough to carry on in text and not reason
+   * enough to write down that the model never takes them.
+   */
+  textForRun: Set<string>;
 }
 
 const controllers = new Map<string, RunController>();
@@ -477,6 +484,7 @@ export async function startAgentRun(options: StartOptions = {}): Promise<void> {
     lastInput: 0,
     cacheSeen: false,
     compactedAt: 0,
+    textForRun: new Set(),
   };
   controllers.set(id, ctl);
   activeRunId = id;
@@ -996,7 +1004,10 @@ async function request(ctl: RunController, system: string, model: string, protoc
   const settings = useAIStore.getState();
   const key = protocolKey(ctl.provider, model);
   let stream: StreamMode = canStream(ctl.provider) ? (settings.streamModes[key] ?? 'on') : 'off';
+  /** Waits made for a rate limit or a busy server. */
   let attempt = 0;
+  /** Requests sent again after a timeout. */
+  let timeouts = 0;
   let stripThinking = false;
   let loweredOutput = false;
   for (;;) {
@@ -1067,8 +1078,10 @@ async function request(ctl: RunController, system: string, model: string, protoc
         if (controllerStopped(ctl)) throw new AIProviderError('cancelled', 'The run was stopped.');
         continue;
       }
-      if (err instanceof AIProviderError && err.kind === 'timeout' && attempt < 1) {
-        attempt++;
+      // A timeout's one second chance is counted on its own. It shared `attempt` with the
+      // waits above, so a request that had waited out a rate limit had none left.
+      if (err instanceof AIProviderError && err.kind === 'timeout' && timeouts < 1) {
+        timeouts++;
         useAIStore.getState().setCurrentStep('The provider timed out; trying once more…');
         continue;
       }
@@ -1285,7 +1298,7 @@ async function drive(ctl: RunController): Promise<void> {
     }
 
     const { model, role } = modelFor(ctl);
-    let protocol = protocolFor(ctl.provider, model);
+    let protocol: ToolProtocol = ctl.textForRun.has(protocolKey(ctl.provider, model)) ? 'text' : protocolFor(ctl.provider, model);
     let system = (ctl.systems[protocol] ??= buildAgentSystemPrompt(protocol));
     if (contextSize(ctl, system) > CONTEXT_SOFT_LIMIT_TOKENS) {
       compact(ctl, run.steps, true);
@@ -1316,12 +1329,27 @@ async function drive(ctl: RunController): Promise<void> {
         reply = await request(ctl, system, model, protocol);
       } catch (err) {
         if (protocol !== 'text' && isToolsRejection(err)) {
-          // The provider or model does not take `tools`: remember, and carry on in text.
-          useAIStore.getState().rememberToolProtocol(protocolKey(ctl.provider, model), 'text');
+          // The provider or model does not take `tools`: carry on in text. A definite refusal is
+          // remembered for this provider and model. A 500 is a server tripping over the request,
+          // which may be `tools` and may be one bad moment: the run moves to text and stays there
+          // (asking with `tools` again at every step would meet the same error at every step),
+          // and the next run asks natively again. Remembered, one such moment put the model on
+          // the text protocol for every run after it.
+          const key = protocolKey(ctl.provider, model);
+          const definite = isDefiniteToolsRejection(err);
+          if (definite) useAIStore.getState().rememberToolProtocol(key, 'text');
+          else ctl.textForRun.add(key);
           protocol = 'text';
           system = ctl.systems[protocol] ??= buildAgentSystemPrompt(protocol);
           patch(ctl, (r) => ({ ...r, protocol }));
-          addEntry(ctl, { kind: 'text', id: newId(), text: 'This model does not take tool calls natively; continuing with the text protocol.', at: Date.now() });
+          addEntry(ctl, {
+            kind: 'text',
+            id: newId(),
+            text: definite
+              ? 'This model does not take tool calls natively; continuing with the text protocol.'
+              : 'The provider’s server failed on a request with tool calls, in words that read as if it does not take them. This run continues with the text protocol; the next run tries tool calls again.',
+            at: Date.now(),
+          });
           reply = await request(ctl, system, model, protocol);
         } else {
           throw err;

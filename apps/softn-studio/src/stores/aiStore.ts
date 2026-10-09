@@ -137,6 +137,8 @@ interface AIState {
   rememberToolProtocol(key: string, protocol: 'native' | 'text'): void;
   rememberStreamMode(key: string, mode: 'plain' | 'off'): void;
   rememberOutputLimit(key: string, limit: number): void;
+  /** Forget everything learned about one `providerId:model`, so the next run finds out afresh. */
+  forgetModelLearning(key: string): void;
   addMessage(message: ChatMessage): void;
   /** Replace one message by id, if it is still there. */
   replaceMessage(id: string, update: (message: ChatMessage) => ChatMessage): void;
@@ -241,6 +243,12 @@ export const useAIStore = create<AIState>((set) => ({
     set((s) => (s.streamModes[key] === mode ? s : { streamModes: { ...s.streamModes, [key]: mode } })),
   rememberOutputLimit: (key, limit) =>
     set((s) => (s.outputLimits[key] === limit ? s : { outputLimits: { ...s.outputLimits, [key]: limit } })),
+  forgetModelLearning: (key) =>
+    set((s) => {
+      if (!(key in s.toolProtocols) && !(key in s.streamModes) && !(key in s.outputLimits)) return s;
+      const without = <T,>(memory: Record<string, T>): Record<string, T> => Object.fromEntries(Object.entries(memory).filter(([k]) => k !== key));
+      return { toolProtocols: without(s.toolProtocols), streamModes: without(s.streamModes), outputLimits: without(s.outputLimits) };
+    }),
   addMessage: (message) =>
     set((s) => {
       const next = [...s.messages, message];

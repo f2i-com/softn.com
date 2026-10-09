@@ -133,6 +133,106 @@ describe('project import', () => {
  * so a Python app imported with its logic as bytes: not shown to the model,
  * not composable in the preview, not readable by the validator.
  */
+/**
+ * A bundle someone zipped by hand: the folder itself, compressed from Finder
+ * or Explorer. That archive holds the project one folder down, entries for
+ * the folders themselves, and on a Mac a `__MACOSX/` tree of resource forks
+ * and `.DS_Store` files. None of it is the project, and all of it used to be
+ * imported as if it were: an app with no manifest at its root, a
+ * `__MACOSX/ui/._main.ui` read as a page. The safety rules are unchanged, and
+ * are checked before anything is left out.
+ */
+describe('a bundle zipped by hand', () => {
+  const MANIFEST = JSON.stringify({ name: 'Tasks', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] } });
+  const PAGE = '<App><Text>Tasks</Text></App>';
+  const dir = new Uint8Array(0);
+  const paths = (archive: Uint8Array) => readProjectArchive(archive).map((entry) => entry.path).sort();
+
+  it('opens what is inside the one folder that holds everything, manifest included', () => {
+    const archive = zipSync({
+      'Tasks/': dir,
+      'Tasks/manifest.json': strToU8(MANIFEST),
+      'Tasks/ui/': dir,
+      'Tasks/ui/main.ui': strToU8(PAGE),
+    });
+    expect(readProjectArchive(archive)).toEqual([
+      { path: 'manifest.json', content: MANIFEST },
+      { path: 'ui/main.ui', content: PAGE },
+    ]);
+  });
+
+  it('judges a path again once its folder is taken off', () => {
+    // Inside the folder `Tasks/C:/notes.txt` is an odd name and nothing more.
+    // Out of it, it is a path that starts with a drive letter, which no
+    // project path may: the rule is asked of the path the project will have.
+    const archive = zipSync({
+      'Tasks/manifest.json': strToU8(MANIFEST),
+      'Tasks/ui/main.ui': strToU8(PAGE),
+      'Tasks/C:/notes.txt': strToU8('x'),
+    });
+    expect(() => readProjectArchive(archive)).toThrow(/unsafe project path/);
+  });
+
+  it('leaves out the __MACOSX tree and every .DS_Store, at any depth', () => {
+    const archive = zipSync({
+      'manifest.json': strToU8(MANIFEST),
+      'ui/main.ui': strToU8(PAGE),
+      '.DS_Store': new Uint8Array([0, 0, 0, 1]),
+      'ui/.DS_Store': new Uint8Array([0, 0, 0, 1]),
+      '__MACOSX/': dir,
+      '__MACOSX/._manifest.json': new Uint8Array([0, 5, 22, 7]),
+      '__MACOSX/ui/._main.ui': new Uint8Array([0, 5, 22, 7]),
+    });
+    expect(paths(archive)).toEqual(['manifest.json', 'ui/main.ui']);
+  });
+
+  it('does both at once: a folder compressed on a Mac', () => {
+    const archive = zipSync({
+      'Tasks/': dir,
+      'Tasks/.DS_Store': new Uint8Array([0, 0, 0, 1]),
+      'Tasks/manifest.json': strToU8(MANIFEST),
+      'Tasks/ui/main.ui': strToU8(PAGE),
+      '__MACOSX/': dir,
+      '__MACOSX/Tasks/': dir,
+      '__MACOSX/Tasks/._manifest.json': new Uint8Array([0, 5, 22, 7]),
+      '__MACOSX/Tasks/ui/._main.ui': new Uint8Array([0, 5, 22, 7]),
+    });
+    expect(paths(archive)).toEqual(['manifest.json', 'ui/main.ui']);
+  });
+
+  it('keeps the folder when something sits beside it, or when the manifest is already at the root', () => {
+    expect(paths(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/ui/main.ui': strToU8(PAGE), 'README.md': strToU8('# Tasks') })))
+      .toEqual(['README.md', 'Tasks/manifest.json', 'Tasks/ui/main.ui']);
+    expect(paths(zipSync({ 'manifest.json': strToU8(MANIFEST), 'ui/main.ui': strToU8(PAGE) }))).toEqual(['manifest.json', 'ui/main.ui']);
+  });
+
+  it('keeps a folder that holds everything but no manifest: it is not a wrapped bundle', () => {
+    expect(paths(zipSync({ 'ui/main.ui': strToU8(PAGE), 'ui/pages/about.ui': strToU8('<Text>About</Text>') }))).toEqual(['ui/main.ui', 'ui/pages/about.ui']);
+  });
+
+  // The archive reader drops an entry whose path would leave the bundle before Studio sees it.
+  // Opening the folder's contents must not give such an entry a way back in.
+  it('never opens an entry whose path leaves the bundle, under a folder that is left out or one that is opened', () => {
+    expect(paths(zipSync({ 'manifest.json': strToU8(MANIFEST), '__MACOSX/../../outside.ui': strToU8('x'), '/absolute.ui': strToU8('x') }))).toEqual(['manifest.json']);
+    expect(paths(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/../outside.ui': strToU8('x'), 'Tasks//ui/main.ui': strToU8('x') }))).toEqual(['manifest.json']);
+  });
+
+  it('still refuses names that collide by case, checked on the paths the project will have', () => {
+    expect(() => readProjectArchive(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/ui/Main.ui': strToU8('a'), 'Tasks/ui/main.ui': strToU8('b') }))).toThrow(/colliding project paths/i);
+    // Two spellings of the folder are two folders: nothing is unwrapped, and their files collide.
+    expect(() => readProjectArchive(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'tasks/manifest.json': strToU8(MANIFEST) }))).toThrow(/colliding project paths/i);
+  });
+
+  // Size limits and checksums are the archive reader's, and every entry still comes through it first.
+  it('still refuses a folder-wrapped archive whose bytes do not match their checksum', () => {
+    const archive = zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/ui/main.ui': strToU8(PAGE) }, { level: 0 });
+    const corrupt = archive.slice();
+    const at = corrupt.findIndex((_, i) => corrupt[i] === 0x3c && corrupt[i + 1] === 0x41);
+    corrupt[at + 1] ^= 0xff;
+    expect(() => readProjectArchive(corrupt)).toThrow();
+  });
+});
+
 describe('which imported entries are text', () => {
   it('decodes Python logic as text and keeps images and fonts as bytes, as classifyAsset says', () => {
     const png = new Uint8Array([137, 80, 78, 71]);

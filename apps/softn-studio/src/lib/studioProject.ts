@@ -135,9 +135,11 @@ function titleCase(value: string): string {
 }
 
 function buildPages(brief: ProjectBrief): BlueprintPage[] {
-  const requestedPages = brief.pages.length > 0
-    ? brief.pages
-    : ['Home', 'Overview', brief.collections.length > 0 ? 'Data' : 'Workspace'];
+  // A brief that names no pages is planned as one. It was planned as three (Home, Overview,
+  // and Workspace or Data): two pages nobody asked for, which the build was then told to make
+  // and which stayed in the bundle as placeholders when it did not. The first page lists the
+  // collections, so a brief with data needs no page of its own for them either.
+  const requestedPages = brief.pages.length > 0 ? brief.pages : ['Home'];
 
   return requestedPages.map((name, index) => {
     const slug = slugify(name);
@@ -191,13 +193,18 @@ export function generateBlueprintFromBrief(brief: ProjectBrief): Blueprint {
       type: pages.length > 4 ? 'sidebar' : 'tabs',
       items: pages.map((page) => page.name),
     },
+    // Each line is said of a plan it is true of. The one about data was shown to every plan
+    // that did not ask for sign-in, a brief with no collections among them.
     risks: [
       brief.target === 'dual' ? 'Dual-target apps should avoid target-specific assumptions.' : 'Review generated layouts before export.',
-      brief.authNeeded ? 'Authentication flows require provider and session decisions before production.' : 'Data workflows may need collection-specific validation.',
+      ...(brief.authNeeded ? ['Authentication flows require provider and session decisions before production.'] : []),
+      ...(collections.length > 0 ? ['Data workflows may need collection-specific validation.'] : []),
     ],
+    // What is true of every plan made here. The second line used to say "API providers should
+    // be configured per role before advanced generation", of a plan that knows nothing of either.
     assumptions: [
-      'The first generated pass prioritizes structure and previewability over dense business logic.',
-      'API providers should be configured per role before advanced generation.',
+      'The scaffold is a starting layout: the AI builds each page’s real content from your description.',
+      'Pages and collections can be added, renamed or removed afterwards by asking in the chat.',
     ],
   };
 }
@@ -338,6 +345,28 @@ function buildDataBlock(blueprint: Blueprint): string {
   return `<data>\n${lines.join('\n')}\n</data>\n\n`;
 }
 
+/** Where a scaffolded app keeps its icon, named by the manifest's `icon`. */
+export const APP_ICON_PATH = 'assets/icon.svg';
+
+/**
+ * The icon a new app starts with: a tile in the style's accent with three
+ * lines on it. A bundle without an icon is one the inspector warns about
+ * ("the card will show the first letter of the name"), so every new app wore
+ * a warning from its first moment that nothing in Studio could act on, and
+ * that the agent was shown again after every check. It is an SVG, which is
+ * text: the person can ask for another, and the agent can draw it. Nothing
+ * the person typed goes into it.
+ */
+export function appIconSvg(accent: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="App icon">
+  <rect width="64" height="64" rx="14" fill="${accent}" />
+  <rect x="16" y="19" width="32" height="6" rx="3" fill="#ffffff" />
+  <rect x="16" y="29" width="22" height="6" rx="3" fill="#ffffff" fill-opacity="0.8" />
+  <rect x="16" y="39" width="27" height="6" rx="3" fill="#ffffff" fill-opacity="0.6" />
+</svg>
+`;
+}
+
 /**
  * The app's shell: nav across the pages, and the page that is showing.
  *
@@ -348,23 +377,32 @@ function buildDataBlock(blueprint: Blueprint): string {
  */
 function buildMainUi(brief: ProjectBrief, blueprint: Blueprint, slugs: string[], logicPath: string): string {
   const imports = slugs.map((slug) => `<import ${pageComponentName(slug)} from="./pages/${slug}.ui" />`).join('\n');
-  const switches = slugs
-    .map((slug) => `      #if (page === ${JSON.stringify(slug)})\n        <${pageComponentName(slug)} />\n      #end`)
-    .join('\n');
-  return `${imports}
-
-${buildDataBlock(blueprint)}<logic src="../${logicPath}" />
-
-<App theme="${themeFor(brief.style)}" title={appName}>
-  <Container size="lg">
-    <Stack direction="vertical" gap="lg" padding="xl">
-      <Stack direction="horizontal" gap="md" align="center" wrap>
-        <Heading level={1} style:color="${accentFor(brief.style)}">{appName}</Heading>
+  // One page is shown as it is: no row of buttons with a single button in it, and no switch
+  // with a single branch. (App takes no `title`; one was written here and did nothing.)
+  const single = slugs.length === 1;
+  const switches = single
+    ? `      <${pageComponentName(slugs[0])} />`
+    : slugs
+      .map((slug) => `      #if (page === ${JSON.stringify(slug)})\n        <${pageComponentName(slug)} />\n      #end`)
+      .join('\n');
+  const heading = `<Heading level={1} style:color="${accentFor(brief.style)}">{appName}</Heading>`;
+  const header = single
+    ? `      ${heading}`
+    : `      <Stack direction="horizontal" gap="md" align="center" wrap>
+        ${heading}
         <Spacer />
         #each (item in pages)
           <Button variant={page === item.id ? "primary" : "ghost"} size="sm" @click={() => go(item.id)}>{item.label}</Button>
         #end
-      </Stack>
+      </Stack>`;
+  return `${imports}
+
+${buildDataBlock(blueprint)}<logic src="../${logicPath}" />
+
+<App theme="${themeFor(brief.style)}">
+  <Container size="lg">
+    <Stack direction="vertical" gap="lg" padding="xl">
+${header}
       <Text variant="muted">{appDescription}</Text>
 ${switches}
     </Stack>
@@ -537,12 +575,13 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
         version: '1.0.0',
         description: brief.description,
         main: 'ui/main.ui',
+        icon: APP_ICON_PATH,
         target: brief.target,
         files: {
           ui: ['ui/main.ui', ...pagePaths],
           logic: [logicPath],
           xdb: xdbPaths,
-          assets: [],
+          assets: [APP_ICON_PATH],
         },
         config: {
           theme: { mode: themeFor(brief.style) },
@@ -563,6 +602,10 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
       // otherwise. The file is here so there is somewhere to say it.
       path: 'permission.json',
       content: JSON.stringify({ permissions: {} }, null, 2),
+    },
+    {
+      path: APP_ICON_PATH,
+      content: appIconSvg(accentFor(brief.style)),
     },
     {
       path: 'builder/blueprint.json',

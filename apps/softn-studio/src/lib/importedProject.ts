@@ -3,6 +3,18 @@ import type { ProjectImportEntry } from './projectImport';
 import { resetProjectSessionForImport } from './projectSession';
 import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage } from './studioProject';
 
+/** The app's name as the imported manifest gives it, or null when it gives none that can be read. */
+function manifestName(batch: ProjectImportEntry[]): string | null {
+  const manifest = batch.find((entry) => entry.path === 'manifest.json');
+  if (!manifest || typeof manifest.content !== 'string') return null;
+  try {
+    const name = (JSON.parse(manifest.content) as { name?: unknown } | null)?.name;
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Put a decoded import into the stores as a new project: one transaction of
  * creates, then the brief and the plan inferred from the files, and the chat
@@ -11,11 +23,14 @@ import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, pr
  * calls this only once the whole import has been decoded, so a file that
  * cannot be read leaves the project that was open as it was.
  */
-export function openImportedInStores(fileName: string, batch: ProjectImportEntry[]): string {
+export function openImportedInStores(fileName: string, batch: ProjectImportEntry[], opener: { name?: string } = {}): string {
   const projectId = resetProjectSessionForImport();
   useVFSStore.getState().batchCreateFiles(batch, 'user');
 
-  const importedProjectName = fileName.replace(/\.(softn|zip|json)$/i, '');
+  // The project is named as its opener names it (a host opening an app under its own name for
+  // it), else as its manifest names the app, else by its file. It took the file's name
+  // whatever was inside: a second download of Counter Club opened as "Counter Club (1)".
+  const importedProjectName = opener.name?.trim() || manifestName(batch) || fileName.replace(/\.(softn|zip|json)$/i, '');
   const importedWorkspace = useWorkspaceStore.getState();
   const importedVFS = useVFSStore.getState();
   importedWorkspace.setProjectName(importedProjectName);

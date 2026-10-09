@@ -59,11 +59,24 @@ export function hasZipSignature(data: Uint8Array): boolean {
  */
 export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
   const decoder = new TextDecoder();
-  const entries: ProjectImportEntry[] = [];
-  const canonicalPaths = new Set<string>();
+  // Every path is judged before anything is set aside, so an unsafe one refuses the archive
+  // wherever it sits, as it always has.
+  const safe: Array<{ path: string; rawPath: string; content: Uint8Array }> = [];
   for (const [rawPath, content] of readBundleEntries(data)) {
     const path = normalizeProjectPath(rawPath);
     if (!path) throw new Error(`Archive contains an unsafe project path: ${rawPath}`);
+    safe.push({ path, rawPath, content });
+  }
+  const kept = unwrapProjectFolder(safe.filter((entry) => !isArchiveLitter(entry.path)));
+
+  // Names that collide by case are refused on the paths the project will have: the same two
+  // files collide inside a folder and out of it.
+  const entries: ProjectImportEntry[] = [];
+  const canonicalPaths = new Set<string>();
+  for (const { path, rawPath, content } of kept) {
+    // Taken out of its folder a path is judged again: `Tasks/C:/notes.txt` is an odd name
+    // inside the folder and a path with a drive letter once the folder's name is off it.
+    if (normalizeProjectPath(path) !== path) throw new Error(`Archive contains an unsafe project path: ${rawPath}`);
     const canonicalPath = canonicalKey(path);
     if (canonicalPaths.has(canonicalPath)) {
       throw new Error(`Archive contains colliding project paths: ${rawPath}`);
@@ -75,6 +88,34 @@ export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
     });
   }
   return entries;
+}
+
+/**
+ * What a folder compressed from Finder carries beside the project: the
+ * `__MACOSX/` tree of resource forks, and a `.DS_Store` in any folder that
+ * was looked at. Neither is the app's, and both were imported as its files
+ * (`__MACOSX/ui/._main.ui` is bytes with a page's name).
+ */
+function isArchiveLitter(path: string): boolean {
+  const segments = path.split('/');
+  return segments[0] === '__MACOSX' || segments[segments.length - 1] === '.DS_Store';
+}
+
+/**
+ * A bundle zipped as its folder holds the project one level down:
+ * `Tasks/manifest.json`, `Tasks/ui/main.ui`. When every entry is inside one
+ * folder and that folder holds the manifest, the project is what is inside
+ * it, and the folder's name is taken off. Anything else is left as it is: a
+ * file beside the folder, a manifest already at the root, a lone folder
+ * with no manifest in it (that is just a bundle with one folder).
+ */
+function unwrapProjectFolder<T extends { path: string }>(entries: T[]): T[] {
+  if (entries.length === 0 || entries.some((entry) => !entry.path.includes('/'))) return entries;
+  const folder = entries[0].path.split('/')[0];
+  const prefix = `${folder}/`;
+  if (!entries.every((entry) => entry.path.startsWith(prefix))) return entries;
+  if (!entries.some((entry) => entry.path === `${prefix}manifest.json`)) return entries;
+  return entries.map((entry) => ({ ...entry, path: entry.path.slice(prefix.length) }));
 }
 
 // The path contract lives in ./paths so that import, the changeset check,

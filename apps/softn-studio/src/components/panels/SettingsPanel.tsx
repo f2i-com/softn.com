@@ -51,7 +51,78 @@ const GenerationModel: React.FC<{ provider: ProviderConfig }> = ({ provider }) =
         emptyChoice={provider.modelId ? `Same as the provider: ${provider.modelId}` : 'Same as the provider'}
         manualByDefault={list.state === 'error'}
       />
+      <LearnedAboutModels provider={provider} />
     </section>
+  );
+};
+
+/**
+ * What runs have learned about this provider's models, and a way to take it
+ * back. A model that refused `tools` has its calls sent as text from then
+ * on, and one whose stream could not be read is asked for whole replies; both
+ * are kept with the settings so the next run does not find out again. Nothing
+ * showed them and nothing could undo them, so a server that had since been
+ * updated, or one refusal that was really a bad moment, held for good.
+ */
+const LearnedAboutModels: React.FC<{ provider: ProviderConfig }> = ({ provider }) => {
+  const toolProtocols = useAIStore((s) => s.toolProtocols);
+  const streamModes = useAIStore((s) => s.streamModes);
+  const forget = useAIStore((s) => s.forgetModelLearning);
+  const prefix = `${provider.id}:`;
+  const models = [...new Set([...Object.keys(toolProtocols), ...Object.keys(streamModes)])]
+    .filter((key) => key.startsWith(prefix))
+    .map((key) => {
+      const facts = [
+        toolProtocols[key] === 'text' ? 'tool calls sent as text' : null,
+        streamModes[key] === 'off' ? 'replies not streamed' : streamModes[key] === 'plain' ? 'streamed without token counts' : null,
+      ].filter((fact): fact is string => fact !== null);
+      return { key, model: key.slice(prefix.length), facts };
+    })
+    .filter((entry) => entry.facts.length > 0)
+    .sort((a, b) => a.model.localeCompare(b.model));
+  // A row leaves the page with the button that was pressed on it. What was done is said in a
+  // line that stays, and the keyboard goes there instead of falling to the page.
+  const [forgotten, setForgotten] = useState<string | null>(null);
+  const said = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (forgotten) said.current?.focus();
+  }, [forgotten]);
+  useEffect(() => setForgotten(null), [provider.id]);
+  if (models.length === 0 && !forgotten) return null;
+  return (
+    <div className="st-learned">
+      {models.length > 0 && (
+        <>
+          <p className="st-settings-note">
+            What Studio has learned from {provider.name}’s answers, and uses without asking again. Forget one after the server or the model has changed, and the next run finds out afresh.
+          </p>
+          <ul className="st-learned-list">
+            {models.map(({ key, model, facts }) => (
+              <li key={key} className="st-learned-row">
+                <span className="st-learned-model">{model}</span>
+                <span className="st-learned-facts">: {facts.join(', ')}</span>
+                <button
+                  type="button"
+                  className="st-btn st-btn-ghost st-btn-xs"
+                  aria-label={`Forget what was learned about ${model}`}
+                  onClick={() => {
+                    forget(key);
+                    setForgotten(model);
+                  }}
+                >
+                  Forget
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {forgotten && (
+        <p ref={said} role="status" tabIndex={-1} className="st-settings-note st-learned-said">
+          Forgot what was learned about {forgotten}. The next run finds out afresh.
+        </p>
+      )}
+    </div>
   );
 };
 

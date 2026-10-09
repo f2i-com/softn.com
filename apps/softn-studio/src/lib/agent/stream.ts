@@ -62,8 +62,12 @@ export class AnthropicStream {
   private usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
   private stopped = false;
   private delta = false;
-  /** Per tool_use id, why its arguments could not be read. */
-  readonly parseErrors = new Map<string, string>();
+  /**
+   * Per tool_use block, why its arguments could not be read. Kept by the block itself, not its
+   * id: a call sent without an id has none, and two of them shared the key "undefined", so a
+   * call written correctly was refused with its neighbour's fault.
+   */
+  readonly parseErrors = new Map<unknown, string>();
 
   constructor(private readonly sink?: StreamSink) {}
 
@@ -118,7 +122,7 @@ export class AnthropicStream {
             block.input = isRecord(input) ? input : {};
           } catch (err) {
             block.input = {};
-            this.parseErrors.set(String(block.id), `The arguments were not valid JSON (${err instanceof Error ? err.message : String(err)}). Send the call again with a JSON object.`);
+            this.parseErrors.set(block, `The arguments were not valid JSON (${err instanceof Error ? err.message : String(err)}). Send the call again with a JSON object.`);
           }
         }
         break;

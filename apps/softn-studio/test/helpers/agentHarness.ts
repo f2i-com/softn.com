@@ -35,6 +35,8 @@ export interface Step {
   noStream?: boolean;
   /** Send the tool calls without an id, as some OpenAI-compatible servers do. */
   noCallIds?: boolean;
+  /** Never answer: the request hangs until its own clock, or the caller, aborts it. */
+  stall?: boolean;
 }
 
 export type Script = Array<Step | ((body: Record<string, unknown>) => Step)>;
@@ -71,7 +73,7 @@ function respond(shape: Shape, step: Step): Record<string, unknown> {
   if (shape === 'anthropic') {
     const content: unknown[] = [];
     if (step.text) content.push({ type: 'text', text: step.text });
-    for (const call of step.calls ?? []) content.push({ type: 'tool_use', id: `toolu_${++callCounter}`, name: call.name, input: call.input });
+    for (const call of step.calls ?? []) content.push({ type: 'tool_use', ...(step.noCallIds ? {} : { id: `toolu_${++callCounter}` }), name: call.name, input: call.input });
     return {
       id: `msg_${callCounter}`,
       type: 'message',
@@ -133,6 +135,11 @@ export function fakeProvider(shape: Shape, script: Script): FakeProvider {
       throw err;
     }
     if (step.networkError) throw new TypeError('Failed to fetch');
+    if (step.stall) {
+      await new Promise<never>((_, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      });
+    }
     if (step.error) {
       return new Response(JSON.stringify(step.error.body), { status: step.error.status, headers: step.error.headers });
     }

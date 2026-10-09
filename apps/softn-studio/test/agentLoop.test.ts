@@ -221,6 +221,30 @@ describe('tool calls that arrive without an id', () => {
     expect(new Set(ids).size).toBe(2);
     expect(messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id)).toEqual(ids);
   });
+
+  // The Messages decoder still named an id-less call by its place in the reply, the rule the
+  // other decoder gave up: a gateway that speaks this API and leaves ids out had every step
+  // rewrite the rows before it, and its echoed tool_use blocks went back with no id to pair.
+  it('gives each its own over the Messages API too, and echoes the call with the id its result answers', async () => {
+    const provider = fakeProvider('anthropic', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/one.ui', content: '<App><Text>1</Text></App>' } }], noCallIds: true },
+      { calls: [{ name: 'write_file', input: { path: 'ui/two.ui', content: '<App><Text>2</Text></App>' } }], noCallIds: true },
+      { calls: [{ name: 'finish', input: { summary: 'Two files.' } }], noCallIds: true },
+    ]);
+    say('Two files');
+    await startAgentRun();
+    expect(lastRun().run.status).toBe('finished');
+    const writes = toolEntries().filter((e) => e.name === 'write_file');
+    expect(writes.map((e) => e.subject)).toEqual(['ui/one.ui', 'ui/two.ui']);
+    expect(writes.map((e) => e.diff?.[0].path)).toEqual(['ui/one.ui', 'ui/two.ui']);
+    expect(new Set(toolEntries().map((e) => e.id)).size).toBe(toolEntries().length);
+    const messages = provider.bodies[2].messages as Array<{ role: string; content: Array<{ type: string; id?: string; tool_use_id?: string }> }>;
+    const used = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content).filter((b) => b.type === 'tool_use').map((b) => b.id);
+    const answered = messages.filter((m) => m.role === 'user').flatMap((m) => m.content).filter((b) => b.type === 'tool_result').map((b) => b.tool_use_id);
+    expect(used.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
+    expect(new Set(used).size).toBe(2);
+    expect(answered).toEqual(used);
+  });
 });
 
 describe('reading a file', () => {
@@ -855,6 +879,30 @@ describe('stopping and limits', () => {
     expect(provider.bodies[4].messages).toEqual(provider.bodies[0].messages);
   });
 
+  // One count was kept for both kinds of second chance, so a request that had waited out a
+  // rate limit had already used the one retry a timeout gets.
+  it('tries a timed-out request once more even after waiting out a rate limit on it', async () => {
+    useAIStore.setState({ requestTimeoutMs: 40 });
+    const provider = fakeProvider('anthropic', [
+      { error: { status: 429, body: { error: { message: 'slow down' } }, headers: { 'retry-after': '0' } } },
+      { stall: true },
+      { calls: [{ name: 'finish', input: { summary: 'ok' } }] },
+    ]);
+    say('Go');
+    await startAgentRun();
+    expect(provider.count()).toBe(3);
+    expect(lastRun().run.status).toBe('finished');
+  });
+
+  it('tries a timed-out request once more, once: a second timeout pauses the run', async () => {
+    useAIStore.setState({ requestTimeoutMs: 40 });
+    const provider = fakeProvider('anthropic', [{ stall: true }, { stall: true }, { calls: [{ name: 'finish', input: { summary: 'ok' } }] }]);
+    say('Go');
+    await startAgentRun();
+    expect(provider.count()).toBe(2);
+    expect(lastRun().run.status).toBe('paused');
+  });
+
   it('stops after the same tool call fails three times in a row', async () => {
     const bad = { calls: [{ name: 'read_file', input: { path: 'ui/nope.ui' } }] };
     fakeProvider('anthropic', [bad, bad, bad]);
@@ -968,6 +1016,46 @@ describe('protocol fallback', () => {
     say('Again');
     await startAgentRun();
     expect(next.bodies[0].tools).toBeUndefined();
+  });
+
+  // A 500 is a server tripping over a request. Some trip over `tools` and say so, and the run
+  // is right to carry on in text; but one bad moment on a server that does take tools was
+  // written down as "this model never takes tools", for every run after, with no way to undo it.
+  it('moves only this run to the text protocol when a server error reads like refused `tools`, and remembers nothing', async () => {
+    resetAgent(LOCAL);
+    seedApp();
+    const provider = fakeProvider('openai', [
+      { error: { status: 500, body: { error: { message: 'template error: this model does not support tools' } } } },
+      (body) => {
+        expect(body.tools).toBeUndefined();
+        return { text: 'Reading first.', calls: [{ name: 'read_file', input: { path: 'ui/main.ui' } }] };
+      },
+      (body) => {
+        // The run stays in text: it does not go back to `tools` and meet the same error at every step.
+        expect(body.tools).toBeUndefined();
+        return { calls: [{ name: 'finish', input: { summary: 'Read it.' } }] };
+      },
+    ]);
+    say('Look');
+    await startAgentRun();
+    const { run } = lastRun();
+    expect(run.status).toBe('finished');
+    expect(run.protocol).toBe('text');
+    expect(provider.count()).toBe(3);
+    expect(useAIStore.getState().toolProtocols).toEqual({});
+    expect(run.entries.some((e) => e.kind === 'text' && /the next run tries tool calls again/.test(e.text))).toBe(true);
+
+    // The next run asks with `tools` again.
+    const next = fakeProvider('openai', [
+      (body) => {
+        expect(body.tools).toBeDefined();
+        return { calls: [{ name: 'finish', input: { summary: 'ok' } }] };
+      },
+    ]);
+    say('Again');
+    await startAgentRun();
+    expect(next.count()).toBe(1);
+    expect(lastRun().run.protocol).toBe('openai');
   });
 
   it('moves to the text protocol when a native reply writes its calls as text', async () => {

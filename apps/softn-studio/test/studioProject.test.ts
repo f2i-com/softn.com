@@ -20,6 +20,7 @@ import {
   resolveActivePreviewPath,
   scaffoldProjectFiles,
 } from '../src/lib/studioProject';
+import { buildGuide } from '../src/lib/agent/guide';
 import { normalizeManifestForBundle } from '../src/lib/exportBundle';
 import { validateProject } from '../src/lib/validator';
 import type { ProjectBrief, VFSFile } from '../src/types/studio';
@@ -95,6 +96,41 @@ describe('the scaffold as a bundle', () => {
     const manifestText = normalizeManifestForBundle(toVfs(files))!;
     expect(manifestText).not.toContain('builder/');
   });
+
+  // Every new app wore a warning from its first moment, "No icon: the card will show the
+  // first letter of the name", which nothing in Studio could act on and the agent was shown
+  // after every check. The scaffold comes with an icon: a real one, in the bundle, that the
+  // person or the agent can redraw, since an SVG is text.
+  it('comes with an icon the directory will show, so a new app starts with nothing to warn about', () => {
+    expect(manifest.icon).toBe('assets/icon.svg');
+    expect(manifest.files.assets).toEqual(['assets/icon.svg']);
+    const icon = String(files.find((f) => f.path === 'assets/icon.svg')!.content);
+    expect(icon).toMatch(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    expect(icon.length).toBeLessThan(2_000);
+    // Drawn in the style's accent, with nothing the person typed in it.
+    expect(icon).toContain('#14b8a6');
+    expect(icon).not.toContain('Test App');
+    const notes = validateProject(toVfs(files), null);
+    expect(notes.filter((e) => /icon/i.test(e.message))).toEqual([]);
+    expect(notes.filter((e) => e.level !== 'info')).toEqual([]);
+    // The exported manifest still names it, and the export holds the file.
+    expect(JSON.parse(normalizeManifestForBundle(toVfs(files))!).icon).toBe('assets/icon.svg');
+  });
+
+  // The agent rewrites manifest.json, and what its guide does not name it does not keep.
+  it('is an icon the agent is told about: to keep in the manifest, and that it may redraw', () => {
+    for (const python of [false, true]) {
+      const guide = buildGuide({ python, torch: false, style: 'clean' });
+      expect(guide).toContain('"icon": "assets/icon.svg"');
+      expect(guide).toMatch(/Keep it when you rewrite the manifest/);
+    }
+  });
+
+  it('gives the Python scaffold the same icon', () => {
+    const python = scaffold({ logicLanguage: 'python' });
+    expect(python.some((f) => f.path === 'assets/icon.svg')).toBe(true);
+    expect(validateProject(toVfs(python), null).filter((e) => /icon/i.test(e.message))).toEqual([]);
+  });
 });
 
 describe('an app name carrying markup', () => {
@@ -163,6 +199,46 @@ describe('generated logic', () => {
   it('survives a newline in the app name', () => {
     const files = scaffold({ appName: 'line one\nline two' });
     expect(() => new Function(logicOf(files))).not.toThrow();
+  });
+});
+
+// A brief that named no pages was planned as three, Home, Overview and Workspace, with a row
+// of buttons to move between them. A one-screen app got two pages nobody asked for, the build
+// was told to make them, and what it left alone stayed in the bundle as empty placeholders.
+describe('a brief that names no pages', () => {
+  const NO_PAGES: ProjectBrief = { appName: 'Counter', description: 'A counter.', target: 'web', style: 'clean', pages: [], collections: [], authNeeded: false, referenceImages: [] };
+
+  it('is planned as one page, and its shell has no row of buttons for moving between pages', () => {
+    const blueprint = generateBlueprintFromBrief(NO_PAGES);
+    expect(blueprint.pages.map((p) => p.name)).toEqual(['Home']);
+    expect(blueprint.navigation.items).toEqual(['Home']);
+    const files = scaffold({ pages: [] });
+    expect(files.filter((f) => f.path.startsWith('ui/pages/')).map((f) => f.path)).toEqual(['ui/pages/home.ui']);
+    const main = String(files.find((f) => f.path === 'ui/main.ui')!.content);
+    expect(main).toContain('<HomePage />');
+    expect(main).not.toContain('#each (item in pages)');
+    // It is still a bundle the inspector and the composer take.
+    expect(validateProject(toVfs(files as Array<{ path: string; content: string }>), blueprint).filter((e) => e.level === 'error')).toEqual([]);
+  });
+
+  it('still plans one page when it names collections: the first page lists them', () => {
+    const blueprint = generateBlueprintFromBrief({ ...NO_PAGES, appName: 'Tasks', description: 'Tasks.', collections: ['Tasks'] });
+    expect(blueprint.pages.map((p) => p.name)).toEqual(['Home']);
+  });
+
+  it('keeps the buttons where there are pages to move between', () => {
+    const main = String(scaffold({ pages: ['Home', 'Settings'] }).find((f) => f.path === 'ui/main.ui')!.content);
+    expect(main).toContain('#each (item in pages)');
+  });
+
+  it('says nothing in its plan about roles or API providers, which the plan knows nothing of', () => {
+    const blueprint = generateBlueprintFromBrief(NO_PAGES);
+    expect([...blueprint.risks, ...blueprint.assumptions].join(' ')).not.toMatch(/per role|API provider/i);
+    // Nor about data it does not have, or sign-in it was not asked for.
+    expect(blueprint.risks.join(' ')).not.toMatch(/collection|authentication/i);
+    const withBoth = generateBlueprintFromBrief({ ...NO_PAGES, collections: ['Tasks'], authNeeded: true });
+    expect(withBoth.risks.join(' ')).toMatch(/collection-specific validation/);
+    expect(withBoth.risks.join(' ')).toMatch(/Authentication flows/);
   });
 });
 

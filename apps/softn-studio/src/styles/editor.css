@@ -262,6 +262,15 @@
   color: var(--studio-code);
 }
 
+/* What a folder is to the bundle, said beside its name: builder/ is not exported. */
+.st-tree-tag {
+  flex-shrink: 0;
+  font-family: var(--studio-mono);
+  font-size: 0.625rem;
+  color: var(--studio-text-dim);
+  white-space: nowrap;
+}
+
 /* ── Canvas ────────────────────────────────────────────────────── */
 
 .st-canvas {
@@ -726,6 +735,49 @@ button.st-status-item[aria-expanded='true'] {
 
 .st-settings-add {
   align-self: flex-start;
+}
+
+/* What runs have learned about a provider's models, each with its Forget. */
+
+.st-learned {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--studio-border);
+}
+
+.st-learned-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.st-learned-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 0.25rem;
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--studio-text-muted);
+}
+
+.st-learned-model {
+  font-family: var(--studio-mono);
+  color: var(--studio-text);
+  overflow-wrap: anywhere;
+}
+
+.st-learned-row .st-btn {
+  margin-left: auto;
+}
+
+.st-learned-said:focus {
+  outline: none;
 }
 
 /* Providers */

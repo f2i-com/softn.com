@@ -1,4 +1,5 @@
 import type { ExampleProject } from './index';
+import { APP_ICON_PATH, appIconSvg } from '../lib/studioProject';
 
 /**
  * The reading list again, with its logic in Python.
@@ -26,12 +27,13 @@ export const READING_LIST_PYTHON: ExampleProject = {
           version: '1.0.0',
           description: 'A small example app whose logic is Python: a list of books to read, with a reading goal.',
           main: 'ui/main.ui',
+          icon: APP_ICON_PATH,
           target: 'web',
           files: {
             ui: ['ui/main.ui', 'ui/pages/home.ui', 'ui/pages/about.ui'],
             logic: ['logic/shelf.py', 'logic/main.py'],
             xdb: ['xdb/books.xdb'],
-            assets: [],
+            assets: [APP_ICON_PATH],
           },
           config: { theme: { mode: 'light' } },
           pages: [
@@ -49,6 +51,11 @@ export const READING_LIST_PYTHON: ExampleProject = {
       content: JSON.stringify({ permissions: {} }, null, 2),
     },
     {
+      // The card's icon, in the heading's colour: without one the bundle carries a warning.
+      path: APP_ICON_PATH,
+      content: appIconSvg('#2563eb'),
+    },
+    {
       path: 'ui/main.ui',
       content: `<import HomePage from="./pages/home.ui" />
 <import AboutPage from="./pages/about.ui" />
@@ -59,7 +66,7 @@ export const READING_LIST_PYTHON: ExampleProject = {
 
 <logic src="../logic/main.py" />
 
-<App theme="light" title={appName}>
+<App theme="light">
   <Container size="lg">
     <Stack direction="vertical" gap="lg" padding="xl">
       <Stack direction="horizontal" gap="md" align="center" wrap>

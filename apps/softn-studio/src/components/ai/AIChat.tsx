@@ -41,8 +41,10 @@ export const AIChat: React.FC = () => {
     ws.addConsoleOutput(`[AI] Reverted turn: ${result.paths.join(', ')}`);
   };
 
+  // The newest message is kept in view. With no message there is nothing to follow: an empty
+  // chat was scrolled to its end too, so on a laptop screen it opened below its own title.
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && messages.length > 0) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
@@ -151,8 +153,12 @@ export const AIChat: React.FC = () => {
         </div>
         {brief && (
           <div style={styles.estimateRow}>
-            <span style={styles.estimatePill}>Blueprint ready</span>
-            <span style={styles.estimatePill}>{brief.pages.length || 1} page targets</span>
+            {/* What there is, counted from it: this said "Blueprint ready" of a brief with no
+                plan yet, and "1 page targets" (the brief's own list, or 1) beside a plan of three. */}
+            <span style={styles.estimatePill}>{blueprint ? 'Plan ready' : 'Brief ready'}</span>
+            {blueprint && (
+              <span style={styles.estimatePill}>{blueprint.pages.length} page{blueprint.pages.length === 1 ? '' : 's'}</span>
+            )}
           </div>
         )}
       </div>
@@ -176,25 +182,6 @@ export const AIChat: React.FC = () => {
               <Icon name="key" size={14} />
               {readiness.state === 'no-model' ? 'Choose a model' : readiness.state === 'unselected' ? 'Choose a provider' : 'Connect a provider'}
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* Brief context */}
-      {brief && messages.length === 0 && (
-        <div style={styles.briefContext}>
-          <div style={styles.briefContextHeader}>
-            <Icon name="file" size={13} color="var(--studio-accent)" />
-            <span style={styles.briefContextTitle}>Brief: {brief.appName}</span>
-          </div>
-          <p style={styles.briefContextDesc}>{brief.description}</p>
-          <div style={styles.briefTags}>
-            <span style={styles.briefTag}>{brief.target}</span>
-            <span style={styles.briefTag}>{brief.style}</span>
-            {brief.authNeeded && <span style={styles.briefTag}>auth</span>}
-            {brief.pages.map((p) => (
-              <span key={p} style={styles.briefTag}>{p}</span>
-            ))}
           </div>
         </div>
       )}
@@ -278,6 +265,28 @@ export const AIChat: React.FC = () => {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* The brief, after what there is to do with it, and inside the part that scrolls. It
+            stood above the conversation at a fixed height: on a laptop screen, with the setup
+            card above it too, that left the conversation about 200px, and the title and the
+            build offer did not both fit in it. */}
+        {brief && messages.length === 0 && (
+          <div style={styles.briefContext}>
+            <div style={styles.briefContextHeader}>
+              <Icon name="file" size={13} color="var(--studio-accent)" />
+              <span style={styles.briefContextTitle}>Brief: {brief.appName}</span>
+            </div>
+            <p style={styles.briefContextDesc}>{brief.description}</p>
+            <div style={styles.briefTags}>
+              <span style={styles.briefTag}>{brief.target}</span>
+              <span style={styles.briefTag}>{brief.style}</span>
+              {brief.authNeeded && <span style={styles.briefTag}>auth</span>}
+              {brief.pages.map((p) => (
+                <span key={p} style={styles.briefTag}>{p}</span>
+              ))}
+            </div>
           </div>
         )}
 
@@ -481,7 +490,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   briefContext: {
-    margin: '10px 10px 0',
     padding: '10px 12px',
     background: 'var(--studio-accent-soft)',
     border: '1px solid var(--studio-border)',

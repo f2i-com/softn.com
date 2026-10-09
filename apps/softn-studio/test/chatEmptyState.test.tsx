@@ -66,6 +66,25 @@ describe('the chat of a project laid out from a brief, before anything is said',
     expect(runAgentTurn).not.toHaveBeenCalled();
   });
 
+  // The bar said "Blueprint ready" and "1 page targets": the brief's own page list, or 1 when
+  // it named none, beside a plan that had three pages.
+  it('says what the plan holds, counted from the plan', () => {
+    const pills = () => [...container.querySelectorAll('span')].map((s) => s.textContent).filter((t) => /ready|page/i.test(t ?? ''));
+    act(() => root.render(<AIChat />));
+    expect(pills()).toEqual(['Plan ready', '1 page']);
+    const three = { ...BRIEF, pages: ['Home', 'Scores', 'About'] };
+    act(() => useWorkspaceStore.setState({ brief: three, blueprint: generateBlueprintFromBrief(three) }));
+    expect(pills()).toEqual(['Plan ready', '3 pages']);
+    expect(container.textContent).not.toMatch(/page targets/);
+  });
+
+  it('with a brief and no plan yet, says the brief is ready and counts no pages', () => {
+    useWorkspaceStore.setState({ blueprint: null });
+    act(() => root.render(<AIChat />));
+    const pills = [...container.querySelectorAll('span')].map((s) => s.textContent).filter((t) => /ready|page/i.test(t ?? ''));
+    expect(pills).toEqual(['Brief ready']);
+  });
+
   it('clears the offer from the box, where an earlier press without a provider left it, once it starts the build', () => {
     useAIStore.setState({ providers: [{ id: 'local', type: 'custom', name: 'Local', apiKey: '', modelId: 'test' }], activeProviderId: 'local', draftMessage: 'Build Counter Club as the brief describes' });
     act(() => root.render(<AIChat />));

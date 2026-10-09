@@ -119,7 +119,17 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
                 {model.created !== undefined && <span className="st-model-date">{MONTH.format(model.created)}</span>}
               </label>
             ))}
-            {visible.length === 0 && (
+            {/* Nothing to list for one of two reasons, each said as what it is. With no search,
+                every model the provider listed was left out as not for chat; this showed the
+                search's message for it: No model matches “”, and a button to use “” as typed. */}
+            {visible.length === 0 && query.trim() === '' && (
+              <p className="st-model-empty">
+                {models!.length === 1 ? 'The one model' : models!.length === 2 ? 'Both models' : `All ${models!.length} models`} this provider lists{' '}
+                {models!.length === 1 ? 'looks like an embedding, speech, image or moderation model, so it is not offered' : `look like embedding, speech, image or moderation models, so ${models!.length === 2 ? 'neither' : 'none'} is offered`}.
+                {' '}If {models!.length === 1 ? 'it is' : 'one of them is'} for chat, show {models!.length === 1 ? 'it' : 'them all'} below, or type a model id.
+              </p>
+            )}
+            {visible.length === 0 && query.trim() !== '' && (
               <p className="st-model-empty">
                 No model matches “{query}”.{' '}
                 <button type="button" className="st-link-btn" onClick={() => { setManual(true); onChange(query.trim()); }}>

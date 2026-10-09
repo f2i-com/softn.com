@@ -193,6 +193,32 @@ describe('Anthropic streams', () => {
     ]);
   });
 
+  // A call whose streamed arguments are not JSON is answered with why. The reason was kept
+  // under the call's id, and a call sent without one has none: two such calls shared the
+  // key "undefined", so the one written correctly was refused with its neighbour's fault.
+  it('refuses only the call whose arguments could not be read, when neither call has an id', async () => {
+    const event = (payload: Record<string, unknown>) => `event: ${String(payload.type)}\ndata: ${JSON.stringify(payload)}\n\n`;
+    stubFetch(() => sse([
+      event({ type: 'message_start', message: { usage: { input_tokens: 5 } } }),
+      event({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', name: 'read_file', input: {} } }),
+      event({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":"ui/main.ui"}' } }),
+      event({ type: 'content_block_stop', index: 0 }),
+      event({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', name: 'read_file', input: {} } }),
+      event({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{bad' } }),
+      event({ type: 'content_block_stop', index: 1 }),
+      event({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 9 } }),
+      event({ type: 'message_stop' }),
+    ].join('')));
+    const reply = await sendAgentRequest(ANTHROPIC, request('anthropic'));
+    expect(reply.calls).toHaveLength(2);
+    expect(reply.calls[0].input).toEqual({ path: 'ui/main.ui' });
+    expect(reply.calls[0].parseError).toBeUndefined();
+    expect(reply.calls[1].parseError).toMatch(/not valid JSON/);
+    // Each has an id of its own, and the block echoed back carries it.
+    expect(new Set(reply.calls.map((c) => c.id)).size).toBe(2);
+    expect((reply.anthropicContent as Array<{ id?: string }>).map((b) => b.id)).toEqual(reply.calls.map((c) => c.id));
+  });
+
   it('turns an overloaded error event into a rate limit and another error event into a provider failure', async () => {
     const start = `event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 5 } } })}\n\n`;
     stubFetch(() => sse(`${start}event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } })}\n\n`));

@@ -3,13 +3,14 @@
  * The page Studio writes itself wears the colour it says it wears.
  *
  * The scaffold of a new app and both bundled examples gave their heading a
- * colour with `<Heading class="brand">` and a `.brand { color: … }` rule.
- * `class` on a component is dropped, so the class never reached the page; and
- * had it been written `className`, a Heading sets its own colour inline, which
- * a class rule does not outrank. The heading was drawn in the theme's text
- * colour, the rule was dead, and these are the first pages the agent reads:
- * they showed it a way of styling that its own guide says does not work. The
- * colour is set with `style:color`, which reaches the element.
+ * colour with `<Heading class="brand">` and a `.brand { color: … }` rule. A
+ * Heading sets its own colour inline, which a class rule does not outrank
+ * (and when this was written the class did not reach the element either:
+ * `class` on a component was dropped, where it is now its className). The
+ * heading was drawn in the theme's text colour, the rule was dead, and these
+ * are the first pages the agent reads: they showed it a way of colouring that
+ * its own guide says does not work. The colour is set with `style:color`,
+ * which reaches the element.
  */
 
 import { readFileSync } from 'node:fs';
@@ -132,10 +133,22 @@ describe('the pages Studio writes', () => {
     expect(container!.querySelector('h2')!.style.color).toBe('rgb(37, 99, 235)');
   });
 
-  it('styles no component with class=, which only plain HTML tags take, in the scaffold or either example', () => {
+  // App takes theme, className and style. `title={appName}` was written on it in all three, set
+  // nothing on the page and nothing on the tab (checked in Chromium), and showed the agent a prop
+  // to copy that its component reference does not list.
+  it('gives App no title, a prop App does not have, in the scaffold of either language or in either example', () => {
+    const python = scaffoldProjectFiles({ ...BRIEF, logicLanguage: 'python' }, generateBlueprintFromBrief(BRIEF));
+    const pages = [...scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)), ...python, ...EXAMPLES.flatMap((e) => e.files)].filter((f) => f.path.endsWith('.ui'));
+    for (const page of pages) expect(page.content, page.path).not.toMatch(/<App\b[^>]*\stitle=/);
+  });
+
+  it('leaves no heading’s colour to a class rule, in the scaffold of either language or in either example', () => {
     const python = scaffoldProjectFiles({ ...BRIEF, logicLanguage: 'python' }, generateBlueprintFromBrief(BRIEF));
     const pages = [...scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)), ...python, ...EXAMPLES.flatMap((e) => e.files)].filter((f) => f.path.endsWith('.ui'));
     expect(pages.length).toBeGreaterThan(4);
-    for (const page of pages) expect(page.content, page.path).not.toMatch(/<[A-Z]\w*[^>]*\sclass=/);
+    for (const page of pages) {
+      expect(page.content, page.path).not.toMatch(/<Heading[^>]*\sclass(Name)?=/);
+      expect(page.content, page.path).not.toMatch(/\.brand\b/);
+    }
   });
 });

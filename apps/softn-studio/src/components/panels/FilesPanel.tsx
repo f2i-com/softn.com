@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useVFSStore, useWorkspaceStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { getBundleEntryPath } from '../../lib/studioProject';
+import { bundleSummary } from '../../lib/exportBundle';
+import { isPrivatePath } from '../../lib/paths';
 
 interface TreeNode {
   name: string;
@@ -84,6 +86,8 @@ const FileTreeItem: React.FC<{
             </>
           )}
         </span>
+        {/* Studio's own folder, said where it is listed: it is in the project and not in the bundle. */}
+        {node.isDir && depth === 0 && isPrivatePath(`${node.path}/`) && <span className="st-tree-tag">not exported</span>}
       </button>
       {node.isDir && isOpen && node.children.map((child) => (
         <FileTreeItem
@@ -106,6 +110,7 @@ export const FilesPanel: React.FC = () => {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const paths = useMemo(() => Array.from(files.keys()), [files]);
+  const bundle = useMemo(() => bundleSummary(files), [files]);
   const tree = useMemo(() => buildTree(paths), [paths]);
   const rootFolders = useMemo(() => tree.filter((node) => node.isDir).map((node) => node.path), [tree]);
   const rootFolderKey = rootFolders.join('|');
@@ -163,8 +168,13 @@ export const FilesPanel: React.FC = () => {
 
   return (
     <div style={styles.container}>
+      {/* "In the bundle" is said of what Export bundle will write, counted from its own plan.
+          The count was every file the project holds, and a project made here keeps its brief
+          and plan under builder/, which the export leaves out: twice the bundle's files. */}
       <p className="st-panel-note">
-        {paths.length} file{paths.length !== 1 ? 's' : ''} in the bundle. Choose one to preview it.
+        {bundle.files} file{bundle.files !== 1 ? 's' : ''} in the bundle.
+        {bundle.privateFiles > 0 && ` ${bundle.privateFiles} more under builder/ ${bundle.privateFiles === 1 ? 'is' : 'are'} Studio’s notes on the project: kept with it, not exported.`}
+        {' '}Choose one to preview it.
       </p>
       <div className="st-tree" role="group" aria-label="Project files">
         {tree.map((node) => (

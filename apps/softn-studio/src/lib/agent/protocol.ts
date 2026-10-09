@@ -108,6 +108,17 @@ export function isToolsRejection(err: unknown): boolean {
 }
 
 /**
+ * Whether a tools rejection is one to remember for the provider and model: a
+ * refusal of the request as it was written (400, 404, 422), a "not
+ * implemented" (501), or the host saying so itself (no status). A 500 is a
+ * server failing while it handled the request; its words can read the same,
+ * and it can also be one bad moment on a server that takes tools.
+ */
+export function isDefiniteToolsRejection(err: unknown): boolean {
+  return isToolsRejection(err) && err instanceof AIProviderError && err.status !== 500;
+}
+
+/**
  * What to do after a streamed request failed: `plain` when the server refused
  * only `stream_options`, `off` when it refused streaming or sent a stream
  * that could not be read, null when the failure has nothing to do with
@@ -191,7 +202,7 @@ async function post(
   body: Record<string, unknown>,
   request: AgentRequest,
   anthropicWire: boolean,
-): Promise<{ data: Record<string, unknown>; parseErrors?: Map<string, string> }> {
+): Promise<{ data: Record<string, unknown>; parseErrors?: Map<unknown, string> }> {
   const mode = request.stream ?? 'off';
   if (mode === 'off') return { data: await postProviderJSON(provider, url, body, { signal: request.signal, timeoutMs: request.timeoutMs }) };
   const streamed = { ...body, stream: true, ...(!anthropicWire && mode === 'on' ? { stream_options: { include_usage: true } } : {}) };
@@ -394,20 +405,27 @@ export function openAIUsage(usage: Record<string, unknown>): AgentUsage {
   return { inputTokens: input, outputTokens: sanitizeCount(usage.completion_tokens), ...(read > 0 ? { cacheReadTokens: read } : {}) };
 }
 
-/** `parseErrors`: per tool_use id, why a streamed call's arguments could not be read. */
-export function decodeAnthropic(data: Record<string, unknown>, parseErrors?: Map<string, string>): AgentReply {
-  const blocks = Array.isArray(data.content) ? data.content : [];
+/** `parseErrors`: per tool_use block of `data.content`, why a streamed call's arguments could not be read. */
+export function decodeAnthropic(data: Record<string, unknown>, parseErrors?: Map<unknown, string>): AgentReply {
+  const blocks: unknown[] = Array.isArray(data.content) ? [...data.content] : [];
   const texts: string[] = [];
   const calls: AgentToolCall[] = [];
-  for (const block of blocks) {
-    if (!isRecord(block)) continue;
+  blocks.forEach((block, index) => {
+    if (!isRecord(block)) return;
     if (block.type === 'text' && typeof block.text === 'string') texts.push(block.text);
     if (block.type === 'tool_use' && typeof block.name === 'string') {
-      const id = typeof block.id === 'string' ? block.id : `call_${calls.length}`;
-      const parseError = parseErrors?.get(id);
+      // A call sent without an id gets one of its own, as the other decoder gives (see
+      // unnamedCallId): it was named by its place in the reply, "call_0" for the first call of
+      // every reply. The block echoed back takes the same id, or the result that answers it
+      // would be paired with a tool_use that has none.
+      const given = typeof block.id === 'string' && block.id ? block.id : null;
+      const id = given ?? unnamedCallId();
+      if (given === null) blocks[index] = { ...block, id };
+      // A streamed call's unreadable arguments are kept by the block as the stream built it.
+      const parseError = parseErrors?.get(block);
       calls.push({ id, name: block.name, input: isRecord(block.input) ? block.input : {}, ...(parseError ? { parseError } : {}) });
     }
-  }
+  });
   const stopReason = typeof data.stop_reason === 'string' ? data.stop_reason : null;
   const usage = isRecord(data.usage) ? data.usage : {};
   const text = texts.join('');

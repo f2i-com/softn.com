@@ -183,7 +183,7 @@ const App: React.FC = () => {
    * before the stores are touched, so a result that arrives after something
    * else took the workspace is dropped, and dropped quietly.
    */
-  const handleImportProject = useCallback(async (file: File, owner?: number): Promise<DashboardOutcome> => {
+  const handleImportProject = useCallback(async (file: File, owner?: number, openerName?: string): Promise<DashboardOutcome> => {
     const generation = owner ?? claimWorkspace().generation;
     abortAgentTurn();
     try {
@@ -239,7 +239,7 @@ const App: React.FC = () => {
       // so any failure above leaves the current project intact — and only if
       // nothing took the workspace while the decode ran.
       if (!ownsWorkspace(generation)) return { ok: true };
-      openImportedInStores(file.name, batch);
+      openImportedInStores(file.name, batch, { name: openerName });
       setView('editor');
       void refreshRecent();
       return { ok: true };
@@ -257,7 +257,9 @@ const App: React.FC = () => {
     if (!isHostedEditor()) return;
     const disconnect = connectHostedEditor({
       open: async (bytes, name, { brief }) => {
-        const result = await handleImportProjectRef.current(new File([new Uint8Array(bytes)], `${name}.softn`, { type: 'application/zip' }));
+        // The host opens the app under its own name for it, which stays the project's name
+        // here whatever the bundle's manifest calls the app.
+        const result = await handleImportProjectRef.current(new File([new Uint8Array(bytes)], `${name}.softn`, { type: 'application/zip' }), undefined, name);
         if (!result.ok) throw new Error(result.message);
         // The host installed this project: every migration it came with has run on its database.
         rememberAppliedMigrations(useVFSStore.getState().files);

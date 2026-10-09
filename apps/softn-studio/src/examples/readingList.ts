@@ -1,4 +1,5 @@
 import type { ExampleProject } from './index';
+import { APP_ICON_PATH, appIconSvg } from '../lib/studioProject';
 
 /**
  * The example a first visit can open: a small, complete .softn-shaped
@@ -22,12 +23,13 @@ export const READING_LIST: ExampleProject = {
           version: '1.0.0',
           description: 'A small example app: a list of books to read, with a page about the app.',
           main: 'ui/main.ui',
+          icon: APP_ICON_PATH,
           target: 'web',
           files: {
             ui: ['ui/main.ui', 'ui/pages/home.ui', 'ui/pages/about.ui'],
             logic: ['logic/main.logic'],
             xdb: ['xdb/books.xdb'],
-            assets: [],
+            assets: [APP_ICON_PATH],
           },
           config: { theme: { mode: 'light' } },
           pages: [
@@ -45,6 +47,11 @@ export const READING_LIST: ExampleProject = {
       content: JSON.stringify({ permissions: {} }, null, 2),
     },
     {
+      // The card's icon, in the heading's colour: without one the bundle carries a warning.
+      path: APP_ICON_PATH,
+      content: appIconSvg('#2563eb'),
+    },
+    {
       path: 'ui/main.ui',
       content: `<import HomePage from="./pages/home.ui" />
 <import AboutPage from="./pages/about.ui" />
@@ -55,7 +62,7 @@ export const READING_LIST: ExampleProject = {
 
 <logic src="../logic/main.logic" />
 
-<App theme="light" title={appName}>
+<App theme="light">
   <Container size="lg">
     <Stack direction="vertical" gap="lg" padding="xl">
       <Stack direction="horizontal" gap="md" align="center" wrap>
@@ -100,7 +107,7 @@ export const READING_LIST: ExampleProject = {
       path: 'ui/pages/about.ui',
       content: `<Stack direction="vertical" gap="md">
   <Heading level={2}>About</Heading>
-  <Text variant="muted">This is the example project that ships with Studio. It is a complete .softn bundle: a manifest, a permission declaration, two pages, one logic file and one collection.</Text>
+  <Text variant="muted">This is the example project that ships with Studio. It is a complete .softn bundle: a manifest, a permission declaration, an icon, two pages, one logic file and one collection.</Text>
   <Card title="What to try">
     <List>
       <ListItem>Change a label on the Home page and watch the preview.</ListItem>

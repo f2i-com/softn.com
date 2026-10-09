@@ -21,22 +21,27 @@ import {
 
 type IconName = React.ComponentProps<typeof Icon>['name'];
 
-const TOOL_LABEL: Record<string, { done: string; doing: string; icon: IconName }> = {
-  list_files: { done: 'Listed files', doing: 'Listing files', icon: 'folder' },
-  read_file: { done: 'Read', doing: 'Reading', icon: 'file' },
-  search_files: { done: 'Searched', doing: 'Searching', icon: 'search' },
-  write_file: { done: 'Wrote', doing: 'Writing', icon: 'edit' },
-  edit_file: { done: 'Edited', doing: 'Editing', icon: 'edit' },
-  delete_file: { done: 'Deleted', doing: 'Deleting', icon: 'trash' },
-  rename_file: { done: 'Renamed', doing: 'Renaming', icon: 'copy' },
-  check_app: { done: 'Checked', doing: 'Checking', icon: 'zap' },
-  inspect_preview: { done: 'Inspected', doing: 'Inspecting', icon: 'eye' },
-  run_app_function: { done: 'Ran', doing: 'Running', icon: 'play' },
-  lookup_components: { done: 'Looked up', doing: 'Looking up', icon: 'components' },
-  read_docs: { done: 'Read the guide', doing: 'Reading the guide', icon: 'info' },
-  update_plan: { done: 'Updated the plan', doing: 'Updating the plan', icon: 'target' },
-  ask_user: { done: 'Asked you', doing: 'Asking you', icon: 'info' },
-  finish: { done: 'Finished', doing: 'Finishing', icon: 'check' },
+/**
+ * A step's verb while it runs, when it is done, and when it did not happen: the tool refused
+ * the call, or the person declined it. A refused edit used to read "Edited ui/main.ui" with
+ * "failed" beside it; "did not" is true of a refusal and of a decline alike.
+ */
+const TOOL_LABEL: Record<string, { done: string; doing: string; failed: string; icon: IconName }> = {
+  list_files: { done: 'Listed files', doing: 'Listing files', failed: 'Did not list files', icon: 'folder' },
+  read_file: { done: 'Read', doing: 'Reading', failed: 'Did not read', icon: 'file' },
+  search_files: { done: 'Searched', doing: 'Searching', failed: 'Did not search', icon: 'search' },
+  write_file: { done: 'Wrote', doing: 'Writing', failed: 'Did not write', icon: 'edit' },
+  edit_file: { done: 'Edited', doing: 'Editing', failed: 'Did not edit', icon: 'edit' },
+  delete_file: { done: 'Deleted', doing: 'Deleting', failed: 'Did not delete', icon: 'trash' },
+  rename_file: { done: 'Renamed', doing: 'Renaming', failed: 'Did not rename', icon: 'copy' },
+  check_app: { done: 'Checked', doing: 'Checking', failed: 'Did not check', icon: 'zap' },
+  inspect_preview: { done: 'Inspected', doing: 'Inspecting', failed: 'Could not inspect', icon: 'eye' },
+  run_app_function: { done: 'Ran', doing: 'Running', failed: 'Could not run', icon: 'play' },
+  lookup_components: { done: 'Looked up', doing: 'Looking up', failed: 'Did not find', icon: 'components' },
+  read_docs: { done: 'Read the guide', doing: 'Reading the guide', failed: 'Did not find the guide', icon: 'info' },
+  update_plan: { done: 'Updated the plan', doing: 'Updating the plan', failed: 'Did not update the plan', icon: 'target' },
+  ask_user: { done: 'Asked you', doing: 'Asking you', failed: 'Did not ask you', icon: 'info' },
+  finish: { done: 'Finished', doing: 'Finishing', failed: 'Did not finish', icon: 'check' },
 };
 
 /** Rows whose subject is words (a question, a count), not a path or a name in code. */
@@ -79,7 +84,7 @@ function DiffView({ diff }: { diff: LineDiff }) {
 function StepRow({ entry, run, message, busy }: { entry: Extract<RunEntry, { kind: 'tool' }>; run: AgentRunRecord; message: ChatMessage; busy: boolean }) {
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const label = TOOL_LABEL[entry.name] ?? { done: entry.name, doing: entry.name, icon: 'terminal' as IconName };
+  const label = TOOL_LABEL[entry.name] ?? { done: entry.name, doing: entry.name, failed: entry.name, icon: 'terminal' as IconName };
   // Undo works from the journal saved with the project, so it is offered after a reload too;
   // a step already undone another way (Ctrl+Z, the History panel) shows as undone, derived from the files.
   const journal = useVFSStore((s) => s.journal);
@@ -94,7 +99,10 @@ function StepRow({ entry, run, message, busy }: { entry: Extract<RunEntry, { kin
   const hasDetail = Boolean(entry.diff?.length || entry.check || entry.result);
   // A row waiting on the person is not the machine running: no mint spinner.
   const waiting = entry.status === 'running' && run.status === 'waiting' && run.question?.callId === entry.id;
-  const verb = waiting ? (entry.name === 'ask_user' ? 'Asked you' : 'Waiting for you') : entry.status === 'running' ? `${label.doing}…` : entry.auto ? 'Automatic check' : label.done;
+  // A check that found errors is a check that ran, and keeps its wording; any other step that
+  // ended in an error did not do what its past tense would say.
+  const refused = entry.status === 'error' && !entry.check;
+  const verb = waiting ? (entry.name === 'ask_user' ? 'Asked you' : 'Waiting for you') : entry.status === 'running' ? `${label.doing}…` : entry.auto ? 'Automatic check' : refused ? label.failed : label.done;
   const checkFailed = entry.check && !entry.check.ok;
   const detailId = `run-step-${entry.id}`;
   return (
@@ -119,7 +127,8 @@ function StepRow({ entry, run, message, busy }: { entry: Extract<RunEntry, { kin
             </span>
           )}
           {entry.check && <span className={`st-run-badge${checkFailed ? ' is-error' : ''}`}>{entry.check.ok ? 'passed' : `${entry.check.errors.length} error${entry.check.errors.length === 1 ? '' : 's'}`}</span>}
-          {entry.status === 'error' && !entry.check && <span className="st-run-badge is-error">failed</span>}
+          {/* No "failed" badge after a verb that already says the step did not happen: the row
+              read "Did not edit … failed", the same thing twice, and was read out twice. */}
           {undone && <span className="st-run-badge">undone</span>}
           {unavailable && (
             <span className="st-run-badge is-muted" title={unavailable}>
@@ -181,7 +190,7 @@ function LiveRows({ reply }: { reply: LiveReply }) {
     <>
       {reply.text && <li className="st-run-text is-live" data-live="text">{reply.text}</li>}
       {reply.calls.map((call) => {
-        const label = TOOL_LABEL[call.name] ?? { done: call.name, doing: call.name, icon: 'terminal' as IconName };
+        const label = TOOL_LABEL[call.name] ?? { done: call.name, doing: call.name, failed: call.name, icon: 'terminal' as IconName };
         return (
           <li key={call.id} className="st-run-step" data-status="running" data-live="call">
             <div className="st-run-row">

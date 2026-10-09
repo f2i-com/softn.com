@@ -107,6 +107,30 @@ describe('the run timeline', () => {
     expect(container.textContent).toContain('undone');
   });
 
+  // A row's verb was the tool's past tense whatever came of the call: an edit that was refused
+  // read "Edited ui/main.ui", with "failed" beside it.
+  it('says of a step that was refused that it did not happen, and keeps a failed check’s own wording', async () => {
+    fakeProvider('anthropic', [
+      { calls: [
+        { name: 'edit_file', input: { path: 'ui/main.ui', old_string: 'x', new_string: 'y' } },
+        { name: 'read_file', input: { path: 'ui/missing.ui' } },
+        { name: 'write_file', input: { path: 'ui/broken.ui', content: '<App><Text>{unclosed</Text></App>' } },
+      ] },
+      { calls: [{ name: 'delete_file', input: { path: 'ui/broken.ui' } }, { name: 'finish', input: { summary: 'Tried.' } }] },
+    ]);
+    say('Change it');
+    await act(async () => { await startAgentRun(); });
+    await flush();
+    const rows = [...container.querySelectorAll('.st-run-step')].map((row) => row.querySelector('.st-run-toggle')!.textContent ?? '');
+    // Said once: the verb is the whole of it, with no "failed" after it to say it again.
+    expect(rows.filter((r) => r.includes('ui/main.ui') && !/^(Wrote|Automatic)/.test(r))).toEqual(['Did not editui/main.ui']);
+    expect(rows.find((r) => r.includes('ui/missing.ui'))).toBe('Did not readui/missing.ui');
+    // What did happen keeps its past tense, and a check that found errors is still a check that ran.
+    expect(rows.find((r) => r.includes('ui/broken.ui') && r.startsWith('Wrote'))).toBeTruthy();
+    expect(rows.some((r) => /^Automatic check/.test(r))).toBe(true);
+    expect(rows.some((r) => /^(Edited|Read)\b.*failed/.test(r))).toBe(false);
+  });
+
   it('offers Stop while running and Continue once stopped; the composer answers a waiting question', async () => {
     const provider = fakeProvider('anthropic', [
       { calls: [{ name: 'list_files', input: {} }] },

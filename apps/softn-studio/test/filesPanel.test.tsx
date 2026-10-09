@@ -57,6 +57,30 @@ describe('the files panel', () => {
     expect(marked()).toBe('ui/main.ui');
   });
 
+  // A project made in Studio keeps its plan and brief under builder/, which the export leaves
+  // out. The panel counted them into "files in the bundle", twice what the bundle held, and
+  // listed the folder like any other.
+  it('counts the files the export will hold, and says which folder is Studio’s own and not exported', () => {
+    act(() => {
+      useVFSStore.getState().createFile('builder/blueprint.json', '{}');
+      useVFSStore.getState().createFile('builder/requirements.md', '# Club');
+    });
+    act(() => root.render(<FilesPanel />));
+    const note = container.querySelector('.st-panel-note')!.textContent!;
+    expect(note).toMatch(/^4 files in the bundle\./);
+    expect(note).toMatch(/2 more under builder\/ are Studio’s notes on the project: kept with it, not exported\./);
+    const folder = [...container.querySelectorAll('button')].find((b) => b.getAttribute('title')?.startsWith('builder'))!;
+    expect(folder.textContent).toContain('not exported');
+    // The folders that are exported say nothing of the kind.
+    const ui = [...container.querySelectorAll('button')].find((b) => b.getAttribute('title') === 'ui')!;
+    expect(ui.textContent).not.toContain('not exported');
+  });
+
+  it('says nothing about Studio’s notes in a project that has none', () => {
+    act(() => root.render(<FilesPanel />));
+    expect(container.querySelector('.st-panel-note')!.textContent).toBe('4 files in the bundle. Choose one to preview it.');
+  });
+
   it('makes the file that is chosen the active one', () => {
     useWorkspaceStore.getState().setActiveFilePath('ui/pages/settings.ui');
     act(() => root.render(<FilesPanel />));

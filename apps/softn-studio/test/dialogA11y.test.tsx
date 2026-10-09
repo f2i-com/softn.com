@@ -74,4 +74,48 @@ describe('BlueprintReview', () => {
     escape();
     expect(onReviseBrief).toHaveBeenCalledTimes(1);
   });
+
+  // The first control in the dialog is the note field at its foot, and that is where the
+  // focus went: on a phone the plan opened scrolled to its end with the keyboard up, the name
+  // and the pages it was there to show out of sight above. And the plan was called "the AI
+  // plan", though Studio lays it out from the brief before any AI has run.
+  it('opens on its title, not in the note field at its foot, and says where the plan came from', () => {
+    const blueprint: Blueprint = {
+      appName: 'Notes', target: 'web', style: 'minimal',
+      pages: [{ id: 'p1', name: 'Home', layout: 'stack', components: [] }],
+      collections: [], navigation: { type: 'tabs', items: ['Home'] }, risks: [], assumptions: [],
+    };
+    const brief: ProjectBrief = { appName: 'Notes', description: 'A notes app', target: 'web', style: 'minimal', pages: ['Home'], collections: [], authNeeded: false, referenceImages: [] };
+    useWorkspaceStore.setState({ blueprint, brief, taskGraph: [] });
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    const dialog = expectDialog();
+    expect(document.activeElement?.id).toBe('blueprint-review-title');
+    expect(dialog.textContent).not.toMatch(/AI plan/);
+    expect(dialog.textContent).toMatch(/laid out from your brief/i);
+  });
+
+  // The title is where the dialog opens and is not one of its controls, so stepping back from
+  // it is not a step the dialog's own keeping of the keyboard knows: it has to go to the last
+  // control, as it does from the first, and not out to the page behind.
+  it('keeps the keyboard inside when stepping back from the title it opens on', () => {
+    const blueprint: Blueprint = {
+      appName: 'Notes', target: 'web', style: 'minimal',
+      pages: [{ id: 'p1', name: 'Home', layout: 'stack', components: [] }],
+      collections: [], navigation: { type: 'tabs', items: ['Home'] }, risks: [], assumptions: [],
+    };
+    const brief: ProjectBrief = { appName: 'Notes', description: 'A notes app', target: 'web', style: 'minimal', pages: ['Home'], collections: [], authNeeded: false, referenceImages: [] };
+    useWorkspaceStore.setState({ blueprint, brief, taskGraph: [] });
+    const behind = document.createElement('button');
+    behind.textContent = 'Behind the dialog';
+    document.body.prepend(behind);
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    const dialog = expectDialog();
+    const title = document.getElementById('blueprint-review-title')!;
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    act(() => { title.dispatchEvent(event); });
+    const controls = [...dialog.querySelectorAll('button')];
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(controls[controls.length - 1]);
+    behind.remove();
+  });
 });
