@@ -167,7 +167,7 @@ pub struct SyncRecord {
 /// from collections with millions of rows. This bounds both RAM consumption
 /// (each row is deserialized to serde_json::Value) and the time a worker thread
 /// is blocked on a query, preventing worker pool exhaustion from pathological reads.
-const MAX_COLLECTION_ROWS: i64 = 10_000;
+pub(crate) const MAX_COLLECTION_ROWS: i64 = 10_000;
 
 /// Query a single record by ID using a read-only connection.
 pub fn read_record(conn: &rusqlite::Connection, id: &str) -> Result<Record, DbError> {
@@ -265,39 +265,251 @@ pub fn read_collection_since(
     }
 }
 
-/// Query all non-deleted records in a collection using a read-only connection.
-/// Sorted by (server_received_at ASC, id ASC) to match the incremental sync
-/// cursor so clients can paginate forward using the compound cursor. If a
-/// collection has >10k records, the client receives the first 10k and uses the
-/// last record's (serverReceivedAt, id) as a compound cursor in the next sync_pull.
+/// Query the first page of a collection's non-deleted records: at most
+/// [`MAX_COLLECTION_ROWS`], oldest received first. See [`read_collection_page`].
 pub fn read_collection(
     conn: &rusqlite::Connection,
     collection: &str,
 ) -> Result<Vec<SyncRecord>, DbError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
-         FROM records WHERE collection = ?1 AND deleted = 0 \
-         ORDER BY server_received_at ASC, id ASC LIMIT ?2",
-    )?;
+    read_collection_page(conn, collection, None, MAX_COLLECTION_ROWS)
+}
 
-    let records = stmt
-        .query_map(params![collection, MAX_COLLECTION_ROWS], |row| {
-            let raw_data = row.get::<_, String>(2)?;
-            Ok(SyncRecord {
-                id: row.get(0)?,
-                collection: row.get(1)?,
-                data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
-                    tracing::warn!("Invalid JSON in record data: {}", e);
-                    serde_json::Value::Null
-                }),
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-                deleted: row.get::<_, i32>(5)? != 0,
-                server_received_at: row.get::<_, Option<String>>(6)?
-                    .unwrap_or_default(),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+fn sync_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncRecord> {
+    let raw_data = row.get::<_, String>(2)?;
+    Ok(SyncRecord {
+        id: row.get(0)?,
+        collection: row.get(1)?,
+        data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
+            tracing::warn!("Invalid JSON in record data: {}", e);
+            serde_json::Value::Null
+        }),
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
+        deleted: row.get::<_, i32>(5)? != 0,
+        server_received_at: row.get::<_, Option<String>>(6)?
+            .unwrap_or_default(),
+    })
+}
 
+/// One page of a collection's non-deleted records, in the order
+/// (server_received_at, id), starting after `after` when it is given.
+///
+/// A collection past [`MAX_COLLECTION_ROWS`] used to be read as its oldest
+/// ten thousand records and no further: a new device never received the
+/// rest, which were the newest, and nothing said so. A caller that gets a
+/// full page passes the last record's (server_received_at, id) back as
+/// `after` for the next. A record with no receipt time sorts as the empty
+/// string, in the cursor as in the order, so a page that ends among such
+/// records continues among them.
+pub fn read_collection_page(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    after: Option<(&str, &str)>,
+    limit: i64,
+) -> Result<Vec<SyncRecord>, DbError> {
+    const COLUMNS: &str = "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at FROM records";
+    const ORDER: &str = "ORDER BY COALESCE(server_received_at, '') ASC, id ASC";
+    let records = match after {
+        None => conn
+            .prepare(&format!("{COLUMNS} WHERE collection = ?1 AND deleted = 0 {ORDER} LIMIT ?2"))?
+            .query_map(params![collection, limit], sync_record)?
+            .collect::<Result<Vec<_>, _>>()?,
+        Some((at, id)) => conn
+            .prepare(&format!(
+                "{COLUMNS} WHERE collection = ?1 AND deleted = 0 \
+                 AND (COALESCE(server_received_at, '') > ?2 OR (COALESCE(server_received_at, '') = ?2 AND id > ?3)) \
+                 {ORDER} LIMIT ?4"
+            ))?
+            .query_map(params![collection, at, id, limit], sync_record)?
+            .collect::<Result<Vec<_>, _>>()?,
+    };
     Ok(records)
+}
+
+/// The most fields a filter may name for it to be applied in the query.
+pub(crate) const MAX_FILTER_FIELDS: usize = 16;
+
+/// The first `limit` non-deleted records of a collection whose data has
+/// every field of `filter` with that value.
+///
+/// This is what `db.query(collection, filter)` means, applied before the
+/// page is cut. Applied after it, as it was, a filtered query over a large
+/// collection looked only among the oldest ten thousand records and missed
+/// every match past them. The comparison is JavaScript's `===` on the parsed
+/// value, or a little wider, never narrower (the script still applies its
+/// own filter to what comes back): a string by its text, a number by its
+/// value as a double, `true`, `false` and `null` by kind, and an object or
+/// an array matches nothing, as it never equals another.
+pub fn read_collection_where(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    filter: &serde_json::Map<String, serde_json::Value>,
+    limit: i64,
+) -> Result<Vec<SyncRecord>, DbError> {
+    use rusqlite::types::Value as Sql;
+    let mut sql = String::from(
+        "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
+         FROM records WHERE collection = ?1 AND deleted = 0",
+    );
+    let mut binds: Vec<Sql> = vec![Sql::Text(collection.to_string())];
+    for (key, value) in filter {
+        binds.push(Sql::Text(key.clone()));
+        let field = binds.len();
+        let matches = match value {
+            serde_json::Value::String(text) => {
+                binds.push(Sql::Text(text.clone()));
+                format!("type = 'text' AND atom = ?{}", binds.len())
+            }
+            serde_json::Value::Number(number) => {
+                binds.push(Sql::Real(number.as_f64().unwrap_or(f64::NAN)));
+                format!("type IN ('integer', 'real') AND CAST(atom AS REAL) = ?{}", binds.len())
+            }
+            serde_json::Value::Bool(true) => "type = 'true'".to_string(),
+            serde_json::Value::Bool(false) => "type = 'false'".to_string(),
+            serde_json::Value::Null => "type = 'null'".to_string(),
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => return Ok(Vec::new()),
+        };
+        // A key of an object is text and an index of an array an integer;
+        // either is what a script names with a string. Data that is not
+        // JSON has no fields (json_each would stop the whole query on it).
+        sql.push_str(&format!(
+            " AND CASE WHEN json_valid(data) THEN EXISTS (SELECT 1 FROM json_each(records.data) \
+             WHERE CAST(key AS TEXT) = ?{field} AND {matches}) ELSE 0 END"
+        ));
+    }
+    binds.push(Sql::Integer(limit));
+    sql.push_str(&format!(" ORDER BY COALESCE(server_received_at, '') ASC, id ASC LIMIT ?{}", binds.len()));
+    let records = conn
+        .prepare(&sql)?
+        .query_map(rusqlite::params_from_iter(binds), sync_record)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(records)
+}
+
+/// Say, at most once a minute, that a read stopped at its limit.
+pub(crate) fn warn_capped(what: &str, collection: &str, limit: i64) {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = LAST.load(std::sync::atomic::Ordering::Relaxed);
+    if now.saturating_sub(last) >= 60
+        && LAST.compare_exchange(last, now, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed).is_ok()
+    {
+        tracing::warn!(collection, limit, "{what} read {limit} records of a collection that has more");
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// What `db.query(collection, filter)` means: every field of the filter
+    /// is a field of the data, with a value `===` it (the preamble's rule).
+    fn script_filter(data: &Value, filter: &serde_json::Map<String, Value>) -> bool {
+        let field = |key: &str| match data {
+            Value::Object(map) => map.get(key).cloned(),
+            Value::Array(items) => key.parse::<usize>().ok().filter(|i| i.to_string() == key).and_then(|i| items.get(i).cloned()),
+            _ => None,
+        };
+        filter.iter().all(|(key, want)| match (field(key), want) {
+            (Some(Value::String(a)), Value::String(b)) => a == *b,
+            (Some(Value::Number(a)), Value::Number(b)) => a.as_f64() == b.as_f64(),
+            (Some(Value::Bool(a)), Value::Bool(b)) => a == *b,
+            (Some(Value::Null), Value::Null) => true,
+            _ => false,
+        })
+    }
+
+    fn store(records: &[(&str, &str)]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE records (id TEXT PRIMARY KEY, collection TEXT, data TEXT, created_at TEXT, updated_at TEXT, deleted INTEGER DEFAULT 0, server_received_at TEXT);",
+        ).unwrap();
+        for (n, (id, data)) in records.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO records VALUES (?1, 'things', ?2, 't', 't', 0, ?3)",
+                params![id, data, format!("2026-01-01T00:00:{n:02}Z")],
+            ).unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn the_filter_in_the_query_finds_what_the_scripts_filter_finds() {
+        let records = [
+            ("text", r#"{"owner":"ann","n":1,"done":true,"note":null}"#),
+            ("other", r#"{"owner":"bob","n":1.0,"done":false}"#),
+            ("typed", r#"{"owner":1,"n":"1","done":"true","note":"null"}"#),
+            ("nested", r#"{"owner":{"name":"ann"},"n":[1],"done":null}"#),
+            ("absent", r#"{"title":"no such fields"}"#),
+            ("big", r#"{"owner":"ann","n":9007199254740993}"#),
+            ("escaped", r#"{"owner":"ann","n":-0.0}"#),
+            ("list", r#"["ann",1,true]"#),
+            ("scalar", r#""ann""#),
+            ("broken", "{not json"),
+            ("empty", r#"{"owner":"","n":0,"done":false}"#),
+        ];
+        let conn = store(&records);
+        let filters = [
+            json!({"owner": "ann"}), json!({"owner": "ann", "done": true}), json!({"owner": ""}),
+            json!({"n": 1}), json!({"n": 1.0}), json!({"n": 0}), json!({"n": "1"}),
+            json!({"n": 9007199254740992u64}), json!({"n": 9007199254740993u64}),
+            json!({"done": true}), json!({"done": false}), json!({"done": null}), json!({"note": null}),
+            json!({"done": "true"}), json!({"owner": 1}), json!({"missing": null}),
+            json!({"owner": {"name": "ann"}}), json!({"n": [1]}),
+            json!({"0": "ann"}), json!({"1": 1}), json!({"2": true, "0": "ann"}), json!({"00": "ann"}),
+        ];
+        for filter in &filters {
+            let filter = filter.as_object().unwrap();
+            let mut found: Vec<String> = read_collection_where(&conn, "things", filter, 100).unwrap().into_iter().map(|r| r.id).collect();
+            found.sort();
+            let mut wanted: Vec<String> = records.iter()
+                .filter(|(_, data)| serde_json::from_str::<Value>(data).is_ok_and(|data| script_filter(&data, filter)))
+                .map(|(id, _)| id.to_string())
+                .collect();
+            wanted.sort();
+            assert_eq!(found, wanted, "filter {}", Value::Object(filter.clone()));
+        }
+    }
+
+    /// The point of filtering in the query: the limit counts what matches.
+    #[test]
+    fn a_match_past_the_limit_of_an_unfiltered_read_is_found() {
+        let records: Vec<(String, String)> = (0..6)
+            .map(|n| (format!("r{n}"), format!(r#"{{"owner":"{}"}}"#, if n >= 4 { "ann" } else { "bob" })))
+            .collect();
+        let borrowed: Vec<(&str, &str)> = records.iter().map(|(id, data)| (id.as_str(), data.as_str())).collect();
+        let conn = store(&borrowed);
+        // Read first and filtered after, the two oldest are all there is to look among.
+        let unfiltered: Vec<String> = read_collection_page(&conn, "things", None, 2).unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(unfiltered, vec!["r0", "r1"]);
+        let filter = json!({"owner": "ann"});
+        let found: Vec<String> = read_collection_where(&conn, "things", filter.as_object().unwrap(), 2).unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(found, vec!["r4", "r5"]);
+    }
+
+    /// Pages line up through records that have no receipt time.
+    #[test]
+    fn pages_continue_through_records_with_no_receipt_time() {
+        let conn = store(&[("a", "{}"), ("b", "{}"), ("c", "{}"), ("d", "{}"), ("e", "{}")]);
+        conn.execute("UPDATE records SET server_received_at = NULL WHERE id IN ('a', 'c', 'e')", []).unwrap();
+        let mut seen = Vec::new();
+        let mut cursor: Option<(String, String)> = None;
+        loop {
+            let page = read_collection_page(&conn, "things", cursor.as_ref().map(|(at, id)| (at.as_str(), id.as_str())), 2).unwrap();
+            let full = page.len() == 2;
+            if let Some(last) = page.last() {
+                cursor = Some((last.server_received_at.clone(), last.id.clone()));
+            }
+            seen.extend(page.into_iter().map(|r| r.id));
+            if !full {
+                break;
+            }
+        }
+        seen.sort();
+        assert_eq!(seen, vec!["a", "b", "c", "d", "e"]);
+    }
 }

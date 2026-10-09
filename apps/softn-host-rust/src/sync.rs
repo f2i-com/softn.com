@@ -282,6 +282,12 @@ pub enum ServerMessage {
     SyncState {
         collection: String,
         records: Vec<serde_json::Value>,
+        /// Present on the last piece of a page that was full: where the next
+        /// page of this collection starts. A client that knows it asks again
+        /// with it as `cursor`; one that does not ignores it, and has what it
+        /// always had.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        more: Option<PullCursor>,
     },
     #[serde(rename = "sync_delta")]
     SyncDelta { ops: Vec<SyncOp> },
@@ -308,9 +314,28 @@ pub enum ServerMessage {
     Error { message: String },
 }
 
+/// Where a full pull of one collection left off: the receipt time and id of
+/// the last record sent, which is the order pages are read in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PullCursor {
+    pub at: String,
+    pub id: String,
+}
+
+/// How long the per-op before-hook may go on taking ops of one push. Each
+/// call may itself run for MAX_CALL_WAIT, so the two together stay inside
+/// the time the connection waits for the push (ws.rs HANDLER_TIMEOUT): past
+/// that the client was told "timed out" and sent everything again, while the
+/// first attempt went on to commit.
+const BEFORE_HOOK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct SyncManager {
     db: ServerDb,
     db_path: PathBuf,
+    /// Records in one page of a pull (pool::MAX_COLLECTION_ROWS).
+    pull_page: std::sync::atomic::AtomicI64,
+    /// BEFORE_HOOK_BUDGET, in milliseconds.
+    before_hook_budget_ms: std::sync::atomic::AtomicU64,
     max_storage_bytes: u64,
     broadcast_tx: broadcast::Sender<(String, ServerMessage)>,
     runtime: Option<Arc<ServerRuntime>>,
@@ -402,6 +427,8 @@ impl SyncManager {
         Arc::new(Self {
             db,
             db_path,
+            pull_page: std::sync::atomic::AtomicI64::new(pool::MAX_COLLECTION_ROWS),
+            before_hook_budget_ms: std::sync::atomic::AtomicU64::new(BEFORE_HOOK_BUDGET.as_millis() as u64),
             max_storage_bytes,
             broadcast_tx,
             runtime,
@@ -561,13 +588,17 @@ impl SyncManager {
     /// `last_id` forms a compound cursor with `last_sync` to handle timestamp
     /// ties — without it, bulk updates sharing a timestamp could be permanently
     /// missed by the `updated_at > ?` cursor.
+    /// `cursor` continues a full pull of one collection from where a page
+    /// that was full left off (the `more` of its last `sync_state`).
     pub fn handle_sync_pull(
         &self,
         collections: &[String],
         last_sync: Option<&str>,
         last_id: Option<&str>,
+        cursor: Option<(&str, &str)>,
     ) -> Vec<ServerMessage> {
         let mut messages = Vec::new();
+        let page = self.pull_page.load(std::sync::atomic::Ordering::Relaxed).max(1);
 
         let mut seen = std::collections::HashSet::new();
         let collections: Vec<&String> = collections.iter().filter(|c| seen.insert(c.as_str())).collect();
@@ -607,8 +638,8 @@ impl SyncManager {
                     }
                 }
             } else {
-                // Full sync: all non-deleted records
-                match pool::read_collection(&conn, collection) {
+                // Full sync: the non-deleted records, a page at a time.
+                match pool::read_collection_page(&conn, collection, cursor, page) {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!("Failed to query collection '{}': {}", collection, e);
@@ -617,6 +648,16 @@ impl SyncManager {
                 }
             };
             drop(conn);
+            // A full page of a full pull: there may be more, and the client
+            // is told where to ask from. It used to be told nothing, and a
+            // collection past the page was never wholly received by anyone.
+            let more = match records.last() {
+                Some(last) if last_sync.is_none() && records.len() as i64 >= page => {
+                    pool::warn_capped("A sync pull", collection, page);
+                    Some(PullCursor { at: last.server_received_at.clone(), id: last.id.clone() })
+                }
+                _ => None,
+            };
 
             let mut json_records: Vec<serde_json::Value> = records
                 .into_iter()
@@ -649,6 +690,7 @@ impl SyncManager {
                 messages.push(ServerMessage::SyncState {
                     collection: collection.clone(),
                     records: Vec::new(),
+                    more: None,
                 });
             } else {
                 let mut chunk = Vec::new();
@@ -661,6 +703,7 @@ impl SyncManager {
                         messages.push(ServerMessage::SyncState {
                             collection: collection.clone(),
                             records: std::mem::take(&mut chunk),
+                            more: None,
                         });
                         chunk_bytes = 0;
                     }
@@ -668,7 +711,7 @@ impl SyncManager {
                     chunk.push(record);
                 }
                 if !chunk.is_empty() {
-                    messages.push(ServerMessage::SyncState { collection: collection.clone(), records: chunk });
+                    messages.push(ServerMessage::SyncState { collection: collection.clone(), records: chunk, more });
                 }
             }
         }
@@ -676,10 +719,60 @@ impl SyncManager {
         messages
     }
 
+    /// Check, store, acknowledge and broadcast a push, then run its
+    /// after-hooks. The connection does the two halves itself
+    /// ([`Self::apply_sync_push`], [`Self::run_after_sync`]) so the answer is
+    /// not kept waiting on the hooks.
+    #[cfg(test)]
     pub fn handle_sync_push(
         &self,
         ops: Vec<SyncOp>,
         client_id: &str,
+    ) -> Vec<ServerMessage> {
+        let (responses, accepted) = self.apply_sync_push(ops, client_id);
+        self.run_after_sync(&accepted);
+        responses
+    }
+
+    /// Everything a push's answer depends on: the checks, the before-hooks,
+    /// the write, and the broadcast to the other clients. Returns the answer
+    /// and the ops that were stored, for [`Self::run_after_sync`].
+    ///
+    /// The after-hooks used to run before the acknowledgement was handed
+    /// back. They may take as long as a handler may, so with the before-hook
+    /// a push could outlast the time its connection waits for it: the client
+    /// was told "Operation timed out" and pushed the same ops again, while
+    /// the first attempt went on to commit, hook and broadcast them.
+    pub fn apply_sync_push(&self, ops: Vec<SyncOp>, client_id: &str) -> (Vec<ServerMessage>, Vec<SyncOp>) {
+        let mut accepted = Vec::new();
+        let responses = self.store_sync_push(ops, client_id, &mut accepted);
+        (responses, accepted)
+    }
+
+    /// The after-sync hooks for ops that are stored, acknowledged and
+    /// broadcast. Outside the DB lock; batch mode (one call) before per-op.
+    pub fn run_after_sync(&self, accepted_ops: &[SyncOp]) {
+        if accepted_ops.is_empty() {
+            return;
+        }
+        if self.has_after_sync_batch {
+            if let Err(e) = self.call_after_sync_batch(accepted_ops) {
+                tracing::warn!("onAfterSyncBatch error: {}", e);
+            }
+        } else if self.has_after_sync {
+            for op in accepted_ops {
+                if let Err(e) = self.call_after_sync(op) {
+                    tracing::warn!("onAfterSync error: {}", e);
+                }
+            }
+        }
+    }
+
+    fn store_sync_push(
+        &self,
+        ops: Vec<SyncOp>,
+        client_id: &str,
+        stored: &mut Vec<SyncOp>,
     ) -> Vec<ServerMessage> {
         // Storage quota: reject all ops if the database file exceeds the
         // configured limit. Prevents clients from filling the disk via
@@ -828,7 +921,20 @@ impl SyncManager {
             self.call_before_sync_batch(basic_valid_ops, &mut responses)
         } else if self.has_before_sync {
             let mut accepted = Vec::new();
+            // One call an op: a few hundred ops against a slow hook could
+            // outlast the connection's wait for the push. Past the budget the
+            // rest are not checked; the client keeps them and sends them
+            // again. The first op is always checked, so a push makes progress.
+            let started = std::time::Instant::now();
+            let budget = std::time::Duration::from_millis(self.before_hook_budget_ms.load(std::sync::atomic::Ordering::Relaxed));
+            let mut checked = 0usize;
+            let mut unchecked = Vec::new();
             for mut op in basic_valid_ops {
+                if checked > 0 && started.elapsed() >= budget {
+                    unchecked.push(op.id.clone());
+                    continue;
+                }
+                checked += 1;
                 match self.call_before_sync(&op) {
                     Ok((false, _)) => {
                         tracing::info!("onBeforeSync rejected op {}", op.id);
@@ -853,6 +959,13 @@ impl SyncManager {
                         });
                     }
                 }
+            }
+            if !unchecked.is_empty() {
+                tracing::warn!("onBeforeSync checked {} op(s) of a push in {}ms; {} left for the client to send again", checked, started.elapsed().as_millis(), unchecked.len());
+                responses.push(ServerMessage::SyncRetry {
+                    op_ids: unchecked,
+                    reason: "The server ran out of time checking this push — send the rest again".into(),
+                });
             }
             accepted
         } else {
@@ -980,33 +1093,20 @@ impl SyncManager {
             drop(db);
         }
 
-        // Phase 3: Run onAfterSync hooks outside the DB lock.
-        // Batch mode (1 RPC) preferred over per-op (N RPCs).
-        if !accepted_ops.is_empty() {
-            if self.has_after_sync_batch {
-                if let Err(e) = self.call_after_sync_batch(&accepted_ops) {
-                    tracing::warn!("onAfterSyncBatch error: {}", e);
-                }
-            } else if self.has_after_sync {
-                for op in &accepted_ops {
-                    if let Err(e) = self.call_after_sync(op) {
-                        tracing::warn!("onAfterSync error: {}", e);
-                    }
-                }
-            }
-        }
-
-        // Acknowledge accepted ops to the pushing client, then broadcast to others
+        // Acknowledge accepted ops to the pushing client, then broadcast to
+        // others. Phase 3, the after-hooks, is the caller's to run once this
+        // answer is on its way (run_after_sync).
         if !accepted_ops.is_empty() {
             let ack_ids: Vec<String> = accepted_ops.iter().map(|op| op.id.clone()).collect();
             responses.push(ServerMessage::SyncAck { op_ids: ack_ids });
 
             let delta = ServerMessage::SyncDelta {
-                ops: accepted_ops,
+                ops: accepted_ops.clone(),
             };
             let _ = self
                 .broadcast_tx
                 .send((client_id.to_string(), delta));
+            *stored = accepted_ops;
         }
 
         responses
@@ -1504,6 +1604,111 @@ mod tests {
         }
     }
 
+    /// A collection past one page is pulled in pages: each full page says
+    /// where the next begins, and nothing is sent twice or left out.
+    #[test]
+    fn a_pull_past_one_page_says_where_the_next_begins() {
+        let (sync, _db) = manager(None);
+        sync.pull_page.store(2, std::sync::atomic::Ordering::Relaxed);
+        for n in 1..=5 {
+            sync.handle_sync_push(vec![op(&format!("c{n}"), "notes", "create", &format!("n{n}"), serde_json::json!({"n": n}))], "a");
+        }
+        // One that is deleted is in no page.
+        sync.handle_sync_push(vec![op("d3", "notes", "delete", "n3", serde_json::json!({}))], "a");
+
+        let page = |cursor: Option<&PullCursor>| {
+            let messages = sync.handle_sync_pull(&["notes".to_string()], None, None, cursor.map(|c| (c.at.as_str(), c.id.as_str())));
+            let mut ids = Vec::new();
+            let mut next = None;
+            for (i, message) in messages.iter().enumerate() {
+                let ServerMessage::SyncState { records, more, .. } = message else { panic!("{message:?}") };
+                ids.extend(records.iter().map(|r| r["id"].as_str().unwrap().to_string()));
+                assert!(more.is_none() || i == messages.len() - 1, "only the last piece of a page says there is more");
+                next = more.clone();
+            }
+            (ids, next)
+        };
+        let (first, more) = page(None);
+        assert_eq!(first.len(), 2);
+        let more = more.expect("a full page says where the next begins");
+        // What a client of today is sent, and what one from before reads past.
+        let wire = serde_json::to_value(ServerMessage::SyncState { collection: "notes".into(), records: Vec::new(), more: Some(more.clone()) }).unwrap();
+        assert_eq!(wire["more"], serde_json::json!({"at": more.at, "id": more.id}));
+        assert!(serde_json::to_value(ServerMessage::SyncState { collection: "notes".into(), records: Vec::new(), more: None }).unwrap().get("more").is_none());
+
+        let (second, more) = page(Some(&more));
+        assert_eq!(second.len(), 2);
+        let (third, end) = page(Some(&more.expect("the second page was full too")));
+        assert!(end.is_none(), "a page that is not full is the last");
+        let mut all = [first, second, third].concat();
+        all.sort();
+        assert_eq!(all, vec!["n1", "n2", "n4", "n5"]);
+    }
+
+    /// The acknowledgement and the broadcast do not wait for the after-hooks.
+    #[test]
+    fn a_push_is_answered_and_broadcast_before_its_after_hooks_run() {
+        let dir = std::env::temp_dir().join(format!("softn-sync-after-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xdb.sqlite");
+        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
+        let hook_db = db.clone();
+        let runtime = ServerRuntime::new(move || crate::host::BridgeSet {
+            db: Some(Box::new(crate::bridges::db::NativeDbBridge::new(hook_db.clone()))),
+            http: None, fs: None, env: None, sql: None, crypto: None,
+            allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
+        }, Some(1)).unwrap();
+        runtime.init("function onAfterSyncBatch(ops) { db.create('audit', { seen: ops.length }); }".to_string()).unwrap();
+        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2, max_connections_per_visitor: 2 };
+        let sync = SyncManager::new(db.clone(), Some(runtime), None, path, settings);
+        let mut deltas = sync.subscribe();
+        let audited = || {
+            let conn = db.read().unwrap();
+            pool::read_collection(&conn, "audit").unwrap().len()
+        };
+
+        let (responses, stored) = sync.apply_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "x"}))], "a");
+        assert_eq!(acked(&responses), vec!["c1"], "{responses:?}");
+        assert!(deltas.try_recv().is_ok(), "the other clients are told with the answer");
+        assert_eq!(audited(), 0, "the after-hook ran before the push was answered");
+        assert_eq!(stored.len(), 1);
+        sync.run_after_sync(&stored);
+        assert_eq!(audited(), 1, "and it does run");
+        // Nothing stored, nothing to hook.
+        sync.run_after_sync(&[]);
+        assert_eq!(audited(), 1);
+    }
+
+    /// Past its budget the per-op before-hook checks no more ops of a push;
+    /// the client keeps the rest. The first is always checked.
+    #[test]
+    fn a_before_hook_that_runs_out_of_time_leaves_the_rest_for_the_client() {
+        let (sync, db) = manager(Some("function onBeforeSync(op) { return true; }"));
+        sync.before_hook_budget_ms.store(0, std::sync::atomic::Ordering::Relaxed);
+        let responses = sync.handle_sync_push(vec![
+            op("c1", "notes", "create", "n1", serde_json::json!({"n": 1})),
+            op("c2", "notes", "create", "n2", serde_json::json!({"n": 2})),
+            op("c3", "notes", "create", "n3", serde_json::json!({"n": 3})),
+        ], "a");
+        assert_eq!(acked(&responses), vec!["c1"], "{responses:?}");
+        assert!(rejected(&responses).is_empty(), "nothing is refused for good: {responses:?}");
+        let retried: Vec<String> = responses.iter().flat_map(|r| match r {
+            ServerMessage::SyncRetry { op_ids, .. } => op_ids.clone(),
+            _ => Vec::new(),
+        }).collect();
+        assert_eq!(retried, vec!["c2", "c3"]);
+        assert!(db.write().get_record("n1").is_ok() && db.write().get_record("n2").is_err());
+        // With time to spare every op is checked.
+        sync.before_hook_budget_ms.store(60_000, std::sync::atomic::Ordering::Relaxed);
+        let responses = sync.handle_sync_push(vec![
+            op("c2", "notes", "create", "n2", serde_json::json!({"n": 2})),
+            op("c3", "notes", "create", "n3", serde_json::json!({"n": 3})),
+        ], "a");
+        let mut ids = acked(&responses);
+        ids.sort();
+        assert_eq!(ids, vec!["c2", "c3"]);
+    }
+
     /// What an after-sync hook throws reaches the caller, which logs it.
     #[test]
     fn an_after_sync_hook_that_throws_is_reported() {
@@ -1527,7 +1732,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
             }).unwrap();
         }
-        let messages = sync.handle_sync_pull(&["docs".to_string()], None, None);
+        let messages = sync.handle_sync_pull(&["docs".to_string()], None, None, None);
         let mut total = 0;
         for message in &messages {
             let bytes = serde_json::to_vec(message).unwrap().len();
@@ -1548,10 +1753,10 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
         }).unwrap();
         let repeated: Vec<String> = std::iter::repeat_n("notes".to_string(), 5_000).collect();
-        let messages = sync.handle_sync_pull(&repeated, None, None);
+        let messages = sync.handle_sync_pull(&repeated, None, None, None);
         assert_eq!(messages.len(), 1, "one sync_state for one distinct collection");
         let many: Vec<String> = (0..MAX_PULL_COLLECTIONS + 1).map(|i| format!("c{i}")).collect();
-        let messages = sync.handle_sync_pull(&many, None, None);
+        let messages = sync.handle_sync_pull(&many, None, None, None);
         assert!(matches!(messages.as_slice(), [ServerMessage::Error { .. }]), "{} messages", messages.len());
     }
 }

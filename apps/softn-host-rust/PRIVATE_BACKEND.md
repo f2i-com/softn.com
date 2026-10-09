@@ -199,11 +199,13 @@ ones that follow. `config` is part of the manifest every client is served, so
 nothing in it is a secret; keys and tokens belong in `backend.json`.
 
 `db.query(collection, filter)`, on the document store (which the PHP host
-does not have), keeps the records whose data has every field of `filter`.
-The host reads at most 10,000 records of a collection for a query, oldest
-first, and the filter is applied to those: on a larger collection a filtered
-query can miss records, as an unfiltered one already stops at 10,000. Keep
-what must be found by a field in `softn.sql`.
+does not have), answers with the records whose data has every field of
+`filter`, compared as a script's `===` compares them. The filter is applied
+in the host's query, so the 10,000 records one query reads at most are
+10,000 that match, oldest first; an unfiltered `db.query(collection)` is the
+oldest 10,000 records of the collection, and the log says so (at most once a
+minute) when either stops there. A filter of more than 16 fields is applied
+by the script alone, to the oldest 10,000.
 
 `softn.time.age(date, timezone)` accepts a `YYYY-MM-DD` date and an optional IANA
 zone (default `UTC`); specify the application's calendar zone explicitly.
@@ -433,6 +435,24 @@ settles such a dispute: a bundle that is renamed, replaced by a new version
 under another name, or moved to another bundles directory is loaded as ever,
 and the record follows it. With no record the first by name is the tenant.
 Bundles are loaded in name order.
+
+Sync, pulls: a collection is sent a page of 10,000 records at a time. The
+last `sync_state` of a page that was full carries `more: {at, id}`, and a
+`sync_pull` naming that collection with `cursor: {at, id}` is answered with
+the page after it; the runtime's client asks until a page is not full. A
+collection past 10,000 records used to be pulled as its oldest 10,000 and no
+further, on every device. A client from before this ignores `more` and has
+what it had.
+
+Sync, pushes: a push is answered (`sync_ack`) and broadcast to the other
+clients as soon as its ops are stored. `onAfterSync` and `onAfterSyncBatch`
+run after that, and the connection's next message waits for them, so one
+client's pushes are still hooked in order. The answer used to wait for the
+after-hooks, and a push whose hooks took long was told "timed out" and sent
+again while the first attempt went on to commit. The per-op `onBeforeSync`
+stops taking ops of one push after five seconds; the rest are answered
+`sync_retry` and the client sends them again. Prefer `onBeforeSyncBatch`,
+which is one call for the whole push.
 
 Sync hooks: what `onBeforeSync` or `onBeforeSyncBatch` hands back as an op's
 `data` must be an object no larger than a client may send (512 KB). Anything

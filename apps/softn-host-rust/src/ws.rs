@@ -368,6 +368,11 @@ async fn reader_task(
                             .get("lastId")
                             .and_then(|v| v.as_str())
                             .map(String::from);
+                        // Where a full pull continues from: the `more` of the
+                        // last sync_state of a page that was full.
+                        let cursor: Option<(String, String)> = parsed.get("cursor").and_then(|c| {
+                            Some((c.get("at")?.as_str()?.to_string(), c.get("id")?.as_str()?.to_string()))
+                        });
 
                         // Acquire a sync permit to bound concurrent blocking tasks.
                         // Without this, a flood of slow sync_pull requests could exhaust
@@ -395,7 +400,10 @@ async fn reader_task(
                             HANDLER_TIMEOUT,
                             tokio::task::spawn_blocking(move || {
                                 let _permit = permit; // held until task completes
-                                sync_clone.handle_sync_pull(&collections, last_sync.as_deref(), last_id.as_deref())
+                                sync_clone.handle_sync_pull(
+                                    &collections, last_sync.as_deref(), last_id.as_deref(),
+                                    cursor.as_ref().map(|(at, id)| (at.as_str(), id.as_str())),
+                                )
                             }),
                         ).await {
                             Ok(Ok(r)) => r,
@@ -461,16 +469,19 @@ async fn reader_task(
 
                         let sync_clone = sync.clone();
                         let cid_clone = cid.to_string();
-                        let responses = match tokio::time::timeout(
-                            HANDLER_TIMEOUT,
-                            tokio::task::spawn_blocking(move || {
-                                let _permit = permit; // held until task completes
-                                sync_clone.handle_sync_push(ops, &cid_clone)
-                            }),
-                        ).await {
+                        // The answer leaves the task as soon as the ops are
+                        // stored and broadcast, before their after-hooks run.
+                        let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
+                        let mut task = tokio::task::spawn_blocking(move || {
+                            let _permit = permit; // held until task completes
+                            let (responses, accepted) = sync_clone.apply_sync_push(ops, &cid_clone);
+                            let _ = answer_tx.send(responses);
+                            sync_clone.run_after_sync(&accepted);
+                        });
+                        let responses = match tokio::time::timeout(HANDLER_TIMEOUT, answer_rx).await {
                             Ok(Ok(r)) => r,
-                            Ok(Err(e)) => {
-                                tracing::error!("sync_push task failed: {}", e);
+                            Ok(Err(_)) => {
+                                tracing::error!("sync_push task ended before it answered");
                                 vec![ServerMessage::Error {
                                     message: "Internal server error".into(),
                                 }]
@@ -487,6 +498,10 @@ async fn reader_task(
                                 return;
                             }
                         }
+                        // This connection's next message waits for the
+                        // after-hooks, as it always did: one client's pushes
+                        // are hooked in the order they came.
+                        let _ = tokio::time::timeout(HANDLER_TIMEOUT, &mut task).await;
                     }
                     "subscribe" => {
                         // Subscriptions handled via broadcast channel

@@ -872,3 +872,94 @@ async fn shutdown_does_not_wait_for_ever_on_a_connection_that_will_not_finish() 
     assert!(ended.is_ok(), "the server was still waiting on a connection that will not finish");
     drop(stream);
 }
+
+/// A store that says how it was asked: with a filter, or for everything.
+struct AskedHow {
+    asked: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl crate::bridges::DbBridge for AskedHow {
+    fn query(&self, collection: &str) -> Result<Vec<crate::bridges::DbRecord>, String> {
+        self.asked.lock().unwrap().push(format!("all of {collection}"));
+        Ok(["ann", "bob"].iter().map(|owner| crate::bridges::DbRecord {
+            id: owner.to_string(), collection: collection.to_string(),
+            data: serde_json::json!({"owner": owner}), created_at: String::new(), updated_at: String::new(),
+        }).collect())
+    }
+    fn query_where(&self, collection: &str, filter: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<crate::bridges::DbRecord>, String> {
+        self.asked.lock().unwrap().push(format!("{collection} where {}", serde_json::Value::Object(filter.clone())));
+        // Wider than the filter on purpose: the script's own filter is what decides.
+        self.query(collection).map(|rows| { self.asked.lock().unwrap().pop(); rows })
+    }
+    fn create(&mut self, _: &str, _: &str) -> Result<crate::bridges::DbRecord, String> { Err("not in this test".into()) }
+    fn update(&mut self, _: &str, _: &str) -> Result<Option<crate::bridges::DbRecord>, String> { Err("not in this test".into()) }
+    fn update_if(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<crate::bridges::DbUpdateIf, String> { Err("not in this test".into()) }
+    fn delete(&mut self, _: &str) -> Result<(), String> { Err("not in this test".into()) }
+    fn hard_delete(&mut self, _: &str, _: &str) -> Result<(), String> { Err("not in this test".into()) }
+    fn get(&self, _: &str, _: &str) -> Result<Option<crate::bridges::DbRecord>, String> { Ok(None) }
+    fn start_sync(&mut self, _: &str) {}
+    fn stop_sync(&mut self, _: Option<&str>) {}
+    fn get_sync_status(&self, _: Option<&str>) -> crate::bridges::DbSyncStatus {
+        crate::bridges::DbSyncStatus { connected: false, peers: 0, room: String::new() }
+    }
+    fn get_saved_sync_room(&self) -> Option<String> { None }
+}
+
+/// `db.query(collection, filter)` reaches the store as a filtered read, so
+/// the store's limit counts what matches; and what the store hands back is
+/// still held to the filter by the script's own comparison.
+#[tokio::test]
+async fn a_scripts_filter_is_applied_by_the_store_and_again_by_the_script() {
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = asked.clone();
+    let runtime = crate::runtime::ServerRuntime::new(move || crate::host::BridgeSet {
+        db: Some(Box::new(AskedHow { asked: seen.clone() })),
+        http: None, fs: None, env: None, sql: None, crypto: None,
+        allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
+    }, Some(1)).unwrap();
+    runtime.init(r#"function counts(req) {
+        var n = function (filter) { return db.query("people", filter).length; };
+        return { status: 200, body: { ann: n({ owner: "ann" }), all: n(), empty: n({}), none: n(null), odd: n(5), absent: n({ owner: undefined }) } };
+    }"#.into()).unwrap();
+    let (status, Json(body)) = execute_api_handler(runtime.clone(), "counts".into(), ApiRouteOptions {
+        transaction: TransactionMode::None, input_limit: 100, private_api: false, host_auth: false, client_ip: false, poll: false, upload: false,
+    }, "127.0.0.1".parse().unwrap(), axum::http::Method::GET, "/api/counts".parse().unwrap(),
+        axum::http::HeaderMap::new(), axum::extract::Query(HashMap::new()), Vec::new().into()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The store answered the filtered read with both people; the script kept the one that matches.
+    assert_eq!(body, serde_json::json!({"ann": 1, "all": 2, "empty": 2, "none": 2, "odd": 2, "absent": 0}));
+    assert_eq!(*asked.lock().unwrap(), vec![
+        r#"people where {"owner":"ann"}"#.to_string(),
+        "all of people".into(), "all of people".into(), "all of people".into(), "all of people".into(),
+        // `{owner: undefined}` is `{}` as JSON: nothing for the store to filter by.
+        "all of people".into(),
+    ]);
+}
+
+/// The store itself: only what matches comes back, without the script's help.
+#[test]
+fn the_native_store_reads_a_filtered_collection() {
+    let dir = std::env::temp_dir().join(format!("softn-filtered-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("xdb.sqlite");
+    let db = crate::pool::ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
+    let mut bridges = crate::host::BridgeSet {
+        db: Some(Box::new(crate::bridges::db::NativeDbBridge::new(db))),
+        http: None, fs: None, env: None, sql: None, crypto: None,
+        allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
+    };
+    let call = |bridges: &mut crate::host::BridgeSet, args: &[&str]| -> serde_json::Value {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        serde_json::from_str(&crate::host::dispatch(bridges, "db.query", &args).unwrap()).unwrap()
+    };
+    for owner in ["ann", "bob", "ann"] {
+        crate::host::dispatch(&mut bridges, "db.create", &["notes".to_string(), serde_json::json!({"owner": owner}).to_string()]).unwrap();
+    }
+    assert_eq!(call(&mut bridges, &["notes"]).as_array().unwrap().len(), 3);
+    assert_eq!(call(&mut bridges, &["notes", r#"{"owner":"ann"}"#]).as_array().unwrap().len(), 2);
+    assert_eq!(call(&mut bridges, &["notes", r#"{"owner":"zed"}"#]).as_array().unwrap().len(), 0);
+    // Not an object, or no fields: the whole collection, as before.
+    assert_eq!(call(&mut bridges, &["notes", "{}"]).as_array().unwrap().len(), 3);
+    assert_eq!(call(&mut bridges, &["notes", "[1]"]).as_array().unwrap().len(), 3);
+    assert_eq!(call(&mut bridges, &["notes", "not json"]).as_array().unwrap().len(), 3);
+}

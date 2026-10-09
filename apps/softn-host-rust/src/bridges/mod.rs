@@ -72,6 +72,13 @@ pub enum DbUpdateIf {
 
 pub trait DbBridge: Send {
     fn query(&self, collection: &str) -> Result<Vec<DbRecord>, String>;
+    /// The records whose data has every field of `filter` with that value,
+    /// found before the read is cut at its limit. A bridge that cannot may
+    /// answer with the unfiltered read: the script filters what it is given.
+    fn query_where(&self, collection: &str, filter: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<DbRecord>, String> {
+        let _ = filter;
+        self.query(collection)
+    }
     fn create(&mut self, collection: &str, data: &str) -> Result<DbRecord, String>;
     fn update(&mut self, id: &str, data: &str) -> Result<Option<DbRecord>, String>;
     /// Merge `data` into the record only if its top-level `field` still equals

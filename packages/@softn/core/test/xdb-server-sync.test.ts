@@ -84,6 +84,37 @@ afterEach(() => {
 });
 
 describe('XDBServerSync', () => {
+  it('asks for the next page of a collection the host says has more, until it has it all', () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    const row = (id: string) => ({ id, collection: 'notes', data: { text: id }, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' });
+    try {
+      socket.open();
+      authOk(socket);
+      expect(socket.ofType('sync_pull')).toEqual([{ type: 'sync_pull', collections: ['notes'] }]);
+      // A full page arrives in pieces; only the last piece says there is more.
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a')] });
+      expect(socket.ofType('sync_pull')).toHaveLength(1);
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('b')], more: { at: '2026-01-01T00:00:02Z', id: 'b' } });
+      expect(socket.ofType('sync_pull')[1]).toEqual({
+        type: 'sync_pull',
+        collections: ['notes'],
+        cursor: { at: '2026-01-01T00:00:02Z', id: 'b' },
+      });
+      // The last page is not full and asks for nothing.
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('c')] });
+      expect(socket.ofType('sync_pull')).toHaveLength(2);
+      expect(xdb.query('notes').map((r) => r.id).sort()).toEqual(['a', 'b', 'c']);
+      // Something that is not a cursor is not followed.
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [], more: { at: 7 } });
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [], more: null });
+      expect(socket.ofType('sync_pull')).toHaveLength(2);
+    } finally {
+      sync.disconnect();
+    }
+  });
+
   it('pushes collection-scoped edits and deletes with the original record identity', () => {
     const record = xdb.create('notes', { text: 'before' });
     const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });

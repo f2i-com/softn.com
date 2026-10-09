@@ -66,7 +66,13 @@ fn dispatch_inner(bridges: &mut BridgeSet, kind: &str, args: &[String]) -> Resul
         // ── db ──
         "db.query" => {
             let db = need(bridges.db.as_deref(), kind)?;
-            let rows = db.query(arg(0))?;
+            // A filter, when the script gave one that is an object: applied
+            // in the query, before the read is cut at its limit.
+            let filter = serde_json::from_str::<serde_json::Value>(arg(1)).ok();
+            let rows = match filter.as_ref().and_then(|f| f.as_object()).filter(|f| !f.is_empty()) {
+                Some(filter) => db.query_where(arg(0), filter)?,
+                None => db.query(arg(0))?,
+            };
             let json: Vec<_> = rows.iter().map(|r| r.to_json()).collect();
             enc(&serde_json::Value::Array(json))
         }

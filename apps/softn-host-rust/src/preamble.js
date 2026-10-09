@@ -18,13 +18,20 @@ var db = {
   // one of its fields with that value: what db.query(collection, filter) is
   // in a page's logic. The second argument used to be dropped, so
   // db.query("notes", {owner: id}) answered with everybody's notes.
-  // The host reads at most 10,000 records of a collection (pool.rs,
-  // MAX_COLLECTION_ROWS), oldest first, and this filters those: past that
-  // size a match can be missed, as an unfiltered query already stops there.
+  // The host applies the filter in its query, so the 10,000 records it
+  // reads at most (pool.rs, MAX_COLLECTION_ROWS) are 10,000 that match;
+  // filtered here alone, as it first was, a match past the oldest 10,000
+  // records of a collection was never found. What comes back is filtered
+  // here as well: this is the comparison a script means, and the host's is
+  // allowed to be a little wider.
   query: function (c, filter) {
-    var rows = JSON.parse(__zippHostCall("db.query", String(c)));
-    if (filter === undefined || filter === null || typeof filter !== "object") return rows;
+    if (filter === undefined || filter === null || typeof filter !== "object") {
+      return JSON.parse(__zippHostCall("db.query", String(c)));
+    }
     var keys = Object.keys(filter);
+    var rows = JSON.parse(keys.length === 0
+      ? __zippHostCall("db.query", String(c))
+      : __zippHostCall("db.query", String(c), JSON.stringify(filter)));
     if (keys.length === 0) return rows;
     var has = Object.prototype.hasOwnProperty;
     return rows.filter(function (row) {

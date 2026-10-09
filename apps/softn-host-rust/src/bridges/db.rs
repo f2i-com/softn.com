@@ -22,11 +22,33 @@ fn xdb_to_record(r: xdb::Record) -> DbRecord {
 }
 
 impl DbBridge for NativeDbBridge {
+    fn query_where(&self, collection: &str, filter: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<DbRecord>, String> {
+        if filter.is_empty() || filter.len() > pool::MAX_FILTER_FIELDS {
+            return self.query(collection);
+        }
+        let conn = self.db.read()?;
+        let records = pool::read_collection_where(&conn, collection, filter, pool::MAX_COLLECTION_ROWS)
+            .map_err(|e| format!("db.query failed: {}", e))?;
+        if records.len() as i64 >= pool::MAX_COLLECTION_ROWS {
+            pool::warn_capped("db.query with a filter", collection, pool::MAX_COLLECTION_ROWS);
+        }
+        Ok(records.into_iter().map(|r| DbRecord {
+            id: r.id,
+            collection: r.collection,
+            data: r.data,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }).collect())
+    }
+
     fn query(&self, collection: &str) -> Result<Vec<DbRecord>, String> {
         // Use read pool — concurrent with other reads and writes
         let conn = self.db.read()?;
         let records = pool::read_collection(&conn, collection)
             .map_err(|e| format!("db.query failed: {}", e))?;
+        if records.len() as i64 >= pool::MAX_COLLECTION_ROWS {
+            pool::warn_capped("db.query", collection, pool::MAX_COLLECTION_ROWS);
+        }
         // Note: the read pool yields `SyncRecord`, not `xdb::Record` — same
         // field set, different type, so this cannot reuse `xdb_to_record`.
         Ok(records.into_iter().map(|r| DbRecord {

@@ -52,11 +52,22 @@ export interface ServerSyncStatus {
   serverTime: string | null;
 }
 
+/**
+ * Where a pull of one collection left off. The host reads a collection a
+ * page at a time (ten thousand records); the last `sync_state` of a page
+ * that was full carries this, and a pull that hands it back as `cursor` is
+ * answered with the page after it. A host from before pages sends none.
+ */
+interface PullCursor {
+  at: string;
+  id: string;
+}
+
 // ── Client → Server messages ─────────────────────────────
 
 type ClientMessage =
   | { type: 'auth'; appVersion: string }
-  | { type: 'sync_pull'; collections: string[] }
+  | { type: 'sync_pull'; collections: string[]; cursor?: PullCursor }
   | { type: 'sync_push'; ops: SyncOp[] }
   | { type: 'subscribe'; collections: string[] };
 
@@ -65,7 +76,7 @@ type ClientMessage =
 type ServerMessage =
   | { type: 'auth_ok'; clientId: string; serverTime: string }
   | { type: 'auth_error'; reason: string }
-  | { type: 'sync_state'; collection: string; records: ServerRecord[] }
+  | { type: 'sync_state'; collection: string; records: ServerRecord[]; more?: PullCursor }
   | { type: 'sync_delta'; ops: SyncOp[] }
   | { type: 'sync_ack'; opIds: string[] }
   | { type: 'sync_reject'; opId: string; reason: string }
@@ -392,7 +403,7 @@ export class XDBServerSync {
         break;
 
       case 'sync_state':
-        this.handleSyncState(msg.collection, msg.records);
+        this.handleSyncState(msg.collection, msg.records, msg.more);
         break;
 
       case 'sync_delta':
@@ -519,7 +530,7 @@ export class XDBServerSync {
   }
 
   /** Replace local collection data with the server's authoritative state. */
-  private handleSyncState(collection: string, records: ServerRecord[]): void {
+  private handleSyncState(collection: string, records: ServerRecord[], more?: PullCursor): void {
     // Apply each record from the server to the local XDB.
     // We use a batch approach: clear local data and re-insert.
     // For Phase 2, we use a simpler approach: upsert each record.
@@ -531,6 +542,12 @@ export class XDBServerSync {
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
       });
+    }
+    // The page was full, so the collection goes on: ask for the rest. A
+    // collection past one page used to stop here, at its oldest ten
+    // thousand records, on every device that ever pulled it.
+    if (more && typeof more.at === 'string' && typeof more.id === 'string') {
+      this.send({ type: 'sync_pull', collections: [collection], cursor: { at: more.at, id: more.id } });
     }
     this.initialPullDone = true;
     this.flushPendingOps();
