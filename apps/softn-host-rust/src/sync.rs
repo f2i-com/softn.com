@@ -760,8 +760,9 @@ impl SyncManager {
                 tracing::warn!("onAfterSyncBatch error: {}", e);
             }
         } else if self.has_after_sync {
+            let scope = ServerRuntime::new_scope();
             for op in accepted_ops {
-                if let Err(e) = self.call_after_sync(op) {
+                if let Err(e) = self.call_after_sync(op, scope) {
                     tracing::warn!("onAfterSync error: {}", e);
                 }
             }
@@ -929,13 +930,15 @@ impl SyncManager {
             let budget = std::time::Duration::from_millis(self.before_hook_budget_ms.load(std::sync::atomic::Ordering::Relaxed));
             let mut checked = 0usize;
             let mut unchecked = Vec::new();
+            // One client's push is one request, however many ops it carries.
+            let scope = ServerRuntime::new_scope();
             for mut op in basic_valid_ops {
                 if checked > 0 && started.elapsed() >= budget {
                     unchecked.push(op.id.clone());
                     continue;
                 }
                 checked += 1;
-                match self.call_before_sync(&op) {
+                match self.call_before_sync(&op, scope) {
                     Ok((false, _)) => {
                         tracing::info!("onBeforeSync rejected op {}", op.id);
                         responses.push(ServerMessage::SyncReject {
@@ -1271,10 +1274,10 @@ impl SyncManager {
     /// If the hook returns an object with a `data` field, that data overrides
     /// the original op's data (enabling sanitization/enrichment).
     /// An explicit `false` rejects; null/undefined/true accepts without mutation.
-    fn call_before_sync(&self, op: &SyncOp) -> Result<(bool, Option<serde_json::Value>), String> {
+    fn call_before_sync(&self, op: &SyncOp, scope: u64) -> Result<(bool, Option<serde_json::Value>), String> {
         let rt = self.runtime.as_ref().ok_or("No runtime")?;
         let op_json = Self::op_to_json(op);
-        let result = rt.call("onBeforeSync", vec![op_json])?;
+        let result = rt.call_within(scope, "onBeforeSync", vec![op_json])?;
         match &result {
             serde_json::Value::Bool(false) => Ok((false, None)),
             // `{ data: clean(op.data) }` where `clean` falls off the end of a
@@ -1333,10 +1336,10 @@ impl SyncManager {
         rt.call("onAfterSyncBatch", vec![serde_json::Value::Array(ops_json)]).map(|_| ())
     }
 
-    fn call_after_sync(&self, op: &SyncOp) -> Result<(), String> {
+    fn call_after_sync(&self, op: &SyncOp, scope: u64) -> Result<(), String> {
         let rt = self.runtime.as_ref().ok_or("No runtime")?;
         let op_json = Self::op_to_json(op);
-        rt.call("onAfterSync", vec![op_json]).map(|_| ())
+        rt.call_within(scope, "onAfterSync", vec![op_json]).map(|_| ())
     }
 
     fn op_to_json(op: &SyncOp) -> serde_json::Value {
@@ -1772,7 +1775,7 @@ mod tests {
         let ops = vec![op("c1", "notes", "create", "n1", serde_json::json!({}))];
         let batch = sync.call_after_sync_batch(&ops).unwrap_err();
         assert!(batch.contains("mail is down"), "{batch}");
-        let single = sync.call_after_sync(&ops[0]).unwrap_err();
+        let single = sync.call_after_sync(&ops[0], ServerRuntime::new_scope()).unwrap_err();
         assert!(single.contains("mail is down"), "{single}");
     }
 

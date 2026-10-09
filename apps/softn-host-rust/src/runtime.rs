@@ -300,6 +300,8 @@ enum ScriptRequest {
         args: Vec<serde_json::Value>,
         transaction: TransactionMode,
         cancellation: Arc<AtomicBool>,
+        /// The request this call is one of several for, if it is: see `call_within`.
+        scope: Option<u64>,
         /// Set by the worker that takes the call off the queue.
         started: Arc<AtomicBool>,
         reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
@@ -322,6 +324,8 @@ struct Worker {
     /// any `db.create` or `http.get` written there — so it must not happen on
     /// a worker that has not run anything since the last one.
     dirty: bool,
+    /// The scope of the last call that ran in this VM (see `call_within`).
+    scope: Option<u64>,
 }
 
 /// Wraps zipp VMs behind a pool of dedicated OS threads.
@@ -703,7 +707,7 @@ impl ServerRuntime {
         let built = Self::build_state(&source, &bridges, guard);
         guard.disarm();
         let (state, slots) = built?;
-        Ok(Worker { state, slots, bridges, source, dirty: false })
+        Ok(Worker { state, slots, bridges, source, dirty: false, scope: None })
     }
 
     /// Compile and run the script, returning the live VM and its symbol table.
@@ -767,10 +771,10 @@ impl ServerRuntime {
                     }
                 }
             }
-            ScriptRequest::Call { name, args, transaction, cancellation, started, reply } => {
+            ScriptRequest::Call { name, args, transaction, cancellation, scope, started, reply } => {
                 started.store(true, Ordering::Relaxed);
                 let result = match worker.as_mut() {
-                    Some(w) => Self::call_handler(w, &name, args, transaction, cancellation, guard),
+                    Some(w) => Self::call_handler(w, &name, args, transaction, cancellation, scope, guard),
                     None => Err("Runtime not initialized".into()),
                 };
                 let _ = reply.send(result);
@@ -784,6 +788,7 @@ impl ServerRuntime {
         args: Vec<serde_json::Value>,
         transaction: TransactionMode,
         cancellation: Arc<AtomicBool>,
+        scope: Option<u64>,
         guard: &CallGuard,
     ) -> Result<serde_json::Value, String> {
         guard.arm();
@@ -791,7 +796,13 @@ impl ServerRuntime {
             if cancellation.load(Ordering::Relaxed) { return Err("Request cancelled".into()); }
             // Rebuilding executes script initialization. Keep SQL unavailable
             // until initialization is complete, just as it is at first startup.
-            Self::isolate(w, guard)?;
+            //
+            // A call made for the same request as the last one this VM ran
+            // (`call_within`) is not a stranger to it and takes it as it is.
+            if scope.is_none() || scope != w.scope {
+                Self::isolate(w, guard)?;
+            }
+            w.scope = scope;
             if let Some(sql) = w.bridges.borrow_mut().sql.as_mut() {
                 sql.begin(transaction, cancellation.clone())?;
             } else if transaction != TransactionMode::None {
@@ -930,12 +941,49 @@ impl ServerRuntime {
         self.call_transaction(name, args, TransactionMode::None, Arc::new(AtomicBool::new(false)))
     }
 
+    /// A name for one request that will make several calls: the hook run for
+    /// each op of one client's push.
+    pub fn new_scope() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// One of several calls made for the request `scope` names.
+    ///
+    /// What a request leaves in the script's memory must not be there for the
+    /// next request, so a worker rebuilds its VM before every call. The calls
+    /// of one request are not strangers to each other: a push of a thousand
+    /// ops with a hook for each is one client's request, and a rebuild for
+    /// each op cost it about a millisecond an op. Calls that carry the same
+    /// scope may run in the VM the last of them left, on whichever worker
+    /// takes them; a call with another scope, or with none, finds a VM no
+    /// other request has run in.
+    pub fn call_within(
+        &self,
+        scope: u64,
+        name: &str,
+        args: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        self.dispatch(name, args, TransactionMode::None, Arc::new(AtomicBool::new(false)), Some(scope))
+    }
+
     pub fn call_transaction(
         &self,
         name: &str,
         args: Vec<serde_json::Value>,
         transaction: TransactionMode,
         cancellation: Arc<AtomicBool>,
+    ) -> Result<serde_json::Value, String> {
+        self.dispatch(name, args, transaction, cancellation, None)
+    }
+
+    fn dispatch(
+        &self,
+        name: &str,
+        args: Vec<serde_json::Value>,
+        transaction: TransactionMode,
+        cancellation: Arc<AtomicBool>,
+        scope: Option<u64>,
     ) -> Result<serde_json::Value, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         let started = Arc::new(AtomicBool::new(false));
@@ -945,6 +993,7 @@ impl ServerRuntime {
                 args,
                 transaction,
                 cancellation: cancellation.clone(),
+                scope,
                 started: started.clone(),
                 reply: reply_tx,
             })
@@ -1395,6 +1444,32 @@ mod isolation_tests {
             let second = serde_json::to_string(&call("bob")["body"]).unwrap();
             assert!(!second.contains("alice"), "{handler}: the second request saw the first's: {second}");
         }
+    }
+
+    /// The calls one request makes are not strangers to each other: the hook
+    /// run for each op of one client's push may find what the op before left,
+    /// which spares a rebuild an op (about a millisecond each). Any other
+    /// request, with a scope of its own or with none, still starts from the
+    /// script as it was loaded, and so does the first request if it comes back.
+    #[test]
+    fn the_calls_of_one_request_may_share_a_world_and_no_other_request_may() {
+        let runtime = one_worker("function count(req) { count.n = (count.n || 0) + 1; return {status: 200, body: count.n}; }");
+        let n = |result: serde_json::Value| result["body"].as_i64().unwrap();
+        let call = || n(runtime.call("count", vec![serde_json::json!({})]).unwrap());
+        let within = |scope: u64| n(runtime.call_within(scope, "count", vec![serde_json::json!({})]).unwrap());
+
+        let push = ServerRuntime::new_scope();
+        assert_eq!([within(push), within(push), within(push)], [1, 2, 3]);
+        // Another client's push.
+        let other = ServerRuntime::new_scope();
+        assert_ne!(push, other);
+        assert_eq!([within(other), within(other)], [1, 2]);
+        // An ordinary request, and another after it.
+        assert_eq!([call(), call()], [1, 1]);
+        // The first push again: what it left is gone.
+        assert_eq!(within(push), 1);
+        // And an ordinary request after a push does not find the push's.
+        assert_eq!(call(), 1);
     }
 }
 
