@@ -1,5 +1,6 @@
 import { MAX_ZIP_INPUT_BYTES, classifyAsset, readBundleEntries } from '@softn/core';
 import { canonicalKey, normalizeProjectPath } from './paths';
+import { keptAsBytes, readsAsText } from './fileKinds';
 
 export interface ProjectImportEntry {
   path: string;
@@ -22,8 +23,14 @@ export interface ProjectImportEntry {
  */
 const SOURCE_TEXT = /\.(svg|ts|tsx|jsx|yaml|yml|toml)$/i;
 
-function isTextEntry(path: string): boolean {
-  return SOURCE_TEXT.test(path) || !classifyAsset(path).binary;
+/**
+ * A type neither list names (a .csv, a README, a .txt) is text when its
+ * bytes are: what the write tool wrote as text comes back as text, and a
+ * binary file of an unknown kind stays the bytes it is. See fileKinds.ts.
+ */
+function isTextEntry(path: string, content: Uint8Array): boolean {
+  if (SOURCE_TEXT.test(path) || !classifyAsset(path).binary) return true;
+  return !keptAsBytes(path) && readsAsText(content);
 }
 
 /** Reject an oversized local file before allocating its bytes. */
@@ -64,7 +71,7 @@ export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
     canonicalPaths.add(canonicalPath);
     entries.push({
       path,
-      content: isTextEntry(path) ? decoder.decode(content) : content,
+      content: isTextEntry(path, content) ? decoder.decode(content) : content,
     });
   }
   return entries;

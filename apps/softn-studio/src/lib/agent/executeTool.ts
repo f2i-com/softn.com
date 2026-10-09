@@ -11,7 +11,8 @@
  * every step can be undone on its own and the run reverted as a whole.
  */
 
-import { ASSET_CLASSIFICATIONS, classifyAsset, pythonModuleName } from '@softn/core';
+import { classifyAsset, pythonModuleName } from '@softn/core';
+import { keptAsBytes } from '../fileKinds';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { useVFSStore, type VFSChangeRecord } from '../../stores/vfsStore';
 import { checkWrite, type SuppliedFiles } from '../changeset';
@@ -87,29 +88,6 @@ export function describeTree(files: Map<string, VFSFile>, prefix = ''): string {
       return `${p}  (${kindOf(p)}, ${sizeOf(file)}${lines})`;
     })
     .join('\n');
-}
-
-/** Archives and compiled code: bytes too, though core's registry, which lists what a bundle serves, does not name them. */
-const ARCHIVE_OR_COMPILED = /\.(zip|gz|tgz|tar|bz2|xz|7z|rar|jar|wasm)$/i;
-
-/**
- * Whether a path's type is one the project keeps as bytes — a picture, a
- * sound, a video, a font, a model, an archive — so a file of it cannot be
- * written from text.
- *
- * Everything else is the text it is written as. This used to ask whether
- * core's registry lists the extension as text, and the registry's answer for
- * an extension it does not know is "bytes": right for a reader, which must not
- * decode what it cannot name, and wrong for a writer, which refused a .csv, a
- * README and a .ts file as "a binary format".
- */
-function keptAsBytes(path: string): boolean {
-  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
-  // An SVG is markup. The registry carries it as bytes for the runtime's icon paths; import
-  // decodes it so that it can be read and edited here, and so it can be written here.
-  if (extension === 'svg') return false;
-  if (ARCHIVE_OR_COMPILED.test(path)) return true;
-  return Object.hasOwn(ASSET_CLASSIFICATIONS, extension) && ASSET_CLASSIFICATIONS[extension].binary;
 }
 
 /** Resolve a path the model wants to write, or say why it may not. */

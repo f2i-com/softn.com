@@ -158,6 +158,32 @@ describe('which imported entries are text', () => {
     expect(entries.get('assets/logo.svg')).toBe('<svg xmlns="http://www.w3.org/2000/svg"/>');
   });
 
+  it('reads back as text what the write tool writes as text, and keeps unknown bytes as bytes', () => {
+    // The writer takes any text it is sent unless the type is one kept as
+    // bytes. The importer asked core's registry, which calls an extension
+    // it does not know "bytes": a .csv the AI wrote came back from its own
+    // export as bytes it could not read.
+    const blob = new Uint8Array([0x89, 0x00, 0xff, 0xfe, 0x01]);
+    const archive = zipSync({
+      'data/tasks.csv': strToU8('id,title\n1,Buy milk\n'),
+      'README': strToU8('What this app is.\n'),
+      'notes/todo.txt': strToU8('caf\u00e9, na\u00efve\n'),
+      'data/blob.dat': blob,
+      'data/export.dat': strToU8('plain words in a file of no known kind'),
+      'assets/pixel.png': strToU8('not really a picture, but named as one'),
+    });
+    const entries = new Map(readProjectArchive(archive).map((entry) => [entry.path, entry.content]));
+    expect(entries.get('data/tasks.csv')).toBe('id,title\n1,Buy milk\n');
+    expect(entries.get('README')).toBe('What this app is.\n');
+    expect(entries.get('notes/todo.txt')).toBe('caf\u00e9, na\u00efve\n');
+    // Not UTF-8, so decoding it would not encode back to the same bytes.
+    expect(entries.get('data/blob.dat')).toEqual(blob);
+    // And a file of no known kind that is text is read as the text it is.
+    expect(entries.get('data/export.dat')).toBe('plain words in a file of no known kind');
+    // A type that is bytes stays bytes whatever is in it.
+    expect(typeof entries.get('assets/pixel.png')).toBe('object');
+  });
+
   it("decodes a private backend's migrations as text, so its agent can read the schema and write the next one", () => {
     const archive = zipSync({
       'server/main.logic': strToU8('function listItems(req) { return {status: 200, body: {}}; }'),
