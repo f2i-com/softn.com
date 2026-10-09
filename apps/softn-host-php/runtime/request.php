@@ -54,6 +54,26 @@ function softn_request_headers(array $server): array {
 }
 
 /**
+ * The request body as the handler receives it: a JSON object, `{}` when
+ * nothing was sent (as on the Rust host, so `req.body.x` never throws), or
+ * null when the bytes are not one. Depth 64 is that host's MAX_JSON_DEPTH.
+ *
+ * A number past the range of a double is refused here as well. PHP decodes
+ * `1e999` to INF, which cannot be written back as JSON, so the request failed
+ * while being handed to a runner already started for it and was answered 503
+ * "please retry": for a body no retry could mend. The Rust host answers 400.
+ */
+function softn_request_body(string $raw): ?object {
+    if($raw==='')return new stdClass();
+    try {
+        $body=json_decode($raw,false,64,JSON_THROW_ON_ERROR);
+        if(!is_object($body))return null;
+        json_encode($body,JSON_THROW_ON_ERROR|JSON_INVALID_UTF8_SUBSTITUTE);
+        return $body;
+    } catch(Throwable $e) {return null;}
+}
+
+/**
  * The body a route may carry: the smaller of the route's maxBodySize and the
  * app's config.server.maxBodySize, as the Rust host bounds a route by both.
  * Neither declared is 256 KB here (2 MB there: an on-demand process per

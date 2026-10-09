@@ -56,10 +56,8 @@ if ((int)($_SERVER['CONTENT_LENGTH']??0)>$limit) reply(413,['error'=>'Request to
 $raw=file_get_contents('php://input',false,null,0,$limit+1);
 if ($raw===false || strlen($raw)>$limit) reply(413,['error'=>'Request too large.','code'=>'payload_too_large']);
 if ($raw!=='' && strtolower(trim(explode(';',$_SERVER['CONTENT_TYPE']??'')[0]))!=='application/json') reply(415,['error'=>'Use application/json','code'=>'unsupported_media_type']);
-// No body is an empty object, as on the Rust host, so `req.body.x` never throws.
-// Depth 64 is that host's MAX_JSON_DEPTH.
-try {$body=$raw===''?new stdClass():json_decode($raw,false,64,JSON_THROW_ON_ERROR);} catch(Throwable $e){reply(400,['error'=>'Request body must be a JSON object','code'=>'invalid_request']);}
-if (!is_object($body)) reply(400,['error'=>'Request body must be a JSON object','code'=>'invalid_request']);
+$body=softn_request_body($raw);
+if ($body===null) reply(400,['error'=>'Request body must be a JSON object','code'=>'invalid_request']);
 if (!function_exists('proc_open') || !function_exists('proc_get_status') || !function_exists('proc_terminate')) reply(503,['error'=>'This host must enable PHP process execution (proc_open, proc_get_status, proc_terminate).','code'=>'backend_unavailable','diagnostic'=>'php_process_functions']);
 $backend=realpath($backend);
 if (!$backend || !is_file($backend.'/private/config.json') || !is_executable($backend.'/bin/node')) reply(503,['error'=>'Run the private backend setup first.','code'=>'backend_unavailable','diagnostic'=>'setup_required']);

@@ -13,7 +13,9 @@
  * - a same-origin page was refused unless its own origin was listed;
  * - `If-None-Match` compared byte for byte, so a tag Apache's mod_deflate
  *   suffixed with -gzip never matched;
- * - every IPv6 address had its own rate-limit bucket.
+ * - every IPv6 address had its own rate-limit bucket;
+ * - a body with a number out of range (`1e999`) was answered 503 "please
+ *   retry" after a runner had been started for it, where it is a 400.
  *
  * Skipped, with the reason, when PHP is not on PATH.
  */
@@ -166,6 +168,20 @@ nodeTest('OPTIONS is always a 204, as on the Rust host, and only an allowed Orig
   const post=cgi('POST','https://evil.example',t);
   assert.equal(post.status,403);
   assert.equal(JSON.parse(post.body).code,'origin_not_allowed');
+});
+
+test('a body is a JSON object the runner can be handed, or it is refused',()=>{
+  const good=['','{}','{"a":1,"nested":{"list":[1,2,{"deep":true}]}}','{"n":1.5e308,"big":12345678901234567890,"s":"x\\ud83d\\ude00"}'];
+  const bad=['{"n":1e999}','{"a":[1,{"b":-1e999}]}','[1,2]','"text"','7','null','{"a":','not json','{"a":1}x','['.repeat(70)+']'.repeat(70)];
+  const got=php([...good,...bad].map(raw=>['softn_request_body',raw]));
+  good.forEach((raw,i)=>assert.notEqual(got[i],null,raw));
+  assert.deepEqual(got[0],{});
+  assert.deepEqual(got[2],{a:1,nested:{list:[1,2,{deep:true}]}});
+  bad.forEach((raw,i)=>assert.equal(got[good.length+i],null,raw.slice(0,40)));
+  // http.php decides with it, before any runner is started.
+  const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
+  assert.match(http,/\$body=softn_request_body\(\$raw\);/);
+  assert.ok(http.indexOf('softn_request_body($raw)')<http.indexOf('proc_open(['));
 });
 
 test('http.php passes the runner\'s body through and never re-encodes it',()=>{

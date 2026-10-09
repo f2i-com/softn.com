@@ -211,8 +211,20 @@ test('softn.time.age takes UTC when no zone is given',t=>{
 test('config.server.requestsPerMinute sets the rate limit, and 0 turns it off',t=>{
   const limited=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}],{config:{server:{requestsPerMinute:2}}}));
   t.after(limited.close);
-  const ping=b=>b.invoke({method:'GET',path:'/api/ping',client_ip:'203.0.113.9'}).status;
-  assert.deepEqual([ping(limited),ping(limited),ping(limited)],[200,200,429]);
+  const ping=(b,ip='203.0.113.9')=>b.invoke({method:'GET',path:'/api/ping',client_ip:ip}).status;
+  // The limiter counts by the wall clock's minute, and each call here is a
+  // process of its own: three that straddle the turn of a minute are counted
+  // in two, and the third is let through. So the three are only judged when
+  // one minute held them all; otherwise they are sent again from another
+  // address.
+  const minute=()=>Math.floor(Date.now()/60000);
+  let burst=null;
+  for(let attempt=0;burst===null&&attempt<3;attempt++){
+    const started=minute(),ip='203.0.113.'+(20+attempt);
+    const got=[ping(limited,ip),ping(limited,ip),ping(limited,ip)];
+    if(minute()===started)burst=got;
+  }
+  assert.deepEqual(burst,[200,200,429]);
   // Another address has its own count.
   assert.equal(limited.invoke({method:'GET',path:'/api/ping',client_ip:'203.0.113.10'}).status,200);
 
