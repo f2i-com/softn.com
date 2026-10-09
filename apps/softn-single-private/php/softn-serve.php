@@ -496,20 +496,75 @@ function softn_digest(string $private, string $bundle): string
     return $digest;
 }
 
+/** The secret a file holds, when it holds a whole one: null for no file, an empty one, or one cut short. */
+function softn_secret_read(string $file): ?string
+{
+    $existing = @file_get_contents($file);
+    if (!is_string($existing)) return null;
+    $existing = trim($existing);
+    return strlen($existing) >= 32 ? $existing : null;
+}
+
+/**
+ * Make `$candidate` the deployment's secret unless it has one already, and
+ * answer the secret it has now: the candidate, or the one somebody else put
+ * there first. Null when nothing can be written here.
+ *
+ * Every first visitor has to be given the same secret. The file used to be
+ * written over whatever was there: of two requests that both found none, the
+ * second replaced the first's, and the first visitor held a cookie signed
+ * with a secret that no longer existed, so the application would not load
+ * for them until they opened the page again. A third request could also read
+ * the file between its being emptied and its being written, take it for no
+ * secret, and write a third.
+ *
+ * So the secret is written whole under a name of its own, and given the
+ * real name by link(), which makes a name only where there is none, in one
+ * step: whoever is second fails, and reads the first's. A file that has the
+ * name is never empty or half written. Where the filesystem has no links,
+ * the name is taken by creating the file exclusively and written then, and
+ * a reader that finds it not yet whole waits for it. A file still no secret
+ * after that was damaged, and is replaced whole.
+ */
+function softn_secret_claim(string $file, string $candidate): ?string
+{
+    $draft = $file . '.' . bin2hex(random_bytes(6)) . '.tmp';
+    if (@file_put_contents($draft, $candidate . "\n") === false) return null;
+    @chmod($draft, 0600);
+    try {
+        if (@link($draft, $file)) return $candidate;
+        $theirs = softn_secret_read($file);
+        if ($theirs !== null) return $theirs;
+        // No link was made and no secret is there: no links here, or a file that is not one yet.
+        $own = @fopen($file, 'x');
+        if ($own) {
+            fwrite($own, $candidate . "\n");
+            fclose($own);
+            @chmod($file, 0600);
+            return $candidate;
+        }
+        // Somebody has the name and has not finished writing: theirs, when it is whole.
+        for ($tries = 0; $tries < 50 && function_exists('usleep'); $tries++) {
+            usleep(10000);
+            $theirs = softn_secret_read($file);
+            if ($theirs !== null) return $theirs;
+        }
+        // Half a second on it is nobody's writing: an empty or cut file, put right in one step.
+        return @rename($draft, $file) ? $candidate : softn_secret_read($file);
+    } finally {
+        @unlink($draft);
+    }
+}
+
 function softn_secret(array $config, string $private): string
 {
     if ($config['secret'] !== '') return $config['secret'];
     $file = $private . '/secret.key';
-    $existing = @file_get_contents($file);
-    if (is_string($existing) && strlen(trim($existing)) >= 32) return trim($existing);
-    $secret = bin2hex(random_bytes(32));
-    if (@file_put_contents($file, $secret . "\n", LOCK_EX) === false) {
+    $secret = softn_secret_read($file) ?? softn_secret_claim($file, bin2hex(random_bytes(32)));
+    if ($secret === null) {
         softn_fail(503, 'The private directory is not writable. Set secret in serve.config.php or make it writable by the PHP user.');
     }
-    @chmod($file, 0600);
-    // Two first requests may have raced; whatever is on disk now is the secret.
-    $written = @file_get_contents($file);
-    return is_string($written) && strlen(trim($written)) >= 32 ? trim($written) : $secret;
+    return $secret;
 }
 
 function softn_token_issue(string $secret, int $lifetime): string

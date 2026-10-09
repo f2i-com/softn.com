@@ -34,7 +34,8 @@ no `.htaccess` (nginx, or Apache with `AllowOverride None`) must be told what
 it says: `index.php` as the directory index, `.wasm` served as
 `application/wasm` and `.mjs` as JavaScript, `/api/…` handed to `api.php`,
 and nothing under `private/` or `backend/` served
-(README-RUNTIME.md has the nginx rules for the backend).
+(DEPLOYMENT-SERVE.md has the nginx rules for the page and README-RUNTIME.md
+those for the backend).
 Replace `private/app.softn` with your application and edit
 `private/serve.config.php`; DEPLOYMENT-SERVE.md documents every setting,
 what the browser receives and what this does and does not protect. In
@@ -85,7 +86,19 @@ application that uses the backend goes in the document root itself.
    server's: step 5 checks that one.
 4. Review `backend/private/config.json`: `appId` must match the PRIVATE
    manifest ID; retain the generated `keyHex` and `cryptoDomains`. Grant only
-   the capabilities the app needs.
+   the capabilities the app needs. Setup says how many of the web server's
+   PHP workers the backend may hold at once: four requests running, and
+   requests waiting for one of those four to finish. The page is served by
+   the same workers, so who waits depends on where PHP runs. Under php-fpm
+   nobody does (a fifth request at once is told the server is busy) until
+   you write `"slotWaiters": N` here, and you should only for a
+   `pm.max_children` larger than four plus N; Ubuntu's php-fpm package
+   ships 5.
+   Under any other PHP (Apache's own, CGI, FastCGI) two wait by default:
+   where the server gives PHP six workers or fewer, write
+   `"slotWaiters": 0`, or an overload of the API keeps the page from
+   loading. README-RUNTIME.md, Isolation and operation, has the
+   measurements.
 5. Visit `/api/meta`. A configured host reports `runtime:zipp-wasm-on-demand`.
    Until the backend is set up, `/api/…` answers 503 with a diagnostic label
    and the application still runs.

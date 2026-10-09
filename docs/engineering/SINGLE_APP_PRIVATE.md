@@ -63,10 +63,15 @@ apply here in full.
 ## Build and deploy
 
 Requirements on the server: PHP 8.1 or newer with the `zip` extension, and
-any web server that runs PHP. Apache with `.htaccess` is what the included
-rules target; other servers need the equivalent (index.php as the directory
-index, `.wasm` as `application/wasm`, `.mjs` as JavaScript, and nothing under
-`private/` reachable).
+any web server that runs PHP. `zip` is the only extension the host needs
+beyond a stock PHP, and a stock Debian or Ubuntu PHP does not have it:
+install the `php-zip` package and restart the web server or PHP-FPM (until
+then every page answers 503 and names the package). Apache with `.htaccess`
+is what the included rules target; other servers need the equivalent
+(index.php as the directory index, `.wasm` as `application/wasm`, `.mjs` as
+JavaScript, and nothing under `private/` reachable), written out under
+[A server that reads no `.htaccess`](#a-server-that-reads-no-htaccess)
+below.
 
 From the repository, with the CI toolchain (Node 24.19+ with npm 10):
 
@@ -138,6 +143,93 @@ and the sample configuration only when `dist/private/serve.config.php` is
 absent; neither overwrites an operator's file. Runtime bounds: an entry up to
 50 MB, a source pack up to 32 MB decoded, an icon up to 256 KiB, sixty
 seconds to fetch the pack.
+
+### A server that reads no `.htaccess`
+
+Nginx reads none, and neither does an Apache with `AllowOverride None`. What
+the two shipped files say has to be written into the server's own
+configuration, and above all the layout has to be right: a `private/` folder
+under the document root is then protected by nothing but `index.php`'s
+refusal to run. The equivalent for nginx with PHP-FPM, inside the site's
+`server { }`, for an application at the site's root (reasoned from the Apache
+rules and nginx's documented behaviour, not run in the test suite: check it
+as described below):
+
+```nginx
+root /srv/site/webroot;            # private/ lives beside it, e.g. /srv/site/private
+index index.php;
+location ~ /\. { deny all; }
+# A second guard, as private/.htaccess is on Apache: nothing of these is
+# served even if someone uploads them into the document root.
+location ~ ^/(private|backend)(/|$) { return 404; }
+location ~ \.(softn|key|cache)$ { return 404; }
+# The library is included by index.php; it is not an entry point.
+location = /softn-serve.php { return 404; }
+# The page, the source pack, the entries and the manifest are all index.php.
+# It sends its own headers (nosniff and the two isolation headers): none are
+# added here, since a header sent twice is one a browser may ignore.
+location = /index.php {
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME $document_root/index.php;
+    fastcgi_pass unix:/run/php/php-fpm.sock;
+}
+# Everything else is a file: the runtime's assets, the icons, sw.js.
+location / {
+    add_header X-Content-Type-Options nosniff always;
+    add_header Cross-Origin-Opener-Policy same-origin always;
+    add_header Cross-Origin-Embedder-Policy credentialless always;
+}
+# The service worker may control the whole directory and must never be stale.
+# add_header in a location replaces the ones above, so they are repeated.
+location = /sw.js {
+    add_header Service-Worker-Allowed /;
+    add_header Cache-Control no-cache;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Cross-Origin-Opener-Policy same-origin always;
+    add_header Cross-Origin-Embedder-Policy credentialless always;
+}
+# A types block replaces the table inherited from http { }: without the
+# include, .html, .css and .js would all be sent as the default type.
+include mime.types;
+types { application/wasm wasm; text/javascript mjs; }
+```
+
+For an application in a subdirectory, each path above gains that prefix
+(`location = /app/index.php`, `location = /app/sw.js`, `location /app/` and
+so on). With the optional backend,
+`/api/...` is handed to `api.php` as well and `api.php` itself is not served;
+README-RUNTIME.md in that archive has those two locations.
+
+### Check it
+
+From outside, once the site is up. Each of these must answer 403 or 404,
+never 200, whatever the server:
+
+```
+for path in private/app.softn private/serve.config.php private/secret.key private/digest.cache app.softn softn-serve.php; do
+  curl -s -o /dev/null -w "%{http_code} /$path\n" "https://your.site/$path"
+done
+```
+
+And the page itself must carry its headers once each:
+`curl -sI https://your.site/ | grep -i -E "cross-origin|nosniff"` shows
+`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy:
+credentialless` and `X-Content-Type-Options: nosniff`, one line of each (as
+Apache sends them with the shipped `.htaccess`, for the page, an asset and
+`sw.js` alike).
+
+What those paths answer was run against Apache 2.4 with the shipped files.
+With `private/` beside the document root, the four under `private/` are 404
+whether `.htaccess` is read or not, and `softn-serve.php` is 403 where it is
+read and 404 (its own answer) where it is not. With `private/` under the
+document root they are 403 while `.htaccess` is read; with `AllowOverride
+None` the archive, `secret.key`, `digest.cache` and `shell.html` are served
+to anyone who asks and `serve.config.php` is run (or, on a server that does
+not hand it to PHP, sent as it is, `secret` and all), while `index.php`
+answers 503 "The private directory must be outside the public document
+root". That refusal is the sign to look for; it does not stop the files
+being fetched. Nginx was not run: it reads no `.htaccess`, so without the
+rules above it is the `AllowOverride None` column.
 
 ## Installable app and link previews
 

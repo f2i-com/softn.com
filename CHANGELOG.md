@@ -159,6 +159,7 @@ section here. Write the section before tagging. Headings are the tag
 - Builder: the canvas scrolls when a drag is held near its top or bottom edge. The warning that a handler's function does not exist offers to create it in the page's logic file. Export names a page that imports a file the project no longer has.
 - Builder: Stack and Box are named on the canvas; the selection box no longer draws resize handles that did nothing; `EmptyState` is a container, and a `CopyButton` is dropped with its label as words; where Components is a rail, the empty canvas's hint is a button that opens it.
 - PHP backend host: a request that finds every worker busy waits a moment for one. A page that makes six calls as it loads was answered four times and refused twice (503 "the server is busy"), with a worker a fifth of a second from free. Up to two requests (half the workers) now wait, for at most a second and a half, and the rest are refused at once as before, so an overload cannot fill the web server's PHP pool with waiting requests. `slotWaiters` in `private/config.json` sets how many may wait, 0 for none. Under php-fpm nobody waits unless that number is written: its packaged pool of five has no child to spare, and `setup.php` says what the pool must exceed.
+- Privately served app: visitors who arrive together on a new deployment are all given the same cookie secret. Two first requests could each write `secret.key`, and the visitor whose secret was replaced was shown an app that would not load until they opened the page again.
 
 ## v0.0.18
 

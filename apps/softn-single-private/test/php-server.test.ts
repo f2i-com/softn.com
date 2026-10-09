@@ -6,7 +6,7 @@
  * PHP host's checks.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import http from 'node:http';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -764,4 +764,131 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
       }
     }
   );
+
+  /**
+   * softn-serve.php's own functions, called in a PHP of their own. The file
+   * answers a request and exits as it is loaded (here: 404, for a request
+   * that is no page of its); what was registered to run at shutdown runs
+   * after that, with every function of the file defined. `body` is the body
+   * of a PHP function that is handed `$argv` and returns what to report.
+   */
+  function inServe(body: string, ...args: string[]): unknown {
+    const file = fileURLToPath(new URL('../php/softn-serve.php', import.meta.url));
+    const script =
+      `register_shutdown_function(function () use ($argv) { ob_start(); $result = (function () use ($argv) { ${body} })(); ob_end_clean(); echo "\\n@@" . json_encode($result); });` +
+      `$private = $argv[1]; require ${JSON.stringify(file)};`;
+    const r = spawnSync(php, ['-r', script, ...args], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    const [, reported] = r.stdout.split('\n@@');
+    expect(reported, r.stdout + r.stderr).toBeDefined();
+    return JSON.parse(reported);
+  }
+
+  it('gives every first visitor the same secret, whichever of them wrote it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'softn-serve-secret-'));
+    const first = 'a'.repeat(64);
+    const second = 'b'.repeat(64);
+    try {
+      // Two first requests that both found no secret.key, in the order they
+      // come to write. The second used to write over the first's: the first
+      // visitor then held a cookie signed with a secret that was gone, and
+      // the application answered "Open the application page first" to its
+      // own page. The second is now given the first's.
+      mkdirSync(join(dir, 'raced'));
+      expect(
+        inServe(
+          `$file = $argv[1] . '/raced/secret.key';
+           $one = softn_secret_claim($file, $argv[2]);
+           $two = softn_secret_claim($file, $argv[3]);
+           return ['one' => $one, 'two' => $two, 'disk' => file_get_contents($file), 'read' => softn_secret_read($file),
+             'left' => array_map('basename', glob($argv[1] . '/raced/*'))];`,
+          dir,
+          first,
+          second
+        )
+      ).toEqual({ one: first, two: first, disk: first + '\n', read: first, left: ['secret.key'] });
+      // A file that is there and is no whole secret is never taken for one:
+      // not an empty one (a writer that has the name and has not written),
+      // not one cut short.
+      mkdirSync(join(dir, 'cut'));
+      for (const content of ['', 'only-the-start-of-a-secret\n']) {
+        writeFileSync(join(dir, 'cut/secret.key'), content);
+        expect(inServe(`return softn_secret_read($argv[1] . '/cut/secret.key');`, dir)).toBeNull();
+      }
+      // Nobody finishes writing it (it was damaged, not being written): the
+      // request waits half a second for a writer, then puts a whole secret
+      // in its place in one step, and the next request is given that one.
+      const began = Date.now();
+      expect(
+        inServe(
+          `$file = $argv[1] . '/cut/secret.key';
+           $mine = softn_secret_claim($file, $argv[2]);
+           return ['mine' => $mine, 'disk' => file_get_contents($file), 'next' => softn_secret_claim($file, $argv[3]),
+             'left' => array_map('basename', glob($argv[1] . '/cut/*'))];`,
+          dir,
+          first,
+          second
+        )
+      ).toEqual({ mine: first, disk: first + '\n', next: first, left: ['secret.key'] });
+      expect(Date.now() - began).toBeGreaterThanOrEqual(450);
+      // Nowhere to write is nothing claimed, which the page answers as 503.
+      expect(inServe(`return softn_secret_claim($argv[1] . '/no-such-directory/secret.key', $argv[2]);`, dir, first)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!cgiAvailable)('sixteen first visitors arriving together all hold a cookie that works', async () => {
+    // The same thing with nothing arranged: a deployment with no secret.key
+    // yet and sixteen page requests at once, each a PHP process of its own.
+    // Overwritten, the secret left one visitor in a few dozen such starts
+    // with a cookie it did not sign (measured: 1 round in 20 to 30).
+    const site = mkdtempSync(join(tmpdir(), 'softn-serve-first-'));
+    try {
+      mkdirSync(join(site, 'webroot'));
+      mkdirSync(join(site, 'private'));
+      const source = fileURLToPath(new URL('../php/', import.meta.url));
+      for (const name of ['index.php', 'softn-serve.php']) cpSync(join(source, name), join(site, 'webroot', name));
+      writeFileSync(join(site, 'private/app.softn'), bundle);
+      writeFileSync(join(site, 'private/serve.config.php'), config());
+      writeFileSync(
+        join(site, 'private/shell.html'),
+        shellTemplate('<script type="module" crossorigin src="./assets/index-test.js"></script>')
+      );
+      const visit = () =>
+        new Promise<string>((resolve) => {
+          const child = spawn('php-cgi', FRESH, {
+            stdio: ['ignore', 'pipe', 'ignore'],
+            env: {
+              ...process.env,
+              REQUEST_METHOD: 'GET',
+              REQUEST_URI: '/index.php',
+              SCRIPT_NAME: '/index.php',
+              SCRIPT_FILENAME: join(site, 'webroot/index.php'),
+              DOCUMENT_ROOT: join(site, 'webroot'),
+              REDIRECT_STATUS: '200',
+              GATEWAY_INTERFACE: 'CGI/1.1',
+              SERVER_PROTOCOL: 'HTTP/1.1',
+              HTTP_HOST: 'site.example',
+            },
+          });
+          let out = '';
+          child.stdout.on('data', (chunk) => (out += chunk));
+          child.on('close', () => resolve(out));
+        });
+      const pages = await Promise.all(Array.from({ length: 16 }, visit));
+      const secret = readFileSync(join(site, 'private/secret.key'), 'utf8').trim();
+      expect(secret).toMatch(/^[a-f0-9]{64}$/);
+      for (const page of pages) {
+        expect(page).not.toMatch(/^Status: [45]/m);
+        const token = page.match(/^Set-Cookie: softn_viewer=([^;\r\n]+)/im)?.[1] ?? '';
+        const parts = token.split('.');
+        expect(parts).toHaveLength(4);
+        // The cookie softn_token_valid() will be shown: signed with the one secret on disk.
+        expect(parts[3]).toBe(createHmac('sha256', secret).update(parts.slice(0, 3).join('.')).digest('hex').slice(0, 32));
+      }
+    } finally {
+      rmSync(site, { recursive: true, force: true });
+    }
+  });
 });
