@@ -1081,6 +1081,50 @@ function evaluateStructural<T>(
 }
 
 /**
+ * The class names a list or a record of conditions stands for: a list's
+ * entries that are text, a record's keys whose values hold, either inside
+ * the other. Anything else in a list (`false` from `cond && "name"`, `null`)
+ * is nothing.
+ */
+function classText(value: unknown, depth = 0): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number') return String(value);
+  if (value === null || typeof value !== 'object' || depth > 8) return '';
+  const names = Array.isArray(value)
+    ? value.map((entry) => classText(entry, depth + 1))
+    : Object.keys(value as Record<string, unknown>).filter((name) => Boolean((value as Record<string, unknown>)[name]));
+  return names.filter(Boolean).join(' ');
+}
+
+/**
+ * What `:bind` holds on a component whose state is not called `value`.
+ *
+ * `:bind` gives a control the variable as `value` and writes back what its
+ * `onChange` reports. A Modal has neither: it is `open`, and it asks to be
+ * shut through `onClose`. Bound the ordinary way it was handed a `value` it
+ * does not read and an `onChange` it never calls, so every page that opens
+ * a dialog carried a function whose whole body was `showAdd = false`.
+ *
+ * `prop` is given the variable (as a plain true or false where `flag`);
+ * each callback in `writes` writes it, with the callback's own argument or
+ * with the value fixed here. By tag name, as the checkable controls are:
+ * a component is registered lazily and cannot be asked before it is drawn.
+ */
+const BOUND_STATE: Record<string, { prop: string; flag?: boolean; writes: Array<[callback: string, fixed?: unknown]> }> = {
+  Modal: { prop: 'open', flag: true, writes: [['onClose', false]] },
+  Drawer: { prop: 'open', flag: true, writes: [['onClose', false]] },
+  // Either answer ends the question; the answer itself is still `@confirm`.
+  Confirm: { prop: 'open', flag: true, writes: [['onCancel', false], ['onConfirm', false]] },
+  Popover: { prop: 'open', flag: true, writes: [['onOpenChange']] },
+  Tooltip: { prop: 'open', flag: true, writes: [['onOpenChange']] },
+  Collapse: { prop: 'isOpen', flag: true, writes: [] },
+  Sidebar: { prop: 'collapsed', flag: true, writes: [['onCollapse']] },
+  Tabs: { prop: 'activeKey', writes: [['onChange']] },
+  Pagination: { prop: 'currentPage', writes: [['onPageChange']] },
+  Accordion: { prop: 'openKeys', writes: [['onChange']] },
+};
+
+/**
  * Render an element node
  * Supports inline conditionals (if=) and loops (each=/as=)
  */
@@ -1271,6 +1315,18 @@ function renderElement(
     }
   }
 
+  // A class written as a list or a record of conditions is the text it
+  // stands for. React writes a list joined by commas and a record as
+  // "[object Object]", and the element had none of its classes.
+  for (const key of ['className', 'class'] as const) {
+    const given = props[key];
+    if (given !== null && typeof given === 'object') {
+      const text = classText(given);
+      if (text) props[key] = text;
+      else delete props[key];
+    }
+  }
+
   if (classToggles.length > 0) {
     // `class` and `className` are both accepted on the way in; whichever the
     // author used is the one written back, so nothing else has to change.
@@ -1311,7 +1367,56 @@ function renderElement(
       props.type === 'checkbox' ||
       isRadio;
 
-    if (binding.name === 'bind') {
+    const held = binding.name === 'bind' ? BOUND_STATE[node.tag] : undefined;
+
+    // Write the bound variable: the row it is on inside a loop, through the
+    // handler a parent gave for it, or the app's own state.
+    const writeBound = (newValue: unknown): void => {
+      const path = getExpressionPath(binding.expression, context);
+      if (!path) {
+        reportUnplacedWrite(binding.expression, context.locals);
+        return;
+      }
+      const rootVar = path.split('.')[0].split('[')[0]; // Handle array access
+      // Look for an external handler first (on[VarName]Change or onUpdate)
+      // This allows parent components to manage state externally
+      const updateHandler = context.functions[`on${capitalize(rootVar)}Change`] || context.functions['onUpdate'];
+      if (typeof updateHandler === 'function') {
+        updateHandler(path, newValue);
+      } else if (rootVar in context.props) {
+        // Props are read-only and no handler was provided
+        if (isDevelopment) {
+          console.warn(
+            `Cannot update prop "${path}" directly. Props are read-only. ` +
+              `Define an on${capitalize(rootVar)}Change or onUpdate handler to propagate changes.`
+          );
+        }
+      } else {
+        // It's internal state - update directly
+        context.setState(path, newValue);
+      }
+    };
+
+    // A callback the binding installs runs before one the page gave under
+    // the same name as a prop, so the page's sees the variable written.
+    const installBound = (name: string, write: (...args: unknown[]) => void): void => {
+      const given = props[name];
+      props[name] =
+        typeof given === 'function'
+          ? (...args: unknown[]) => {
+              write(...args);
+              return (given as (...a: unknown[]) => unknown)(...args);
+            }
+          : write;
+    };
+
+    if (held) {
+      // A component whose state is not called `value`: see BOUND_STATE.
+      props[held.prop] = held.flag ? value === true : value;
+      for (const [callback, fixed] of held.writes) {
+        installBound(callback, (argument: unknown) => writeBound(fixed === undefined ? argument : fixed));
+      }
+    } else if (binding.name === 'bind') {
       // Two-way binding shorthand
       // Default to "" when value is undefined/null to keep the input controlled
       // from the first render (avoids React "uncontrolled to controlled" warning)
@@ -1329,56 +1434,27 @@ function renderElement(
         props.value = value ?? '';
       }
       // Handle both native elements (pass event) and custom components (pass value directly)
-      props.onChange = (eventOrValue: unknown) => {
-        // Extract path from expression (supports complex paths)
-        // The context carries the loop variables, so an index inside #each
-        // resolves to the row actually being edited.
-        const path = getExpressionPath(binding.expression, context);
-        if (!path) reportUnplacedWrite(binding.expression, context.locals);
-        if (path) {
-          const rootVar = path.split('.')[0].split('[')[0]; // Handle array access
-
-          // Determine the new value:
-          // - If it's an event object with target.value (native elements), use that
-          // - Otherwise, treat the argument as the value directly (custom components like Select)
-          let newValue: unknown;
-          if (isRadio) {
-            // The chosen option, not a boolean. A radio's `value` is the answer.
-            newValue = props.value;
-          } else if (isCheckable) {
-            // Read `checked`, and as a boolean: `target.value` on a checkbox is
-            // the constant "on", which would make the bound variable a string
-            // that never compares false again.
-            const target = eventTarget(eventOrValue);
-            newValue = target ? Boolean(target.checked) : Boolean(eventOrValue);
-          } else {
-            // A native event's value, or the value a custom component such
-            // as Select passed directly.
-            newValue = changedValue(eventOrValue);
-          }
-
-          // Look for an external handler first (on[VarName]Change or onUpdate)
-          // This allows parent components to manage state externally
-          const updateHandler =
-            context.functions[`on${capitalize(rootVar)}Change`] || context.functions['onUpdate'];
-
-          if (typeof updateHandler === 'function') {
-            // Use the external handler
-            updateHandler(path, newValue);
-          } else if (rootVar in context.props) {
-            // Props are read-only and no handler was provided
-            if (isDevelopment) {
-              console.warn(
-                `Cannot update prop "${path}" directly. Props are read-only. ` +
-                  `Define an on${capitalize(rootVar)}Change or onUpdate handler to propagate changes.`
-              );
-            }
-          } else {
-            // It's internal state - update directly
-            context.setState(path, newValue);
-          }
+      installBound('onChange', (eventOrValue: unknown) => {
+        // Determine the new value:
+        // - If it's an event object with target.value (native elements), use that
+        // - Otherwise, treat the argument as the value directly (custom components like Select)
+        let newValue: unknown;
+        if (isRadio) {
+          // The chosen option, not a boolean. A radio's `value` is the answer.
+          newValue = props.value;
+        } else if (isCheckable) {
+          // Read `checked`, and as a boolean: `target.value` on a checkbox is
+          // the constant "on", which would make the bound variable a string
+          // that never compares false again.
+          const target = eventTarget(eventOrValue);
+          newValue = target ? Boolean(target.checked) : Boolean(eventOrValue);
+        } else {
+          // A native event's value, or the value a custom component such
+          // as Select passed directly.
+          newValue = changedValue(eventOrValue);
         }
-      };
+        writeBound(newValue);
+      });
     } else {
       props[binding.name] = value;
     }

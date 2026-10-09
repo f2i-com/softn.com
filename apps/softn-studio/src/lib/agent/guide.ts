@@ -328,11 +328,12 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 
 ### Binding
 - **\`:bind={name}\` is the only two-way binding**: it shows the state and writes what the person types or checks back to it. \`<Input :bind={query} />\`, \`<Checkbox :bind={agreed} />\`, \`<Select :bind={choice} options={["A", "B"]} />\`.
+- **\`:bind\` also holds what is open and which one is showing.** \`<Modal :bind={adding}>\` is open while \`adding\` is true and sets it false when the person closes it, so no close function is needed; the same for \`Drawer\`, \`Popover\` and \`Confirm\` (either answer shuts it; \`@confirm\` still runs). \`<Tabs :bind={tab} />\` holds the chosen tab's key, \`<Pagination :bind={page} />\` the page, \`<Accordion :bind={openPanels} />\` the open keys. To open one, set the variable: \`@click={() => adding = true}\`.
 - **Inside \`#each\`, bind the loop item itself.** \`#each (todo in todos)\` with \`<Checkbox :bind={todo.done} />\` writes that row, and so does a handler that assigns to it: \`@click={() => todo.done = !todo.done}\`, \`@click={() => todo.count++}\`. This needs the list to be state (a state variable, or a path into one such as \`project.tasks\`). Over a list worked out in the page (\`todos.filter(…)\`), a computed value or a \`<data>\` collection, the item has nowhere in state to be written: nothing changes and the console says so. There, call a logic function with the item's id.
 - Every other prop is one-way: \`value={x}\` or \`checked={x}\` only shows \`x\`. A controlled component needs its event too: \`<Tabs activeKey={tab} @change={(key) => tab = key} … />\`.
 
 ### Classes and styles
-- On components write \`className="card"\`; \`class:selected={isSelected}\` adds a class when true, hyphens included (\`class:is-active={on}\`). (\`class="…"\` only styles plain HTML tags.)
+- On components write \`className="card"\`; \`class:selected={isSelected}\` adds a class when true, hyphens included (\`class:is-active={on}\`). A class may also be a list or a record of conditions: \`className={["card", selected && "is-selected"]}\`, \`className={{ card: true, "is-selected": selected }}\`. (\`class="…"\` only styles plain HTML tags.)
 - \`style:color={accent}\` sets one style property and leaves the rest of \`style\` alone: \`style:font-size="1.25rem"\`, \`style:--accent={colour}\` for a CSS variable, \`style:opacity={busy && 0.5}\` (a false or empty value sets nothing).
 - A \`<style>\` block is global to the page, not scoped: give your classes distinctive names.
 
