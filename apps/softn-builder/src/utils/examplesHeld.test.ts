@@ -40,6 +40,8 @@ function pagesUnder(dir: string): string[] {
 const pages = [
   ...pagesUnder(join(repo, 'examples')),
   ...pagesUnder(join(repo, 'docs', 'examples')),
+  // The CLI's worked example: the pages a newcomer reads first, three of them placed inside the fourth.
+  ...pagesUnder(join(repo, 'packages', '@softn', 'core', 'demo-bundle')),
   ...pagesUnder(join(here, '__fixtures__')),
 ].map((path) => [relative(repo, path).replace(/\\/g, '/'), path] as const);
 
