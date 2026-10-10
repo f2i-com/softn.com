@@ -341,12 +341,7 @@ describe('the theme of an opened app', () => {
     expect(await openedAndEdited('<App>\n  <Text>Hi</Text>\n</App>\n', 'system')).toBe('<App>\n  <Text>Edited</Text>\n</App>\n');
   });
 
-  it('is what the preview is shown in: the manifest, else the page, else light', async () => {
-    const mode = async (ui: string, theme?: string) => prepareProjectSnapshot(await loadBundle(bundleWith(ui, theme))).project.themeMode;
-    expect(await mode('<App><Text>Hi</Text></App>', 'dark')).toBe('dark');
-    expect(await mode('<App theme="dark"><Text>Hi</Text></App>')).toBe('dark');
-    expect(await mode('<App theme="system"><Text>Hi</Text></App>')).toBe('system');
-    expect(await mode('<App theme={mode}><Text>Hi</Text></App>')).toBe('light');
-    expect(await mode('<App><Text>Hi</Text></App>')).toBe('light');
-  });
+  // What the project's own theme is read as, where the manifest names none,
+  // is held in themeModeUndeclared.test.ts: it was "the page's, else light"
+  // here, which the next export wrote into the manifest.
 });

@@ -173,6 +173,7 @@ section here. Write the section before tagging. Headings are the tag
 - A `$:` value follows what it is built on. `$: double = n * 2` and then `$: quad = double * 2` left `quad` at its first value for good, and a function that read `double` read its first value too: the page showed the right number while logic worked with the old one. Declared in another order the script did not load. Computed values are now worked out again, in the order they depend on one another, whenever state changes, and a page that reads state only through a `$:` is redrawn when it does.
 - A page with two `<style>` blocks, or two `<data>` blocks, has both: the second used to replace the first, with nothing said. `class` on a plain tag no longer makes a development build report "Invalid DOM property `class`" for every element that has one.
 - A page used inside another brings its styles. A `<style>` block in the imported page was drawn as "Unknown component: <style>" and its rules were ignored; they now join the page's stylesheet, once however many times the page is used. An imported page's name written inside a comment is left alone.
+- Builder: opening and saving an app no longer gives it a theme. A manifest with no theme mode was read as light and written back; it is read as System and left as it came, so an app that follows its visitor's device still does after an untouched open and export.
 
 ## v0.0.18
 

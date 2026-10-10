@@ -26,6 +26,7 @@ import type {
 } from '../types/builder';
 import { generateSource } from './sourceGenerator';
 import { logicSrcOf } from './logicFiles';
+import { isThemeMode } from './themeMode';
 import { debug } from './debug';
 import { buildPermissionJson, type PermissionDeclaration } from './permissions';
 import { envelopeFor, serializeXdb, type XdbRecordEnvelope } from './xdbFormat';
@@ -232,7 +233,18 @@ function composeManifest(
   // set to something else is a setting the Builder has no control for.
   if (previousName !== null && window.title === previousName) window.title = options.name;
   config.window = window;
-  config.theme = { ...(isObject(config.theme) ? config.theme : {}), mode: options.themeMode };
+  // The theme is declared when a person chose a side, when the manifest
+  // declared one of the three words, and in a project that never had a
+  // manifest, where the field shows what it starts as. A manifest that came
+  // with no word, or with one the Builder does not know, is a project that
+  // follows the device ("system" in the field): while it still does, the
+  // manifest is left saying what it said. The mode was always written, and
+  // read as "light" where there was none, so an untouched export pinned an
+  // app that followed its visitor's device (utils/themeMode.ts).
+  const declared = isObject(config.theme) ? config.theme.mode : undefined;
+  if (!retained || options.themeMode !== 'system' || isThemeMode(declared)) {
+    config.theme = { ...(isObject(config.theme) ? config.theme : {}), mode: options.themeMode };
+  }
   manifest.config = options.pythonPackages !== undefined ? withPythonPackages(config, options.pythonPackages) : config;
 
   return manifest;

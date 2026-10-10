@@ -44,6 +44,7 @@ import { readLocalStorage, removeLocalStorage } from './safeStorage';
 import { describeMigrations, migrateElements } from './propMigrations';
 import { applyInlineLogicMove, planInlineLogicMove, takenPaths } from './inlineLogic';
 import { entryFileId } from './logicFiles';
+import { readThemeMode } from './themeMode';
 import type {
   AssetFile,
   CanvasElement,
@@ -207,17 +208,17 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
     throw new Error(`The entry file "${mainUIFile.path}" has no root element; it did not parse as a UI file.`);
   }
 
-  // The theme the preview is shown in: what the manifest says, else what the
-  // page's own `<App>` names, else light. The page is not changed to match.
-  // It used to be, on the way in: the root was given the manifest's theme
-  // (light where it named none) over whatever the page said, an expression
-  // included, and the first unrelated edit wrote that into the file.
+  // The project's theme is what its manifest declares, and "system" where it
+  // declares nothing, or a word that is not one of the three: what a runtime
+  // makes of the same manifest (utils/themeMode.ts). It was "light" where the
+  // manifest had none, or the side a literal `<App theme>` named, and the
+  // next export wrote that into the manifest: an app that followed its
+  // visitor's device was pinned by being opened and saved. The page's own
+  // `theme` is the page's. It is read where the page is drawn
+  // (utils/drawnTheme.ts) and is not changed to match the project: it used
+  // to be, on the way in, and the first unrelated edit wrote that into the file.
   const elements = mainUIFile.elements;
-  const rootElement = elements.get(mainUIFile.rootId);
-  const authored =
-    rootElement?.componentType === 'App' && !(rootElement.expressionProps ?? []).includes('theme') ? rootElement.props.theme : undefined;
-  const themeMode: 'light' | 'dark' | 'system' =
-    bundle.manifest.config?.theme?.mode || (authored === 'dark' || authored === 'system' || authored === 'light' ? authored : 'light');
+  const themeMode = readThemeMode(bundle.manifest.config?.theme?.mode);
 
   for (const entityId of bundle.seedData.keys()) {
     if (!bundle.entities.some((e) => e.id === entityId)) {
@@ -421,7 +422,8 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
       version: project.version || '1.0.0',
       description: project.description || '',
       icon: project.icon || null,
-      themeMode: project.themeMode || 'light',
+      // A record from before the theme was kept has none: see utils/themeMode.ts.
+      themeMode: readThemeMode(project.themeMode),
       permissions: project.permissions,
       // A session written before the setting existed has it only in the
       // manifest it retained, if it came from a bundle.

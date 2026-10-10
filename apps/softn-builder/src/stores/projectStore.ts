@@ -26,6 +26,7 @@ import { create } from 'zustand';
 import type { CollectionDef, AssetFile } from '../types/builder';
 import { emptyDeclaration, type PermissionDeclaration } from '../utils/permissions';
 import { logicStarter, type LogicLanguage } from '../utils/logicFiles';
+import { readThemeMode } from '../utils/themeMode';
 
 /** Everything an opened bundle carried that the Builder keeps opaque. */
 export interface RetainedSource {
@@ -361,7 +362,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       version: data.version || '1.0.0',
       description: data.description || '',
       icon: data.icon || null,
-      themeMode: data.themeMode || 'light',
+      // A record from before the theme was kept has none: see utils/themeMode.ts.
+      themeMode: readThemeMode(data.themeMode),
       permissions: data.permissions ? { ...emptyDeclaration(), ...data.permissions } : emptyDeclaration(),
       pythonPackages: Array.isArray(data.pythonPackages) ? data.pythonPackages.filter((name) => typeof name === 'string') : [],
       logicSource: data.logicSource || '',
