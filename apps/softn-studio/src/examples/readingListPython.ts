@@ -72,7 +72,7 @@ export const READING_LIST_PYTHON: ExampleProject = {
       <Stack direction="horizontal" gap="md" align="center" wrap>
         <Heading level={1} style:color="#2563eb">{appName}</Heading>
         <Spacer />
-        #each (item in pages)
+        #each (item in pages) key={item.id}
           <Button variant={page === item.id ? "primary" : "ghost"} size="sm" @click={() => go(item.id)}>{item.label}</Button>
         #end
       </Stack>
@@ -100,7 +100,7 @@ export const READING_LIST_PYTHON: ExampleProject = {
     </Stack>
   </Card>
   <Card title="Books">
-    #each (item in books)
+    #each (item in books) key={item.id}
       <Stack direction="horizontal" gap="md" align="center" wrap>
           <Text>{item.data.title}</Text>
           <Text>{item.data.author}</Text>

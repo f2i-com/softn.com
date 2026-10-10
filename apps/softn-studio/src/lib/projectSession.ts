@@ -9,6 +9,8 @@ import {
   normalizeMode,
   loadGlobalSettings,
   loadProjectRecord,
+  readProjectRecord,
+  type ReadRecord,
   migrateLegacyProject,
   removeRecentProject,
   saveActiveProjectId,
@@ -135,6 +137,18 @@ export function subscribeSaveStatus(listener: () => void): () => void {
 function setSaveStatus(next: SaveStatus): void {
   saveStatus = next;
   for (const listener of statusListeners) listener();
+}
+
+// A project whose last save failed is in this tab's memory and nowhere else: the bar says so
+// and offers the export, and closing or reloading the tab used to lose it without a word (the
+// browser's question was asked only for a file being edited by hand, stores/editStore.ts).
+// Asked here, where the save's result is known, and only while there is a project to lose.
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('beforeunload', (event) => {
+    if (saveStatus.state !== 'failed' || !hasProjectContent()) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
 }
 
 // --- Sessions ---------------------------------------------------------------
@@ -545,11 +559,11 @@ export async function restoreSession(now = Date.now()): Promise<RestoreOutcome> 
   applyGlobalSettings();
   const activeId = loadActiveProjectId();
   if (activeId) {
-    const record = await loadProjectRecord(activeId);
+    const read = await readProjectRecord(activeId);
     if (!ownsWorkspace(claim.generation)) return { restored: false, notice: null };
-    if (record) {
-      applyProjectRecord(record);
-      return { restored: true, notice: null };
+    if (read) {
+      applyProjectRecord(read.record);
+      return { restored: true, notice: announceLeftOut(read) };
     }
   }
   const migration = await migrateLegacyProject(now);
@@ -593,6 +607,22 @@ export async function restoreSession(now = Date.now()): Promise<RestoreOutcome> 
 export type OpenOutcome = { ok: true } | { ok: false; message: string };
 
 /**
+ * A project that opened with parts of its save left out (persistence.ts,
+ * readStoredRecord) says so where the person is looking: the sentence is
+ * answered for the log, and put in the chat. Null when the record read whole.
+ * The message is a change to the project, so the next autosave writes a record
+ * that reads whole in place of the one that did not.
+ */
+function announceLeftOut(read: ReadRecord): string | null {
+  if (read.leftOut.length === 0) return null;
+  const name = read.record.workspace.projectName.trim() || 'This project';
+  const files = read.record.files.length;
+  const notice = `${name} was opened from a save that could not be read whole. Its ${files} file${files === 1 ? ' is' : 's are'} here; left out: ${read.leftOut.join(', ')}. Export a bundle to keep a copy.`;
+  useAIStore.getState().addMessage({ id: newProjectId(), role: 'assistant', content: notice, timestamp: Date.now() });
+  return notice;
+}
+
+/**
  * Claim the workspace before checkpointing the current project. A slow save
  * must not let an older Open click replace a newer import or new project.
  */
@@ -603,11 +633,13 @@ export async function openProjectById(projectId: string, checkpoint?: () => Prom
     if (!ownsWorkspace(claim.generation)) return { ok: false, message: 'Superseded by a later action.' };
     if (!proceed) return { ok: false, message: 'The current project was kept open.' };
   }
-  const record = await loadProjectRecord(projectId);
+  const read = await readProjectRecord(projectId);
   if (!ownsWorkspace(claim.generation)) return { ok: false, message: 'Superseded by a later action.' };
-  if (!record) return { ok: false, message: 'There is no saved copy of that project in this browser.' };
-  applyProjectRecord(record);
+  if (!read) return { ok: false, message: 'There is no saved copy of that project in this browser.' };
+  applyProjectRecord(read.record);
   saveActiveProjectId(projectId);
+  const notice = announceLeftOut(read);
+  if (notice) useWorkspaceStore.getState().addConsoleOutput(notice);
   return { ok: true };
 }
 

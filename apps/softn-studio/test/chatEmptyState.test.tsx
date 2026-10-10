@@ -93,6 +93,33 @@ describe('the chat of a project laid out from a brief, before anything is said',
     expect(useAIStore.getState().draftMessage).toBe('');
   });
 
+  // With no provider the card that says so sits above the conversation, and in a short window
+  // (1280 by 640) the picture, the title and the three lines under it filled what was left: the
+  // offer to build was 41 pixels under the box the message is typed in, found only by scrolling
+  // a conversation that looked empty. While the card is there the greeting is its title and
+  // the offers, and nothing else. (jsdom lays nothing out: the positions are measured in Chromium.)
+  it('with no provider, greets with its title and the offers alone, so they fit under the card', () => {
+    act(() => root.render(<AIChat />));
+    const log = container.querySelector('[role="log"]')!;
+    expect(container.querySelector('[aria-label="AI setup"]')).not.toBeNull();
+    expect(log.textContent).toContain('Ready to build');
+    expect(log.textContent).not.toMatch(/The pages are laid out and waiting/);
+    // No picture above the title: the greeting begins with it.
+    expect(log.firstElementChild?.firstElementChild?.tagName).toBe('P');
+    expect(log.firstElementChild?.firstElementChild?.textContent).toBe('Ready to build');
+    // The offer is the first thing after the title.
+    expect([...log.querySelectorAll('button')].map((b) => b.textContent)[0]).toBe('Build Counter Club as the brief describes');
+    expect(log.querySelector('p')?.nextElementSibling?.querySelector('button')?.textContent).toBe('Build Counter Club as the brief describes');
+  });
+
+  it('with a provider, keeps the whole greeting: there is room for it', () => {
+    useAIStore.setState({ providers: [{ id: 'local', type: 'custom', name: 'Local', apiKey: '', modelId: 'test' }], activeProviderId: 'local' });
+    act(() => root.render(<AIChat />));
+    const log = container.querySelector('[role="log"]')!;
+    expect(log.textContent).toMatch(/The pages are laid out and waiting/);
+    expect(log.firstElementChild?.firstElementChild?.querySelector('svg')).not.toBeNull();
+  });
+
   it('with no provider, the offer opens the AI setup and keeps the request for when there is one', () => {
     act(() => root.render(<AIChat />));
     act(() => offer()!.click());

@@ -4,16 +4,19 @@ import { Icon } from '../common/Icon';
 import { declarePythonPackage, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
 import { getXDB, type SoftNRendererProps } from '@softn/core';
 import type { ThemeProviderProps } from '@softn/components';
-import { createPreviewAssetResolver, rewriteAssetReferences } from '../../lib/previewAssets';
+import { createPreviewAssetResolver } from '../../lib/previewAssets';
 import { CodeFile, FileEditor } from './FileEditor';
 import { useEditStore } from '../../stores/editStore';
 import { confirmLeaveDraft } from '../../lib/handEdit';
+import { askAgentToFix } from '../../lib/agentOrchestrator';
+import { listenToConsoleErrors, notePreviewFault, readAppFault, readAppLog } from '../../lib/previewFaults';
 import { MediaView, mediaKindFor } from './MediaView';
 import {
   buildPreviewXDBState,
   clearPreviewXDBCollections,
   composePreviewProject,
   previewDataKey,
+  declaredThemeMode,
   replacePreviewXDBCollections,
   stripTemplateComments,
 } from '../../lib/previewProject';
@@ -43,6 +46,21 @@ export function useSettledFiles<T>(value: T, delay: number, maxWait = 2_000): T 
   }, [value, delay, maxWait]);
   return delay <= 0 ? value : settled;
 }
+
+/**
+ * How many different things one run of an app may put in Studio's log. A handler that fails on
+ * every keystroke, or thirty times a second in a game's loop, says its one line once; an app
+ * with a new complaint each time stops being copied out here.
+ */
+const APP_LOG_LINES = 12;
+/** And how many different lines of its own (console.log, console.warn) a project may put there. */
+const APP_PRINT_LINES = 40;
+
+/**
+ * The name of the element the previewed app is drawn in, for the theme provider: a side the
+ * project declares is written on that element, and Studio's own document keeps Studio's.
+ */
+const PREVIEW_THEME_BOX = 'studio-preview';
 
 export type CanvasViewMode = 'preview' | 'code';
 
@@ -83,6 +101,8 @@ export function ViewSwitch({ mode, onChange }: { mode: CanvasViewMode; onChange:
 
 interface VisualCanvasProps {
   onStartBrief?: () => void;
+  /** Bring the chat into view, where the canvas and the chat are not on screen together (a phone). */
+  onShowChat?: () => void;
 }
 
 interface StablePreviewSurfaceProps {
@@ -194,12 +214,11 @@ export function StablePreviewSurface({
   );
 }
 
-export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
+export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShowChat }) => {
   const {
     blueprint,
     devicePreset,
     zoom,
-    themePreview,
     activePageId,
     activeFilePath,
     projectId,
@@ -207,6 +226,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
   } = useWorkspaceStore();
   const liveFiles = useVFSStore((s) => s.files);
   const agentWriting = useAIStore((s) => s.agentState === 'building');
+  const aiConnected = useAIStore((s) => s.providers.some((provider) => provider.id === s.activeProviderId));
   const files = useSettledFiles(liveFiles, agentWriting ? 600 : 0);
   const [activeVFSFile, setActiveVFSFile] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -305,9 +325,13 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
         }
         const core = await import('@softn/core');
         if (!mounted) return;
-        if (!core.SoftNRenderer) throw new Error('The preview renderer is unavailable.');
+        if (!core.SoftNWithXDB) throw new Error('The preview renderer is unavailable.');
         setThemeProviderComponent(() => components.ThemeProvider ?? null);
-        setPreviewComponent(() => core.SoftNRenderer);
+        // The renderer a runtime uses: the page's <data> block binds its collections from the
+        // preview's store (seeded below), under the names, filters, order and limits it gives
+        // them. The plain renderer was handed every record under its collection's name, which
+        // showed a collection read as another name as empty, and ignored filter, sort and limit.
+        setPreviewComponent(() => core.SoftNWithXDB);
       } catch (error) {
         if (mounted) setRendererError(error instanceof Error ? error.message : 'The preview renderer could not load.');
       }
@@ -334,7 +358,10 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [previewDataKeyValue, previewDataResets]
   );
-  const initialData = previewXDBState.initialData;
+  // The records go into the preview's store (below) and nowhere else: the page reads them
+  // through its <data> block, as it does when the app runs. They used to be handed to the
+  // page as well, every collection under its own name, so a page that declared none still
+  // drew its rows here and was empty everywhere else.
 
   useEffect(() => {
     let xdb: ReturnType<typeof getXDB>;
@@ -362,8 +389,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
         };
       })
       .catch(() => {
-        // SoftNRenderer still receives initialData if persistent preview XDB
-        // is unavailable, so a storage failure does not blank the preview.
+        // Without the store the page has no records, here as in a runtime without one.
       });
 
     return () => {
@@ -406,9 +432,12 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     const result = composePreviewProject(files, activeVFSFile);
     if (!result.ok) return result;
     const { composition } = result;
-    const source = stripTemplateComments(rewriteAssetReferences(composition.source, resolveAssetUrl));
+    // The page as it is written. Quoted paths under assets/ used to be swapped for data: URLs
+    // here, which drew a picture named by its bare path (src="assets/logo.png") that no
+    // runtime loads; asset() and the asset resolver below are what resolve a bundle file.
+    const source = stripTemplateComments(composition.source);
     return { ok: true as const, composition, source };
-  }, [isSoftNUIFile, activeVFSFile, previewFileContent, resolveAssetUrl, files]);
+  }, [isSoftNUIFile, activeVFSFile, previewFileContent, files]);
   const softNSource = preview?.ok ? preview.source : null;
   const composition = preview?.ok ? preview.composition : null;
   const compositionError = preview && !preview.ok ? preview.error : null;
@@ -423,8 +452,82 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     const next = declarePythonPackage(current, name);
     if (next !== null && next !== current) vfs.updateFile('manifest.json', next, 'user');
   }, []);
-  /** The app is actually rendering in the frame: the one thing the chrome marks as live. */
-  const isLive = Boolean(isSoftNUIFile && softNSource && PreviewComponent && !showCode);
+  /** The app is mounted and its logic can run, whether the frame shows it or its code. */
+  const appMounted = Boolean(isSoftNUIFile && softNSource && PreviewComponent);
+
+  // One run of the app: this source, since this start. A stop belongs to the run it happened
+  // in, so a changed file or a restart is a new run with nothing stopped, and a late line from
+  // the run before it is not taken for this one's.
+  const run = useMemo(() => ({ source: softNSource, start: refreshKey, file: activeVFSFile }), [softNSource, refreshKey, activeVFSFile]);
+  const [stop, setStop] = useState<{ run: object; reason: string } | null>(null);
+  const stoppedBecause = stop && stop.run === run ? stop.reason : null;
+
+  // What the app prints with console.log and console.warn, copied to Studio's log. Each
+  // different line is copied once for as long as this project is on the canvas (a page that
+  // logs as it starts would say so again after every edit), and one run of the app may add no
+  // more than APP_PRINT_LINES, so an app that logs in a loop fills neither the log nor the
+  // saved project. The count is of the run: a page that prints a changing value is copied
+  // out again after an edit or a restart, where a count for the whole session left it quiet
+  // for good. (The log itself keeps its newest 500 lines whatever is put in it.)
+  const printed = useRef<{ project: string | null; said: Set<string>; run: object | null; count: number; full: boolean }>({ project: null, said: new Set(), run: null, count: 0, full: false });
+  const logAppLine = useCallback((text: string) => {
+    if (printed.current.project !== projectId) printed.current = { project: projectId, said: new Set(), run: null, count: 0, full: false };
+    const book = printed.current;
+    if (book.run !== run) {
+      book.run = run;
+      book.count = 0;
+      book.full = false;
+      // What was said is remembered so as not to be said twice, and not without end.
+      if (book.said.size > APP_PRINT_LINES * 10) book.said.clear();
+    }
+    if (book.full || book.said.has(text)) return;
+    const over = book.count >= APP_PRINT_LINES;
+    if (over) book.full = true;
+    else {
+      book.count++;
+      book.said.add(text);
+    }
+    const line = over ? 'More lines from the app are not copied here: the browser’s console has them all.' : text;
+    // Later, not now: the app may be printing from inside a render, where a store may not be written.
+    queueMicrotask(() => useWorkspaceStore.getState().addConsoleOutput('[App] ' + line));
+  }, [projectId, run]);
+
+  // What the app's logic reports goes to the browser's console and nowhere else, so it is
+  // listened for while an app is mounted (lib/previewFaults.ts): each thing it says once to
+  // Studio's log and to the agent's next run, and a stop to the frame, which says so.
+  useEffect(() => {
+    if (!appMounted) return;
+    let listening = true;
+    const said = new Set<string>();
+    const stopListening = listenToConsoleErrors((args, level) => {
+      if (!listening) return;
+      if (level !== 'error') {
+        // What the app itself printed: to the log, and not to the AI.
+        const line = readAppLog(args, level);
+        if (line !== null) logAppLine(line);
+        return;
+      }
+      const fault = readAppFault(args);
+      if (!fault) return;
+      // Later, not now: the runtime may be reporting from inside a render, where a store may not be written.
+      queueMicrotask(() => {
+        if (!listening) return;
+        if (fault.text && !said.has(fault.text) && said.size < APP_LOG_LINES) {
+          said.add(fault.text);
+          useWorkspaceStore.getState().addConsoleOutput(`[App] ${fault.text}`);
+          notePreviewFault(projectId, fault);
+        }
+        if (fault.stopped) setStop((was) => (was && was.run === run ? was : { run, reason: fault.text || 'A call in its logic ran until the engine cut it off.' }));
+      });
+    });
+    return () => {
+      listening = false;
+      stopListening();
+    };
+  }, [appMounted, run, projectId, logAppLine]);
+
+  /** The app is actually rendering in the frame, and answering: the one thing the chrome marks as live. */
+  const isLive = Boolean(appMounted && !showCode && !stoppedBecause);
 
   // Blob URLs are resources, not render calculations. Creating them in
   // useMemo leaks the URL whenever React abandons a render (and on Strict
@@ -580,6 +683,37 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
             {declared.length === 1 ? 'it' : 'them'} fail here. Use Run to open the bundle in the runtime, where they can be allowed.
           </div>
         ) : null;
+      // The app's logic has stopped: said above the app, which still shows its last state and
+      // answers nothing. Restart mounts it again with a fresh engine.
+      const stopNotice = stoppedBecause ? (
+        <div role="alert" className="st-preview-stop-notice" data-preview-stopped="true">
+          <p>
+            <strong>This app has stopped.</strong> {stoppedBecause} Fix it in the code, or ask the AI to.
+          </p>
+          <div className="st-preview-stop-actions">
+            {/* Where a provider is connected: the reason, sent as the request the person would have typed. */}
+            {aiConnected && (
+              <button
+                type="button"
+                className="st-btn st-btn-sm st-btn-primary"
+                disabled={agentWriting}
+                title={agentWriting ? 'The AI is working: ask when the run stops.' : undefined}
+                onClick={() => {
+                  if (!askAgentToFix(stoppedBecause)) return;
+                  const ws = useWorkspaceStore.getState();
+                  if (ws.leftPanel !== 'ai' || !ws.leftPanelExpanded) ws.setLeftPanel('ai');
+                  onShowChat?.();
+                }}
+              >
+                Ask the AI to fix it
+              </button>
+            )}
+            <button type="button" className="st-btn st-btn-sm" onClick={() => setRefreshKey((k) => k + 1)}>
+              Restart the preview
+            </button>
+          </div>
+        </div>
+      ) : null;
       // In Code the running app stays mounted, hidden, so switching back
       // finds it as it was rather than restarted.
       const rendererStyle = showCode ? { ...styles.rendererWrap, display: 'none' } : styles.rendererWrap;
@@ -587,38 +721,45 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
         <>
           {showCode && codeView}
           <div style={rendererStyle}>
+          {stopNotice}
           {capabilityNote}
-          <ThemeProviderComponent darkMode={themePreview === 'dark'} followSystem={false}>
+          {/* The app's own box: a side the project declares is written here, under Studio's notices and not on them. */}
+          <div data-softn-theme-box={PREVIEW_THEME_BOX} style={styles.themeBox}>
+          <ThemeProviderComponent followHost followSystem declaredMode={declaredThemeMode(manifest)} box={PREVIEW_THEME_BOX}>
             <PreviewComponent
               key={refreshKey}
               source={softNSource}
               functions={rendererFunctions}
-              initialData={initialData}
+              assetResolver={resolveAssetUrl}
               importResolver={composition?.importResolver}
               logicBasePath={composition?.logicBasePath}
               preIncludedLogicPaths={composition?.preIncludedLogicPaths}
               python={composition?.python}
               appId={previewAppId}
+              scriptExecutionMode="main"
               resumeSavedSyncRoom={false}
             />
           </ThemeProviderComponent>
+          </div>
           </div>
         </>
       ) : (
         <>
           {showCode && codeView}
           <div style={rendererStyle}>
+          {stopNotice}
           {capabilityNote}
           <PreviewComponent
             key={refreshKey}
             source={softNSource}
             functions={rendererFunctions}
-            initialData={initialData}
+              assetResolver={resolveAssetUrl}
             importResolver={composition?.importResolver}
             logicBasePath={composition?.logicBasePath}
             preIncludedLogicPaths={composition?.preIncludedLogicPaths}
             python={composition?.python}
             appId={previewAppId}
+            scriptExecutionMode="main"
             resumeSavedSyncRoom={false}
           />
           </div>
@@ -705,6 +846,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
                   </span>
                   <span className="st-preview-tag">{devicePreset}</span>
                   {isLive && <span className="st-live">Running</span>}
+                  {stoppedBecause && !showCode && <span className="st-preview-stopped" title={stoppedBecause}>Stopped</span>}
                 </div>
                 <div style={styles.chromeRight}>
                 {canSwitchView && <ViewSwitch mode={viewMode} onChange={setViewMode} />}
@@ -848,6 +990,9 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text-muted)',
     background: 'var(--studio-panel)',
     borderBottom: '1px solid var(--studio-border)',
+  },
+  themeBox: {
+    minHeight: '100%',
   },
   rendererWrap: {
     minWidth: 0,

@@ -117,8 +117,19 @@ export interface TemplateFile {
 export interface NameCheckInput {
   files: TemplateFile[];
   logic: LogicNames;
-  /** Names the render's `data` holds whatever the page declares: the preview's seeded collections. */
+  /**
+   * The names the composed page's `<data>` blocks bind beside those of the files checked: for a
+   * page looked at on its own, what the page that imports it declares.
+   */
   dataNames: Iterable<string>;
+  /**
+   * The project's collections, each with its file: what a page could declare, and does not
+   * have until it does. A collection used to count as defined wherever it was read, because
+   * Studio handed every one to every page; a runtime hands a page only what its blocks bind.
+   */
+  collections?: ReadonlyMap<string, string>;
+  /** Every `<collection>` in effect for the composed page, for saying that one is bound under another name. */
+  declared?: ReadonlyArray<{ name: string; as: string }>;
   /** Template helpers core adds to every render (builtinHelpers). */
   helpers: Iterable<string>;
   python: boolean;
@@ -491,6 +502,18 @@ export function checkTemplateNames(input: NameCheckInput): { errors: string[]; w
           if (isValue(name, local) || assigned.has(name)) break;
           if (UNAVAILABLE_GLOBALS.has(name)) {
             report(file.path, `read:${name}`, ref.line, () => `${name} is not available in templates, so it is undefined there (templates have ${TEMPLATE_GLOBALS.filter((g) => /^[A-Z]/.test(g) && g !== 'NaN' && g !== 'Infinity').join(', ')} and the helpers). Compute the value in a logic function and call it.`);
+            break;
+          }
+          // A collection the project has, read where no <data> block binds it: empty when the
+          // app runs. Said with the line that would bind it, or the name it is bound under.
+          const collectionFile = input.collections?.get(name);
+          if (collectionFile !== undefined) {
+            const under = input.declared?.find((c) => c.name === name);
+            const main = input.files[0]?.path ?? file.path;
+            report(file.path, `read:${name}`, ref.line, () =>
+              under
+                ? `${name} is read here, but this page binds that collection under another name (<collection name="${name}" as="${under.as}" />). Read ${under.as}, or write as="${name}" on that line.`
+                : `${name} is read here, and the project has a collection of that name (${collectionFile}), but no <data> block declares it for this page, so it is empty when the app runs. Declare it in ${main}, ${input.files[0]?.doc.data ? `in its <data> block: <collection name="${name}" as="${name}" />` : `above <App>: <data> <collection name="${name}" as="${name}" /> </data>`}.`);
             break;
           }
           const pool = [...logic.state, ...logic.computed, ...logic.functions, ...aliases, ...local, ...props];

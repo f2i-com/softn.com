@@ -11,6 +11,7 @@
  * the renderer, and is re-exported here where the tests have always found it.
  */
 
+import { useAIStore } from '../stores/aiStore';
 import { useVFSStore } from '../stores/vfsStore';
 import type { VFSFile } from '../types/studio';
 import type { SuppliedFiles, TurnBase } from './changeset';
@@ -192,6 +193,31 @@ export function buildSystemPromptWithRecord(): { system: string } & TurnBase {
 /** Start an agent run for the chat's latest message. */
 export async function runAgentTurn(options: { kind?: 'build' | 'edit' } = {}): Promise<void> {
   await startAgentRun(options);
+}
+
+/** Whether a request sent now would be taken: a provider is chosen and no run is working. */
+export function canAskAgent(): boolean {
+  const ai = useAIStore.getState();
+  return ai.agentState === 'idle' && ai.providers.some((provider) => provider.id === ai.activeProviderId);
+}
+
+/**
+ * Ask the agent to mend what stopped the app in the preview: the reason goes
+ * into the chat as the person's request, which is what they would have typed,
+ * and a run starts. (What the preview reported is handed to that run with the
+ * project, lib/previewFaults.ts; this only saves the typing.) False, with
+ * nothing sent, where no request would be taken.
+ */
+export function askAgentToFix(reason: string): boolean {
+  if (!canAskAgent()) return false;
+  useAIStore.getState().addMessage({
+    id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `u-${Date.now()}`,
+    role: 'user',
+    content: `The app stopped in the preview: ${reason} Find what causes it and fix it.`,
+    timestamp: Date.now(),
+  });
+  void runAgentTurn();
+  return true;
 }
 
 /** Abandon any run: the project is changing under the chat. */

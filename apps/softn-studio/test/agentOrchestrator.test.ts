@@ -138,6 +138,8 @@ const LONG = HEAD + FILLER + TAIL;
 describe('what the model has read is what it may replace', () => {
   beforeEach(() => {
     useVFSStore.getState().hydrateFiles([
+      // A whole app: a run does not finish over a check that failed, so these fixtures pass one.
+      { path: 'manifest.json', content: JSON.stringify({ name: 'App', version: '1.0.0', main: 'ui/main.ui' }) },
       { path: 'logic/app.logic', content: LONG },
       { path: 'ui/main.ui', content: '<App/>' },
     ]);
@@ -157,7 +159,11 @@ describe('what the model has read is what it may replace', () => {
 
   it('pages a read of a file longer than one read: it can then be edited, but not replaced whole', async () => {
     const longer = LONG + '// more\n'.repeat(300);
-    useVFSStore.getState().hydrateFiles([{ path: 'logic/app.logic', content: longer }]);
+    useVFSStore.getState().hydrateFiles([
+      { path: 'manifest.json', content: JSON.stringify({ name: 'App', version: '1.0.0', main: 'ui/main.ui' }) },
+      { path: 'logic/app.logic', content: longer },
+      { path: 'ui/main.ui', content: '<App/>' },
+    ]);
     fakeProvider('openai', [
       { calls: [{ name: 'read_file', input: { path: 'logic/app.logic' } }] },
       (body) => {
@@ -221,6 +227,8 @@ describe('what the model has read is what it may replace', () => {
 describe('each write as a transaction', () => {
   beforeEach(() => {
     useVFSStore.getState().hydrateFiles([
+      // A whole app, as above: the run has to be able to finish.
+      { path: 'manifest.json', content: JSON.stringify({ name: 'App', version: '1.0.0', main: 'ui/main.ui' }) },
       { path: 'ui/main.ui', content: '<App>\n  <Text>one</Text>\n</App>' },
       { path: 'ui/about.ui', content: '<About/>' },
       { path: 'assets/logo.png', content: new Uint8Array([1, 2, 3]) },
@@ -248,7 +256,7 @@ describe('each write as a transaction', () => {
       { calls: [{ name: 'finish', input: { summary: 'x' } }] },
     ]);
     await runAgentTurn();
-    expect(useVFSStore.getState().files.size).toBe(3);
+    expect(useVFSStore.getState().files.size).toBe(4);
     const write = lastRun().run.entries.find((e) => e.kind === 'tool' && e.name === 'write_file');
     expect(write?.kind === 'tool' && write.result).toMatch(/private/i);
   });

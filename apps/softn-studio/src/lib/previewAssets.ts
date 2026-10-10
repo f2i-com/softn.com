@@ -4,27 +4,42 @@ import { isPrivatePath, normalizeProjectPath } from './paths';
 import { resolveProjectRelativePath } from './projectImport';
 
 /**
- * The previewed source with each quoted path to one of the project's assets —
- * `src="assets/logo.png"`, `asset('assets/logo.svg')`, a `url()` in a style
- * block, a path in the logic — replaced by the URL the preview serves that
- * file from.
+ * A bundle file named by its bare path in a `src`, with where and what to
+ * write instead.
  *
- * Only a path that is a file is replaced. Every quoted string that began
- * `assets/` used to be, and one that named no file by the empty string: so
- * `asset("assets/avatars/" + id + ".png")` lost its folder and showed nothing,
- * in the preview and nowhere else. What is written in stays inside the quotes
- * it is written between: a text file's URL carries the file's text with its
- * apostrophes as they were, and inside `'…'` the first one ended the string.
+ * `<Image src="assets/logo.png" />` loads nothing when the app is run: a
+ * runtime resolves a bundle file through `asset("assets/logo.png")`, and a
+ * bare path is asked of whatever site the app is served from. Studio's
+ * preview used to swap every quoted "assets/…" that named a file for a data:
+ * URL before the page was parsed, so such a picture drew here and was broken
+ * everywhere else, and neither the person nor the agent was told. The preview
+ * no longer does that; this finds the uses, for the check to report.
+ *
+ * Only a literal that names a file the project has is reported, on a `src`,
+ * `poster` or `href`, written in quotes or as a quoted string in braces. A
+ * path that is worked out (`asset("assets/" + id + ".png")`), or handed to
+ * `asset()`, is not one.
  */
-export function rewriteAssetReferences(source: string, resolveAsset: (path: string) => string): string {
-  return source.replace(
-    /(["'])(assets\/[^"']+|\.\.\/assets\/[^"']+|\.\/assets\/[^"']+)(\1)/g,
-    (written: string, quote: string, assetPath: string) => {
-      const url = resolveAsset(assetPath);
-      if (!url) return written;
-      return `${quote}${url.replace(/'/g, '%27').replace(/"/g, '%22')}${quote}`;
-    }
-  );
+/**
+ * Files a page names for the composer, not for the browser: `<logic src="../logic/main.logic" />`
+ * is how a page says where its logic is, and is read before anything runs.
+ */
+const SOURCE_FILE = /\.(ui|logic|py|xdb|json|sql)$/i;
+
+export function bareAssetPaths(path: string, source: string, files: ReadonlyMap<string, unknown>): string[] {
+  const out: string[] = [];
+  // Other languages blanked, line numbers kept: a path in the logic is the logic's business.
+  const template = source.replace(/<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, (block) => block.replace(/[^\n]/g, ' '));
+  for (const match of template.matchAll(/(^|[\s<])(src|poster|href)=(?:"([^"]+)"|'([^']+)'|\{\s*"([^"]+)"\s*\}|\{\s*'([^']+)'\s*\})/g)) {
+    const written = match[3] ?? match[4] ?? match[5] ?? match[6] ?? '';
+    if (/^([a-z][a-z0-9+.-]*:|\/\/|#|\/)/i.test(written)) continue;
+    const named = normalizeProjectPath(written.replace(/^\.\//, '')) ?? resolveProjectRelativePath(path, written);
+    const file = [named, resolveProjectRelativePath(path, written)].find((candidate) => candidate && !isPrivatePath(candidate) && files.has(candidate));
+    if (!file || SOURCE_FILE.test(file)) continue;
+    const line = template.slice(0, match.index + match[1].length).split('\n').length;
+    out.push(`${path} line ${line}: ${match[2]}="${written}" names a file in the bundle by its bare path, which nothing loads when the app runs (it is asked of the site the app is served from). Write ${match[2]}={asset("${file}")}: asset() is what resolves a bundle file.`);
+  }
+  return out;
 }
 
 /** Resolve local bundle assets without depending on an assets/ directory. */

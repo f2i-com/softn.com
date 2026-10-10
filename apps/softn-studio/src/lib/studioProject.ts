@@ -7,7 +7,7 @@ import type {
   ProjectBrief,
   VFSFile,
 } from '../types/studio';
-import { PYTHON_PACKAGES, readPythonPackages } from '@softn/core';
+import { PYTHON_PACKAGES, parseXDBFile, readPythonPackages } from '@softn/core';
 import { isPrivatePath } from './paths';
 
 /**
@@ -391,7 +391,7 @@ function buildMainUi(brief: ProjectBrief, blueprint: Blueprint, slugs: string[],
     : `      <Stack direction="horizontal" gap="md" align="center" wrap>
         ${heading}
         <Spacer />
-        #each (item in pages)
+        #each (item in pages) key={item.id}
           <Button variant={page === item.id ? "primary" : "ghost"} size="sm" @click={() => go(item.id)}>{item.label}</Button>
         #end
       </Stack>`;
@@ -430,12 +430,14 @@ function buildPageUi(blueprint: Blueprint, page: BlueprintPage, index: number): 
       const key = collectionKey(collection.name);
       const fields = collection.fields.filter((f) => f.name !== 'id' && FIELD_IDENT.test(f.name)).slice(0, 4);
       // A record bound from a collection carries its fields under `data`;
-      // `id` and the timestamps sit beside it.
+      // `id` and the timestamps sit beside it. The loop is keyed by that id, as
+      // the guide teaches: without a key the page warns on every render, and
+      // the agent was shown that warning after every check of a new app.
       const cells = fields.length > 0
         ? fields.map((f) => `          <Text>{item.data.${f.name}}</Text>`).join('\n')
         : `          <Text>{JSON.stringify(item.data)}</Text>`;
       parts.push(`  <Card title="${uiText(collection.name)}">
-    #each (item in ${key})
+    #each (item in ${key}) key={item.id}
       <Stack direction="horizontal" gap="md" align="center" wrap>
 ${cells}
       </Stack>
@@ -721,10 +723,86 @@ export function resolveActivePreviewPath(
   return getBundleEntryPath(files);
 }
 
+/**
+ * The pages a manifest lists, when the list can be taken whole: every entry
+ * has a name and names a file the project has, and that file is the one the
+ * Pages panel and the validator would find for a page of that name
+ * (findPageFile). Null otherwise, and the pages are worked out from the files.
+ *
+ * Studio writes this list itself (scaffoldProjectFiles), and Builder carries
+ * it through untouched, so an app that comes back has the pages it was
+ * planned with. Read from the files alone it came back with its shell as a
+ * page: "Main" first, and Home moved from / to /home.
+ */
+function manifestPages(manifest: Record<string, unknown> | null, files: Map<string, VFSFile>): BlueprintPage[] | null {
+  const listed = manifest?.pages;
+  if (!Array.isArray(listed) || listed.length === 0) return null;
+  const pages: BlueprintPage[] = [];
+  const paths: string[] = [];
+  for (const [index, entry] of listed.entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const { id, name, path, route } = entry as Record<string, unknown>;
+    if (typeof name !== 'string' || !name.trim() || typeof path !== 'string' || !files.has(path)) return null;
+    const slug = slugify(name);
+    pages.push({
+      id: typeof id === 'string' && id ? id : `${slug}-page`,
+      name: name.trim(),
+      route: typeof route === 'string' && route ? route : index === 0 ? '/' : `/${slug}`,
+      layout: 'imported',
+      components: ['imported-file'],
+    });
+    paths.push(path);
+  }
+  return pages.every((_, index) => findPageFile(files, pages, index) === paths[index]) ? pages : null;
+}
+
+/** The plan's word for a value found in a record. */
+function fieldTypeOf(value: unknown): BlueprintCollection['fields'][number]['type'] {
+  if (typeof value === 'number') return 'number';
+  if (typeof value === 'boolean') return 'boolean';
+  if (Array.isArray(value)) return 'array';
+  if (value && typeof value === 'object') return 'object';
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(T|$)/.test(value) ? 'date' : 'string';
+}
+
+const PLAN_FIELD_TYPES = new Set(['string', 'number', 'boolean', 'date', 'array', 'object']);
+
+/**
+ * A collection's fields, read from its file: the schema's where it carries
+ * one (Builder writes `schema.fields`), then whatever its records hold
+ * besides, typed by the first value found. Nothing for a file that is not
+ * text or does not parse; that is the validator's to report.
+ */
+function fieldsOfCollectionFile(path: string, content: string | Uint8Array | undefined): BlueprintCollection['fields'] {
+  if (typeof content !== 'string' || !/\.xdb$/i.test(path)) return [];
+  const fields: BlueprintCollection['fields'] = [];
+  const seen = new Set<string>();
+  const add = (name: string, type: BlueprintCollection['fields'][number]['type'], required: boolean) => {
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    fields.push({ name, type, required });
+  };
+  try {
+    const schema = (JSON.parse(content) as { schema?: { fields?: unknown } } | null)?.schema?.fields;
+    if (Array.isArray(schema)) for (const field of schema) {
+      if (!field || typeof field !== 'object') continue;
+      const { name, type, required } = field as Record<string, unknown>;
+      if (typeof name === 'string') add(name, PLAN_FIELD_TYPES.has(String(type)) ? (type as BlueprintCollection['fields'][number]['type']) : 'string', required === true);
+    }
+  } catch {
+    return [];
+  }
+  // The runtime's own reader, so a record is its data whichever of the two forms the file is in.
+  for (const record of parseXDBFile(path, content).records) {
+    for (const [name, value] of Object.entries(record.data ?? {})) add(name, fieldTypeOf(value), false);
+  }
+  return fields;
+}
+
 export function inferBlueprintFromFiles(projectName: string, files: Map<string, VFSFile>): Blueprint {
   const manifest = resolveManifest(files);
   const previewable = getPreviewablePaths(files);
-  const pages = previewable
+  const pages = manifestPages(manifest, files) ?? previewable
     .filter((path) => /\.(html|htm|ui)$/i.test(path))
     .map((path, index) => {
       const fileName = path.split('/').pop()?.replace(/\.(html|htm|ui)$/i, '') ?? `page-${index + 1}`;
@@ -743,7 +821,9 @@ export function inferBlueprintFromFiles(projectName: string, files: Map<string, 
     .map((path) => ({
       id: `${slugify(path)}-collection`,
       name: titleCase(path.split('/').pop()?.replace(/\.(xdb|json)$/i, '') ?? path),
-      fields: [],
+      // The fields its records have: a collection used to come back with none, and the agent
+      // was told "Notes []" of a file it then had to read to learn what a note is.
+      fields: fieldsOfCollectionFile(path, files.get(path)?.content),
       relationships: [],
     }));
 
@@ -767,11 +847,15 @@ export function inferBlueprintFromFiles(projectName: string, files: Map<string, 
  * project's own — pass `projectLogicLanguage(files)` — so a Python bundle is
  * edited in Python from the first turn.
  */
-export function inferBriefFromBlueprint(blueprint: Blueprint, logicLanguage: LogicLanguage = 'javascript'): ProjectBrief {
+export function inferBriefFromBlueprint(blueprint: Blueprint, logicLanguage: LogicLanguage = 'javascript', description?: unknown): ProjectBrief {
+  // The manifest's description is the one the person typed when the app was made here, and
+  // what its author wrote when it was made elsewhere; only a bundle that says nothing of
+  // itself is described as an import.
+  const said = typeof description === 'string' ? description.trim() : '';
   return {
     logicLanguage,
     appName: blueprint.appName,
-    description: `Imported SoftN bundle for ${blueprint.appName}. Use AI to inspect, improve, and regenerate parts of the app without rewriting it from scratch.`,
+    description: said || `Imported SoftN bundle for ${blueprint.appName}. Use AI to inspect, improve, and regenerate parts of the app without rewriting it from scratch.`,
     target: blueprint.target,
     pages: blueprint.pages.map((page) => page.name),
     collections: blueprint.collections.map((collection) => collection.name),

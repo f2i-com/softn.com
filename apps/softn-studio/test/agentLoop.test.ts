@@ -160,7 +160,8 @@ describe('editing with edit_file (OpenAI tool_calls)', () => {
   });
 
   it('refuses a non-unique old_string and names the lines, and replace_all changes them all', async () => {
-    useVFSStore.getState().hydrateFiles([{ path: 'ui/list.ui', content: '<Text>a</Text>\n<Text>a</Text>' }]);
+    // In a whole app: a run does not finish over a check that failed, so the fixture has to pass one.
+    useVFSStore.getState().hydrateFiles([{ path: 'manifest.json', content: APP.manifest }, { path: 'ui/main.ui', content: APP.ui }, { path: 'logic/main.logic', content: APP.logic }, { path: 'ui/list.ui', content: '<Text>a</Text>\n<Text>a</Text>' }]);
     fakeProvider('openai', [
       { calls: [{ name: 'read_file', input: { path: 'ui/list.ui' } }, { name: 'edit_file', input: { path: 'ui/list.ui', old_string: '<Text>a</Text>', new_string: '<Text>b</Text>' } }] },
       (body) => {
@@ -178,7 +179,8 @@ describe('editing with edit_file (OpenAI tool_calls)', () => {
     // A bundle written on Windows keeps its \r\n. read_file shows the lines, the model writes
     // them back joined by \n, and no edit of more than one line ever matched: "old_string was
     // not found … check the indentation and line breaks", three times, and the run stopped.
-    useVFSStore.getState().hydrateFiles([{ path: 'ui/win.ui', content: '<App>\r\n  <Text>one</Text>\r\n  <Text>two</Text>\r\n</App>\r\n' }]);
+    // (In a whole app, as above: the run has to be able to finish.)
+    useVFSStore.getState().hydrateFiles([{ path: 'manifest.json', content: APP.manifest }, { path: 'ui/main.ui', content: APP.ui }, { path: 'logic/main.logic', content: APP.logic }, { path: 'ui/win.ui', content: '<App>\r\n  <Text>one</Text>\r\n  <Text>two</Text>\r\n</App>\r\n' }]);
     fakeProvider('openai', [
       {
         calls: [
@@ -226,6 +228,8 @@ describe('tool calls that arrive without an id', () => {
   // other decoder gave up: a gateway that speaks this API and leaves ids out had every step
   // rewrite the rows before it, and its echoed tool_use blocks went back with no id to pair.
   it('gives each its own over the Messages API too, and echoes the call with the id its result answers', async () => {
+    // In a whole app: a run does not finish over a check that failed, so the fixture has to pass one.
+    seedApp();
     const provider = fakeProvider('anthropic', [
       { calls: [{ name: 'write_file', input: { path: 'ui/one.ui', content: '<App><Text>1</Text></App>' } }], noCallIds: true },
       { calls: [{ name: 'write_file', input: { path: 'ui/two.ui', content: '<App><Text>2</Text></App>' } }], noCallIds: true },
@@ -501,7 +505,8 @@ describe('pausing for the person', () => {
   });
 
   it('asks before deleting more than three files, and honours a decline and an allow', async () => {
-    useVFSStore.getState().hydrateFiles([...['a', 'b', 'c', 'd', 'e'].map((n) => ({ path: `ui/${n}.ui`, content: '<App/>' }))]);
+    // In a whole app: a run does not finish over a check that failed, so the fixture has to pass one.
+    useVFSStore.getState().hydrateFiles([{ path: 'manifest.json', content: APP.manifest }, { path: 'ui/main.ui', content: APP.ui }, { path: 'logic/main.logic', content: APP.logic }, ...['a', 'b', 'c', 'd', 'e'].map((n) => ({ path: `ui/${n}.ui`, content: '<App/>' }))]);
     fakeProvider('anthropic', [
       { calls: ['a', 'b', 'c', 'd', 'e'].map((n) => ({ name: 'delete_file', input: { path: `ui/${n}.ui` } })) },
       (body) => {

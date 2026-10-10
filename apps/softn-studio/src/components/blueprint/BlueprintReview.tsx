@@ -74,6 +74,9 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
   return (
     <div style={styles.overlay}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="blueprint-review-title" tabIndex={-1} style={styles.modal}>
+        {/* The plan scrolls; the two actions under it do not. The sheet used to scroll whole with
+            Approve as its last line, a screen and a half down on a phone. */}
+        <div style={styles.body}>
         <div style={styles.header}>
           <div>
             <span style={styles.eyebrow}>Review the plan</span>
@@ -180,6 +183,7 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
             </button>
           </div>
         </div>
+        </div>
 
         <div style={styles.actions}>
           <button
@@ -244,7 +248,9 @@ const styles: Record<string, React.CSSProperties> = {
   modal: {
     width: 'min(1100px, 100%)',
     maxHeight: '100%',
-    overflow: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
     borderRadius: 14,
     background: 'var(--studio-bg-elevated)',
     borderWidth: 1,
@@ -254,7 +260,13 @@ const styles: Record<string, React.CSSProperties> = {
     // already carries its own offsets, so the declaration was invalid and the
     // modal had no shadow at all.
     boxShadow: 'var(--studio-shadow)',
-    padding: 28,
+  },
+  /** The plan itself: the only part of the sheet that scrolls. */
+  body: {
+    flex: '1 1 auto',
+    minHeight: 0,
+    overflowY: 'auto',
+    padding: '28px 28px 20px',
   },
   header: {
     display: 'flex',
@@ -286,7 +298,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   statGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+    // Three counts side by side at any width: at 140 each they stacked on a phone and took
+    // half the screen before the plan began.
+    gridTemplateColumns: 'repeat(auto-fit, minmax(84px, 1fr))',
     gap: 12,
     marginBottom: 14,
   },
@@ -420,11 +434,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     transition: 'border-color 0.12s, box-shadow 0.12s',
   },
+  /** Under the plan, always in the window: what the dialog is for. */
   actions: {
     display: 'flex',
     justifyContent: 'flex-end',
+    flexWrap: 'wrap',
     gap: 10,
-    marginTop: 20,
+    flexShrink: 0,
+    padding: '14px 28px',
+    borderTop: '1px solid var(--studio-border)',
+    background: 'var(--studio-bg-elevated)',
   },
   secondaryButton: {
     padding: '10px 16px',

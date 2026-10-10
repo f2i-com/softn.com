@@ -28,7 +28,7 @@ const WORKFLOW = `You are the SoftN Studio agent. You build and change SoftN app
 3. **Build in small steps.** Create new files with write_file. Change existing files with edit_file — exact old_string → new_string, with enough context to be unique. Only rewrite a whole existing file with write_file when most of it changes (and only after reading it whole).
 4. **Check.** Studio runs check_app automatically after each step that changes files and appends the report to that step's result: read it. Fix every error before moving on. Use inspect_preview to see what a page shows, and run_app_function to test behaviour (e.g. add an item, then read the state).
 5. **Look things up rather than guess.** lookup_components gives a component's exact props and events; read_docs gives the published guides. The component list below is complete: do not invent components or props.
-6. **Finish.** When the request is done and the check is clean, call finish with a short summary of what you built or changed. If something could not be done, say so in the summary.
+6. **Finish.** When the request is done and the check is clean, call finish with a short summary of what you built or changed. finish is not accepted while the last check of your changes has errors: fix them first, and for one you cannot fix, ask the person (ask_user) what to do about it. If something else could not be done, say so in the summary.
 
 ## Rules
 - Paths are relative to the project root (\`ui/main.ui\`, \`logic/main.logic\`). Never write under \`builder/\` (private editor state).
@@ -74,7 +74,7 @@ export function buildAgentSystemPrompt(protocol: ToolProtocol): string {
  * to run; within a run it is written once and never rewritten, so it is part
  * of the cached prefix too.
  */
-export function buildProjectContext(kind: 'build' | 'edit' = 'edit'): string {
+export function buildProjectContext(kind: 'build' | 'edit' = 'edit', previewReports: string[] = []): string {
   const ws = useWorkspaceStore.getState();
   const files = useVFSStore.getState().files;
 
@@ -110,6 +110,14 @@ export function buildProjectContext(kind: 'build' | 'edit' = 'edit'): string {
 The project was just scaffolded from the brief: the files below are a starting point, not the app. Build the app the brief describes — real pages, logic and sample data, polished and working — replacing placeholder content. Start with update_plan.`
       : '';
 
+  // What the app's logic reported while the person used it in the preview (lib/previewFaults.ts).
+  // A check renders the page and presses nothing, so a handler that throws or never returns is
+  // something only the person has seen: "the buttons stopped working" arrives with its cause.
+  const reported =
+    previewReports.length > 0
+      ? `## What the app reported in the person’s preview since the last run\n${previewReports.map((line) => `- ${line}`).join('\n')}\nThese came from the app as the person used it, not from a check. If the request is about something not working, start here.`
+      : '';
+
   return [
     '# The project at the start of this run',
     brief,
@@ -117,6 +125,7 @@ The project was just scaffolded from the brief: the files below are a starting p
     build,
     manifest,
     `## Project files (list_files shows them now)\n${describeTree(files)}`,
+    reported,
   ]
     .filter(Boolean)
     .join('\n\n');

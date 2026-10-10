@@ -18,11 +18,13 @@ import type { Blueprint, VFSFile } from '../../types/studio';
 import { validateProject } from '../validator';
 import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } from '../previewProject';
 import { getBundleEntryPath } from '../studioProject';
-import { normalizeProjectPath } from '../paths';
+import { isPrivatePath, normalizeProjectPath } from '../paths';
 import { checkTemplateNames, type LogicNames, type TemplateFile } from './templateNames';
 import type { CheckReport } from './types';
 import { backendSqlProblems, migrationSqlProblems } from './sqlLint';
 import { appliedMigrationPaths, projectRelative } from './appliedMigrations';
+import { duringCheck, explainEngineStops, heardByPreview } from '../previewFaults';
+import { bareAssetPaths } from '../previewAssets';
 
 export interface RunFunctionRequest {
   name: string;
@@ -98,20 +100,31 @@ export function visibleText(root: Element): string {
   return parts.join('').replace(/\s+/g, ' ').trim();
 }
 
-/** Wait until the rendered text stops changing, within a bound. */
-async function settle(read: () => string, minMs: number, maxMs: number): Promise<void> {
+/**
+ * Wait until the rendered text stops changing, within a bound.
+ *
+ * The count starts when the renderer says the page is loaded (`loaded`), not
+ * when it was mounted: it draws nothing until the page is parsed and its data
+ * bound, and on a busy machine that outlasted a wait counted from the mount,
+ * so a working page was reported as rendering no text. A renderer that has
+ * said nothing by `unloadedMs` is believed as it stands.
+ */
+async function settle(read: () => string, loaded: () => boolean, minMs: number, maxMs: number, unloadedMs: number): Promise<void> {
   const start = Date.now();
   let last = read();
   let stableSince = Date.now();
+  let loadedAt: number | null = null;
   while (Date.now() - start < maxMs) {
     await new Promise((r) => setTimeout(r, 50));
     const now = read();
+    if (loadedAt === null && loaded()) loadedAt = Date.now();
     if (now !== last) {
       last = now;
       stableSince = Date.now();
-    } else if (Date.now() - start >= minMs && Date.now() - stableSince >= 300) {
-      return;
+      continue;
     }
+    if (Date.now() - stableSince < 300) continue;
+    if (loadedAt !== null ? Date.now() - loadedAt >= minMs : Date.now() - start >= unloadedMs) return;
   }
 }
 
@@ -131,6 +144,8 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   const warnings: string[] = [];
   const original = { error: console.error, warn: console.warn };
   console.error = (...args: unknown[]) => {
+    // A line the person's preview printed while this render was going is the preview's to hear.
+    if (heardByPreview(args)) return;
     errors.push(formatConsoleArgs(args));
   };
   console.warn = (...args: unknown[]) => {
@@ -152,33 +167,64 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
     // Storage may be unavailable; the render does not need it.
   }
 
+  // The page's data the way a runtime gives it: a store holding the project's seed records,
+  // read through the page's own `<data>` block, so a collection has the name `as` gives it
+  // and is filtered, sorted and limited as the block says. The page used to be handed every
+  // record under its collection's name instead, which agrees with a runtime only for
+  // `<collection name="x" as="x" />` with nothing else on it. A store of this render's own,
+  // in memory: it does not find the last check's records, and leaves none behind.
+  const seed = buildPreviewXDBState(files).initialData;
+  const scope = core.createEphemeralXDBScope();
+  scope.xdb.import({ version: 1, exportedAt: new Date().toISOString(), collections: seed }, { merge: false });
+
   const host = document.createElement('div');
   host.setAttribute('aria-hidden', 'true');
   host.setAttribute('data-softn-agent-check', 'true');
   host.style.cssText = 'position:fixed;left:-20000px;top:0;width:1024px;height:768px;overflow:hidden;pointer-events:none;';
   document.body.appendChild(host);
   const root = createRoot(host);
+  let loaded = false;
   try {
     root.render(
-      createElement(core.SoftNRenderer, {
+      createElement(core.SoftNWithXDB, {
         source: stripTemplateComments(composition.source),
         importResolver: composition.importResolver,
         logicBasePath: composition.logicBasePath,
         preIncludedLogicPaths: composition.preIncludedLogicPaths,
         python: composition.python,
-        initialData: buildPreviewXDBState(files).initialData,
-        appId: HEADLESS_APP_ID,
+        // Nothing is handed to the page beside the store: a collection it does not declare is
+        // empty here, as it is when the app runs (the name check says which line declares it).
+        appId: scope.appId,
+        xdb: scope.xdb,
         scriptExecutionMode: 'main',
         resumeSavedSyncRoom: false,
-        onError: (error: Error) => errors.push(`Render error: ${error.message}`),
+        onLoad: () => {
+          loaded = true;
+        },
+        onError: (error: Error) => {
+          loaded = true;
+          errors.push(`Render error: ${error.message}`);
+        },
       }),
     );
     // Python's engine takes longer the first time it loads.
-    await settle(() => visibleText(host), composition.python ? 1500 : 500, composition.python ? 12_000 : 5_000);
-    return { errors: dedupe(errors), warnings: dedupe(warnings), text: visibleText(host), snapshot: describeDom(host) };
+    await settle(() => visibleText(host), () => loaded, composition.python ? 1500 : 500, composition.python ? 12_000 : 5_000, composition.python ? 6_000 : 2_500);
+    // A call cut off at its budget is said as what it is (an endless loop), once: the engine's
+    // own two lines for it name a budget and a disposed engine, and nothing a model can act on.
+    return { errors: dedupe(explainEngineStops(errors)), warnings: dedupe(warnings), text: visibleText(host), snapshot: describeDom(host) };
   } finally {
     root.unmount();
     host.remove();
+    scope.dispose();
+    // What the script kept under this render's id goes with it.
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key?.startsWith(`softn:${scope.appId}:`)) localStorage.removeItem(key);
+      }
+    } catch {
+      // Storage may be unavailable.
+    }
     console.error = original.error;
     console.warn = original.warn;
     window.removeEventListener('error', onWindowError);
@@ -322,6 +368,8 @@ export function lintTemplates(files: Map<string, VFSFile>): { errors: string[]; 
       warnings.push(`${path} line ${lineOf(match.index)}: <${match[1]} :value={…}> is one-way, so typing never changes the state. Use :bind={name}.`);
     }
     warnings.push(...importedPageMisuse(path, file.content, template, lineOf));
+    // A picture named by its bare path draws nothing when the app runs (lib/previewAssets.ts).
+    errors.push(...bareAssetPaths(path, file.content, files));
   }
   return { errors, warnings };
 }
@@ -605,18 +653,31 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
   if (templates.length === 0) return NONE;
 
   let block: { type: string; code: string } | undefined;
+  // What the composed page binds: its own <data> blocks, those of the pages it imports, and,
+  // for a page looked at on its own, those of the page that imports it (previewProject.ts).
+  let declared: Array<{ name: string; as: string }> = [];
   try {
     const doc = core.parse(stripTemplateComments(composition.source));
     block = doc.logic ?? doc.script;
+    declared = (doc.data?.collections ?? []).map((c) => ({ name: c.name, as: c.as }));
   } catch {
     return NONE;
+  }
+  // The project's collections by name: what a page can declare. Not what it may read undeclared.
+  const collections = new Map<string, string>();
+  for (const [path, file] of files) {
+    if (!/\.xdb$/i.test(path) || typeof file.content !== 'string' || isPrivatePath(path)) continue;
+    const name = core.parseXDBFile(path, file.content).collection;
+    if (!collections.has(name)) collections.set(name, path);
   }
   const logic: LogicNames = { state: new Set(), functions: new Set(), computed: new Set() };
   if (block || composition.python) {
     const logs: string[] = [];
     const original = console.error;
     // A load error is the render's to report; here it only means there are no names to check against.
-    console.error = (...args: unknown[]) => logs.push(`error: ${formatConsoleArgs(args)}`);
+    console.error = (...args: unknown[]) => {
+      if (!heardByPreview(args)) logs.push(`error: ${formatConsoleArgs(args)}`);
+    };
     try {
       const { runtime, loaded } = await loadPageLogic(core, composition, block, quietContext(core, files, logs) as never);
       runtime.cleanup();
@@ -633,7 +694,9 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
   return checkTemplateNames({
     files: templates,
     logic,
-    dataNames: Object.keys(buildPreviewXDBState(files).initialData),
+    dataNames: declared.map((c) => c.as),
+    collections,
+    declared,
     helpers: Object.keys(core.builtinHelpers),
     python: !!composition.python,
   });
@@ -671,8 +734,8 @@ async function ownParseErrors(files: Map<string, VFSFile>, page: string): Promis
   return errors;
 }
 
-/** The real environment: validator and composer everywhere, the render wherever there is a document. */
-export const browserEnvironment: AgentEnvironment = {
+/** The checks themselves: validator and composer everywhere, the render wherever there is a document. */
+const checks: AgentEnvironment = {
   async checkApp(files, { page, blueprint }) {
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -741,6 +804,24 @@ export const browserEnvironment: AgentEnvironment = {
 
   async runFunction(files, request) {
     return runAppFunction(files, request);
+  },
+};
+
+/** The functions a renderer calls in an app's logic by itself: all that a check's own copy of the app runs. */
+const RENDERER_CALLS = (fn: string): boolean => fn === '_init' || fn === '_onDataChange';
+
+/**
+ * The real environment. Each check runs the app a second time, off the page,
+ * and what that copy prints is the check's to report, while what the person's
+ * preview prints in the same second is the preview's to hear: the two are
+ * told apart by which functions a check can be running (lib/previewFaults.ts).
+ */
+export const browserEnvironment: AgentEnvironment = {
+  checkApp: (files, options) => duringCheck(RENDERER_CALLS, () => checks.checkApp(files, options)),
+  inspectPreview: (files, page) => duringCheck(RENDERER_CALLS, () => checks.inspectPreview(files, page)),
+  runFunction: (files, request) => {
+    const asked = new Set([request.name, ...(request.setup_calls ?? []).map((step) => step.name ?? '')]);
+    return duringCheck((fn) => RENDERER_CALLS(fn) || asked.has(fn), () => checks.runFunction(files, request));
   },
 };
 
@@ -853,7 +934,9 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
   const context = quietContext(core, files, logs);
   const state = context.state;
   const original = console.error;
-  console.error = (...args: unknown[]) => logs.push(`error: ${formatConsoleArgs(args)}`);
+  console.error = (...args: unknown[]) => {
+    if (!heardByPreview(args)) logs.push(`error: ${formatConsoleArgs(args)}`);
+  };
   let runtime: ReturnType<CoreModule['createScriptRuntime']> | null = null;
   try {
     const started = await loadPageLogic(core, composition, block, context as never);
@@ -896,11 +979,20 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
       if (a !== b) changed.push(`  ${describeChange(key, before[key], after[key])}`);
     }
     const errors = logs.filter((l) => l.startsWith('error:'));
+    const call = `${request.name}(${(request.args ?? []).map(preview).join(', ')})`;
+    // The engine cut a call off (an endless loop) and answers nothing after it: "returned
+    // undefined" would be read as a function that ran. Said as what happened, in one sentence,
+    // with the engine's own lines for it left out of the console below.
+    const explained = explainEngineStops(errors);
+    const stop = explained.find((line) => !errors.includes(line));
+    const said = stop ? explainEngineStops(logs).filter((line) => line !== stop) : logs;
     const text = [
       ...(lines.length > 0 ? ['Setup:', ...lines.map((l) => `  ${l}`)] : []),
-      `${request.name}(${(request.args ?? []).map(preview).join(', ')}) returned ${preview(value)}`,
+      stop
+        ? `${call} ${stop.startsWith(`${request.name} ran`) || stop.includes(` in ${request.name} ran`) ? 'did not return' : 'was not run'}: ${stop}`
+        : `${call} returned ${preview(value)}`,
       changed.length > 0 ? `State changed:\n${changed.join('\n')}` : 'State did not change.',
-      ...(logs.length > 0 ? [`Console:\n${logs.slice(0, 10).map((l) => `  ${l}`).join('\n')}`] : []),
+      ...(said.length > 0 ? [`Console:\n${said.slice(0, 10).map((l) => `  ${l}`).join('\n')}`] : []),
     ].join('\n');
     return { ok: errors.length === 0, text };
   } catch (err) {

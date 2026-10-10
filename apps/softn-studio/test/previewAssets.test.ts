@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createPreviewAssetResolver, rewriteAssetReferences } from '../src/lib/previewAssets';
+import { lintTemplates } from '../src/lib/agent/appCheck';
+import { buildGuide } from '../src/lib/agent/guide';
+import { bareAssetPaths, createPreviewAssetResolver } from '../src/lib/previewAssets';
 import type { VFSFile } from '../src/types/studio';
 
 const file = (path: string, content: string | Uint8Array): VFSFile => ({
@@ -42,39 +44,74 @@ describe('Studio bundle asset previews', () => {
   });
 });
 
-describe('asset paths written in the previewed source', () => {
-  const svg = "<svg xmlns='http://www.w3.org/2000/svg'><title>Ada's logo</title></svg>";
-  const files = new Map([
-    ['assets/logo.svg', file('assets/logo.svg', svg)],
+// A bundle file named by its bare path draws nothing when the app is run: only asset("…")
+// resolves one. The preview used to swap every quoted "assets/…" that named a file for a
+// data: URL before the page was parsed, so `<Image src="assets/logo.png" />` drew in Studio
+// and was broken wherever the app ran, with nothing said. The preview hands the page over as
+// written now (previewLoading.test.tsx), and the check says where such a path is.
+describe('a bundle file named by its bare path', () => {
+  const files = new Map<string, VFSFile>([
+    ['assets/logo.svg', file('assets/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg" />')],
     ['assets/avatars/ada.png', file('assets/avatars/ada.png', new Uint8Array([137, 80, 78, 71]))],
+    ['assets/intro.mp4', file('assets/intro.mp4', new Uint8Array([0, 0, 0, 24]))],
   ]);
-  const resolve = createPreviewAssetResolver(files, 'ui/main.ui');
 
-  it('are rewritten only where the quoted path is a file of the project', () => {
-    // Every quoted string that began "assets/" was replaced, and one that named no file by "":
-    // asset("assets/avatars/" + id + ".png") lost its folder, in the preview and nowhere else.
+  it('is found on a src, however the literal is written, with its line and what to write', () => {
     const source = [
-      '<Image src={asset("assets/avatars/" + person.id + ".png")} />',
-      '<Image src="assets/avatars/ada.png" />',
-      '<logic>',
-      'const SPRITES = "assets/sprites/"',
-      'let missing = "./assets/gone.png"',
-      '</logic>',
+      '<App>',
+      '  <Image src="assets/logo.svg" alt="Logo" />',
+      "  <Avatar src={'./assets/avatars/ada.png'} name=\"Ada\" />",
+      '  <video poster="../assets/logo.svg" src={"assets/intro.mp4"}></video>',
+      '</App>',
     ].join('\n');
-    const out = rewriteAssetReferences(source, resolve);
-    expect(out).toContain('asset("assets/avatars/" + person.id + ".png")');
-    expect(out).toContain('const SPRITES = "assets/sprites/"');
-    expect(out).toContain('let missing = "./assets/gone.png"');
-    expect(out).toContain(`<Image src="${resolve('assets/avatars/ada.png')}" />`);
+    expect(bareAssetPaths('ui/main.ui', source, files)).toEqual([
+      'ui/main.ui line 2: src="assets/logo.svg" names a file in the bundle by its bare path, which nothing loads when the app runs (it is asked of the site the app is served from). Write src={asset("assets/logo.svg")}: asset() is what resolves a bundle file.',
+      expect.stringMatching(/^ui\/main\.ui line 3: src="\.\/assets\/avatars\/ada\.png" names a file .* Write src=\{asset\("assets\/avatars\/ada\.png"\)\}/),
+      expect.stringMatching(/^ui\/main\.ui line 4: poster="\.\.\/assets\/logo\.svg" names a file .* Write poster=\{asset\("assets\/logo\.svg"\)\}/),
+      expect.stringMatching(/^ui\/main\.ui line 4: src="assets\/intro\.mp4" names a file /),
+    ]);
   });
 
-  it('are replaced by a URL that stays inside the quotes it is written in', () => {
-    // A text file goes in as a data: URL, with its apostrophes as they were: inside
-    // asset('assets/logo.svg') the first one ended the string and the page stopped parsing.
-    const out = rewriteAssetReferences("<Image src={asset('assets/logo.svg')} alt=\"Logo\" />", resolve);
-    const written = /asset\('([^']*)'\)/.exec(out)?.[1] ?? '';
-    expect(written).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
-    expect(decodeURIComponent(written.slice(written.indexOf(',') + 1))).toBe(svg);
-    expect(out.endsWith(' alt="Logo" />')).toBe(true);
+  it('is not found where asset() is given the path, where the path is worked out, or where it names no file', () => {
+    const withLogic = new Map(files).set('logic/main.logic', file('logic/main.logic', 'let name = "ada"'));
+    // Where a page says which file its logic is in: read by the composer, and not a picture.
+    expect(bareAssetPaths('ui/main.ui', '<logic src="../logic/main.logic" />\n<App />\n', withLogic)).toEqual([]);
+    const source = [
+      '<App>',
+      '  <Image src={asset("assets/logo.svg")} />',
+      '  <Image src={asset("assets/avatars/" + person.id + ".png")} />',
+      '  <Image src={"assets/avatars/" + person.id + ".png"} />',
+      '  <Image src="assets/gone.png" />',
+      '  <Image src="https://example.com/assets/logo.svg" />',
+      '  <a href="#assets">Assets</a>',
+      '  <Text>src="assets/logo.svg" is how not to write it</Text>',
+      '</App>',
+      '<logic>',
+      'const src = "assets/logo.svg"',
+      '</logic>',
+    ].join('\n');
+    // Not even the words in the Text, which only look like an attribute: nothing stands before
+    // them but the end of a tag.
+    expect(bareAssetPaths('ui/main.ui', source, files)).toEqual([]);
+  });
+
+  it('is reported by the check as an error, so a run does not finish on a picture that will not load', () => {
+    const project = new Map<string, VFSFile>([
+      ...files,
+      ['manifest.json', file('manifest.json', JSON.stringify({ name: 'Logo', version: '1.0.0', main: 'ui/main.ui' }))],
+      ['ui/main.ui', file('ui/main.ui', '<App>\n  <Image src="assets/logo.svg" alt="Logo" />\n</App>\n')],
+    ]);
+    const { errors } = lintTemplates(project);
+    expect(errors).toEqual([expect.stringMatching(/^ui\/main\.ui line 2: src="assets\/logo\.svg" names a file in the bundle by its bare path/)]);
+    const mended = new Map(project).set('ui/main.ui', file('ui/main.ui', '<App>\n  <Image src={asset("assets/logo.svg")} alt="Logo" />\n</App>\n'));
+    expect(lintTemplates(mended).errors).toEqual([]);
+  });
+
+  it('is what the guide tells the agent not to write', () => {
+    for (const python of [false, true]) {
+      const guide = buildGuide({ python, torch: false, style: 'clean' });
+      expect(guide).toContain('<Image src={asset("assets/logo.png")} alt="Logo" />');
+      expect(guide).toMatch(/A bare path \(`src="assets\/logo\.png"`\) loads nothing when the app runs/);
+    }
   });
 });

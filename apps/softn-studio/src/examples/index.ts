@@ -1,5 +1,5 @@
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
-import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage } from '../lib/studioProject';
+import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage, resolveManifest } from '../lib/studioProject';
 import { resetProjectSessionForImport } from '../lib/projectSession';
 import { READING_LIST } from './readingList';
 import { READING_LIST_PYTHON } from './readingListPython';
@@ -40,7 +40,7 @@ export function openExampleInStores(example: ExampleProject = DEFAULT_EXAMPLE): 
   ws.setProjectName(example.name);
   const snapshot = useVFSStore.getState().getSnapshot();
   const blueprint = inferBlueprintFromFiles(example.name, snapshot);
-  ws.setBrief(inferBriefFromBlueprint(blueprint, projectLogicLanguage(snapshot)));
+  ws.setBrief(inferBriefFromBlueprint(blueprint, projectLogicLanguage(snapshot), resolveManifest(snapshot)?.description));
   ws.setBlueprint(blueprint);
   ws.setBlueprintApproved(true);
   ws.setTaskGraph(generateTaskGraph(blueprint));

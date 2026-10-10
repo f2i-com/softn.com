@@ -55,7 +55,9 @@ describe('undefined names in the markup', () => {
     expect(errors).toHaveLength(5);
   });
 
-  it('does not flag loop variables, indexes, arrow parameters, <data> aliases, seeded collections or template assignments', async () => {
+  // (A collection counted as defined here once, declared or not, because Studio handed every
+  // one to every page. A runtime hands a page what its <data> block binds: undeclaredCollections.test.tsx.)
+  it('does not flag loop variables, indexes, arrow parameters, <data> aliases, declared collections or template assignments', async () => {
     const { errors, warnings } = await templateNameErrors(
       page(
         [
@@ -74,7 +76,7 @@ describe('undefined names in the markup', () => {
         ].join('\n'),
         { 'data/notes.xdb': JSON.stringify({ collection: 'notes', records: [{ id: '1', text: 'x' }] }) },
         LOGIC,
-        '<data><collection name="tasks" as="rows" /></data>',
+        '<data><collection name="tasks" as="rows" /><collection name="notes" as="notes" /></data>',
       ),
       'ui/main.ui',
     );

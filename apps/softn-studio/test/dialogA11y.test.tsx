@@ -94,6 +94,43 @@ describe('BlueprintReview', () => {
     expect(dialog.textContent).toMatch(/laid out from your brief/i);
   });
 
+  // The whole sheet scrolled, with Approve as its last line: on a phone the plan of the smallest
+  // brief is a screen and a half, and at 1280 by 640 the button was cut by the window's edge, so
+  // the one action the dialog is for had to be found by scrolling past everything else. The
+  // plan scrolls now, and the actions stay under it. (jsdom lays nothing out, so this holds the
+  // structure; the positions are measured in Chromium.)
+  it('keeps Approve and Revise brief outside the part that scrolls', () => {
+    const blueprint: Blueprint = {
+      appName: 'Notes', target: 'web', style: 'minimal',
+      pages: [{ id: 'p1', name: 'Home', layout: 'stack', components: [] }],
+      collections: [], navigation: { type: 'tabs', items: ['Home'] }, risks: [], assumptions: [],
+    };
+    const brief: ProjectBrief = { appName: 'Notes', description: 'A notes app', target: 'web', style: 'minimal', pages: ['Home'], collections: [], authNeeded: false, referenceImages: [] };
+    useWorkspaceStore.setState({ blueprint, brief, taskGraph: [] });
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    const dialog = expectDialog();
+    const scrolls = (element: HTMLElement) => /auto|scroll/.test(element.style.overflow) || /auto|scroll/.test(element.style.overflowY);
+    // The sheet is as tall as the window allows and does not scroll itself.
+    expect(scrolls(dialog)).toBe(false);
+    expect(dialog.style.display).toBe('flex');
+    expect(dialog.style.flexDirection).toBe('column');
+    const body = [...dialog.children].find((child) => scrolls(child as HTMLElement)) as HTMLElement | undefined;
+    expect(body, 'a part of the sheet that scrolls').toBeDefined();
+    // A flex child that may shrink below its content, or it would push the actions out instead.
+    expect(parseFloat(body!.style.minHeight)).toBe(0);
+    // What scrolls is the plan: its title, its pages and the note field.
+    expect(body!.contains(document.getElementById('blueprint-review-title'))).toBe(true);
+    expect(body!.contains(document.getElementById('blueprint-revision-note'))).toBe(true);
+    for (const name of ['Approve blueprint', 'Revise brief']) {
+      const button = [...dialog.querySelectorAll('button')].find((b) => b.textContent?.trim() === name);
+      expect(button, name).toBeDefined();
+      expect(body!.contains(button!), `${name} scrolls away with the plan`).toBe(false);
+      // Nothing between the button and the sheet scrolls or shrinks it out of view.
+      expect(button!.parentElement!.parentElement).toBe(dialog);
+      expect(button!.parentElement!.style.flexShrink).toBe('0');
+    }
+  });
+
   // The title is where the dialog opens and is not one of its controls, so stepping back from
   // it is not a step the dialog's own keeping of the keyboard knows: it has to go to the last
   // control, as it does from the first, and not out to the page behind.

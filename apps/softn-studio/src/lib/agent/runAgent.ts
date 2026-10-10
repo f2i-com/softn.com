@@ -35,6 +35,7 @@ import { executeTool, type ToolOutcome } from './executeTool';
 import { addUsage, cacheWeights, effectiveTokens, runEffective, type CacheWeights } from './budget';
 import { holdPageForRun, releasePageForRun, wasInBackground } from './keepAlive';
 import { buildAgentSystemPrompt, buildProjectContext } from './prompt';
+import { takePreviewFaults } from '../previewFaults';
 import {
   canStream,
   encodeText,
@@ -149,6 +150,12 @@ interface RunController {
   repairNext: boolean;
   lastCheckSignature: string | null;
   sameCheckFailures: number;
+  /** The run's last check, when it failed: finish is not accepted over it (see finishCalls). */
+  failingCheck: CheckReport | null;
+  /** Finishes refused one after another over that check; the second ends the run. */
+  finishRefusals: number;
+  /** The person was asked after such a refusal and answered: the next finish is theirs to have. */
+  personAnsweredFailingCheck: boolean;
   lastToolError: string | null;
   sameToolErrors: number;
   truncations: number;
@@ -462,7 +469,7 @@ export async function startAgentRun(options: StartOptions = {}): Promise<void> {
     provider,
     kind,
     // The project as it stands opens the conversation, not the system prompt, which stays the same across runs.
-    turns: [{ role: 'user', text: buildProjectContext(kind) }, ...openingTurns(), ...(continuing ? [{ role: 'user' as const, text: continuing.note }] : [])],
+    turns: [{ role: 'user', text: buildProjectContext(kind, takePreviewFaults(useWorkspaceStore.getState().projectId)) }, ...openingTurns(), ...(continuing ? [{ role: 'user' as const, text: continuing.note }] : [])],
     resultSteps: new Map(),
     seen: new Map(),
     pending: null,
@@ -475,6 +482,9 @@ export async function startAgentRun(options: StartOptions = {}): Promise<void> {
     repairNext: false,
     lastCheckSignature: null,
     sameCheckFailures: 0,
+    failingCheck: null,
+    finishRefusals: 0,
+    personAnsweredFailingCheck: false,
     lastToolError: null,
     sameToolErrors: 0,
     truncations: 0,
@@ -593,6 +603,7 @@ export async function continueAgentRun(runId: string): Promise<void> {
     ...(wasReverted ? { reverted: false } : {}),
   }));
   ctl.sameCheckFailures = 0;
+  ctl.finishRefusals = 0;
   ctl.sameToolErrors = 0;
   ctl.truncations = 0;
   const wasPaused = run.status === 'paused';
@@ -635,6 +646,13 @@ export async function answerAgentQuestion(runId: string, answer: string | boolea
   } else {
     const text = typeof answer === 'string' ? answer.trim() : answer ? 'Yes.' : 'No.';
     pending.results.push({ id: call.id, name: call.name, content: `The person answered: ${text || '(no answer)'}`, isError: false, step });
+    // A finish refused over a failed check tells the model to ask the person. They have been
+    // asked and have answered: what to do about the error is theirs to say, so the next
+    // finish is taken, until something is written and checked again.
+    if (ctl.finishRefusals > 0) {
+      ctl.finishRefusals = 0;
+      ctl.personAnsweredFailingCheck = true;
+    }
     const entry = record(ctl)?.entries.find((e) => e.kind === 'tool' && e.id === call.id);
     if (entry) updateEntry(ctl, call.id, { status: 'ok', result: `You answered: ${text}` });
   }
@@ -1125,6 +1143,8 @@ async function runOneCall(ctl: RunController, call: AgentToolCall, step: number,
     if (call.name === 'write_file' && ws.mode === 'describe') ws.setMode('design');
   }
   if (call.name === 'check_app') pending.checkedAfterWrite = true;
+  // The model's own check counts as the run's last one, as the automatic check does.
+  if (call.name === 'check_app' && outcome.check) ctl.failingCheck = outcome.check.ok ? null : outcome.check;
   if (outcome.control?.kind === 'plan') patch(ctl, (run) => ({ ...run, plan: outcome.control && outcome.control.kind === 'plan' ? outcome.control.items : run.plan }));
   if (outcome.control?.kind === 'finish') pending.finishSummary = outcome.control.summary;
   if (outcome.check) {
@@ -1257,6 +1277,9 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
       }
       if (lastWrite && lastWrite !== finish) lastWrite.content += '\n\nfinish was not accepted: fix the errors above, then call finish.';
     }
+    ctl.failingCheck = report.ok ? null : report;
+    // A new check of a new write: what the person said of the last one does not cover it.
+    ctl.personAnsweredFailingCheck = false;
     if (report.ok) {
       ctl.sameCheckFailures = 0;
       ctl.lastCheckSignature = null;
@@ -1270,10 +1293,39 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
     }
   }
 
+  // Finish in a reply that changed nothing, after a check that failed: the errors are still
+  // there. The refusal above is for a reply that writes and finishes together; a model that
+  // wrote in one reply, read the failed check, and called finish in the next was believed, and
+  // the run ended "Finished" under a check row that said the app was broken. (A reply that
+  // wrote with the automatic check turned off is let through: nothing has judged the app since.)
+  // Two finishes are taken all the same: one in a run that has changed nothing, which has
+  // broken nothing ("summarize this app", of a project that came in broken); and one after
+  // the person, asked about the error as the refusal says to ask, has answered.
+  let finishedOverErrors: string | null = null;
+  const changedSomething = (record(ctl)?.transactions.length ?? 0) > 0;
+  if (pending.finishSummary !== undefined && ctl.failingCheck && !pending.wrote && changedSomething && !ctl.personAnsweredFailingCheck) {
+    const errors = ctl.failingCheck.errors;
+    pending.finishSummary = undefined;
+    ctl.finishRefusals++;
+    const finish = pending.results.find((r) => r.name === 'finish');
+    if (finish) {
+      finish.content = `Not accepted: the last check of the app found errors and nothing has changed since:\n${errors.map((e) => `- ${e}`).join('\n')}\nFix them, then call finish again. If one cannot be fixed, ask the person (ask_user) what to do about it.`;
+      finish.isError = true;
+      updateEntry(ctl, finish.id, { status: 'error', result: finish.content.slice(0, 2_000) });
+    }
+    if (ctl.finishRefusals >= 2) finishedOverErrors = `${errors.length} error${errors.length === 1 ? '' : 's'}: ${errors[0] ?? 'the check failed'}`;
+  } else if (pending.wrote || !ctl.failingCheck) {
+    ctl.finishRefusals = 0;
+  }
+
   ctl.turns.push({ role: 'tool', results: pending.results.map(({ step: _step, ...r }) => r) });
   const summary = pending.finishSummary;
   ctl.pending = null;
 
+  if (finishedOverErrors) {
+    end(ctl, 'failed', `The agent said it was finished while the check still finds ${finishedOverErrors}. The run stopped rather than call the app done. Continue to let it try again, or say how to fix it.`);
+    return true;
+  }
   if (failedRepeatedly) {
     end(ctl, 'failed', `The same check error came back ${REPEAT_LIMIT} times after the agent's fixes: ${failedRepeatedly}. The run stopped rather than keep trying the same thing. Continue to let it try again, or say how to fix it.`);
     return true;

@@ -21,6 +21,7 @@ import { SaveStatusIndicator } from './components/common/SaveStatus';
 import { exportCurrentProject } from './components/common/ProjectActions';
 import { openImportedInStores } from './lib/importedProject';
 import { confirmLeaveDraft } from './lib/handEdit';
+import { beginReplacingProject } from './lib/replaceProject';
 import { validateProject } from './lib/validator';
 import { openExampleInStores, type ExampleProject } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
@@ -30,7 +31,8 @@ import { rememberAppliedMigrations } from './lib/agent/appliedMigrations';
 import { exportAsBundle, buildBundle } from './lib/exportBundle';
 import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import {
-  listProjectSummaries,
+  askStoreAgain,
+  surveyProjectStore,
   loadProjectRecord,
   loadRecentProjects,
   recordFilesAsMap,
@@ -76,6 +78,8 @@ const App: React.FC = () => {
   const [isMobile, setIsMobile] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<'chat' | 'canvas' | 'settings'>('canvas');
   const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
+  /** The project store did not answer when the list was last made: said on the dashboard, with Try again. */
+  const [storeSilent, setStoreSilent] = useState(false);
   const autosaveRef = useRef<AutosaveController | null>(null);
   /** The `?open=` link read once on first mount; `undefined` until read. */
   const openLinkRef = useRef<ReturnType<typeof readOpenLink> | undefined>(undefined);
@@ -107,11 +111,13 @@ const App: React.FC = () => {
    */
   const refreshRecent = useCallback(async () => {
     const list = loadRecentProjects();
-    const summaries = await listProjectSummaries();
-    const saved = new Set(summaries.map((summary) => summary.projectId));
+    const survey = await surveyProjectStore();
+    const saved = new Set(survey.summaries.map((summary) => summary.projectId));
+    // Why an entry has no copy to open, when it is not that there is none (Dashboard.tsx).
+    const why = (id: string): RecentEntry['why'] => (!survey.answered ? 'silent' : survey.newer.includes(id) ? 'newer' : undefined);
     const ws = useWorkspaceStore.getState();
     const activeId = ws.projectId && hasProjectContent() ? ws.projectId : null;
-    const entries: RecentEntry[] = list.map((entry) => ({ ...entry, saved: saved.has(entry.id), active: entry.id === activeId }));
+    const entries: RecentEntry[] = list.map((entry) => ({ ...entry, saved: saved.has(entry.id), active: entry.id === activeId, why: why(entry.id) }));
     if (activeId && !entries.some((entry) => entry.id === activeId)) {
       entries.unshift({
         id: activeId,
@@ -123,6 +129,7 @@ const App: React.FC = () => {
       });
     }
     setRecentProjects(entries);
+    setStoreSilent(!survey.answered);
   }, []);
 
   /**
@@ -148,12 +155,12 @@ const App: React.FC = () => {
 
   const handleNewProject = useCallback(async () => {
     // A generation still running would finish against the project that replaces
-    // this one and write its files there. agentOrchestrator already treats an
-    // AbortError as "stop quietly", so nothing is written and no error is shown.
-    const claim = claimWorkspace();
-    abortAgentTurn();
+    // this one and write its files there, so it is discarded: after the person
+    // has been asked about a draft they have not saved (lib/replaceProject.ts).
+    const generation = beginReplacingProject();
+    if (generation === null) return;
     if (!(await checkpointBeforeReplace())) return;
-    if (!ownsWorkspace(claim.generation)) return;
+    if (!ownsWorkspace(generation)) return;
     beginNewProjectSession();
     setView('brief');
   }, [checkpointBeforeReplace]);
@@ -164,10 +171,10 @@ const App: React.FC = () => {
    * are already here.
    */
   const handleOpenExample = useCallback(async (example?: ExampleProject) => {
-    const claim = claimWorkspace();
-    abortAgentTurn();
+    const generation = beginReplacingProject();
+    if (generation === null) return;
     if (!(await checkpointBeforeReplace())) return;
-    if (!ownsWorkspace(claim.generation)) return;
+    if (!ownsWorkspace(generation)) return;
     openExampleInStores(example);
     setView('editor');
     void refreshRecent();
@@ -189,8 +196,10 @@ const App: React.FC = () => {
    * else took the workspace is dropped, and dropped quietly.
    */
   const handleImportProject = useCallback(async (file: File, owner?: number, openerName?: string): Promise<DashboardOutcome> => {
-    const generation = owner ?? claimWorkspace().generation;
-    abortAgentTurn();
+    // Asked before the run is stopped: the host opening an app, or a file dropped on Import,
+    // must not cost the person a run when they answer that they would rather stay.
+    const generation = beginReplacingProject(owner);
+    if (generation === null) return { ok: false, message: 'The current project was kept open.' };
     try {
       if (!(await checkpointBeforeReplace())) return { ok: false, message: 'The current project was kept open.' };
       if (!ownsWorkspace(generation)) return { ok: true };
@@ -383,7 +392,8 @@ const App: React.FC = () => {
       setView('editor');
       return { ok: true };
     }
-    abortAgentTurn();
+    // openProjectById claims the workspace itself; the claim made here is the same step earlier.
+    if (beginReplacingProject() === null) return { ok: false, message: 'The current project was kept open.' };
     const outcome = await openProjectById(id, checkpointBeforeReplace);
     if (outcome.ok) {
       setView('editor');
@@ -468,6 +478,8 @@ const App: React.FC = () => {
             onExportProject={handleExportProject}
             onOpenExample={(example) => void handleOpenExample(example)}
             recentProjects={recentProjects}
+            storeSilent={storeSilent}
+            onRetryStore={() => { askStoreAgain(); return refreshRecent(); }}
             ai={isHostedEditor() ? undefined : {
               gate: needsProviderSetup({ hosted: false, providerCount, setupSkipped }),
               onSkip: () => useAIStore.getState().setSetupSkipped(true),
@@ -535,7 +547,7 @@ const App: React.FC = () => {
           )}
           {mobilePanel === 'canvas' && (
             <div style={styles.mobilePanel}>
-              <VisualCanvas onStartBrief={handleNewProject} />
+              <VisualCanvas onStartBrief={handleNewProject} onShowChat={() => setMobilePanel('chat')} />
             </div>
           )}
           {mobilePanel === 'settings' && (

@@ -107,6 +107,8 @@ export const AIChat: React.FC = () => {
   // Ready means a provider and a model: sending with less opens the setup
   // for what is missing, and keeps the message as it was typed.
   const hasProvider = readiness.state === 'ready';
+  /** The card that says what the AI is missing is showing (a hosted editor's AI is its host's: no card). */
+  const needsSetup = !hasProvider && !isHostedEditor();
   const openSettings = () => openSetupFor(readiness);
 
   const sendSuggestedPrompt = (text: string) => {
@@ -165,7 +167,7 @@ export const AIChat: React.FC = () => {
 
       {/* What the AI is missing, and the one button that fixes it. */}
       {/* A hosted editor's AI is its host's; there is no setup to open. */}
-      {!hasProvider && !isHostedEditor() && (
+      {needsSetup && (
         <div style={styles.setupWrap}>
           <div className="st-ai-cta" role="region" aria-label="AI setup">
             <h3 className="st-ai-cta-title">
@@ -201,10 +203,15 @@ export const AIChat: React.FC = () => {
         style={styles.messages}
       >
         {messages.length === 0 && (
-          <div style={styles.emptyState}>
-            <div style={styles.emptyIcon}>
-              <Icon name="ai" size={32} color="var(--studio-accent)" />
-            </div>
+          <div style={needsSetup ? styles.emptyStateCompact : styles.emptyState}>
+            {/* While the card above says what the AI is missing, the greeting is its title and the
+                offers: with the picture and the three lines of text, a short window (1280 by 640)
+                had the offer to build under the box the message is typed in. */}
+            {!needsSetup && (
+              <div style={styles.emptyIcon}>
+                <Icon name="ai" size={32} color="var(--studio-accent)" />
+              </div>
+            )}
             {/* A brief and a plan with nothing said yet is a project the brief wizard has just laid
                 out. It used to be greeted as an import ("Imported app ready: this bundle is loaded
                 into Studio"), which it never is: an import and an example each open with a message
@@ -212,14 +219,14 @@ export const AIChat: React.FC = () => {
             <p style={styles.emptyTitle}>
               {brief && blueprint ? 'Ready to build' : brief ? 'Ready to generate' : 'Describe your app'}
             </p>
-            <p style={styles.emptyDesc}>
+            {!needsSetup && <p style={styles.emptyDesc}>
               {brief && blueprint
                 ? 'The pages are laid out and waiting for their content. Ask the AI to build the app, or tell it what to change.'
                 : brief
                 ? 'Your brief is loaded. Send a message to start generating, or refine the details.'
                 : 'Tell the AI what you want to build, or use the guided brief wizard for a structured approach.'
               }
-            </p>
+            </p>}
             {!blueprint && (
               <div style={styles.suggestions}>
                 {(brief
@@ -548,6 +555,14 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     flex: 1,
     padding: 20,
+    textAlign: 'center',
+  },
+  /** Under the setup card: the title and the offers, from the top, with no room given away. */
+  emptyStateCompact: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    padding: '2px 6px 6px',
     textAlign: 'center',
   },
   emptyIcon: {

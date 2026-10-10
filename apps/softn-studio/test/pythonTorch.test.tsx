@@ -41,7 +41,8 @@ vi.mock('@softn/components', () => ({
 vi.mock('@softn/core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@softn/core')>()),
   getXDB: () => { throw new Error('No persistent preview storage in this fixture'); },
-  SoftNRenderer: (props: SoftNRendererProps) => {
+  // The renderer the preview mounts: the one a runtime uses, which binds the page's <data> block.
+  SoftNWithXDB: (props: SoftNRendererProps) => {
     rendered.push(props);
     return <div data-testid="ready-preview">Rendered app</div>;
   },

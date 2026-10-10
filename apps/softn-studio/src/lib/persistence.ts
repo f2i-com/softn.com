@@ -493,6 +493,9 @@ function readItem(key: string): string | null {
 function describeStorageFailure(error: unknown): { reason: SaveFailureReason; message: string } {
   const name = error instanceof Error ? error.name : '';
   const text = error instanceof Error ? error.message : String(error);
+  if (name === 'StoreSilentError') {
+    return { reason: 'unavailable', message: 'This browser’s storage did not answer. Export the bundle to keep your work.' };
+  }
   if (name === 'QuotaExceededError' || /quota/i.test(name + ' ' + text)) {
     return {
       reason: 'quota',
@@ -746,10 +749,39 @@ export function removeRecentProject(id: string): SaveResult {
 // IndexedDB: the project records.
 // ---------------------------------------------------------------------------
 
+/** How long the database may take to open before the store is taken to be out of reach. */
+export const DB_OPEN_DEADLINE_MS = 8_000;
+/** How long after that it is not asked again: every reader would otherwise wait the deadline out in turn. */
+const DB_SILENT_FOR_MS = 30_000;
+
+/** The open neither succeeded nor failed in time. */
+class StoreSilentError extends Error {
+  constructor() {
+    super('IndexedDB did not answer');
+    this.name = 'StoreSilentError';
+  }
+}
+
+let silentUntil = 0;
+
+/**
+ * Open the project database, within a deadline.
+ *
+ * The open was waited for without limit, and every read and write begins
+ * with it. A request on which nothing ever fires (a store left wedged by a
+ * crash) kept the start on "Opening your project…" for good and a save on
+ * "Saving…", and anything that waits for a save, such as leaving for another
+ * project, never went on. Past the deadline the open is a failure like any
+ * other: a read finds nothing, a save says the store did not answer.
+ */
 function openStudioDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
       reject(new Error('IndexedDB is not available here'));
+      return;
+    }
+    if (Date.now() < silentUntil) {
+      reject(new StoreSilentError());
       return;
     }
     let req: IDBOpenDBRequest;
@@ -759,12 +791,33 @@ function openStudioDb(): Promise<IDBDatabase> {
       reject(error);
       return;
     }
+    let late = false;
+    const deadline = setTimeout(() => {
+      late = true;
+      silentUntil = Date.now() + DB_SILENT_FOR_MS;
+      reject(new StoreSilentError());
+    }, DB_OPEN_DEADLINE_MS);
     req.onupgradeneeded = () => {
       if (!req.result.objectStoreNames.contains(PROJECTS_STORE)) req.result.createObjectStore(PROJECTS_STORE);
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'));
-    req.onblocked = () => reject(new Error('IndexedDB open blocked'));
+    req.onsuccess = () => {
+      clearTimeout(deadline);
+      // It answered after all, too late for the caller that asked: nobody holds this connection.
+      if (late) {
+        silentUntil = 0;
+        req.result.close();
+        return;
+      }
+      resolve(req.result);
+    };
+    req.onerror = () => {
+      clearTimeout(deadline);
+      reject(req.error ?? new Error('IndexedDB open failed'));
+    };
+    req.onblocked = () => {
+      clearTimeout(deadline);
+      reject(new Error('IndexedDB open blocked'));
+    };
   });
 }
 
@@ -829,8 +882,102 @@ export async function saveProjectRecord(record: ProjectRecord, lastSeenRevision?
   }
 }
 
-/** The record for a project id, validated, or null when there is none. */
-export async function loadProjectRecord(projectId: string): Promise<ProjectRecord | null> {
+/** A record as it was read, and what of it could not be: empty for a record that read whole. */
+export interface ReadRecord {
+  record: ProjectRecord;
+  /** The parts left out, each as a phrase for the person ("1 chat message"). */
+  leftOut: string[];
+}
+
+const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * A stored value as a record, part by part.
+ *
+ * The check used to be all or nothing: one chat message without a timestamp,
+ * or one workspace field an older Studio wrote differently, and the whole
+ * record was "not a record". Its project was then listed as "No saved copy",
+ * with every one of its files in the store and nothing able to reach them.
+ * The files are the work, so they are what a reading is built around: each
+ * one that is a file is kept, the workspace is kept when it reads and rebuilt
+ * around its name when it does not, and chat messages that read are kept.
+ *
+ * Null still for what cannot be opened without guessing: a value that is not
+ * a record of this id, one a newer Studio wrote (reading it as version 1 and
+ * saving it would put a poorer copy over it), and one with no file that reads.
+ */
+export function readStoredRecord(raw: unknown, projectId: string): ReadRecord | null {
+  if (!isRecord(raw) || raw.projectId !== projectId || raw.schemaVersion !== PROJECT_SCHEMA_VERSION) return null;
+  if (isProjectRecord(raw)) return { record: raw, leftOut: [] };
+  if (!Array.isArray(raw.files)) return null;
+  const leftOut: string[] = [];
+
+  const files = raw.files.filter(isPersistedFile);
+  if (files.length === 0) return null;
+  if (files.length < raw.files.length) leftOut.push(count(raw.files.length - files.length, 'file that could not be read', 'files that could not be read'));
+
+  let workspace: PersistedWorkspace;
+  if (isPersistedWorkspace(raw.workspace)) {
+    workspace = raw.workspace;
+  } else {
+    const stored = isRecord(raw.workspace) ? raw.workspace : {};
+    workspace = {
+      projectName: typeof stored.projectName === 'string' && stored.projectName.trim() ? stored.projectName : 'Recovered project',
+      projectId,
+      // No brief and no plan: with a plan and no approval the review would open over the files.
+      brief: null,
+      blueprint: null,
+      taskGraph: [],
+      blueprintApproved: true,
+      mode: 'design',
+      leftPanel: 'ai',
+      leftPanelExpanded: true,
+      rightSidebarOpen: true,
+      bottomDrawerOpen: false,
+      bottomTab: 'log',
+      advancedMode: false,
+      activePageId: null,
+      activeFilePath: null,
+      selectedComponentId: null,
+      devicePreset: 'desktop',
+      zoom: 100,
+      themePreview: 'light',
+      consoleOutput: isStringArray(stored.consoleOutput) ? stored.consoleOutput : [],
+    };
+    leftOut.push('the editor’s layout and the plan');
+  }
+
+  const storedSession = isRecord(raw.session) ? raw.session : {};
+  let session: PersistedSession;
+  if (Array.isArray(storedSession.messages)) {
+    const messages = (storedSession.messages as unknown[]).filter(isChatMessage) as ChatMessage[];
+    const dropped = storedSession.messages.length - messages.length;
+    if (dropped > 0) leftOut.push(count(dropped, 'chat message', 'chat messages'));
+    const counter = (key: string) => (isNonNegativeInteger(storedSession[key]) ? storedSession[key] : 0);
+    session = { messages, iterationsUsed: counter('iterationsUsed'), tokensUsed: counter('tokensUsed'), filesChanged: counter('filesChanged') };
+  } else {
+    session = { messages: [], iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 };
+    leftOut.push('the chat');
+  }
+
+  return {
+    record: {
+      projectId,
+      schemaVersion: PROJECT_SCHEMA_VERSION,
+      revision: isNonNegativeInteger(raw.revision) ? raw.revision : 0,
+      savedAt: typeof raw.savedAt === 'number' && Number.isFinite(raw.savedAt) ? raw.savedAt : Date.now(),
+      workspace,
+      files,
+      session,
+      // Read leniently where it is applied (readPersistedJournal): a journal that does not read is no journal.
+      ...(raw.undo !== undefined ? { undo: raw.undo as PersistedUndoJournal } : {}),
+    },
+    leftOut,
+  };
+}
+
+/** The record for a project id, with what had to be left out of it, or null when there is none to open. */
+export async function readProjectRecord(projectId: string): Promise<ReadRecord | null> {
   let db: IDBDatabase;
   try {
     db = await openStudioDb();
@@ -839,8 +986,8 @@ export async function loadProjectRecord(projectId: string): Promise<ProjectRecor
   }
   try {
     const tx = db.transaction(PROJECTS_STORE, 'readonly');
-    const raw = await request(tx.objectStore(PROJECTS_STORE).get(projectId));
-    return isProjectRecord(raw) && raw.projectId === projectId ? raw : null;
+    const raw: unknown = await request(tx.objectStore(PROJECTS_STORE).get(projectId));
+    return readStoredRecord(raw, projectId);
   } catch {
     return null;
   } finally {
@@ -848,30 +995,54 @@ export async function loadProjectRecord(projectId: string): Promise<ProjectRecor
   }
 }
 
-/** Every saved project, as summaries. An empty list when the store cannot be read. */
-export async function listProjectSummaries(): Promise<ProjectSummary[]> {
+/** The record for a project id, or null when there is none to open. */
+export async function loadProjectRecord(projectId: string): Promise<ProjectRecord | null> {
+  return (await readProjectRecord(projectId))?.record ?? null;
+}
+
+/** What the store says of the saved projects. */
+export interface StoreSurvey {
+  /** False when the store did not answer in time: nothing can be said of any project then. */
+  answered: boolean;
+  summaries: ProjectSummary[];
+  /** Ids of records a newer Studio wrote: there, and not for this one to read or write over. */
+  newer: string[];
+}
+
+/**
+ * Every saved project, and why the others are not: the dashboard called a
+ * name with no record, a record a newer Studio wrote and a store that did
+ * not answer all "No saved copy", which is true of the first alone. A store
+ * that answers but cannot be read (no IndexedDB here, a failed cursor) is
+ * answered with nothing in it, as it always was.
+ */
+export async function surveyProjectStore(): Promise<StoreSurvey> {
   let db: IDBDatabase;
   try {
     db = await openStudioDb();
-  } catch {
-    return [];
+  } catch (error) {
+    return { answered: !(error instanceof StoreSilentError), summaries: [], newer: [] };
   }
   try {
     const tx = db.transaction(PROJECTS_STORE, 'readonly');
     const store = tx.objectStore(PROJECTS_STORE);
-    return await new Promise<ProjectSummary[]>((resolve, reject) => {
-      const out: ProjectSummary[] = [];
+    return await new Promise<StoreSurvey>((resolve, reject) => {
+      const summaries: ProjectSummary[] = [];
+      const newer: string[] = [];
       const cursorReq = store.openCursor();
       cursorReq.onerror = () => reject(cursorReq.error ?? new Error('IndexedDB cursor failed'));
       cursorReq.onsuccess = () => {
         const cursor = cursorReq.result;
         if (!cursor) {
-          resolve(out);
+          resolve({ answered: true, summaries, newer });
           return;
         }
-        const value = cursor.value as unknown;
-        if (isProjectRecord(value)) {
-          out.push({
+        const raw = cursor.value as unknown;
+        // Read as it will be opened, and under the id it is filed by: a record that opens with
+        // parts left out is a saved copy, and one filed under another id is not one of this id.
+        const value = typeof cursor.key === 'string' ? readStoredRecord(raw, cursor.key)?.record : undefined;
+        if (value) {
+          summaries.push({
             projectId: value.projectId,
             name: value.workspace.projectName,
             target: value.workspace.blueprint?.target ?? 'web',
@@ -879,15 +1050,31 @@ export async function listProjectSummaries(): Promise<ProjectSummary[]> {
             savedAt: value.savedAt,
             fileCount: value.files.length,
           });
+        } else if (typeof cursor.key === 'string' && isRecord(raw) && raw.projectId === cursor.key && typeof raw.schemaVersion === 'number' && raw.schemaVersion > PROJECT_SCHEMA_VERSION) {
+          newer.push(cursor.key);
         }
         cursor.continue();
       };
     });
   } catch {
-    return [];
+    return { answered: true, summaries: [], newer: [] };
   } finally {
     db.close();
   }
+}
+
+/** Every saved project, as summaries. An empty list when the store cannot be read. */
+export async function listProjectSummaries(): Promise<ProjectSummary[]> {
+  return (await surveyProjectStore()).summaries;
+}
+
+/**
+ * Ask the store again now. After an open that was not answered, opens are not
+ * waited for again for a while (every reader would wait the deadline out in
+ * turn); a person who presses "Try again" has asked for exactly that wait.
+ */
+export function askStoreAgain(): void {
+  silentUntil = 0;
 }
 
 /** Delete one project's record. Nothing else: not the settings, not other records. */

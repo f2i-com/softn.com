@@ -129,7 +129,9 @@ describe('the run timeline', () => {
     expect(rows.find((r) => r.includes('ui/broken.ui') && r.startsWith('Wrote'))).toBeTruthy();
     expect(rows.some((r) => /^Automatic check/.test(r))).toBe(true);
     expect(rows.some((r) => /^(Edited|Read)\b.*failed/.test(r))).toBe(false);
-  });
+    // Two checks, each of which renders the page: inside act() the render is held back until
+    // the run is over, so each waits out the time a renderer is given to say it has loaded.
+  }, 20_000);
 
   it('offers Stop while running and Continue once stopped; the composer answers a waiting question', async () => {
     const provider = fakeProvider('anthropic', [

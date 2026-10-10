@@ -14,6 +14,11 @@ export interface RecentEntry {
   saved: boolean;
   /** This is the project currently in memory, saved or not. */
   active: boolean;
+  /**
+   * Why there is no copy to open, when it is not simply that there is none: the store did
+   * not answer in time (`silent`), or the record was written by a newer Studio (`newer`).
+   */
+  why?: 'silent' | 'newer';
 }
 
 export type DashboardOutcome = { ok: true } | { ok: false; message: string };
@@ -32,6 +37,9 @@ interface DashboardProps {
   /** Open one of the bundled examples as a new project. */
   onOpenExample?: (example: ExampleProject) => void;
   recentProjects?: RecentEntry[];
+  /** This browser's storage did not answer in time: said above the list, with a way to ask again. */
+  storeSilent?: boolean;
+  onRetryStore?: () => void | Promise<void>;
   /** The examples offered; the bundled ones unless a test says otherwise. */
   examples?: readonly ExampleProject[];
   /**
@@ -133,12 +141,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onExportProject,
   onOpenExample,
   recentProjects = [],
+  storeSilent = false,
+  onRetryStore,
   examples = EXAMPLES,
   ai,
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  /** The store is being asked again: it may take as long to answer as it did not answer before. */
+  const [askingStore, setAskingStore] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importRequest = useRef(0);
@@ -356,6 +368,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <h2 id="studio-recent-heading" className="st-section-title">Recent projects</h2>
               {recentProjects.length > 0 && <span className="st-section-note">Kept in this browser</span>}
             </div>
+            {storeSilent && (
+              <div role="alert" className="st-store-silent" data-store-silent="true">
+                <p>
+                  This browser’s storage did not answer in time, so Studio cannot tell which of these projects have a saved copy, and none of them can be opened yet. Nothing has been lost by this.
+                </p>
+                <button
+                  type="button"
+                  className="st-btn st-btn-sm"
+                  disabled={askingStore}
+                  aria-busy={askingStore || undefined}
+                  onClick={() => {
+                    if (askingStore) return;
+                    setAskingStore(true);
+                    void Promise.resolve(onRetryStore?.()).finally(() => setAskingStore(false));
+                  }}
+                >
+                  {askingStore ? 'Asking…' : 'Try again'}
+                </button>
+              </div>
+            )}
             {recentProjects.length === 0 ? (
               <div className="st-empty">
                 <strong>Nothing here yet</strong>
@@ -368,12 +400,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   const openable = project.saved || project.active;
                   const isBusy = busyId === project.id;
                   const state = project.active && !project.saved ? 'unsaved' : project.saved ? 'saved' : 'missing';
-                  const stateLabel = state === 'unsaved' ? 'Open, not saved' : state === 'saved' ? 'Saved' : 'No saved copy';
+                  // "No saved copy" is said only of a name with no record behind it. A store that
+                  // did not answer may hold every copy, and a record a newer Studio wrote is a copy:
+                  // each used to be called the same thing.
+                  const why = state === 'missing' ? project.why : undefined;
+                  const stateLabel = state === 'unsaved' ? 'Open, not saved' : state === 'saved' ? 'Saved'
+                    : why === 'silent' ? 'Storage did not answer' : why === 'newer' ? 'From a newer Studio' : 'No saved copy';
                   const stateTitle = state === 'unsaved'
                     ? 'This project is in memory but has not been saved to this browser. Open it and export a bundle to keep it.'
                     : state === 'saved'
                       ? 'A saved copy is in this browser.'
-                      : 'This entry is only a name: no saved copy of it is in this browser.';
+                      : why === 'silent'
+                        ? 'This browser’s storage did not answer in time, so Studio cannot tell whether a saved copy of this project is here. Try again above.'
+                        : why === 'newer'
+                          ? 'This project was saved by a newer version of Studio than this one, which cannot read it. Reload the page to get the newer Studio; nothing here writes over it.'
+                          : 'This entry is only a name: no saved copy of it is in this browser.';
                   return (
                     <li key={project.id} className="st-recent-item">
                       <div className="st-recent-row" data-openable={openable}>

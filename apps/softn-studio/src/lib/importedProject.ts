@@ -1,7 +1,7 @@
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
 import type { ProjectImportEntry } from './projectImport';
 import { resetProjectSessionForImport } from './projectSession';
-import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage } from './studioProject';
+import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage, resolveManifest } from './studioProject';
 
 /** The app's name as the imported manifest gives it, or null when it gives none that can be read. */
 function manifestName(batch: ProjectImportEntry[]): string | null {
@@ -36,7 +36,7 @@ export function openImportedInStores(fileName: string, batch: ProjectImportEntry
   importedWorkspace.setProjectName(importedProjectName);
   const importedSnapshot = importedVFS.getSnapshot();
   const inferredBlueprint = inferBlueprintFromFiles(importedProjectName, importedSnapshot);
-  const inferredBrief = inferBriefFromBlueprint(inferredBlueprint, projectLogicLanguage(importedSnapshot));
+  const inferredBrief = inferBriefFromBlueprint(inferredBlueprint, projectLogicLanguage(importedSnapshot), resolveManifest(importedSnapshot)?.description);
   importedWorkspace.setBrief(inferredBrief);
   importedWorkspace.setBlueprint(inferredBlueprint);
   importedWorkspace.setBlueprintApproved(true);

@@ -1,6 +1,8 @@
 import {
+  UI_IMPORT_PATTERN,
   composeBundleSource,
   parseXDBFile,
+  resolveBundlePath,
   rewriteBundleLogicImports,
   seedXDBBundleData,
   type ComposedBundleSource,
@@ -11,6 +13,7 @@ import {
 import type { VFSFile } from '../types/studio';
 import { normalizeManifestForBundle } from './exportBundle';
 import { isPrivatePath, normalizeProjectPath } from './paths';
+import { getBundleEntryPath } from './studioProject';
 
 export interface PreviewXDBState {
   bundles: XDBBundleData[];
@@ -62,10 +65,13 @@ export function composePreviewProject(files: Map<string, VFSFile>, mainPath: str
 
   try {
     const composed = composeBundleSource(text, mainPath, manifestLogicPaths(files));
+    const outer = outerDataBlocks(text, mainPath, getBundleEntryPath(files));
     return {
       ok: true,
       composition: {
         ...composed,
+        // After the page, so that its own lines keep their numbers.
+        ...(outer ? { source: `${composed.source}\n\n${outer}\n` } : {}),
         // An imported .logic file's own imports are relative to it, not to
         // the entry; the runtime rewrites them to bundle-root paths before
         // the fragment joins the one logic block, and so does the preview.
@@ -80,6 +86,74 @@ export function composePreviewProject(files: Map<string, VFSFile>, mainPath: str
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** A page and every page it imports, itself first, each once. */
+function importClosure(text: ReadonlyMap<string, string>, from: string): string[] {
+  const seen: string[] = [];
+  const queue = [from];
+  while (queue.length > 0) {
+    const path = queue.shift()!;
+    if (seen.includes(path)) continue;
+    const source = text.get(path);
+    if (source === undefined) continue;
+    seen.push(path);
+    for (const match of source.matchAll(new RegExp(UI_IMPORT_PATTERN.source, 'g'))) {
+      try {
+        queue.push(resolveBundlePath(path, match[2]));
+      } catch {
+        // An unsafe path is the composer's to report.
+      }
+    }
+  }
+  return seen;
+}
+
+/** The `<data>` blocks a page's markup carries, as written; other languages' blocks are not looked in. */
+function dataBlocksOf(source: string): string[] {
+  const markup = source.replace(/<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
+  return [...markup.matchAll(/<data\b[^>]*>[\s\S]*?<\/data\s*>/gi)].map((match) => match[0]);
+}
+
+/**
+ * The `<data>` declarations a page is given by the app around it, when it is
+ * shown on its own.
+ *
+ * A page gets its collections from `<data>` blocks: its own, and those of
+ * the pages it imports, which the composer joins to it. So a page that is
+ * itself imported (every page of a scaffolded app is, by the shell) reads
+ * what the shell declares whenever the app runs, and declares nothing of its
+ * own. Shown on its own, with only what it declares, it would be a row of
+ * empty lists that the running app never shows. It is given the declarations
+ * of the app's main page and of the other pages that page imports, which is
+ * what it has there. A page nothing imports gets nothing: it is not part of
+ * the app, and what it reads without declaring is empty.
+ */
+function outerDataBlocks(text: ReadonlyMap<string, string>, page: string, entry: string | null): string {
+  if (!entry || entry === page || !/\.ui$/i.test(entry)) return '';
+  const app = importClosure(text, entry);
+  if (!app.includes(page)) return '';
+  const own = new Set(importClosure(text, page));
+  return app.filter((path) => !own.has(path)).flatMap((path) => dataBlocksOf(text.get(path) ?? '')).join('\n');
+}
+
+/**
+ * The theme the project declares: manifest.json's `config.theme.mode`, as it
+ * is written, for the theme provider to judge.
+ *
+ * Which side an app is drawn on is one rule, the runtimes' (@softn/components,
+ * theme/app-theme.ts), and the preview applies it by handing the provider
+ * what a runtime hands it: this value, and Studio as the host to follow where
+ * the project declares no side. Studio writes the mode into every app it
+ * scaffolds and then drew the preview by its own theme alone, so a page with
+ * no theme of its own, in a project declared dark, was light here and dark
+ * wherever it was run. Nothing is made of a missing mode here: "undefined" is
+ * a project that declares none, and follows its host.
+ */
+export function declaredThemeMode(manifest: Record<string, unknown> | null): unknown {
+  const config = manifest?.config;
+  const theme = config && typeof config === 'object' && !Array.isArray(config) ? (config as Record<string, unknown>).theme : null;
+  return theme && typeof theme === 'object' && !Array.isArray(theme) ? (theme as Record<string, unknown>).mode : undefined;
 }
 
 /** The manifest's logic group as the export writes it: the helpers the runtime loads, in its order. */

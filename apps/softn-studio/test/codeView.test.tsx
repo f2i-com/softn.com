@@ -14,7 +14,8 @@ vi.mock('@softn/components', () => ({
 vi.mock('@softn/core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@softn/core')>()),
   getXDB: () => { throw new Error('No persistent preview storage in this fixture'); },
-  SoftNRenderer: () => {
+  // The renderer the preview mounts: the one a runtime uses, which binds the page's <data> block.
+  SoftNWithXDB: () => {
     useEffect(() => {
       mounts();
       return unmounts;
@@ -103,7 +104,8 @@ describe('Preview | Code on a page', () => {
     expect(container.querySelector('code')?.textContent).toBe(`${ui}\n`);
     // The app is still mounted, hidden, and the chrome no longer says it is running.
     const preview = container.querySelector<HTMLElement>('[data-testid="ready-preview"]')!;
-    expect(preview.parentElement?.style.display).toBe('none');
+    // (The app sits in its own theme box inside the frame that is hidden.)
+    expect(preview.parentElement?.parentElement?.style.display).toBe('none');
     expect(container.querySelector('.st-live')).toBeNull();
     expect(unmounts).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem('softn.studio.canvasView.v1')).toBe('code');

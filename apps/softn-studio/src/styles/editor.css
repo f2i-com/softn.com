@@ -293,6 +293,7 @@
   gap: 0.75rem;
   width: 100%;
   min-width: 0;
+  container: preview-header / inline-size;
 }
 
 .st-preview-where {
@@ -302,6 +303,8 @@
   min-width: 0;
 }
 
+/* The name keeps room for itself: it was the one part of the row allowed to shrink, and at 900
+   pixels it shrank to nothing, without even its ellipsis. The device word gives way first. */
 .st-preview-file {
   font-family: var(--studio-mono);
   font-size: 0.75rem;
@@ -309,6 +312,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 3rem;
+  flex-shrink: 1;
 }
 
 .st-preview-file .dir {
@@ -320,6 +325,19 @@
   color: var(--studio-text-dim);
   white-space: nowrap;
   text-transform: capitalize;
+  min-width: 0;
+  flex-shrink: 100;
+  overflow: hidden;
+}
+
+/* In a narrow frame the row says the file by its own name and whether it is running: the
+   device word and the folder go (the name's title has the whole path), where they used to
+   stay and push the name out. */
+@container preview-header (max-width: 28rem) {
+  .st-preview-tag,
+  .st-preview-file .dir {
+    display: none;
+  }
 }
 
 /* Mint because it is the machine: the app in the frame is actually running. */
@@ -339,6 +357,62 @@
   border-radius: 50%;
   background: var(--studio-live);
   box-shadow: 0 0 0 3px var(--studio-live-soft);
+}
+
+/* The app's logic has stopped (lib/previewFaults.ts): said where "Running" was, in the colour of
+   something that needs an action, with a square where the live dot was. */
+.st-preview-stopped {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--studio-error);
+  white-space: nowrap;
+}
+
+.st-preview-stopped::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--studio-error);
+}
+
+/* What stopped it, above the app it stopped, with the way to start it again. */
+.st-preview-stop-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--studio-border);
+  background: var(--studio-panel);
+  color: var(--studio-text);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.st-preview-stop-notice p {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.st-preview-stop-notice strong {
+  color: var(--studio-error);
+}
+
+.st-preview-stop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+@media (max-width: 767px) {
+  .st-preview-stop-notice {
+    flex-direction: column;
+  }
 }
 
 .st-preview-tools {

@@ -291,12 +291,14 @@ A SoftN app is a bundle of text files: pages in the SoftN UI language (\`.ui\`),
 ## Files
 - **manifest.json** — required. \`name\` (non-empty), \`version\`, \`main\` (the entry .ui file, e.g. \`"main": "ui/main.ui"\`, which must exist), and \`files\` listing every .ui, ${logicExt}, .xdb and asset you create, by group: \`{ "ui": […], "logic": […], "xdb": […], "assets": […] }\`. A path listed that does not exist is refused. \`config.execution\` may be \`"main"\` or \`"worker"\`${python ? '; `config.python.packages` may be `["torch"]`' : ''}. \`icon\` names the app's icon, an image in the bundle (\`"icon": "assets/icon.svg"\`). Keep it when you rewrite the manifest; an .svg is text, so you can redraw it with write_file. Never write an \`entry\` field; the runtime does not read it.
 - **permission.json** — what the app may use: \`{ "permissions": { "net": { "enabled": true, "allowed_hosts": ["api.example.com"] }, "storage": { "enabled": true } } }\`. \`enabled\` must be the boolean \`true\`. Capabilities: net, camera, mic, files, qr, ai, gpu, sync, storage, accel. Without the file, every capability is denied; declare exactly what the logic calls, in the same step you write the call.
-- **ui/*.ui** — pages. **${python ? 'logic/*.py' : 'logic/*.logic'}** — logic, referenced from a page with \`<logic src>\`. **data/*.xdb** — seed records. **assets/** — images, sounds, fonts (already in the project; you write text files only, which an .svg is).
+- **ui/*.ui** — pages. **${python ? 'logic/*.py' : 'logic/*.logic'}** — logic, referenced from a page with \`<logic src>\`. **xdb/*.xdb** — seed records. **assets/** — images, sounds, fonts (already in the project; you write text files only, which an .svg is).
 ${python ? '- **.py** — Python: this project\'s logic language. Each file is a module, referenced from a .ui file with `<logic src="...">`. (A `.logic` file is JavaScript, and one app cannot mix the two.)' : '- **.logic** — JavaScript, run in a sandboxed VM. Imported by .ui files for shared logic.'}
 - Keep manifest.json true: \`"main"\` names the entry .ui file, and \`"files"\` lists every .ui, ${logicExt}, .xdb and asset you create, by group.
 
 ## A .ui page
 A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<logic src="../${entry}" />\`${python ? '' : ' (or an inline `<logic>…</logic>`)'}, \`<data>\` for XDB collections, and \`<style>\`. \`<App theme="light">\` takes \`light\`, \`dark\` or \`system\`.
+
+**Theme.** An app's theme is kept in two places. manifest.json's \`config.theme.mode\` is the project's: \`"light"\` or \`"dark"\` is honoured wherever the app runs, and wins over the visitor's device and the theme of the site it is opened on; \`"system"\` (or no mode) follows the visitor. \`<App theme="light">\` or \`<App theme="dark">\` pins the page to that side wherever it runs, and wins over the manifest; a page that pins neither is drawn on the side \`config.theme.mode\` declares. When you change the app's theme, change both. For an app that follows the visitor, write \`"system"\` in the manifest and no \`theme\` on \`<App>\`.
 
 \`\`\`xml
 <logic src="../${entry}" />
@@ -405,11 +407,11 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 \`\`\`
 
 ### Assets
-\`<Image src={asset("assets/logo.png")} alt="Logo" />\` — the path is from the bundle root, never \`../\`.
+\`<Image src={asset("assets/logo.png")} alt="Logo" />\` — the path is from the bundle root, never \`../\`. A file in the bundle is always named through \`asset("…")\`, which may be given a path it works out (\`asset("assets/avatars/" + person.id + ".png")\`). A bare path (\`src="assets/logo.png"\`) loads nothing when the app runs, and the check reports it.
 
 ## Data with XDB
 - A \`.xdb\` file seeds a collection: \`{ "collection": "tasks", "records": [{ "id": "1", "title": "Buy milk", "done": false }] }\`. Every record needs a **string** \`id\` (a record without one is dropped). List the file in manifest.json's \`files.xdb\`, or its records are not loaded.
-- Bind it in a page: \`<data><collection name="tasks" as="tasks" sort="created_at:desc" limit={50} /></data>\`, with optional \`filter={{ done: false }}\` (literal values only). The template reads a bound record's fields under \`data\`: \`{task.data.title}\`, with \`task.id\` and \`task.created_at\` beside it. A Table wants flat rows: \`data={tasks.map((t) => t.data)}\`.
+- Bind it in a page: \`<data><collection name="tasks" as="tasks" sort="created_at:desc" limit={50} /></data>\`, with optional \`filter={{ done: false }}\` (literal values only). The template reads a bound record's fields under \`data\`: \`{task.data.title}\`, with \`task.id\` and \`task.created_at\` beside it. A Table wants flat rows: \`data={tasks.map((t) => t.data)}\`. A page has only the collections a \`<data>\` block binds for it (its own block, or one in a page it imports or is imported into): a collection that is only a file under \`xdb/\` is an empty list to the page, and the check says which line would bind it.
 - Logic does not see \`<data>\` collections.${python ? ' Python logic has no `db`: keep app records in state, or use `softn.storage.*`.' : ' Logic changes records with `db.create`, `db.update` and `db.delete`, and the bound collection updates.'}
 
 ${python ? `${PYTHON_LOGIC_SECTION}
