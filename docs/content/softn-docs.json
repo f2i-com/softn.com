@@ -1642,7 +1642,7 @@
         "title": "The .softn app format | SoftN Docs",
         "description": "The .softn format: a ZIP bundle with manifest.json, permission.json, UI, JavaScript or Python logic, XDB seeds and assets; config.execution and config.python.packages."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-10",
       "sourceIds": [
         "softn-readme",
         "softn-bundle-format",
@@ -1724,6 +1724,10 @@
                 {
                   "term": "config.execution",
                   "description": "`\"main\"`, the default, runs logic on the page’s thread; `\"worker\"` asks for a JavaScript app’s logic to run in a worker. Python logic always runs on the main thread. Any other value is reported and treated as main."
+                },
+                {
+                  "term": "config.theme.mode",
+                  "description": "`\"light\"` or `\"dark\"` draws the app on that side in the web runtime, on a single-app page and in the desktop runtime, whatever the site’s own theme or the visitor’s device prefers. `\"system\"`, or no mode, follows the host instead. A page whose own `<App theme>` is light or dark keeps that side over this one. Builder writes the key from the project’s Theme setting; any other value is treated as system."
                 },
                 {
                   "term": "config.python.packages",
@@ -2997,7 +3001,7 @@
         "title": "Assets, themes and responsive layouts | SoftN Docs",
         "description": "Manage SoftN assets, light and dark themes, and responsive layouts. Test exported bundles, narrow screens and fresh app instances."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-10",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -3031,6 +3035,23 @@
             {
               "type": "paragraph",
               "text": "The App component takes a `theme`, and Builder’s new projects offer Light, Dark or System. Fieldnotes shows one app drawn in both palettes, and the runtime switches theme without clearing unfinished input."
+            },
+            {
+              "type": "paragraph",
+              "text": "Three things can say whether an app is light or dark, and the first one that does decides:"
+            },
+            {
+              "type": "list",
+              "ordered": true,
+              "items": [
+                "The page. `<App theme=\"light\">` or `<App theme=\"dark\">` is that side wherever it runs. The word can be written or worked out, as in `theme={darkMode ? \"dark\" : \"light\"}`, which is how an app offers a switch of its own.",
+                "The project. Builder saves the project’s Light or Dark as `config.theme.mode` in `manifest.json`, and the web runtime, a single-app page and the desktop runtime all draw the app on that side, over the site’s own theme and the visitor’s device.",
+                "The host, for a project set to System or with no mode: softn.com’s theme in the web runtime, the desktop runtime’s own theme, and the deployment’s `theme` on a single-app page."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "Components take their colours from the side that was chosen, chart series and code colours included. Where that side is not the host’s own, the app is also given a ground and a text colour of its side, so an app with no `<App>` does not stand on the host’s page. One case is kept as it always was: in a project set to System, a page that pins its own theme has its own colours, while chart and code colours go on following the host. Set the project to Light or Dark and they follow the page."
             },
             {
               "type": "paragraph",
@@ -4370,7 +4391,7 @@
         "title": "Host one app on its own website | SoftN Docs",
         "description": "Host a SoftN app on its own website with the single-app runtime: the build and package commands, every runtime.config.json field, permission modes, identity and the archive variants."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-10",
       "sourceIds": [
         "softn-single-guide",
         "softn-package",
@@ -4460,7 +4481,7 @@
                 },
                 {
                   "term": "theme",
-                  "description": "The initial theme, light or dark."
+                  "description": "The theme for an app whose manifest declares none: `\"light\"` or `\"dark\"`, dark when left out. An app whose `config.theme.mode` is light or dark is drawn on that side whatever this says."
                 },
                 {
                   "term": "permissions",
