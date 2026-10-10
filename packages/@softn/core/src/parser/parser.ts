@@ -195,6 +195,15 @@ function patternHasDefault(pattern: BindingPattern): boolean {
   );
 }
 
+/**
+ * A page's `<style>` blocks as one stylesheet: the rules of each, in the
+ * order the blocks are written, at the place the first one stands.
+ */
+function joinStyleBlocks(first: StyleBlock, next: StyleBlock): StyleBlock {
+  const content = [first.content, next.content].filter((rules) => rules !== '').join('\n');
+  return { type: 'StyleBlock', content, loc: first.loc };
+}
+
 function describeExpression(expr: Expression): string {
   switch (expr.type) {
     case 'Literal':
@@ -353,9 +362,12 @@ export class Parser {
             } else if (isLogicBlock(element)) {
               doc.logic = element;
             } else if (isDataBlock(element)) {
-              doc.data = element;
+              // A page that writes either block more than once means all of
+              // them. The last used to replace the others, and nothing said
+              // that the first block's rules or collections were gone.
+              doc.data = doc.data ? this.joinDataBlocks(doc.data, element) : element;
             } else if (isStyleBlock(element)) {
-              doc.style = element;
+              doc.style = doc.style ? joinStyleBlocks(doc.style, element) : element;
             } else if (isTemplateNode(element)) {
               pushTemplate(element);
             }
@@ -785,6 +797,39 @@ export class Parser {
     }
 
     return { type: 'DataBlock', collections, loc };
+  }
+
+  /**
+   * The declarations of a page's `<data>` blocks as one set, in the order
+   * written.
+   *
+   * A name is read as one collection, so the first block to give a name a
+   * collection keeps it: a later block that declares the same collection by
+   * the same name adds nothing, and one that gives the name to another
+   * collection is left out and said. (The composer does the same for the
+   * blocks of imported pages.) Inside one block nothing is taken out.
+   */
+  private joinDataBlocks(first: DataBlock, next: DataBlock): DataBlock {
+    const holders = new Map<string, string>();
+    for (const declared of first.collections) holders.set(declared.as, declared.name);
+
+    const collections = [...first.collections];
+    for (const declaration of next.collections) {
+      const holder = holders.get(declaration.as);
+      if (holder === undefined) {
+        holders.set(declaration.as, declaration.name);
+        collections.push(declaration);
+      } else if (holder !== declaration.name) {
+        this.diagnostics.push({
+          message:
+            `<collection name="${declaration.name}" as="${declaration.as}"> is not declared, ` +
+            `because this page already reads "${holder}" as ${declaration.as}.`,
+          severity: 'warning',
+          loc: declaration.loc,
+        });
+      }
+    }
+    return { type: 'DataBlock', collections, loc: first.loc };
   }
 
   /**
@@ -2828,4 +2873,7 @@ export function parse(source: string): SoftNDocument {
 //    Whitespace after an element is read as whitespace after an expression
 //    is: `<b>bold</b> and more` keeps its space, and on one line between two
 //    elements, or an element and an expression, it is a text node of one space.
-export const PARSER_VERSION = 7;
+// 8: A page's `<style>` blocks are one stylesheet and its `<data>` blocks one
+//    set of declarations, in the order written. The last block of either used
+//    to replace the ones before it.
+export const PARSER_VERSION = 8;

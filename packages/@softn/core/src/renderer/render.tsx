@@ -1327,22 +1327,37 @@ function renderElement(
     }
   }
 
-  if (classToggles.length > 0) {
-    // `class` and `className` are both accepted on the way in; whichever the
-    // author used is the one written back, so nothing else has to change.
-    const key = typeof props.className === 'string' ? 'className' : 'class';
-    const base = typeof props[key] === 'string' ? (props[key] as string) : '';
-    props[key] = [base, ...classToggles].filter(Boolean).join(' ');
-  }
-
-  // On a component `class` is its `className`. A component reads only the
-  // second, so `<Heading class="title">` was drawn with no class and the
-  // rule written for it never applied, with nothing to say so; on a `<div>`
-  // the same word worked. A plain element keeps the word it was written with.
-  if (typeof FinalComponent !== 'string' && 'class' in props) {
-    const written = [props.className, props.class].filter((value) => typeof value === 'string' && value !== '');
+  // `class` is `className`: the word HTML teaches, under the name React has
+  // for it.
+  //
+  // On a component, because a component reads only the second: `<Heading
+  // class="title">` was drawn with no class and the rule written for it never
+  // applied, with nothing to say so. On a plain tag, because React writes
+  // the attribute for either word but a development build reports the first
+  // — "Invalid DOM property `class`. Did you mean `className`?" — once for
+  // every kind of element that carries it, about markup written the way the
+  // documentation writes it. A `className` written beside it is kept, and
+  // the two are one list.
+  //
+  // A custom element (a tag with a hyphen) is left as it is written: React
+  // hands such an element its attributes by the names they are given.
+  const customElement = typeof FinalComponent === 'string' && FinalComponent.includes('-');
+  if (!customElement && 'class' in props) {
+    // What was drawn for a plain tag still is: a number was written as text.
+    const plainTag = typeof FinalComponent === 'string';
+    const written = [props.className, props.class]
+      .map((value) => (plainTag && typeof value === 'number' ? String(value) : value))
+      .filter((value) => typeof value === 'string' && value !== '');
     if (written.length > 0) props.className = written.join(' ');
     delete props.class;
+  }
+
+  if (classToggles.length > 0) {
+    // Added to what was written. Only a custom element still has two words
+    // for it, and there the one its author used is the one written back.
+    const key = customElement && typeof props.className !== 'string' ? 'class' : 'className';
+    const base = typeof props[key] === 'string' ? (props[key] as string) : '';
+    props[key] = [base, ...classToggles].filter(Boolean).join(' ');
   }
 
   // Bindings

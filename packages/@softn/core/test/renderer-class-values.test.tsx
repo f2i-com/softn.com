@@ -14,7 +14,8 @@
  */
 
 import React from 'react';
-import { describe, expect, it } from 'vitest';
+import { createRequire } from 'node:module';
+import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parse } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
@@ -107,7 +108,93 @@ describe('class written on a component', () => {
     expect('class' in given).toBe(false);
   });
 
-  it('and a plain element keeps the word it was written with', () => {
+  it('and a plain element is drawn with the class it always had', () => {
     expect(html('<div class="card">x</div>')).toBe('<div class="card">x</div>');
+  });
+});
+
+describe('class written on a plain tag', () => {
+  // `class` is the word HTML teaches and the word the documentation's own
+  // examples write. React calls the attribute `className`: handed `class` it
+  // writes the attribute all the same, and a development build says "Invalid
+  // DOM property `class`. Did you mean `className`?" for it — an error in
+  // the console of every app under `npm run dev`, about markup that was
+  // written as documented and drawn correctly.
+  //
+  // React says a thing like that once for as long as its renderer is loaded,
+  // so whether it is said here would depend on what an earlier test drew.
+  // Each of these draws with a server renderer loaded anew, one that has
+  // said nothing yet. (It is Node's own module, outside what
+  // `vi.resetModules()` resets, so it is taken out of Node's cache by hand.)
+  const nodeRequire = createRequire(`${process.cwd()}/package.json`);
+  function rendererThatHasSaidNothing(): typeof import('react-dom/server') {
+    for (const id of Object.keys(nodeRequire.cache)) {
+      if (/[\\/]react-dom[\\/]/.test(id)) delete nodeRequire.cache[id];
+    }
+    return nodeRequire('react-dom/server');
+  }
+
+  /** What is drawn, and everything written to console.error while it was. */
+  function drawnAfresh(element: React.ReactNode): { markup: string; said: string[] } {
+    const server = rendererThatHasSaidNothing();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const markup = server.renderToStaticMarkup(React.createElement(React.Fragment, null, element));
+      return { markup, said: error.mock.calls.map((call) => call.map(String).join(' ')) };
+    } finally {
+      error.mockRestore();
+    }
+  }
+
+  function pageDrawnAfresh(source: string, values: Record<string, unknown> = {}) {
+    const doc = parse(source);
+    expect(doc.diagnostics ?? [], source).toEqual([]);
+    const context = { state: values, setState: () => {}, data: {}, props: {}, functions: {}, asyncFunctions: {}, computed: {} } as unknown as SoftNRenderContext;
+    return drawnAfresh(renderDocument(doc, context, new ComponentRegistry()));
+  }
+
+  it('this is how React says it, each time it is asked afresh', () => {
+    // Not through SoftN at all: the attribute handed to React directly,
+    // twice. If the second time were silent the tests below would pass for
+    // having come second.
+    for (const attempt of [1, 2]) {
+      const { markup, said } = drawnAfresh(React.createElement('div', { class: 'card' }));
+      expect(markup, `attempt ${attempt}`).toBe('<div class="card"></div>');
+      expect(said.join('\n'), `attempt ${attempt}`).toMatch(/Invalid DOM property/);
+    }
+  });
+
+  it('is drawn as it was, and React has nothing to say about it', () => {
+    const { markup, said } = pageDrawnAfresh(
+      '<div class="card"><p class={["a", on && "b", off && "c"]}>x</p><span class="s" class:t={on} class:never={off}>y</span><b class:only={on}>z</b></div>',
+      state
+    );
+    expect(markup).toBe('<div class="card"><p class="a b">x</p><span class="s t">y</span><b class="only">z</b></div>');
+    expect(said).toEqual([]);
+  });
+
+  it('is added to a className written beside it, as on a component', () => {
+    const { markup, said } = pageDrawnAfresh('<div className="card" class="wide" class:on={on}>x</div>', state);
+    expect(markup).toBe('<div class="card wide on">x</div>');
+    expect(said).toEqual([]);
+  });
+
+  it('with nothing that holds is no class at all', () => {
+    const { markup, said } = pageDrawnAfresh('<div class={[off && "is-off", none]} class:never={off}>x</div><p class={none}>y</p>', state);
+    expect(markup).toBe('<div>x</div><p>y</p>');
+    expect(said).toEqual([]);
+  });
+
+  it('that is a number is still the text of it', () => {
+    // Nobody means it, and it was drawn, so it still is.
+    const { markup, said } = pageDrawnAfresh('<div class={7}>x</div>');
+    expect(markup).toBe('<div class="7">x</div>');
+    expect(said).toEqual([]);
+  });
+
+  it('written as className, it is as it was', () => {
+    const { markup, said } = pageDrawnAfresh('<div className="card" class:on={on}><p className={["a", off && "b"]}>x</p></div>', state);
+    expect(markup).toBe('<div class="card on"><p class="a">x</p></div>');
+    expect(said).toEqual([]);
   });
 });

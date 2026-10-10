@@ -171,6 +171,7 @@ section here. Write the section before tagging. Headings are the tag
 - Builder: the pages of a project are in the palette. Dropping one into another page writes its import and places it; Undo, or deleting its last use, takes the import away again. A page used inside another is its content, so it has no properties of its own: the panel says so and opens its file. "New UI file" can make a component file (no `App` of its own, in `ui/components/`), as real apps keep their shared parts.
 - Builder: a drop let go at the top edge of an element on the page goes there. It went to the end of the page, because the drop line itself pushed the element out from under the pointer.
 - A `$:` value follows what it is built on. `$: double = n * 2` and then `$: quad = double * 2` left `quad` at its first value for good, and a function that read `double` read its first value too: the page showed the right number while logic worked with the old one. Declared in another order the script did not load. Computed values are now worked out again, in the order they depend on one another, whenever state changes, and a page that reads state only through a `$:` is redrawn when it does.
+- A page with two `<style>` blocks, or two `<data>` blocks, has both: the second used to replace the first, with nothing said. `class` on a plain tag no longer makes a development build report "Invalid DOM property `class`" for every element that has one.
 
 ## v0.0.18
 
