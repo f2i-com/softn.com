@@ -28,6 +28,16 @@ import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
 import { deepEqual } from './vm-state';
+import {
+  COMPUTED_PREFIX,
+  COMPUTED_SETTLE_FUNCTION,
+  computedSource,
+  extractComputedDeclarations,
+  guardFirstValues,
+  namesReadBy,
+  planComputed,
+  type ComputedDeclaration,
+} from './computed-declarations';
 import { storageVisitorToken } from './visitor-token';
 
 import type { ScriptBlock, LogicBlock, SoftNDocument } from '../parser/ast';
@@ -404,9 +414,6 @@ const EXTERNAL_VALUES_VAR = '__softnExternalValues';
 const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn', EXTERNAL_VALUES_VAR]);
 const EXTERNAL_FUNCTION_RESERVED_NAMES = new Set([...BRIDGE_VARS, 'db', 'localStorage']);
 
-/** Prefix for the functions generated from `$:` declarations. */
-const COMPUTED_PREFIX = '__softnComputed_';
-
 /**
  * Cross-check every "unchanged" digest against a full value comparison.
  *
@@ -416,6 +423,15 @@ const COMPUTED_PREFIX = '__softnComputed_';
 function FINGERPRINT_AUDIT(): boolean {
   return (globalThis as unknown as Record<string, unknown>).__SOFTN_FP_AUDIT__ === true;
 }
+
+/**
+ * How many times the `$:` values of a script are worked out, at most, to
+ * find them still. Only a script where one reads another through a function
+ * is passed over more than once: each pass carries a change one such step
+ * further, so this is the longest chain of them that settles — and what a
+ * pair that never will is allowed to cost.
+ */
+const COMPUTED_SETTLE_PASSES = 8;
 
 /** A name safe to paste into generated source as an identifier. */
 const VALID_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
@@ -441,123 +457,6 @@ function normalizeExternalPrimitive(value: unknown): ExternalValueRead {
  * Extract safe, serializable properties from a browser Event for passing to the VM.
  * Only extracts primitive-valued properties — no DOM nodes, functions, or circular refs.
  */
-/**
- * Extract `$: name = expression;` reactive declarations from source code.
- * Uses a comment/string-aware scanner to avoid matching inside comments or strings,
- * and supports multi-line expressions by balancing brackets.
- */
-function extractComputedDeclarations(code: string): Array<{ name: string; expression: string }> {
-  const results: Array<{ name: string; expression: string }> = [];
-  const len = code.length;
-  let i = 0;
-
-  while (i < len) {
-    const ch = code[i];
-
-    // Skip single-line comments
-    if (ch === '/' && i + 1 < len && code[i + 1] === '/') {
-      i += 2;
-      while (i < len && code[i] !== '\n') i++;
-      continue;
-    }
-
-    // Skip multi-line comments
-    if (ch === '/' && i + 1 < len && code[i + 1] === '*') {
-      i += 2;
-      while (i < len && !(code[i] === '*' && i + 1 < len && code[i + 1] === '/')) i++;
-      if (i + 1 < len) i += 2; // skip */ (with bounds check)
-      continue;
-    }
-
-    // Skip string literals
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch;
-      i++;
-      while (i < len && code[i] !== quote) {
-        if (code[i] === '\\' && i + 1 < len) i++; // skip escaped char (with bounds check)
-        i++;
-      }
-      if (i < len) i++; // skip closing quote (with bounds check)
-      continue;
-    }
-
-    // Look for `$:` at a statement boundary (start of line or after whitespace/semicolon)
-    if (ch === '$' && i + 1 < len && code[i + 1] === ':') {
-      // Verify it's at a statement boundary (not part of an identifier like `a$:`)
-      const prev = i > 0 ? code[i - 1] : '\n';
-      if (prev === '\n' || prev === ';' || prev === '{' || prev === '}' || /\s/.test(prev)) {
-        let j = i + 2; // skip "$:"
-        // Skip whitespace
-        while (j < len && (code[j] === ' ' || code[j] === '\t')) j++;
-
-        // Extract variable name
-        const nameStart = j;
-        while (j < len && /\w/.test(code[j])) j++;
-        const name = code.substring(nameStart, j);
-
-        if (name) {
-          // Skip whitespace and '='
-          while (j < len && (code[j] === ' ' || code[j] === '\t')) j++;
-          if (j < len && code[j] === '=') {
-            j++; // skip '='
-            while (j < len && (code[j] === ' ' || code[j] === '\t')) j++;
-
-            // Extract expression — balance brackets until ';' at depth 0
-            // Skips strings AND comments to avoid false termination
-            const exprStart = j;
-            let depth = 0;
-            while (j < len) {
-              const ec = code[j];
-              // Skip single-line comments inside expression
-              if (ec === '/' && j + 1 < len && code[j + 1] === '/') {
-                j += 2;
-                while (j < len && code[j] !== '\n') j++;
-                continue;
-              }
-              // Skip multi-line comments inside expression
-              if (ec === '/' && j + 1 < len && code[j + 1] === '*') {
-                j += 2;
-                while (j < len && !(code[j] === '*' && j + 1 < len && code[j + 1] === '/')) j++;
-                if (j + 1 < len) j += 2;
-                continue;
-              }
-              if (ec === '(' || ec === '[' || ec === '{') {
-                depth++;
-              } else if (ec === ')' || ec === ']' || ec === '}') {
-                depth--;
-              } else if (ec === '"' || ec === "'" || ec === '`') {
-                // Skip string inside expression
-                const q = ec;
-                j++;
-                while (j < len && code[j] !== q) {
-                  if (code[j] === '\\' && j + 1 < len) j++;
-                  j++;
-                }
-              } else if (ec === ';' && depth === 0) {
-                break;
-              } else if (ec === '\n' && depth === 0) {
-                // Newline at depth 0 also ends the expression (ASI)
-                break;
-              }
-              j++;
-            }
-            const expression = code.substring(exprStart, j).trim();
-            if (expression) {
-              results.push({ name, expression });
-            }
-          }
-        }
-        i = j + 1;
-        continue;
-      }
-    }
-
-    i++;
-  }
-
-  return results;
-}
-
 /**
  * SoftN Script Runtime
  * Executes .logic code inside the WASM VM for true sandboxing.
@@ -620,6 +519,24 @@ export class SoftNScriptRuntime {
   private syncCallCache = new Map<string, unknown>();
   /** Timestamp of last sync function call — for frame boundary detection. */
   private lastSyncCallTs = 0;
+
+  /**
+   * The loaded script's top-level `$:` declarations in the order they are
+   * worked out, or null when it has none — every app that shipped before
+   * this existed, for which none of what follows runs.
+   *
+   * `untilStill` is for a script where one `$:` reads another through a
+   * function: its values are worked out again until a pass changes nothing.
+   */
+  private computedSettle: { names: string[]; untilStill: boolean } | null = null;
+  /** Whether the `$:` globals may be behind the state they are worked out from. */
+  private computedStale = true;
+  /** The values handed to the page for the draw in progress. */
+  private computedBatch: Map<string, unknown> | null = null;
+  /** The failure last said for each `$:` value, so it is said when it changes and not at every draw. */
+  private computedFailures = new Map<string, string>();
+  /** Whether the values have been said not to settle. */
+  private computedUnsettledSaid = false;
 
   /**
    * Active native event listeners for the window bridge.
@@ -827,6 +744,7 @@ export class SoftNScriptRuntime {
     // A template helper may already be cached for this render. Its answer was
     // computed with the previous host snapshot and must not survive the write.
     this.syncCallCache.clear();
+    this.computedMayHaveMoved();
   }
 
   /**
@@ -929,8 +847,13 @@ export class SoftNScriptRuntime {
     }
 
     let symbolMap: Map<string, { index: number; scope: SymbolScope }>;
-    let computedDecls: Array<{ name: string; expression: string }> = [];
+    let computedDecls: ComputedDeclaration[] = [];
     let computedCompiled = false;
+    // The top-level `$:` declarations, each after the ones it reads.
+    let computedPlan = planComputed([]);
+    this.computedSettle = null;
+    this.computedBatch = null;
+    this.computedStale = true;
 
     if (this.pythonProject) {
       // A Python app's logic is a set of modules, not one source string. There
@@ -1001,21 +924,25 @@ export class SoftNScriptRuntime {
       // costs a fresh parse each time — the engine interns the result for the VM's
       // lifetime, so a per-frame expression grows the heap until the tab dies.
       // Compiled once alongside the script, each becomes an ordinary call.
-      // The expression is raw source and keeps whatever trailed it, including a
-      // `// comment`. Each piece therefore gets its own line: on one line a
-      // trailing comment would swallow the closing `);` and take the whole
-      // script's compilation down with it, not just this one value.
-      computedDecls = extractComputedDeclarations(script.code).filter(
+      //
+      // Read from the code as it will be compiled, imports inlined, because
+      // the top-level ones are also rewritten in it: each is worked out
+      // through its function as the script loads, and one more generated
+      // function works them all out again, in the order they read each other,
+      // whenever the runtime asks (see computed-declarations.ts for why).
+      computedDecls = extractComputedDeclarations(resolvedCode).filter(
         (d) => VALID_IDENTIFIER.test(d.name) && d.expression.trim() !== ''
       );
-      const computedPreamble = computedDecls
-        .map((d) => `function ${COMPUTED_PREFIX}${d.name}() {\nreturn (\n${d.expression}\n);\n}`)
-        .join('\n');
+      computedPlan = planComputed(computedDecls);
+      const computedPreamble = computedSource(computedDecls, computedPlan);
 
       // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
       // window/navigator/db/localStorage/host itself) then SoftN's own.
-      const scriptCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode;
-      const fullCode = computedPreamble ? scriptCode + '\n' + computedPreamble : scriptCode;
+      const bridges = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble;
+      const scriptCode = bridges + resolvedCode;
+      const fullCode = computedPreamble
+        ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble
+        : scriptCode;
 
       // 5. Compile + run the full .logic code in the WASM VM.
       //
@@ -1035,6 +962,9 @@ export class SoftNScriptRuntime {
           compileError
         );
         computedCompiled = false;
+        // And the script is compiled as its author wrote it: nothing is
+        // generated, so there is nothing to keep the `$:` globals true with.
+        computedPlan = planComputed([]);
         // The failed compile took the engine with it — v0.0.1 terminates an
         // Engine whose `initScript` throws, wiping its bridges and its capability
         // allowlist — so the retry cannot reuse it. Rebuilding also re-wires and
@@ -1062,6 +992,7 @@ export class SoftNScriptRuntime {
     const initialState: Record<string, unknown> = {};
     const functionNames: string[] = [];
     const stateVarNames: string[] = [];
+    const settledNames = new Set(computedPlan.order.map((declaration) => declaration.name));
 
     for (const [name, sym] of symbolMap.entries()) {
       // Skip bridge-injected variables
@@ -1070,12 +1001,45 @@ export class SoftNScriptRuntime {
       // Generated `$:` bodies are engine plumbing, not script API.
       if (name.startsWith(COMPUTED_PREFIX)) continue;
 
+      // A `$:` value the script also declares (`let double = 0`) is still a
+      // computed value and not state. As state it was mirrored to the page
+      // once and read from there ever after — a page looks in state first —
+      // so the page showed its first value while logic moved on.
+      if (settledNames.has(name) && sym.scope !== 'function') continue;
+
       if (sym.scope === 'function') {
         functionNames.push(name);
       } else {
         stateVarNames.push(name);
         // WASM returns plain JS values — no formLogicToJS conversion needed
         initialState[name] = this.vmEngine.getGlobal(sym.index);
+      }
+    }
+
+    // A value that reads another through a function says nothing of it in
+    // its own words, so the order they are worked out in cannot know.
+    const calls = new Set(functionNames);
+    const readsThroughAFunction = computedDecls.some((declaration) =>
+      [...namesReadBy(declaration.expression)].some((name) => calls.has(name))
+    );
+
+    // State the markup never names is kept in the engine and not mirrored to
+    // the page. But a `$:` value is how a page reads state: `$: label =
+    // "step " + step` puts `step` on the screen though no markup names it.
+    // Left unmirrored, a change to `step` told the page nothing, the page
+    // was not redrawn, and `label` stood at its first value. So what a `$:`
+    // expression names is observed too — and where one reaches further,
+    // through a function, there is no telling what it reads, and everything
+    // is mirrored, as it is for a host that never asked for less.
+    if (this.observedStateNames && computedDecls.length > 0) {
+      if (readsThroughAFunction) {
+        this.observedStateNames = null;
+      } else {
+        const observed = new Set(this.observedStateNames);
+        for (const declaration of computedDecls) {
+          for (const name of namesReadBy(declaration.expression)) observed.add(name);
+        }
+        this.observedStateNames = observed;
       }
     }
     this.partitionStateVars(stateVarNames, symbolMap);
@@ -1104,14 +1068,32 @@ export class SoftNScriptRuntime {
       syncFunctions[name] = this.createVMSyncFunction(name);
     }
 
-    // 9. Computed values, each bound to the function compiled for it in 4b.
+    // 9. Computed values. A top-level one is read from the values the settle
+    // function hands back, so a page sees exactly what logic sees; one written
+    // inside a function is bound to the function compiled for it in 4b, as
+    // before; and where nothing could be compiled each is evaluated by itself.
+    if (computedPlan.order.length > 0) {
+      // A script where one reads another through a function is settled by
+      // working everything out again until nothing changes.
+      this.computedSettle = {
+        names: computedPlan.order.map((declaration) => declaration.name),
+        untilStill: readsThroughAFunction && computedPlan.circles.length === 0,
+      };
+      for (const circle of computedPlan.circles) {
+        console.error(
+          `[SoftN] These $: values read each other in a circle: ${circle.join(' → ')}. None of them can be worked out before the others, so each is worked out once, in the order written, from what the others were.`
+        );
+      }
+    }
     const computed: Record<string, () => unknown> = {};
     for (const { name, expression } of computedDecls) {
-      if (computedCompiled) {
+      if (!computedCompiled) {
+        computed[name] = () => this.evaluateExpression(expression);
+      } else if (settledNames.has(name)) {
+        computed[name] = () => this.readSettledComputed(name);
+      } else {
         const fn = `${COMPUTED_PREFIX}${name}`;
         computed[name] = () => this.callComputed(fn, name);
-      } else {
-        computed[name] = () => this.evaluateExpression(expression);
       }
     }
 
@@ -1202,6 +1184,9 @@ export class SoftNScriptRuntime {
         this.syncExternalFunctionsToVM();
         // Sync real browser window → VM window
         this.syncWindowToVM();
+        // The function reads `$:` values as they are for the state it is
+        // called with, not as they were when the script loaded.
+        this.settleComputedIfStale();
         this._perfSyncToVMMs += performance.now() - tSyncStart;
 
         // Suppress XDB notifications during the WASM call — all db mutations
@@ -1222,6 +1207,9 @@ export class SoftNScriptRuntime {
       } finally {
         // Resume XDB notifications — fires one 'refresh' per affected collection.
         this.xdbService?.resumeNotifications();
+
+        // Whatever it changed, the `$:` values are worked out from.
+        this.computedMayHaveMoved();
 
         // Always sync state back, even if the VM function threw mid-execution.
         // Partial state mutations before the error should be reflected in the UI.
@@ -1369,6 +1357,9 @@ export class SoftNScriptRuntime {
           this.syncReactStateToVM();
         }
         this.syncExternalFunctionsToVM();
+        // A helper that reads a `$:` value reads it as it is now. Nothing is
+        // marked afterwards: a helper asked from a page does not change state.
+        this.settleComputedIfStale();
 
         // Per-render frame cache: if >2ms since the last sync call, we've crossed
         // a render frame boundary — clear the cache so results reflect current state.
@@ -1419,6 +1410,7 @@ export class SoftNScriptRuntime {
     // State is changing — invalidate sync function cache so the next calls
     // execute against fresh VM globals instead of returning stale results.
     this.syncCallCache.clear();
+    this.computedMayHaveMoved();
     if (dirty === null || vmDirty) {
       // Full sync: first call or worker pushed new state
       const values = this.stateVarNames.map((name) => this.context.state[name]);
@@ -1610,9 +1602,119 @@ export class SoftNScriptRuntime {
         this.syncReactStateToVM();
       }
       this.syncExternalFunctionsToVM();
+      this.settleComputedIfStale();
       return this.vmEngine.callFunctionSync(fnName, []);
     } catch (error) {
       console.error(`[SoftN] Error evaluating computed "${declName}":`, error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Work every top-level `$:` value out again inside the VM and assign it,
+   * so that guest code reading one — another `$:`, a function — reads what
+   * its expression is worth now. Answers the values, in the order of
+   * `computedSettle.names`, when they are wanted.
+   *
+   * One pass does it for a script whose `$:` expressions name what they
+   * read: the generated function goes through them in that order. A script
+   * where one reads another through a function is passed over again until a
+   * pass changes nothing, within a bound, so that a pair that will never
+   * stop changing costs a fixed amount and is said once.
+   */
+  private settleComputed(wanted: boolean): unknown[] | null {
+    const plan = this.computedSettle;
+    if (!plan || !this.vmEngine) return null;
+
+    const compare = plan.untilStill;
+    let values: unknown[] | null = null;
+    for (let pass = 1; ; pass++) {
+      const [next, failures] = this.vmEngine.callFunctionSync(COMPUTED_SETTLE_FUNCTION, [wanted || compare]) as [
+        unknown[] | null,
+        Array<[number, string]>,
+      ];
+      const still = !compare || (values !== null && deepEqual(values, next));
+      values = next;
+      if (still || pass === COMPUTED_SETTLE_PASSES) {
+        this.sayComputedFailures(plan.names, failures);
+        if (!still && !this.computedUnsettledSaid) {
+          this.computedUnsettledSaid = true;
+          console.error(
+            `[SoftN] The $: values were still changing after being worked out ${COMPUTED_SETTLE_PASSES} times, and are left as they stood. One of them reads another through a function, and each time round gives a different answer.`
+          );
+        }
+        break;
+      }
+    }
+    this.computedStale = false;
+    // A helper asked from the page may have answered from the values as they
+    // were; its answer must not outlive them.
+    this.syncCallCache.clear();
+    return values;
+  }
+
+  /** Say why a `$:` value could not be worked out, when the reason is new. */
+  private sayComputedFailures(names: readonly string[], failures: ReadonlyArray<[number, string]>): void {
+    const failed = new Map(failures.map(([index, reason]) => [names[index], reason]));
+    for (const name of names) {
+      const reason = failed.get(name);
+      if (reason === undefined) {
+        this.computedFailures.delete(name);
+      } else if (this.computedFailures.get(name) !== reason) {
+        this.computedFailures.set(name, reason);
+        console.error(`[SoftN] Error evaluating computed "${name}":`, reason);
+      }
+    }
+  }
+
+  /** Bring the `$:` globals up to date before guest code that may read them runs. */
+  private settleComputedIfStale(): void {
+    if (!this.computedSettle || !this.computedStale) return;
+    try {
+      this.settleComputed(false);
+    } catch (error) {
+      console.error('[SoftN] Error working out the $: values:', error);
+    }
+  }
+
+  /** Something the `$:` values are worked out from may have changed. */
+  private computedMayHaveMoved(): void {
+    if (!this.computedSettle) return;
+    this.computedStale = true;
+    this.computedBatch = null;
+  }
+
+  /**
+   * A top-level `$:` value, as a page reads it.
+   *
+   * A draw reads every value one after another, with nothing between. The
+   * first read works them all out — the same pass that assigns the globals
+   * logic reads, so the page and the logic cannot disagree — and the rest of
+   * that draw is answered from it. The answers are dropped as soon as the
+   * draw is over, so the next one works them out again whatever changed in
+   * between: a record written by another tab moves nothing this runtime
+   * could have noticed.
+   */
+  private readSettledComputed(name: string): unknown {
+    try {
+      if (!this.vmEngine || !this.computedSettle) return undefined;
+      if (!this.computedBatch) {
+        // Skip React→VM sync if an async function is in-flight
+        if (!this.asyncCallInProgress) {
+          this.syncReactStateToVM();
+        }
+        this.syncExternalFunctionsToVM();
+        const values = this.settleComputed(true) ?? [];
+        const batch = new Map<string, unknown>();
+        this.computedSettle.names.forEach((settled, index) => batch.set(settled, values[index]));
+        this.computedBatch = batch;
+        queueMicrotask(() => {
+          if (this.computedBatch === batch) this.computedBatch = null;
+        });
+      }
+      return this.computedBatch.get(name);
+    } catch (error) {
+      console.error(`[SoftN] Error evaluating computed "${name}":`, error);
       return undefined;
     }
   }
@@ -1648,6 +1750,8 @@ export class SoftNScriptRuntime {
       ) {
         if (!this.dirtyStateKeys) this.dirtyStateKeys = new Set();
         this.dirtyStateKeys.add(key);
+        // The page's state moved: values handed out for a draw are over.
+        this.computedBatch = null;
       }
     }
     Object.assign(this.context.state, newState);
@@ -1689,7 +1793,9 @@ export class SoftNScriptRuntime {
         }
 
         // Dispatch to VM handlers (runs synchronously in WASM)
+        this.settleComputedIfStale();
         this.vmEngine.dispatchEvent(eventType, eventObj);
+        this.computedMayHaveMoved();
 
         // Sync VM state → React after dispatch
         this.syncVMStateToReact();
@@ -2123,7 +2229,9 @@ export class SoftNScriptRuntime {
         try {
           this.syncCallCache.clear();
           this.syncReactStateToVM();
+          this.settleComputedIfStale();
           this.vmEngine!.resolveHostCallback(call.id, result);
+          this.computedMayHaveMoved();
           this.syncVMStateToReact();
         } catch (err) {
           console.error(`[SoftN] Error resolving host callback:`, err);
