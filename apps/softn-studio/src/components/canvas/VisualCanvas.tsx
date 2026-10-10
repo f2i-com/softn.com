@@ -5,6 +5,7 @@ import { declarePythonPackage, resolveActivePreviewPath, resolveManifest, undecl
 import { getXDB, type SoftNRendererProps } from '@softn/core';
 import type { ThemeProviderProps } from '@softn/components';
 import { createPreviewAssetResolver } from '../../lib/previewAssets';
+import { declaredCapabilities } from '../../lib/declaredCapabilities';
 import { CodeFile, FileEditor } from './FileEditor';
 import { useEditStore } from '../../stores/editStore';
 import { confirmLeaveDraft } from '../../lib/handEdit';
@@ -922,20 +923,8 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   );
 };
 
-/** The capabilities a permission.json turns on, by name; nothing for a file that is missing or not JSON. */
-export function declaredCapabilities(content: string | Uint8Array | undefined): string[] {
-  if (typeof content !== 'string') return [];
-  try {
-    const parsed = JSON.parse(content) as { permissions?: Record<string, { enabled?: unknown } | undefined> } | null;
-    const permissions = parsed && typeof parsed === 'object' ? parsed.permissions : undefined;
-    if (!permissions || typeof permissions !== 'object') return [];
-    return Object.keys(permissions)
-      .filter((name) => permissions[name]?.enabled === true)
-      .sort();
-  } catch {
-    return [];
-  }
-}
+// Kept here for what has always imported it from the canvas; it lives with the check's use of it now.
+export { declaredCapabilities };
 
 const styles: Record<string, React.CSSProperties> = {
   canvasArea: {

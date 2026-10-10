@@ -25,6 +25,7 @@ import { backendSqlProblems, migrationSqlProblems } from './sqlLint';
 import { appliedMigrationPaths, projectRelative } from './appliedMigrations';
 import { duringCheck, explainEngineStops, heardByPreview } from '../previewFaults';
 import { bareAssetPaths } from '../previewAssets';
+import { explainUngrantedCalls } from '../declaredCapabilities';
 
 export interface RunFunctionRequest {
   name: string;
@@ -211,7 +212,15 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
     await settle(() => visibleText(host), () => loaded, composition.python ? 1500 : 500, composition.python ? 12_000 : 5_000, composition.python ? 6_000 : 2_500);
     // A call cut off at its budget is said as what it is (an endless loop), once: the engine's
     // own two lines for it name a budget and a disposed engine, and nothing a model can act on.
-    return { errors: dedupe(explainEngineStops(errors)), warnings: dedupe(warnings), text: visibleText(host), snapshot: describeDom(host) };
+    // And a call the check did not grant is said as what it is for this project: the runtime's
+    // line for it says the bundle ships no permission.json, which the project may well have.
+    const permissionJson = files.get('permission.json')?.content;
+    return {
+      errors: dedupe(explainUngrantedCalls(explainEngineStops(errors), permissionJson)),
+      warnings: dedupe(explainUngrantedCalls(warnings, permissionJson)),
+      text: visibleText(host),
+      snapshot: describeDom(host),
+    };
   } finally {
     root.unmount();
     host.remove();
@@ -985,7 +994,8 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
     // with the engine's own lines for it left out of the console below.
     const explained = explainEngineStops(errors);
     const stop = explained.find((line) => !errors.includes(line));
-    const said = stop ? explainEngineStops(logs).filter((line) => line !== stop) : logs;
+    // A call the run did not grant is said as it is for this project, as in the check.
+    const said = explainUngrantedCalls(stop ? explainEngineStops(logs).filter((line) => line !== stop) : logs, files.get('permission.json')?.content);
     const text = [
       ...(lines.length > 0 ? ['Setup:', ...lines.map((l) => `  ${l}`)] : []),
       stop
@@ -996,7 +1006,8 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
     ].join('\n');
     return { ok: errors.length === 0, text };
   } catch (err) {
-    return { ok: false, text: `Error: ${err instanceof Error ? err.message : String(err)}${logs.length > 0 ? `\nConsole:\n${logs.slice(0, 10).map((l) => `  ${l}`).join('\n')}` : ''}` };
+    const printed = explainUngrantedCalls(logs, files.get('permission.json')?.content);
+    return { ok: false, text: `Error: ${err instanceof Error ? err.message : String(err)}${printed.length > 0 ? `\nConsole:\n${printed.slice(0, 10).map((l) => `  ${l}`).join('\n')}` : ''}` };
   } finally {
     console.error = original;
     runtime?.cleanup();
