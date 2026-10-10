@@ -10,6 +10,7 @@ import { editorLanguageFor } from './logicLanguage';
 import { dockLogicFile, entryFileId } from '../../utils/logicFiles';
 import { dockInlineLogicHolder } from '../../utils/inlineLogic';
 import { toast } from '../../stores/notificationStore';
+import { EditorWayOut } from './EditorWayOut';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -154,6 +155,7 @@ export function LogicEditor() {
             : 'Define state, computed values, and functions'}
         </span>
       </div>
+      <EditorWayOut style={{ display: 'block', padding: '3px 16px', borderBottom: '1px solid var(--line-soft)' }} />
       <div style={styles.editorWrapper}>
         <CodeEditor
           value={logicFile.content}

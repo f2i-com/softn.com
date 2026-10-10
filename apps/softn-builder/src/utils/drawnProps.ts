@@ -29,6 +29,7 @@
 
 import { cssResourceReferences, isSafeUrl, parse, sanitizeSvg } from '@softn/core';
 import type { Expression } from '@softn/core';
+import { TEXT_NODE_TYPE } from '../types/builder';
 import type { CanvasElement, ComponentMeta } from '../types/builder';
 
 /** A value read from the text of an expression, or the news that it is not a plain value. */
@@ -319,4 +320,43 @@ export function drawnProps(element: CanvasElement, meta: ComponentMeta): Record<
     given.value = `{${bound.trim()}}`;
   }
   return given;
+}
+
+/** One thing a drawn component holds among its words: the words, or an element that stands in a line of them. */
+export type DrawnHeld = string | { type: string; props: Record<string, unknown> };
+
+/**
+ * What `element` holds, as it can be drawn inside it, or null where it
+ * cannot: `<Badge><Icon name="check" /> Shipped</Badge>` is an Icon and the
+ * words, and the Badge is drawn with both in it.
+ *
+ * A component that held anything went back to a card with its name, so the
+ * Badge a page was full of turned grey the moment an Icon was put in it,
+ * and stayed grey. What can be drawn inside is what stands in a line of
+ * words and is itself one of the components the canvas draws (`inline` and
+ * `drawn` in the registry: an Icon, a key, a Badge, a Tag, a Spinner), with
+ * nothing in it, and the words between them. Anything else in the element
+ * and it is the card as before. `metaOf` is the registry, and `imported`
+ * says whether a name is a page of the project and not the library's.
+ */
+export function drawnHeld(
+  element: CanvasElement,
+  elements: ReadonlyMap<string, CanvasElement>,
+  metaOf: (type: string) => ComponentMeta | undefined,
+  imported: (type: string) => boolean
+): DrawnHeld[] | null {
+  if (element.children.length === 0) return null;
+  const held: DrawnHeld[] = [];
+  for (const id of element.children) {
+    const child = elements.get(id);
+    if (!child || child.block) return null;
+    if (child.componentType === TEXT_NODE_TYPE) {
+      held.push(String(child.props.children ?? ''));
+      continue;
+    }
+    const meta = metaOf(child.componentType);
+    if (!meta?.inline || !meta.drawn || child.children.length > 0 || imported(child.componentType)) return null;
+    held.push({ type: child.componentType, props: drawnProps(child, meta) });
+  }
+  return held;
 }

@@ -19,9 +19,13 @@
  * its name, and no longer: undoing the drop takes it out with the element,
  * redoing puts it back, and deleting the last use of it removes the line.
  * It is worked out from the elements whenever the page is written, not
- * recorded beside them, so it cannot come apart from them. An import the
- * Builder did not write is the author's, and is never taken out, used or
- * not.
+ * recorded beside them, so it cannot come apart from them.
+ *
+ * An import the Builder did not write is the author's. It is never taken
+ * out of a page that is opened, edited or saved, used or not, with one
+ * exception: when its last use is deleted on the canvas it goes with that
+ * use, as the Builder's own does (importsLeftUnused), and Undo brings both
+ * back.
  */
 
 import { UI_IMPORT_PATTERN } from '@softn/core';
@@ -138,6 +142,40 @@ export function liveImports(elements: ReadonlyMap<string, CanvasElement>, import
   if (written.length === 0) return [...imports];
   const used = usedNames(elements);
   return imports.filter((imp) => !written.includes(imp.name) || used.has(imp.name));
+}
+
+/**
+ * The imports that have just lost their last use: of the names the elements
+ * taken off the page were written with (`removed`), those a page of the
+ * project is imported by that no element left on the page uses.
+ *
+ * These become the Builder's to take away, whoever wrote the line. Which
+ * imports the Builder wrote was remembered for the session and no longer:
+ * a project exported and opened again came back with every import the
+ * author's, so the last use of a page dropped from the palette the day
+ * before left `<import TaskRow … />` in the header for good, importing a
+ * file nothing on the page used. The rule now needs nothing remembered: the
+ * line goes with the last use, when that use is deleted on the canvas.
+ *
+ * What it does not reach, each on purpose: an import that had no use to
+ * delete (it may be on its way in), so a page that is only opened, edited
+ * or saved keeps every line it has; a name of the library's or of an alias
+ * (`@…`), which is not a page of the project; and a line written with
+ * braces, which may name several things at once.
+ */
+export function importsLeftUnused(
+  removed: Iterable<string>,
+  elements: ReadonlyMap<string, CanvasElement>,
+  imports: readonly UIImport[],
+  written: readonly string[]
+): string[] {
+  const used = usedNames(elements);
+  return [...new Set(removed)].filter(
+    (name) =>
+      !used.has(name) &&
+      !written.includes(name) &&
+      imports.some((imp) => imp.name === name && !imp.named && !imp.source.startsWith('@'))
+  );
 }
 
 /** `<import Name from="./path.ui" />`, as the language's own examples write it. */

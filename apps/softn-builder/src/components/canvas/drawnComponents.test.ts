@@ -415,9 +415,10 @@ describe('the theme the canvas draws in', () => {
     expect(drawnThemeFor('light', 'system', 'dark')).toEqual({ tokens: 'light', page: 'light' });
     expect(drawnThemeFor('dark', undefined, 'light')).toEqual({ tokens: 'dark', page: 'dark' });
     expect(drawnThemeFor('system', 'system', 'dark')).toEqual({ tokens: 'dark', page: 'dark' });
-    // A dark project whose page says light is drawn light, as it runs.
-    expect(drawnThemeFor('dark', 'light', 'dark')).toEqual({ tokens: 'dark', page: 'light' });
-    expect(drawnThemeFor('light', 'dark', 'light')).toEqual({ tokens: 'light', page: 'dark' });
+    // A dark project whose page says light is drawn light, as it runs, and
+    // the tokens go with the page (the rule is held in utils/appThemeRule.test.ts).
+    expect(drawnThemeFor('dark', 'light', 'dark')).toEqual({ tokens: 'light', page: 'light' });
+    expect(drawnThemeFor('light', 'dark', 'light')).toEqual({ tokens: 'dark', page: 'dark' });
     // A theme of the author's own is neither, and follows the project.
     expect(drawnThemeFor('dark', 'brand', 'light')).toEqual({ tokens: 'dark', page: 'dark' });
   });

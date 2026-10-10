@@ -170,6 +170,33 @@ describe('the export dialog', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect(container.textContent).toContain('Ready:');
     expect(container.querySelector('[data-report="references"]')).toBeNull();
+    expect(container.querySelector('[data-report="pages"]')).toBeNull();
+  });
+
+  it('names a page that does not parse, and what the parser warns of in one that does', async () => {
+    // The check reads the archive and its manifest and no page. A page with
+    // a tag left open was "Ready", and the app made from it stopped where it
+    // started. And the parser's one warning, for a second <data> block that
+    // gives a name already taken to another collection, was said nowhere.
+    vi.useFakeTimers();
+    const files = useFilesStore.getState();
+    files.reset();
+    const broken = files.createFile('ui', 'broken.ui', 'ui');
+    files.updateUIFileSource(broken, '<App>\n  <Text>Hello</Text>\n  <Card>\n</App>\n');
+    files.updateUIFileSource(
+      'main_ui',
+      '<data>\n  <collection name="tasks" as="items" />\n</data>\n<App>\n  <Text>Hi</Text>\n</App>\n<data>\n  <collection name="people" as="items" />\n</data>\n'
+    );
+
+    render(true, () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const lines = [...container.querySelectorAll('[data-report="pages"] > span')].map((line) => line.textContent ?? '');
+    expect(lines).toHaveLength(2);
+    // The page that will not run first, then the warning.
+    expect(lines[0]).toMatch(/^✕ ui\/broken\.ui does not parse, and the app will stop there\. Line \d+: /);
+    expect(lines[1]).toBe('△ ui/main.ui, line 8: <collection name="people" as="items"> is not declared, because this page already reads "tasks" as items.');
+    // Neither stops the export: the file is the person's, and writing it is how a project with no file is saved.
+    expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Export .softn')?.disabled).toBe(false);
   });
 
   it('reports failed preflight checks and retries when the project details change', async () => {

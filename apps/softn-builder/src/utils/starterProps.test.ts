@@ -138,6 +138,20 @@ describe('what a drop writes', () => {
     expect(sourceOfCanvas()).toContain('<Select placeholder="Select an option..." options={[{ value: "one", label: "Option one" }');
   });
 
+  it('a Breadcrumb and a Table start with something to show', () => {
+    // A Breadcrumb with no items draws nothing at all, on the canvas or in
+    // the app, and a Table with neither columns nor rows is the words "No
+    // data available" under no header.
+    insertFromPalette('Breadcrumb');
+    insertFromPalette('Table');
+    const source = sourceOfCanvas();
+    expect(source).toContain('<Breadcrumb items={[{ label: "Home" }, { label: "Projects" }, { label: "This page" }]} />');
+    expect(source).toContain('<Table columns={[{ key: "name", header: "Name" }, { key: "role", header: "Role" }]} data={[{ name: "Ada Lovelace", role: "Engineer" }, { name: "Grace Hopper", role: "Admiral" }]} rowKey="name" />');
+    const html = rendered(source);
+    for (const shown of ['Home', 'Projects', 'This page', 'Name', 'Role', 'Ada Lovelace', 'Admiral']) expect(html, shown).toContain(shown);
+    expect(html).not.toContain('No data available');
+  });
+
   it('selects what was inserted, as before', () => {
     const id = insertFromPalette('Text');
     expect(useCanvasStore.getState().selectedIds).toEqual([id]);

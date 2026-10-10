@@ -17,6 +17,7 @@ import { elementsEqual } from '../utils/elementsEqual';
 import { assessSourceFidelity, parseSource } from '../utils/sourceParser';
 import { writeBack } from '../utils/sourceFrame';
 import { withImportLines } from '../utils/pageImports';
+import { pagesFollowing } from '../utils/manifestPages';
 import { changeDataDeclarations, type CollectionChange } from '../utils/dataDeclarations';
 import {
   MAIN_LOGIC_PATHS,
@@ -33,6 +34,40 @@ import { isPythonLogicPath, parse as parseSoftN, pythonModuleName, type SoftNDoc
 
 function generateId(): string {
   return `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * The folder at `path` in `nodes`, made with every folder above it that is
+ * not there yet; null for the top of the project.
+ *
+ * A file or a folder was put under the folder of its path when there was
+ * one, and under nothing when there was not. "New UI file" as a component
+ * makes `ui/components/row.ui`, and a new project has no `ui/components`: the
+ * file was made, opened in a tab, written into the export, and was nowhere
+ * in the Files panel, which draws what each folder holds. With its tab
+ * closed there was no way back to it.
+ */
+function folderAt(nodes: Map<string, ProjectFileNode>, path: string): string | null {
+  let parentId: string | null = null;
+  let at = '';
+  for (const part of path.split('/').filter(Boolean)) {
+    at = at ? `${at}/${part}` : part;
+    let found: string | null = null;
+    for (const [nodeId, node] of nodes) {
+      if (node.type === 'folder' && node.path === at) {
+        found = nodeId;
+        break;
+      }
+    }
+    if (!found) {
+      found = generateId();
+      nodes.set(found, { id: found, name: part, path: at, type: 'folder', parentId, children: [] });
+      const parent = parentId ? nodes.get(parentId) : undefined;
+      if (parentId && parent) nodes.set(parentId, { ...parent, children: [...(parent.children ?? []), found] });
+    }
+    parentId = found;
+  }
+  return parentId;
 }
 
 // Default initial state for a new UI file
@@ -465,7 +500,16 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   const edit: typeof set = (...args) => {
     const before = get();
     set(...(args as Parameters<typeof set>));
-    if (get() !== before) useProjectStore.getState().markDirty();
+    const after = get();
+    if (after === before) return;
+    // The manifest's list of pages names UI files, and follows them when
+    // one is renamed, moved or deleted (utils/manifestPages.ts).
+    if (after.uiFiles !== before.uiFiles) {
+      const project = useProjectStore.getState();
+      const manifest = pagesFollowing(project.source.manifest, before.uiFiles, after.uiFiles);
+      if (manifest !== project.source.manifest) project.setSource({ ...project.source, manifest });
+    }
+    useProjectStore.getState().markDirty();
   };
   return ({
   ...initialFiles('javascript'),
@@ -479,14 +523,8 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     edit((state) => {
       const newNodes = new Map(state.nodes);
 
-      // Find parent folder
-      let parentId: string | null = null;
-      for (const [nodeId, node] of newNodes) {
-        if (node.type === 'folder' && node.path === parentPath) {
-          parentId = nodeId;
-          break;
-        }
-      }
+      // The folder it goes in, made if the project has not got it yet.
+      const parentId = folderAt(newNodes, parentPath);
 
       // Create folder node
       newNodes.set(id, {
@@ -662,14 +700,8 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       const newUIFiles = new Map(state.uiFiles);
       const newLogicFiles = new Map(state.logicFiles);
 
-      // Find parent folder
-      let parentId: string | null = null;
-      for (const [nodeId, node] of newNodes) {
-        if (node.type === 'folder' && node.path === parentPath) {
-          parentId = nodeId;
-          break;
-        }
-      }
+      // The folder it goes in, made if the project has not got it yet.
+      const parentId = folderAt(newNodes, parentPath);
 
       // Create file node
       newNodes.set(id, {

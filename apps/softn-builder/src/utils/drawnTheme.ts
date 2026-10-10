@@ -5,13 +5,18 @@
  * The two are different things. The editor is dark or light as the person
  * using it likes; the app is light, dark or the visitor's own choice as its
  * project says, and a page can pin its `<App theme>` to one of them over
- * that. A component on the canvas has to look as it will in Preview, so
- * what is worked out here is what Preview works out, in the same order:
+ * that. A component on the canvas has to look as it will when the app
+ * runs, so what is worked out here is the one rule every host that draws an
+ * app goes by (@softn/components, theme/app-theme.ts), asked of that rule
+ * and not written out again here:
  *
  *  - the tokens (the palette, type and spacing every component reads) are
- *    the light or the dark set by the project's theme mode, as the runtime's
- *    ThemeProvider chooses them; "system" is the stored preference the
- *    running app would read, then the device's;
+ *    the side the project declares, light or dark, unless the page pins the
+ *    other, and then they go with the page. They stayed the project's, and
+ *    a light page in a dark project had the dark set's chart colours on it;
+ *  - a project that declares nothing ("system") has the tokens of what the
+ *    host comes to: here the document's own theme, as on the site an app
+ *    runs on, then the stored preference, then the device;
  *  - the page's own colours are `<App theme="light|dark">` where the page
  *    says so, and the tokens' side otherwise, as the App component decides.
  *
@@ -24,37 +29,52 @@
  */
 
 import { useEffect, useState } from 'react';
+import { resolveAppTheme } from '@softn/components/theme';
 import { useCanvasStore } from '../stores/canvasStore';
 import { useProjectStore } from '../stores/projectStore';
 
 export type ThemeSide = 'light' | 'dark';
 
 export interface DrawnTheme {
-  /** Which set of tokens: the project's theme mode. */
+  /** Which set of tokens: the project's declared side, the page's where it pins the other, or the host's. */
   tokens: ThemeSide;
   /** Which of the page's own colours: its `<App theme>`, or the tokens' side. */
   page: ThemeSide;
 }
 
-/** Where the running app keeps a visitor's explicit choice (ThemeProvider reads it first). */
+/** Where the running app keeps a visitor's explicit choice, one for the whole origin. */
 const PREFERENCE_KEY = 'softn-theme-preference';
 
-/** What "system" comes to here and now, as the running app would read it. */
+/**
+ * What "system" comes to here and now, read in the order the web runtime
+ * reads it: the theme of the document the app is drawn in (its
+ * `data-theme`: in the Builder the site's theme, which is the editor's
+ * own), then the stored preference, then the device. The document's theme
+ * was not read, so a System project was drawn by the device under an editor
+ * a person had switched the other way, where the same app on the site
+ * would follow the switch.
+ */
 export function systemSide(): ThemeSide {
   if (typeof window === 'undefined') return 'light';
+  let stored: string | null = null;
   try {
-    const stored = window.localStorage.getItem(PREFERENCE_KEY);
-    if (stored === 'dark' || stored === 'light') return stored;
+    stored = window.localStorage.getItem(PREFERENCE_KEY);
   } catch {
     // Storage that cannot be read has no preference in it.
   }
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return resolveAppTheme({
+    host: typeof document === 'undefined' ? undefined : document.documentElement.getAttribute('data-theme'),
+    stored,
+    device: window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+  }).ambient;
 }
 
-/** The theme for a project of this mode and a page whose `<App theme>` is this. */
+/**
+ * The theme for a project of this mode and a page whose `<App theme>` is
+ * this, where "system" comes to `system` here: what the rule makes of them.
+ */
 export function drawnThemeFor(themeMode: 'light' | 'dark' | 'system', pageTheme: unknown, system: ThemeSide): DrawnTheme {
-  const tokens: ThemeSide = themeMode === 'system' ? system : themeMode;
-  const page: ThemeSide = pageTheme === 'light' || pageTheme === 'dark' ? pageTheme : tokens;
+  const { tokens, page } = resolveAppTheme({ manifest: themeMode, page: pageTheme, host: system });
   return { tokens, page };
 }
 
@@ -76,7 +96,13 @@ export function themeSentence(
   }
   const own = pageTheme?.value;
   if (own === 'light' || own === 'dark') {
-    if (themeMode === 'system') return `This page is ${own}: its own theme is set to ${own}, whatever a visitor's device prefers.`;
+    // A project that declares no side leaves the tokens following the host
+    // under a page that pins one: the page's own colours are its own, and
+    // the chart series and code colours are still the visitor's side's.
+    // That is what the canvas draws, and it looks like a mistake unsaid.
+    if (themeMode === 'system') {
+      return `This page is ${own}: its own theme is set to ${own}, whatever a visitor's device prefers. Its chart and code colours still follow the visitor: set the project to ${own} to keep them with the page.`;
+    }
     return own === project
       ? `This page is ${own}: its own theme is set to ${own}, as the project's is.`
       : `This page is ${own}: its own theme is set to ${own}, which wins over the project's ${project}.`;
@@ -85,19 +111,25 @@ export function themeSentence(
     return `This page has a theme of its own, "${own}", drawn here over the project's ${project} colours.`;
   }
   return themeMode === 'system'
-    ? `This page follows the project: system, which is ${system} on this device. A visitor sees their own.`
-    : // The project's setting is the Builder's: Preview and the canvas read it,
-      // and it is saved in the app's manifest, where no runtime looks for
-      // it yet. What a running app follows is said, not left to be found.
-      `This page follows the project: ${project}, on the canvas and in Preview. A running app follows its visitor's device unless the page's own theme is set.`;
+    ? // What "system" comes to here is the document's theme first, which in
+      // the Builder is the editor's own (systemSide).
+      `This page follows the project: system, which is ${system} here, as this editor is. A visitor sees their own.`
+    : // The project's light or dark is saved in the app's manifest
+      // (`config.theme.mode`), and the running app is that theme as the canvas
+      // and Preview are. For a while no runtime read it, and this sentence
+      // said a running app followed its visitor's device.
+      `This page follows the project: ${project}, on the canvas, in Preview and in the running app.`;
 }
 
-/** What "system" comes to on this device, followed while it is asked for. */
+/** What "system" comes to here, followed while it is asked for: the document's theme, the store, the device. */
 export function useSystemSide(watch: boolean): ThemeSide {
   const [system, setSystem] = useState<ThemeSide>(systemSide);
   useEffect(() => {
     if (!watch || typeof window === 'undefined') return;
     const update = () => setSystem(systemSide());
+    // The document's theme is switched without the page being loaded again.
+    const observer = typeof MutationObserver === 'undefined' ? null : new MutationObserver(update);
+    observer?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     const query = window.matchMedia?.('(prefers-color-scheme: dark)');
     query?.addEventListener('change', update);
     const stored = (event: StorageEvent) => {
@@ -106,6 +138,7 @@ export function useSystemSide(watch: boolean): ThemeSide {
     window.addEventListener('storage', stored);
     update();
     return () => {
+      observer?.disconnect();
       query?.removeEventListener('change', update);
       window.removeEventListener('storage', stored);
     };

@@ -42,6 +42,8 @@ import { toast } from './stores/notificationStore';
 import { debug } from './utils/debug';
 import { useProjectStartup } from './hooks/useProjectStartup';
 import { useUnsavedChanges } from './hooks/useUnsavedChanges';
+import { useRecoveryCopy } from './hooks/useRecoveryCopy';
+import { recoveryOf, restoreOffer } from './utils/recoveryCopy';
 import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { useActiveFileOnCanvas } from './hooks/useActiveFileOnCanvas';
@@ -318,6 +320,9 @@ function App() {
   const projectName = useProjectStore((state) => state.name);
   const projectDirty = useProjectStore((state) => state.isDirty);
   const [view, setView] = useState<ViewMode>('design');
+  // Unsaved work is kept as it is made, for the next open to offer back. A
+  // draft edited inside FormLogic is kept there, and has no copy here.
+  useRecoveryCopy(view, !isHostedEditor());
   // A panel the window has no room for starts as its rail, so the canvas is
   // on the screen: at 900 pixels the three panels left it no room at all.
   const { files: dockFiles, components: dockComponents, setFiles: setDockFiles, setComponents: setDockComponents } = useSidePanels();
@@ -441,9 +446,12 @@ function App() {
         toast.error('The saved session could not be restored. It was kept; download it from Export → Recovery.');
         return;
       }
-      if (!window.confirm('Restore the last locally saved builder session?')) return;
+      // A copy of unsaved work says so, and what of the project is not in it (utils/recoveryCopy.ts).
+      if (!window.confirm(restoreOffer(action.raw))) return;
       try {
         applySnapshotRef.current(snapshot);
+        // It was not saved when it was kept, and is not now: it says "Unsaved", and leaving asks first.
+        if (recoveryOf(action.raw)) useProjectStore.getState().markDirty();
       } catch (e) {
         console.error('[App] Failed to restore session:', e);
         quarantineSession(action.raw, e);
@@ -504,7 +512,8 @@ function App() {
     } else {
       toast.success(where);
     }
-    if (!outcome.sessionStored && !outcome.projectChanged) {
+    // A newer copy of the work is already kept: nothing went wrong, and nothing is said.
+    if (!outcome.sessionStored && !outcome.projectChanged && !outcome.sessionSuperseded) {
       // The file is written; only the local recovery copy is missing.
       console.warn('[App] Could not store session for restore:', outcome.sessionError);
       toast.info('The local recovery copy could not be stored (storage full or blocked); the file itself was saved.');
@@ -620,10 +629,13 @@ function App() {
         return (
           <div style={styles.designShell}>
             <div style={styles.main}>
+              {/* Each part of the workspace is a panel F6 goes to (utils/panelFocus.ts). */}
               {dockFiles ? (
-                <FileNavigator onToggleDock={() => setDockFiles(false)} />
+                <div data-panel="Files" style={{ display: 'contents' }}>
+                  <FileNavigator onToggleDock={() => setDockFiles(false)} />
+                </div>
               ) : (
-                <div style={styles.collapsedRailLeft}>
+                <div data-panel="Files" style={styles.collapsedRailLeft}>
                   <button className="bl-rail-btn" onClick={() => setDockFiles(true)} aria-label="Show files panel">
                     Files
                   </button>
@@ -631,12 +643,12 @@ function App() {
               )}
 
               {dockComponents && (
-                <div style={styles.leftPanel}>
+                <div data-panel="Components" style={styles.leftPanel}>
                   <ComponentPalette onToggleDock={() => setDockComponents(false)} />
                 </div>
               )}
               {!dockComponents && (
-                <div style={styles.collapsedRailLeft}>
+                <div data-panel="Components" style={styles.collapsedRailLeft}>
                   <button className="bl-rail-btn" onClick={() => setDockComponents(true)} aria-label="Show components panel">
                     Components
                   </button>
@@ -645,7 +657,7 @@ function App() {
 
               <div style={styles.centerWithTabs}>
                 <FileTabs />
-                <div style={styles.centerTop}>
+                <div data-panel="Canvas" style={styles.centerTop}>
                   {!hasActiveFile ? (
                     <div style={styles.emptyFileState}>
                       <div>
@@ -689,7 +701,7 @@ function App() {
                   )}
                 </div>
                 {hasActiveFile && !isLogicFileActive && !isAssetFileActive && dockLogic && (
-                  <div style={styles.centerBottom}>
+                  <div data-panel="Logic" style={styles.centerBottom}>
                     <div style={styles.logicDockHeader}>
                       <span style={styles.logicDockTitle}>Logic</span>
                       <button className="bl-mini" onClick={() => setDockLogic(false)} aria-label="Hide logic panel">
@@ -710,10 +722,10 @@ function App() {
 
               {dockInspector && (
                 <div style={styles.rightPanel}>
-                  <div style={styles.rightPanelTop}>
+                  <div data-panel="Properties" style={styles.rightPanelTop}>
                     <PropertyPanel onToggleDock={() => setDockInspector(false)} />
                   </div>
-                  <div style={styles.rightPanelBottom}>
+                  <div data-panel="Hierarchy" style={styles.rightPanelBottom}>
                     <TreeView />
                     <DataPanel />
                   </div>
@@ -733,7 +745,7 @@ function App() {
       case 'preview':
         return (
           <div style={styles.main}>
-            <div style={{ flex: 1, height: '100%', overflow: 'hidden' }}>
+            <div data-panel="Preview" style={{ flex: 1, height: '100%', overflow: 'hidden' }}>
               <LivePreview />
             </div>
           </div>
@@ -742,7 +754,7 @@ function App() {
       case 'code':
         return (
           <div style={styles.main}>
-            <div style={{ flex: 1 }}>
+            <div data-panel="Code" style={{ flex: 1 }}>
               <SourceView />
             </div>
           </div>
@@ -759,7 +771,7 @@ function App() {
         );
         return (
           <div style={styles.main}>
-            <div style={{ flex: 1 }}>
+            <div data-panel="Data" style={{ flex: 1 }}>
               <SchemaDesigner />
             </div>
           </div>

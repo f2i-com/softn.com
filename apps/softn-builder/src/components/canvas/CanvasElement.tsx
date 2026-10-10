@@ -6,14 +6,17 @@ import React, { useCallback, useState, useEffect, useLayoutEffect, useRef, useMe
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
-import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
+import { useCurrentAssets } from '../../utils/projectAssets';
+import { assetCallPath, assetNamed } from '../../utils/assetSource';
+import { isRemoteAddress, remoteShown, showRemotePicture, useShownPictures } from '../../utils/remotePictures';
 import { useFilesStore } from '../../stores/filesStore';
 import { DrawnComponent } from './DrawnComponent';
 import { addDropped } from '../../utils/pageDrop';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
 import { blockHeaderText } from '../../utils/sourceGenerator';
-import { acceptsChildren, blockDescription, branchEnd, canDropInto, elementLabel, isTextNode, takesInline } from '../../utils/blocks';
+import { acceptsChildren, blockDescription, branchEnd, canDropInto, elementLabel, hasTextField, isTextNode, takesInline } from '../../utils/blocks';
+import { drawnHeld, type DrawnHeld } from '../../utils/drawnProps';
 import { parseStringLiteralVariables } from '../../utils/logicStringLiterals';
 import { dockLogicFile, entryFileId, logicLanguageOf } from '../../utils/logicFiles';
 import { TokenIcon } from '../icons/TokenIcon';
@@ -27,6 +30,13 @@ import type { CanvasElement as CanvasElementType, DropIndicator } from '../../ty
  * in a Stack always went to the Stack.
  */
 const answered = new WeakSet<Event>();
+
+/**
+ * The drawn components that stay drawn when they hold something that is not
+ * among their words: what they hold goes under their own content, which is
+ * where the canvas draws an element's children.
+ */
+const DRAWN_OVER_ITS_CHILDREN: ReadonlySet<string> = new Set(['EmptyState']);
 
 /** What is being dragged, as the type the drop rules ask about. */
 function draggedTypeOf(state: { draggedType: string | null; draggedElementId: string | null; elements: Map<string, CanvasElementType> }): string | null {
@@ -279,7 +289,22 @@ export const CanvasElement = React.memo(function CanvasElement({
   // asked of the registry, which has no entry for them, so a block showed
   // a notice and its branch was neither drawn nor droppable.
   const allowsChildren = element ? acceptsChildren(element) : false;
+  // What the element holds among its words, where it can be drawn inside
+  // the element itself (utils/drawnProps.ts, drawnHeld). As text, so that
+  // this element is drawn again when one of the things it holds changes,
+  // and only then.
+  const heldText = useCanvasStore((s) => {
+    const own = s.elements.get(elementId);
+    if (!own || own.children.length === 0 || own.block || !hasTextField(own.componentType)) return null;
+    if (!getComponentMeta(own.componentType)?.drawn) return null;
+    const held = drawnHeld(own, s.elements, getComponentMeta, (type) => s.imports.some((imp) => imp.name === type));
+    return held ? JSON.stringify(held) : null;
+  });
+  const held = useMemo<DrawnHeld[] | null>(() => (heldText ? (JSON.parse(heldText) as DrawnHeld[]) : null), [heldText]);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  // The address of a picture that is not loaded until it is asked for, and how many have been.
+  const [withheldPicture, setWithheldPicture] = useState<string | null>(null);
+  const picturesShown = useShownPictures();
   const assets = useCurrentAssets();
   const retainedSource = useProjectStore((state) => state.source);
   const { activeFileId, uiFiles, logicFiles } = useFilesStore((state) => ({
@@ -546,7 +571,11 @@ export const CanvasElement = React.memo(function CanvasElement({
   }, [setHoveredId]);
 
   useEffect(() => {
-    if (elementComponentType !== 'Image') {
+    // An Image, and an Avatar, whose picture the app shows and the canvas
+    // showed initials for. An Avatar is given a picture of the project's
+    // own (`src={asset("…")}`) and no other: see the address test below.
+    setWithheldPicture(null);
+    if (elementComponentType !== 'Image' && elementComponentType !== 'Avatar') {
       setImagePreviewUrl(null);
       return;
     }
@@ -557,23 +586,33 @@ export const CanvasElement = React.memo(function CanvasElement({
       return;
     }
 
-    let resolvedSrc = src;
-    const isExpressionSrc = imageExpressionProps?.includes('src');
-    if (isExpressionSrc && resolvedLogicStrings[src]) {
+    // What the app would load: the file `asset("…")` names, an address, or
+    // a name the logic gives a string. A path written on its own is none of
+    // these (utils/assetSource.ts): the app does not load it, and the canvas
+    // found the file by it and drew the picture all the same.
+    const isExpressionSrc = imageExpressionProps?.includes('src') ?? false;
+    const called = isExpressionSrc ? assetCallPath(src) : null;
+    let resolvedSrc = called ?? src;
+    if (isExpressionSrc && called === null && resolvedLogicStrings[src]) {
       resolvedSrc = resolvedLogicStrings[src];
     }
 
-    if (/^(https?:|data:|blob:)/i.test(resolvedSrc)) {
-      setImagePreviewUrl(resolvedSrc);
+    if (/^(https?:|data:|blob:)/i.test(resolvedSrc) || isRemoteAddress(resolvedSrc)) {
+      // A component drawn as itself is given nothing the browser would go
+      // and fetch (utils/drawnProps.ts): an Avatar with an address keeps its
+      // initials here. An Image at an address was fetched as its file was
+      // opened, which told the host of every picture in somebody else's
+      // project that it had been opened. It is drawn once it has been asked
+      // for (utils/remotePictures.ts); a picture written into the page as
+      // `data:` is a request to nobody, and is drawn as before.
+      const remote = isRemoteAddress(resolvedSrc);
+      const drawn = elementComponentType === 'Image' && (!remote || remoteShown(resolvedSrc));
+      setImagePreviewUrl(drawn ? resolvedSrc : null);
+      if (remote && !drawn && elementComponentType === 'Image') setWithheldPicture(resolvedSrc);
       return;
     }
 
-    const normalizedSrc = resolvedSrc.replace(/^\.?\//, '').replace(/^assets\//, '');
-
-    const matchedAsset = assets.find((a) => {
-      const name = assetPath(a).replace(/^assets\//, '');
-      return name === normalizedSrc || name.endsWith(`/${normalizedSrc}`);
-    });
+    const matchedAsset = isExpressionSrc ? assetNamed(resolvedSrc, assets) : undefined;
 
     if (!matchedAsset) {
       setImagePreviewUrl(null);
@@ -587,7 +626,7 @@ export const CanvasElement = React.memo(function CanvasElement({
     );
     setImagePreviewUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
-  }, [elementComponentType, imageSource, imageExpressionProps, assets, resolvedLogicStrings]);
+  }, [elementComponentType, imageSource, imageExpressionProps, assets, resolvedLogicStrings, picturesShown]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -706,18 +745,31 @@ export const CanvasElement = React.memo(function CanvasElement({
   // what the canvas draws in its place otherwise.
   const renderComponentPreview = () => {
     const meta = element.block || isTextNode(element) ? undefined : getComponentMeta(element.componentType);
-    // Only while it holds nothing on the canvas. What an element holds is
-    // drawn below its own drawing, where it can be picked up, and that is
-    // not where the component would draw it: a Badge's Icon stands among
-    // its words, an EmptyState's Button under its description, and what a
-    // Skeleton holds is shown in place of the Skeleton. Holding something,
-    // each is drawn as before. And a name a page has imported over is that
-    // page's component, not the library's.
+    // What an element holds is drawn below its own drawing, where it can be
+    // picked up. A component that held anything was a card with its name
+    // again, so a Badge turned grey when an Icon was put in it. It stays
+    // itself where the drawing is still a true one: holding what stands
+    // among its words, which is drawn inside it as well (`held`), and an
+    // EmptyState, which lays what it holds out under its description, where
+    // the canvas puts it too. What a Skeleton holds is shown in place of the
+    // Skeleton, and any other container lays its children out itself: each
+    // of those is drawn as before. And a name a page has imported over is
+    // that page's component, not the library's.
     const itself =
       meta?.drawn === true &&
-      element.children.length === 0 &&
+      (element.children.length === 0 || held !== null || DRAWN_OVER_ITS_CHILDREN.has(element.componentType)) &&
       !useCanvasStore.getState().getImportSource(element.componentType);
-    if (itself) return <DrawnComponent element={element} meta={meta} fallback={renderStandIn()} />;
+    if (itself) {
+      return (
+        <DrawnComponent
+          element={element}
+          meta={meta}
+          fallback={renderStandIn()}
+          held={held}
+          picture={element.componentType === 'Avatar' ? imagePreviewUrl : null}
+        />
+      );
+    }
     return renderStandIn();
   };
 
@@ -904,12 +956,37 @@ export const CanvasElement = React.memo(function CanvasElement({
               border: '1px solid var(--line-soft)',
             }}
           >
-            {imagePreviewUrl ? (
+            {withheldPicture ? (
+              <span data-remote-picture="" style={{ display: 'grid', gap: 6, justifyItems: 'center', padding: '10px 12px', textAlign: 'center', overflowWrap: 'anywhere' }}>
+                <span style={{ fontFamily: 'var(--mono)' }}>{withheldPicture}</span>
+                <span>Not loaded: the canvas asks nothing of another site until you say so.</span>
+                {/* The canvas is one stop for Tab: the same is offered in Properties, where the keyboard reaches. */}
+                <button
+                  type="button"
+                  className="bl-btn bl-btn-sm"
+                  tabIndex={-1}
+                  data-action="show-remote-picture"
+                  // What the canvas draws for an element is a picture and takes no pointer; this is the one thing in it to press.
+                  style={{ pointerEvents: 'auto' }}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    showRemotePicture(withheldPicture);
+                  }}
+                >
+                  Show
+                </button>
+              </span>
+            ) : imagePreviewUrl ? (
               <img
                 src={imagePreviewUrl}
                 alt={(props.alt as string) || 'Image'}
                 style={{ maxWidth: '100%', maxHeight: 180, objectFit: 'contain' }}
               />
+            ) : props.src && !(element.expressionProps ?? []).includes('src') && assetNamed(String(props.src), assets) ? (
+              // The file is in the project and the page names it by its path,
+              // which the app does not load: said here, where it was drawn.
+              `${String(props.src)} is written as a path, which the app does not load. Choose the picture under Asset in Properties.`
             ) : props.src ? (
               `Missing image source: ${String(props.src)}`
             ) : (

@@ -471,29 +471,110 @@ describe('a component the canvas draws as itself', () => {
     for (const type of ['Button', 'Text', 'Heading', 'Card', 'Stack']) expect(drawnIn(type), type).toBeNull();
   });
 
-  it('goes back to its card when it holds an element among its words, which are then its children to pick up', () => {
-    open('<App><Badge><Icon name="check" /> Shipped</Badge></App>');
+  it('stays itself when it holds an element among its words, drawn with both in it, and they are still its children to pick up', () => {
+    // It went back to a card with its name: a Badge turned grey the moment
+    // an Icon was put in it, and so did a Tag and a CopyButton.
+    open('<App><Badge variant="success"><Icon name="check" /> Shipped</Badge><Tag><Kbd keys="K" /> Key</Tag><CopyButton value="x"><Icon name="copy" /> Copy</CopyButton></App>');
+    mount();
+    const badge = drawnIn('Badge')!;
+    expect(badge.textContent).toBe(' Shipped');
+    expect(badge.querySelector('svg')).not.toBeNull();
+    expect(drawnIn('Tag')!.querySelector('kbd')!.textContent).toBe('K');
+    expect(drawnIn('CopyButton')!.textContent).toContain('Copy');
+    // What it holds is below it as before, each a thing to select, move and delete.
+    expect(hasChildrenArea('Badge')).toBe(true);
+    expect(drawnIn('Icon')).not.toBeNull();
+
+    // The drawing follows what it holds: the Icon taken out, and the words changed.
+    const words = [...canvas().elements.values()].find((el) => el.props.children === ' Shipped')!;
+    act(() => canvas().updateElementProps(words.id, { children: ' Done' }));
+    expect(drawnIn('Badge')!.textContent).toBe(' Done');
+    act(() => canvas().deleteElement(byType('Icon').id));
+    expect(drawnIn('Badge')!.textContent?.trim()).toBe('Done');
+    expect(drawnIn('Badge')!.querySelector('svg')).toBeNull();
+  });
+
+  it('is a card again when it holds something that does not stand among words', () => {
+    // A Card in a Badge is nothing the Badge can be drawn with inside it.
+    open('<App><Badge>New <Card></Card></Badge></App>');
     mount();
     expect(drawnIn('Badge')).toBeNull();
     expect(hasChildrenArea('Badge')).toBe(true);
-    // The Icon in it is one with no children of its own, and is drawn.
-    expect(drawnIn('Icon')).not.toBeNull();
   });
 
-  it('goes back to its card when it holds what it would lay out itself, and is itself with a place to drop into while it holds nothing', () => {
-    // What an element holds is drawn below its drawing. Under a drawn
-    // EmptyState that is outside its box, and under a drawn Skeleton it is
-    // beside the placeholder it is shown in place of.
+  it('stays itself over what it lays out under its own content, and is a card where it would lay its children out itself', () => {
+    // An EmptyState puts what it holds under its description, which is
+    // where the canvas draws an element's children. What a Skeleton holds is
+    // shown in place of the Skeleton, and a Stat lays its children out itself.
     open('<App><EmptyState title="Nothing yet"><Button>Add</Button></EmptyState><Skeleton><Text>Loaded</Text></Skeleton><Stat label="Open" value="3" /></App>');
     mount();
-    expect(drawnIn('EmptyState')).toBeNull();
-    expect(drawnIn('Skeleton')).toBeNull();
+    expect(drawnIn('EmptyState')!.textContent).toContain('Nothing yet');
+    // Drawn once, below it, and not inside the drawing as well.
+    expect(drawnIn('EmptyState')!.textContent).not.toContain('Add');
     expect(hasChildrenArea('EmptyState')).toBe(true);
+    expect(drawnIn('Skeleton')).toBeNull();
     // Holding nothing, a container is drawn as itself, and still takes a drop.
     expect(drawnIn('Stat')!.textContent).toContain('Open');
     expect(hasChildrenArea('Stat')).toBe(true);
     expect(dropFromPalette('Text', 'Stat')).toEqual(['Text']);
     expect(drawnIn('Stat')).toBeNull();
+  });
+
+  describe('a picture of the project\'s own', () => {
+    // Driven in Chromium first, with one picture in the project's assets:
+    //
+    //   written                          the canvas          Preview, and the app
+    //   <Image src="assets/a.png">       the picture         "Failed to load"
+    //   <Image src={asset("…")}>         "Missing image…"    the picture
+    //   <Avatar src={asset("…")}>        initials            the picture
+    //
+    // The app is handed a file of its bundle by `asset("…")` and by nothing
+    // else, and the first row is what the panel's own list of assets wrote.
+    const made: Blob[] = [];
+    const createObjectURL = URL.createObjectURL;
+    const revokeObjectURL = URL.revokeObjectURL;
+    const element = (id: string) => host.querySelector<HTMLElement>(`[data-canvas-element-id="${id}"]`)!;
+    const all = (type: string) => [...canvas().elements.values()].filter((el) => el.componentType === type);
+
+    beforeEach(() => {
+      made.length = 0;
+      URL.createObjectURL = (blob: Blob) => `blob:picture-${made.push(blob)}`;
+      URL.revokeObjectURL = () => undefined;
+      act(() => useProjectStore.getState().setAssets([{ name: 'ada.png', bundlePath: 'assets/ada.png', type: 'image/png', data: new Uint8Array([1, 2, 3]) }]));
+    });
+    afterEach(() => {
+      URL.createObjectURL = createObjectURL;
+      URL.revokeObjectURL = revokeObjectURL;
+      act(() => useProjectStore.getState().setAssets([]));
+    });
+
+    it('is drawn for an Image that asks for it as the app does, and not for its bare path', () => {
+      open('<App><Image src={asset("assets/ada.png")} alt="called" /><Image src="assets/ada.png" alt="by path" /><Image src="assets/missing.png" alt="not there" /></App>');
+      mount();
+      const [called, byPath, missing] = all('Image');
+      expect(element(called.id).querySelector('img')?.getAttribute('src')).toBe('blob:picture-1');
+      expect(element(byPath.id).querySelector('img')).toBeNull();
+      expect(element(byPath.id).textContent).toContain('assets/ada.png is written as a path, which the app does not load. Choose the picture under Asset in Properties.');
+      expect(element(missing.id).textContent).toContain('Missing image source: assets/missing.png');
+      expect(made).toHaveLength(1);
+    });
+
+    it('is drawn for an Avatar that asks for it, where every Avatar showed its initials', () => {
+      // Nothing drawn on the canvas is given an address to fetch, so an
+      // Avatar with an address keeps its initials here. A picture in the
+      // project's assets is bytes the page already holds.
+      open('<App><Avatar name="Ada Lovelace" src={asset(\'assets/ada.png\')} /><Tag>between</Tag><Avatar name="Grace Hopper" src="https://example.com/grace.png" /><Avatar name="Mary Shelley" src="assets/ada.png" /></App>');
+      mount();
+      const [ada, grace, mary] = all('Avatar');
+      const drawing = (id: string) => element(id).querySelector<HTMLElement>(':scope > [aria-hidden="true"] > [data-softn-drawn]')!;
+      expect(drawing(ada.id).querySelector('img')?.getAttribute('src')).toBe('blob:picture-1');
+      expect(made).toHaveLength(1);
+      expect(drawing(grace.id).querySelector('img')).toBeNull();
+      expect(drawing(grace.id).textContent).toBe('GH');
+      // By its path the app shows initials, and so does the canvas.
+      expect(drawing(mary.id).querySelector('img')).toBeNull();
+      expect(drawing(mary.id).textContent).toBe('MS');
+    });
   });
 
   it('is drawn in the project\'s theme, on an artboard that is the app\'s page in that theme', () => {
@@ -524,9 +605,10 @@ describe('a component the canvas draws as itself', () => {
       expect(dark.page.contains(host.querySelector(`[data-canvas-element-id="${byType('Text').id}"]`))).toBe(true);
       expect(drawnIn('Badge')!.getAttribute('data-softn-drawn')).toBe('dark');
 
-      // A page that pins light is a light page, on a dark project's tokens: as it runs.
+      // A page that pins light in a dark project is a light page with the
+      // light tokens: the tokens go with the page, as the app runs it.
       const pinned = whole('<App theme="light"><Badge>Shipped</Badge></App>');
-      expect(pinned.board.getAttribute('data-app-tokens')).toBe('dark');
+      expect(pinned.board.getAttribute('data-app-tokens')).toBe('light');
       expect(pinned.page.getAttribute('data-builder-page')).toBe('light');
       expect(pinned.page.classList.contains('softn-theme-light')).toBe(true);
     } finally {

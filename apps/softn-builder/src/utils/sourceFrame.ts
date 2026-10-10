@@ -130,6 +130,49 @@ const HEADER_NAMES: Array<[keyof SoftNDocument, string]> = [
   ['component', 'component'],
 ];
 
+/** The tags that declare something, by the token the lexer gives their name after `<`. */
+const HEADER_TOKENS: ReadonlyMap<TokenType, string> = new Map([
+  [TokenType.LOGIC, 'logic'],
+  [TokenType.SCRIPT, 'script'],
+  [TokenType.DATA, 'data'],
+  [TokenType.STYLE, 'style'],
+  [TokenType.COMPONENT, 'component'],
+  [TokenType.IMPORT, 'import'],
+]);
+
+/**
+ * Where each declaring block of the file opens, every one of them.
+ *
+ * The parsed page has one place for its `<data>` and one for its `<style>`,
+ * the first of each, since the parser reads every block of a kind as one.
+ * A second block written after the template was therefore unknown here, was
+ * taken for the end of the template and written over by the first visual
+ * edit, and a page that had one could only be edited as source. So the
+ * places are read from the file's own tokens: a `<` followed by one of the
+ * declaring names, where no element of the template begins (`anchors`).
+ */
+function declaringBlocks(source: string, doc: SoftNDocument, anchors: ReadonlySet<number>): Array<{ name: string; at: number }> {
+  const blocks: Array<{ name: string; at: number }> = [];
+  const tokens = safeTokenize(source);
+  if (tokens) {
+    tokens.forEach((token, index) => {
+      if (token.type !== TokenType.TAG_OPEN || anchors.has(token.start)) return;
+      const name = HEADER_TOKENS.get(tokens[index + 1]?.type);
+      if (name) blocks.push({ name, at: token.start });
+    });
+    return blocks;
+  }
+  // A file the lexer cannot read again: the places the parser kept.
+  for (const [key, name] of HEADER_NAMES) {
+    const block = doc[key] as { type: string; loc: { start: number } } | undefined;
+    if (block) blocks.push({ name, at: anchorOf({ type: 'Element', loc: block.loc }, source) });
+  }
+  for (const imported of doc.imports ?? []) {
+    blocks.push({ name: 'import', at: anchorOf({ type: 'Element', loc: imported.loc }, source) });
+  }
+  return blocks;
+}
+
 /** The three stretches of `source`, or null when it has no template to write. */
 export function frameSource(source: string, doc: SoftNDocument): SourceFrame | null {
   const roots = contentNodes(doc.template);
@@ -140,22 +183,18 @@ export function frameSource(source: string, doc: SoftNDocument): SourceFrame | n
   // The last node of the template, however deep: nothing of the template
   // begins after it, so a block that begins after it is past the template.
   let lastStart = bodyStart;
+  const anchors = new Set<number>();
   const visit = (nodes: TemplateNode[]): void => {
     for (const node of nodes) {
-      lastStart = Math.max(lastStart, anchorOf(node, source));
+      const at = anchorOf(node, source);
+      anchors.add(at);
+      lastStart = Math.max(lastStart, at);
       for (const branch of branchesOf(node)) visit(branch);
     }
   };
   visit(doc.template);
 
-  const blocks: Array<{ name: string; at: number }> = [];
-  for (const [key, name] of HEADER_NAMES) {
-    const block = doc[key] as { type: string; loc: { start: number } } | undefined;
-    if (block) blocks.push({ name, at: anchorOf({ type: 'Element', loc: block.loc }, source) });
-  }
-  for (const imported of doc.imports ?? []) {
-    blocks.push({ name: 'import', at: anchorOf({ type: 'Element', loc: imported.loc }, source) });
-  }
+  const blocks = declaringBlocks(source, doc, anchors);
 
   let tailStart = source.length;
   for (const block of blocks) {

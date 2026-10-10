@@ -40,6 +40,10 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '-0.02em',
     color: 'var(--paper)',
     maxWidth: 240,
+    // The one thing in the row that gives way, and so the last to: the
+    // buttons give up their words first (builder.css, .bl-toolbar).
+    minWidth: 0,
+    flexShrink: 1,
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -52,6 +56,7 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: 0,
     color: 'var(--dim)',
     marginLeft: 8,
+    flexShrink: 0,
   },
 };
 
@@ -182,10 +187,10 @@ export function Toolbar({
   const elsewhere = view === 'code' ? 'steps the canvas, in Design; the code editor has its own' : 'steps the canvas, in Design';
 
   return (
-    <div style={styles.toolbar} role="toolbar" aria-label="Project">
+    <div className="bl-toolbar" data-panel="Toolbar" style={styles.toolbar} role="toolbar" aria-label="Project">
       {/* The product bar above already says this is Builder; this row is the
           project's. */}
-      <span style={styles.projectName} title={isDirty ? `${name} — unsaved changes` : name}>
+      <span style={styles.projectName} data-project-name="" title={isDirty ? `${name} — unsaved changes` : name}>
         {name}
       </span>
       {isDirty && (
@@ -196,12 +201,15 @@ export function Toolbar({
 
       <div style={styles.divider} />
 
-      <button className="bl-tool" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${withMod('Z')})` : `Undo ${elsewhere}`}>
-        <IconUndo /> Undo
+      {/* The words of these two, and of New and Open, are put out of sight
+          where the row is short (data-compact, builder.css); the name each
+          has is said either way. */}
+      <button className="bl-tool" data-compact="1" aria-label="Undo" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${withMod('Z')})` : `Undo ${elsewhere}`}>
+        <IconUndo /> <span className="bl-tool-label">Undo</span>
       </button>
 
-      <button className="bl-tool" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${withMod('Y')})` : `Redo ${elsewhere}`}>
-        <IconRedo /> Redo
+      <button className="bl-tool" data-compact="1" aria-label="Redo" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${withMod('Y')})` : `Redo ${elsewhere}`}>
+        <IconRedo /> <span className="bl-tool-label">Redo</span>
       </button>
 
       <div style={styles.spacer} />
@@ -223,12 +231,12 @@ export function Toolbar({
 
       <div style={styles.spacer} />
 
-      <button className="bl-tool" onClick={onNew} title={`New app (${withMod('N')})`}>
-        <IconNew /> New
+      <button className="bl-tool" data-compact="2" aria-label="New" onClick={onNew} title={`New app (${withMod('N')})`}>
+        <IconNew /> <span className="bl-tool-label">New</span>
       </button>
 
-      <button className="bl-tool" onClick={onOpen} title={`Open a .softn file (${withMod('O')})`}>
-        <IconOpen /> Open
+      <button className="bl-tool" data-compact="2" aria-label="Open" onClick={onOpen} title={`Open a .softn file (${withMod('O')})`}>
+        <IconOpen /> <span className="bl-tool-label">Open</span>
       </button>
 
       <button className="bl-tool" onClick={onSave} disabled={isSaving} aria-busy={isSaving} title={`Save (${withMod('S')})`}>

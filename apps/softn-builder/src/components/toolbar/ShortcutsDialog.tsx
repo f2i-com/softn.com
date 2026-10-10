@@ -4,7 +4,7 @@
 
 import React, { useId } from 'react';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
-import { modKeyLabel } from '../../utils/platformKeys';
+import { isApplePlatform, modKeyLabel } from '../../utils/platformKeys';
 
 // The overlay, frame, title and close button are classes in styles/builder.css.
 const styles: Record<string, React.CSSProperties> = {
@@ -84,6 +84,8 @@ interface ShortcutEntry {
 }
 
 const MOD = modKeyLabel();
+/** The code editor's own key for handing Tab back (platformKeys.ts, tabFocusKeyLabel), as keys. */
+const TAB_LEAVES = isApplePlatform() ? ['⌃', '⇧', 'M'] : ['Ctrl', 'M'];
 
 const shortcuts: { title: string; entries: ShortcutEntry[] }[] = [
   {
@@ -116,6 +118,9 @@ const shortcuts: { title: string; entries: ShortcutEntry[] }[] = [
       { action: 'Data view', keys: [[MOD, '2']] },
       { action: 'Preview', keys: [[MOD, '3']] },
       { action: 'Code view', keys: [[MOD, '4']] },
+      // Tab stops in a code editor, where it indents: these are the ways on.
+      { action: 'Next / previous panel', keys: [['F6'], ['Shift', 'F6']] },
+      { action: 'Let Tab leave a code editor', keys: [TAB_LEAVES] },
     ],
   },
   {
@@ -138,6 +143,8 @@ const shortcuts: { title: string; entries: ShortcutEntry[] }[] = [
       { action: 'Into the container before it', keys: [['Alt', 'Shift', '→']] },
       { action: 'Out of what holds it', keys: [['Alt', 'Shift', '←']] },
       { action: 'Add from the palette at the selection', keys: [['Enter']] },
+      // The palette is one stop for Tab: these move through its rows.
+      { action: 'Next / previous in the palette', keys: [['↓'], ['↑']] },
     ],
   },
 ];

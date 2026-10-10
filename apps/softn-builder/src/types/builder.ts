@@ -111,6 +111,12 @@ export interface CanvasComment {
 export interface SourceFidelity {
   lossless: boolean;
   reasons: string[];
+  /**
+   * What the parser warns of in a page it reads whole, each with its line.
+   * Not a reason: the page runs and is edited on the canvas. Absent where
+   * there is none.
+   */
+  warnings?: string[];
 }
 
 // Canvas element representing a component instance
@@ -354,5 +360,10 @@ export interface LogicFileState {
 export interface UIImport {
   name: string; // "Header"
   source: string; // "./components/Header.ui"
+  /**
+   * Written with braces, `<import { Header, Footer } from=… />`: a line that
+   * may name several things, which the Builder neither writes nor takes away.
+   */
+  named?: boolean;
 }
 

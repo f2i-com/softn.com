@@ -378,6 +378,14 @@ export function Canvas({ onShowComponents }: CanvasProps) {
             : `Source-only file: it has constructs the visual editor cannot write back (${summariseReasons(fidelity!.reasons)}). Canvas edits will not be saved; edit its source instead.`}
         </div>
       )}
+      {/* A page the parser only warns about is edited here like any other;
+          what it warns of is written in the page's source, and said. */}
+      {!sourceOnly && !blocked && fidelity?.warnings && fidelity.warnings.length > 0 && (
+        <div className="bl-notice" role="status" data-source-warnings="">
+          {fidelity.warnings.length === 1 ? 'A warning for this page, to put right in Code. ' : `${fidelity.warnings.length} warnings for this page, to put right in Code. `}
+          {fidelity.warnings.join(' ')}
+        </div>
+      )}
       <div style={styles.canvasWrapper} ref={scrollerRef} data-canvas-scroller="">
         <div
           style={{

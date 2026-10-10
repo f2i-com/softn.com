@@ -244,6 +244,74 @@ describe('the import of a page the Builder put on the canvas', () => {
   });
 });
 
+describe('the import of a page, in a project that has been exported and opened again', () => {
+  // Which imports the Builder wrote is remembered for the session. A page
+  // opened from a file comes back with every import the author's, so the
+  // import of a page dropped from the palette the day before stayed in the
+  // header when its last use was deleted. The line goes with the last use
+  // now, whoever wrote it, and that needs nothing remembered.
+  const OPENED = '<import Footer from="./footer.ui" />\n<import TaskRow from="./components/task-row.ui" />\n<App>\n  <Heading>Tasks</Heading>\n  <Stack>\n    <TaskRow />\n  </Stack>\n  <TaskRow />\n</App>\n';
+  const uses = () => [...canvas().elements.values()].filter((element) => element.componentType === 'TaskRow');
+
+  beforeEach(() => {
+    component('ui/components', 'task-row.ui');
+    // As a file gives it back: its source, and nothing known of who wrote what.
+    write(MAIN, OPENED);
+    expect(canvas().writtenImports).toEqual([]);
+  });
+
+  it('goes when the last use of it is deleted on the canvas, and not while another is left', () => {
+    canvas().deleteElement(uses()[0].id);
+    flushCanvasToActiveFile();
+    expect(file(MAIN).originalSource).toContain('<import TaskRow from="./components/task-row.ui" />');
+    canvas().deleteElement(uses()[0].id);
+    expect(live()).toEqual(['Footer']);
+    flushCanvasToActiveFile();
+    expect(file(MAIN).visualEditBlocked).toBeUndefined();
+    expect(file(MAIN).originalSource).toBe('<import Footer from="./footer.ui" />\n<App>\n  <Heading>Tasks</Heading>\n  <Stack />\n</App>\n');
+  });
+
+  it('goes when what holds the last use of it is deleted', () => {
+    canvas().deleteElement(uses()[1].id);
+    canvas().deleteElement([...canvas().elements.values()].find((element) => element.componentType === 'Stack')!.id);
+    flushCanvasToActiveFile();
+    expect(file(MAIN).originalSource).toBe('<import Footer from="./footer.ui" />\n<App>\n  <Heading>Tasks</Heading>\n</App>\n');
+  });
+
+  it('comes back with the use when the delete is undone', () => {
+    canvas().deleteElement(uses()[1].id);
+    // A step for Undo, as the canvas, the panel and the hierarchy each record before they delete.
+    useHistoryStore.getState().push(canvas().elements, canvas().rootId);
+    canvas().deleteElement(uses()[0].id);
+    flushCanvasToActiveFile();
+    expect(file(MAIN).originalSource).not.toContain('TaskRow');
+    undoCanvas();
+    flushCanvasToActiveFile();
+    expect(file(MAIN).originalSource).toBe('<import Footer from="./footer.ui" />\n<import TaskRow from="./components/task-row.ui" />\n<App>\n  <Heading>Tasks</Heading>\n  <Stack>\n    <TaskRow />\n  </Stack>\n</App>\n');
+    expect(parse(file(MAIN).originalSource!).diagnostics ?? []).toEqual([]);
+  });
+
+  it('stays on a page that is edited and saved without its use being deleted, used or not', () => {
+    // Footer has no use on the page: it may be on its way in. Nothing but
+    // deleting the last use of an import takes one out.
+    canvas().deleteElement([...canvas().elements.values()].find((element) => element.componentType === 'Heading')!.id);
+    canvas().addElement('Divider', canvas().rootId, undefined, { starter: true });
+    flushCanvasToActiveFile();
+    expect(file(MAIN).originalSource).toContain('<import Footer from="./footer.ui" />');
+    expect(file(MAIN).originalSource).toContain('<import TaskRow from="./components/task-row.ui" />');
+  });
+
+  it('stays when it is written with braces, or names something that is not a page of the project', () => {
+    write(MAIN, '<import { TaskRow, Other } from="./components/task-row.ui" />\n<import Chart from="@/charts/Chart.ui" />\n<App>\n  <TaskRow />\n  <Chart />\n</App>\n');
+    canvas().deleteElement(uses()[0].id);
+    canvas().deleteElement([...canvas().elements.values()].find((element) => element.componentType === 'Chart')!.id);
+    expect(canvas().writtenImports).toEqual([]);
+    flushCanvasToActiveFile();
+    expect(file(MAIN).visualEditBlocked).toBeUndefined();
+    expect(file(MAIN).originalSource).toBe('<import { TaskRow, Other } from="./components/task-row.ui" />\n<import Chart from="@/charts/Chart.ui" />\n<App />\n');
+  });
+});
+
 describe('a component file made from the Files panel', () => {
   it('is a fragment with no App of its own, in ui/components, and is offered to the pages of the project by its name', () => {
     const id = createComponentFile('task-row');

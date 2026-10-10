@@ -15,6 +15,8 @@ import { previewSourceFor, undeclaredPythonPackage } from '../../utils/previewSo
 import type { PermissionConfig } from '@softn/core';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
+import { PreviewProblems } from './PreviewProblems';
+import { previewThemeProps, type PreviewThemeProps } from '../../utils/previewTheme';
 
 // Error boundary to catch rendering errors in the preview
 interface ErrorBoundaryProps {
@@ -319,12 +321,15 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   const [forceRender, setForceRender] = useState(false);
   const [PreviewComponent, setPreviewComponent] = useState<React.ComponentType<PreviewRuntimeProps> | null>(null);
   const [previewRecordsFor, setPreviewRecordsFor] = useState<typeof import('./PreviewRuntime').previewRecordsFor | null>(null);
-  const [ThemeProviderComponent, setThemeProviderComponent] = useState<React.ComponentType<{
-    darkMode?: boolean;
-    followSystem?: boolean;
-    children: React.ReactNode;
-  }> | null>(null);
+  const [ThemeProviderComponent, setThemeProviderComponent] = useState<React.ComponentType<
+    PreviewThemeProps & { children: React.ReactNode }
+  > | null>(null);
   const [sourceInfo, setSourceInfo] = useState<string | null>(null);
+  // Which start of the app this is. A new one is a new engine and the
+  // records the app began with: the way out of a logic that has stopped,
+  // which was leaving Preview and coming back, if a person thought of it.
+  const [run, setRun] = useState(0);
+  const [stopped, setStopped] = useState(false);
 
   // Mount indicator
   useEffect(() => {
@@ -421,13 +426,6 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   }, []);
 
   const dimensions = deviceDimensions[device];
-
-  // Determine if dark mode based on themeMode setting
-  const isDarkMode =
-    themeMode === 'dark' ||
-    (themeMode === 'system' &&
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 
   const renderError = (err: Error) => (
     <div style={styles.error}>
@@ -563,6 +561,7 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       const preview = (
         <PreviewErrorBoundary fallback={renderError}>
           <PreviewComponent
+            key={run}
             source={cleanSource}
             loading={loadingFallback}
             error={errorFallback}
@@ -592,10 +591,9 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
         return (
           <DeviceViewport width={dimensions.width} height={dimensions.height}>
             <PreviewErrorBoundary fallback={renderError}>
-              <ThemeProviderComponent
-                darkMode={themeMode === 'system' ? undefined : isDarkMode}
-                followSystem={themeMode === 'system'}
-              >
+              {/* The project's theme as its declaration, as a runtime is
+                  handed it, and not as an editor's switch (utils/previewTheme.ts). */}
+              <ThemeProviderComponent {...previewThemeProps(themeMode)}>
                 {preview}
               </ThemeProviderComponent>
             </PreviewErrorBoundary>
@@ -641,10 +639,15 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       <div style={styles.header}>
         <span style={styles.title}>
           Preview
-          {!error && !isLoading && source.trim() && (
+          {!error && !isLoading && source.trim() && !stopped && (
             <span style={styles.live} data-preview-live="true">
               <span style={styles.liveDot} aria-hidden="true" />
               Running
+            </span>
+          )}
+          {!error && !isLoading && source.trim() && stopped && (
+            <span className="bl-badge" data-tone="warn" data-preview-live="false">
+              Stopped
             </span>
           )}
         </span>
@@ -667,6 +670,7 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
           </div>
         </div>
       </div>
+      <PreviewProblems run={run} onRestart={() => setRun((n) => n + 1)} onStopped={setStopped} />
       {sourceInfo && <div style={styles.infoBanner}>{sourceInfo}</div>}
       {collections.length > 0 && <div style={styles.infoBanner}>Try your app here. Records you add in the preview are thrown away when you leave it; the app’s saved records are edited in Data.</div>}
 

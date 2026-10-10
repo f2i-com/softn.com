@@ -877,7 +877,9 @@ const baseRegistry: ComponentMeta[] = [
     'Navigation',
     'chevrons-right',
     'Breadcrumb trail',
-    {},
+    // A new one has a trail to show. With no items it drew nothing, on the
+    // canvas or in the running app, and was a card to be found by.
+    { items: [{ label: 'Home' }, { label: 'Projects' }, { label: 'This page' }] },
     [
       { name: 'separator', type: 'string', default: '/' },
       { name: 'items', type: 'json', description: 'Array of { label, href } objects' },
@@ -1001,7 +1003,19 @@ const baseRegistry: ComponentMeta[] = [
     'Data',
     'table',
     'Data table',
-    {  },
+    // A new one has two columns and two rows, to be seen and then replaced:
+    // it started with neither, and drew "No data available" under no header.
+    {
+      columns: [
+        { key: 'name', header: 'Name' },
+        { key: 'role', header: 'Role' },
+      ],
+      data: [
+        { name: 'Ada Lovelace', role: 'Engineer' },
+        { name: 'Grace Hopper', role: 'Admiral' },
+      ],
+      rowKey: 'name',
+    },
     [
       { name: 'data', type: 'expression', description: 'Array of row objects' },
       { name: 'columns', type: 'json', description: 'Column definitions' },

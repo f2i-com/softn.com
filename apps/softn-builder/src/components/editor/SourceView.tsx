@@ -14,6 +14,7 @@ import { gatherCollections } from '../../utils/buildProjectBundle';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { useSourceFidelity, summariseReasons } from '../../utils/useSourceFidelity';
 import { CodeEditor } from './CodeEditor';
+import { EditorWayOut } from './EditorWayOut';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -150,11 +151,20 @@ export function SourceView() {
         </div>
         <span style={styles.hint}>Edits here update the canvas and the preview</span>
       </div>
+      <EditorWayOut style={{ display: 'block', padding: '3px 16px', borderBottom: '1px solid var(--line-soft)' }} />
       {(sourceOnly || blocked) && (
         <div className="bl-notice" role="status">
           {blocked
             ? `A canvas edit was not written to this file — it has constructs the visual editor cannot write back: ${summariseReasons(blocked)}. Edit its source here.`
             : `This file has constructs the visual editor cannot write back: ${summariseReasons(fidelity!.reasons)}. Edit its source here; the canvas will not change it.`}
+        </div>
+      )}
+      {/* What the parser warns of in a page it reads whole: the page runs and
+          is edited in Design, and something written in it does nothing. */}
+      {fidelity?.warnings && fidelity.warnings.length > 0 && (
+        <div className="bl-notice" role="status" data-source-warnings="">
+          {fidelity.warnings.length === 1 ? 'A warning for this page. ' : `${fidelity.warnings.length} warnings for this page. `}
+          {fidelity.warnings.join(' ')}
         </div>
       )}
       <div style={styles.editorWrapper}>

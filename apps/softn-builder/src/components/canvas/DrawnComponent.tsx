@@ -40,7 +40,7 @@
 import React, { createContext, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { App, builtinComponents, darkTheme, lightTheme, themeToCssVariables } from '@softn/components';
 import type { CanvasElement, ComponentMeta } from '../../types/builder';
-import { drawnProps } from '../../utils/drawnProps';
+import { drawnProps, type DrawnHeld } from '../../utils/drawnProps';
 import type { DrawnTheme, ThemeSide } from '../../utils/drawnTheme';
 
 /** What an `<App>` of one side makes of its container: the page a component is drawn in. */
@@ -191,24 +191,46 @@ interface DrawnProps {
   meta: ComponentMeta;
   /** What the canvas drew for this element before: shown when the component cannot be. */
   fallback: React.ReactNode;
+  /** What it holds among its words, drawn inside it (utils/drawnProps.ts, drawnHeld). */
+  held?: readonly DrawnHeld[] | null;
+  /**
+   * A picture of the project's own for its `src`, as an address that asks
+   * nothing of a network (the asset's bytes, held in the page). An address
+   * written for it is never handed over, and without this an Avatar with a
+   * picture from the project's assets showed initials where the app shows
+   * the picture.
+   */
+  picture?: string | null;
 }
 
 /**
  * The component itself, as a picture of it. A change to what it is given
  * starts it again: one that threw for a value is tried with the next.
  */
-export function DrawnComponent({ element, meta, fallback }: DrawnProps): React.ReactElement {
+export function DrawnComponent({ element, meta, fallback, held, picture }: DrawnProps): React.ReactElement {
   const { theme, pages } = useContext(DrawnContext);
   const Component = components[element.componentType];
-  const props = useMemo(() => drawnProps(element, meta), [element, meta]);
+  const props = useMemo(() => {
+    const given = drawnProps(element, meta);
+    if (picture) given.src = picture;
+    if (held && held.length > 0) {
+      given.children = held.map((part, index) => {
+        if (typeof part === 'string') return part;
+        const Held = components[part.type];
+        return Held ? <Held key={index} {...part.props} /> : null;
+      });
+    }
+    return given;
+  }, [element, meta, held, picture]);
   // What it is given, as one text: the same again is the same attempt.
   const attempt = useMemo(() => {
     try {
-      return JSON.stringify([element.componentType, props]);
+      // What it holds is in `held` as plain values; in `props` it is elements, which are not text.
+      return JSON.stringify([element.componentType, { ...props, children: held && held.length > 0 ? held : props.children }]);
     } catch {
       return element.id;
     }
-  }, [element.componentType, element.id, props]);
+  }, [element.componentType, element.id, props, held]);
   const content = useRef<HTMLDivElement>(null);
   // The attempt that could not be drawn: it threw, or there was nothing to see.
   const [standIn, setStandIn] = useState<string | null>(null);

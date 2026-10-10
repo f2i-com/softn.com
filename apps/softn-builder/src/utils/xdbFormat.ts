@@ -12,9 +12,10 @@
  *
  * What the runtime reads (packages/@softn/core/src/bundle/bundle.ts,
  * parseXDBFile): `{ collection, records: [{ id, data, created_at, updated_at }] }`,
- * where a record without `data` is taken as flat (`{ id, ...fields }`), an
- * unknown key is ignored, and `deleted` is not read at all — every listed
- * record is seeded as live. The `schema` block is the Builder's own and the
+ * where a record without `data` is taken as flat (`{ id, ...fields }`: every
+ * key but `id` and `collection` is one of its fields, `updatedAt` and
+ * `deleted` included), an unknown key of a nested record is ignored, and
+ * `deleted` is not read at all — every listed record is seeded as live. The `schema` block is the Builder's own and the
  * runtime ignores it; it is what makes reopening lossless.
  *
  * Identity policy:
@@ -218,13 +219,16 @@ export function parseXdb(text: string, fallbackCollection: string): ParsedXdb {
       skipped += 1;
       continue;
     }
-    if (candidate.deleted === true) {
+    const nested = Object.prototype.hasOwnProperty.call(candidate, 'data');
+    // The envelope's own flag. In a flat record there is no envelope:
+    // `deleted` there is a field of the record, as every key is.
+    if (nested && candidate.deleted === true) {
       tombstones.push(candidate as XdbRecordEnvelope);
       continue;
     }
     let data: Record<string, unknown>;
     let rest: Record<string, unknown>;
-    if (Object.prototype.hasOwnProperty.call(candidate, 'data')) {
+    if (nested) {
       if (!isObject(candidate.data)) {
         skipped += 1;
         continue;
@@ -232,10 +236,14 @@ export function parseXdb(text: string, fallbackCollection: string): ParsedXdb {
       data = candidate.data;
       rest = candidate;
     } else {
-      // Flat, as Studio writes seed rows: every key but the identity is data.
-      data = Object.fromEntries(
-        Object.entries(candidate).filter(([key]) => key !== 'id' && key !== 'collection' && key !== 'created_at' && key !== 'updated_at' && key !== 'createdAt' && key !== 'updatedAt' && key !== 'deleted')
-      );
+      // Flat, as Studio writes seed rows: every key but `id` and `collection`
+      // is a field, which is exactly what the runtime keeps (core,
+      // parseXDBFile). `created_at`, `updated_at`, `createdAt`, `updatedAt`
+      // and `deleted` were taken out here as the record's own, so a field of
+      // one of those names came back from an untouched export as nothing: a
+      // "last updated" column, blank. The record's own times are still read
+      // from those keys, as the runtime reads them, and the fields stay.
+      data = Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== 'id' && key !== 'collection'));
       rest = { id: candidate.id, created_at: candidate.created_at ?? candidate.createdAt, updated_at: candidate.updated_at ?? candidate.updatedAt };
     }
     const rawCreated = rest.created_at ?? rest.createdAt;

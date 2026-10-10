@@ -159,7 +159,7 @@ export function parseSource(source: string): ParseResult {
           imports.push({ name: imp.defaultImport, source: imp.source });
         }
         for (const name of imp.namedImports || []) {
-          imports.push({ name, source: imp.source });
+          imports.push({ name, source: imp.source, named: true });
         }
       }
     }

@@ -21,3 +21,12 @@ export function withMod(key: string, apple = isApplePlatform()): string {
   const shift = key.startsWith('Shift+');
   return `${shift ? '⇧' : ''}⌘${shift ? key.slice(6) : key}`;
 }
+
+/**
+ * The code editor's own key for handing Tab back: pressed once, Tab moves
+ * the focus on instead of indenting, until it is pressed again. Ctrl+M, and
+ * Control+Shift+M on a Mac, where the editor keeps ⌘M for the window.
+ */
+export function tabFocusKeyLabel(apple = isApplePlatform()): string {
+  return apple ? '⌃⇧M' : 'Ctrl+M';
+}

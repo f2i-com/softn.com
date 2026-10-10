@@ -537,12 +537,18 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
 /**
  * The session as the stores stand, for the recovery record. Synchronous,
  * so a save that captured a revision a moment ago writes that revision.
+ *
+ * `assets: false` leaves the project's assets out, with their places in the
+ * file tree: for the copy kept of unsaved work (utils/recoveryCopy.ts),
+ * which is written again and again into a store a few megabytes deep, and
+ * keeps the text of a project whose pictures would not fit.
  */
-export function captureSession(view: ViewMode): BuilderSession {
+export function captureSession(view: ViewMode, options: { assets?: boolean } = {}): BuilderSession {
   const projectState = useProjectStore.getState();
   const canvasState = useCanvasStore.getState();
   const schemaState = useSchemaStore.getState();
   const filesState = useFilesStore.getState();
+  const left = options.assets === false ? new Set(filesState.assetFiles.keys()) : new Set<string>();
   return {
     savedAt: new Date().toISOString(),
     projectId: projectState.projectId,
@@ -563,18 +569,20 @@ export function captureSession(view: ViewMode): BuilderSession {
       selectedEntityId: schemaState.selectedEntityId,
     },
     files: {
-      nodes: Array.from(filesState.nodes.entries()),
+      nodes: Array.from(filesState.nodes.entries())
+        .filter(([id]) => !left.has(id))
+        .map(([id, node]) => (left.size > 0 && node.children?.some((child) => left.has(child)) ? [id, { ...node, children: node.children.filter((child) => !left.has(child)) }] : [id, node]) as [string, ProjectFileNode]),
       rootFolders: filesState.rootFolders,
       uiFiles: Array.from(filesState.uiFiles.entries()).map(([id, file]) => [
         id,
         { ...file, elements: Array.from(file.elements.entries()) },
       ]),
       logicFiles: Array.from(filesState.logicFiles.entries()),
-      assetFiles: Array.from(filesState.assetFiles.entries()).map(
-        ([id, asset]) => [id, encodeAsset(asset)] as [string, SerializedAssetFile]
-      ),
-      activeFileId: filesState.activeFileId,
-      openTabs: filesState.openTabs,
+      assetFiles: Array.from(filesState.assetFiles.entries())
+        .filter(([id]) => !left.has(id))
+        .map(([id, asset]) => [id, encodeAsset(asset)] as [string, SerializedAssetFile]),
+      activeFileId: filesState.activeFileId !== null && left.has(filesState.activeFileId) ? null : filesState.activeFileId,
+      openTabs: filesState.openTabs.filter((id) => !left.has(id)),
     },
     source: {
       manifest: projectState.source.manifest,

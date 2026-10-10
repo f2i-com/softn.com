@@ -53,11 +53,57 @@ describe('adding from the palette', () => {
     act(() => root.render(React.createElement(ComponentPalette)));
     const item = host.querySelector<HTMLElement>('[data-palette-item="Stack"]')!;
     expect(item.getAttribute('role')).toBe('button');
-    expect(item.tabIndex).toBe(0);
+    // It takes the focus, by the arrow keys from the row that holds the list's Tab stop.
+    expect(item.hasAttribute('tabindex')).toBe(true);
     act(() => {
       item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     });
     expect(count('Stack')).toBe(1);
+  });
+
+  it('is one stop for Tab, with the arrow keys moving through its rows', () => {
+    // Every row was a stop of its own: sixty presses of Tab from the Files
+    // panel to the canvas with the sections that start open, over a hundred
+    // with all of them, and no way round.
+    act(() => root.render(React.createElement(ComponentPalette)));
+    const rows = () => [...host.querySelectorAll<HTMLElement>('[data-palette-row]')];
+    const stops = () => rows().filter((row) => row.tabIndex === 0);
+    const press = (key: string) => act(() => void document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })));
+    expect(rows().length).toBeGreaterThan(40);
+    expect(stops()).toHaveLength(1);
+    expect(stops()[0]).toBe(rows()[0]);
+    // The search field and the Hide button are the panel's other stops.
+    expect([...host.querySelectorAll<HTMLElement>('button, input, [tabindex]')].filter((node) => node.tabIndex === 0)).toHaveLength(2);
+
+    act(() => rows()[0].focus());
+    press('ArrowDown');
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(stops()).toEqual([rows()[1]]);
+    press('End');
+    expect(document.activeElement).toBe(rows().at(-1));
+    press('ArrowDown');
+    expect(document.activeElement).toBe(rows().at(-1));
+    press('Home');
+    press('ArrowUp');
+    expect(document.activeElement).toBe(rows()[0]);
+
+    // A section closed with the stop inside it: the stop goes to a row that is still there.
+    const stack = host.querySelector<HTMLElement>('[data-palette-item="Stack"]')!;
+    act(() => stack.focus());
+    expect(stops()).toEqual([stack]);
+    const layout = rows().find((row) => row.tagName === 'BUTTON' && row.textContent?.startsWith('Layout'))!;
+    act(() => layout.click());
+    expect(host.querySelector('[data-palette-item="Stack"]')).toBeNull();
+    expect(stops()).toHaveLength(1);
+
+    // And a search leaves one stop among what it found.
+    const search = host.querySelector<HTMLInputElement>('input[type="search"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'chart');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(rows().length).toBeGreaterThan(1);
+    expect(stops()).toEqual([rows()[0]]);
   });
 
   it('does not offer the page itself, which a page has one of', () => {

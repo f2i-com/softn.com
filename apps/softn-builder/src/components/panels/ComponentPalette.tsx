@@ -2,7 +2,7 @@
  * ComponentPalette - Left sidebar with draggable components
  */
 
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   paletteComponents,
   getComponentsByCategory,
@@ -180,6 +180,38 @@ export function insertFromPalette(type: string): string | null {
 }
 
 /**
+ * Put the focus on an element of the canvas, once it has been drawn there.
+ *
+ * For what a double-click adds. The press that began it left the focus
+ * where it was, which after a search is the search field: Delete, Ctrl+Z
+ * and Alt+Shift with an arrow were then the field's own, and edited the
+ * search while the element just added sat selected on the canvas. On the
+ * element itself every key of the canvas is heard, and the search is not
+ * touched. Enter on a row leaves the focus on the row: a page is built from
+ * the keyboard by pressing it on one row after another.
+ */
+function focusOnCanvas(id: string | null): void {
+  if (id === null || typeof document === 'undefined') return;
+  requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>(`[data-canvas-element-id="${id}"]`)?.focus({ preventScroll: false });
+  });
+}
+
+/**
+ * Delete what is selected on the canvas, as one step for Undo. For Delete
+ * pressed on a row of the palette, where the focus is after Enter added
+ * something: the canvas hears that key only while the focus is in it.
+ */
+function deleteSelection(): boolean {
+  const canvas = useCanvasStore.getState();
+  const ids = canvas.selectedIds.filter((id) => id !== canvas.rootId && canvas.elements.has(id));
+  if (ids.length === 0) return false;
+  useHistoryStore.getState().push(canvas.elements, canvas.rootId);
+  for (const id of ids) useCanvasStore.getState().deleteElement(id);
+  return true;
+}
+
+/**
  * The selection as the last insert left it. The store makes a new list
  * whenever the selection is set, so this being the list that is selected
  * now says nobody has picked anything since, the same element included.
@@ -224,7 +256,7 @@ function ComponentItem({ component }: ComponentItemProps) {
   );
 
   const handleDoubleClick = useCallback(() => {
-    insertFromPalette(component.name);
+    focusOnCanvas(insertFromPalette(component.name));
   }, [component.name]);
 
   const handleKeyDown = useCallback(
@@ -246,7 +278,8 @@ function ComponentItem({ component }: ComponentItemProps) {
   return (
     <div
       role="button"
-      tabIndex={0}
+      tabIndex={-1}
+      data-palette-row=""
       data-palette-item={component.name}
       aria-label={`Add ${component.name}`}
       aria-description={component.description}
@@ -278,7 +311,7 @@ interface CategorySectionProps {
 function CategorySection({ category, components, isExpanded, onToggle }: CategorySectionProps) {
   return (
     <div style={styles.category}>
-      <button type="button" style={styles.categoryHeader} onClick={onToggle} aria-expanded={isExpanded}>
+      <button type="button" tabIndex={-1} data-palette-row="" style={styles.categoryHeader} onClick={onToggle} aria-expanded={isExpanded}>
         <span>
           {category} <span style={{ color: 'var(--dimmer)', fontWeight: 400 }}>{components.length}</span>
         </span>
@@ -358,13 +391,14 @@ function PageItem({ page }: { page: Importable }) {
   return (
     <div
       role="button"
-      tabIndex={0}
+      tabIndex={-1}
+      data-palette-row=""
       data-palette-page={page.file.path}
       aria-label={`Add ${fileName}`}
       aria-disabled={refused}
       aria-description={page.refused ?? `A page of this project, used here as ${page.name}`}
       onMouseDown={handleMouseDown}
-      onDoubleClick={add}
+      onDoubleClick={() => focusOnCanvas(insertFromPalette(type))}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -405,6 +439,45 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
   const matchingPages = searchQuery
     ? projectPages.filter((page) => `${page.file.path} ${page.name}`.toLowerCase().includes(searchQuery.toLowerCase()))
     : projectPages;
+
+  // The list is one stop for Tab, and the arrow keys move within it.
+  // Every row was a stop of its own: with the four sections that start
+  // open that is sixty presses of Tab between the Files panel and the
+  // canvas, and over a hundred with all of them open, with no way round.
+  // One row holds the stop (the one last used, or the first), as in the
+  // canvas's own tree.
+  const listRef = useRef<HTMLDivElement>(null);
+  const rowsOf = (list: HTMLElement | null): HTMLElement[] => [...(list?.querySelectorAll<HTMLElement>('[data-palette-row]') ?? [])];
+  const holdStop = (rows: HTMLElement[], holder: HTMLElement | undefined): void => {
+    for (const row of rows) row.tabIndex = row === holder ? 0 : -1;
+  };
+  // After every drawing: the rows change with the search and with a section opening or closing.
+  useEffect(() => {
+    const rows = rowsOf(listRef.current);
+    holdStop(rows, rows.find((row) => row.tabIndex === 0) ?? rows[0]);
+  });
+  const onListFocus = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
+    const row = (event.target as HTMLElement).closest<HTMLElement>('[data-palette-row]');
+    if (row) holdStop(rowsOf(event.currentTarget), row);
+  }, []);
+  const onListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    // Delete on a row is the canvas's Delete: see deleteSelection.
+    if ((event.key === 'Delete' || event.key === 'Backspace') && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      if ((event.target as HTMLElement).closest('[data-palette-row]') && deleteSelection()) event.preventDefault();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+    const rows = rowsOf(event.currentTarget);
+    const at = rows.indexOf((event.target as HTMLElement).closest<HTMLElement>('[data-palette-row]') as HTMLElement);
+    if (at === -1) return;
+    const to = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : event.key === 'ArrowDown' ? at + 1 : at - 1;
+    const next = rows[Math.max(0, Math.min(rows.length - 1, to))];
+    event.preventDefault();
+    if (!next || next === rows[at]) return;
+    holdStop(rows, next);
+    next.focus();
+    next.scrollIntoView?.({ block: 'nearest' });
+  }, []);
 
   // Ensure drag visuals always clear even if mouseup happens outside canvas.
   // Uses requestAnimationFrame to defer cleanup by one frame so React mouseup
@@ -475,7 +548,7 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
         <div style={styles.searchHint}>Drag onto the canvas, or double-click (or press Enter) to add into what is selected, or after it.</div>
       </div>
 
-      <div style={styles.list}>
+      <div style={styles.list} ref={listRef} data-palette-list="" onKeyDown={onListKeyDown} onFocus={onListFocus}>
         {filteredComponents ? (
           <div style={styles.componentList}>
             {matchingPages.map((page) => (
@@ -495,7 +568,7 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
             {/* The project's own pages, first: what a person made is what they reach for. */}
             {projectPages.length > 0 && (
               <div style={styles.category} data-palette-pages="">
-                <button type="button" style={styles.categoryHeader} onClick={() => setPagesExpanded((open) => !open)} aria-expanded={pagesExpanded}>
+                <button type="button" tabIndex={-1} data-palette-row="" style={styles.categoryHeader} onClick={() => setPagesExpanded((open) => !open)} aria-expanded={pagesExpanded}>
                   <span>
                     This project <span style={{ color: 'var(--dimmer)', fontWeight: 400 }}>{projectPages.length}</span>
                   </span>

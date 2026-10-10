@@ -30,7 +30,12 @@ import { readThemeMode } from '../utils/themeMode';
 
 /** Everything an opened bundle carried that the Builder keeps opaque. */
 export interface RetainedSource {
-  /** The manifest.json as parsed from the bundle, untouched. Null for a project made here. */
+  /**
+   * The manifest.json as parsed from the bundle. Null for a project made
+   * here. Untouched but for its `pages` list, where it has one: that names
+   * UI files, and follows them as they are renamed, moved and deleted
+   * (utils/manifestPages.ts).
+   */
   manifest: Record<string, unknown> | null;
   /** Validated archive entries the Builder does not model, path → bytes, written back verbatim. */
   extraEntries: Map<string, Uint8Array>;

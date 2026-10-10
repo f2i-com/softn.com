@@ -198,6 +198,11 @@ describe('a string constant in a Python module', () => {
     const image = Array.from(mainUI.elements.values()).find((element) => element.componentType === 'Image')!;
     const host = render(image.id);
 
+    // The name is read from the logic to the address it is given there. An address is not
+    // fetched because the file was opened (remotePictures.test.ts): it is named, and shown when asked for.
+    expect(host.querySelector('img')).toBeNull();
+    expect(host.querySelector('[data-remote-picture]')?.textContent).toContain('https://example.com/logo.png');
+    act(() => host.querySelector<HTMLButtonElement>('[data-action="show-remote-picture"]')!.click());
     expect(host.querySelector('img')?.getAttribute('src')).toBe('https://example.com/logo.png');
   });
 });

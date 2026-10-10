@@ -31,6 +31,7 @@ import type { PermissionDeclaration } from '../../utils/permissions';
 import { destinationLabel, prepareHandoff, type ReadyHandoff } from '../../utils/handoff';
 import { exportMessage, saveProject, type SaveOutcome } from '../../utils/saveProject';
 import { danglingReferences, describeDangling, type DanglingReference } from '../../utils/projectReferences';
+import { pageDiagnostics, type PageDiagnostic } from '../../utils/pageDiagnostics';
 import {
   discardQuarantinedSession,
   exportQuarantinedSession,
@@ -280,6 +281,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
   const [ready, setReady] = useState<ReadyHandoff | null>(null);
   const [inspection, setInspection] = useState<BundleInspection | null>(null);
   const [references, setReferences] = useState<DanglingReference[]>([]);
+  const [pages, setPages] = useState<PageDiagnostic[]>([]);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   /** A saved session that would not restore, kept for download (utils/openProject.ts). */
   const [quarantine, setQuarantine] = useState<QuarantinedSession | null>(null);
@@ -394,6 +396,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
     if (!isOpen) return;
     setInspection(null);
     setReferences([]);
+    setPages([]);
     setPreflightError(null);
     if (collections.error) return;
     let cancelled = false;
@@ -407,6 +410,8 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
           // after the build, which puts the canvas into its file first.
           const files = useFilesStore.getState();
           setReferences(danglingReferences(files.uiFiles, files.logicFiles));
+          // Nor whether each page parses, or what the parser warns of in one that does.
+          setPages(pageDiagnostics(files.uiFiles));
         })
         .catch((e) => {
           if (!cancelled) setPreflightError(e instanceof Error ? e.message : 'Could not check the bundle.');
@@ -445,7 +450,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
           // A copy that leaves changes unsaved is news, not a success to wave through.
           if (outcome.copy?.unsaved || outcome.stale || outcome.projectChanged) toast.warning(said);
           else toast.success(said);
-          if (!outcome.copy && !outcome.sessionStored && !outcome.projectChanged) {
+          if (!outcome.copy && !outcome.sessionStored && !outcome.projectChanged && !outcome.sessionSuperseded) {
             toast.info('The local recovery copy could not be stored (storage full or blocked); the file itself was exported.');
           }
           setTimeout(() => {
@@ -741,6 +746,15 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
                           ✕ {l.text}
                         </span>
                       ))}
+                      {pages.length > 0 && (
+                        <span data-report="pages" style={{ display: 'contents' }}>
+                          {pages.map((line, i) => (
+                            <span key={`p${i}`} style={line.level === 'error' ? styles.reportError : styles.reportWarn}>
+                              {line.level === 'error' ? '✕' : '△'} {line.text}
+                            </span>
+                          ))}
+                        </span>
+                      )}
                       {references.length > 0 && (
                         <span data-report="references" style={{ display: 'contents' }}>
                           {references.map((reference, i) => (

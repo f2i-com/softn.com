@@ -7,6 +7,8 @@ import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
+import { assetCall, assetCallPath } from '../../utils/assetSource';
+import { isRemoteAddress, remoteShown, showRemotePicture, useShownPictures } from '../../utils/remotePictures';
 import { useFilesStore } from '../../stores/filesStore';
 import { ACCESSIBILITY_PROP_NAMES, getComponentMeta } from '../../utils/componentRegistry';
 import { dockLogicFile, entryFileId, logicLanguageOf, resolveImportPath, type LogicLanguage } from '../../utils/logicFiles';
@@ -759,6 +761,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
 
   const isCollapsed = useCallback((key: string) => Boolean(collapsedSections[key]), [collapsedSections]);
 
+  const picturesShown = useShownPictures();
   const imageAssetOptions = useMemo(() => {
     const files = assets
       .map((asset) => assetPath(asset).replace(/^assets\//, ''))
@@ -772,12 +775,20 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
       if (!selectedElement) return null;
 
       const currentValue = selectedElement.props[prop.name];
-      const isImageSrc = selectedElement.componentType === 'Image' && prop.name === 'src';
+      // A picture: an Image's, and an Avatar's, which had no list of the
+      // project's pictures and so no way to be given one but by typing.
+      const isImageSrc = (selectedElement.componentType === 'Image' || selectedElement.componentType === 'Avatar') && prop.name === 'src';
 
       if (isImageSrc) {
         const normalizedCurrent = String(currentValue || '').trim();
-        const selectedAssetValue =
-          !propState(selectedElement, prop.name).isExpression && imageAssetOptions.includes(normalizedCurrent) ? normalizedCurrent : '';
+        // The app is given a file of its own by `asset("…")` (utils/
+        // assetSource.ts). This list wrote the bare path, which the canvas
+        // drew and the app could not load; a path written before is said to
+        // be one, and choosing the picture again writes it as the app reads it.
+        const srcIsExpression = propState(selectedElement, prop.name).isExpression;
+        const calledPath = srcIsExpression ? assetCallPath(normalizedCurrent) : null;
+        const selectedAssetValue = calledPath !== null && imageAssetOptions.includes(calledPath) ? calledPath : '';
+        const writtenAsPath = !srcIsExpression && imageAssetOptions.includes(normalizedCurrent.replace(/^\.\//, ''));
 
         return (
           <div key={prop.name} style={styles.field}>
@@ -787,7 +798,9 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
               id={`panel-${selectedElement.id}-src-asset`}
               style={styles.select}
               value={selectedAssetValue}
-              onChange={(e) => handlePropChange(prop.name, { value: e.target.value || undefined, isExpression: false })}
+              onChange={(e) =>
+                handlePropChange(prop.name, e.target.value ? { value: assetCall(e.target.value), isExpression: true } : { value: undefined, isExpression: false })
+              }
             >
               <option value="">Choose an image from assets…</option>
               {imageAssetOptions.map((assetPath) => (
@@ -808,8 +821,24 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
               }}
               placeholder="https://… or {appIconUrl}"
             />
+            {/* A picture at an address is not fetched by the canvas until it is asked for
+                (utils/remotePictures.ts). The canvas offers that beside the picture's place; this is
+                the same, where the keyboard reaches. */}
+            {selectedElement.componentType === 'Image' && !srcIsExpression && isRemoteAddress(normalizedCurrent) && !remoteShown(normalizedCurrent) && (
+              <div className="bl-notice" role="status" data-remote-picture-note="" style={{ marginTop: 8, borderRadius: 'var(--bl-radius-sm)' }}>
+                Not loaded on the canvas: it asks nothing of another site until you say so.{' '}
+                <button type="button" className="bl-btn bl-btn-sm" data-action="show-remote-picture-panel" onClick={() => showRemotePicture(normalizedCurrent)}>
+                  Show it on the canvas
+                </button>
+              </div>
+            )}
+            {writtenAsPath && (
+              <div className="bl-notice" role="status" data-src-as-path="" style={{ marginTop: 8, borderRadius: 'var(--bl-radius-sm)' }}>
+                {normalizedCurrent} is written as a path, which the app does not load. Choose it under Asset to write it as the app reads it.
+              </div>
+            )}
             <div style={styles.fieldHint}>
-              Use an asset path, a URL or data URI, or a value from the logic in braces: {'{appIconUrl}'}.
+              Choose a picture of the project, or write a URL or data URI, or a value from the logic in braces: {'{appIconUrl}'}.
             </div>
           </div>
         );
@@ -855,7 +884,9 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
         </div>
       );
     },
-    [selectedElement, imageAssetOptions, handlePropChange, handleEventChange, endEdit, handlerHelp, createHandler]
+    // picturesShown: the note under a picture's address goes when the picture has been asked for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedElement, imageAssetOptions, handlePropChange, handleEventChange, endEdit, handlerHelp, createHandler, picturesShown]
   );
 
   const header = (

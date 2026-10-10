@@ -424,6 +424,48 @@ body {
   cursor: not-allowed;
 }
 
+/*
+ * The toolbar in a narrow window. Its row is longer than a 900 pixel window,
+ * and the one thing in it that gives way is the project's name, cut short
+ * with an ellipsis: a project called Field Notes was "F…". The row measures
+ * itself, and where it is short the buttons a glance knows by their drawing
+ * give up their words: Undo and Redo first, then New and Open. A word is
+ * clipped to nothing and not removed, so each button keeps its name for a
+ * screen reader (it has an aria-label as well). Whether Design is offered at
+ * all is the window's to say, not the row's (App.tsx, useNarrowScreen).
+ */
+.bl-toolbar {
+  container-type: inline-size;
+  container-name: bl-toolbar;
+}
+
+.bl-tool {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@container bl-toolbar (max-width: 1040px) {
+  .bl-tool[data-compact='1'] .bl-tool-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@container bl-toolbar (max-width: 900px) {
+  .bl-tool[data-compact='2'] .bl-tool-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 .bl-kbd {
   font-family: var(--mono);
   font-size: 0.6875rem;

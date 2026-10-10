@@ -11,7 +11,7 @@ import { useSourceFidelity } from '../../utils/useSourceFidelity';
 import type { ProjectFileNode } from '../../types/builder';
 import { FileGlyph, type FileGlyphKind } from './fileIcons';
 import { PANEL_WIDTHS } from '../../hooks/usePanelsThatFit';
-import { COMPONENTS_FOLDER, createComponentFile } from '../../utils/componentFile';
+import { COMPONENTS_FOLDER, createComponentFile, pageFolderBeside } from '../../utils/componentFile';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -589,19 +589,32 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     setQuickCreateParentPath(null);
   }, []);
 
+  // Where the file being made will go: one answer, for the form to say and
+  // for the file to be made at. A folder asked for from a folder's menu is
+  // that folder. Otherwise a component goes with the components, and a
+  // page beside the open file, unless that is a component: a page made
+  // while one was open landed among the components (pageFolderBeside).
+  const quickCreateFolder = useCallback((): string => {
+    if (!quickCreateType) return '';
+    if (quickCreateParentPath) return quickCreateParentPath;
+    if (quickCreateType === 'ui' && quickCreateAs === 'component') return COMPONENTS_FOLDER;
+    const beside = resolveDefaultParentPath(quickCreateType);
+    return quickCreateType === 'ui' ? pageFolderBeside(beside) : beside;
+  }, [quickCreateType, quickCreateParentPath, quickCreateAs, resolveDefaultParentPath]);
+
   const handleQuickCreateSubmit = useCallback(() => {
     if (!quickCreateType) return;
     const trimmed = quickCreateName.trim();
     if (!trimmed) return;
 
-    const parentPath = quickCreateParentPath || resolveDefaultParentPath(quickCreateType);
+    const parentPath = quickCreateFolder();
     // A refused name keeps the form open, with the reason under it.
     const created = attempt(() => {
       if (quickCreateType === 'folder') {
         createFolder(parentPath, trimmed);
       } else if (quickCreateType === 'ui' && quickCreateAs === 'component') {
         // In the folder asked for from a folder's menu, and with the other components otherwise.
-        createComponentFile(trimmed, quickCreateParentPath || COMPONENTS_FOLDER);
+        createComponentFile(trimmed, parentPath);
       } else if (quickCreateType === 'ui') {
         createFile(parentPath, trimmed.endsWith('.ui') ? trimmed : `${trimmed}.ui`, 'ui');
       } else {
@@ -617,8 +630,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     quickCreateType,
     quickCreateAs,
     quickCreateName,
-    resolveDefaultParentPath,
-    quickCreateParentPath,
+    quickCreateFolder,
     createFolder,
     createFile,
     handleQuickCreateCancel,
@@ -890,11 +902,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
                 {quickCreateType === 'folder' ? 'New folder' : quickCreateType === 'ui' ? 'New UI file' : 'New logic file'}
               </div>
               <div style={styles.quickCreateSub}>
-                {quickCreateType === 'folder'
-                  ? `in ${quickCreateParentPath || resolveDefaultParentPath('folder')}/`
-                  : quickCreateType === 'ui' && quickCreateAs === 'component'
-                    ? `in ${quickCreateParentPath || COMPONENTS_FOLDER}/`
-                    : `in ${quickCreateParentPath || resolveDefaultParentPath(quickCreateType)}/`}
+                {`in ${quickCreateFolder()}/`}
               </div>
             </div>
             <button className="bl-close" style={{ width: 28, height: 28, fontSize: 18 }} onClick={handleQuickCreateCancel} aria-label="Cancel">

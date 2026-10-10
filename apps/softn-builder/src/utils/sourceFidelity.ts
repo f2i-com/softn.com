@@ -60,7 +60,17 @@ function expressionRegions(source: string, tokens: Token[]): Array<{ text: strin
   let depth = 0;
   let openAt = -1;
   let openLine = 0;
+  // The braces of `<import { Row, Footer } from=… />` hold a list of names
+  // and no expression: read as one, two names with a comma between them
+  // were "not fully supported by the parser", and a page that imported two
+  // things in one line could only be edited as source.
+  let inImport = false;
+  let previous: Token | undefined;
   for (const token of tokens) {
+    if (token.type === TokenType.IMPORT && previous?.type === TokenType.TAG_OPEN) inImport = true;
+    else if (inImport && (token.type === TokenType.TAG_SELF_CLOSE || token.type === TokenType.TAG_CLOSE)) inImport = false;
+    previous = token;
+    if (inImport) continue;
     if (token.type === TokenType.EXPR_START || token.type === TokenType.TEMPLATE_EXPR_START) {
       if (depth === 0) {
         openAt = token.end;
@@ -418,7 +428,15 @@ export function computeFidelity(input: FidelityInput): SourceFidelity {
   reasons.push(...input.conversionReasons);
   const commentsPlaced = !input.conversionReasons.some((reason) => reason.startsWith('a comment on line'));
   reasons.push(...writtenBackDifferences(input.source, input.doc, input.elements, input.rootId, commentsPlaced));
-  return { lossless: reasons.length === 0, reasons: dedupe(reasons) };
+  // What the parser warns of is not a reason the canvas cannot write the page
+  // (those are its errors, above): the page runs and is edited in Design. It
+  // is something of the page that will not do what was written, a second
+  // <data> block giving a name that is already another collection's, and it
+  // was said nowhere in the Builder. It goes with the verdict to be shown.
+  const warnings = dedupe(
+    (input.doc.diagnostics ?? []).filter((d) => d.severity === 'warning').map((d) => `Line ${d.loc.line}: ${d.message}`)
+  );
+  return { lossless: reasons.length === 0, reasons: dedupe(reasons), ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 function dedupe(items: string[]): string[] {

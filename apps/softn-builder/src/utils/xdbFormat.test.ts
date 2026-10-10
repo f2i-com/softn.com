@@ -191,7 +191,8 @@ describe('parseXdb', () => {
       'notes'
     );
     expect(parsed.records.map((r) => r.id)).toEqual(['n1', 'n2']);
-    expect(parsed.records[0].data).toEqual({ title: 'flat' });
+    // Every key of a flat record but its id is a field, as the runtime has it (untouchedRoundTrip.test.ts).
+    expect(parsed.records[0].data).toEqual({ title: 'flat', createdAt: '2024-01-01T00:00:00.000Z' });
     expect(parsed.records[0].created_at).toBe('2024-01-01T00:00:00.000Z');
     expect(parsed.records[0].updated_at).toBe('2024-01-01T00:00:00.000Z');
     expect(parsed.records[1].origin).toBe('import');

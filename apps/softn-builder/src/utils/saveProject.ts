@@ -60,6 +60,12 @@ export type SaveOutcome =
       sessionStored: boolean;
       sessionError?: unknown;
       /**
+       * The recovery record was left as it is because it already holds a
+       * newer revision of this project: a copy of work done while the file
+       * was being written (utils/recoveryCopy.ts). Nothing failed.
+       */
+      sessionSuperseded?: boolean;
+      /**
        * Export only: what was written is a copy beside the place the project
        * is kept, which it does not replace, so nothing was marked clean.
        * `of` names that place (null for a draft FormLogic holds), and
@@ -176,7 +182,8 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   // never over a newer one. Losing it does not affect the file just written.
   let sessionStored = false;
   let sessionError: unknown;
-  if (!projectChanged && (persisted.get(projectId) ?? -1) <= revision) {
+  const sessionSuperseded = !projectChanged && (persisted.get(projectId) ?? -1) > revision;
+  if (!projectChanged && !sessionSuperseded) {
     try {
       const storage = deps.storage ?? window.localStorage;
       storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
@@ -196,6 +203,7 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
     projectChanged,
     sessionStored,
     sessionError,
+    ...(sessionSuperseded ? { sessionSuperseded } : {}),
   };
 }
 
@@ -211,6 +219,17 @@ export function exportMessage(outcome: Extract<SaveOutcome, { kind: 'saved' }>, 
   if (outcome.projectChanged) return `Exported ${written}: the project that was open when the export began, not this one.`;
   if (outcome.stale) return `Exported ${written}: an earlier revision. Edits made during the export are not in it; export or save again.`;
   return `Exported ${written}. Your project is saved in it.`;
+}
+
+/**
+ * The recovery record now holds this revision of this project, written by
+ * something other than a save: the copy kept of unsaved work. A save that
+ * captured an earlier revision and finishes after it must not put that
+ * earlier revision back over it, which is the promise at the head of this
+ * file and was kept only between two saves.
+ */
+export function notePersistedRevision(projectId: string, revision: number): void {
+  if ((persisted.get(projectId) ?? -1) < revision) persisted.set(projectId, revision);
 }
 
 /** For tests: forget which revisions were persisted. */

@@ -3,6 +3,7 @@ import type { ViewMode } from '../utils/openProject';
 import { ownsTextKeys, redoCanvas, undoCanvas } from '../utils/canvasHistory';
 import { moveSelected, type KeyboardMove } from '../utils/keyboardMoves';
 import { useCanvasStore } from '../stores/canvasStore';
+import { focusPanel } from '../utils/panelFocus';
 
 /**
  * Move the selected element and leave the focus on it. An element moved to
@@ -43,6 +44,16 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
     const keyDown = (event: KeyboardEvent) => {
       const current = actionsRef.current;
       if (event.isComposing || current.blocked) return;
+      // F6 goes to the next panel and Shift+F6 to the one before, a code
+      // editor included: Tab indents there, and stopped there for good.
+      if (event.key === 'F6' && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        const from = event.target instanceof HTMLElement ? event.target : null;
+        if (current.narrow || from?.closest('[role="dialog"][aria-modal="true"]')) return;
+        if (focusPanel(event.shiftKey ? -1 : 1)) {
+          event.preventDefault(); event.stopPropagation();
+        }
+        return;
+      }
       if (event.altKey) {
         // Alt+Shift and an arrow moves the selected element, wherever the
         // focus is while the canvas is on the screen: nothing but a drag

@@ -220,19 +220,34 @@ function composeManifest(
   else delete manifest.icon;
 
   const files = isObject(manifest.files) ? { ...manifest.files } : {};
-  files.ui = groups.ui;
-  files.logic = exportedLogicPaths(retained ?? null, groups.logic);
-  files.xdb = groups.xdb;
-  files.assets = groups.assets;
+  // Each group is the project's list. A group with nothing in it is written
+  // for a project made here, and for a manifest that had the group; a
+  // manifest that listed no `xdb` or no `assets` is not given an empty one.
+  const had = isObject(retained?.files) ? retained.files : null;
+  const group = (name: string, paths: string[]): void => {
+    if (!retained || paths.length > 0 || (had !== null && name in had)) files[name] = paths;
+    else delete files[name];
+  };
+  group('ui', groups.ui);
+  group('logic', exportedLogicPaths(retained ?? null, groups.logic));
+  group('xdb', groups.xdb);
+  group('assets', groups.assets);
   manifest.files = files;
 
   const config = isObject(manifest.config) ? { ...manifest.config } : {};
   const previousName = typeof retained?.name === 'string' ? retained.name : null;
-  const window = isObject(config.window) ? { ...config.window } : { title: options.name, width: 1200, height: 800 };
-  // The window title tracked the app's name when it was the same; a title
-  // set to something else is a setting the Builder has no control for.
-  if (previousName !== null && window.title === previousName) window.title = options.name;
-  config.window = window;
+  // A project made here starts with a window, as the Builder's own projects
+  // always have. A manifest that came with none leaves with none: the
+  // Builder has no control that sets one, and `{ title, width: 1200, height:
+  // 800 }` was written into every bundle that passed through, a setting
+  // nobody chose.
+  if (!retained || isObject(config.window)) {
+    const window = isObject(config.window) ? { ...config.window } : { title: options.name, width: 1200, height: 800 };
+    // The window title tracked the app's name when it was the same; a title
+    // set to something else is a setting the Builder has no control for.
+    if (previousName !== null && window.title === previousName) window.title = options.name;
+    config.window = window;
+  }
   // The theme is declared when a person chose a side, when the manifest
   // declared one of the three words, and in a project that never had a
   // manifest, where the field shows what it starts as. A manifest that came
@@ -245,7 +260,10 @@ function composeManifest(
   if (!retained || options.themeMode !== 'system' || isThemeMode(declared)) {
     config.theme = { ...(isObject(config.theme) ? config.theme : {}), mode: options.themeMode };
   }
-  manifest.config = options.pythonPackages !== undefined ? withPythonPackages(config, options.pythonPackages) : config;
+  const written = options.pythonPackages !== undefined ? withPythonPackages(config, options.pythonPackages) : config;
+  // Nor is an empty `config` written into a manifest that had none.
+  if (Object.keys(written).length > 0 || (retained !== null && retained !== undefined && 'config' in retained)) manifest.config = written;
+  else delete manifest.config;
 
   return manifest;
 }

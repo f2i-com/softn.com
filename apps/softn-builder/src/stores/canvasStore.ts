@@ -8,6 +8,7 @@ import { TEXT_NODE_TYPE, type CanvasBlock, type CanvasElement, type CanvasState,
 import { debug } from '../utils/debug';
 import { branchEnd, canDropInto, defaultBlock, hasTextField, isBlockHead, isContinuationType, wordsOf } from '../utils/blocks';
 import { starterProps } from '../utils/starterProps';
+import { importsLeftUnused } from '../utils/pageImports';
 
 function generateId(): string {
   return `el_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -331,10 +332,12 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       const newElements = new Map(state.elements);
 
       // Recursively delete children
+      const removedTypes: string[] = [];
       const deleteRecursive = (elementId: string) => {
         const el = newElements.get(elementId);
         if (el) {
           el.children.forEach(deleteRecursive);
+          removedTypes.push(el.componentType);
           newElements.delete(elementId);
         }
       };
@@ -355,6 +358,13 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       // Update selection: the element and whatever it held are gone from it.
       const newSelectedIds = state.selectedIds.filter((sid) => newElements.has(sid));
 
+      // The import of a page goes with the last use of it, whoever wrote the
+      // line: it becomes one the Builder takes out of the page when it is
+      // written, and puts back if the use comes back by Undo.
+      const unused = importsLeftUnused(removedTypes, newElements, state.imports, state.writtenImports);
+      if (unused.length > 0) {
+        return { elements: newElements, selectedIds: newSelectedIds, writtenImports: [...state.writtenImports, ...unused] };
+      }
       return { elements: newElements, selectedIds: newSelectedIds };
     });
   },

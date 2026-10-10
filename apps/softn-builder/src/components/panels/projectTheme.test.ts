@@ -81,9 +81,9 @@ describe('the project theme, among the page\'s properties', () => {
 
   it('says the page follows the project while the page does not pin a theme of its own', () => {
     mount('<App theme="system"><Text>Hi</Text></App>');
-    expect(outcome()).toBe('This page follows the project: light, on the canvas and in Preview. A running app follows its visitor\'s device unless the page\'s own theme is set.');
+    expect(outcome()).toBe('This page follows the project: light, on the canvas, in Preview and in the running app.');
     choose('Dark');
-    expect(outcome()).toBe('This page follows the project: dark, on the canvas and in Preview. A running app follows its visitor\'s device unless the page\'s own theme is set.');
+    expect(outcome()).toBe('This page follows the project: dark, on the canvas, in Preview and in the running app.');
   });
 
   it('says the page wins where its own theme is light or dark and the project\'s is the other', () => {
@@ -97,15 +97,17 @@ describe('which theme a page is drawn in', () => {
   const written = (value: unknown) => ({ value, isExpression: false });
 
   it('is the project\'s, unless the page pins light or dark, as the App component decides', () => {
-    expect(themeSentence('light', written('system'), 'dark')).toBe('This page follows the project: light, on the canvas and in Preview. A running app follows its visitor\'s device unless the page\'s own theme is set.');
-    expect(themeSentence('dark', undefined, 'light')).toBe('This page follows the project: dark, on the canvas and in Preview. A running app follows its visitor\'s device unless the page\'s own theme is set.');
+    expect(themeSentence('light', written('system'), 'dark')).toBe('This page follows the project: light, on the canvas, in Preview and in the running app.');
+    expect(themeSentence('dark', undefined, 'light')).toBe('This page follows the project: dark, on the canvas, in Preview and in the running app.');
     expect(themeSentence('dark', written('dark'), 'light')).toBe('This page is dark: its own theme is set to dark, as the project\'s is.');
     expect(themeSentence('light', written('dark'), 'light')).toBe('This page is dark: its own theme is set to dark, which wins over the project\'s light.');
   });
 
   it('says what "system" comes to here, and that a visitor sees their own', () => {
-    expect(themeSentence('system', written('system'), 'dark')).toBe('This page follows the project: system, which is dark on this device. A visitor sees their own.');
-    expect(themeSentence('system', written('light'), 'dark')).toBe('This page is light: its own theme is set to light, whatever a visitor\'s device prefers.');
+    expect(themeSentence('system', written('system'), 'dark')).toBe('This page follows the project: system, which is dark here, as this editor is. A visitor sees their own.');
+    expect(themeSentence('system', written('light'), 'dark')).toBe(
+      'This page is light: its own theme is set to light, whatever a visitor\'s device prefers. Its chart and code colours still follow the visitor: set the project to light to keep them with the page.'
+    );
   });
 
   it('does not guess a theme that is worked out when the app runs, or one of the author\'s own', () => {

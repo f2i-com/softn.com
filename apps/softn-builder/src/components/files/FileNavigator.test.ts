@@ -16,6 +16,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useFilesStore } from '../../stores/filesStore';
 import { parseSource } from '../../utils/sourceParser';
+import { createComponentFile } from '../../utils/componentFile';
 import { FileNavigator } from './FileNavigator';
 
 const LOSSY_UI = `<App>\n  <Text>Hi</Text>\n  // a comment the visual model cannot hold\n</App>\n`;
@@ -116,5 +117,44 @@ describe('the file navigator', () => {
       vi.advanceTimersByTime(500);
     });
     expect(host.querySelector('[data-fidelity="source-only"]')).toBeNull();
+  });
+});
+
+describe('a file made in a folder the project has not got yet', () => {
+  // "New UI file" as a component makes ui/components/row.ui, and a new
+  // project has no ui/components. The file was put under no folder at all:
+  // open in its tab, written into the export, and nowhere in this panel.
+  const rows = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')].map((row) => row.getAttribute('aria-label') ?? row.textContent ?? '');
+
+  it('is listed, in that folder, which is made for it', () => {
+    act(() => {
+      createComponentFile('row');
+    });
+    const store = useFilesStore.getState();
+    const folder = [...store.nodes.values()].find((node) => node.type === 'folder' && node.path === 'ui/components')!;
+    const file = [...store.nodes.values()].find((node) => node.path === 'ui/components/row.ui')!;
+    expect(file.parentId).toBe(folder.id);
+    expect(folder.children).toEqual([file.id]);
+    // And the folder is in the one above it.
+    expect(store.nodes.get(folder.parentId!)!.path).toBe('ui');
+    expect(store.nodes.get(folder.parentId!)!.children).toContain(folder.id);
+
+    const host = mount();
+    expect(rows(host).join(' | ')).toContain('components');
+    expect(rows(host).join(' | ')).toContain('row.ui');
+  });
+
+  it('is made with every folder of its path, and a second file there is beside the first', () => {
+    act(() => {
+      useFilesStore.getState().createFile('ui/pages/admin', 'users.ui', 'ui');
+      useFilesStore.getState().createFile('ui/pages/admin', 'roles.ui', 'ui');
+      useFilesStore.getState().createFolder('logic/lib', 'dates');
+    });
+    const paths = [...useFilesStore.getState().nodes.values()].filter((node) => node.type === 'folder').map((node) => node.path).sort();
+    expect(paths).toEqual(['assets', 'logic', 'logic/lib', 'logic/lib/dates', 'ui', 'ui/pages', 'ui/pages/admin']);
+    const admin = [...useFilesStore.getState().nodes.values()].find((node) => node.path === 'ui/pages/admin')!;
+    expect(admin.children).toHaveLength(2);
+    // Nothing is left under no folder.
+    expect([...useFilesStore.getState().nodes.values()].filter((node) => node.type === 'file' && node.parentId === null)).toEqual([]);
   });
 });

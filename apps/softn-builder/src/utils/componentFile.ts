@@ -28,3 +28,17 @@ export function createComponentFile(name: string, parentPath: string = COMPONENT
   useFilesStore.getState().updateUIFileSource(id, componentStarter(fileName));
   return id;
 }
+
+/** Where pages go: the folder a new project's first page is in. */
+export const PAGES_FOLDER = 'ui';
+
+/**
+ * The folder a new page is made in, for a file that is open in `folder`:
+ * beside it, as "New UI file" has always put it, unless that is among the
+ * components. A page made while a component file was open landed in
+ * `ui/components/`, where the files are that have no App of their own and
+ * are made to be used inside pages.
+ */
+export function pageFolderBeside(folder: string): string {
+  return folder === COMPONENTS_FOLDER || folder.startsWith(`${COMPONENTS_FOLDER}/`) ? PAGES_FOLDER : folder;
+}

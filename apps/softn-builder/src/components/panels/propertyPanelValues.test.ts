@@ -27,6 +27,8 @@ import { generateSource } from '../../utils/sourceGenerator';
 import { insertFromPalette } from './ComponentPalette';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useFilesStore } from '../../stores/filesStore';
+import { useProjectStore } from '../../stores/projectStore';
+import { assetCall, assetCallPath, assetNamed } from '../../utils/assetSource';
 import { PropertyPanel } from './PropertyPanel';
 
 let root: Root | undefined;
@@ -293,5 +295,70 @@ describe('a binding', () => {
     expect(field<HTMLInputElement>(':bind').value).toBe('title');
     type(field<HTMLInputElement>(':bind'), '');
     expect(source()).toBe('<App>\n  <Input />\n</App>');
+  });
+});
+
+describe('a picture chosen from the project\'s assets', () => {
+  // The list wrote the picture's path, `src="assets/logo.png"`. The canvas
+  // found the file by it and drew it; the app is handed a file of its own
+  // by `asset("…")` and by nothing else, so in Preview and in the exported
+  // app the same Image was "Failed to load".
+  const picture = { name: 'logo.png', bundlePath: 'assets/logo.png', type: 'image/png', data: new Uint8Array([1]) };
+  beforeEach(() => act(() => useProjectStore.getState().setAssets([picture])));
+  afterEach(() => act(() => useProjectStore.getState().setAssets([])));
+
+  it('is written as the call the app loads it by, and shown as chosen', () => {
+    open('<App><Image alt="Logo" /></App>', 'Image');
+    choose(field<HTMLSelectElement>('Asset'), 'assets/logo.png');
+    expect(source()).toContain('<Image alt="Logo" src={asset("assets/logo.png")} />');
+    expect(field<HTMLSelectElement>('Asset').value).toBe('assets/logo.png');
+    // And taken away again by the first choice of the list.
+    choose(field<HTMLSelectElement>('Asset'), '');
+    expect(source()).toContain('<Image alt="Logo" />');
+  });
+
+  it('is offered for an Avatar as well, which had no list', () => {
+    open('<App><Avatar name="Ada Lovelace" /></App>', 'Avatar');
+    choose(field<HTMLSelectElement>('Asset'), 'assets/logo.png');
+    expect(source()).toContain('<Avatar name="Ada Lovelace" src={asset("assets/logo.png")} />');
+  });
+
+  it('says so of a path written before, and is put right by choosing the picture again', () => {
+    open('<App><Image src="assets/logo.png" /></App>', 'Image');
+    expect(host.querySelector('[data-src-as-path]')?.textContent).toBe(
+      'assets/logo.png is written as a path, which the app does not load. Choose it under Asset to write it as the app reads it.'
+    );
+    // Not shown as chosen: what is written is not what choosing it writes.
+    expect(field<HTMLSelectElement>('Asset').value).toBe('');
+    choose(field<HTMLSelectElement>('Asset'), 'assets/logo.png');
+    expect(source()).toContain('<Image src={asset("assets/logo.png")} />');
+    expect(host.querySelector('[data-src-as-path]')).toBeNull();
+  });
+
+  it('says nothing of an address, or of a path that is no file of the project', () => {
+    open('<App><Image src="https://example.com/a.png" /></App>', 'Image');
+    expect(host.querySelector('[data-src-as-path]')).toBeNull();
+  });
+});
+
+describe('how a page asks for a picture of its own', () => {
+  it('is read from the call and from nothing worked out when the app runs', () => {
+    expect(assetCall('assets/logo.png')).toBe('asset("assets/logo.png")');
+    expect(assetCallPath('asset("assets/logo.png")')).toBe('assets/logo.png');
+    expect(assetCallPath(" asset( 'logo.png' ) ")).toBe('logo.png');
+    expect(assetCallPath('asset(folder + name)')).toBeNull();
+    expect(assetCallPath('asset("a.png") + "?v=2"')).toBeNull();
+    expect(assetCallPath('assets/logo.png')).toBeNull();
+    expect(assetCallPath(undefined)).toBeNull();
+  });
+
+  it('finds the file by the path a page would write for it', () => {
+    const assets = [{ name: 'logo.png', bundlePath: 'assets/brand/logo.png' }, { name: 'face.png' }];
+    expect(assetNamed('assets/brand/logo.png', assets)).toBe(assets[0]);
+    expect(assetNamed('./assets/brand/logo.png', assets)).toBe(assets[0]);
+    expect(assetNamed('logo.png', assets)).toBe(assets[0]);
+    expect(assetNamed('assets/face.png', assets)).toBe(assets[1]);
+    expect(assetNamed('assets/other.png', assets)).toBeUndefined();
+    expect(assetNamed('', assets)).toBeUndefined();
   });
 });

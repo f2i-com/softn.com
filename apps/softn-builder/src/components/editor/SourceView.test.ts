@@ -81,4 +81,40 @@ describe('source edits and the visual model', () => {
     expect(redoCanvas()).toBe(true);
     expect(onCanvas()).toContain('<Badge>Two</Badge>');
   });
+
+  it('says what the parser warns of, on a page that is still edited in both views', async () => {
+    // A second <data> block that gives a name already taken to another
+    // collection is left out by the parser, with a warning: the only one it
+    // has. The page is not source-only for it, and the warning was shown
+    // nowhere.
+    vi.useFakeTimers();
+    try {
+      act(() =>
+        changeSource(
+          '<data>\n  <collection name="tasks" as="items" />\n</data>\n<App><Text>Original</Text></App>\n<data>\n  <collection name="people" as="items" />\n</data>\n'
+        )
+      );
+      // The verdict is worked out a moment after the source settles.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(host.querySelector('[data-fidelity]')?.getAttribute('data-fidelity')).toBe('visual');
+    expect(host.querySelector('[data-source-warnings]')?.textContent).toBe(
+      'A warning for this page. Line 6: <collection name="people" as="items"> is not declared, because this page already reads "tasks" as items.'
+    );
+    // No warning, no notice.
+    vi.useFakeTimers();
+    try {
+      act(() => changeSource('<data>\n  <collection name="tasks" as="items" />\n</data>\n<App><Text>Original</Text></App>\n'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(host.querySelector('[data-source-warnings]')).toBeNull();
+  });
 });
