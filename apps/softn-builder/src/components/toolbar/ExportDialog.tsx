@@ -453,6 +453,9 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
           if (!outcome.copy && !outcome.sessionStored && !outcome.projectChanged && !outcome.sessionSuperseded) {
             toast.info('The local recovery copy could not be stored (storage full or blocked); the file itself was exported.');
           }
+          if (!outcome.copy && outcome.sessionAssets === 'left-out' && !outcome.projectChanged) {
+            toast.info('The local recovery copy was kept without the project’s pictures and other assets (this browser’s storage is full); the file itself was exported.');
+          }
           setTimeout(() => {
             setDone(null);
             onClose();

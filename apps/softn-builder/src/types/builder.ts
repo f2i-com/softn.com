@@ -347,6 +347,21 @@ export interface UIFileState {
    * file and that its source is where to edit it.
    */
   visualEditBlocked?: string[];
+  /**
+   * What the file was read as: its text, and the elements and imports that
+   * text was read into, from its bundle or from what was last written in
+   * Code. When the canvas is those again, the file is that text again
+   * (stores/filesStore.ts, updateUIFile). Never saved with a session.
+   */
+  baseline?: UIFileBaseline;
+}
+
+/** A UI file as it was read: see UIFileState.baseline. */
+export interface UIFileBaseline {
+  source: string;
+  elements: Map<string, CanvasElement>;
+  rootId: string;
+  imports: UIImport[];
 }
 
 // Logic file

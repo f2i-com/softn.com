@@ -39,6 +39,7 @@ import { readPythonPackages } from '@softn/core';
 import { loadBundle, type LoadedBundle } from './bundleLoader';
 import { inferRelationships, validRelationships } from './schemaRelationships';
 import { encodeAsset, decodeAsset, type SerializedAssetFile } from './sessionAssets';
+import { SESSION_ASSETS_HEAD_KEY, SESSION_ASSETS_KEY, captureAssets, joinStoredSession, type AssetRef } from './storedAssets';
 import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from './xdbFormat';
 import { readLocalStorage, removeLocalStorage } from './safeStorage';
 import { describeMigrations, migrateElements } from './propMigrations';
@@ -60,8 +61,10 @@ export type ViewMode = 'design' | 'preview' | 'code' | 'data';
 export const SESSION_STORAGE_KEY = 'softn.builder.session.v1';
 /** Where a session that would not restore is kept, with the error, until exported or discarded. */
 export const QUARANTINE_STORAGE_KEY = 'softn.builder.session.v1.quarantine';
+/** The assets of the session set aside, which are a record of their own (utils/storedAssets.ts). */
+export const QUARANTINE_ASSETS_KEY = 'softn.builder.session.v1.quarantine.assets';
 
-interface SerializedUIFile extends Omit<UIFileState, 'elements'> {
+interface SerializedUIFile extends Omit<UIFileState, 'elements' | 'baseline'> {
   elements: [string, CanvasElement][];
 }
 
@@ -103,6 +106,8 @@ export interface BuilderSession {
      * asset, which would push almost any project past the storage quota.
      */
     assetFiles?: [string, SerializedAssetFile][];
+    /** The assets by name, size and hash, where their bytes are kept in a record of their own (utils/storedAssets.ts). */
+    assetRefs?: [string, AssetRef][];
     activeFileId: string | null;
     openTabs: string[];
   };
@@ -340,7 +345,10 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
       if (!isObject(file) || typeof file.path !== 'string') throw new Error(`UI file ${id} in the saved session is malformed`);
       const fileElements = new Map<string, CanvasElement>(pairs<CanvasElement>(file.elements, `files.uiFiles[${id}].elements`));
       migrationWarnings.push(...describeMigrations(file.path, migrateElements(fileElements.values())));
-      return [id, { ...file, elements: fileElements }];
+      // What a record says a file was read as is not taken from it: that is
+      // worked out when the files are put in place (commitProjectSnapshot),
+      // after everything a restore itself rewrites in them.
+      return [id, { ...file, elements: fileElements, baseline: undefined }];
     })
   );
   const logicFiles = new Map<string, LogicFileState>(pairs<LogicFileState>(s.files.logicFiles, 'files.logicFiles'));
@@ -503,7 +511,17 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
       useFilesStore.setState({
         nodes: snapshot.files.nodes,
         rootFolders: snapshot.files.rootFolders,
-        uiFiles: snapshot.files.uiFiles,
+        // Each page is read as the text the session left it with: as it is
+        // now, after an inline logic block has been moved to its file, and
+        // not as it was stored.
+        uiFiles: new Map(
+          [...snapshot.files.uiFiles].map(([id, file]) => [
+            id,
+            file.originalSource === undefined
+              ? { ...file, baseline: undefined }
+              : { ...file, baseline: { source: file.originalSource, elements: file.elements, rootId: file.rootId, imports: file.imports ?? [] } },
+          ])
+        ),
         logicFiles: snapshot.files.logicFiles,
         assetFiles: snapshot.files.assetFiles,
         activeFileId: snapshot.files.activeFileId,
@@ -538,17 +556,18 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
  * The session as the stores stand, for the recovery record. Synchronous,
  * so a save that captured a revision a moment ago writes that revision.
  *
- * `assets: false` leaves the project's assets out, with their places in the
- * file tree: for the copy kept of unsaved work (utils/recoveryCopy.ts),
- * which is written again and again into a store a few megabytes deep, and
- * keeps the text of a project whose pictures would not fit.
+ * `assets: 'apart'` is the shape it is stored in: each asset named
+ * (`files.assetRefs`) and none of them held, the bytes being a record of
+ * their own that is written only when they change (utils/storedAssets.ts).
+ * Without it the assets are in the session, as every stored record had
+ * them before, and as a session is restored from once the two are joined.
  */
-export function captureSession(view: ViewMode, options: { assets?: boolean } = {}): BuilderSession {
+export function captureSession(view: ViewMode, options: { assets?: 'inline' | 'apart' } = {}): BuilderSession {
   const projectState = useProjectStore.getState();
   const canvasState = useCanvasStore.getState();
   const schemaState = useSchemaStore.getState();
   const filesState = useFilesStore.getState();
-  const left = options.assets === false ? new Set(filesState.assetFiles.keys()) : new Set<string>();
+  const apart = options.assets === 'apart';
   return {
     savedAt: new Date().toISOString(),
     projectId: projectState.projectId,
@@ -569,20 +588,18 @@ export function captureSession(view: ViewMode, options: { assets?: boolean } = {
       selectedEntityId: schemaState.selectedEntityId,
     },
     files: {
-      nodes: Array.from(filesState.nodes.entries())
-        .filter(([id]) => !left.has(id))
-        .map(([id, node]) => (left.size > 0 && node.children?.some((child) => left.has(child)) ? [id, { ...node, children: node.children.filter((child) => !left.has(child)) }] : [id, node]) as [string, ProjectFileNode]),
+      nodes: Array.from(filesState.nodes.entries()),
       rootFolders: filesState.rootFolders,
       uiFiles: Array.from(filesState.uiFiles.entries()).map(([id, file]) => [
         id,
-        { ...file, elements: Array.from(file.elements.entries()) },
+        // What the file was read as is the editor's own, and is not kept: it holds the page a second time.
+        { ...file, baseline: undefined, elements: Array.from(file.elements.entries()) },
       ]),
       logicFiles: Array.from(filesState.logicFiles.entries()),
-      assetFiles: Array.from(filesState.assetFiles.entries())
-        .filter(([id]) => !left.has(id))
-        .map(([id, asset]) => [id, encodeAsset(asset)] as [string, SerializedAssetFile]),
-      activeFileId: filesState.activeFileId !== null && left.has(filesState.activeFileId) ? null : filesState.activeFileId,
-      openTabs: filesState.openTabs.filter((id) => !left.has(id)),
+      assetFiles: apart ? [] : Array.from(filesState.assetFiles.entries()).map(([id, asset]) => [id, encodeAsset(asset)] as [string, SerializedAssetFile]),
+      ...(apart ? { assetRefs: captureAssets(filesState.assetFiles).refs } : {}),
+      activeFileId: filesState.activeFileId,
+      openTabs: filesState.openTabs,
     },
     source: {
       manifest: projectState.source.manifest,
@@ -610,7 +627,13 @@ export interface QuarantinedSession {
  * The live key is cleared so the prompt does not recur; the bytes are not
  * deleted, because they may be the only copy of the work.
  */
-export function quarantineSession(raw: string, error: unknown): void {
+/**
+ * `assetsRaw` is the record of the assets the session names. It is set
+ * aside with it: left where it was it is the next project's to remove at
+ * its first change, and the session kept would be its text alone. Moved,
+ * not copied: the store has not the room for two of it.
+ */
+export function quarantineSession(raw: string, error: unknown, assetsRaw: string | null = null): void {
   const record: QuarantinedSession = {
     quarantinedAt: new Date().toISOString(),
     error: error instanceof Error ? error.message : String(error),
@@ -624,6 +647,16 @@ export function quarantineSession(raw: string, error: unknown): void {
     return;
   }
   removeLocalStorage(SESSION_STORAGE_KEY);
+  // Whatever was set aside before went with the session this one replaces.
+  removeLocalStorage(QUARANTINE_ASSETS_KEY);
+  if (assetsRaw === null) return;
+  removeLocalStorage(SESSION_ASSETS_KEY);
+  removeLocalStorage(SESSION_ASSETS_HEAD_KEY);
+  try {
+    window.localStorage.setItem(QUARANTINE_ASSETS_KEY, assetsRaw);
+  } catch (e) {
+    console.warn('[openProject] The assets of the quarantined session could not be kept with it:', e);
+  }
 }
 
 export function readQuarantinedSession(): QuarantinedSession | null {
@@ -644,6 +677,7 @@ export function readQuarantinedSession(): QuarantinedSession | null {
 
 export function discardQuarantinedSession(): void {
   removeLocalStorage(QUARANTINE_STORAGE_KEY);
+  removeLocalStorage(QUARANTINE_ASSETS_KEY);
 }
 
 /** The quarantined payload as a file the person can keep. */
@@ -651,12 +685,15 @@ export async function exportQuarantinedSession(): Promise<boolean> {
   const record = readQuarantinedSession();
   if (!record) return false;
   const name = `softn-builder-session-${record.quarantinedAt.replace(/[:.]/g, '-') || 'quarantined'}.json`;
+  // Whole: the session with the assets that were set aside with it put back into it.
+  const assets = readLocalStorage(QUARANTINE_ASSETS_KEY);
+  const payload = assets === null ? record.payload : joinStoredSession(record.payload, assets).raw;
   const { isDesktop, saveDesktopFile } = await import('./desktop');
   if (isDesktop()) {
-    await saveDesktopFile(new TextEncoder().encode(record.payload), name);
+    await saveDesktopFile(new TextEncoder().encode(payload), name);
     return true;
   }
-  const blob = new Blob([record.payload], { type: 'application/json' });
+  const blob = new Blob([payload], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

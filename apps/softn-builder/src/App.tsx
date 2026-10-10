@@ -44,6 +44,8 @@ import { useProjectStartup } from './hooks/useProjectStartup';
 import { useUnsavedChanges } from './hooks/useUnsavedChanges';
 import { useRecoveryCopy } from './hooks/useRecoveryCopy';
 import { recoveryOf, restoreOffer } from './utils/recoveryCopy';
+import { SESSION_ASSETS_KEY, joinStoredSession } from './utils/storedAssets';
+import { readLocalStorage } from './utils/safeStorage';
 import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { useActiveFileOnCanvas } from './hooks/useActiveFileOnCanvas';
@@ -436,25 +438,28 @@ function App() {
     }
 
     if (action.kind === 'restore-prompt') {
+      // The session's text, with the project's assets put back into it from their own record.
+      const assetsRaw = readLocalStorage(SESSION_ASSETS_KEY);
+      const joined = joinStoredSession(action.raw, assetsRaw);
       let snapshot: ProjectSnapshot;
       try {
-        snapshot = prepareSessionSnapshot(action.raw);
+        snapshot = prepareSessionSnapshot(joined.raw);
       } catch (e) {
         // Kept, with the reason, not deleted: it may be the only copy.
         console.error('[App] The saved session could not be restored; quarantined:', e);
-        quarantineSession(action.raw, e);
+        quarantineSession(action.raw, e, assetsRaw);
         toast.error('The saved session could not be restored. It was kept; download it from Export → Recovery.');
         return;
       }
       // A copy of unsaved work says so, and what of the project is not in it (utils/recoveryCopy.ts).
-      if (!window.confirm(restoreOffer(action.raw))) return;
+      if (!window.confirm(restoreOffer(action.raw, joined.assets))) return;
       try {
         applySnapshotRef.current(snapshot);
         // It was not saved when it was kept, and is not now: it says "Unsaved", and leaving asks first.
         if (recoveryOf(action.raw)) useProjectStore.getState().markDirty();
       } catch (e) {
         console.error('[App] Failed to restore session:', e);
-        quarantineSession(action.raw, e);
+        quarantineSession(action.raw, e, assetsRaw);
         toast.error(`Could not restore the session: ${e instanceof Error ? e.message : String(e)}. It was kept; download it from Export → Recovery.`);
       }
       return;
@@ -511,6 +516,9 @@ function App() {
       toast.warning(`${where} — an earlier revision. Edits made during the save are not in it; save again.`);
     } else {
       toast.success(where);
+    }
+    if (outcome.sessionAssets === 'left-out' && !outcome.projectChanged) {
+      toast.info('The local recovery copy was kept without the project’s pictures and other assets (this browser’s storage is full); the file itself was saved.');
     }
     // A newer copy of the work is already kept: nothing went wrong, and nothing is said.
     if (!outcome.sessionStored && !outcome.projectChanged && !outcome.sessionSuperseded) {

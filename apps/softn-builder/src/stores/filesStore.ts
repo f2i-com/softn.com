@@ -118,6 +118,52 @@ function normalizePath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
 }
 
+/**
+ * What a file is read as, from the file as it stands: its text with the
+ * elements and imports the text was read into. Nothing for a page made on
+ * the canvas, which has no text of its own.
+ *
+ * The first canvas edit writes a page's template again in the Builder's
+ * own layout, and Undo put the elements back and not the text: a page
+ * edited and undone to the start was some hundreds of bytes shorter than
+ * it had been opened, with its blank lines gone. While a file keeps this,
+ * a canvas that is these elements and imports again is this text again
+ * (updateUIFile).
+ */
+function baselineOf(file: UIFileState): UIFileState['baseline'] {
+  if (file.originalSource === undefined) return undefined;
+  return { source: file.originalSource, elements: file.elements, rootId: file.rootId, imports: file.imports };
+}
+
+function sameImportList(a: readonly UIImport[], b: readonly UIImport[]): boolean {
+  return a.length === b.length && a.every((imp, at) => imp.name === b[at].name && imp.source === b[at].source);
+}
+
+/**
+ * The files after a change that wrote into a page's text from outside the
+ * canvas and Code: a page it imports renamed, its logic file moved, a
+ * collection renamed in Data, its inline logic moved to a file. What the
+ * page was read as has to say the same, or Undo would bring the old path or
+ * the old name back with the old text. A page that was still its read text
+ * is read as the new text; one the canvas had already rewritten has
+ * nothing to go back to, and keeps nothing.
+ */
+function baselinesFollowing(before: Map<string, UIFileState>, after: Map<string, UIFileState>): Map<string, UIFileState> {
+  let next: Map<string, UIFileState> | null = null;
+  for (const [id, file] of after) {
+    const was = before.get(id);
+    if (!was || !was.baseline || file.baseline !== was.baseline) continue;
+    const linked = file.logicSrc !== was.logicSrc && file.originalSource === was.originalSource;
+    if (!linked && file.originalSource === was.originalSource && sameImportList(file.imports, was.imports)) continue;
+    // A logic file linked from the panel is written into the page at its
+    // next edit; the text as read has no such line, and is not gone back to.
+    const untouched = !linked && was.originalSource === was.baseline.source && file.elements === was.elements;
+    next ??= new Map(after);
+    next.set(id, { ...file, baseline: untouched ? baselineOf(file) : undefined });
+  }
+  return next ?? after;
+}
+
 /** A path mapped through a move of `from` (a file or a folder) to `to`. */
 function movedPath(path: string, from: string, to: string): string {
   if (path === from) return to;
@@ -500,8 +546,16 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   const edit: typeof set = (...args) => {
     const before = get();
     set(...(args as Parameters<typeof set>));
-    const after = get();
+    let after = get();
     if (after === before) return;
+    // What each page was read as follows a text rewritten from outside it (baselinesFollowing).
+    if (after.uiFiles !== before.uiFiles) {
+      const uiFiles = baselinesFollowing(before.uiFiles, after.uiFiles);
+      if (uiFiles !== after.uiFiles) {
+        set({ uiFiles });
+        after = get();
+      }
+    }
     // The manifest's list of pages names UI files, and follows them when
     // one is renamed, moved or deleted (utils/manifestPages.ts).
     if (after.uiFiles !== before.uiFiles) {
@@ -955,7 +1009,9 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       const file = state.uiFiles.get(id);
       if (!file) return state;
       const newUIFiles = new Map(state.uiFiles);
-      newUIFiles.set(id, { ...file, elements, rootId });
+      // The tree the file's own text is read as, where the file is still that text.
+      const baseline = file.baseline && file.originalSource === file.baseline.source ? { ...file.baseline, elements, rootId } : file.baseline;
+      newUIFiles.set(id, { ...file, elements, rootId, baseline });
       return { uiFiles: newUIFiles };
     });
   },
@@ -975,6 +1031,31 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       // grouped expressions flattened, nested blocks collapsed. The original
       // bytes stay authoritative until the tree actually differs.
       if (file.rootId === rootId && sameImports && elementsEqual(file.elements, elements)) return state;
+
+      // The canvas is what the file was read as: the file is that text
+      // again, byte for byte, and not the Builder's writing of the same
+      // page. This is what "undo everything" comes to, and a property typed
+      // back to what it was.
+      const read = file.baseline;
+      if (read && read.rootId === rootId && sameImportList(imports ?? file.imports, read.imports) && elementsEqual(read.elements, elements)) {
+        const restored = new Map(state.uiFiles);
+        restored.set(id, {
+          ...file,
+          elements,
+          rootId,
+          imports: read.imports,
+          ...(writtenImports !== undefined ? { writtenImports } : {}),
+          originalSource: read.source,
+          sourceFidelity: undefined,
+          visualEditBlocked: undefined,
+        });
+        // Marked as changed like any edit: what was saved is not known here (see the report of this pass).
+        const marked = new Map(state.nodes);
+        const own = marked.get(id);
+        if (own) marked.set(id, { ...own, isDirty: true });
+        useProjectStore.getState().markDirty();
+        return { uiFiles: restored, nodes: marked };
+      }
 
       // Only regenerate originalSource when the file already had one (loaded
       // from a bundle or set via SourceView).  For files that never had
@@ -1091,6 +1172,8 @@ export const useFilesStore = create<FilesStore>((set, get) => {
         imports: parsed.imports,
         logicSrc: parsed.logicSrc,
         visualEditBlocked: undefined,
+        // What is written in Code is what the file is read as from here on.
+        baseline: { source, elements: parsed.elements, rootId: parsed.rootId, imports: parsed.imports },
       });
 
       // Mark as dirty
@@ -1355,7 +1438,8 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     set({
       nodes: new Map(nodes),
       rootFolders: [...rootFolders],
-      uiFiles: new Map(uiFiles),
+      // Each page is read as the text its bundle has for it.
+      uiFiles: new Map([...uiFiles].map(([id, file]) => [id, { ...file, baseline: baselineOf(file) }])),
       logicFiles: new Map(logicFiles),
       assetFiles: loadedAssets,
       activeFileId: mainFileId,

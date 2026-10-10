@@ -45,6 +45,7 @@ import { exportBundleToFile, saveBundleToFile } from './bundleExporter';
 import { buildProjectBundle, bundleFileName, flushCanvasToActiveFile } from './buildProjectBundle';
 import { captureSession, SESSION_STORAGE_KEY, type BuilderSession, type ViewMode } from './openProject';
 import type { BundleFileHandle } from './desktop';
+import { captureAssets, storeAssets, type AssetStore, type CapturedAssets } from './storedAssets';
 
 export type SaveOutcome =
   | {
@@ -59,6 +60,11 @@ export type SaveOutcome =
       /** Whether the recovery record was stored; the error when it could not be. */
       sessionStored: boolean;
       sessionError?: unknown;
+      /**
+       * Where the recovery record was stored: whether the project's assets
+       * are in the store with it, or the store took the text and not them.
+       */
+      sessionAssets?: 'kept' | 'left-out';
       /**
        * The recovery record was left as it is because it already holds a
        * newer revision of this project: a copy of work done while the file
@@ -91,7 +97,7 @@ export interface SaveDeps {
   hosted?: boolean;
   writeFile?: typeof saveBundleToFile;
   writeExport?: typeof exportBundleToFile;
-  storage?: Pick<Storage, 'setItem'>;
+  storage?: AssetStore;
   build?: () => Promise<Uint8Array>;
   capture?: (view: ViewMode) => BuilderSession;
 }
@@ -111,7 +117,8 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   const writeFile = deps.writeFile ?? saveBundleToFile;
   const writeExport = deps.writeExport ?? exportBundleToFile;
   const build = deps.build ?? buildProjectBundle;
-  const capture = deps.capture ?? captureSession;
+  // Stored with its assets apart: they are a record of their own (utils/storedAssets.ts).
+  const capture = deps.capture ?? ((view: ViewMode) => captureSession(view, { assets: 'apart' }));
 
   // The flush may be an edit (it marks the file dirty when the canvas moved),
   // so it comes before the revision is read.
@@ -119,11 +126,15 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   let revision: number;
   let name: string;
   let session: BuilderSession;
+  let assets: CapturedAssets;
   let bundlePromise: Promise<Uint8Array>;
   try {
     flushCanvasToActiveFile();
     ({ projectId, revision, name } = useProjectStore.getState());
     session = capture(deps.view);
+    // The assets as they are now, with the text that names them: written
+    // together when the file is done, whatever the project holds by then.
+    assets = captureAssets(useFilesStore.getState().assetFiles);
     bundlePromise = build();
   } catch (error) {
     // Invalid or unserializable project state is a reported save failure,
@@ -182,6 +193,7 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   // never over a newer one. Losing it does not affect the file just written.
   let sessionStored = false;
   let sessionError: unknown;
+  let sessionAssets: 'kept' | 'left-out' | undefined;
   const sessionSuperseded = !projectChanged && (persisted.get(projectId) ?? -1) > revision;
   if (!projectChanged && !sessionSuperseded) {
     try {
@@ -189,6 +201,9 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
       storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
       persisted.set(projectId, revision);
       sessionStored = true;
+      // The text first: a store that then refuses the assets has still kept it.
+      // A set the store refused while the work went on is asked for again here.
+      sessionAssets = storeAssets(storage, assets, { again: true }).kind === 'refused' ? 'left-out' : 'kept';
     } catch (e) {
       sessionError = e;
     }
@@ -203,6 +218,7 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
     projectChanged,
     sessionStored,
     sessionError,
+    ...(sessionAssets ? { sessionAssets } : {}),
     ...(sessionSuperseded ? { sessionSuperseded } : {}),
   };
 }

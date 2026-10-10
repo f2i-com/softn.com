@@ -26,7 +26,8 @@ import { useNotificationStore } from '../stores/notificationStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useSchemaStore } from '../stores/schemaStore';
 import { SESSION_STORAGE_KEY, captureSession, commitProjectSnapshot, prepareSessionSnapshot, startupAction } from './openProject';
-import { ASSET_BUDGET, RECOVERY_OWNER_KEY, TAB_ID, recoveryOf, restoreOffer, writeRecoveryCopy } from './recoveryCopy';
+import { RECOVERY_OWNER_KEY, TAB_ID, recoveryOf, restoreOffer, writeRecoveryCopy } from './recoveryCopy';
+import { SESSION_ASSETS_KEY, joinStoredSession, resetRefusedAssets } from './storedAssets';
 import { resetPersistedRevisions, saveProject } from './saveProject';
 
 declare global {
@@ -65,6 +66,7 @@ function everythingNew(): void {
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   window.localStorage.clear();
+  resetRefusedAssets();
   useNotificationStore.getState().clearAll();
   everythingNew();
   useProjectStore.getState().setName('Field Notes');
@@ -87,33 +89,38 @@ describe('the copy of unsaved work', () => {
     expect(useProjectStore.getState().name).toBe('Field Notes');
   });
 
-  it('keeps the project\'s assets while they are small, and its text alone when they are not', () => {
+  it('names the project\'s assets and holds none of them: they are a record of their own, put back when it is restored', () => {
     asset('small.png', 2000);
     edit();
     expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'written', assets: 'kept' });
-    expect(prepareSessionSnapshot(stored()!).files.assetFiles.size).toBe(1);
+    const text = JSON.parse(stored()!) as { files: { assetFiles: unknown[]; assetRefs: Array<[string, { name: string; size: number }]> } };
+    expect(text.files.assetFiles).toEqual([]);
+    expect(text.files.assetRefs.map(([, ref]) => [ref.name, ref.size])).toEqual([['small.png', 2000]]);
+    const joined = joinStoredSession(stored()!, window.localStorage.getItem(SESSION_ASSETS_KEY));
+    expect(joined.assets).toEqual({ total: 1, missing: 0 });
+    const copy = prepareSessionSnapshot(joined.raw);
+    if (copy.files.kind !== 'state') throw new Error('a stored session comes back as the files it held');
+    expect(copy.files.assetFiles.size).toBe(1);
+    expect([...copy.canvas.elements.values()].some((element) => element.props.children === 'Unsaved words')).toBe(true);
+  });
 
-    asset('large.png', ASSET_BUDGET);
-    expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'written', assets: 'left-out' });
-    const copy = prepareSessionSnapshot(stored()!);
+  it('is its text alone where the record of its assets is not there, with nothing left pointing at them', () => {
+    asset('small.png', 2000);
+    edit();
+    writeRecoveryCopy({ view: 'design' });
+    const joined = joinStoredSession(stored()!, null);
+    expect(joined.assets).toEqual({ total: 1, missing: 1 });
+    const copy = prepareSessionSnapshot(joined.raw);
     if (copy.files.kind !== 'state') throw new Error('a stored session comes back as the files it held');
     expect(copy.files.assetFiles.size).toBe(0);
-    // Nothing is left pointing at a file that is not in the copy.
     expect([...copy.files.nodes.values()].filter((node) => node.fileType === 'asset')).toEqual([]);
     expect([...copy.files.nodes.values()].find((node) => node.path === 'assets')!.children).toEqual([]);
     expect([...copy.canvas.elements.values()].some((element) => element.props.children === 'Unsaved words')).toBe(true);
-    // A megabyte and a half of pictures is not written into the store at each change.
-    expect(stored()!.length).toBeLessThan(200_000);
   });
 
-  it('is kept without its assets when the store will not take them, and is a failure handed back when it will take nothing', () => {
+  it('is a failure handed back when the store will not take the text, and nothing is thrown', () => {
     asset('small.png', 4000);
     edit();
-    const taken: string[] = [];
-    const tight = { setItem: (key: string, value: string) => { if (key === SESSION_STORAGE_KEY && value.includes('"assetFiles":[[')) throw new DOMException('full', 'QuotaExceededError'); taken.push(key); } };
-    expect(writeRecoveryCopy({ view: 'design', storage: tight })).toMatchObject({ kind: 'written', assets: 'left-out' });
-    expect(taken).toEqual([SESSION_STORAGE_KEY, RECOVERY_OWNER_KEY]);
-
     const full = { setItem: () => { throw new DOMException('full', 'QuotaExceededError'); } };
     const outcome = writeRecoveryCopy({ view: 'design', storage: full });
     expect(outcome.kind).toBe('failed');
@@ -168,9 +175,11 @@ describe('the offer made on the next open', () => {
     writeRecoveryCopy({ view: 'design' });
     expect(restoreOffer(stored()!)).toMatch(/^Restore “Field Notes” with the changes that were not saved, as it was at .+ on .+\?$/);
 
-    asset('large.png', ASSET_BUDGET + 1);
-    writeRecoveryCopy({ view: 'design' });
-    expect(restoreOffer(stored()!)).toContain('Its pictures and other assets were too large to keep in this browser and are not in it: add them again, or open the file you last saved.');
+    // What joining it with the record of its assets found is said, and a copy from before they were kept apart says it of itself.
+    expect(restoreOffer(stored()!, { total: 3, missing: 3 })).toContain('Its pictures and other assets could not be kept in this browser and are not in it: add them again, or open the file you last saved.');
+    expect(restoreOffer(stored()!, { total: 3, missing: 0 })).not.toContain('pictures');
+    const before = JSON.stringify({ ...JSON.parse(stored()!), recovery: { tab: 'x', unsaved: true, assets: 'left-out' } });
+    expect(restoreOffer(before)).toContain('Its pictures and other assets could not be kept in this browser and are not in it: add them again, or open the file you last saved.');
   });
 
   it('is the question it always was for a session that Save wrote, and for one that cannot be read', () => {

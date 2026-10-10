@@ -15,7 +15,8 @@
 import { useEffect, useRef } from 'react';
 import { useProjectStore } from '../stores/projectStore';
 import { useNotificationStore } from '../stores/notificationStore';
-import type { ViewMode } from '../utils/openProject';
+import { SESSION_STORAGE_KEY, type ViewMode } from '../utils/openProject';
+import { SESSION_ASSETS_HEAD_KEY, SESSION_ASSETS_KEY } from '../utils/storedAssets';
 import { RECOVERY_OWNER_KEY, TAB_ID, writeRecoveryCopy } from '../utils/recoveryCopy';
 
 /** How long after the last change the copy is written. */
@@ -75,10 +76,16 @@ export function useRecoveryCopy(view: ViewMode, enabled = true): void {
 
     // Another tab writing the copy is heard here as a change to the store.
     const taken = (event: StorageEvent): void => {
-      if (event.key !== RECOVERY_OWNER_KEY || !event.newValue || toldTaken) return;
-      try {
-        if ((JSON.parse(event.newValue) as { tab?: unknown }).tab === TAB_ID) return;
-      } catch {
+      // The store is heard changing only when another tab changes it: its copy
+      // of unsaved work, its Save, its assets. Each is this tab's replaced.
+      if (toldTaken || event.newValue === null) return;
+      if (event.key === RECOVERY_OWNER_KEY) {
+        try {
+          if ((JSON.parse(event.newValue) as { tab?: unknown }).tab === TAB_ID) return;
+        } catch {
+          return;
+        }
+      } else if (event.key !== SESSION_STORAGE_KEY && event.key !== SESSION_ASSETS_KEY && event.key !== SESSION_ASSETS_HEAD_KEY) {
         return;
       }
       // Only a tab that had a copy of its own unsaved work has lost one.
