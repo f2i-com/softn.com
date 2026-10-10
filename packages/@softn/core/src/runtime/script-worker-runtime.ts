@@ -46,6 +46,8 @@ type EntryResult = {
 export interface WorkerRuntimeOptions {
   /** The state variables the template can observe; the rest stay VM-owned. */
   observedStateNames?: ReadonlySet<string>;
+  /** The names the template could call while it is drawn; see ScriptRuntimeOptions.drawnNames. */
+  drawnNames?: ReadonlySet<string>;
   /** Logic files the shell already inlined; their `import` lines are satisfied. */
   preIncludedLogicPaths?: readonly string[];
   /** The bundle's `permission.json`, for the host calls run on this thread. */
@@ -221,6 +223,12 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    */
   private observedStateNames: ReadonlySet<string> | null = null;
   /**
+   * The names the template could call while it is drawn. What a function
+   * among them may read is observed as well; the worker works that out from
+   * the logic it compiles, as the main-thread runtime does.
+   */
+  private drawnNames: ReadonlySet<string> | null = null;
+  /**
    * Logic files the shell inlined before handing the script over; their
    * `import` lines are already satisfied and must not be resolved again.
    */
@@ -264,6 +272,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.appId = appId;
     this.logicBasePath = logicBasePath;
     this.observedStateNames = options?.observedStateNames ?? null;
+    this.drawnNames = options?.drawnNames ?? null;
     this.preIncludedLogicPaths = options?.preIncludedLogicPaths ? [...options.preIncludedLogicPaths] : [];
     this.externalFunctions = options?.externalFunctions ?? null;
     this.accelGranted =
@@ -704,6 +713,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       appId: this.appId,
       logicBasePath: this.logicBasePath,
       observedStateNames: this.observedStateNames ? [...this.observedStateNames] : null,
+      drawnNames: this.drawnNames ? [...this.drawnNames] : null,
       preIncludedLogicPaths: this.preIncludedLogicPaths,
       externalPreamble: buildExternalValuesPreamble(this.externalFunctions),
       dbSnapshot: this.getDBSnapshot(),

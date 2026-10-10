@@ -31,6 +31,7 @@ import {
   URL_ATTRIBUTES,
 } from './sanitize-html';
 import { cssPropertyName, inlineStyleObject } from './inline-style';
+import { isCallbackProp } from '../runtime/drawn-functions';
 import {
   beginPass,
   keep,
@@ -1284,8 +1285,8 @@ function renderElement(
       try {
         // Use callbackContext for props that look like callbacks (on*) to ensure
         // state changes from these handlers trigger re-renders
-        const isCallbackProp = prop.name.startsWith('on') && prop.name.length > 2;
-        const evalContext = isCallbackProp ? callbackContext() : context;
+        const isCallback = isCallbackProp(prop.name);
+        const evalContext = isCallback ? callbackContext() : context;
 
         // `onClick={doThing()}` names the call to make on click, not a value to
         // compute now — the same reading `@click={doThing()}` already gets from
@@ -1295,7 +1296,7 @@ function renderElement(
         // what to do when it closes, as `@close={open = false}` does.
         const deferred = prop.value.value.type;
         if (
-          isCallbackProp &&
+          isCallback &&
           (deferred === 'CallExpression' || deferred === 'AssignmentExpression' || deferred === 'UpdateExpression')
         ) {
           const callExpr = prop.value.value;

@@ -20,6 +20,7 @@ import { getDefaultRegistry } from '../renderer/registry';
 import { collectFirstScreenTags } from '../renderer/document-tags';
 import { isRemoteUrl, rewriteCssResources } from '../renderer/sanitize-html';
 import {
+  collectDrawnNames,
   collectObservedStateNames,
   createScriptRuntime,
   detectWorkerIncompatibilities,
@@ -914,6 +915,9 @@ export function SoftNRenderer({
         // because this is where the parsed document lives; the runtime only
         // ever sees the code block.
         const observedStateNames = collectObservedStateNames(doc) ?? undefined;
+        // And which names it could call while it is drawn: a function among
+        // them reads state for the page, whether the markup names it or not.
+        const drawnNames = collectDrawnNames(doc) ?? undefined;
 
         if (codeBlock && !scriptInitializedRef.current) {
           scriptInitializedRef.current = true;
@@ -1120,6 +1124,7 @@ export function SoftNRenderer({
                 netFetchHandler,
                 pythonProject: runtimePython,
                 observedStateNames,
+                drawnNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
                   setPersistenceNotice(describePersistenceFailure(failure));
@@ -1154,6 +1159,7 @@ export function SoftNRenderer({
               logicBasePath,
               {
                 observedStateNames,
+                drawnNames,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1202,6 +1208,7 @@ export function SoftNRenderer({
                 netFetchHandler,
                 pythonProject: runtimePython,
                 observedStateNames,
+                drawnNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
                   setPersistenceNotice(describePersistenceFailure(failure));
@@ -1237,6 +1244,7 @@ export function SoftNRenderer({
                 netFetchHandler,
                 pythonProject: runtimePython,
                 observedStateNames,
+                drawnNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
                   setPersistenceNotice(describePersistenceFailure(failure));

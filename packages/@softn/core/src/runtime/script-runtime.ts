@@ -38,6 +38,7 @@ import {
   planComputed,
   type ComputedDeclaration,
 } from './computed-declarations';
+import { readsOfDrawnFunctions } from './drawn-functions';
 import { storageVisitorToken } from './visitor-token';
 
 import type { ScriptBlock, LogicBlock, SoftNDocument } from '../parser/ast';
@@ -64,6 +65,8 @@ import type {
 } from './ai-manager';
 import { debug } from './debug';
 export type { BundleFileProvider } from './ai-manager';
+// Beside `collectObservedStateNames`, which a host calls with it.
+export { collectDrawnNames } from './drawn-functions';
 
 /**
  * Type alias for code blocks - either ScriptBlock or LogicBlock
@@ -197,6 +200,18 @@ export interface ScriptRuntimeOptions {
    * before this existed and is always correct — just slower.
    */
   observedStateNames?: ReadonlySet<string>;
+  /**
+   * Every name the document could call while it is drawn, from
+   * `collectDrawnNames`: the names its expressions are written with, without
+   * what only an event runs.
+   *
+   * A function among them is how a page reads state its markup does not
+   * name, so what that function may read is observed as well. Only looked at
+   * beside {@link observedStateNames}. Omit it and every observed name is
+   * supposed to be drawn, which is correct and holds less back: a game's
+   * `@tick={tick}` then counts, and `tick` reads everything.
+   */
+  drawnNames?: ReadonlySet<string>;
   /**
    * Where `softn.storage.*` sends its operations: the storage endpoint of
    * the app in the directory that published it. Absent for an app opened
@@ -483,6 +498,8 @@ export class SoftNScriptRuntime {
   private stateVarFingerprints: number[] | null = null;
   /** Identifiers the document can resolve; null means "assume all of them". */
   private observedStateNames: ReadonlySet<string> | null = null;
+  /** Names the document could call while it is drawn; null means "any observed name". */
+  private drawnNames: ReadonlySet<string> | null = null;
   private backendCall?: ScriptRuntimeOptions['backendCall'];
   /** The host's stand-in for the browser's fetch, if it supplied one. */
   private netFetchHandler?: NetFetchHandler;
@@ -673,6 +690,7 @@ export class SoftNScriptRuntime {
     );
     this.runtimeMode = options?.mode || 'main';
     this.observedStateNames = options?.observedStateNames ?? null;
+    this.drawnNames = options?.drawnNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
     this.backendCall = options?.backendCall;
     this.netFetchHandler = options?.netFetchHandler;
@@ -851,6 +869,9 @@ export class SoftNScriptRuntime {
     let computedCompiled = false;
     // The top-level `$:` declarations, each after the ones it reads.
     let computedPlan = planComputed([]);
+    // The logic as its author and the host wrote it, for reading what a
+    // function names. Empty for Python, which is not read that way.
+    let writtenCode = '';
     this.computedSettle = null;
     this.computedBatch = null;
     this.computedStale = true;
@@ -935,6 +956,7 @@ export class SoftNScriptRuntime {
       );
       computedPlan = planComputed(computedDecls);
       const computedPreamble = computedSource(computedDecls, computedPlan);
+      writtenCode = extFnPreamble + resolvedCode;
 
       // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
       // window/navigator/db/localStorage/host itself) then SoftN's own.
@@ -1039,6 +1061,35 @@ export class SoftNScriptRuntime {
         for (const declaration of computedDecls) {
           for (const name of namesReadBy(declaration.expression)) observed.add(name);
         }
+        this.observedStateNames = observed;
+      }
+    }
+
+    // A function the page calls while it is drawn is the other way a page
+    // reads state: `<p>{label()}</p>` over `function label() { return "n is "
+    // + n }` puts `n` on the screen, and no markup names it. `n` was kept in
+    // the engine, a change to it told the page nothing, and the paragraph
+    // stood at "n is 1" whatever was clicked. So what such a function may
+    // read is observed as well: every name in its body and in what its body
+    // names, followed through the logic (see drawn-functions.ts). A function
+    // only an event runs is not followed, which is what keeps a game's large
+    // state in the engine: `tick` reads all of it, and is never drawn. Where
+    // a drawn function cannot be followed, everything is mirrored.
+    if (this.observedStateNames) {
+      const reads = readsOfDrawnFunctions({
+        code: writtenCode,
+        functionNames,
+        drawn: this.drawnNames ?? this.observedStateNames,
+        python: this.pythonProject !== undefined,
+      });
+      if (!reads.known) {
+        debug(
+          `[SoftN] All state is mirrored: the page calls ${reads.functions.join(', ')} while it is drawn, and ${reads.why}.`
+        );
+        this.observedStateNames = null;
+      } else if (reads.names.size > 0) {
+        const observed = new Set(this.observedStateNames);
+        for (const name of reads.names) observed.add(name);
         this.observedStateNames = observed;
       }
     }
@@ -1796,6 +1847,11 @@ export class SoftNScriptRuntime {
         this.settleComputedIfStale();
         this.vmEngine.dispatchEvent(eventType, eventObj);
         this.computedMayHaveMoved();
+        // And what a function answered the page from. An answer is kept for
+        // the rest of a drawing, and let go by a call of the script's or by
+        // two milliseconds passing; a listener is neither, so a page drawn
+        // again straight after a key was answered from before the key.
+        this.syncCallCache.clear();
 
         // Sync VM state → React after dispatch
         this.syncVMStateToReact();

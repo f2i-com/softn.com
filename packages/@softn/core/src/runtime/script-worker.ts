@@ -17,6 +17,7 @@ import {
 } from './script-worker-bridges';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { deepEqual } from './vm-state';
+import { readsOfDrawnFunctions } from './drawn-functions';
 
 // Type-only import from script-runtime (no runtime dependency on DOM-heavy module)
 import type { CodeBlock } from './script-runtime';
@@ -293,15 +294,29 @@ self.onmessage = async (evt: MessageEvent) => {
       // runtime's partition, and the difference between mirroring 21 numbers a
       // call and a 2 MB cartridge.
       const observedNames = payload.observedStateNames;
-      const observed = Array.isArray(observedNames) ? new Set(observedNames as string[]) : null;
-      stateVarNames = [];
-      stateVarIndices = [];
+      let observed = Array.isArray(observedNames) ? new Set(observedNames as string[]) : null;
       functionNames = [];
       for (const [name, sym] of symbolMap.entries()) {
-        if (BRIDGE_VARS.has(name)) continue;
-        if (sym.scope === 'function') {
-          functionNames.push(name);
-        } else if (!observed || observed.has(name)) {
+        if (!BRIDGE_VARS.has(name) && sym.scope === 'function') functionNames.push(name);
+      }
+      // What a function the page could call while it is drawn may read is
+      // observed too, as on the main thread (see drawn-functions.ts): the
+      // function is how the page reads that state. Unknown mirrors everything.
+      if (observed) {
+        const drawnNames = payload.drawnNames;
+        const reads = readsOfDrawnFunctions({
+          code: externalPreamble + resolvedCode,
+          functionNames,
+          drawn: Array.isArray(drawnNames) ? new Set(drawnNames as string[]) : observed,
+        });
+        if (!reads.known) observed = null;
+        else for (const name of reads.names) observed.add(name);
+      }
+      stateVarNames = [];
+      stateVarIndices = [];
+      for (const [name, sym] of symbolMap.entries()) {
+        if (BRIDGE_VARS.has(name) || sym.scope === 'function') continue;
+        if (!observed || observed.has(name)) {
           stateVarNames.push(name);
           workerState[name] = wasmAdapter.getGlobal(sym.index);
         }

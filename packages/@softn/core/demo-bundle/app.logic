@@ -158,7 +158,7 @@ function setFilter(newFilter) {
  * Read the collection again, oldest first
  */
 function refreshTodos() {
-  todos = db.query("todos").sort((a, b) => a.data.createdAt < b.data.createdAt ? -1 : 1)
+  todos = db.query("todos").sort((a, b) => a.data.createdAt < b.data.createdAt ? -1 : a.data.createdAt > b.data.createdAt ? 1 : 0)
 }
 
 // ============================================================================

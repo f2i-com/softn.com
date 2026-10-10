@@ -201,11 +201,16 @@ function withoutCommentsAndStrings(expression: string): string {
  * and `todos` in `double + todos.length`, not `length`. Deliberately generous
  * — a parameter of an arrow function or an object's key is counted too —
  * because it is only used to order work, where a name too many costs nothing.
+ *
+ * Unicode-aware, because the engine is: `let café = 1` compiles. Read as
+ * ASCII, `"x" + café` named `caf`, so the state a `$:` value was built on
+ * was not found to be read by it, stayed in the engine, and the value stood
+ * on the page at its first.
  */
 export function namesReadBy(expression: string): Set<string> {
   const text = withoutCommentsAndStrings(expression);
   const names = new Set<string>();
-  const word = /[A-Za-z_$][\w$]*/g;
+  const word = /[\p{ID_Start}$_][\p{ID_Continue}$_]*/gu;
   let match: RegExpExecArray | null;
   while ((match = word.exec(text)) !== null) {
     const before = text[match.index - 1];
