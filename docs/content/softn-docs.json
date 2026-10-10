@@ -2228,6 +2228,10 @@
             {
               "type": "paragraph",
               "text": "A `$:` declaration is a name and the expression it is always worth: `$: remaining = tasks.filter(t => !t.done)`. A page, a function and another `$:` all read it as it stands. The values are worked out again before a page is drawn and before a function is called, each after the ones it reads, in whatever order they are written. A function that changes state and then reads one reads what it was when the function was called. Keep the expression on one line, or break it only inside brackets."
+            },
+            {
+              "type": "paragraph",
+              "text": "A function the page calls is followed the same way. `<Text>{label()}</Text>` is drawn again when any state `label` reads changes, directly or through the functions it calls, whether or not the page names that state. A function that only an event runs (`@click`, `@tick`, an `on…` prop) is not followed, so a game’s `tick` can work on large state without the page being told of every change."
             }
           ]
         },
