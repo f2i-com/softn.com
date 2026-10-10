@@ -2,9 +2,9 @@
   The footer, put where main.ui writes the Footer tag. It counts the page's
   todos itself and calls the page's clearCompleted(); main.ui hands it nothing.
 -->
-<footer className="footer">
-  <div className="footer-content">
-    <span className="stats">
+<footer class="footer">
+  <div class="footer-content">
+    <span class="stats">
       {count(todos)} {count(todos) === 1 ? "item" : "items"} total
       #if (count(completedTodos) > 0)
         · {count(completedTodos)} completed
@@ -18,7 +18,36 @@
     #end
   </div>
 
-  <div className="footer-meta">
+  <div class="footer-meta">
     <span>Double-click a todo to edit it</span>
   </div>
 </footer>
+
+<style>
+  .footer {
+    padding: 1rem 1.5rem;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
+  }
+
+  .footer-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .footer .stats {
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+  }
+
+  .footer-meta {
+    max-width: 600px;
+    margin: 0.5rem auto 0;
+    font-size: 0.75rem;
+    text-align: center;
+    color: var(--color-text-muted);
+  }
+</style>

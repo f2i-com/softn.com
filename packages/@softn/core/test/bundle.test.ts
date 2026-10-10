@@ -309,6 +309,41 @@ describe('Bundle Module', () => {
       expect(bundle.manifest.main).toBe('ui/main.ui');
       expect(bundle.uiFiles.has('ui/main.ui')).toBe(true);
     });
+
+    // What a page imports is listed for whoever reads the bundle. The list
+    // was read with a pattern of its own that took `from "./x.ui"` and not
+    // `from="./x.ui"` — the opposite of the composer's, which took only the
+    // second — so the spelling every shipped app uses listed nothing.
+    const importsOf = async (page: string) => {
+      const manifest: SoftNManifest = { name: 'Imports', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] } };
+      const bundle = await readBundle(await createBundleFromFiles(manifest, new Map([['ui/main.ui', page]])));
+      return bundle.uiFiles.get('ui/main.ui')?.imports;
+    };
+
+    it.each([['from="./header.ui"'], ["from='./header.ui'"], ['from "./header.ui"'], ['from = "./header.ui"']])(
+      'lists a page’s import written %s',
+      async (from) => {
+        expect(await importsOf(`<import Header ${from} />\n<App><Header /></App>`)).toEqual([
+          { defaultImport: 'Header', namedImports: undefined, source: './header.ui', type: 'ui' },
+        ]);
+      }
+    );
+
+    it('lists every import of a page, named ones too, however each is written', async () => {
+      const page = [
+        '<import Header from="./components/header.ui" />',
+        '<import Footer from "./components/footer.ui" />',
+        '<import { Row, Cell } from="./table.ui" />',
+        '<import { format } from "../logic/format.logic" />',
+        '<App><Header /><Footer /></App>',
+      ].join('\n');
+      expect(await importsOf(page)).toEqual([
+        { defaultImport: 'Header', namedImports: undefined, source: './components/header.ui', type: 'ui' },
+        { defaultImport: 'Footer', namedImports: undefined, source: './components/footer.ui', type: 'ui' },
+        { defaultImport: undefined, namedImports: ['Row', 'Cell'], source: './table.ui', type: 'ui' },
+        { defaultImport: undefined, namedImports: ['format'], source: '../logic/format.logic', type: 'logic' },
+      ]);
+    });
   });
 
   describe('createBundleFromFiles', () => {

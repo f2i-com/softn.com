@@ -10,9 +10,11 @@
  * nothing passed to it.
  *
  * What these tests hold is the edge of that: the two ways an import is
- * written, a use the composer used not to find, saying so when something
- * written on a tag is dropped, and the two things a whole page carries that
- * a fragment does not — an `<App>` root and a `<data>` block.
+ * written, a use the composer used not to find and one it should not have
+ * (inside a comment), saying so when something written on a tag is dropped,
+ * and the three things a whole page carries that belong to the document and
+ * not inside another page's markup — an `<App>` root, a `<data>` block and
+ * a `<style>` block.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
@@ -194,6 +196,73 @@ describe('where an imported page is used', () => {
   });
 });
 
+describe('an imported name written inside a comment', () => {
+  // A comment is not markup, and a use inside one was replaced all the same:
+  // the name was looked for in the text, wherever it stood. Commenting a use
+  // out did not take it out. Where the page that replaced it had a comment
+  // of its own, that comment's `-->` ended the author's, and the rest of the
+  // "commented out" page was drawn; behind `//`, every line of it after the
+  // first was.
+  const row = { 'ui/row.ui': '<!-- one line of the list -->\n<Text>{item.title}</Text>\n<Divider />' };
+
+  it('is left as it is written, in each kind of comment', () => {
+    const main = [
+      '<!-- <Row /> stood here -->',
+      '// and <Row item={item} /> here',
+      '<App>',
+      '  {/* <Row /> */}',
+      '  <Box // <Row /> is not placed in a tag either',
+      '    gap=md',
+      '  />',
+      '  <!--',
+      '    <Row>',
+      '      <Text>the paired form</Text>',
+      '    </Row>',
+      '  -->',
+      '</App>',
+    ].join('\n');
+    const source = compose({ 'ui/main.ui': `<import Row from="./row.ui" />\n${main}`, ...row });
+    expect(source).toBe(main);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('does not stop the uses beside it from being placed', () => {
+    const source = compose({
+      'ui/main.ui': [
+        '<import Row from="./row.ui" />',
+        '<App>',
+        '  <!-- <Row /> --><Row />',
+        '  <Text>see http://example.com/<Row /></Text>',
+        '  // the list',
+        '  <Row></Row>',
+        '</App>',
+      ].join('\n'),
+      'ui/row.ui': '<Text>{item.title}</Text>',
+    });
+    expect(source).toBe(
+      [
+        '<App>',
+        '  <!-- <Row /> --><Text>{item.title}</Text>',
+        '  <Text>see http://example.com/<Text>{item.title}</Text></Text>',
+        '  // the list',
+        '  <Text>{item.title}</Text>',
+        '</App>',
+      ].join('\n')
+    );
+  });
+
+  it('is left in the comments of a page placed earlier, too', () => {
+    // Uses are looked for over the page as it stands so far, so a comment
+    // brought in with one imported page is in front of the next import.
+    const source = compose({
+      'ui/main.ui': '<import Table from="./table.ui" />\n<import Row from="./row.ui" />\n<App><Table /></App>',
+      'ui/table.ui': '<Stack>\n  <!-- each <Row /> is a todo -->\n  <Row />\n</Stack>',
+      'ui/row.ui': '<Text>{item.title}</Text>',
+    });
+    expect(source).toBe('<App><Stack>\n  <!-- each <Row /> is a todo -->\n  <Text>{item.title}</Text>\n</Stack></App>');
+  });
+});
+
 describe('attributes and children on an imported page', () => {
   // They are dropped: the language has no properties or events for an
   // imported page. Dropping them silently is how a page came to pass
@@ -276,19 +345,14 @@ describe('an imported page with an App root', () => {
     expect(warnings()).toEqual([]);
   });
 
-  it('keeps the comments and the style block written beside the App', () => {
-    // Only the wrapper is taken off. A `<style>` block is placed with the
-    // rest of the page, where it has always been placed — which, inside
-    // another element, is not somewhere the parser reads it as the
-    // document's style: an app keeps its CSS in its main page's block.
+  it('keeps the comments written beside the App', () => {
+    // Only the wrapper is taken off.
     const source = compose({
       'ui/main.ui': '<import Home from="./home.ui" />\n<App>\n<Home />\n</App>',
       'ui/home.ui':
-        '// home.ui - the first page\n<!-- shown at / -->\n<style>\n.home > .title { color: red; }\n</style>\n<App>\n  <Heading class="title">Home</Heading>\n</App>\n',
+        '// home.ui - the first page\n<!-- shown at / -->\n<App>\n  <Heading class="title">Home</Heading>\n</App>\n<!-- the end -->\n',
     });
-    expect(source).toBe(
-      '<App>\n<!-- shown at / -->\n<style>\n.home > .title { color: red; }\n</style>\n<Heading class="title">Home</Heading>\n</App>'
-    );
+    expect(source).toBe('<App>\n<!-- shown at / -->\n<Heading class="title">Home</Heading>\n<!-- the end -->\n</App>');
   });
 
   it('contributes nothing for an App with nothing in it', () => {
@@ -433,6 +497,34 @@ describe('a data block in an imported page', () => {
     ]);
   });
 
+  it('reads every data block of the main page as the page’s own', () => {
+    // A page's blocks are one set of declarations. A name the first block
+    // gave away is taken, though the imported page's declarations are
+    // written into the last.
+    const source = compose({
+      'ui/main.ui': [
+        '<import List from="./list.ui" />',
+        '<data><collection name="tasks" as="items" /></data>',
+        '<App><List /></App>',
+        '<data>',
+        '  <collection name="tags" />',
+        '</data>',
+      ].join('\n'),
+      'ui/list.ui':
+        '<data><collection name="todos" as="items" /><collection name="tags" /><collection name="notes" /></data>\n<Text>{count(items)}</Text>',
+    });
+    const doc = parse(source);
+    expect(doc.diagnostics ?? []).toEqual([]);
+    expect(doc.data?.collections.map(({ name, as }) => `${name} as ${as}`)).toEqual([
+      'tasks as items',
+      'tags as tags',
+      'notes as notes',
+    ]);
+    expect(warnings()).toEqual([
+      '[SoftN] ui/list.ui: <collection name="todos" as="items"> is not declared, because this app already reads "tasks" as items.',
+    ]);
+  });
+
   it('leaves out a declaration the parser would refuse, so it cannot take the page’s block with it', () => {
     // A collection with no name fails the whole `<data>` block it is in.
     // Inside the main page's block that would undeclare the page's own
@@ -461,11 +553,118 @@ describe('a data block in an imported page', () => {
   });
 });
 
+describe('a style block in an imported page', () => {
+  // `<style>` is a declaration of the document, like `<data>`: read as one
+  // at the top of a page and nowhere else. Pasted in with the page it stood
+  // inside an element, where the parser reads it as an element named
+  // `style` with nothing in it — so the rules were lost, and the renderer,
+  // which refuses to draw a `style` element, drew "Unknown component:
+  // <style>" in their place. Once for each use: a row placed by `#each`
+  // drew the box under every row.
+  const header = '<header class="header">{title}</header>\n<style>\n.header > h1 { color: red; }\n</style>\n';
+
+  it('joins the document’s one style block, after the page’s own rules', () => {
+    const source = compose({
+      'ui/main.ui':
+        '<import Header from="./header.ui" />\n<App>\n  <Header />\n</App>\n<style>\n.app { color: black; }\n</style>',
+      'ui/header.ui': header,
+    });
+    expect(source).toBe(
+      '<App>\n  <header class="header">{title}</header>\n</App>\n<style>\n.app { color: black; }\n.header > h1 { color: red; }\n</style>'
+    );
+    const doc = parse(source);
+    expect(doc.diagnostics ?? []).toEqual([]);
+    expect(doc.style?.content).toBe('.app { color: black; }\n.header > h1 { color: red; }');
+    expect(tagsIn(doc.template)).toEqual(['App', 'header']);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('becomes the document’s style block when the main page has none', () => {
+    const source = compose({
+      'ui/main.ui': '<import Header from="./header.ui" />\n<App>\n  <Header />\n</App>',
+      'ui/header.ui': header,
+    });
+    expect(source).toBe(
+      '<App>\n  <header class="header">{title}</header>\n</App>\n<style>\n.header > h1 { color: red; }\n</style>'
+    );
+    expect(parse(source).style?.content).toBe('.header > h1 { color: red; }');
+  });
+
+  it('joins once, however often the page is used', () => {
+    // Like its logic and its collections, a page's rules join the document
+    // because the page was imported, not each time its name is written.
+    const row = '<Text class="row">{item.title}</Text>\n<style>.row { padding: 4px; }</style>';
+    for (const uses of ['#each (item in items)\n<Row />\n#end\n<Row />', '']) {
+      const source = compose({ 'ui/main.ui': `<import Row from="./row.ui" />\n<App>${uses}</App>`, 'ui/row.ui': row });
+      expect(source.match(/\.row \{ padding: 4px; \}/g)).toHaveLength(1);
+      const doc = parse(source);
+      expect(doc.style?.content).toBe('.row { padding: 4px; }');
+      expect(tagsIn(doc.template)).not.toContain('style');
+    }
+  });
+
+  it('comes in the order of the imports, a page before the pages it imports', () => {
+    // Where two rules are a match for each other the later one is applied,
+    // so the order is one an author can know: the main page's own rules,
+    // then each imported page's as the imports are written, a page's own
+    // before those of a page it imports in turn.
+    const source = compose({
+      'ui/main.ui': [
+        '<style>.main { order: 0; }</style>',
+        '<import Home from="./home.ui" />',
+        '<import Footer from="./footer.ui" />',
+        '<App><Home /><Footer /></App>',
+      ].join('\n'),
+      'ui/home.ui':
+        '<import Card from="./card.ui" />\n<Stack class="home"><Card /></Stack>\n<style>.home { order: 1; }</style>',
+      'ui/card.ui': '<style>.card { order: 2; }</style>\n<Text class="card">card</Text>',
+      'ui/footer.ui': '<Text class="footer">footer</Text>\n<style>.footer { order: 3; }</style>',
+    });
+    const doc = parse(source);
+    expect(doc.diagnostics ?? []).toEqual([]);
+    expect(doc.style?.content).toBe(
+      '.main { order: 0; }\n.home { order: 1; }\n.card { order: 2; }\n.footer { order: 3; }'
+    );
+    expect(tagsIn(doc.template)).toEqual(['App', 'Stack', 'Text', 'Text']);
+  });
+
+  it('is taken from beside an App root, and from a page with several blocks', () => {
+    const source = compose({
+      'ui/main.ui': '<import Home from="./home.ui" />\n<App>\n<Home />\n</App>',
+      'ui/home.ui':
+        '<style>\n.home > .title { color: red; }\n</style>\n<App>\n  <Heading class="title">Home</Heading>\n</App>\n<style scoped>.home { margin: 0; }</style>\n',
+    });
+    expect(source).toBe(
+      '<App>\n<Heading class="title">Home</Heading>\n</App>\n<style>\n.home > .title { color: red; }\n.home { margin: 0; }\n</style>'
+    );
+  });
+
+  it('adds nothing for a block with nothing in it', () => {
+    const main = '<import Blank from="./blank.ui" />\n<App><Blank /></App>';
+    expect(compose({ 'ui/main.ui': main, 'ui/blank.ui': '<style>\n</style>\n<Text>blank</Text>' })).toBe(
+      '<App><Text>blank</Text></App>'
+    );
+  });
+
+  it('leaves a <style> written inside the page’s own markup where it is', () => {
+    // Only a block at the top of the imported page is its style block. One
+    // inside an element is an element in any page, the page on its own
+    // included, and moving it would hide that from its author.
+    const page = '<Stack>\n  <style>.inner { color: red; }</style>\n</Stack>';
+    expect(
+      compose({ 'ui/main.ui': '<import Page from="./page.ui" />\n<Page />', 'ui/page.ui': page })
+    ).toBe(page);
+  });
+});
+
 describe('what did not change', () => {
   it('a fragment is placed exactly as real apps write one', () => {
     // The shape of a real app's sidebar: comment lines, an `if=` on the
-    // root, the page's state and functions read directly, a style block of
-    // its own. Byte for byte what the composer has always produced.
+    // root, the page's state and functions read directly. Byte for byte
+    // what the composer has always produced. (This fixture once ended in a
+    // `<style>` block and expected it left in place. No shipped app's
+    // imported page has one, and left in place it was drawn as an unknown
+    // component: see "a style block in an imported page" above.)
     const source = compose({
       'ui/main.ui': [
         '// main.ui - the app',
@@ -494,9 +693,6 @@ describe('what did not change', () => {
         '  // Logo Header',
         '  <NavItem icon=dashboard label="Dashboard" active={currentPage === "dashboard"} @click={navigate("dashboard")} />',
         '</Box>',
-        '<style>',
-        '.softn-nav-item > span { opacity: 0.8; }',
-        '</style>',
         '',
       ].join('\n'),
       'logic/main.logic': 'let sidebarCollapsed = false;',
@@ -520,9 +716,6 @@ describe('what did not change', () => {
         '  // Logo Header',
         '  <NavItem icon=dashboard label="Dashboard" active={currentPage === "dashboard"} @click={navigate("dashboard")} />',
         '</Box>',
-        '<style>',
-        '.softn-nav-item > span { opacity: 0.8; }',
-        '</style>',
         '  <Text>{count(clients)}</Text>',
         '</App>',
         '<logic>',

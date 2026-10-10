@@ -25,6 +25,13 @@ import { parse } from '../src/parser';
 import type { SoftNDocument, TemplateNode } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
 import { builtinHelpers } from '../src/runtime/helpers';
+import {
+  createConsoleModule,
+  createMockNavModule,
+  createMockXDBModule,
+  createScriptRuntime,
+  type ScriptContext,
+} from '../src/runtime/script-runtime';
 import type { SoftNRenderContext, SoftNProps } from '../src/types';
 
 /** The project narrows the ambient Buffer type, so compare the bytes directly. */
@@ -228,13 +235,31 @@ describe('the worked example', () => {
     const doc = parse(source);
     expect(doc.diagnostics ?? []).toEqual([]);
     expect(doc.imports).toEqual([]);
-    // One logic block holding both files, the helpers first, and the one
-    // style block the main page declares.
+    // One logic block holding both files, the helpers first.
     expect(doc.logic?.code.indexOf('function formatRelativeTime')).toBeGreaterThan(-1);
     expect(doc.logic?.code.indexOf('function addTodo')).toBeGreaterThan(
       doc.logic?.code.indexOf('function formatRelativeTime') ?? -1
     );
-    expect(doc.style?.content).toContain('.todo-item');
+  });
+
+  it('keeps each page’s rules in the page’s own file, and all of them in one stylesheet', async () => {
+    // A newcomer looks for the header's rules in header.ui. They are there,
+    // and the composer adds them to the document's one style block: the main
+    // page's own first, then each imported page's in the order of the
+    // imports, once each — the row's once, not once for every row.
+    const { text } = await example();
+    for (const page of ['components/header.ui', 'components/todo-item.ui', 'components/footer.ui']) {
+      expect(text.get(page), page).toMatch(/<style>[\s\S]+<\/style>/);
+    }
+    const { source } = await composed();
+    expect(source.match(/<style[\s>]/g)).toHaveLength(1);
+    const css = parse(source).style?.content ?? '';
+    const at = (rule: string) => css.indexOf(rule);
+    expect(at('.app {')).toBeGreaterThan(-1);
+    expect(at('.header {')).toBeGreaterThan(at('.app {'));
+    expect(at('.todo-item {')).toBeGreaterThan(at('.header {'));
+    expect(at('.footer {')).toBeGreaterThan(at('.todo-item {'));
+    expect(css.match(/\.todo-item \{/g)).toHaveLength(1);
   });
 
   it('has every imported page in place, and no tag the runtime does not know', async () => {
@@ -324,6 +349,80 @@ describe('the worked example', () => {
     // example began with a prompt to let it use the internet.
     const { text, manifest } = await example();
     expect(extractPermissions(text, manifest)).toBeNull();
+  });
+
+  it('does in the engine what its pages ask of it', async () => {
+    // The logic as the runtime compiles it, called the way the pages call
+    // it. The list the page shows is a `$:` value built on two others, and
+    // "clear completed" loops over one: written that way the example showed
+    // empty Active and Completed lists and cleared nothing, because inside
+    // logic a `$:` name held the value it had when the script loaded.
+    localStorage.clear();
+    const { text } = await example();
+    const { source, logicBasePath, preIncludedLogicPaths } = await composed();
+    const code = parse(source).logic?.code ?? '';
+    const state: Record<string, unknown> = {};
+    const context: ScriptContext = {
+      state,
+      setState: (path: string, value: unknown) => {
+        state[path] = value;
+      },
+      data: {},
+      xdb: createMockXDBModule(),
+      nav: createMockNavModule(),
+      console: createConsoleModule(),
+    };
+    const runtime = createScriptRuntime(
+      context,
+      undefined,
+      'WorkedExampleLogic',
+      async (path: string) => text.get(path) ?? null,
+      logicBasePath,
+      { preIncludedLogicPaths }
+    );
+    try {
+      const loaded = await runtime.loadScript({
+        type: 'LogicBlock',
+        code,
+        loc: { line: 1, column: 0, start: 0, end: code.length },
+      });
+      Object.assign(state, loaded.state);
+      const shown = () => (loaded.computed.filteredTodos() as Array<{ data: { text: string } }>).map((t) => t.data.text);
+      const add = async (words: string) => {
+        runtime.updateContext({ newTodoText: words });
+        await loaded.functions.addTodo();
+      };
+      const idOf = (words: string) =>
+        (state.todos as Array<{ id: string; data: { text: string } }>).find((t) => t.data.text === words)!.id;
+
+      await loaded.functions._init();
+      expect(shown()).toEqual([]);
+      await add('write the example');
+      await add('run it');
+      await add('ship it');
+      expect(state.newTodoText).toBe('');
+      expect(shown()).toEqual(['write the example', 'run it', 'ship it']);
+
+      await loaded.functions.toggleTodo(idOf('run it'));
+      await loaded.functions.setFilter('active');
+      expect(shown()).toEqual(['write the example', 'ship it']);
+      await loaded.functions.setFilter('completed');
+      expect(shown()).toEqual(['run it']);
+
+      await loaded.functions.startEdit(idOf('ship it'));
+      runtime.updateContext({ editText: 'ship it today' });
+      await loaded.functions.saveEdit();
+      await loaded.functions.toggleTodo(idOf('ship it today'));
+      expect(shown()).toEqual(['run it', 'ship it today']);
+
+      await loaded.functions.clearCompleted();
+      expect(shown()).toEqual([]);
+      await loaded.functions.setFilter('all');
+      expect(shown()).toEqual(['write the example']);
+      expect((loaded.computed.activeTodos() as unknown[]).length).toBe(1);
+    } finally {
+      runtime.cleanup();
+    }
   });
 
   it('lists the files it carries, and carries the files it lists', async () => {

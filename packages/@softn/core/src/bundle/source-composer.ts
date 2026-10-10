@@ -12,13 +12,19 @@
  * written, as text, in the importing page's scope: it reads that page's state
  * and calls its functions, and its `<logic>` joins the page's one block.
  * Nothing is passed to it — attributes and children written on the tag are
- * dropped, and said so. What a page carries only when it stands on its own,
- * an `<App>` wrapper and `<data>` declarations, is handed to the document
- * instead of being pasted inside it (see page-include.ts).
+ * dropped, and said so. What a page carries only when it stands on its own
+ * — `<data>` declarations, `<style>` rules, an `<App>` wrapper — is handed
+ * to the document instead of being pasted inside it (see page-include.ts).
  */
 
 import { PYTHON_PACKAGES, readPythonPackages } from './inspect';
-import { declareCollections, placeInclude, readInclude, type IncludedCollection } from './page-include';
+import {
+  declareCollections,
+  declareStyles,
+  placeInclude,
+  readInclude,
+  type IncludedCollection,
+} from './page-include';
 
 export interface ComposedBundleSource {
   source: string;
@@ -224,6 +230,12 @@ function escapeRegex(value: string): string {
 }
 
 /**
+ * The `from` of an import, as the text of a pattern: the word, an `=` or
+ * none, and the quoted path, which is its one group.
+ */
+const IMPORT_FROM = String.raw`from\s*=?\s*["']([^"']+)["']`;
+
+/**
  * How a page imports another: `<import Header from="./header.ui" />`. Group 1
  * is the name it is used by, group 2 the path as written.
  *
@@ -233,7 +245,21 @@ function escapeRegex(value: string): string {
  * imports placed. Every place that looks for an import builds on this one
  * pattern, so the two cannot come apart again.
  */
-export const UI_IMPORT_PATTERN = /<import\s+(\w+)\s+from\s*=?\s*["']([^"']+)["']\s*\/>/;
+export const UI_IMPORT_PATTERN = new RegExp(String.raw`<import\s+(\w+)\s+${IMPORT_FROM}\s*\/>`);
+
+/**
+ * Any import a page writes, whatever it names: `<import Header from=…>`,
+ * `<import { Row, Cell } from=…>`, or a name and a list together. Group 1 is
+ * the name, group 2 what is between the braces, group 3 the path.
+ *
+ * The bundle reader lists a page's imports with this. It had a pattern of its
+ * own, which read `from "./x.ui"` and not `from="./x.ui"` — the opposite of
+ * the composer's — so the spelling every shipped app uses listed nothing.
+ * Both are built on the same reading of `from` now.
+ */
+export const UI_IMPORT_DECLARATION_PATTERN = new RegExp(
+  String.raw`<import\s+(?:(\w+)\s+)?(?:\{([^}]+)\}\s*)?${IMPORT_FROM}\s*\/>`
+);
 
 /** What a use of an imported page carried that an include cannot take, as a sentence. */
 function describeIgnored(attributes: readonly string[], children: boolean): string {
@@ -267,6 +293,8 @@ export function composeBundleSource(
   // The collections imported pages declare, with the page each came from.
   // Like their logic, they belong to the document: see declareCollections.
   const includedCollections: Array<IncludedCollection & { from: string }> = [];
+  // And the rules of their `<style>` blocks, for the document's one block.
+  const includedStyles: string[] = [];
   let firstFragment: LogicFragment | undefined;
   let sawExternalLogic = false;
 
@@ -336,6 +364,25 @@ export function composeBundleSource(
     main: boolean
   ): string => {
     let nextSource = collectLogic(source, basePath, main);
+
+    if (!main) {
+      // An imported page is placed inside another, so what only a whole page
+      // carries comes off it here, once, however often the page is used. It
+      // is read before the pages it imports in turn, so that what it declares
+      // comes before what they do.
+      const include = readInclude(nextSource);
+      nextSource = include.markup;
+      for (const collection of include.collections) {
+        includedCollections.push({ ...collection, from: basePath });
+      }
+      for (let i = 0; i < include.unusable; i++) {
+        console.warn(
+          `[SoftN] ${basePath}: a <collection> in its <data> block has no usable name and is not declared.`
+        );
+      }
+      includedStyles.push(...include.styles);
+    }
+
     const importRegex = new RegExp(UI_IMPORT_PATTERN.source, 'g');
     const imports: Array<{ name: string; path: string; content: string }> = [];
 
@@ -380,19 +427,7 @@ export function composeBundleSource(
           `[SoftN] ${declaration.from}: <collection name="${declaration.name}" as="${declaration.as}"> is not declared, because this app already reads "${holder}" as ${declaration.as}.`
         );
       }
-    } else {
-      // An imported page is placed inside another, so what only a whole page
-      // carries comes off it here, once, however often the page is used.
-      const include = readInclude(nextSource);
-      nextSource = include.markup;
-      for (const collection of include.collections) {
-        includedCollections.push({ ...collection, from: basePath });
-      }
-      for (let i = 0; i < include.unusable; i++) {
-        console.warn(
-          `[SoftN] ${basePath}: a <collection> in its <data> block has no usable name and is not declared.`
-        );
-      }
+      nextSource = declareStyles(nextSource, includedStyles);
     }
 
     for (const imported of imports) {

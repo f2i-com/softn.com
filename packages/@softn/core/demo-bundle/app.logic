@@ -36,11 +36,13 @@ let editText = ""
 // Computed values
 // ============================================================================
 
-// A computed value is a `$:` declaration. The runtime finds these by name,
-// compiles each expression into a function, and re-evaluates it when the state
-// it reads moves. `$computed(() => ...)` was an earlier spelling that nothing
-// defines any more, so it reached the browser as
-// "ReferenceError: $computed is not defined".
+// A computed value is a `$:` declaration: a name, and the expression it is
+// always worth. The runtime works each one out again whenever the state it
+// reads has changed, before a page is drawn and before a function is called,
+// so a page, a function and another `$:` all read the value as it is now.
+// (`$computed(() => ...)` was an earlier spelling that nothing defines any
+// more, so it reached the browser as "ReferenceError: $computed is not
+// defined".)
 
 // Todos still to do
 $: activeTodos = todos.filter(t => !t.data.completed)
@@ -48,14 +50,10 @@ $: activeTodos = todos.filter(t => !t.data.completed)
 // Todos that are done
 $: completedTodos = todos.filter(t => t.data.completed)
 
-// The todos the current filter shows.
-// Worked out from `todos`, not from the two values above. A page reads a `$:`
-// value live; logic does not. Inside another `$:` expression, or a function,
-// the name holds what the expression gave when the script first ran (an empty
-// list here), so one `$:` cannot be built on another.
+// The todos the current filter shows: one `$:` built on two others.
 // One line: the extractor reads `$:` declarations a line at a time, so a
 // wrapped expression is truncated at the newline and fails to compile.
-$: filteredTodos = todos.filter(t => filter === "all" || t.data.completed === (filter === "completed"))
+$: filteredTodos = filter === "active" ? activeTodos : filter === "completed" ? completedTodos : todos
 
 // ============================================================================
 // Actions
@@ -143,8 +141,8 @@ function editTodo(id, newText) {
  * Delete every todo that is done
  */
 function clearCompleted() {
-  for (const todo of todos) {
-    if (todo.data.completed) db.delete(todo.id)
+  for (const todo of completedTodos) {
+    db.delete(todo.id)
   }
   refreshTodos()
 }

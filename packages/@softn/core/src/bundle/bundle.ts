@@ -21,6 +21,7 @@ import type {
 import { validateManifest, createDefaultManifest } from './types';
 import { MAX_ZIP_INPUT_BYTES, readBundleEntries } from './zip';
 import { classifyAsset } from './asset-classification';
+import { UI_IMPORT_DECLARATION_PATTERN } from './source-composer';
 import type { XDBService } from '../runtime/xdb';
 
 // ============================================================================
@@ -367,8 +368,10 @@ function getFileType(path: string): BundleFile['type'] {
 function parseUIFile(path: string, content: string): UIFile {
   const imports: UIImport[] = [];
 
-  // Extract imports using regex (before full parsing)
-  const importRegex = /<import\s+(?:(\w+)\s+)?(?:\{([^}]+)\}\s+)?from\s+["']([^"']+)["']\s*\/>/g;
+  // Extract imports (before full parsing), by the pattern the composer's own
+  // is built on, so `from="./x.ui"` and `from "./x.ui"` are both read here as
+  // they are there.
+  const importRegex = new RegExp(UI_IMPORT_DECLARATION_PATTERN.source, 'g');
   let match;
 
   while ((match = importRegex.exec(content)) !== null) {

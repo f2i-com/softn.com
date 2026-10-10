@@ -2,7 +2,29 @@
   The header. main.ui puts this where it writes the Header tag, so `title` and
   `activeTodos` are that page's: both are declared in app.logic.
 -->
-<header className="header">
-  <h1 className="title">{title}</h1>
-  <span className="remaining">{count(activeTodos)} to do</span>
+<header class="header">
+  <h1 class="title">{title}</h1>
+  <span class="remaining">{count(activeTodos)} to do</span>
 </header>
+
+<style>
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.5rem;
+    background: var(--color-primary);
+    color: var(--color-primary-text);
+  }
+
+  .header .title {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+  }
+
+  .header .remaining {
+    font-size: 0.875rem;
+    opacity: 0.85;
+  }
+</style>

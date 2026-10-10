@@ -7,10 +7,13 @@
   Which row is being edited is the page's state too (`editingId`, `editText`).
   This file could not keep it: it has no scope of its own, so a variable
   declared here would be one variable shared by every row.
+
+  The rules at the foot of this file are the row's, and join the app's one
+  stylesheet once, however many rows the list has.
 -->
-<div className="todo-item" class:completed={todo.data.completed}>
+<div class="todo-item" class:completed={todo.data.completed}>
   #if (editingId === todo.id)
-    <div className="edit-mode">
+    <div class="edit-mode">
       <Input
         type="text"
         :bind={editText}
@@ -27,16 +30,16 @@
       </Button>
     </div>
   #else
-    <div className="view-mode">
+    <div class="view-mode">
       <Checkbox
         checked={todo.data.completed}
         @change={() => toggleTodo(todo.id)}
       />
-      <span className="todo-text" @dblclick={() => startEdit(todo.id)}>
+      <span class="todo-text" @dblclick={() => startEdit(todo.id)}>
         {todo.data.text}
       </span>
-      <span className="todo-meta">{formatRelativeTime(todo.data.createdAt)}</span>
-      <div className="todo-actions">
+      <span class="todo-meta">{formatRelativeTime(todo.data.createdAt)}</span>
+      <div class="todo-actions">
         <Button variant="ghost" size="sm" aria-label="Edit" @click={() => startEdit(todo.id)}>
           <Icon name="edit" />
         </Button>
@@ -47,3 +50,43 @@
     </div>
   #end
 </div>
+
+<style>
+  .todo-item {
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface);
+  }
+
+  .todo-item.completed {
+    opacity: 0.7;
+  }
+
+  .view-mode,
+  .edit-mode {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .todo-text {
+    flex: 1;
+    cursor: pointer;
+  }
+
+  .todo-item.completed .todo-text {
+    text-decoration: line-through;
+    color: var(--color-text-muted);
+  }
+
+  .todo-meta {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+  }
+
+  .todo-actions {
+    display: flex;
+    gap: 0.25rem;
+  }
+</style>
