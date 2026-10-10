@@ -52,6 +52,13 @@ export type AssembledApplication = ReturnType<typeof processBundle> & {
   appId: string;
   textFiles: Map<string, string>;
   execution: 'worker' | 'main';
+  /**
+   * The side the project declares: the manifest's `config.theme.mode`, as
+   * the manifest has it. Read here so the archive-served and the PHP-served
+   * host hand the theme rule the same word; which words decide anything is
+   * the rule's (@softn/components, theme/app-theme.ts), not the shell's.
+   */
+  themeMode: unknown;
 };
 
 export async function assembleApplication(input: AssembleInput): Promise<AssembledApplication> {
@@ -88,5 +95,9 @@ export async function assembleApplication(input: AssembleInput): Promise<Assembl
   // worker, and anything else, a misspelling included, is main. Whether the
   // script can in fact leave the main thread is still the renderer's decision.
   const execution: 'worker' | 'main' = raw.config?.execution === 'worker' ? 'worker' : 'main';
-  return { raw, declared, grantKey, appId, textFiles, execution, ...source };
+  // Passed on as written. A manifest is a file anyone can write, so `config`
+  // and `theme` are only looked into when they are objects.
+  const theme: unknown = (raw.config as { theme?: unknown } | null | undefined)?.theme;
+  const themeMode: unknown = theme && typeof theme === 'object' ? (theme as { mode?: unknown }).mode : undefined;
+  return { raw, declared, grantKey, appId, textFiles, execution, themeMode, ...source };
 }

@@ -2,10 +2,16 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type R
 import { Mark, ThemeToggle } from '@softn/brand';
 import './desktop.css';
 
-export function DesktopShell({ children, chrome, appName, onHome, onOpen, canOpen, contentRef }: {
+export function DesktopShell({ children, chrome, appName, onHome, onOpen, canOpen, contentRef, themeBox }: {
   children: ReactNode;
   /** The element the app renders in; focusable, so focus can be put back into the app. */
   contentRef?: RefObject<HTMLElement>;
+  /**
+   * The name the app's ThemeProvider knows that element by. An app whose
+   * project declares the other side from this shell's has its tokens, and a
+   * ground from them, written on the element so named.
+   */
+  themeBox?: string;
   /**
    * Runtime chrome drawn under the header and above the app — the permission
    * bar. Measured with the header, since an app root is sized under both.
@@ -39,7 +45,7 @@ export function DesktopShell({ children, chrome, appName, onHome, onOpen, canOpe
       </header>
       {chrome}
     </div>
-    <main className="desktop-content" ref={contentRef} tabIndex={-1}>{children}</main>
+    <main className="desktop-content" ref={contentRef} tabIndex={-1} data-softn-theme-box={themeBox}>{children}</main>
   </div>;
 }
 

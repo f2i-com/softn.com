@@ -5,8 +5,20 @@
  * Provides app-level theming and context with CSS variables.
  */
 
-import React from 'react';
+import React, { createContext, useContext, useEffect, useLayoutEffect } from 'react';
 import { useTheme } from '../theme/ThemeProvider';
+import { pageSide } from '../theme/app-theme';
+
+/**
+ * Whether an `<App>` is being drawn inside another. The page is the outermost
+ * one: a page used inside another brings its own `<App>` along, and that one
+ * does not get to say what the app's page pins.
+ */
+const InsideApp = createContext(false);
+
+// Before paint in a browser, so the tokens never show a frame on the side
+// the page has just left; a plain effect where there is no layout to wait for.
+const useBeforePaint = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
 export interface AppProps {
   /** App content */
@@ -228,8 +240,17 @@ const globalStyles = `
 `;
 
 export function App({ children, theme = 'system', className, style }: AppProps): React.ReactElement {
-  const { isDarkMode } = useTheme();
-  const resolvedTheme = theme === 'light' || theme === 'dark' ? theme : isDarkMode ? 'dark' : 'light';
+  const { isDarkMode, pinPage } = useTheme();
+  const inside = useContext(InsideApp);
+  // The page's own light or dark is the page's to say, and the provider's to
+  // act on: in a project that declares a side, the tokens this element does
+  // not name (the chart series, the code colours) go with the page instead
+  // of staying on the side the project declared (theme/app-theme.ts, 2a).
+  useBeforePaint(() => {
+    if (inside || !pinPage) return;
+    return pinPage(theme);
+  }, [inside, pinPage, theme]);
+  const resolvedTheme = pageSide(theme, isDarkMode ? 'dark' : 'light');
   const themeVars = resolvedTheme === 'light' ? lightThemeVars : darkThemeVars;
   const customThemeClass = !['system', 'light', 'dark'].includes(theme) ? `softn-theme-${theme}` : '';
 
@@ -251,7 +272,7 @@ export function App({ children, theme = 'system', className, style }: AppProps):
     <>
       <style>{`.softn-theme-${resolvedTheme} { ${themeVars} } ${globalStyles}`}</style>
       <div className={`softn-app softn-theme-${resolvedTheme} ${customThemeClass} ${className || ''}`} data-theme={customThemeClass ? theme : resolvedTheme} style={containerStyle}>
-        {children}
+        <InsideApp.Provider value={true}>{children}</InsideApp.Provider>
       </div>
     </>
   );

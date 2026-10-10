@@ -90,6 +90,9 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 // Platform detection
 const isMobile = typeof __ANDROID__ !== 'undefined' && __ANDROID__;
 
+/** The name of the one box an app is drawn in here: the shell's content area. */
+const THEME_BOX = 'desktop-app';
+
 // Types for bundle content
 interface BundleManifest {
   name: string;
@@ -657,7 +660,7 @@ function App(): React.ReactElement {
     ? <PermissionBar {...consent} wording={DESKTOP_WORDING} appRootRef={contentRef} />
     : null;
 
-  return <DesktopShell contentRef={contentRef} appName={bundlePath ? _manifest?.name : undefined} chrome={consentBar} onHome={goHome} onOpen={openFilePicker} canOpen={isTauri || isMobile}>
+  return <DesktopShell contentRef={contentRef} themeBox={THEME_BOX} appName={bundlePath ? _manifest?.name : undefined} chrome={consentBar} onHome={goHome} onOpen={openFilePicker} canOpen={isTauri || isMobile}>
     {installationChoice?.kind === 'upgrade' && <InstallationChoiceDialog choice={installationChoice} />}
     {installationChoice?.kind === 'registry-damaged' && <RegistryDamagedDialog choice={installationChoice} />}
     {installationChoice?.kind === 'upgrade-unresolved' && <UnresolvedUpgradeDialog choice={installationChoice} />}
@@ -665,7 +668,10 @@ function App(): React.ReactElement {
     {!bundlePath && !loading ? <DesktopWelcome onOpen={openFilePicker} canOpen={isTauri || isMobile} dragging={isDragOver} error={error} />
       : loading ? <div className="desktop-state" role="status"><Spinner size="lg" /><p>Opening {bundlePath?.split(/[/\\]/).pop() || 'your app'}…</p></div>
       : error ? <div className="desktop-state" role="alert"><h1>We couldn’t open this app</h1><p className="desktop-error">{error.message}</p><p>{bundlePath}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>
-      : <ThemeProvider followHost followSystem>
+      // The side the project declares (the manifest's `config.theme.mode`, as
+      // written) over this shell's own theme and the device, as in the web
+      // runtime; the rule that weighs them is the provider's.
+      : <ThemeProvider followHost followSystem declaredMode={_manifest?.config?.theme?.mode} box={THEME_BOX}>
         <XDBStorageNotice appId={runtimeAppId ?? undefined} />
         <SoftNWithXDB
           key={runtimeAppId ?? undefined}

@@ -3,11 +3,11 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), files: new Map<string, string>() }));
+const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), theme: vi.fn(), files: new Map<string, string>() }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: bridge.open }));
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: bridge.drag }) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: bridge.title }) }));
-vi.mock('@softn/components', () => ({ registerAllBuiltins() {}, ThemeProvider: ({ children }: { children: React.ReactNode }) => children, Spinner: () => <span>Loading</span> }));
+vi.mock('@softn/components', () => ({ registerAllBuiltins() {}, ThemeProvider: (props: Record<string, unknown> & { children: React.ReactNode }) => { bridge.theme(props); return props.children; }, Spinner: () => <span>Loading</span> }));
 vi.mock('@softn/core', async (importOriginal) => ({
   // The manifest and permission reads are core's real ones: the loader is
   // what this test exercises, and those are what it reads through. So is
@@ -210,4 +210,29 @@ it("honours the manifest's config.execution as the web runtime does", async () =
   bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', main: 'main.ui', files: {}, config: { execution: 'Worker' } }));
   await click('Open app');
   expect(lastRun().executionPreference).toBe('main');
+});
+
+it("honours the manifest's config.theme.mode as the web runtime does", async () => {
+  // The loader read `config.execution`, `config.window` and `config.server`
+  // from the manifest and never the side its project declares, so a project
+  // declared dark was drawn in whatever the desktop shell's own theme was.
+  // The rule is the provider's (@softn/components, theme/app-theme.ts); the
+  // loader hands it the manifest's word and names the box the app is drawn in.
+  bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', main: 'main.ui', files: {}, config: { theme: { primary: '#22d3ee', mode: 'dark' } } }));
+  await mount();
+  await click('Open app');
+  const provider = bridge.theme.mock.lastCall?.[0] as Record<string, unknown>;
+  expect(provider.declaredMode).toBe('dark');
+  // The shell's own theme is still followed: it is what a project declared
+  // system, or nothing, goes on being drawn by.
+  expect(provider.followHost).toBe(true);
+  expect(provider.followSystem).toBe(true);
+  const box = host.querySelector('[data-softn-theme-box]');
+  expect(box?.tagName).toBe('MAIN');
+  expect(box?.getAttribute('data-softn-theme-box')).toBe(provider.box);
+  expect(box?.textContent).toContain('Running the selected app');
+
+  bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', main: 'main.ui', files: {} }));
+  await click('Open app');
+  expect((bridge.theme.mock.lastCall?.[0] as Record<string, unknown>).declaredMode).toBeUndefined();
 });

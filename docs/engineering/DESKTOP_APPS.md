@@ -70,9 +70,16 @@ the current project open. The runtime's **Open app** action can reopen a file
 after another tool has updated it; **Runtime home** closes its current view.
 
 The runtime's theme switch also updates the running app, preserving its current
-screen and unfinished form input. An app with `<App>` or `<App theme="system">`
-follows the runtime appearance; `theme="light"` or `theme="dark"` intentionally
-keeps a fixed appearance. Use the app's `--color-*` variables for custom styles,
+screen and unfinished form input. Which side an app is drawn in is decided in
+this order: a page's own `<App theme="light">` or `theme="dark"` keeps that
+appearance; otherwise a project whose manifest declares `config.theme.mode`
+`"light"` or `"dark"` is drawn in that side, whatever the runtime's switch and
+the device say; otherwise (`"system"`, or no mode, with `<App>` or
+`<App theme="system">`) the app follows the runtime appearance. The web
+runtime and the single-app runtimes apply the same rule
+(`packages/@softn/components/src/theme/app-theme.ts`). An app drawn in the
+other side from the runtime's has its colours on its own area; the runtime's
+header keeps the runtime's. Use the app's `--color-*` variables for custom styles,
 or scope alternate colours under `.softn-theme-dark`, as Fieldnotes does.
 Studio and Builder preview controls apply the selected appearance in place.
 Previously downloaded bundles keep their authored styles; reopen the updated

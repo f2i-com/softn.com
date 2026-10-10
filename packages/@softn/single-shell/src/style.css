@@ -49,8 +49,15 @@ body {
   position: relative;
   contain: layout paint;
 }
+/* The shell's own screens (loading, could not open) carry the page's colours
+   themselves. They are drawn in the box the app is drawn in, and that box is
+   given the app's ground and text colour when its project declares the other
+   side from this deployment's theme; the button below keeps a dark
+   background of its own, so on a light app's ink it could not be read. */
 .application-content .loading {
   min-height: 100%;
+  background: #171821;
+  color: #f5f5f8;
 }
 /* The permission bar is the shared one from @softn/runtime-shell, which
    carries its own styles; it sits in .application-chrome and is measured

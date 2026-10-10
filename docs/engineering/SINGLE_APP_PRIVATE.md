@@ -116,6 +116,12 @@ return [
 
 - `id` names the visitor's local XDB records together with the page's path.
   Keep it stable across updates of the same application.
+- `theme` is `dark` (the default) or `light`: the colours of the page the
+  server renders, and the side the application is drawn in when its project
+  declares none. A bundle whose manifest declares `config.theme.mode` `light`
+  or `dark` is drawn in that side whatever `theme` says, and a page that sets
+  its own `<App theme>` to one of the two is drawn in that; the rule is the
+  static runtime's.
 - `permissionMode` `prompt` shows the permission bar; `preapproved` enables
   the declared capabilities at once and requires `sha256`, the hex digest of
   the archive, which the host also checks before serving the pack.

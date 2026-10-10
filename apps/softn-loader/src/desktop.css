@@ -28,7 +28,8 @@
 .desktop-guide li > span { color: var(--dim); font: 0.6875rem var(--mono); padding-top: 0.3rem; }
 .desktop-guide h3 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.375rem; }
 .desktop-guide .desktop-note { border-top: 1px solid var(--line); padding-top: 1.25rem; margin-top: 1.75rem; font-size: 0.8125rem; }
-.desktop-state { min-height: 100%; display: grid; align-content: center; justify-items: center; gap: 1rem; padding: 2rem; text-align: center; }
+/* The shell's own screens (starting, could not start) carry the shell's ground and text colour themselves: they are drawn in the box the app is drawn in, which is given the app's ground when its project declares the other side from this shell's theme. */
+.desktop-state { min-height: 100%; display: grid; align-content: center; justify-items: center; gap: 1rem; padding: 2rem; text-align: center; background: var(--ink); color: var(--paper); }
 .desktop-state h1 { font: 500 1.75rem var(--display); }
 .desktop-state p { max-width: 46rem; color: var(--dim); overflow-wrap: anywhere; }
 .desktop-error { color: var(--danger) !important; }

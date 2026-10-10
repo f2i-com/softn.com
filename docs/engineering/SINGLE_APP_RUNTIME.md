@@ -21,6 +21,8 @@ Replace the sample `app.softn` in the deployed directory and edit `runtime.confi
 }
 ```
 
+`theme` is `"dark"` (the default) or `"light"`: the side an app is drawn in when its project declares none. A bundle whose manifest declares `config.theme.mode` `"light"` or `"dark"` is drawn in that side whatever `theme` says, and a page that sets its own `<App theme="light">` or `theme="dark"` is drawn in that. The loading and failure screens are the shell's own and stay as they are.
+
 Optional `permissions` points to a same-origin JSON permission declaration, e.g. `"./permission.json"`. That operator-supplied file is authoritative; without it the runtime uses the bundle's `permission.json`, then its legacy manifest declaration, then no permissions. Invalid declarations stop loading. Optional `sha256` pins the exact bundle bytes. All locations resolve relative to the config file and must be same-origin HTTP(S); redirects, credentials in URLs and URL fragments are refused. The entry always reads its adjacent config. Query parameters, hashes, file drops and messages cannot replace the chosen app.
 
 Optional `directory` names where the app came from when a directory serves this shell for it: `{"runs": "/api/apps/x/runs", "storage": "/api/apps/x/storage"}`, both same-origin, the first `POST`ed to once when the app is up and the second reached by the app's scripts as `softn.storage.*`. A standalone deployment leaves it out.

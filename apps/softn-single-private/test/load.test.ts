@@ -151,3 +151,20 @@ it('refuses a pack whose main file is not in the text', async () => {
     loadServedApplication('/games/index.php', base, new AbortController().signal)
   ).rejects.toThrow('Invalid application manifest');
 });
+
+it('reads the side the project declares from the manifest the server passed on, as the archive host does', async () => {
+  // softn-serve.php hands on the manifest's `config.theme` beside
+  // `config.execution`; the deployment's own `theme` is a different thing
+  // (the default a project that declares no side is drawn in), and the
+  // runtime had only ever read that one.
+  serve(pack({ theme: 'dark', manifest: { ...pack().manifest, config: { execution: 'worker', theme: { primary: '#c7ee53', mode: 'light' } } } }));
+  const light = await loadServedApplication('/games/index.php', base, new AbortController().signal);
+  expect(light.themeMode).toBe('light');
+  expect(light.config.theme).toBe('dark');
+  light.assets.dispose();
+
+  serve(pack());
+  const silent = await loadServedApplication('/games/index.php', base, new AbortController().signal);
+  expect(silent.themeMode).toBeUndefined();
+  silent.assets.dispose();
+});

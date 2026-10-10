@@ -318,6 +318,11 @@ interface OpenTab {
   python?: PythonProject;
   /** The manifest's `config.execution`: where the bundle asked its script to run. */
   execution?: 'worker' | 'main';
+  /**
+   * The manifest's `config.theme.mode`, as the bundle has it: the side the
+   * project declares. Judged by the theme rule, not here.
+   */
+  themeMode?: unknown;
   serverUrl?: string;
   serverToken?: string;
   serverCollections?: string[];
@@ -965,6 +970,7 @@ function App(): React.ReactElement {
           preIncludedLogicPaths,
           python,
           execution: manifest.config?.execution,
+          themeMode: manifest.config?.theme?.mode,
           serverUrl,
           serverToken: serverConfig?.token,
           serverCollections: serverConfig?.collections,
@@ -1786,6 +1792,7 @@ function App(): React.ReactElement {
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
               python={tab.python}
               executionPreference={tab.execution}
+              themeMode={tab.themeMode}
               permissionConfig={tab.permissionConfig}
               consent={tab.consent}
               onPageChange={(page) => handlePageChange(tab.id, page)}

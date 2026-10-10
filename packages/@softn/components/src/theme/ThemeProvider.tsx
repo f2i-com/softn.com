@@ -4,20 +4,38 @@
  * Provides theme context and injects CSS custom properties.
  */
 
-import React, { createContext, useContext, useMemo, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useMemo, useEffect, useRef, useState, useCallback } from 'react';
 import { Theme, lightTheme, darkTheme } from './tokens';
 import { CHART_PALETTE_LIGHT, chartColorVariable } from './chart-palette';
 import { CODE_PALETTE_LIGHT } from './code-palette';
+import { resolveAppTheme, themeSide, type ThemeSide } from './app-theme';
 import { cssThemeKey, cssThemeValue } from '../utils/css-values';
 
 export interface ThemeContextValue {
   theme: Theme;
   setTheme: (theme: Theme) => void;
   toggleDarkMode: () => void;
+  /** The side of the tokens, as the rule in app-theme.ts comes to it. */
   isDarkMode: boolean;
+  /**
+   * For `<App>`: says what the page's own `theme` is, so the tokens can go
+   * with a page that pins a side in a project that declares one (the rule's
+   * 2a). Returns the undo, for when the page goes or its theme changes.
+   * Absent where there is no provider.
+   */
+  pinPage?: (theme: unknown) => () => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
+
+/** The stored preference the provider has always read: one key for the whole origin. */
+const PREFERENCE_KEY = 'softn-theme-preference';
+
+/**
+ * The attribute a host puts on the element an app is drawn in, with the
+ * name it gives the provider as `box`.
+ */
+export const THEME_BOX_ATTRIBUTE = 'data-softn-theme-box';
 
 export interface ThemeProviderProps {
   /** Initial theme */
@@ -30,8 +48,37 @@ export interface ThemeProviderProps {
   followHost?: boolean;
   /** Follow system preference */
   followSystem?: boolean;
+  /**
+   * The side the app's project declares: its manifest's `config.theme.mode`,
+   * handed over as the manifest has it. "light" and "dark" win over the
+   * host's theme, the stored preference and the device; "system", nothing
+   * and anything else leave the provider doing what it did. A page's own
+   * `<App theme="light|dark">` still wins over it. See app-theme.ts.
+   */
+  declaredMode?: unknown;
+  /**
+   * For a host that draws its app in an element of its own, and above all
+   * for one that keeps several apps in one document: the name on that
+   * element's `data-softn-theme-box`. An app whose side is not the host's
+   * then has its tokens written on its own box, with a ground and a text
+   * colour from them, and the document keeps the host's side. Without it a
+   * declared side is written on the document, where the provider has always
+   * written, and where two apps that disagree would overwrite each other.
+   */
+  box?: string;
   /** Children */
   children: React.ReactNode;
+}
+
+/** What the host has to say about the side, read as it stands. */
+interface Surroundings {
+  host?: unknown;
+  stored?: unknown;
+  device?: unknown;
+}
+
+function sameSurroundings(a: Surroundings, b: Surroundings): boolean {
+  return a.host === b.host && a.stored === b.stored && a.device === b.device;
 }
 
 /** The entries of a theme section, or none when a partial theme left it out. */
@@ -132,12 +179,30 @@ export function themeToCssVariables(theme: Theme): Record<string, string> {
 /**
  * Generate CSS string from variables
  */
-function generateCss(vars: Record<string, string>): string {
-  const rules = Object.entries(vars)
-    .map(([key, value]) => `  ${key}: ${value};`)
-    .join('\n');
+function generateCss(vars: Record<string, string>, selector = ':root', more: string[] = []): string {
+  const rules = [...Object.entries(vars).map(([key, value]) => `  ${key}: ${value};`), ...more.map((line) => `  ${line}`)].join('\n');
 
-  return `:root {\n${rules}\n}`;
+  return `${selector} {\n${rules}\n}`;
+}
+
+/**
+ * A box name as it may be written into a selector: letters, digits, `-` and
+ * `_`. The name lands in `<style>` text, where anything else could close the
+ * selector and open a rule of its own.
+ */
+function boxName(box: unknown): string | undefined {
+  return typeof box === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(box) ? box : undefined;
+}
+
+/**
+ * What an app's own box is given besides the tokens when its side is not the
+ * host's: the tokens' ground and text colour, and the side for the browser's
+ * own controls. An app with no `<App>` and no background of its own is drawn
+ * straight onto the host's page, in the host's text colour; in dark tokens on
+ * a light host it would be light text on a light page.
+ */
+function groundOf(side: ThemeSide): string[] {
+  return ['background-color: var(--color-bg);', 'color: var(--color-text);', `color-scheme: ${side};`];
 }
 
 /**
@@ -258,29 +323,42 @@ export function ThemeProvider({
   darkMode,
   followHost = false,
   followSystem = false,
+  declaredMode,
+  box,
   children,
 }: ThemeProviderProps): React.ReactElement {
-  const readDarkMode = useCallback(() => {
+  // What the host has to say, read as it stands: its document's theme where
+  // that is followed, the stored preference, the device where that is
+  // followed. Which of them decides, and whether any does, is the rule's.
+  const readSurroundings = useCallback((): Surroundings => {
+    const surroundings: Surroundings = {};
     if (followHost && typeof document !== 'undefined') {
-      const hostTheme = document.documentElement.getAttribute('data-theme');
-      if (hostTheme === 'dark' || hostTheme === 'light') return hostTheme === 'dark';
+      surroundings.host = document.documentElement.getAttribute('data-theme');
     }
-    // Check localStorage first for user's explicit preference
     if (typeof window !== 'undefined') {
       try {
-        const stored = localStorage.getItem('softn-theme-preference');
-        if (stored === 'dark') return true;
-        if (stored === 'light') return false;
+        surroundings.stored = localStorage.getItem(PREFERENCE_KEY);
       } catch { /* Sandboxed frames use the host's default theme. */ }
+      if (followSystem) {
+        const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+        if (typeof dark === 'boolean') surroundings.device = dark ? 'dark' : 'light';
+      }
     }
-    // Fall back to system preference
-    if (followSystem && typeof window !== 'undefined') {
-      return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? defaultDarkMode;
-    }
-    return defaultDarkMode;
-  }, [followHost, followSystem, defaultDarkMode]);
-  const [preferredDark, setIsDark] = useState(readDarkMode);
-  const isDark = darkMode ?? preferredDark;
+    return surroundings;
+  }, [followHost, followSystem]);
+  const [surroundings, setSurroundings] = useState(readSurroundings);
+  // The page's own `<App theme>`, as the page reports it (see pinPage).
+  const [pagePin, setPagePin] = useState<ThemeSide | undefined>(undefined);
+  const fallback: ThemeSide = defaultDarkMode ? 'dark' : 'light';
+  const resolved = resolveAppTheme({
+    manifest: declaredMode,
+    page: pagePin,
+    control: darkMode === undefined ? undefined : darkMode ? 'dark' : 'light',
+    ...surroundings,
+    fallback,
+  });
+  const isDark = resolved.tokens === 'dark';
+  const ambientDark = resolved.ambient === 'dark';
 
   const [customTheme, setCustomTheme] = useState<Theme | null>(initialTheme ?? null);
   // A new `theme` from the host replaces the one in use; it was only ever read
@@ -295,13 +373,18 @@ export function ThemeProvider({
   // the renderer, which would discard app state and unfinished form input.
   useEffect(() => {
     if (darkMode !== undefined || typeof window === 'undefined') return;
-    const update = () => setIsDark(readDarkMode());
+    // The same object while nothing has changed, so an event that changes
+    // nothing redraws nothing.
+    const update = () => setSurroundings((was) => {
+      const now = readSurroundings();
+      return sameSurroundings(was, now) ? was : now;
+    });
     const observer = followHost ? new MutationObserver(update) : null;
     observer?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     const mediaQuery = followSystem ? window.matchMedia?.('(prefers-color-scheme: dark)') : null;
     mediaQuery?.addEventListener('change', update);
     const onStorage = (event: StorageEvent) => {
-      if (event.key === 'softn-theme-preference' || event.key === null) update();
+      if (event.key === PREFERENCE_KEY || event.key === null) update();
     };
     window.addEventListener('storage', onStorage);
     update();
@@ -310,31 +393,65 @@ export function ThemeProvider({
       mediaQuery?.removeEventListener('change', update);
       window.removeEventListener('storage', onStorage);
     };
-  }, [darkMode, followHost, followSystem, readDarkMode]);
+  }, [darkMode, followHost, followSystem, readSurroundings]);
 
   const theme = useMemo(() => {
     if (customTheme) return customTheme;
     return isDark ? darkTheme : lightTheme;
   }, [customTheme, isDark]);
 
-  const cssVariables = useMemo(() => themeToCssVariables(theme), [theme]);
-  const cssString = useMemo(() => generateCss(cssVariables), [cssVariables]);
+  // Where the tokens are written. An app that is on the host's side, a host
+  // that named no box and a theme the host brought itself are all written on
+  // the document, as they always were. Only an app that the rule has put on
+  // the other side from its host, in a box the host named, is written on
+  // that box, and then the document keeps the host's side: what is drawn
+  // around the app, and any other app in the same document, is not moved.
+  const named = boxName(box);
+  const apart = named !== undefined && !customTheme && isDark !== ambientDark;
+  const cssString = useMemo(() => {
+    if (!apart) return generateCss(themeToCssVariables(theme));
+    return generateCss(themeToCssVariables(ambientDark ? darkTheme : lightTheme));
+  }, [apart, theme, ambientDark]);
+  const boxCss = useMemo(
+    () =>
+      apart
+        ? '\n' + generateCss(themeToCssVariables(theme), `[${THEME_BOX_ATTRIBUTE}="${named}"]`, groundOf(isDark ? 'dark' : 'light'))
+        : '',
+    [apart, theme, named, isDark]
+  );
 
   const toggleDarkMode = useCallback(() => {
-    setIsDark((prev) => {
-      const next = !prev;
+    setSurroundings((was) => {
+      // What the host alone comes to, turned over. Kept as a stored
+      // preference with nothing above it until the host's theme, the device
+      // or the store next changes, which is how long the old switch held.
+      const next: ThemeSide = resolveAppTheme({ ...was, fallback }).ambient === 'dark' ? 'light' : 'dark';
       try {
-        localStorage.setItem('softn-theme-preference', next ? 'dark' : 'light');
+        localStorage.setItem(PREFERENCE_KEY, next);
       } catch {
         // localStorage may be unavailable in restricted contexts
       }
-      return next;
+      return { stored: next };
     });
     setCustomTheme(null); // Reset custom theme when toggling
-  }, []);
+  }, [fallback]);
 
   const setTheme = useCallback((newTheme: Theme) => {
     setCustomTheme(newTheme);
+  }, []);
+
+  // The pages that have said what their `theme` is. One, in an app; the
+  // last to say so where a document draws two side by side.
+  const pins = useRef(new Map<object, ThemeSide | undefined>());
+  const pinPage = useCallback((pageTheme: unknown) => {
+    const page = {};
+    const settle = () => setPagePin([...pins.current.values()].pop());
+    pins.current.set(page, themeSide(pageTheme));
+    settle();
+    return () => {
+      pins.current.delete(page);
+      settle();
+    };
   }, []);
 
   const contextValue = useMemo<ThemeContextValue>(
@@ -343,13 +460,14 @@ export function ThemeProvider({
       setTheme,
       toggleDarkMode,
       isDarkMode: isDark,
+      pinPage,
     }),
-    [theme, setTheme, toggleDarkMode, isDark]
+    [theme, setTheme, toggleDarkMode, isDark, pinPage]
   );
 
   return (
     <ThemeContext.Provider value={contextValue}>
-      <style dangerouslySetInnerHTML={{ __html: cssString + globalStyles }} />
+      <style dangerouslySetInnerHTML={{ __html: cssString + globalStyles + boxCss }} />
       {children}
     </ThemeContext.Provider>
   );

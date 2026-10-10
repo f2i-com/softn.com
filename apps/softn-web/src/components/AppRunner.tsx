@@ -1,4 +1,4 @@
-import React, { Component, useCallback, useMemo, useRef, useState, type ErrorInfo } from 'react';
+import React, { Component, useCallback, useId, useMemo, useRef, useState, type ErrorInfo } from 'react';
 import { SoftNWithXDB, type AppAssetResolver, type PythonProject } from '@softn/core';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
@@ -32,6 +32,12 @@ interface AppRunnerProps {
   python?: PythonProject;
   /** The manifest's `config.execution`, forwarded to the renderer. */
   executionPreference?: 'worker' | 'main';
+  /**
+   * The manifest's `config.theme.mode`, as the bundle has it. "light" and
+   * "dark" win over softn.com's own theme and the visitor's device; the rule
+   * is @softn/components' (theme/app-theme.ts).
+   */
+  themeMode?: unknown;
   permissionConfig?: import('@softn/core').PermissionConfig;
   /**
    * The bundle declared capabilities the user has not answered yet, so
@@ -208,8 +214,15 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, executionPreference, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
+  // The name of the box this app is drawn in, for the provider to write a
+  // declared side on. Every open app stays mounted in the one document, and
+  // a provider with no box writes on the document, where the last app opened
+  // would decide the tokens of all of them. The tab's id where the shell
+  // gave one; an id of its own for a runner mounted outside the shell.
+  const ownBox = useId().replace(/[^A-Za-z0-9_-]/g, '');
+  const themeBox = tabId && /^[A-Za-z0-9_-]{1,64}$/.test(tabId) ? tabId : `app-${ownBox}`;
   const hostRef = useRef<HTMLDivElement>(null);
   // Stable, or the bar's ResizeObserver effect tears down and re-observes on
   // every render of this tab.
@@ -326,9 +339,9 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
           box is the area it was always meant to occupy. (Markup that would
           reach the browser's top layer, which no containment clips, is refused
           by the renderer.) */}
-      <div className="softn-runner-app" style={APP_BOX_STYLE}>
+      <div className="softn-runner-app" style={APP_BOX_STYLE} data-softn-theme-box={themeBox}>
         <RunnerErrorBoundary>
-          <ThemeProvider followHost followSystem>
+          <ThemeProvider followHost followSystem declaredMode={themeMode} box={themeBox}>
             <SoftNWithXDB
               source={source}
               initialState={initialState}

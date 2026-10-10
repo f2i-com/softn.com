@@ -43,6 +43,12 @@ export interface RunnableApplication {
   appId: string;
   textFiles: Map<string, string>;
   execution: 'worker' | 'main';
+  /**
+   * The bundle's own `config.theme.mode`: the side its project declares.
+   * `config.theme` above is the deployment's, and is what a project that
+   * declares no side is drawn in.
+   */
+  themeMode?: unknown;
   source: string;
   logicBasePath?: string;
   preIncludedLogicPaths: string[];
@@ -104,6 +110,8 @@ class Boundary extends Component<{ children: React.ReactNode }, { error: unknown
     return this.state.failed ? <Failure error={this.state.error} /> : this.props.children;
   }
 }
+/** The name of the one box an app is drawn in on this page: `.application-content`. */
+const THEME_BOX = 'application';
 /** The bar over a directory's play page folds away; remembered per browser, as the runtime remembers its own. */
 const CHROME_KEY = 'softn.play.chromeHidden';
 function savedChromeHidden() {
@@ -206,7 +214,11 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   // Where focus goes back to after Allow; see PermissionBar's appRootRef.
   const content = useRef<HTMLDivElement>(null);
   return (
-    <ThemeProvider defaultDarkMode={app.config.theme === 'dark'}>
+    // The project's declared side over the deployment's `theme`, which stays
+    // the default; the rule that weighs them is the provider's. The box named
+    // here is where a side that is not the deployment's is written, with a
+    // ground of its own: this page's is dark whatever the theme (style.css).
+    <ThemeProvider defaultDarkMode={app.config.theme === 'dark'} declaredMode={app.themeMode} box={THEME_BOX}>
       <div
         ref={layout}
         className="application-layout"
@@ -263,7 +275,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
             />
           )}
         </div>
-        <div className="application-content" ref={content} tabIndex={-1}>
+        <div className="application-content" ref={content} tabIndex={-1} data-softn-theme-box={THEME_BOX}>
           <Boundary>
             <SoftNWithXDB
               source={app.source}

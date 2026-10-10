@@ -3,6 +3,7 @@
  */
 
 export * from './tokens';
+export * from './app-theme';
 export * from './ThemeProvider';
 export * from './variants';
 export * from './sizes';
