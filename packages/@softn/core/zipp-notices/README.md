@@ -10,9 +10,9 @@ release's web-torch bundle (the torch package installed beside the engine in
 
 `THIRD_PARTY_LICENSES.txt` is the file `scripts/build-zipp-wasm.mjs` writes
 (its `THIRD_PARTY_LICENSES.txt` step), generated from zipp.org's
-`LICENSE-UNICODE`. It is present at tag `v0.0.21` (commit
-`9df6e2fdeb27d9b931bffba84e5714c4fd3d5f50`), and regenerating the file from it
-there gives these bytes exactly.
+`LICENSE-UNICODE`. It is present at tag `v0.0.22` (commit
+`4a9a9124ed05a20f340379e1517c693b70e020e5`), unchanged since `v0.0.21`, and
+regenerating the file from it there gives these bytes exactly.
 
 Up to 0.0.20 the file also carried the RustPython parser's MIT licence. ZIPP
 0.0.21 removed its RustPython fork and parses Python with its own
