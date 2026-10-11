@@ -8,6 +8,8 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+## v0.0.19
+
 - The `.ui` language reads the expressions a JavaScript author writes first. Arrows without parentheses (`tasks.filter(t => t.done)`), spread in a list, an argument list and an object (`[...done, item]`, `Math.max(...scores)`, `{ ...base, color: "red" }`), `count++` and `--count`, `**`, `in`, `instanceof`, `undefined`, hexadecimal numbers, numeric object keys, and `new` for `Date`, `Array`, `Map` and `Set` (nothing else is constructed). Several of these were not refused before but read as something else with nothing said: `count++` parsed as `count + +undefined` and set the count to NaN, `2 ** 8` as `2 * undefined * 8`, and `{/* a comment */}` as divisions of nothing that rendered "NaN"; a comment inside braces now renders nothing. `Map`, `Set` and `Object.keys`/`values`/`entries` join the globals a template can name; `Object` is those three read-only functions and no more.
 - A variable can be called `data`, `style`, `from`, `end`, `empty`, `prop`, `slot`, `template`, `component` or `collection`. The lexer types those words as keywords because markup uses them, and applied that inside expressions too: `{data.title}` was "Unexpected token data", `#each (prop in props)` failed on its own loop variable, and `#if (end > start)` left the condition at `end`. JavaScript's own reserved words stay reserved.
 - `#else if (…)` is `#elseif (…)`. It used to render the text "if (b)" and merge the two branches.
