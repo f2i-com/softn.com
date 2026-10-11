@@ -333,7 +333,7 @@ export class XDBServerSync {
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
-    } catch (e) {
+    } catch {
       this.scheduleReconnect();
       return;
     }

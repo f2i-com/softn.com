@@ -82,9 +82,8 @@ interface TFModelOutput {
   slice?(start: unknown, end: unknown): unknown;
 }
 
-interface TFStreamer {
-  // Callback-based streamer
-}
+// Callback-based streamer; nothing of it is read here
+type TFStreamer = object;
 
 interface PipelineEntry {
   pipeline: TransformersPipeline;
@@ -125,7 +124,7 @@ export class TransformersManager {
     try {
       this.transformers = await import('@huggingface/transformers') as unknown as TransformersModule;
       return this.transformers;
-    } catch (e) {
+    } catch {
       throw new Error(
         '@huggingface/transformers is not installed. Add it to your app dependencies to use softn.ai.pipeline/generate/embed/classify.'
       );

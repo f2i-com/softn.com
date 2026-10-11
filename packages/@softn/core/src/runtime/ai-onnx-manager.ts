@@ -156,7 +156,7 @@ export class OnnxManager {
     try {
       this.ort = await import('onnxruntime-web') as unknown as OrtModule;
       return this.ort;
-    } catch (e) {
+    } catch {
       throw new Error(
         'onnxruntime-web is not installed. Add it to your app dependencies to use softn.ai.onnx.*'
       );
