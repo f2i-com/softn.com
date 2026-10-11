@@ -1642,7 +1642,7 @@
         "title": "The .softn app format | SoftN Docs",
         "description": "The .softn format: a ZIP bundle with manifest.json, permission.json, UI, JavaScript or Python logic, XDB seeds and assets; config.execution and config.python.packages."
       },
-      "updatedAt": "2026-10-10",
+      "updatedAt": "2026-10-12",
       "sourceIds": [
         "softn-readme",
         "softn-bundle-format",
@@ -1727,7 +1727,7 @@
                 },
                 {
                   "term": "config.theme.mode",
-                  "description": "`\"light\"` or `\"dark\"` draws the app on that side in the web runtime, on a single-app page and in the desktop runtime, whatever the site’s own theme or the visitor’s device prefers. `\"system\"`, or no mode, follows the host instead. A page whose own `<App theme>` is light or dark keeps that side over this one. Builder writes the key from the project’s Theme setting; any other value is treated as system."
+                  "description": "`\"light\"` or `\"dark\"` draws the app on that side in the web runtime, on a single-app page, in the desktop runtime and embedded in FormLogic, whatever the host’s own theme or the visitor’s device prefers. `\"system\"`, or no mode, follows the host instead. A page whose own `<App theme>` is light or dark keeps that side over this one. Builder writes the key from the project’s Theme setting; any other value is treated as system."
                 },
                 {
                   "term": "config.python.packages",
@@ -3005,7 +3005,7 @@
         "title": "Assets, themes and responsive layouts | SoftN Docs",
         "description": "Manage SoftN assets, light and dark themes, and responsive layouts. Test exported bundles, narrow screens and fresh app instances."
       },
-      "updatedAt": "2026-10-10",
+      "updatedAt": "2026-10-12",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -3049,8 +3049,8 @@
               "ordered": true,
               "items": [
                 "The page. `<App theme=\"light\">` or `<App theme=\"dark\">` is that side wherever it runs. The word can be written or worked out, as in `theme={darkMode ? \"dark\" : \"light\"}`, which is how an app offers a switch of its own.",
-                "The project. Builder saves the project’s Light or Dark as `config.theme.mode` in `manifest.json`, and the web runtime, a single-app page and the desktop runtime all draw the app on that side, over the site’s own theme and the visitor’s device.",
-                "The host, for a project set to System or with no mode: softn.com’s theme in the web runtime, the desktop runtime’s own theme, and the deployment’s `theme` on a single-app page."
+                "The project. Builder saves the project’s Light or Dark as `config.theme.mode` in `manifest.json`, and the web runtime, a single-app page, the desktop runtime and FormLogic, for an app embedded there, all draw the app on that side, over the host’s own theme and the visitor’s device.",
+                "The host, for a project set to System or with no mode: softn.com’s theme in the web runtime, the desktop runtime’s own theme, the deployment’s `theme` on a single-app page, and FormLogic’s theme for an app embedded there."
               ]
             },
             {

@@ -8,6 +8,8 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+- An app embedded in FormLogic is drawn in the side its project declares, as it is everywhere else it runs. The frame FormLogic embeds handed the theme provider only FormLogic's own light or dark, so a project made dark was dark in the web runtime and light inside a light FormLogic. It now hands over the manifest's `config.theme.mode` as well: `"light"` or `"dark"` wins over FormLogic's theme, a page's own `<App theme>` still wins over both, and `"system"`, or no mode, follows FormLogic as before. Nothing changes for an app that declares no side, and FormLogic takes this with the release that carries it.
+
 ## v0.0.19
 
 - The `.ui` language reads the expressions a JavaScript author writes first. Arrows without parentheses (`tasks.filter(t => t.done)`), spread in a list, an argument list and an object (`[...done, item]`, `Math.max(...scores)`, `{ ...base, color: "red" }`), `count++` and `--count`, `**`, `in`, `instanceof`, `undefined`, hexadecimal numbers, numeric object keys, and `new` for `Date`, `Array`, `Map` and `Set` (nothing else is constructed). Several of these were not refused before but read as something else with nothing said: `count++` parsed as `count + +undefined` and set the count to NaN, `2 ** 8` as `2 * undefined * 8`, and `{/* a comment */}` as divisions of nothing that rendered "NaN"; a comment inside braces now renders nothing. `Map`, `Set` and `Object.keys`/`values`/`entries` join the globals a template can name; `Object` is those three read-only functions and no more.

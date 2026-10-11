@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { SoftNWithXDB, composeBundleSource, configureZippWasmSource, zippLanguages } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
+import { declaredThemeMode } from './appTheme';
 import { installAppStorage } from './storage';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import { acceptEngine, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
@@ -129,7 +130,8 @@ window.addEventListener('message', async event => {
     const resolveAsset = (path: string) => media.get(path.replace(/^\.\//, '')) || '';
     const composed = composeBundleSource(files, manifest.main, manifest.files?.logic || []);
     // A bundle's permission.json cannot enable arbitrary network, hardware or sync access.
-    root.render(<Boundary><ThemeProvider defaultDarkMode={event.data.dark === true}>
+    // FormLogic's own theme, and the side the project declares, which wins over it (appTheme.ts).
+    root.render(<Boundary><ThemeProvider defaultDarkMode={event.data.dark === true} declaredMode={declaredThemeMode(manifest)}>
       <SoftNWithXDB {...composed} appId={event.data.appId} resumeSavedSyncRoom={false}
         permissionConfig={{ permissions: {} }} scriptExecutionMode="main"
         assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}

@@ -21,6 +21,16 @@ against the engine's own profile, not against anyone's records.
 `features` for later runtime capabilities), read straight from `src/engineInit.ts` so the
 manifest and these announcements cannot drift apart.
 
+## Theme
+
+`init.dark` is FormLogic's own theme, and an app whose project declares none is drawn in it, as
+it always was. A project whose manifest declares `config.theme.mode` `"light"` or `"dark"` is
+drawn on that side whatever `dark` says, as it is in the web runtime, on a single-app page and in
+the desktop app; a page's own `<App theme>` wins over both, and `"system"` follows `dark`
+(`src/appTheme.ts`; the rule is `@softn/components`' `app-theme.ts`). The frame is the app's
+whole document, so the side is written on the document: its tokens, and the body's ground and
+text colour with them.
+
 ## Two documents
 
 `index.html` serves the ZIPP engines. `host.html` is the same file with one attribute —
