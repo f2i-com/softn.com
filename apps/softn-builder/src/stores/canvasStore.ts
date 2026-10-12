@@ -64,6 +64,17 @@ interface CanvasStore extends CanvasState {
    * pageImports.ts, liveImports).
    */
   writtenImports: string[];
+  /**
+   * The file whose page the canvas holds, once whoever put it there has said
+   * (hooks/useActiveFileOnCanvas.ts, utils/openProject.ts); null until then.
+   * It is the file an edit on the canvas is an edit of, whichever file is
+   * open in the middle: with a logic file open the panels still hold the
+   * last page. The root does not say which page it is: a page written in
+   * Code is read under a new root, and Undo brings the old one back.
+   */
+  pageId: string | null;
+  /** The canvas holds this file's page: it was opened with it, or flushed into it. */
+  holdPage: (pageId: string) => void;
   setImports: (imports: UIImport[]) => void;
   isImportedComponent: (componentType: string) => boolean;
   getImportSource: (componentType: string) => string | null;
@@ -149,7 +160,8 @@ interface CanvasStore extends CanvasState {
 
   // Reset
   reset: () => void;
-  loadState: (elements: Map<string, CanvasElement>, rootId: string, imports?: UIImport[], writtenImports?: string[]) => void;
+  /** `pageId` says whose page it is (see `pageId`); left out, the canvas holds a page nobody has named. */
+  loadState: (elements: Map<string, CanvasElement>, rootId: string, imports?: UIImport[], writtenImports?: string[], pageId?: string | null) => void;
   /**
    * Put back the elements of an earlier state of the same page: what undo
    * and redo do. Unlike `loadState`, which opens a page, it leaves the
@@ -215,6 +227,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   dropIndicator: null,
   imports: [],
   writtenImports: [],
+  pageId: null,
+
+  holdPage: (pageId) => {
+    if (get().pageId !== pageId) set({ pageId });
+  },
 
   setImports: (imports) => {
     // What the file imports, and beside it any import the Builder wrote that
@@ -796,10 +813,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       draggedElementId: null,
       dropIndicator: null,
       imports: [],
+      pageId: null,
     });
   },
 
-  loadState: (elements, rootId, imports = [], writtenImports = []) => {
+  loadState: (elements, rootId, imports = [], writtenImports = [], pageId = null) => {
     debug('[canvasStore] loadState called:', {
       elementsSize: elements.size,
       rootId,
@@ -815,6 +833,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   clipboardTree: new Map(),
       imports,
       writtenImports,
+      pageId,
     });
   },
 

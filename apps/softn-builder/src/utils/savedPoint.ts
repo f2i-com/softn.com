@@ -102,26 +102,39 @@ export function captureSavedPoint(): SavedPoint {
 
 /**
  * Whether a page is as it was kept. The canvas is ahead of the page it
- * shows (hooks/useActiveFileOnCanvas.ts), so for that page it is what the
- * canvas holds, which the next flush writes into it. The canvas shows the
- * active page once it has that page's root; until then, as a tab is being
- * changed, it still holds the page being left. A root is not enough alone:
- * pages read in the same millisecond can have the same ids.
+ * holds (hooks/useActiveFileOnCanvas.ts), so for that page it is what the
+ * canvas holds, which the next flush writes into it.
+ *
+ * Which page that is, the canvas says (canvasStore, pageId). It was taken
+ * to be the open file whenever the canvas had that file's root, and a root
+ * does not say: a page written in Code is read under a new root, and Undo
+ * brings back the canvas of before under the old one. The canvas was then
+ * no page's, the page was judged by its file, and nothing done on the
+ * canvas from there on was unsaved until something flushed it. Nor is it
+ * the open file with a logic file open in the middle. A canvas that has not
+ * said (one loaded outside the app) is the open file's while it has that
+ * file's root, as it was.
  */
 function pageAsKept(file: UIFileState, kept: KeptPage, active: boolean): boolean {
   if (file.path !== kept.path || file.logicSrc !== kept.logicSrc) return false;
   const canvas = useCanvasStore.getState();
-  const shown = active && canvas.rootId === file.rootId;
+  const shown = canvas.pageId !== null ? canvas.pageId === file.id : active && canvas.rootId === file.rootId;
   const now: Tree = shown
     ? { elements: canvas.elements, rootId: canvas.rootId, imports: liveImports(canvas.elements, canvas.imports ?? [], canvas.writtenImports) }
     : file;
   if (!sameTree(now, kept)) return false;
   if (kept.source === undefined) return file.originalSource === undefined;
-  if (file.originalSource === kept.source) return true;
-  // Its text was written again by an edit the canvas has since undone: the
-  // next flush puts back the text it was read as (filesStore, updateUIFile).
+  // The canvas is what the file holds: the next flush changes nothing in it.
+  if (!shown || sameTree(now, file)) return file.originalSource === kept.source;
+  // It is not, and the next flush writes the page's text again: the text it
+  // was read as, where the canvas is that again (an edit the canvas has
+  // since undone; filesStore, updateUIFile), and otherwise the Builder's
+  // writing of the canvas, which is not known to be what was kept until it
+  // is written. A text typed back in Code to what was kept, with the
+  // canvas then stepped back to before it, was taken for saved, and the
+  // save wrote the page again in the Builder's layout.
   const read = file.baseline;
-  return shown && read !== undefined && read.source === kept.source && !sameTree(now, file) && sameTree(now, read);
+  return read !== undefined && read.source === kept.source && sameTree(now, read);
 }
 
 /**

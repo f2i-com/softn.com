@@ -146,3 +146,22 @@ it('changes the view from a field, which has no use for the keys, and commits a 
   expect(committed).toHaveBeenCalledOnce();
   expect(actions.changeView).toHaveBeenLastCalledWith('design');
 });
+
+// AltGr is heard as Ctrl and Alt together on Windows, and is how a keyboard
+// that is not American types what its digit keys also hold: | @ # on a
+// Spanish one, ² ³ on a German one, { [ on a French one. Where a layout
+// gives a digit key nothing with AltGr the key is still the digit. None of
+// it is a view key, nor Save: a key with Alt held is left to the field,
+// now that the view keys are heard there.
+it('leaves a key pressed with AltGr to the field it is typed into', () => {
+  const actions = shortcutHarness();
+  const field = host.querySelector('textarea')!;
+  for (const key of ['1', '2', '3', '4', '@', '#', 's', 'o', 'n']) {
+    const event = press(key, { ctrlKey: true, altKey: true }, field);
+    expect(event.defaultPrevented, key).toBe(false);
+  }
+  expect(actions.changeView).not.toHaveBeenCalled();
+  expect(actions.save).not.toHaveBeenCalled();
+  expect(actions.open).not.toHaveBeenCalled();
+  expect(actions.create).not.toHaveBeenCalled();
+});

@@ -98,9 +98,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> => value !==
  * The file `source` with `decl` written into it: as it is when it declares
  * what `decl` does, else with the capabilities `decl` asks for, `net`'s
  * hosts and `storage`'s policies changed, and everything else in it kept.
- * Null for a file that is not a JSON object, which is written anew.
+ *
+ * A file that is not a JSON object declares nothing, and the runtime reads
+ * it as a file that allows nothing (core, extractPermissions). It goes back
+ * as it came while nothing is declared: read as no file, it was left out of
+ * the export, and what was there to be put right was gone. Null once
+ * something is declared: there is nothing in it to keep, and it is written
+ * anew.
  */
 function keptPermissionJson(source: string, decl: PermissionDeclaration): string | null {
+  if (modelled(readPermissionJson(source)) === modelled(decl)) return source;
   let parsed: unknown;
   try {
     parsed = JSON.parse(source);
@@ -108,7 +115,6 @@ function keptPermissionJson(source: string, decl: PermissionDeclaration): string
     return null;
   }
   if (!isRecord(parsed)) return null;
-  if (modelled(readPermissionJson(source)) === modelled(decl)) return source;
 
   const was = isRecord(parsed.permissions) ? parsed.permissions : {};
   const permissions: Record<string, unknown> = {};
@@ -145,7 +151,8 @@ export function readPermissionJson(text: string): PermissionDeclaration {
   try {
     parsed = JSON.parse(text);
   } catch {
-    return emptyDeclaration();
+    // It declares nothing, and it is a file all the same (keptPermissionJson).
+    return { ...emptyDeclaration(), file: true, source: text };
   }
   // Read from a file, so the project has one to write back (PermissionDeclaration.file).
   const report = inspectDeclaration(parsed);

@@ -97,18 +97,25 @@ export function gatherRecords(now = new Date().toISOString()): Map<string, XdbRe
   return records;
 }
 
-/** Write the canvas into the file it is editing, so the export carries the latest edit. */
+/**
+ * Write the canvas into the file it is editing, so the export carries the
+ * latest edit. That is the page the canvas says it holds, which is not the
+ * file that is open when a logic file or an asset is open in the middle:
+ * the panels still hold the last page then, and what was changed there was
+ * written nowhere. A canvas that has not said is taken for the open file's.
+ */
 export function flushCanvasToActiveFile(): void {
   const filesState = useFilesStore.getState();
   const canvasState = useCanvasStore.getState();
-  if (!filesState.activeFileId) return;
-  const activeNode = filesState.nodes.get(filesState.activeFileId);
-  if (activeNode?.type === 'file' && activeNode.fileType === 'ui') {
+  const pageId = canvasState.pageId ?? filesState.activeFileId;
+  if (!pageId) return;
+  const node = filesState.nodes.get(pageId);
+  if (node?.type === 'file' && node.fileType === 'ui') {
     // With the page's imports as they stand now: one the Builder wrote is
     // among them only while an element of the page uses it.
     const written = canvasState.writtenImports;
     const imports = liveImports(canvasState.elements, canvasState.imports, written);
-    filesState.updateUIFile(filesState.activeFileId, canvasState.elements, canvasState.rootId, imports, written);
+    filesState.updateUIFile(pageId, canvasState.elements, canvasState.rootId, imports, written);
   }
 }
 

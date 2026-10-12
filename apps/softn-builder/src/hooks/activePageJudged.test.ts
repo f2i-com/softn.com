@@ -3,12 +3,13 @@
  * A change of tab, judged against what the project was kept as.
  *
  * As a tab is changed, the page left is flushed while the canvas still holds
- * it and the page opened is already the active one (App.tsx). The project
- * is judged at that flush (utils/savedPoint.ts), when the canvas is the
- * active page's only once it has that page's root; and pages read in the
- * same millisecond can have the same ids, root and all. Judged then, the
- * page opened was held against the page left, and the project said
- * "Unsaved" with nothing changed. It is judged again once the canvas holds
+ * it and the page opened is already the active one (useActiveFileOnCanvas.ts).
+ * The project is judged at that flush (utils/savedPoint.ts). The canvas was
+ * taken for the active page's once it had that page's root; and pages read
+ * in the same millisecond could have the same ids, root and all. Judged
+ * then, the page opened was held against the page left, and the project
+ * said "Unsaved" with nothing changed. The canvas says which page it holds
+ * now (canvasStore, pageId), and the project is judged again once it holds
  * the page opened.
  */
 

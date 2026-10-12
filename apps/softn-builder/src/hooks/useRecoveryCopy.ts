@@ -8,7 +8,9 @@
  * second time for a revision already kept. A project whose work is undone
  * back to what it was kept as, while this tab's copy of that work is in the
  * store, is written once more as it stands, without the mark of unsaved
- * work (utils/recoveryCopy.ts).
+ * work (utils/recoveryCopy.ts). Whether the project is unsaved is asked
+ * once the canvas is in its file, which is where the copy is taken from;
+ * and whether the store still holds this tab's copy is read from the store.
  *
  * Two things are said, each once: that the copy could not be kept (the
  * store is full, or the browser will not let a page use it), and that
@@ -20,8 +22,10 @@ import { useProjectStore } from '../stores/projectStore';
 import { useNotificationStore } from '../stores/notificationStore';
 import { SESSION_STORAGE_KEY, type ViewMode } from '../utils/openProject';
 import { SESSION_ASSETS_HEAD_KEY, SESSION_ASSETS_KEY } from '../utils/storedAssets';
-import { RECOVERY_OWNER_KEY, TAB_ID, writeRecoveryCopy } from '../utils/recoveryCopy';
+import { RECOVERY_OWNER_KEY, TAB_ID, recoveryOf, writeRecoveryCopy } from '../utils/recoveryCopy';
 import { persistedRevision } from '../utils/saveProject';
+import { flushCanvasToActiveFile } from '../utils/buildProjectBundle';
+import { readLocalStorage } from '../utils/safeStorage';
 
 /** How long after the last change the copy is written. */
 export const RECOVERY_DELAY_MS = 1500;
@@ -54,11 +58,34 @@ export function useRecoveryCopy(view: ViewMode, enabled = true): void {
       if (project.isDirty) return true;
       return ownCopy && kept?.projectId === project.projectId && persistedRevision(project.projectId) < project.revision;
     };
+    /** Whether what the store holds now is this tab's copy of unsaved work, read from the store itself. */
+    const holdsOwnCopy = (): boolean => {
+      const raw = readLocalStorage(SESSION_STORAGE_KEY);
+      return raw !== null && recoveryOf(raw)?.tab === TAB_ID;
+    };
     const write = (): void => {
       if (timer !== null) clearTimeout(timer);
       timer = null;
       if (!due()) return;
+      // The canvas goes into its file first, as it does when the copy is
+      // taken, and whether the project is unsaved is asked after that: the
+      // flush is an edit when the canvas had moved, and the project is
+      // judged again by it (utils/savedPoint.ts). Asked before, a project
+      // redone to what was saved was written as unsaved work.
+      try {
+        flushCanvasToActiveFile();
+      } catch {
+        // Writing the copy puts the canvas into its file too, and reports what went wrong.
+      }
+      if (!due()) return;
       const unsaved = useProjectStore.getState().isDirty;
+      // A copy with no mark replaces this tab's copy of work since undone,
+      // and nothing else. Another tab's write is heard a moment after it is
+      // made (`taken`, below), so the store is asked whose copy it holds.
+      if (!unsaved && !holdsOwnCopy()) {
+        ownCopy = false;
+        return;
+      }
       const outcome = writeRecoveryCopy({ view: viewRef.current, unsaved });
       if (outcome.kind === 'written') {
         kept = { projectId: outcome.projectId, revision: outcome.revision };

@@ -258,6 +258,36 @@ describe('a permission.json that declares nothing', () => {
   });
 });
 
+describe('a permission.json that cannot be read', () => {
+  // One comma from valid, or no object at all. The runtime reads either as
+  // a declaration that allows nothing, and as a file that is there (core,
+  // bundle/manifest.ts, extractPermissions): it is not told it "ships no
+  // permission.json", and the `permissions` block of an older manifest is
+  // not read in its place. The Builder read it as no file at all, and an
+  // untouched export left without it: a hand-written file was gone with no
+  // word, and an app with that older block in its manifest was given the
+  // network and the files its own file had been refusing it.
+  const UNREADABLE = ['{ "permissions": { "net": { "enabled": true, } } }', '[]', '"net"', ''];
+
+  it.each(UNREADABLE)('leaves as it came, untouched: %s', async (written) => {
+    await open(studioBundle({ permission: written }));
+    expect(useProjectStore.getState().permissions.capabilities).toEqual([]);
+    expect(text((await exported()).get('permission.json'))).toBe(written);
+  });
+
+  it('is kept through a saved session, and is the file it was when something is declared and taken away again', async () => {
+    await open(studioBundle({ permission: UNREADABLE[0] }));
+    commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(captureSession('design'))));
+    expect(text((await exported()).get('permission.json'))).toBe(UNREADABLE[0]);
+    const project = useProjectStore.getState();
+    project.setPermissions({ ...project.permissions, capabilities: ['camera'] });
+    // Something is declared: there is nothing in the file to keep, and it is written anew.
+    expect(json((await exported()).get('permission.json'))).toEqual({ permissions: { camera: { enabled: true } } });
+    useProjectStore.getState().setPermissions({ ...useProjectStore.getState().permissions, capabilities: [] });
+    expect(text((await exported()).get('permission.json'))).toBe(UNREADABLE[0]);
+  });
+});
+
 describe('a permission.json with more in it than the Builder shows', () => {
   // As the demos and FormLogic's exports write them. `app.id` is what an
   // app's sync rooms are scoped by (core, sync-room-security.ts); the limits

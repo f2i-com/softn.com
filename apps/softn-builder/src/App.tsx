@@ -21,7 +21,6 @@ import { SchemaDesigner } from './components/schema';
 import { FileNavigator, FileTabs } from './components/files';
 import { useCanvasStore } from './stores/canvasStore';
 import { useProjectStore } from './stores/projectStore';
-import { useHistoryStore } from './stores/historyStore';
 import { useFilesStore } from './stores/filesStore';
 import { openBundleFile, loadBundle } from './utils/bundleLoader';
 import {
@@ -51,7 +50,6 @@ import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { useActiveFileOnCanvas } from './hooks/useActiveFileOnCanvas';
 import { PANEL_WIDTHS, useSidePanels } from './hooks/usePanelsThatFit';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
-import { liveImports } from './utils/pageImports';
 import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { viewsFor } from './utils/workspaceViews';
@@ -351,12 +349,8 @@ function App() {
   /** The part of the page that goes inert behind the export dialog. */
   const shellRef = useRef<HTMLDivElement | null>(null);
 
-  const clearHistory = useHistoryStore((state) => state.clear);
-  const updateUIFile = useFilesStore((state) => state.updateUIFile);
   const selectedCount = useCanvasStore((state) => state.selectedIds.length);
   const elementCount = useCanvasStore((state) => state.elements.size);
-  const canvasElements = useCanvasStore((state) => state.elements);
-  const canvasRootId = useCanvasStore((state) => state.rootId);
   const handleCreateNewProject = useCallback((config: NewProjectConfig) => {
     fileHandleRef.current = null;
     remoteOpenRef.current?.abort();
@@ -593,7 +587,6 @@ function App() {
   const hasActiveFile = !!activeNode;
   const activeAsset = activeFileId ? assetFiles.get(activeFileId) : undefined;
   const [activeAssetPreviewUrl, setActiveAssetPreviewUrl] = useState<string | null>(null);
-  const previousActiveFileIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isAssetFileActive || !activeAsset || !isPreviewableImage(activeAsset.name)) {
@@ -616,28 +609,7 @@ function App() {
     }
   }, [activeFileType, view]);
 
-  // Persist currently edited UI canvas when switching files/tabs so preview and reopen stay in sync.
-  useEffect(() => {
-    const previousActiveId = previousActiveFileIdRef.current;
-    if (previousActiveId && previousActiveId !== activeFileId) {
-      const previousNode = fileNodes.get(previousActiveId);
-      if (previousNode?.type === 'file' && previousNode.fileType === 'ui') {
-        // With the imports the canvas holds for it: the file being left, since
-        // the next one is put on the canvas only after this.
-        const leaving = useCanvasStore.getState();
-        updateUIFile(previousActiveId, canvasElements, canvasRootId, liveImports(canvasElements, leaving.imports, leaving.writtenImports), leaving.writtenImports);
-      }
-      // The history is a stack of canvas snapshots with no idea which file each
-      // came from, and undo loads one unconditionally. Left in place across a
-      // switch, one Ctrl+Z would drop the previous file's element tree into the
-      // file now open — and the flush above would then write it there.
-      clearHistory();
-    }
-    previousActiveFileIdRef.current = activeFileId;
-  }, [activeFileId, fileNodes, updateUIFile, canvasElements, canvasRootId, clearHistory]);
-
-  // After the flush above, so a file is left with what the canvas held
-  // before the next one is put on it.
+  // The page being left is put into its file, and the one opened onto the canvas.
   useActiveFileOnCanvas();
 
   const renderMainContent = () => {

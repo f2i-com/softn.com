@@ -49,6 +49,7 @@ import { readThemeMode } from './themeMode';
 import { keepSavedPoint } from './savedPoint';
 import { gatherCollections, gatherRecords } from './buildProjectBundle';
 import { xdbText, type KeptXdb } from './bundleExporter';
+import { elementsEqual } from './elementsEqual';
 import type {
   AssetFile,
   CanvasElement,
@@ -333,6 +334,20 @@ function writtenAsRead(files: Map<string, KeptXdb>): Map<string, KeptXdb> {
   return new Map([...files].map(([name, file]) => [name, { ...file, written: written.get(name) ?? null }]));
 }
 
+/**
+ * The file whose page the snapshot's canvas holds (canvasStore, pageId). A
+ * bundle is opened with its entry on the canvas. A session does not say:
+ * it is the one page that has the canvas's root and its elements, when
+ * there is one, and otherwise nobody's until a page is opened.
+ */
+function pageOnCanvas(snapshot: ProjectSnapshot): string | null {
+  if (snapshot.files.kind === 'bundle') return snapshot.files.mainFileId;
+  const holding = [...snapshot.files.uiFiles.values()].filter(
+    (file) => file.rootId === snapshot.canvas.rootId && elementsEqual(file.elements, snapshot.canvas.elements)
+  );
+  return holding.length === 1 ? holding[0].id : null;
+}
+
 function base64ToBytes(text: string): Uint8Array {
   const binary = atob(text);
   const bytes = new Uint8Array(binary.length);
@@ -556,7 +571,7 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
       });
     }
 
-    useCanvasStore.getState().loadState(snapshot.canvas.elements, snapshot.canvas.rootId, snapshot.canvas.imports);
+    useCanvasStore.getState().loadState(snapshot.canvas.elements, snapshot.canvas.rootId, snapshot.canvas.imports, [], pageOnCanvas(snapshot));
 
     useSchemaStore.setState({
       entities: snapshot.schema.entities,

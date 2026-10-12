@@ -30,7 +30,7 @@ import { RECOVERY_OWNER_KEY, TAB_ID, recoveryOf, restoreOffer, writeRecoveryCopy
 import { SESSION_ASSETS_KEY, joinStoredSession, resetRefusedAssets } from './storedAssets';
 import { resetPersistedRevisions, saveProject } from './saveProject';
 import { keepSavedPoint } from './savedPoint';
-import { undoCanvas } from './canvasHistory';
+import { redoCanvas, undoCanvas } from './canvasHistory';
 
 declare global {
   // eslint-disable-next-line no-var
@@ -322,6 +322,56 @@ describe('while a project is being edited', () => {
     act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
     act(() => void window.dispatchEvent(new Event('pagehide')));
     expect(stored()).toBe(theirs);
+  });
+
+  it('is not written over another tab\'s copy that this tab has not heard of yet', () => {
+    // The store is heard changing a moment after it has changed. Whose copy
+    // it holds is read from it before a copy with no mark is written over it.
+    kept();
+    open();
+    act(() => undoable('mine, undone later'));
+    act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+    const theirs = JSON.stringify({ ...JSON.parse(stored()!), recovery: { tab: 'another-tab', unsaved: true, assets: 'kept' } });
+    window.localStorage.setItem(SESSION_STORAGE_KEY, theirs);
+    act(() => void undoCanvas());
+    act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+    act(() => void window.dispatchEvent(new Event('pagehide')));
+    expect(stored()).toBe(theirs);
+  });
+
+  it('is not marked as unsaved where putting the canvas into its file shows the project to be what was saved', async () => {
+    // Driven first: an edit, a save, Undo, and Redo back to the save. The
+    // toolbar said "Unsaved" until the canvas went into its file, which is
+    // where the copy is taken from; the copy had been decided on before
+    // that, and was written as unsaved work for a project with none. The
+    // next open offered "the changes that were not saved".
+    resetPersistedRevisions();
+    const page = '<App>\n  <Text>First</Text>\n</App>';
+    useFilesStore.getState().updateUIFileSource('main_ui', page);
+    useProjectStore.getState().markClean();
+    kept();
+    open();
+    const text = [...canvas().elements.values()].find((element) => element.componentType === 'Text')!;
+    act(() => {
+      useHistoryStore.getState().push(canvas().elements, canvas().rootId);
+      canvas().updateElementProps(text.id, { children: 'Saved words' });
+    });
+    await act(async () => {
+      await saveProject({ view: 'design', existingHandle: null, writeFile: async () => null });
+    });
+    expect(useProjectStore.getState().isDirty).toBe(false);
+
+    act(() => void undoCanvas());
+    act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+    // Undone past the save: that is unsaved, and kept as such.
+    expect(recoveryOf(stored()!)?.unsaved).toBe(true);
+    expect(stored()).not.toContain('Saved words');
+
+    act(() => void redoCanvas());
+    act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+    expect(useProjectStore.getState().isDirty).toBe(false);
+    expect(stored()).toContain('Saved words');
+    expect(recoveryOf(stored()!)).toBeNull();
   });
 
   it('is not kept for a draft that is edited inside another product, which keeps it', () => {

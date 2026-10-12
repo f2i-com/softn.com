@@ -356,8 +356,9 @@ function addSharedEntries(
     if (iconPath.startsWith('assets/') && !assets.includes(iconPath)) assets.push(iconPath);
   }
 
+  // A file that came empty is still a file, and goes back as one.
   const permission = options.permissions ? buildPermissionJson(options.permissions) : null;
-  if (permission) files['permission.json'] = strToU8(permission);
+  if (permission !== null) files['permission.json'] = strToU8(permission);
 
   // Generate XDB entries, one serializer for both export paths.
   const xdb: string[] = [];
