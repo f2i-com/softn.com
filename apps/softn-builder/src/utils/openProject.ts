@@ -47,6 +47,8 @@ import { applyInlineLogicMove, planInlineLogicMove, takenPaths } from './inlineL
 import { entryFileId } from './logicFiles';
 import { readThemeMode } from './themeMode';
 import { keepSavedPoint } from './savedPoint';
+import { gatherCollections, gatherRecords } from './buildProjectBundle';
+import { xdbText, type KeptXdb } from './bundleExporter';
 import type {
   AssetFile,
   CanvasElement,
@@ -115,6 +117,8 @@ export interface BuilderSession {
   /** What the opened bundle carried that the Builder does not model. */
   source?: {
     manifest: Record<string, unknown> | null;
+    /** Base64. Absent in sessions written before it was kept. */
+    manifestBytes?: string | null;
     extraEntries: [string, string][];
     mainFileId: string | null;
     xdbPaths: [string, string][];
@@ -261,9 +265,12 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
       assets,
       source: {
         manifest: bundle.rawManifest,
+        manifestBytes: bundle.manifestBytes,
         extraEntries: bundle.extraEntries,
         mainFileId: bundle.mainFileId,
         xdbPaths: bundle.xdbPaths,
+        // How the Builder writes each as it was read is known once the project is in the stores (commitProjectSnapshot).
+        xdbFiles: new Map([...bundle.xdbFiles].map(([name, bytes]) => [name, { bytes, written: null }])),
         iconPath: bundle.iconPath,
       },
     },
@@ -306,6 +313,24 @@ function bytesToBase64(bytes: Uint8Array): string {
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   return btoa(binary);
+}
+
+/**
+ * The kept .xdb files with how the Builder writes each collection as it was
+ * read, from the stores of a bundle just opened. Never from a restored
+ * session, whose collections may be edited since the file was read.
+ */
+function writtenAsRead(files: Map<string, KeptXdb>): Map<string, KeptXdb> {
+  let collections;
+  try {
+    collections = gatherCollections();
+  } catch {
+    // Two collections of one name, a field with none: the export refuses those, and each file is written anew.
+    return files;
+  }
+  const records = gatherRecords();
+  const written = new Map(collections.map((collection) => [collection.name, xdbText(collection, records.get(collection.name))]));
+  return new Map([...files].map(([name, file]) => [name, { ...file, written: written.get(name) ?? null }]));
 }
 
 function base64ToBytes(text: string): Uint8Array {
@@ -391,6 +416,7 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
   const source: RetainedSource = src && isObject(src)
     ? {
         manifest: isObject(src.manifest) ? src.manifest : null,
+        manifestBytes: typeof src.manifestBytes === 'string' ? base64ToBytes(src.manifestBytes) : null,
         extraEntries: new Map(pairs<string>(src.extraEntries, 'source.extraEntries').map(([path, b64]) => [path, base64ToBytes(b64)])),
         mainFileId: typeof src.mainFileId === 'string' ? src.mainFileId : null,
         xdbPaths: new Map(pairs<string>(src.xdbPaths, 'source.xdbPaths')),
@@ -541,6 +567,11 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
       tombstones: snapshot.schema.tombstones,
     });
 
+    if (snapshot.files.kind === 'bundle') {
+      const kept = useProjectStore.getState().source;
+      if (kept.xdbFiles && kept.xdbFiles.size > 0) useProjectStore.getState().setSource({ ...kept, xdbFiles: writtenAsRead(kept.xdbFiles) });
+    }
+
     // Loaded, not edited: clean, at revision 0 of a new project id, and
     // what an edit that is undone comes back to.
     useProjectStore.getState().newWorkspace();
@@ -606,9 +637,14 @@ export function captureSession(view: ViewMode, options: { assets?: 'inline' | 'a
     },
     source: {
       manifest: projectState.source.manifest,
+      manifestBytes: projectState.source.manifestBytes ? bytesToBase64(projectState.source.manifestBytes) : null,
       extraEntries: Array.from(projectState.source.extraEntries.entries()).map(([path, bytes]) => [path, bytesToBase64(bytes)]),
       mainFileId: projectState.source.mainFileId,
       xdbPaths: Array.from(projectState.source.xdbPaths.entries()),
+      // The .xdb files as they came are not here: a session is written again
+      // and again into a store of a few megabytes, and they would be most of
+      // it for an app with much data. A project restored from one writes its
+      // collections anew (bundleExporter.ts, KeptXdb).
       iconPath: projectState.source.iconPath,
     },
   };

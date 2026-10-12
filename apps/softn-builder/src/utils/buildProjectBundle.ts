@@ -152,9 +152,11 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
   const schemaState = useSchemaStore.getState();
   const source: RetainedExportSource = {
     manifest: withBuilderSchema(retained.manifest, schemaState.entities, schemaState.relationships),
+    manifestBytes: retained.manifestBytes,
     extraEntries: retained.extraEntries,
     iconPath: retained.iconPath,
     xdbPaths: retained.xdbPaths,
+    xdbFiles: retained.xdbFiles,
   };
   // The icon stays where the bundle had it when the format still matches;
   // a new icon of another format takes the default path.

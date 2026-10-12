@@ -354,6 +354,8 @@ export interface UIFileState {
    * (stores/filesStore.ts, updateUIFile). Never saved with a session.
    */
   baseline?: UIFileBaseline;
+  /** The file began with a byte-order mark, which reading takes away and writing puts back. */
+  bom?: boolean;
 }
 
 /** A UI file as it was read: see UIFileState.baseline. */
@@ -369,6 +371,8 @@ export interface LogicFileState {
   id: string;
   path: string;
   content: string; // Raw source, in the language its name says
+  /** The file began with a byte-order mark, which reading takes away and writing puts back. */
+  bom?: boolean;
 }
 
 // Import from another UI file

@@ -131,6 +131,95 @@ describe('a seed record written flat', () => {
   });
 });
 
+describe('a file the Builder writes again only once it is changed', () => {
+  const BOM = [0xef, 0xbb, 0xbf];
+  const withBom = (body: string) => Uint8Array.from([...BOM, ...new TextEncoder().encode(body)]);
+  const bytesOf = (bytes: Uint8Array | undefined) => [...(bytes ?? [])];
+  const books = () => useSchemaStore.getState().entities.find((entity) => entity.name === 'books')!;
+  const XDB = JSON.stringify(BOOKS_XDB, null, 2);
+
+  it('is an .xdb whose records are edited: written with the edit', async () => {
+    await open(studioBundle());
+    expect(text((await exported()).get('xdb/books.xdb'))).toBe(XDB);
+    useSchemaStore.getState().updateSeedRecord(books().id, 0, { ...useSchemaStore.getState().seedData.get(books().id)![0], title: 'Persuasion' });
+    const out = text((await exported()).get('xdb/books.xdb'));
+    expect(out).not.toBe(XDB);
+    expect(asRuntimeTitles(out)).toEqual(['Persuasion', 'Emma']);
+  });
+
+  it('is an .xdb whose fields are changed, which the runtime does not read and the Builder does', async () => {
+    await open(studioBundle());
+    const title = books().fields.find((field) => field.name === 'title')!;
+    useSchemaStore.getState().updateField(books().id, title.id, { required: !title.required });
+    const out = JSON.parse(text((await exported()).get('xdb/books.xdb'))) as { schema?: { fields: Array<{ name: string; required: boolean }> } };
+    expect(out.schema?.fields.find((field) => field.name === 'title')?.required).toBe(!title.required);
+  });
+
+  it('is not kept in a saved session, which is written again and again and has a few megabytes to hold the work in', async () => {
+    // A collection of a few thousand records, as a data-heavy app has.
+    const rows = Array.from({ length: 3000 }, (_, at) => ({ id: `b${at}`, title: `Book ${at}`, note: 'x'.repeat(40) }));
+    const heavy = JSON.stringify({ collection: 'books', records: rows }, null, 2);
+    await open(studioBundle({ xdb: JSON.parse(heavy) }));
+    expect(text((await exported()).get('xdb/books.xdb'))).toBe(heavy);
+    const session = JSON.stringify(captureSession('design'));
+    // The size it had before the file was kept: the same project, holding nothing of the file as it came.
+    const project = useProjectStore.getState();
+    project.setSource({ ...project.source, xdbFiles: undefined });
+    expect(session.length).toBe(JSON.stringify(captureSession('design')).length);
+    expect(session).not.toContain('xdbFiles');
+  });
+
+  it('is, after a saved session is restored, written again, with the edit where something was changed', async () => {
+    await open(studioBundle());
+    commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(captureSession('design'))));
+    // The file as it came is not in the session: the Builder's writing of the same records.
+    expect(asRuntimeTitles(text((await exported()).get('xdb/books.xdb')))).toEqual(['Middlemarch', 'Emma']);
+    // Edited, kept in a session, and restored: the session's records, not the file the project was opened from.
+    useSchemaStore.getState().updateSeedRecord(books().id, 1, { ...useSchemaStore.getState().seedData.get(books().id)![1], title: 'Sanditon' });
+    commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(captureSession('design'))));
+    expect(asRuntimeTitles(text((await exported()).get('xdb/books.xdb')))).toEqual(['Middlemarch', 'Sanditon']);
+  });
+
+  it('is a manifest written another way than the Builder writes one: as it came, until it is changed', async () => {
+    const manifest = JSON.stringify({ name: 'Packed', version: '1.0.0', description: '', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: [], xdb: [], assets: [] } });
+    await open(zipSync({ 'manifest.json': strToU8(manifest), 'ui/main.ui': strToU8('<App>\n  <Text>Hi</Text>\n</App>\n') }));
+    expect(text((await exported()).get('manifest.json'))).toBe(manifest);
+    useProjectStore.getState().setDescription('Now with words');
+    expect(json((await exported()).get('manifest.json')).description).toBe('Now with words');
+  });
+
+  it('is a page or a logic file that began with a byte-order mark, which it keeps when it is edited', async () => {
+    const manifest = { name: 'Marked', version: '1.0.0', description: '', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: ['logic/main.logic'], xdb: [], assets: [] } };
+    const page = withBom('<logic src="../logic/main.logic" />\n<App>\n  <Text>Hi</Text>\n</App>\n');
+    const logic = withBom('let count = 0\n');
+    await open(zipSync({ 'manifest.json': strToU8(JSON.stringify(manifest, null, 2)), 'ui/main.ui': page, 'logic/main.logic': logic }));
+    let out = await exported();
+    expect(bytesOf(out.get('ui/main.ui'))).toEqual(bytesOf(page));
+    expect(bytesOf(out.get('logic/main.logic'))).toEqual(bytesOf(logic));
+
+    const files = useFilesStore.getState();
+    const logicId = [...files.logicFiles.values()][0].id;
+    files.updateLogicFile(logicId, 'let count = 1\n');
+    files.updateUIFileSource(files.activeFileId!, '<logic src="../logic/main.logic" />\n<App>\n  <Text>Hello</Text>\n</App>\n');
+    // The canvas is given what was written in Code, as the app gives it.
+    const written = useFilesStore.getState().uiFiles.get(files.activeFileId!)!;
+    useCanvasStore.getState().loadState(written.elements, written.rootId, written.imports);
+    out = await exported();
+    expect(bytesOf(out.get('logic/main.logic')).slice(0, 3)).toEqual(BOM);
+    expect(text(out.get('logic/main.logic'))).toBe('let count = 1\n');
+    expect(bytesOf(out.get('ui/main.ui')).slice(0, 3)).toEqual(BOM);
+    expect(text(out.get('ui/main.ui'))).toContain('Hello');
+    // And through a saved session.
+    commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(captureSession('design'))));
+    expect(bytesOf((await exported()).get('logic/main.logic')).slice(0, 3)).toEqual(BOM);
+  });
+});
+
+/** The titles of a .xdb's records, as the runtime reads them. */
+function asRuntimeTitles(xdb: string): unknown[] {
+  return parseXDBFile('xdb/books.xdb', xdb).records.map((record) => record.data.title);
+}
+
 describe('a permission.json that declares nothing', () => {
   it('is written back: the file the bundle came with is in what leaves', async () => {
     await open(studioBundle());
@@ -360,5 +449,24 @@ describe('opened and exported with nothing touched', () => {
     expect([...output.keys()].sort()).toEqual([...input.keys()].sort());
     // What the app declares it needs is the file it came with.
     expect(text(output.get('permission.json'))).toBe(text(input.get('permission.json')));
+  });
+
+  // Driven first over the demos: an untouched export rewrote the .xdb files
+  // of four (each given a `schema` the file did not have, and its records
+  // the Builder's spelling of their times and a `deleted: false`), and
+  // took the byte-order mark off the front of a logic file. Each is read
+  // the same by the runtime, and is still a change to a file nobody touched.
+  it.each(shipped)('%s leaves with every file as it came, byte for byte', async (_name, read) => {
+    const input = readBundleEntries(read());
+    await open(read());
+    const output = await exported();
+    const changed: string[] = [];
+    for (const [path, bytes] of input) {
+      // A manifest path given without its folder is written where the file is (`deliberately`, above).
+      if (path === 'manifest.json' && JSON.stringify(deliberately(json(bytes), output)) !== JSON.stringify(json(bytes))) continue;
+      const out = output.get(path);
+      if (!out || out.length !== bytes.length || out.some((byte, at) => byte !== bytes[at])) changed.push(path);
+    }
+    expect(changed).toEqual([]);
   });
 });

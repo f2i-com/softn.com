@@ -63,6 +63,11 @@ interface ParsedNode {
   isSelfClosing: boolean;
 }
 
+/**
+ * Goes on from page to page. It started again at each page read, and the
+ * time is in milliseconds: the pages of a bundle read in one millisecond
+ * had the same ids, root and all.
+ */
 let idCounter = 0;
 
 /**
@@ -106,7 +111,6 @@ export function assessSourceFidelity(source: string): SourceFidelity {
  * Parse SoftN .ui source into canvas-compatible state
  */
 export function parseSource(source: string): ParseResult {
-  idCounter = 0;
   conversionReasons = [];
   sourceText = source;
   unplacedComments = new Map();

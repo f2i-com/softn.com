@@ -20,7 +20,7 @@ import { debug } from './debug';
 import { MAX_ZIP_INPUT_BYTES, resolveBundlePath } from '@softn/core';
 import { ensureFieldIds } from './schemaFields';
 import { readBuilderSchema } from './builderSchemaMetadata';
-import { parseBundle, type BundleManifest } from './bundleExporter';
+import { parseBundle, startsWithByteOrderMark, type BundleManifest } from './bundleExporter';
 import { parseSource } from './sourceParser';
 import { describeMigrations, migrateElements } from './propMigrations';
 import { validateBundle as validateBundleIntegrity, resolveEntry, FILE_GROUPS, type FileGroup } from './bundleValidator';
@@ -40,6 +40,10 @@ export interface LoadedBundle {
   /** A dialog-granted native file, retained only until this workspace closes. */
   sourceHandle?: import('./desktop').DesktopFileHandle;
   manifest: BundleManifest;
+  /** The manifest.json as it was in the archive, which an untouched export writes back as it came. */
+  manifestBytes: Uint8Array;
+  /** Each collection's .xdb as it was in the archive, by collection name, for the same. */
+  xdbFiles: Map<string, Uint8Array>;
   /** The manifest exactly as parsed, for the export to patch rather than rebuild. */
   rawManifest: Record<string, unknown>;
   uiFiles: Map<string, UIFileState>;
@@ -103,7 +107,7 @@ function declaredPaths(manifest: BundleManifest, group: FileGroup): string[] {
 export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   fileIdCounter = 0;
 
-  const { manifest, files } = parseBundle(data);
+  const { manifest, manifestBytes, files } = parseBundle(data);
   // The manifest as read, before anything here touches the typed view of it.
   const rawManifest = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;
 
@@ -127,6 +131,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   const recordIdentity = new Map<string, RecordIdentity[]>();
   const tombstones = new Map<string, XdbRecordEnvelope[]>();
   const xdbPaths = new Map<string, string>();
+  const xdbFiles = new Map<string, Uint8Array>();
   const assets = new Map<string, Uint8Array>();
   const warnings: string[] = [...validation.warnings];
   /** Every archive path something here has taken; the rest are passthrough. */
@@ -163,6 +168,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       logicSrc: parsed.logicSrc,
       imports,
       originalSource: source, // Preserve original source for preview
+      ...(startsWithByteOrderMark(found.bytes) ? { bom: true } : {}),
     });
 
     // Collect collections from this file
@@ -208,7 +214,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     if (found.migrated) warnings.push(`Logic file "${logicPath}" was found at "${found.path}"; the export will name it there.`);
 
     const fileId = generateFileId();
-    logicFiles.set(fileId, { id: fileId, path: found.path, content: decoder.decode(found.bytes) });
+    logicFiles.set(fileId, { id: fileId, path: found.path, content: decoder.decode(found.bytes), ...(startsWithByteOrderMark(found.bytes) ? { bom: true } : {}) });
   }
 
   // A logic file a UI file links with `<logic src>` is the app's logic
@@ -233,7 +239,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       consumed.add(path);
       warnings.push(`Logic file "${path}" is linked by ${uiFile.path} but not listed in manifest.json; the export will list it.`);
       const fileId = generateFileId();
-      logicFiles.set(fileId, { id: fileId, path, content: decoder.decode(bytes) });
+      logicFiles.set(fileId, { id: fileId, path, content: decoder.decode(bytes), ...(startsWithByteOrderMark(bytes) ? { bom: true } : {}) });
     }
   }
 
@@ -262,6 +268,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
         continue;
       }
       xdbPaths.set(collectionName, found.path);
+      xdbFiles.set(collectionName, found.bytes);
 
       // Prefer the schema the bundle recorded; fall back to sniffing the first
       // seed row only for bundles written before it was recorded at all.
@@ -398,6 +405,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
 
   return {
     manifest,
+    manifestBytes,
     rawManifest,
     uiFiles,
     logicFiles,
@@ -408,6 +416,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     recordIdentity,
     tombstones,
     xdbPaths,
+    xdbFiles,
     assets,
     extraEntries,
     mainPath: mainEntry.path,

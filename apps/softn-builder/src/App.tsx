@@ -33,7 +33,7 @@ import {
   type ProjectSnapshot,
   type ViewMode,
 } from './utils/openProject';
-import { saveProject } from './utils/saveProject';
+import { saveProject, saveToHost } from './utils/saveProject';
 import { STUDIO_URL, RUNTIME_URL, PRODUCT_URLS } from './utils/siteUrls';
 import { isDesktop, openCompanionUrl, type BundleFileHandle } from './utils/desktop';
 import { ToastContainer } from './components/feedback/ToastContainer';
@@ -52,11 +52,11 @@ import { useActiveFileOnCanvas } from './hooks/useActiveFileOnCanvas';
 import { PANEL_WIDTHS, useSidePanels } from './hooks/usePanelsThatFit';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
 import { liveImports } from './utils/pageImports';
-import { connectHostedEditor, isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
+import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { viewsFor } from './utils/workspaceViews';
 import { startNewProject } from './utils/newProject';
-import { forgetSavedPoint, keepSavedPoint, markUnsaved } from './utils/savedPoint';
+import { keepSavedPoint, markUnsaved } from './utils/savedPoint';
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -494,20 +494,17 @@ function App() {
   });
 
   const saveCurrentProject = useCallback(async () => {
-    // Hosted in FormLogic (audit SN-04): a save is only "handled" once the
-    // parent confirms it took the draft. A closed channel keeps the edits here
-    // and says so — it never silently falls back to a local file download.
-    const hosted = requestHostedSave();
-    if (hosted.handled) {
-      // FormLogic takes the draft as it is when it asks for it, which is not
-      // known here: from now on only another save makes this clean.
-      forgetSavedPoint();
-      const result = await hosted.completion;
-      if (result.ok) toast.success('Your changes are back in FormLogic.');
-      else toast.error(result.error ?? 'FormLogic could not take the draft. Your changes are still here.');
+    // Hosted in FormLogic (audit SN-04): saved once FormLogic says it took the draft (utils/saveProject.ts).
+    const hosted = await saveToHost();
+    if (hosted.kind === 'saved') {
+      toast.success('Your changes are back in FormLogic.');
       return;
     }
-    if (hosted.reason === 'disconnected') {
+    if (hosted.kind === 'failed') {
+      toast.error(hosted.error);
+      return;
+    }
+    if (hosted.kind === 'disconnected') {
       toast.error('FormLogic is not connected. Your changes stay in the editor; try again in a moment.');
       return;
     }

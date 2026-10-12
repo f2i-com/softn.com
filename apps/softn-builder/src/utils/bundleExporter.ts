@@ -13,6 +13,13 @@
  * entry, followed through a rename by file id, never guessed.
  *
  * Every .xdb entry is written by utils/xdbFormat.ts, for both export paths.
+ *
+ * A file the Builder would write as it was read goes back as it came, byte
+ * for byte: the manifest, each .xdb, and the byte-order mark at the front of
+ * a page or a logic file. An untouched export rewrote them: the same to the
+ * runtime, and still a change to a file nobody touched (the .xdb files of
+ * four demos gained a `schema` and the Builder's spelling of their records,
+ * and a logic file lost its mark).
  */
 
 import { zipSync, strToU8 } from 'fflate';
@@ -60,16 +67,70 @@ export interface BundleManifest {
   };
 }
 
+/**
+ * A collection's .xdb as it was in the archive, and the Builder's writing of
+ * the collection as it was read (null until that is known): while the
+ * Builder would write that still, the file goes back as it came.
+ */
+export interface KeptXdb {
+  bytes: Uint8Array;
+  written: string | null;
+}
+
 /** What an opened bundle carried that the export writes back rather than rebuilds. */
 export interface RetainedExportSource {
   /** The manifest as read, or null for a project made in the Builder. */
   manifest: Record<string, unknown> | null;
+  /** The manifest.json as it was in the archive, written back as it came while the export would write the same. */
+  manifestBytes?: Uint8Array | null;
   /** Validated entries the Builder does not model, written back verbatim. */
   extraEntries: Map<string, Uint8Array>;
   /** Where the icon was, when the bundle had one. */
   iconPath: string | null;
   /** Where each collection's .xdb was, by collection name. */
   xdbPaths: Map<string, string>;
+  /** Each collection's .xdb as it was in the archive, by collection name. */
+  xdbFiles?: ReadonlyMap<string, KeptXdb>;
+}
+
+const BYTE_ORDER_MARK = [0xef, 0xbb, 0xbf];
+
+/** Whether text in `bytes` begins with the UTF-8 byte-order mark, which decoding takes away. */
+export function startsWithByteOrderMark(bytes: Uint8Array): boolean {
+  return BYTE_ORDER_MARK.every((byte, at) => bytes[at] === byte);
+}
+
+/** `text` as the bytes of a file, with the byte-order mark the file had. */
+function fileBytes(text: string, bom: boolean | undefined): Uint8Array {
+  const body = strToU8(text);
+  if (!bom) return body;
+  const bytes = new Uint8Array(BYTE_ORDER_MARK.length + body.length);
+  bytes.set(BYTE_ORDER_MARK);
+  bytes.set(body, BYTE_ORDER_MARK.length);
+  return bytes;
+}
+
+/** The manifest's bytes: as it came, where the export writes what was read; else written anew. */
+function manifestBytes(manifest: Record<string, unknown>, source?: RetainedExportSource): Uint8Array {
+  const written = JSON.stringify(manifest, null, 2);
+  const read = source?.manifestBytes;
+  if (read) {
+    try {
+      if (JSON.stringify(JSON.parse(new TextDecoder().decode(read)), null, 2) === written) return read;
+    } catch {
+      // Not readable as it was: written anew.
+    }
+  }
+  return strToU8(written);
+}
+
+/** The text of a collection's .xdb, as the Builder writes it. */
+export function xdbText(collection: CollectionDef, records: XdbRecordEnvelope[] | undefined): string {
+  return serializeXdb({
+    name: collection.name,
+    schema: { alias: collection.alias ?? collection.name, fields: collection.fields ?? [] },
+    records: records ?? (collection.seedData || []).map((data) => envelopeFor(collection.name, data, undefined)),
+  });
 }
 
 interface SharedOptions {
@@ -302,14 +363,9 @@ function addSharedEntries(
   const xdb: string[] = [];
   for (const col of options.collections) {
     const path = xdbPathFor(col.name, options.source);
-    const records = options.records?.get(col.name) ?? (col.seedData || []).map((data) => envelopeFor(col.name, data, undefined));
-    files[path] = strToU8(
-      serializeXdb({
-        name: col.name,
-        schema: { alias: col.alias ?? col.name, fields: col.fields ?? [] },
-        records,
-      })
-    );
+    const text = xdbText(col, options.records?.get(col.name));
+    const kept = options.source?.xdbFiles?.get(col.name);
+    files[path] = kept && kept.written === text ? kept.bytes : strToU8(text);
     xdb.push(path);
   }
 
@@ -362,7 +418,7 @@ export async function exportBundle(options: BundleOptions): Promise<Uint8Array> 
     main,
     shared.iconPath
   );
-  files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2));
+  files['manifest.json'] = manifestBytes(manifest, options.source);
 
   return zip(files, options);
 }
@@ -402,7 +458,7 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
       });
     }
 
-    files[path] = strToU8(source);
+    files[path] = fileBytes(source, uiFile.bom);
     debug('[exportMultiFileBundle] Added UI file:', path, 'length:', source.length);
   }
 
@@ -417,7 +473,7 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
   for (const [, logicFile] of options.logicFiles) {
     const path = stripSlash(logicFile.path);
     logicPaths.push(path);
-    files[path] = strToU8(logicFile.content);
+    files[path] = fileBytes(logicFile.content, logicFile.bom);
     debug(
       '[exportMultiFileBundle] Added logic file:',
       path,
@@ -433,7 +489,7 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
     main,
     shared.iconPath
   );
-  files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2));
+  files['manifest.json'] = manifestBytes(manifest, options.source);
 
   debug('[exportMultiFileBundle] Creating bundle with', Object.keys(files).length, 'files');
 
@@ -445,6 +501,8 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
  */
 export function parseBundle(data: Uint8Array): {
   manifest: BundleManifest;
+  /** The manifest.json as it was in the archive. */
+  manifestBytes: Uint8Array;
   files: Map<string, Uint8Array>;
 } {
   // Validated read, shared with softn-web and softn-loader.
@@ -489,7 +547,7 @@ export function parseBundle(data: Uint8Array): {
     throw new Error('Invalid bundle: manifest.json is not a JSON object');
   }
 
-  return { manifest: manifest as unknown as BundleManifest, files };
+  return { manifest: manifest as unknown as BundleManifest, manifestBytes: manifestData, files };
 }
 
 /**

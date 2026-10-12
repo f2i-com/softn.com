@@ -27,6 +27,7 @@ import type { CollectionDef, AssetFile } from '../types/builder';
 import { emptyDeclaration, type PermissionDeclaration } from '../utils/permissions';
 import { logicStarter, type LogicLanguage } from '../utils/logicFiles';
 import { readThemeMode } from '../utils/themeMode';
+import type { KeptXdb } from '../utils/bundleExporter';
 
 /** Everything an opened bundle carried that the Builder keeps opaque. */
 export interface RetainedSource {
@@ -37,12 +38,22 @@ export interface RetainedSource {
    * (utils/manifestPages.ts).
    */
   manifest: Record<string, unknown> | null;
+  /** The manifest.json as it was in the archive: what an export that would write the same writes. */
+  manifestBytes?: Uint8Array | null;
   /** Validated archive entries the Builder does not model, path → bytes, written back verbatim. */
   extraEntries: Map<string, Uint8Array>;
   /** The files-store id of the declared entry file, so a rename follows it; null when unknown. */
   mainFileId: string | null;
   /** Where each collection's .xdb was in the archive, by collection name. */
   xdbPaths: Map<string, string>;
+  /**
+   * Each collection's .xdb as it was in the archive, by collection name, and
+   * the Builder's writing of the collection as it was read: while the
+   * Builder would write that still, the file goes back as it came
+   * (utils/bundleExporter.ts). Held for the project opened, and not kept in
+   * a saved session.
+   */
+  xdbFiles?: Map<string, KeptXdb>;
   /** Where the icon was in the archive, when the manifest named one. */
   iconPath: string | null;
 }

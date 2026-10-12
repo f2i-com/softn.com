@@ -46,7 +46,8 @@ import { buildProjectBundle, bundleFileName, flushCanvasToActiveFile } from './b
 import { captureSession, SESSION_STORAGE_KEY, type BuilderSession, type ViewMode } from './openProject';
 import type { BundleFileHandle } from './desktop';
 import { captureAssets, storeAssets, type AssetStore, type CapturedAssets } from './storedAssets';
-import { captureSavedPoint, keepSavedPoint, type SavedPoint } from './savedPoint';
+import { captureSavedPoint, forgetSavedPoint, keepSavedPoint, type SavedPoint } from './savedPoint';
+import { requestHostedSave } from '@softn/editor-shared/hostedEditor';
 
 export type SaveOutcome =
   | {
@@ -231,6 +232,31 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
     ...(sessionAssets ? { sessionAssets } : {}),
     ...(sessionSuperseded ? { sessionSuperseded } : {}),
   };
+}
+
+export type HostedSaveReport =
+  | { kind: 'not-hosted' }
+  | { kind: 'disconnected' }
+  | { kind: 'saved' }
+  | { kind: 'failed'; error: string };
+
+/**
+ * Save a draft edited inside FormLogic: FormLogic is asked to take it, and
+ * the save is done only once it says it has (audit SN-04). A closed channel
+ * keeps the edits here and says so; it is never a download instead. Not
+ * hosted, the caller saves to a file.
+ *
+ * FormLogic takes the draft as it is when it asks for it, which is not
+ * known here: from the request on, what the project was opened as is
+ * nothing it can come back to, and only another save makes it clean
+ * (utils/savedPoint.ts).
+ */
+export async function saveToHost(request: typeof requestHostedSave = requestHostedSave): Promise<HostedSaveReport> {
+  const hosted = request();
+  if (!hosted.handled) return { kind: hosted.reason };
+  forgetSavedPoint();
+  const result = await hosted.completion;
+  return result.ok ? { kind: 'saved' } : { kind: 'failed', error: result.error ?? 'FormLogic could not take the draft. Your changes are still here.' };
 }
 
 /** What a person is told an export did, in the dialog and in its toast. */
