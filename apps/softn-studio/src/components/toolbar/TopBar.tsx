@@ -6,6 +6,7 @@ import { Mark } from '../common/Mark';
 import { HandoffReady } from '../common/HandoffReady';
 import { ProjectActionError } from '../common/ProjectActionError';
 import { SaveStatusIndicator } from '../common/SaveStatus';
+import { ProjectNameControl } from '../common/ProjectName';
 import { useProjectActions } from '../common/ProjectActions';
 import { AIStatusPill } from '../ai/AIStatusPill';
 
@@ -40,7 +41,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
           {/* The product bar above already says Studio; only a hosted editor,
               which has no product bar, needs to say whose editor this is. */}
           {hosted && <span className="st-project-eyebrow">AI Studio</span>}
-          <span className="st-project-name">{projectName || 'Untitled app'}</span>
+          <ProjectNameControl name={projectName} fallback="Untitled app" hosted={hosted} textClassName="st-project-name" />
         </div>
       </div>
 

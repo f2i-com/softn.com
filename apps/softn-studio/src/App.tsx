@@ -18,6 +18,7 @@ import { SettingsPanel } from './components/panels/SettingsPanel';
 import { FilesPanel } from './components/panels/FilesPanel';
 import { MobileProjectMenu } from './components/mobile/MobileProjectMenu';
 import { SaveStatusIndicator } from './components/common/SaveStatus';
+import { ProjectNameControl } from './components/common/ProjectName';
 import { exportCurrentProject } from './components/common/ProjectActions';
 import { openImportedInStores } from './lib/importedProject';
 import { confirmLeaveDraft } from './lib/handEdit';
@@ -56,6 +57,7 @@ import {
   ownsWorkspace,
   readOpenLink,
   releaseWorkspace,
+  renameSavedProject,
   reopenUnansweredProject,
   restoreSession,
   startProjectAutosave,
@@ -356,7 +358,8 @@ const App: React.FC = () => {
   // debounce.
   useEffect(() => {
     if (!isHydrated || isHostedEditor()) return;
-    const controller = startProjectAutosave();
+    // Live: another tab's save of this project is taken in when it is made (lib/projectSession.ts).
+    const controller = startProjectAutosave({ live: true });
     autosaveRef.current = controller;
     const flush = () => void controller.flush();
     const onVisibility = () => {
@@ -428,6 +431,12 @@ const App: React.FC = () => {
     return outcome;
   }, [refreshRecent]);
 
+  const handleRenameProject = useCallback(async (id: string, name: string): Promise<DashboardOutcome> => {
+    const outcome = await renameSavedProject(id, name);
+    void refreshRecent();
+    return outcome;
+  }, [refreshRecent]);
+
   const handleExportProject = useCallback(async (id: string): Promise<DashboardOutcome> => {
     const ws = useWorkspaceStore.getState();
     if (ws.projectId === id && hasProjectContent()) return exportCurrentProject();
@@ -491,6 +500,7 @@ const App: React.FC = () => {
             onRemoveRecent={handleRemoveRecent}
             onDeleteProject={handleDeleteProject}
             onExportProject={handleExportProject}
+            onRenameProject={handleRenameProject}
             onOpenExample={(example) => void handleOpenExample(example)}
             recentProjects={recentProjects}
             storeSilent={storeSilent}
@@ -546,7 +556,7 @@ const App: React.FC = () => {
             >
               <Icon name="chevron-left" size={20} />
             </button>}
-            <span style={styles.mobileProjectName}>{projectName || 'SoftN Studio'}</span>
+            <ProjectNameControl name={projectName} fallback="SoftN Studio" hosted={isHostedEditor()} textStyle={styles.mobileProjectName} />
           </div>
           <div style={styles.mobileTopRight}>
             <SaveStatusIndicator compact />

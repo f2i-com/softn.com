@@ -133,6 +133,19 @@ describe('undefined names in the markup', () => {
     expect(errors).toEqual([expect.stringMatching(/^ui\/main\.ui line 11: window is not available in templates, so it is undefined there \(templates have Number, String, Boolean, Array, Date, Map, Set, Math, JSON, Object/)]);
   });
 
+  // A handler's { } body runs now, one expression after another, and the names in it were
+  // passed over: the check returned at the braces.
+  it('checks the names in a block body, and in what it returns', async () => {
+    const { errors } = await templateNameErrors(
+      page('  <Button @click={() => { addd(); count++ }}>Add</Button>\n  <Button @click={() => { add(); return totl }}>Total</Button>\n  <Button @click={() => { add(); add() }}>Twice</Button>'),
+      'ui/main.ui',
+    );
+    const text = errors.join('\n');
+    expect(text).toMatch(/^ui\/main\.ui line 4: @click calls addd\(\), which the logic does not define — so it does nothing when it fires\. Did you mean add\?/m);
+    expect(text).toMatch(/line 5: totl is read here but nothing defines it/);
+    expect(errors).toHaveLength(2);
+  });
+
   // Timers run in page logic and not in markup. A timer written in a handler was told only that
   // "the logic does not define" setTimeout, which a model answers by defining one.
   it('says a timer written in the markup belongs in a logic function, where timers work', async () => {

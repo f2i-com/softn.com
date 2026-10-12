@@ -350,9 +350,10 @@ async function parseDiagnostics(source: string): Promise<{ errors: string[]; war
 
 /**
  * Template mistakes that parse and render without a word, found in the
- * source: a block-bodied arrow in an event handler is read as an object
- * literal, so the handler never runs; `:value` on a text field is one-way,
- * so typing never reaches the state.
+ * source: `:value` on a text field is one-way, so typing never reaches the
+ * state. (A handler with a `{ }` body was one of them, read as a record and
+ * never run. The renderer runs such a body now, and the parser warns of one
+ * that holds a statement markup does not read, which the check passes on.)
  */
 export function lintTemplates(files: Map<string, VFSFile>): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
@@ -364,15 +365,6 @@ export function lintTemplates(files: Map<string, VFSFile>): { errors: string[]; 
     // Blank out other languages, keeping line numbers.
     const template = file.content.replace(/<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, (block) => block.replace(/[^\n]/g, ' '));
     const lineOf = (index: number) => template.slice(0, index).split('\n').length;
-    // An event with whatever modifiers it carries (`@click`, `@submit.prevent`, `@keydown.ctrl.enter`),
-    // or a callback prop (`onClick`). The name used to be read up to its first dot, and only
-    // events were looked at, so both of those passed: neither the parser nor the name check
-    // objects to an object literal that is then called.
-    // (The character before the name is matched too, so that `iconOnly=` is not taken for `onOnly=`.)
-    for (const match of template.matchAll(/(^|[^\w-])(@[\w-]+(?:\.[\w-]+)*|on[A-Z]\w*)=\{\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{/g)) {
-      const name = match[2];
-      errors.push(`${path} line ${lineOf(match.index + match[1].length)}: ${name} has a block-bodied arrow (\`=> { … }\`), which templates read as an object literal — the handler never runs. Use a single expression, e.g. ${name}={() => doIt()}, and put statements in a logic function.`);
-    }
     for (const match of template.matchAll(/<(Input|TextArea)\b[^>]*\s:value=\{/g)) {
       warnings.push(`${path} line ${lineOf(match.index)}: <${match[1]} :value={…}> is one-way, so typing never changes the state. Use :bind={name}.`);
     }

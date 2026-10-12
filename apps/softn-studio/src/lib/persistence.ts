@@ -734,6 +734,13 @@ export function saveRecentProject(project: RecentProjectRecord): SaveResult {
   return writeItem(STORAGE_KEYS.recent, JSON.stringify(next));
 }
 
+/** Give a project's entry on the recent list a new name, where it stands in the list. */
+export function renameRecentProject(id: string, name: string): SaveResult {
+  const list = loadRecentProjects();
+  if (!list.some((item) => item.id === id)) return { ok: true };
+  return writeItem(STORAGE_KEYS.recent, JSON.stringify(list.map((item) => (item.id === id ? { ...item, name } : item))));
+}
+
 /**
  * Take one entry off the recent list. That is all it does: the project's
  * record, the active-project pointer and the provider settings are not

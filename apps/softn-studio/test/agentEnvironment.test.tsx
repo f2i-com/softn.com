@@ -47,32 +47,38 @@ describe('check_app', () => {
     expect(report.errors.join('\n')).toMatch(/Parse error at line \d+/);
   }, 20_000);
 
-  it('catches the handler that parses but never runs, and a one-way text field', async () => {
-    const report = await browserEnvironment.checkApp(app(APP.ui.replace('<Button @click={() => add()}>', '<Input :value={count} />\n    <Button @click={() => { add() }}>')), { blueprint: null });
-    expect(report.ok).toBe(false);
-    expect(report.errors.join('\n')).toMatch(/ui\/main\.ui line 8: @click has a block-bodied arrow/);
-    expect(report.warnings.join('\n')).toMatch(/ui\/main\.ui line 7: <Input :value=\{…\}> is one-way/);
+  // A handler with a { } body was read as a record and never ran, and the check said so as an
+  // error. The renderer runs such a body now, one expression after another; a body with a
+  // statement markup does not read (if, let, a loop) is the parser's to warn of.
+  it('passes a handler with a block body, which runs', async () => {
+    const report = await browserEnvironment.checkApp(app(APP.ui.replace('<Button @click={() => add()}>', '<Button @click={() => { add(); add() }}>')), { blueprint: null });
+    expect(report.errors).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(report.warnings.join('\n')).not.toMatch(/block-bodied|never runs/);
   }, 20_000);
 
-  it('catches the handler that never runs on an event with modifiers and on an on… prop too', () => {
-    // The lint read an event's name up to its first dot and looked at events only, so
-    // "@submit.prevent={() => { save() }}" and onClick={() => { … }} passed: the parser reads
-    // each as an object that is then called, and nothing else in the check objects.
+  it('still catches a one-way text field', async () => {
+    const report = await browserEnvironment.checkApp(app(APP.ui.replace('<Button @click={() => add()}>', '<Input :value={count} />\n    <Button @click={() => { add() }}>')), { blueprint: null });
+    expect(report.warnings.join('\n')).toMatch(/ui\/main\.ui line 7: <Input :value=\{…\}> is one-way/);
+    expect(report.errors.join('\n')).not.toMatch(/block-bodied|never runs/);
+  }, 20_000);
+
+  it('passes on what the parser says of a block body that cannot run', async () => {
+    const report = await browserEnvironment.checkApp(app(APP.ui.replace('<Button @click={() => add()}>', '<Button @click={() => { if (count < 3) add() }}>')), { blueprint: null });
+    expect(report.warnings.join('\n')).toMatch(/This handler's \{ \} body cannot run: "if" is a statement markup does not read/);
+  }, 20_000);
+
+  it('does not call a block body an object literal, on an event with modifiers or an on… prop', () => {
     const { errors } = lintTemplates(vfs({
       'ui/a.ui': [
         '<App>',
         '  <form @submit.prevent={() => { save() }}>x</form>',
         '  <Input @keydown.ctrl.enter={(e) => { add() }} />',
         '  <Button onClick={() => { add() }}>y</Button>',
-        '  <Button @click.stop={() => add()} onClick={() => ({ a: 1 })} icon={{ name: "x" }}>fine</Button>',
         '</App>',
       ].join('\n'),
     }));
-    expect(errors).toEqual([
-      expect.stringMatching(/^ui\/a\.ui line 2: @submit\.prevent has a block-bodied arrow .* e\.g\. @submit\.prevent=\{\(\) => doIt\(\)\}/),
-      expect.stringMatching(/^ui\/a\.ui line 3: @keydown\.ctrl\.enter has a block-bodied arrow/),
-      expect.stringMatching(/^ui\/a\.ui line 4: onClick has a block-bodied arrow .* e\.g\. onClick=\{\(\) => doIt\(\)\}/),
-    ]);
+    expect(errors).toEqual([]);
   });
 
   it('reports a parse error in an imported page against that page and its own line, not the composed main page', async () => {

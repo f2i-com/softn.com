@@ -29,6 +29,7 @@ section here. Write the section before tagging. Headings are the tag
 - Single-app pages fail a download only when nothing has arrived for 60 seconds, where a slow download that was still arriving was cut off at 60 seconds in all; the desktop app copies a damaged registry aside once, not on every read; FormLogic's storage alert for an embedded app follows the theme.
 - Builder: exporting a project that was opened and not changed gives back every file as it came, data files and byte-order marks included, where it rewrote the .xdb files and the manifest in its own style.
 - Rust backend host: an update that would grow a synced record past 512 KB is refused; after-sync hooks stop being started after 5 seconds and no longer hold the push's permit; a pull is read and sent one message at a time; on Windows an app whose name ends in dots opens its database.
+- Studio: tabs on one project take in each other's saves as they are made, conflicts named and nothing written over; a project can be renamed from its header and from the project list; a run whose write lost to another tab says so in its summary; the AI is told that a handler with a `{ }` body runs its statements.
 
 ## v0.0.19
 

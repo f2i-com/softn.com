@@ -36,6 +36,7 @@ import { addUsage, cacheWeights, effectiveTokens, runEffective, type CacheWeight
 import { holdPageForRun, releasePageForRun, wasInBackground } from './keepAlive';
 import { buildAgentSystemPrompt, buildProjectContext } from './prompt';
 import { takePreviewFaults } from '../previewFaults';
+import { saveAndFindConflicts } from '../projectSession';
 import {
   canStream,
   encodeText,
@@ -156,6 +157,8 @@ interface RunController {
   finishRefusals: number;
   /** The person was asked after such a refusal and answered: the next finish is theirs to have. */
   personAnsweredFailingCheck: boolean;
+  /** Files this run wrote whose save met another tab's change, and the model has been told so. */
+  toldConflicts: Set<string>;
   lastToolError: string | null;
   sameToolErrors: number;
   truncations: number;
@@ -485,6 +488,7 @@ export async function startAgentRun(options: StartOptions = {}): Promise<void> {
     failingCheck: null,
     finishRefusals: 0,
     personAnsweredFailingCheck: false,
+    toldConflicts: new Set(),
     lastToolError: null,
     sameToolErrors: 0,
     truncations: 0,
@@ -1318,6 +1322,31 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
     ctl.finishRefusals = 0;
   }
 
+  // A write is saved now, and a finish waits for the save: a file this run wrote that another
+  // tab changed too is not written over (lib/projectMerge.ts), storage keeps the other tab's
+  // version, and the run used to end saying it had made a change that was in this tab alone.
+  if (pending.wrote || pending.finishSummary !== undefined) {
+    const conflicts = await saveAndFindConflicts();
+    if (!ctl.alive || ctl.pending !== pending) return true;
+    const written = pathsWritten(ctl);
+    const untold = conflicts.filter((path) => written.has(path) && !ctl.toldConflicts.has(path));
+    if (untold.length > 0) {
+      for (const path of untold) ctl.toldConflicts.add(path);
+      const note = conflictNote(untold);
+      const finish = pending.finishSummary !== undefined ? pending.results.find((r) => r.name === 'finish') : undefined;
+      if (finish) {
+        // Not counted with the refusals over a failed check: the next finish is accepted.
+        pending.finishSummary = undefined;
+        finish.content = `Not accepted yet: ${note} Call finish again with a summary that says so.`;
+        finish.isError = true;
+        updateEntry(ctl, finish.id, { status: 'error', result: finish.content });
+      } else {
+        const lastWrite = [...pending.results].reverse().find((r) => WRITE_TOOLS.has(r.name) && !r.isError) ?? pending.results.at(-1);
+        if (lastWrite) lastWrite.content += `\n\n${note}`;
+      }
+    }
+  }
+
   ctl.turns.push({ role: 'tool', results: pending.results.map(({ step: _step, ...r }) => r) });
   const summary = pending.finishSummary;
   ctl.pending = null;
@@ -1335,6 +1364,22 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
     return true;
   }
   return false;
+}
+
+/** The files this run's committed changes touched, from the undo journal and the history. */
+function pathsWritten(ctl: RunController): Set<string> {
+  const ids = new Set(record(ctl)?.transactions ?? []);
+  const vfs = useVFSStore.getState();
+  const paths = new Set<string>();
+  for (const entry of vfs.journal) if (ids.has(entry.id)) for (const change of entry.changes) paths.add(change.path);
+  for (const event of vfs.history) if (event.transactionId !== undefined && ids.has(event.transactionId)) paths.add(event.path);
+  return paths;
+}
+
+/** What the model is told of files it wrote that another tab changed too. */
+function conflictNote(paths: string[]): string {
+  const list = paths.length === 1 ? `${paths[0]} was` : `${paths.slice(0, -1).join(', ')} and ${paths[paths.length - 1]} were`;
+  return `${list} also changed in another tab where this project is open, so storage kept the other tab’s version: your change is in this tab only, not saved. The person chooses which to keep. Do not write the file again to get past this; say it in your summary.`;
 }
 
 async function drive(ctl: RunController): Promise<void> {

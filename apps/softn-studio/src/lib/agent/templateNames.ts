@@ -246,13 +246,19 @@ function collect(expr: Expression, local: Set<string>, out: Ref[], handler: stri
       for (const arg of expr.arguments) visit(arg, local);
       return;
     case 'ArrowFunctionExpression': {
-      if (typeof expr.body === 'string') return; // A block body never runs; lintTemplates says so.
       const inner = new Set(local);
       // `params` is every name the arrow binds, destructured ones included.
       for (const param of expr.params) inner.add(param.replace(/^\.\.\./, '').replace(/\s*=.*$/, '').trim());
       // A default is read with the parameters in scope: `(a, b = a) => …`.
       for (const param of expr.patterns ?? []) visitDefaults(param, (e) => visit(e, inner));
-      visit(expr.body, inner);
+      if (typeof expr.body !== 'string') {
+        visit(expr.body, inner);
+        return;
+      }
+      // A block body, `{ count++; save() }`: its statements run one after another, and then
+      // what it returns. One the parser could not read has neither, and a warning of its own.
+      for (const statement of expr.statements ?? []) visit(statement, inner);
+      if (expr.returns) visit(expr.returns, inner);
       return;
     }
     case 'AssignmentExpression': {

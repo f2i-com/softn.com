@@ -80,6 +80,84 @@
   text-overflow: ellipsis;
 }
 
+/* The name is the way to rename it: a button that reads as the name until hovered or focused.
+   Its pencil takes room only then, so the name has all of it at rest. */
+.st-project-name-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.125rem 0.375rem;
+  border: 1px solid transparent;
+  border-radius: var(--studio-radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+
+.st-project-name-btn:hover,
+.st-project-name-btn:focus-visible {
+  border-color: var(--studio-border);
+}
+
+.st-project-name-btn svg {
+  display: none;
+  flex-shrink: 0;
+  color: var(--studio-text-dim);
+}
+
+.st-project-name-btn:hover svg,
+.st-project-name-btn:focus-visible svg {
+  display: block;
+}
+
+.st-rename {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.st-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.st-rename-input {
+  min-width: 0;
+  width: 16rem;
+  max-width: 100%;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--studio-border-strong);
+  border-radius: var(--studio-radius);
+  background: var(--studio-bg-elevated);
+  color: var(--studio-text);
+  font: inherit;
+  font-size: 0.9375rem;
+}
+
+.st-rename-error {
+  font-size: 0.75rem;
+  color: var(--studio-error);
+}
+
+/* In a bar the reason hangs under the field, so the bar keeps its height. */
+.st-topbar .st-rename-error {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  z-index: 20;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--studio-radius);
+  background: var(--studio-bg-elevated);
+  white-space: nowrap;
+}
+
 /* ── Rail and panels ───────────────────────────────────────────── */
 
 .st-rail-wrap {

@@ -1,5 +1,6 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Icon } from '../common/Icon';
+import { RenameField } from '../common/ProjectName';
 import { EXAMPLES, type ExampleProject } from '../../examples';
 import { ProviderSetup } from '../ai/ProviderSetup';
 import { AIStatusPill, useAIReadiness } from '../ai/AIStatusPill';
@@ -34,6 +35,8 @@ interface DashboardProps {
   onDeleteProject?: (id: string) => Promise<DashboardOutcome>;
   /** Download a saved project as a .softn without opening it. */
   onExportProject?: (id: string) => Promise<DashboardOutcome>;
+  /** Give a project a new name: one saved here, open or not. */
+  onRenameProject?: (id: string, name: string) => Promise<DashboardOutcome>;
   /** Open one of the bundled examples as a new project. */
   onOpenExample?: (example: ExampleProject) => void;
   recentProjects?: RecentEntry[];
@@ -139,6 +142,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onRemoveRecent,
   onDeleteProject,
   onExportProject,
+  onRenameProject,
   onOpenExample,
   recentProjects = [],
   storeSilent = false,
@@ -148,6 +152,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   /** The store is being asked again: it may take as long to answer as it did not answer before. */
   const [askingStore, setAskingStore] = useState(false);
@@ -439,6 +444,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
                           <span className="st-state" data-state={state}>{isBusy ? 'Opening…' : stateLabel}</span>
                         </button>
                         <div className="st-recent-actions">
+                          {openable && onRenameProject && (
+                            <button
+                              type="button"
+                              className="st-icon-btn"
+                              onClick={() => setRenamingId(renamingId === project.id ? null : project.id)}
+                              aria-expanded={renamingId === project.id}
+                              aria-label={`Rename ${project.name}`}
+                              title="Rename…"
+                            >
+                              <Icon name="edit" size={15} />
+                            </button>
+                          )}
                           {project.saved && onExportProject && (
                             <button
                               type="button"
@@ -473,6 +490,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
                           )}
                         </div>
                       </div>
+                      {renamingId === project.id && onRenameProject && (
+                        <div role="group" aria-label={`Rename ${project.name}`} className="st-confirm">
+                          <RenameField
+                            name={project.name}
+                            label={`New name for ${project.name}`}
+                            actions
+                            onClose={() => setRenamingId(null)}
+                            onRename={async (next) => {
+                              try {
+                                const outcome = await onRenameProject(project.id, next);
+                                if (!outcome.ok) return `Could not rename ${project.name}: ${outcome.message}`;
+                              } catch (err) {
+                                return `Could not rename ${project.name}: ${err instanceof Error ? err.message : String(err)}`;
+                              }
+                              setNotice(null);
+                              return null;
+                            }}
+                          />
+                        </div>
+                      )}
                       {confirmingId === project.id && (
                         <div role="group" aria-label={`Delete ${project.name}`} className="st-confirm">
                           <p>

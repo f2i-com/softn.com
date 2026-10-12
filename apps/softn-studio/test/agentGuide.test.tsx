@@ -283,3 +283,29 @@ describe('what the guide says of timers', () => {
     expect(text()).toContain('done');
   }, 30_000);
 });
+
+describe('what the guide says of a handler with a block body', () => {
+  // It said a block body never runs, which was true; the renderer runs one now.
+  it('says its statements run in order, and that if, let and loops belong in a logic function', () => {
+    for (const python of [false, true]) {
+      const guide = buildGuide({ python, torch: false, style: 'clean' });
+      expect(guide).not.toMatch(/never runs/);
+      expect(guide).toMatch(/a block body, `\(\) => \{ count\+\+; save\(\) \}`, whose statements run in order/);
+      expect(guide).toMatch(/`if`, `let` and loops belong in a logic function/);
+    }
+  });
+
+  it('is true of the renderer: both statements of a block body run', async () => {
+    const files = vfs({
+      'ui/main.ui': '<logic src="../logic/main.logic" />\n<App>\n  <Text>{count} and {label}</Text>\n  <Button @click={() => { count++; label = "pressed" }}>Press</Button>\n</App>',
+      'logic/main.logic': 'let count = 0\nlet label = "waiting"\n',
+      'manifest.json': JSON.stringify({ name: 'Block', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: ['logic/main.logic'] } }),
+    });
+    const { errors, text } = await renderApp(files, 'StudioGuideBlockBody');
+    expect(errors).toEqual([]);
+    const press = [...container!.querySelectorAll('button')].find((b) => b.textContent === 'Press')!;
+    await act(async () => { press.click(); });
+    await settle();
+    expect(text()).toMatch(/1\s*and\s*pressed/);
+  }, 30_000);
+});

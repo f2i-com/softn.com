@@ -78,7 +78,9 @@ export function SaveStatusIndicator({ compact = false }: { compact?: boolean }):
       style={{ ...styles.box, ...(compact ? styles.boxCompact : {}) }}
     >
       <span aria-hidden="true" style={{ ...styles.dot, background: dotColour(tone) }} />
-      <span style={styles.label}>
+      {/* "Not saved" keeps its room in the desktop bar, where the reason after it gives way
+          first. On a phone the dot says it, and the bar keeps its room for the button beside it. */}
+      <span style={failed && !compact ? { ...styles.label, minWidth: '4.25rem' } : styles.label}>
         {label}
         {failed && !compact && <span style={styles.detail}> — {detail}</span>}
       </span>
@@ -87,8 +89,9 @@ export function SaveStatusIndicator({ compact = false }: { compact?: boolean }):
           <span>Keep this tab’s version</span>
         </button>
       )}
-      {/* On a phone the bar has room for one of the two; the project menu beside it has Export bundle. */}
-      {failed && !(compact && status.parts) && (
+      {/* With Keep this tab's version there is room for one of the two, and the bar it sits in
+          has Export bundle beside it (the desktop bar's button, the phone's project menu). */}
+      {failed && !status.parts && (
         <button type="button" onClick={() => void exportCurrentProject()} style={styles.exportBtn} title="Export the project in memory as a .softn file">
           <Icon name="export" size={12} />
           <span>Export bundle</span>
@@ -122,7 +125,10 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     color: 'var(--studio-text-muted)',
     fontSize: 12.5,
-    maxWidth: 'min(420px, 100%)',
+    // A length, not a share of the bar: a percentage of a row sized by its content does not
+    // limit how wide the box asks to be, so a long failure asked for the whole bar and the
+    // project's name beside it was squeezed to a letter (the name shrinks in proportion).
+    maxWidth: 420,
   },
   boxCompact: {
     padding: '2px 8px',
