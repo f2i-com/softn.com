@@ -29,6 +29,8 @@ import { SESSION_STORAGE_KEY, captureSession, commitProjectSnapshot, prepareSess
 import { RECOVERY_OWNER_KEY, TAB_ID, recoveryOf, restoreOffer, writeRecoveryCopy } from './recoveryCopy';
 import { SESSION_ASSETS_KEY, joinStoredSession, resetRefusedAssets } from './storedAssets';
 import { resetPersistedRevisions, saveProject } from './saveProject';
+import { keepSavedPoint } from './savedPoint';
+import { undoCanvas } from './canvasHistory';
 
 declare global {
   // eslint-disable-next-line no-var
@@ -278,6 +280,48 @@ describe('while a project is being edited', () => {
     fromOther();
     fromOther();
     expect(said()).toEqual([RECOVERY_TAKEN]);
+  });
+
+  /** The entry page on the canvas, as the app has it once it is open, held as what was kept. */
+  function kept(): void {
+    const file = useFilesStore.getState().uiFiles.get('main_ui')!;
+    canvas().loadState(file.elements, file.rootId, file.imports);
+    keepSavedPoint();
+  }
+  /** An edit that Undo takes back whole. */
+  function undoable(words: string): void {
+    useHistoryStore.getState().push(canvas().elements, canvas().rootId);
+    edit(words);
+  }
+
+  it('is written again as the project stands, and not as unsaved, once the work is undone to what was kept', () => {
+    kept();
+    open();
+    act(() => undoable('undone later'));
+    act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+    expect(recoveryOf(stored()!)?.unsaved).toBe(true);
+    act(() => void undoCanvas());
+    expect(useProjectStore.getState().isDirty).toBe(false);
+    act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+    // The next open does not offer the undone words back as work that was not saved.
+    expect(stored()).not.toContain('undone later');
+    expect(recoveryOf(stored()!)).toBeNull();
+    expect(useProjectStore.getState().name).toBe('Field Notes');
+    expect(JSON.parse(stored()!).project.name).toBe('Field Notes');
+  });
+
+  it('is not written over another tab\'s copy once the work here is undone', () => {
+    kept();
+    open();
+    act(() => undoable('mine, undone later'));
+    act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+    const theirs = JSON.stringify({ ...JSON.parse(stored()!), recovery: { tab: 'another-tab', unsaved: true, assets: 'kept' } });
+    window.localStorage.setItem(SESSION_STORAGE_KEY, theirs);
+    act(() => void window.dispatchEvent(new StorageEvent('storage', { key: SESSION_STORAGE_KEY, newValue: theirs })));
+    act(() => void undoCanvas());
+    act(() => void vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+    act(() => void window.dispatchEvent(new Event('pagehide')));
+    expect(stored()).toBe(theirs);
   });
 
   it('is not kept for a draft that is edited inside another product, which keeps it', () => {

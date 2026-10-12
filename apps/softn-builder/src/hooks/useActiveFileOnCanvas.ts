@@ -18,6 +18,7 @@
 import { useEffect } from 'react';
 import { useCanvasStore } from '../stores/canvasStore';
 import { useFilesStore } from '../stores/filesStore';
+import { useProjectStore } from '../stores/projectStore';
 import { debug } from '../utils/debug';
 
 export function useActiveFileOnCanvas(): void {
@@ -40,6 +41,10 @@ export function useActiveFileOnCanvas(): void {
     debug('[canvas] loading file', activeFileId, { elements: elements.size, rootId });
     const opened = useFilesStore.getState().uiFiles.get(activeFileId);
     loadCanvasState(elements, rootId, opened?.imports ?? [], opened?.writtenImports ?? []);
+    // The page left was flushed while the canvas still held it, and the
+    // page opened was judged by it then (utils/savedPoint.ts): judged again
+    // now that the canvas holds it.
+    useProjectStore.getState().settle();
   }, [activeFileId, elements, rootId, refused, loadCanvasState]);
 
   // What the file imports can change without its tree changing (a component

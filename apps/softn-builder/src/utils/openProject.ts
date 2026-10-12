@@ -46,6 +46,7 @@ import { describeMigrations, migrateElements } from './propMigrations';
 import { applyInlineLogicMove, planInlineLogicMove, takenPaths } from './inlineLogic';
 import { entryFileId } from './logicFiles';
 import { readThemeMode } from './themeMode';
+import { keepSavedPoint } from './savedPoint';
 import type {
   AssetFile,
   CanvasElement,
@@ -540,8 +541,10 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
       tombstones: snapshot.schema.tombstones,
     });
 
-    // Loaded, not edited: clean, at revision 0 of a new project id.
+    // Loaded, not edited: clean, at revision 0 of a new project id, and
+    // what an edit that is undone comes back to.
     useProjectStore.getState().newWorkspace();
+    keepSavedPoint();
   } catch (e) {
     useCanvasStore.setState(previous.canvas, true);
     useProjectStore.setState(previous.project, true);

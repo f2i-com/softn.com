@@ -56,6 +56,7 @@ import { connectHostedEditor, isHostedEditor, requestHostedSave } from '@softn/e
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { viewsFor } from './utils/workspaceViews';
 import { startNewProject } from './utils/newProject';
+import { forgetSavedPoint, keepSavedPoint, markUnsaved } from './utils/savedPoint';
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -430,6 +431,13 @@ function App() {
     open: async bytes => applySnapshotRef.current(prepareProjectSnapshot(await loadBundle(bytes))),
     export: buildProjectBundle,
   }), []);
+  // The project the page starts with is in no file and has nothing to lose:
+  // an edit undone in it leaves it as clean as it was. Opening or restoring
+  // a project holds it against what that project was kept as instead.
+  useEffect(() => {
+    const project = useProjectStore.getState();
+    if (project.revision === 0 && !project.isDirty && project.isAsKept === null) keepSavedPoint();
+  }, []);
   useProjectStartup((action) => {
     if (action.kind === 'nothing') return;
     if (action.kind === 'refused-link') {
@@ -455,8 +463,9 @@ function App() {
       if (!window.confirm(restoreOffer(action.raw, joined.assets))) return;
       try {
         applySnapshotRef.current(snapshot);
-        // It was not saved when it was kept, and is not now: it says "Unsaved", and leaving asks first.
-        if (recoveryOf(action.raw)) useProjectStore.getState().markDirty();
+        // It was not saved when it was kept, and is not now: it says "Unsaved",
+        // leaving asks first, and undoing an edit does not make it saved.
+        if (recoveryOf(action.raw)) markUnsaved();
       } catch (e) {
         console.error('[App] Failed to restore session:', e);
         quarantineSession(action.raw, e, assetsRaw);
@@ -490,6 +499,9 @@ function App() {
     // and says so — it never silently falls back to a local file download.
     const hosted = requestHostedSave();
     if (hosted.handled) {
+      // FormLogic takes the draft as it is when it asks for it, which is not
+      // known here: from now on only another save makes this clean.
+      forgetSavedPoint();
       const result = await hosted.completion;
       if (result.ok) toast.success('Your changes are back in FormLogic.');
       else toast.error(result.error ?? 'FormLogic could not take the draft. Your changes are still here.');

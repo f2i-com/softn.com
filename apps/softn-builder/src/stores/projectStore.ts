@@ -112,6 +112,13 @@ interface ProjectStore {
   /** What the opened bundle carried that the Builder does not model. */
   source: RetainedSource;
 
+  /**
+   * Whether the project is again what was last kept (utils/savedPoint.ts),
+   * asked at each edit. Null when nothing is known to be kept, and then only
+   * a save makes the project clean. Dropped with the workspace.
+   */
+  isAsKept: (() => boolean) | null;
+
   // Actions - Metadata
   setName: (name: string) => void;
   setVersion: (version: string) => void;
@@ -136,6 +143,11 @@ interface ProjectStore {
 
   // Actions - Project
   setFilePath: (path: string | null) => void;
+  /**
+   * An edit has been made: the revision advances, and the project is unsaved
+   * unless it is now what was last kept. Called once the edit has landed,
+   * so that it is judged on the project as it now is.
+   */
   markDirty: () => void;
   markClean: () => void;
   /**
@@ -143,8 +155,15 @@ interface ProjectStore {
    * was saved. Returns whether it was.
    */
   markCleanIf: (projectId: string, revision: number) => boolean;
+  /**
+   * Clean if the project is what was last kept, with no edit made: for a
+   * save whose file holds an earlier revision than the project has now.
+   */
+  settle: () => void;
   /** Keep what an opened bundle carried, without treating it as an edit. */
   setSource: (source: RetainedSource) => void;
+  /** Hold each edit from now on against `isAsKept`, or against nothing. */
+  holdAgainst: (isAsKept: (() => boolean) | null) => void;
   /** A new workspace: new id, revision 0, generation advanced. Not an edit. */
   newWorkspace: () => void;
   /** A new, empty project whose logic is in `language` (JavaScript unless said). */
@@ -177,12 +196,13 @@ function defaultLogicSource(language: LogicLanguage): string {
   return language === 'javascript' ? logicStarter('javascript') : '';
 }
 
-/** The part of every edit that marks the project dirty and advances its revision. */
-function touch(state: { revision: number }): { isDirty: true; revision: number } {
-  return { isDirty: true, revision: state.revision + 1 };
-}
-
-export const useProjectStore = create<ProjectStore>((set, get) => ({
+export const useProjectStore = create<ProjectStore>((set, get) => {
+  /** An edit of the project's own fields: made, and then marked. */
+  const edit = (change: Partial<ProjectStore> | ((state: ProjectStore) => Partial<ProjectStore>)) => {
+    set(change);
+    get().markDirty();
+  };
+  return ({
   name: 'Untitled App',
   version: '1.0.0',
   description: '',
@@ -199,37 +219,38 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   revision: 0,
   workspaceGeneration: 0,
   source: emptyRetainedSource(),
+  isAsKept: null,
 
   setName: (name) => {
-    set((state) => ({ name, ...touch(state) }));
+    edit({ name });
   },
 
   setVersion: (version) => {
-    set((state) => ({ version, ...touch(state) }));
+    edit({ version });
   },
 
   setDescription: (description) => {
-    set((state) => ({ description, ...touch(state) }));
+    edit({ description });
   },
 
   setIcon: (icon) => {
-    set((state) => ({ icon, ...touch(state) }));
+    edit({ icon });
   },
 
   setPermissions: (permissions) => {
-    set((state) => ({ permissions, ...touch(state) }));
+    edit({ permissions });
   },
 
   setPythonPackages: (packages) => {
-    set((state) => ({ pythonPackages: [...new Set(packages)], ...touch(state) }));
+    edit({ pythonPackages: [...new Set(packages)] });
   },
 
   setThemeMode: (mode) => {
-    set((state) => ({ themeMode: mode, ...touch(state) }));
+    edit({ themeMode: mode });
   },
 
   setLogicSource: (source) => {
-    set((state) => ({ logicSource: source, ...touch(state) }));
+    edit({ logicSource: source });
   },
 
   addCollection: (name) => {
@@ -243,7 +264,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       counter++;
     }
 
-    set((state) => ({
+    edit((state) => ({
       collections: [
         ...state.collections,
         {
@@ -253,42 +274,38 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           seedData: [],
         },
       ],
-      ...touch(state),
     }));
   },
 
   updateCollection: (index, updates) => {
-    set((state) => {
+    edit((state) => {
       const newCollections = [...state.collections];
       if (index >= 0 && index < newCollections.length) {
         newCollections[index] = { ...newCollections[index], ...updates };
       }
-      return { collections: newCollections, ...touch(state) };
+      return { collections: newCollections };
     });
   },
 
   deleteCollection: (index) => {
-    set((state) => ({
+    edit((state) => ({
       collections: state.collections.filter((_, i) => i !== index),
-      ...touch(state),
     }));
   },
 
   addAsset: (asset) => {
-    set((state) => ({
+    edit((state) => ({
       assets: [...state.assets.filter((a) => a.name !== asset.name), asset],
-      ...touch(state),
     }));
   },
 
   setAssets: (assets) => {
-    set((state) => ({ assets: [...assets], ...touch(state) }));
+    edit({ assets: [...assets] });
   },
 
   deleteAsset: (name) => {
-    set((state) => ({
+    edit((state) => ({
       assets: state.assets.filter((a) => a.name !== name),
-      ...touch(state),
     }));
   },
 
@@ -297,7 +314,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   },
 
   markDirty: () => {
-    set((state) => touch(state));
+    const asKept = get().isAsKept?.() ?? false;
+    set((state) => ({ isDirty: !asKept, revision: state.revision + 1 }));
   },
 
   markClean: () => {
@@ -311,8 +329,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     return true;
   },
 
+  settle: () => {
+    if (get().isAsKept?.()) set({ isDirty: false });
+  },
+
   setSource: (source) => {
     set({ source });
+  },
+
+  holdAgainst: (isAsKept) => {
+    set({ isAsKept });
   },
 
   newWorkspace: () => {
@@ -322,6 +348,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       workspaceGeneration: state.workspaceGeneration + 1,
       isDirty: false,
       filePath: null,
+      isAsKept: null,
     }));
   },
 
@@ -343,6 +370,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       revision: 0,
       workspaceGeneration: state.workspaceGeneration + 1,
       source: emptyRetainedSource(),
+      isAsKept: null,
     }));
   },
 
@@ -376,4 +404,5 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       isDirty: false,
     });
   },
-}));
+  });
+});

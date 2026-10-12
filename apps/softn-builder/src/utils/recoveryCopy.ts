@@ -24,6 +24,12 @@
  *    tab's that changed last. A tab whose copy has just been replaced by
  *    another's is told so, once: it is not silent, and nothing is merged.
  *
+ * Work undone back to what the project was kept as is no longer unsaved
+ * (utils/savedPoint.ts), and a copy of it would offer the undone edits
+ * back on the next open as work that was not saved. The tab whose copy it
+ * is writes the project again as it stands, unmarked: the record a Save of
+ * it would have stored.
+ *
  * A store that will not take the text is a failure handed back, for the
  * hook to say once; one that takes the text and not the assets has kept the
  * copy, and the offer says what is not in it. Nothing here throws.
@@ -58,6 +64,8 @@ export interface RecoveryDeps {
   storage?: AssetStore;
   /** Put the canvas into its file first, as Save does; a test may leave it out. */
   flush?: () => void;
+  /** False for a project that is again what it was kept as: written without the mark. */
+  unsaved?: boolean;
 }
 
 /** Write the copy of the project as it stands. The outcome, never a throw. */
@@ -66,7 +74,10 @@ export function writeRecoveryCopy(deps: RecoveryDeps): RecoveryWrite {
     (deps.flush ?? flushCanvasToActiveFile)();
     const storage = deps.storage ?? window.localStorage;
     const assets = captureAssets(useFilesStore.getState().assetFiles);
-    const session: RecoverySession = { ...captureSession(deps.view, { assets: 'apart' }), recovery: { tab: TAB_ID, unsaved: true, assets: 'kept' } };
+    const session: RecoverySession = {
+      ...captureSession(deps.view, { assets: 'apart' }),
+      ...(deps.unsaved === false ? {} : { recovery: { tab: TAB_ID, unsaved: true, assets: 'kept' } }),
+    };
     // The text first, which is what is typed: a store that refuses it has kept nothing, and that is the failure.
     try {
       storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));

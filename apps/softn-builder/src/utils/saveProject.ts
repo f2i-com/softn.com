@@ -46,6 +46,7 @@ import { buildProjectBundle, bundleFileName, flushCanvasToActiveFile } from './b
 import { captureSession, SESSION_STORAGE_KEY, type BuilderSession, type ViewMode } from './openProject';
 import type { BundleFileHandle } from './desktop';
 import { captureAssets, storeAssets, type AssetStore, type CapturedAssets } from './storedAssets';
+import { captureSavedPoint, keepSavedPoint, type SavedPoint } from './savedPoint';
 
 export type SaveOutcome =
   | {
@@ -127,11 +128,14 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   let name: string;
   let session: BuilderSession;
   let assets: CapturedAssets;
+  let kept: SavedPoint;
   let bundlePromise: Promise<Uint8Array>;
   try {
     flushCanvasToActiveFile();
     ({ projectId, revision, name } = useProjectStore.getState());
     session = capture(deps.view);
+    // What the file will hold, for what an edit that is undone comes back to.
+    kept = captureSavedPoint();
     // The assets as they are now, with the text that names them: written
     // together when the file is done, whatever the project holds by then.
     assets = captureAssets(useFilesStore.getState().assetFiles);
@@ -188,6 +192,12 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
     }
   }
   const projectChanged = useProjectStore.getState().projectId !== projectId;
+  // The file holds the revision captured, whatever was done while it was
+  // being written: work undone back to that revision is saved, and work
+  // undone past it is not. When the project has moved on, what it is held
+  // against has moved under it, and it is judged again at a new revision,
+  // as an edit is, so the copy kept for recovery follows.
+  if (!projectChanged && keepSavedPoint(kept) && !cleaned) useProjectStore.getState().markDirty();
 
   // The recovery record: of the revision on disk, for that project only, and
   // never over a newer one. Losing it does not affect the file just written.
@@ -246,6 +256,11 @@ export function exportMessage(outcome: Extract<SaveOutcome, { kind: 'saved' }>, 
  */
 export function notePersistedRevision(projectId: string, revision: number): void {
   if ((persisted.get(projectId) ?? -1) < revision) persisted.set(projectId, revision);
+}
+
+/** The newest revision of the project whose record is in the store, as far as this page knows; -1 for none. */
+export function persistedRevision(projectId: string): number {
+  return persisted.get(projectId) ?? -1;
 }
 
 /** For tests: forget which revisions were persisted. */

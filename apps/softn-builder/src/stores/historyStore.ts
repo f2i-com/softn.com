@@ -3,7 +3,6 @@
  */
 
 import { create } from 'zustand';
-import { useProjectStore } from './projectStore';
 import type { CanvasElement, HistoryEntry, LogicSnapshot } from '../types/builder';
 
 /**
@@ -110,7 +109,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       future: [current, ...state.future],
     }));
 
-    useProjectStore.getState().markDirty();
+    // The step is an edit once the canvas holds it (canvasStore, restoreElements).
     return previous;
   },
 
@@ -126,7 +125,6 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       future: state.future.slice(1),
     }));
 
-    useProjectStore.getState().markDirty();
     return next;
   },
 

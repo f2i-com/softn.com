@@ -307,19 +307,19 @@ export const CanvasElement = React.memo(function CanvasElement({
   const picturesShown = useShownPictures();
   const assets = useCurrentAssets();
   const retainedSource = useProjectStore((state) => state.source);
-  const { activeFileId, uiFiles, logicFiles } = useFilesStore((state) => ({
-    activeFileId: state.activeFileId,
-    uiFiles: state.uiFiles,
-    logicFiles: state.logicFiles,
-  }));
 
   // The logic the file on the canvas runs — the one it links, else the
   // entry's — read in its own language, so an image bound to a Python
   // module's name shows too. It used to fall back to the project's copy of
   // the logic, which is JavaScript whatever the project is.
-  const linkedLogic = React.useMemo(
-    () => dockLogicFile(activeFileId, uiFiles, logicFiles, entryFileId(uiFiles, retainedSource)),
-    [activeFileId, uiFiles, logicFiles, retainedSource]
+  //
+  // Only a picture reads it, for a `src` that names a string of the logic,
+  // and only a picture is drawn again as the logic is typed. Every element
+  // held every file of the project and read the whole logic again at each
+  // key: sixty keys took nineteen seconds with 427 elements on the canvas.
+  const pictured = element?.componentType === 'Image' || element?.componentType === 'Avatar';
+  const linkedLogic = useFilesStore((state) =>
+    pictured ? dockLogicFile(state.activeFileId, state.uiFiles, state.logicFiles, entryFileId(state.uiFiles, retainedSource)) : undefined
   );
 
   const resolvedLogicStrings = React.useMemo(

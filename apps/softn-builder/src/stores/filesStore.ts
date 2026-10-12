@@ -164,6 +164,18 @@ function baselinesFollowing(before: Map<string, UIFileState>, after: Map<string,
   return next ?? after;
 }
 
+/**
+ * The tree with the file `id` marked as changed. The same tree when it is
+ * marked already: a new one is every part of the workspace that shows the
+ * files drawn again, and the logic dock and Code view mark a file at every
+ * key typed into it.
+ */
+function markedChanged(nodes: Map<string, ProjectFileNode>, id: string): Map<string, ProjectFileNode> {
+  const node = nodes.get(id);
+  if (!node || node.isDirty) return nodes;
+  return new Map(nodes).set(id, { ...node, isDirty: true });
+}
+
 /** A path mapped through a move of `from` (a file or a folder) to `to`. */
 function movedPath(path: string, from: string, to: string): string {
   if (path === from) return to;
@@ -1017,6 +1029,8 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   },
 
   updateUIFile: (id, elements, rootId, imports, writtenImports) => {
+    // Marked once the file holds the edit (projectStore, markDirty).
+    let edited = false;
     set((state) => {
       const file = state.uiFiles.get(id);
       if (!file) return state;
@@ -1049,11 +1063,12 @@ export const useFilesStore = create<FilesStore>((set, get) => {
           sourceFidelity: undefined,
           visualEditBlocked: undefined,
         });
-        // Marked as changed like any edit: what was saved is not known here (see the report of this pass).
+        // Marked as changed like any edit; it is saved again if what it was
+        // read as is what was last kept (utils/savedPoint.ts).
         const marked = new Map(state.nodes);
         const own = marked.get(id);
         if (own) marked.set(id, { ...own, isDirty: true });
-        useProjectStore.getState().markDirty();
+        edited = true;
         return { uiFiles: restored, nodes: marked };
       }
 
@@ -1130,16 +1145,10 @@ export const useFilesStore = create<FilesStore>((set, get) => {
         visualEditBlocked: undefined,
       });
 
-      // Mark as dirty
-      const newNodes = new Map(state.nodes);
-      const node = newNodes.get(id);
-      if (node) {
-        newNodes.set(id, { ...node, isDirty: true });
-      }
-
-      useProjectStore.getState().markDirty();
-      return { uiFiles: newUIFiles, nodes: newNodes };
+      edited = true;
+      return { uiFiles: newUIFiles, nodes: markedChanged(state.nodes, id) };
     });
+    if (edited) useProjectStore.getState().markDirty();
   },
 
   updateUIFileLogicSrc: (id, logicSrc) => {
@@ -1176,14 +1185,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
         baseline: { source, elements: parsed.elements, rootId: parsed.rootId, imports: parsed.imports },
       });
 
-      // Mark as dirty
-      const newNodes = new Map(state.nodes);
-      const node = newNodes.get(id);
-      if (node) {
-        newNodes.set(id, { ...node, isDirty: true });
-      }
-
-      return { uiFiles: newUIFiles, nodes: newNodes };
+      return { uiFiles: newUIFiles, nodes: markedChanged(state.nodes, id) };
     });
   },
 
@@ -1214,14 +1216,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       const newLogicFiles = new Map(state.logicFiles);
       newLogicFiles.set(id, { ...file, content });
 
-      // Mark as dirty
-      const newNodes = new Map(state.nodes);
-      const node = newNodes.get(id);
-      if (node) {
-        newNodes.set(id, { ...node, isDirty: true });
-      }
-
-      return { logicFiles: newLogicFiles, nodes: newNodes };
+      return { logicFiles: newLogicFiles, nodes: markedChanged(state.nodes, id) };
     });
   },
 

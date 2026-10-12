@@ -819,7 +819,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   },
 
   restoreElements: (elements, rootId) => {
-    set((state) => ({
+    // An edit, marked once the canvas holds it: an undo that marked the
+    // project before the step landed judged the step it was leaving.
+    edit((state) => ({
       elements,
       rootId,
       selectedIds: state.selectedIds.filter((id) => elements.has(id)),
