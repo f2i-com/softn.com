@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CapabilityFilter, Category } from '../../lib/api';
 import { navigate } from '../../lib/router';
 
@@ -199,16 +199,48 @@ export function Pagination({ page, pages, hrefFor, onPage }: { page: number; pag
   );
 }
 
-/** A small popover anchored to whatever renders it; closes on outside click or Escape. */
-export function Popover({ open, onClose, children, align = 'right' }: { open: boolean; onClose: () => void; children: React.ReactNode; align?: 'left' | 'right' }): React.ReactElement | null {
+/**
+ * A small popover anchored to whatever renders it; closes on outside click or
+ * Escape. It is a labelled group of ordinary controls, reached with Tab — not
+ * a `menu`, which it used to call itself: a menu's children are menu items
+ * moved through with the arrow keys, and these are a button and links.
+ *
+ * `opener` is the control that opened it. Escape gives focus back to it when
+ * focus was inside: the popover is gone from the page by then, and focus used
+ * to be left on nothing. A click elsewhere leaves focus where the click put it.
+ *
+ * It hangs from the `align` edge of its anchor unless that puts it off the
+ * screen, and then from the other: the Share button sits at the left of its
+ * row on a phone, and a menu hung from its right edge opened 80px to the left
+ * of a 320px screen.
+ */
+export function Popover({
+  open,
+  onClose,
+  children,
+  align = 'right',
+  label,
+  opener,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+  align?: 'left' | 'right';
+  label?: string;
+  opener?: React.RefObject<HTMLElement | null>;
+}): React.ReactElement | null {
   const ref = useRef<HTMLDivElement>(null);
+  const [side, setSide] = useState(align);
   useEffect(() => {
     if (!open) return undefined;
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      const inside = Boolean(ref.current && ref.current.contains(document.activeElement));
+      onClose();
+      if (inside) opener?.current?.focus();
     };
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
@@ -216,10 +248,22 @@ export function Popover({ open, onClose, children, align = 'right' }: { open: bo
       document.removeEventListener('mousedown', onDoc);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open, onClose]);
+  }, [open, onClose, opener]);
+  // Measured once it is in the page and before it is painted, so it is never
+  // seen on the wrong side.
+  useLayoutEffect(() => {
+    if (!open) {
+      setSide(align);
+      return;
+    }
+    const box = ref.current?.getBoundingClientRect();
+    if (!box) return;
+    if (box.left < 0) setSide('left');
+    else if (box.right > document.documentElement.clientWidth) setSide('right');
+  }, [open, align]);
   if (!open) return null;
   return (
-    <div className={`popover popover-${align}`} ref={ref} role="menu">
+    <div className={`popover popover-${side}`} ref={ref} role="group" aria-label={label}>
       {children}
     </div>
   );

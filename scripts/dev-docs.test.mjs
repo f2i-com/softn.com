@@ -25,14 +25,16 @@ async function startPlugin(t) {
   };
   await docsDevPlugin({ outDir }).configureServer(server);
   const request = (url, method = 'GET') =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
       const headers = {};
       const response = {
         statusCode: 200,
         setHeader: (name, value) => (headers[name.toLowerCase()] = value),
         end: (body) => resolve({ status: response.statusCode, headers, body: body ? String(body) : '' }),
       };
-      middlewares[0]({ url, method }, response, () => resolve({ next: true }));
+      // The handler is async and Vite does not wait for it: an error out of
+      // it is a rejection nobody handles. Here it fails the request instead.
+      Promise.resolve(middlewares[0]({ url, method }, response, () => resolve({ next: true }))).catch(reject);
     });
   return { outDir, request };
 }
@@ -59,6 +61,21 @@ test('serves the guides, redirects a missing slash, and 404s what does not exist
   const sitemap = await request('/sitemap-docs.xml');
   assert.equal(sitemap.status, 200);
   assert.match(sitemap.body, /<loc>http:\/\/localhost:1420\/docs\//);
+});
+
+test('a path that is not valid percent-encoding is a 404, not an error out of the handler', async (t) => {
+  // decodeURIComponent throws on it, and the throw left the async handler as
+  // an unhandled rejection, which ends a Node process: one request for
+  // /docs/%E0%A4%A stopped the site's development server, and `npm run dev`
+  // stops the other servers when one of them exits.
+  const { request } = await startPlugin(t);
+  const answer = await request('/docs/%E0%A4%A');
+  assert.equal(answer.status, 404);
+  assert.equal((await request('/docs/%')).status, 404);
+  // The redirect for a missing slash decodes too.
+  assert.equal((await request('/docs/first-app%E0%A4%A')).status, 404);
+  // A request target that does not parse as a URL at all is not a guide's.
+  assert.deepEqual(await request('//'), { next: true });
 });
 
 test('leaves every other path, and every other method, to the site', async (t) => {

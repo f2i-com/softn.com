@@ -1641,6 +1641,10 @@ main:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.5rem 0.75rem;
+  /* A select is as wide as its longest option, and the options are category
+     names, which visitors suggest. */
+  min-width: 0;
+  max-width: 100%;
 }
 .directory-count {
   font-family: var(--mono);
@@ -1763,7 +1767,7 @@ main:focus-visible {
 }
 .app-head {
   display: grid;
-  grid-template-columns: minmax(280px, 5fr) 7fr;
+  grid-template-columns: minmax(280px, 5fr) minmax(0, 7fr);
   gap: 2rem;
   align-items: start;
 }
@@ -2347,7 +2351,7 @@ main:focus-visible {
 }
 .field-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1rem;
 }
 .field-emoji {
@@ -2412,7 +2416,7 @@ main:focus-visible {
   .app-head,
   .app-columns,
   .field-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .app-actions .cta {
     flex: 1 1 auto;
@@ -3266,4 +3270,38 @@ main:focus-visible {
 }
 .key-import .app-actions {
   margin-top: 0.5rem;
+}
+
+/* ── Text other people wrote ─────────────────────────────────────────────
+   A name, a description, a tag, a comment and who signed it, a category a
+   visitor suggested, a bundle's file name, the path in the address: none of
+   it is the site's, and none of it has to contain a space. A run of letters
+   with no space in it was as wide as it was long, and it took its column
+   with it — the page hides what runs off its right edge, so what went there
+   was out of reach. A comment signed with a 40-letter name put an app's
+   comment box, rating and side cards past the edge of a phone; a suggested
+   category with a 32-letter name did it to the publish form; a publisher's
+   own long name or version notes did it to their app's page at any width.
+   A long word now breaks where its line ends on the three inner pages, and
+   in the cards, the shelf and the pills the home page shares with them. The
+   grid tracks these sit in start at nothing (minmax(0, …) above), so what
+   cannot break — a picture, a select — is held to its column too. */
+.directory,
+.app-page,
+.publish,
+.app-card,
+.featured-card,
+.pill {
+  overflow-wrap: anywhere;
+}
+/* Not the row of figures under a card: it is short tokens side by side on
+   one line, and breaking anywhere would split "4.5" in two before it let
+   the row give. */
+.app-card-meta {
+  overflow-wrap: normal;
+}
+/* When a comment is posted stays in one piece beside a name that wraps. */
+.comment-time {
+  flex-shrink: 0;
+  white-space: nowrap;
 }

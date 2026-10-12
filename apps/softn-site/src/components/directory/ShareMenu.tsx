@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { SHARE_TARGETS, canSystemShare, copyText, systemShare } from '../../lib/share';
 import { Popover } from './Controls';
 
 export function ShareMenu({ url, title, text, className = '' }: { url: string; title: string; text: string; className?: string }): React.ReactElement {
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  /** How the last "Copy link" went; a copy the browser refused says so rather than closing as if it had worked. */
+  const [copied, setCopied] = useState<'no' | 'yes' | 'refused'>('no');
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLSpanElement>(null);
   const absolute = typeof window !== 'undefined' ? new URL(url, window.location.origin).href : url;
 
   const onShare = async () => {
@@ -14,9 +17,17 @@ export function ShareMenu({ url, title, text, className = '' }: { url: string; t
     setOpen((o) => !o);
   };
 
+  // Closing from inside takes the pressed control out of the page with the
+  // menu, so focus goes back to the button that opened it instead of nowhere.
+  const closeFromInside = () => {
+    const inside = Boolean(menu.current?.querySelector('.popover')?.contains(document.activeElement));
+    setOpen(false);
+    if (inside) button.current?.focus();
+  };
+
   return (
-    <span className={`share ${className}`}>
-      <button type="button" className="cta" onClick={onShare} aria-haspopup="menu" aria-expanded={open}>
+    <span className={`share ${className}`} ref={menu}>
+      <button type="button" className="cta" onClick={onShare} aria-expanded={open} ref={button}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="18" cy="5" r="3" />
           <circle cx="6" cy="12" r="3" />
@@ -25,23 +36,23 @@ export function ShareMenu({ url, title, text, className = '' }: { url: string; t
         </svg>
         Share
       </button>
-      <Popover open={open} onClose={() => setOpen(false)}>
+      <Popover open={open} onClose={() => setOpen(false)} label="Share this app" opener={button}>
         <button
           type="button"
           className="popover-item"
           onClick={async () => {
-            setCopied(await copyText(absolute));
+            setCopied((await copyText(absolute)) ? 'yes' : 'refused');
             setTimeout(() => {
-              setCopied(false);
-              setOpen(false);
+              setCopied('no');
+              closeFromInside();
             }, 900);
           }}
         >
-          {copied ? 'Copied' : 'Copy link'}
+          {copied === 'yes' ? 'Copied' : copied === 'refused' ? 'Could not copy' : 'Copy link'}
         </button>
         <div className="popover-sep" />
         {SHARE_TARGETS.map((t) => (
-          <a key={t.id} className="popover-item" href={t.href(absolute, title)} target="_blank" rel="noreferrer noopener" onClick={() => setOpen(false)}>
+          <a key={t.id} className="popover-item" href={t.href(absolute, title)} target="_blank" rel="noreferrer noopener" onClick={closeFromInside}>
             {t.name}
           </a>
         ))}

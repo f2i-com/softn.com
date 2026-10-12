@@ -79,6 +79,31 @@ function safePath(pathname) {
   return candidate;
 }
 
+/**
+ * What no host serves: the directory's state under data/ (its config holds
+ * the admin key), the API's PHP under api/ (a host executes one script there
+ * and this preview runs no PHP), and dotfiles other than .well-known. The
+ * shipped Apache rules, the nginx config and the PHP router refuse all three,
+ * and a preview that served them would show a private file as reachable.
+ * Compared in lower case: a file system that ignores case opens /DATA/ too.
+ */
+function isWithheld(candidate) {
+  const segments = path.relative(distDir, candidate).split(path.sep).map((segment) => segment.toLowerCase());
+  if (segments[0] === 'data' || segments[0] === 'api') return true;
+  return segments.some((segment) => segment.startsWith('.') && segment !== '.well-known');
+}
+
+/**
+ * An NTFS stream name: `config.json::$DATA` is config.json to Windows and
+ * `data::$INDEX_ALLOCATION` is the data folder, while to every check above
+ * each is some other name. Nothing the build writes has a colon in its name,
+ * so such a path is never answered with a file; a route inside an app that
+ * is spelt with one still gets its shell.
+ */
+function namesStream(candidate) {
+  return path.relative(distDir, candidate).includes(':');
+}
+
 function existingFile(candidate) {
   if (!fs.existsSync(candidate)) return null;
   const stat = fs.statSync(candidate);
@@ -106,7 +131,15 @@ function handleRequest(req, res) {
     return;
   }
 
-  const url = new URL(req.url || '/', 'http://localhost');
+  let url;
+  try {
+    url = new URL(req.url || '/', 'http://localhost');
+  } catch {
+    // `//` and the like are not a URL. Thrown out of this listener it would
+    // be an uncaught exception, and one such request ended the preview.
+    send(res, 400, 'Bad request\n', { 'Content-Type': 'text/plain; charset=utf-8' });
+    return;
+  }
   const pathname = url.pathname;
   if (['/web', '/builder', '/studio'].includes(pathname)) {
     res.writeHead(308, { Location: `${pathname}/${url.search}` });
@@ -119,17 +152,22 @@ function handleRequest(req, res) {
     send(res, 400, 'Bad request\n', { 'Content-Type': 'text/plain; charset=utf-8' });
     return;
   }
+  if (isWithheld(candidate)) {
+    send(res, 404, 'Not found\n', { 'Content-Type': 'text/plain; charset=utf-8' });
+    return;
+  }
 
   // A directory asked for without its trailing slash (a guide under /docs/,
   // say) goes to its canonical URL, as Apache's DirectorySlash and the nginx
   // rule do; relative links inside the page depend on it.
-  if (!pathname.endsWith('/') && fs.existsSync(candidate) && fs.statSync(candidate).isDirectory() && fs.existsSync(path.join(candidate, 'index.html'))) {
+  const onDisk = !namesStream(candidate);
+  if (onDisk && !pathname.endsWith('/') && fs.existsSync(candidate) && fs.statSync(candidate).isDirectory() && fs.existsSync(path.join(candidate, 'index.html'))) {
     res.writeHead(301, { Location: `${pathname}/${url.search}` });
     res.end();
     return;
   }
 
-  let file = existingFile(candidate);
+  let file = onDisk ? existingFile(candidate) : null;
   let status = 200;
   const acceptsHtml = String(req.headers.accept || '').includes('text/html');
   if (!file && acceptsHtml && mayUseSpaFallback(pathname)) {

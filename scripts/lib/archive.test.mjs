@@ -56,7 +56,7 @@ test('stores what is already compressed, deflates the rest, keeps modes and rest
     assert.equal(read.get('b/index.html').mode, 0o100644);
 
     const sidecar = fs.readFileSync(`${out}.sha256`, 'utf8');
-    assert.match(sidecar, /^[0-9a-f]{64}  test\.zip\n$/);
+    assert.match(sidecar, /^[0-9a-f]{64} {2}test\.zip\n$/);
     assert.equal(sidecar.slice(0, 64), result.sha256);
 
     // A second opinion from a tool that shares no code with the writer, when one is around.
@@ -72,6 +72,36 @@ test('stores what is already compressed, deflates the rest, keeps modes and rest
     const again = path.join(s.dir, 'again.zip');
     writeArchive(entries, again, { stamp: new Date('2026-01-02T03:04:06Z') });
     assert.ok(fs.readFileSync(again).equals(zip));
+  } finally {
+    s.done();
+  }
+});
+
+test('one stamp gives the same bytes whatever time zone the machine is in', () => {
+  // The DOS time and date used to be read off the stamp in local time, so the
+  // release workflow (UTC) and a laptop wrote different archives from the same
+  // input and the same stamp. Each zone is a process of its own: a zone is
+  // fixed when the process starts.
+  const s = scratch('zone');
+  try {
+    const script = [
+      'const { writeArchive } = await import(process.argv[1]);',
+      "writeArchive({ 'a.txt': Buffer.from('hello') }, process.argv[2], { stamp: new Date('2026-01-02T23:04:06Z'), sidecar: false });",
+    ].join('\n');
+    const write = (zone) => {
+      const out = path.join(s.dir, `${zone.replace(/\W/g, '-')}.zip`);
+      execFileSync(process.execPath, ['--input-type=module', '-e', script, new URL('./archive.mjs', import.meta.url).href, out], {
+        env: { ...process.env, TZ: zone },
+        stdio: 'pipe',
+      });
+      return fs.readFileSync(out);
+    };
+    const east = write('Asia/Tokyo');
+    const west = write('America/Los_Angeles');
+    assert.ok(east.equals(west), 'the archive does not depend on the zone');
+    // And the stamp is written as its UTC reading: 23:04:06 on 2 January 2026.
+    assert.equal(east.readUInt16LE(10), (23 << 11) | (4 << 5) | (6 >> 1));
+    assert.equal(east.readUInt16LE(12), ((2026 - 1980) << 9) | (1 << 5) | 2);
   } finally {
     s.done();
   }

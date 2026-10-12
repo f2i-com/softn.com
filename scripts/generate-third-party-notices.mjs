@@ -35,7 +35,18 @@ const DEPLOYED_WORKSPACES = [
 // Workbox is a build dependency, but these packages become the service-worker
 // runtime copied into dist. A production-only dependency walk would otherwise
 // omit the licence for code the PWA actually serves.
+//
+// The Tauri bridge is the same case from the other side: Builder declares it
+// under devDependencies, for its desktop build, and imports it from sources
+// the web build bundles as well, so its chunks are in dist/builder/assets/
+// and in the FormLogic runtime's app-editors/builder/. The walk follows
+// `dependencies` and never reached it; the inventory had no record of code
+// both archives ship. generate-third-party-notices.test.mjs holds the
+// inventory to what the deployed apps import, so the next one is named.
 const EMITTED_BUILD_PACKAGES = [
+  '@tauri-apps/api',
+  '@tauri-apps/plugin-dialog',
+  '@tauri-apps/plugin-fs',
   'kokoro-js',
   'workbox-cacheable-response',
   'workbox-core',

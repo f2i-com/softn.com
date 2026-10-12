@@ -33,7 +33,15 @@ const TYPES = {
 
 /** The file a request for `pathname` is answered with from `outDir`, or null for a 404. */
 function resolveDocsFile(outDir, pathname) {
-  const target = path.resolve(outDir, `.${decodeURIComponent(pathname)}`);
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    // Not valid percent-encoding, so not a guide. The throw must not leave
+    // the async handler: an unhandled rejection ends the development server.
+    return null;
+  }
+  const target = path.resolve(outDir, `.${decoded}`);
   if (target !== outDir && !target.startsWith(outDir + path.sep)) return null;
   const candidate = pathname.endsWith('/') ? path.join(target, 'index.html') : target;
   return fs.existsSync(candidate) && fs.statSync(candidate).isFile() ? candidate : null;
@@ -79,7 +87,13 @@ export function docsDevPlugin({ outDir = defaultOutDir } = {}) {
       });
 
       server.middlewares.use(async (request, response, next) => {
-        const pathname = new URL(request.url ?? '/', 'http://softn.local').pathname;
+        let pathname;
+        try {
+          pathname = new URL(request.url ?? '/', 'http://softn.local').pathname;
+        } catch {
+          // `//` and the like do not parse; whatever they are, they are not a guide.
+          return next();
+        }
         if (pathname !== '/docs' && !pathname.startsWith('/docs/') && pathname !== '/sitemap-docs.xml') return next();
         if (!['GET', 'HEAD'].includes(request.method ?? 'GET')) return next();
         if (pathname === '/docs') {
@@ -88,7 +102,7 @@ export function docsDevPlugin({ outDir = defaultOutDir } = {}) {
           return response.end();
         }
         await building;
-        let file = resolveDocsFile(outDir, pathname);
+        const file = resolveDocsFile(outDir, pathname);
         // A guide's URL without its trailing slash, the way the hosts redirect it.
         if (!file && !pathname.endsWith('/') && !path.extname(pathname) && resolveDocsFile(outDir, `${pathname}/`)) {
           response.statusCode = 301;

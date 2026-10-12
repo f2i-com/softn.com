@@ -236,4 +236,19 @@ describe('the import control on the update page', () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain('1 key restored');
     expect(savedKeys()).toEqual({ notes: KEY_A });
   });
+
+  // A backup is a line per app. The picker's file type is a hint the browser
+  // does not hold anyone to, and a file chosen by mistake used to be read
+  // whole into a string, whatever its size, before it was found not to be one.
+  it('does not read a file far too large to be a backup', async () => {
+    const text = vi.fn(textOf);
+    Object.defineProperty(File.prototype, 'text', { value: text, configurable: true, writable: true });
+    act(() => {
+      root.render(<KeyImport />);
+    });
+    give(Object.defineProperty(new File(['{}'], 'holiday.mov'), 'size', { value: 2 * 1024 * 1024 * 1024 }));
+    await settle(() => container.querySelector('[role="status"]') !== null);
+    expect(text).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="status"]')?.textContent).toMatch(/holiday\.mov is .*too large to be a key backup/);
+  });
 });

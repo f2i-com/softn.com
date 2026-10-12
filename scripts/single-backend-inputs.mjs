@@ -4,7 +4,7 @@
 // beside them. Shared by package-single-backend.mjs (the static runtime with
 // a backend) and package-private-single-php.mjs (the PHP-served runtime with
 // a backend), so the two archives cannot disagree about a version or a hash.
-import {readFileSync,writeFileSync,mkdirSync,existsSync,copyFileSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,existsSync,copyFileSync,rmSync} from 'node:fs';
 import {resolve,join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
@@ -26,7 +26,7 @@ async function download(url,file,digest) {
   if(sha(bytes)!==digest)throw Error('Dependency checksum mismatch');
   writeFileSync(file,bytes);return bytes;
 }
-/** Package local-build provenance without assuming an upstream release ZIP exists. */
+/** Package local-build provenance without assuming an upstream release ZIP exists. `notices` is this function's own directory. */
 export async function prepareZippNotices(wasmDir, notices) {
   const source=JSON.parse(readFileSync(join(wasmDir,'SOURCE.json'),'utf8'));
   if(source.artifact!=='zipp_wasm_bg.wasm'||!source.sha256||sha(readFileSync(join(wasmDir,source.artifact)))!==source.sha256)throw Error('ZIPP WASM provenance mismatch');
@@ -43,10 +43,27 @@ export async function prepareZippNotices(wasmDir, notices) {
     if(!name)throw Error('Upstream WASM license missing');
     license=files[name];
   }
+  // Everything in `notices` is packaged, and the directory outlives a run: it
+  // is emptied here so that what ships is this engine's and nothing an earlier
+  // one left (its third-party notices, when this engine carries none).
+  rmSync(notices,{recursive:true,force:true});
   mkdirSync(notices,{recursive:true});
   writeFileSync(join(notices,'ZIPP-LICENSE-APACHE'),license);
   copyFileSync(join(wasmDir,'SOURCE.json'),join(notices,'ZIPP-SOURCE.json'));
   if(existsSync(noticesFile))copyFileSync(noticesFile,join(notices,'ZIPP-THIRD-PARTY-LICENSES.txt'));
+}
+/**
+ * Refuse a single-app dist/ that is not the standalone build. The site build
+ * (build-site.mjs) builds the same app with VITE_BASE=/play/ into the same
+ * folder; that page loads its scripts from /play/assets/ and so runs nowhere
+ * but under softn.com, while the archive is for any directory of any host.
+ * The standalone build's URLs are relative.
+ */
+export function requireStandaloneBuild(dist) {
+  const page=join(dist,'index.html');
+  if(!existsSync(page))throw Error('Build the single-app runtime first.');
+  const fixed=readFileSync(page,'utf8').match(/\s(?:src|href)="(\/[^"]*)"/);
+  if(fixed)throw Error('apps/softn-single/dist was built for '+fixed[1]+', a fixed path (the site build leaves it so, for /play/). The standalone runtime loads its files by relative URL: run `npm run build -w @softn/single` and package again.');
 }
 /** The README.md for a backend archive, written where packagePhp can read it. */
 export function explainerFile(id,version) {
@@ -54,6 +71,20 @@ export function explainerFile(id,version) {
   const file=join(cache,'README-'+id+'.md');
   writeFileSync(file,startHere(id,{tag:'v'+version}));
   return file;
+}
+/**
+ * Unpack `archive`, a file in `dir`, into `dir/into`, emptied first: the
+ * whole directory is packaged, and one kept from an earlier version of the
+ * archive would add the files that version had and this one does not. The
+ * name is relative, from inside the target: GNU tar reads a `C:` in an
+ * absolute Windows path as a remote host, and bsdtar accepts either form.
+ */
+export function unpackPinned(dir,archive,into) {
+  const target=join(dir,into);
+  rmSync(target,{recursive:true,force:true});
+  mkdirSync(target,{recursive:true});
+  execFileSync('tar',['-xf','../'+archive],{cwd:target});
+  return target;
 }
 /** @returns {Promise<{nodeDir:string,wasmDir:string,notices:string,websocketDir:string,version:string}>} */
 export async function prepareBackendInputs() {
@@ -64,10 +95,9 @@ export async function prepareBackendInputs() {
   // Relative names from the cache directory: GNU tar reads a `C:` in an
   // absolute Windows path as a remote host, and bsdtar accepts either form.
   execFileSync('tar',['-xf',nodeName+'.tar.xz',nodeName+'/bin/node',nodeName+'/LICENSE'],{cwd:cache});
-  const wsDir=join(cache,'ws');mkdirSync(wsDir,{recursive:true});
   const wsArchive='ws-'+wsVersion+'.tgz';
   await download('https://registry.npmjs.org/ws/-/ws-'+wsVersion+'.tgz',join(cache,wsArchive),wsHash);
-  execFileSync('tar',['-xf','../'+wsArchive],{cwd:wsDir});
+  const wsDir=unpackPinned(cache,wsArchive,'ws');
   const wasmDir=join(root,'packages/@softn/core/wasm-zipp');
   const notices=join(cache,'notices');
   await prepareZippNotices(wasmDir,notices);

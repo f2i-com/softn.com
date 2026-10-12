@@ -120,26 +120,31 @@ forward(server.stdout);
 forward(server.stderr);
 
 let shuttingDown = false;
-function shutdown(code) {
+/** Stop PHP and remove the data directory. Does not end the process, so it is safe while one is ending. */
+function cleanup() {
   if (shuttingDown) return;
   shuttingDown = true;
   if (server.exitCode === null) {
     if (process.platform === 'win32') {
       // No signal to deliver on Windows; taskkill is the hard stop, done
-      // synchronously so the exit below cannot outrun it.
+      // synchronously so the exit cannot outrun it.
       spawnSync('taskkill', ['/pid', String(server.pid), '/T', '/F'], { stdio: 'ignore' });
     } else {
       server.kill();
     }
   }
   if (!keepData) fs.rmSync(dataDir, { recursive: true, force: true });
+}
+function shutdown(code) {
+  cleanup();
   process.exit(code);
 }
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
-process.on('exit', () => {
-  if (!shuttingDown) shutdown(0);
-});
+// An exit already under way keeps its own code. This used to call
+// process.exit(0) here, which replaces it: fail() after PHP had started
+// ended the script with 0.
+process.on('exit', cleanup);
 server.on('exit', (code) => {
   if (shuttingDown) return;
   console.error(`serve-topology: php exited with code ${code}`);

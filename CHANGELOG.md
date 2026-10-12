@@ -45,6 +45,8 @@ section here. Write the section before tagging. Headings are the tag
 - PHP backend host: a migration the deadline keeps stopping answers `migration_stopped` (on `/api/meta` too) and `setup.php` names it; a migration is not held to a request's opcode limit, so a large seed INSERT runs again.
 - Directory: a storage collection name with a line break after it is refused.
 - Desktop app: network access and peer sync are confirmed in a native dialog once per opened app, in addition to the permission bar, and a "Don't allow" stands until the app is opened again; a script's `Host` and framing headers are not sent; a 304 reaches the script; a cached-bundle name or a network path can no longer point outside what the person opened; the page no longer has the dialog plugin.
+- Site: an app whose slug is a word like `constructor` no longer shows every visitor as holding its edit key; View source no longer hangs on a long file with unclosed quotes; long unbroken names and words wrap instead of widening the page on a phone; the Share menu stays on screen at 320 px and says when a copy was refused; a bundle dropped beside the update page's zone is taken.
+- Release scripts: archives carry UTC timestamps, so they are the same bytes in every time zone; the third-party notices list three packages Builder's web build ships; stale cache files no longer go into the backend archives.
 
 ## v0.0.19
 

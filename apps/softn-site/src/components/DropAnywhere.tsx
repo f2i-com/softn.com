@@ -7,8 +7,10 @@ import { dragHasFiles, stashDroppedBundles } from '../lib/dropped';
  * folder's worth. While a file drag is over the window an overlay says so.
  * On the publish page itself the stash is what its zone would have taken,
  * so a drop beside the zone is not the browser opening the file; the zone's
- * own drop stops before it reaches here. A drag of anything but files —
- * text, a link — is ignored.
+ * own drop stops before it reaches here — which is why the overlay comes
+ * down on the way in, not here: it used to stay up, dimming the page, after
+ * a file had been dropped on the zone. A drag of anything but files — text,
+ * a link — is ignored.
  */
 export function DropAnywhere({ onPublishPage }: { onPublishPage: boolean }): React.ReactElement | null {
   const [over, setOver] = useState(false);
@@ -32,21 +34,28 @@ export function DropAnywhere({ onPublishPage }: { onPublishPage: boolean }): Rea
       depth = Math.max(0, depth - 1);
       if (depth === 0) setOver(false);
     };
+    // Any drop ends the drag, and nothing follows it to say the pointer has
+    // left. The publish form's zone stops its own drop from reaching `drop`
+    // below, so the overlay is taken down on the way in, before a zone can.
+    const ended = () => {
+      depth = 0;
+      setOver(false);
+    };
     const drop = (e: DragEvent) => {
       if (!dragHasFiles(e.dataTransfer)) return;
       e.preventDefault();
-      depth = 0;
-      setOver(false);
       if (stashDroppedBundles(e.dataTransfer?.files ?? []) > 0 && !onPublishPage) navigate('/publish');
     };
     window.addEventListener('dragenter', enter);
     window.addEventListener('dragover', move);
     window.addEventListener('dragleave', leave);
+    window.addEventListener('drop', ended, true);
     window.addEventListener('drop', drop);
     return () => {
       window.removeEventListener('dragenter', enter);
       window.removeEventListener('dragover', move);
       window.removeEventListener('dragleave', leave);
+      window.removeEventListener('drop', ended, true);
       window.removeEventListener('drop', drop);
       setOver(false);
     };

@@ -265,6 +265,18 @@ export function isEditKey(value: unknown): value is string {
 }
 
 /**
+ * A key map: slug to key, and nothing inherited. A slug is whatever the
+ * directory made of an app's name, so `constructor` is one, and on a plain
+ * object `keys['constructor']` is the `Object` function: the app called
+ * "Constructor" was every visitor's to update, by its page's account, and
+ * its update page threw reading a key that was not text. With no prototype
+ * the map holds the slugs put in it and answers for no others.
+ */
+function keyMap(...from: Array<Record<string, string>>): Record<string, string> {
+  return Object.assign(Object.create(null) as Record<string, string>, ...from);
+}
+
+/**
  * Read the key map. `null` means there is one and it cannot be read — as
  * distinct from there being none — so a writer can refuse to replace it.
  */
@@ -273,9 +285,9 @@ function readKeyMap(): Record<string, string> | null {
   try {
     raw = localStorage.getItem(KEYS);
   } catch {
-    return {};
+    return keyMap();
   }
-  if (raw === null || raw === '') return {};
+  if (raw === null || raw === '') return keyMap();
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -283,7 +295,7 @@ function readKeyMap(): Record<string, string> | null {
     return null;
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const keys: Record<string, string> = {};
+  const keys = keyMap();
   for (const [slug, key] of Object.entries(parsed as Record<string, unknown>)) {
     if (typeof key === 'string' && key !== '') keys[slug] = key;
   }
@@ -291,7 +303,7 @@ function readKeyMap(): Record<string, string> | null {
 }
 
 export function savedKeys(): Record<string, string> {
-  return readKeyMap() ?? {};
+  return readKeyMap() ?? keyMap();
 }
 
 /** Whether a key map is stored here but cannot be read. Nothing here will overwrite it. */
@@ -320,7 +332,7 @@ function writeKeyMap(keys: Record<string, string>): KeyStoreResult {
 export function rememberKey(slug: string, key: string): KeyStoreResult {
   const keys = readKeyMap();
   if (keys === null) return 'unreadable';
-  return writeKeyMap({ ...keys, [slug]: key });
+  return writeKeyMap(keyMap(keys, { [slug]: key }));
 }
 
 /**
@@ -332,7 +344,7 @@ export function forgetKey(slug: string): KeyStoreResult {
   const keys = readKeyMap();
   if (keys === null) return 'unreadable';
   if (!(slug in keys)) return 'stored';
-  const rest = { ...keys };
+  const rest = keyMap(keys);
   delete rest[slug];
   return writeKeyMap(rest);
 }
@@ -398,7 +410,7 @@ export function importKeys(text: string, replace = false): KeyImportResult {
     result.stored = 'unreadable';
     return result;
   }
-  const next = { ...current };
+  const next = keyMap(current);
   for (const [slug, key] of Object.entries(source)) {
     if (slug === 'format' || slug === 'version') continue;
     if (!/^[a-z0-9][a-z0-9-]{0,80}$/i.test(slug) || !isEditKey(key)) {

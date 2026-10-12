@@ -39,6 +39,8 @@
  * - Leave the served set half replaced. Every archive is downloaded and
  *   verified into a staging file first; the served files change only once
  *   all of them have, and a failure anywhere leaves what was there before.
+ *   Staging files a stopped run left behind are cleared by the next one, so
+ *   they are not served with the bundles (--check reports them instead).
  */
 
 import fs from 'node:fs';
@@ -274,6 +276,15 @@ async function main() {
   fs.mkdirSync(demosDir, { recursive: true });
   let verified = 0;
   const problems = [];
+  // A verified download waits here as `<name>.softn.download` until the whole
+  // run has verified. A run stopped in between leaves them behind, and the
+  // site build copies this folder whole, so one would be served. They are
+  // cleared before anything new is staged; --check, which changes nothing,
+  // names them instead.
+  for (const name of fs.readdirSync(demosDir).filter((entry) => /\.softn\.download$/i.test(entry))) {
+    if (checkOnly) problems.push(`${name} is left from an interrupted fetch; run fetch-demos without --check to clear it`);
+    else fs.rmSync(path.join(demosDir, name), { force: true });
+  }
   /** Archives downloaded and verified into a staging file, waiting to be moved into place together. */
   const staged = [];
   for (const entry of index) {

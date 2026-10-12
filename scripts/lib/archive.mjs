@@ -13,8 +13,9 @@
  *     a binary format, not a compression format: it deflates like JavaScript.
  *   - No zip64. A release is a few hundred MB in under a thousand files; the
  *     writer refuses rather than emit an archive it cannot verify.
- *   - Entry timestamps are one fixed stamp (the build's own time), so two
- *     archives of one build agree byte for byte.
+ *   - Entry timestamps are one fixed stamp (the build's own time, written as
+ *     its UTC reading), so two archives of one build agree byte for byte on
+ *     machines in different time zones.
  *   - Unix modes travel in the external attributes, so an executable
  *     (`backend/bin/node`) is still executable after `unzip`.
  *   - The finished file is read back the way an extractor reads it (central
@@ -56,9 +57,11 @@ const MADE_BY_UNIX = (3 << 8) | VERSION_NEEDED;
 const LIMIT = 0xffffffff;
 
 function dosStamp(stamp) {
-  // DOS time has two-second resolution and no year before 1980.
-  const time = (stamp.getHours() << 11) | (stamp.getMinutes() << 5) | (stamp.getSeconds() >> 1);
-  const date = ((Math.max(stamp.getFullYear(), 1980) - 1980) << 9) | ((stamp.getMonth() + 1) << 5) | stamp.getDate();
+  // DOS time has two-second resolution, no year before 1980 and no zone. The
+  // stamp is written as its UTC reading: read in local time, the same stamp
+  // gave a laptop and the release workflow two different archives.
+  const time = (stamp.getUTCHours() << 11) | (stamp.getUTCMinutes() << 5) | (stamp.getUTCSeconds() >> 1);
+  const date = ((Math.max(stamp.getUTCFullYear(), 1980) - 1980) << 9) | ((stamp.getUTCMonth() + 1) << 5) | stamp.getUTCDate();
   return { time, date };
 }
 

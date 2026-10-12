@@ -276,7 +276,10 @@ if (runtime) {
   if (asset) await check('runtime asset', asset, { accept: '*/*', isolated: true, type: 'text/javascript' });
 }
 await check('missing asset is a 404, not a shell', '/assets/does-not-exist.js', { status: 404 });
-await check('data directory is refused', '/data/directory.sqlite', { accept: '*/*', status: 404 });
+// A file that is there: every built root has data/README.txt (package-site.mjs
+// refuses to package one without it). Asking for data/directory.sqlite, which
+// the root never holds, was a 404 from any server at all, refusing or not.
+await check('data directory is refused', '/data/README.txt', { accept: '*/*', status: 404 });
 await check('api library is refused', '/api/lib/db.php', { accept: '*/*', status: 404 });
 
 cleanup();

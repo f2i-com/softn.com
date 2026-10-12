@@ -11,13 +11,18 @@ import React from 'react';
  * scope; the builder ships Monaco for that.
  */
 
-type Rule = { cls: string; re: RegExp };
+/**
+ * `quotes` marks the rule that reads strings and names the characters that
+ * open one; `oneLine` says its strings end with their line. `highlight` uses
+ * the two to avoid looking for the same missing closing quote twice.
+ */
+type Rule = { cls: string; re: RegExp; quotes?: string; oneLine?: boolean };
 
 // Order is the whole design here: the first rule that matches at a position
 // wins, so the specific marks have to be tried before the general ones.
 const RULES: Rule[] = [
   { cls: 'tok-com', re: /^\/\/[^\n]*/ },
-  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'|^`(?:[^`\\]|\\.)*`/ },
+  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'|^`(?:[^`\\]|\\.)*`/, quotes: '"\'`' },
   // SoftN's control-flow directives.
   { cls: 'tok-mark', re: /^#(?:if|else|each|empty|end)\b/ },
   // A tag only counts when the name is capitalised or is the `logic` block —
@@ -46,7 +51,7 @@ const RULES: Rule[] = [
  */
 const PYTHON_RULES: Rule[] = [
   { cls: 'tok-com', re: /^#[^\n]*/ },
-  { cls: 'tok-str', re: /^(?:"""[\s\S]*?"""|'''[\s\S]*?''')|^"(?:[^"\\\n]|\\.)*"|^'(?:[^'\\\n]|\\.)*'/ },
+  { cls: 'tok-str', re: /^(?:"""[\s\S]*?"""|'''[\s\S]*?''')|^"(?:[^"\\\n]|\\.)*"|^'(?:[^'\\\n]|\\.)*'/, quotes: '"\'', oneLine: true },
   {
     cls: 'tok-mark',
     re: /^\b(?:def|global|nonlocal|return|if|elif|else|for|while|in|not|and|or|is|import|from|as|with|class|lambda|pass|break|continue|try|except|finally|raise|yield|del|assert)\b/,
@@ -64,10 +69,51 @@ export function languageOf(path: string): HighlightLanguage {
   return /\.py$/i.test(path) ? 'python' : 'softn';
 }
 
+const BACKSLASH = 92;
+const LINE_FEED = 10;
+
+/**
+ * Where a string opened at `open` stops being read without having closed:
+ * the end of the source, the end of its line when strings are kept to one,
+ * or a backslash with nothing after it to escape (a line break, or the end).
+ * This follows the string rules above character for character. Answers
+ * `open` itself for a string that does close.
+ *
+ * No string the same quote opens between `open` and that point closes
+ * either. A quote in that stretch is an escaped one, or the string would
+ * have closed at it, and what follows an escape is read from there exactly
+ * as it was read from `open`.
+ */
+function unclosedUntil(source: string, open: number, oneLine: boolean): number {
+  const quote = source.charCodeAt(open);
+  let i = open + 1;
+  while (i < source.length) {
+    const ch = source.charCodeAt(i);
+    if (ch === quote) return open;
+    if (oneLine && ch === LINE_FEED) return i;
+    if (ch === BACKSLASH) {
+      const next = source.charCodeAt(i + 1);
+      // `\\.` in the rules: any one character but a line terminator.
+      if (i + 1 >= source.length || next === LINE_FEED || next === 13 || next === 0x2028 || next === 0x2029) return i;
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  return source.length;
+}
+
 export function highlight(source: string, language: HighlightLanguage = 'softn'): React.ReactElement[] {
   const rules = language === 'python' ? PYTHON_RULES : RULES;
   const out: React.ReactElement[] = [];
   let rest = source;
+  let pos = 0;
+  // By quote character: no string it opens before this index closes. The
+  // source is a publisher's, and a file of quotes that never close — every
+  // one of them escaped — was otherwise read to its end from each of them:
+  // 256 KB of that, which the directory will send, held the tab for many
+  // seconds each time the pane was drawn.
+  const unclosed = new Map<string, number>();
   let key = 0;
   // Runs of the same class are merged so a paragraph of prose is one span
   // rather than one span per word.
@@ -87,14 +133,20 @@ export function highlight(source: string, language: HighlightLanguage = 'softn')
   while (rest.length > 0) {
     let matched = false;
     for (const rule of rules) {
+      const opensString = rule.quotes !== undefined && rule.quotes.includes(rest[0]);
+      if (opensString && pos < (unclosed.get(rest[0]) ?? 0)) continue;
       const m = rule.re.exec(rest);
-      if (!m || m[0].length === 0) continue;
+      if (!m || m[0].length === 0) {
+        if (opensString) unclosed.set(rest[0], unclosedUntil(source, pos, rule.oneLine === true));
+        continue;
+      }
       if (rule.cls !== pendingCls) {
         flush();
         pendingCls = rule.cls;
       }
       pending += m[0];
       rest = rest.slice(m[0].length);
+      pos += m[0].length;
       matched = true;
       break;
     }
@@ -107,6 +159,7 @@ export function highlight(source: string, language: HighlightLanguage = 'softn')
       }
       pending += rest[0];
       rest = rest.slice(1);
+      pos += 1;
     }
   }
 

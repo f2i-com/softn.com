@@ -32,6 +32,8 @@ import { createSelectionController, isSettled, pendingCount, type SelectOptions,
 import { exportKeyBackup, importKeyBackup } from '../lib/keyBackup';
 
 const AUTHOR_KEY = 'softn.site.author';
+/** The most a key backup file may be. A backup is a line per app; a megabyte is thousands of them. */
+const MAX_KEY_BACKUP_BYTES = 1024 * 1024;
 
 /**
  * One bundle of several dropped together, and what became of it. `info` is
@@ -113,6 +115,24 @@ async function fitImage(file: File): Promise<Blob> {
   bitmap.close();
   const type = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b ?? file), type, 0.9));
+}
+
+/**
+ * The chosen screenshot, fitted, or null with `say` told why not. A file
+ * that is not the image its name and type claim makes the decode throw, and
+ * nothing was listening: choosing it did nothing, with no word why.
+ */
+async function fitChosenImage(f: File, say: (problem: string) => void): Promise<Blob | null> {
+  if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) {
+    say('A thumbnail is a PNG, JPEG, WebP or GIF.');
+    return null;
+  }
+  try {
+    return await fitImage(f);
+  } catch {
+    say(`${f.name} could not be read as a picture. Choose a PNG, JPEG, WebP or GIF that opens in this browser.`);
+    return null;
+  }
 }
 
 function errorText(err: unknown): string {
@@ -221,6 +241,13 @@ export function KeyImport({ onImported }: { onImported?: () => void }): React.Re
     if (!file) return;
     setReport(null);
     setRefused(null);
+    // Judged by size before it is read: the picker's file type is a hint,
+    // and a file chosen by mistake is otherwise read whole into a string.
+    if (file.size > MAX_KEY_BACKUP_BYTES) {
+      setSealed(null);
+      setReport(`${file.name} is ${formatBytes(file.size)}: too large to be a key backup, so it was not read.`);
+      return;
+    }
     const text = await file.text();
     const outcome = await importKeyBackup(text);
     if (outcome.kind === 'needs-passphrase') {
@@ -710,11 +737,8 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
   }, [selector, takeFiles]);
 
   const takeThumb = async (f: File) => {
-    if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) {
-      setError('A thumbnail is a PNG, JPEG, WebP or GIF.');
-      return;
-    }
-    const blob = await fitImage(f);
+    const blob = await fitChosenImage(f, setError);
+    if (!blob) return;
     if (thumb) URL.revokeObjectURL(thumb.url);
     setThumb({ blob, url: URL.createObjectURL(blob) });
   };
@@ -1289,17 +1313,29 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
   // The same versioned selection as the publish form: the file shown and
   // the file sent are one item, and a slower earlier read cannot overwrite
   // a later choice.
-  const takeFile = async (f: File) => {
-    setError(null);
-    const outcome = await selector.select([f]);
-    if (outcome.outcome === 'rejected') setError(outcome.reason);
-  };
+  const takeFile = useCallback(
+    async (f: File) => {
+      setError(null);
+      const outcome = await selector.select([f]);
+      if (outcome.outcome === 'rejected') setError(outcome.reason);
+    },
+    [selector],
+  );
+  // A bundle dropped beside the zone is stashed by the page-wide handler,
+  // whose overlay says it goes into the form. This form takes one bundle, so
+  // the first is the new version; the rest are let go rather than left for
+  // the new-app form to find the next time it opens.
+  useEffect(() => {
+    const take = () => {
+      const [first] = takeDroppedBundles();
+      if (first) void takeFile(first);
+    };
+    take();
+    return onDroppedBundles(take);
+  }, [takeFile]);
   const takeThumb = async (f: File) => {
-    if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) {
-      setError('A thumbnail is a PNG, JPEG, WebP or GIF.');
-      return;
-    }
-    const blob = await fitImage(f);
+    const blob = await fitChosenImage(f, setError);
+    if (!blob) return;
     if (thumb) URL.revokeObjectURL(thumb.url);
     setThumb({ blob, url: URL.createObjectURL(blob) });
   };
