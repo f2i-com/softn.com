@@ -285,7 +285,7 @@ final class Apps
             if ($zip->open(self::dir($slug) . '/' . $ver['file'], ZipArchive::RDONLY) !== true) return null;
             $text = $zip->getFromName('manifest.json');
             $zip->close();
-            $m = is_string($text) ? json_decode($text, true) : null;
+            $m = is_string($text) ? json_decode(Bundle::jsonText($text), true) : null;
             if (!is_array($m)) return null;
             $files = is_array($m['files'] ?? null) ? $m['files'] : [];
             $counts = [];
@@ -616,6 +616,29 @@ final class Apps
         if (!is_string($presented) || $presented === '' || !is_string($hash) || !hash_equals($hash, hash('sha256', $presented))) {
             throw new ApiError(403, 'That needs the edit key this app was published with.');
         }
+    }
+
+    /**
+     * Give an app a new edit key in place of the one it has, and return it.
+     * Only the hash is kept, as at publication, so the old key is refused by
+     * every route from the moment this is written: the owner routes and the
+     * publisher's side of the app's storage alike. The caller has checked
+     * the current key (or the admin key) under the same catalogue lock.
+     *
+     * An app with no key is the site's (a seeded demo, a folder the operator
+     * dropped in) and is refused even for the admin: issuing it a key would
+     * hand it to whoever receives that key. `updated_at` is left alone; a
+     * replaced key is not a change anyone browsing should see.
+     */
+    public static function replaceKey(string $slug): string
+    {
+        $row = self::row($slug, true);
+        if (!is_string($row['edit_key_hash']) || $row['edit_key_hash'] === '') {
+            throw new ApiError(409, 'This app has no edit key to replace: it belongs to the site, and the admin key is what changes it.');
+        }
+        $key = bin2hex(random_bytes(20));
+        Catalog::patch($slug, ['edit_key_hash' => hash('sha256', $key)]);
+        return $key;
     }
 
     /** @param array<string, mixed> $manifest */

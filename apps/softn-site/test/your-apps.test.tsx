@@ -135,16 +135,35 @@ describe('the Your apps listing', () => {
     expect(container.textContent).toContain('2 apps could not be checked');
   });
 
-  it('shows a confirmed 404 as gone, with its key, and does not forget it by itself', async () => {
+  it('shows a confirmed 404 as gone, its key only when asked, and does not forget it by itself', async () => {
     const before = stored();
     mount((slug) => (slug === 'notes' ? Promise.resolve(detail('notes')) : Promise.reject(new ApiError(404, 'No such app.'))));
     await settle();
 
     expect(stored()).toBe(before);
     expect(container.textContent).toContain('Not in the directory any more');
+    // The key is a secret; the row says there is one and shows it on request.
+    expect(container.textContent).not.toContain(KEY_B);
+    const show = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Show key')!;
+    expect(show.getAttribute('aria-expanded')).toBe('false');
+    act(() => show.click());
     expect(container.textContent).toContain(KEY_B);
+    expect(show.getAttribute('aria-expanded')).toBe('true');
+    act(() => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Hide key')!.click());
+    expect(container.textContent).not.toContain(KEY_B);
     const forget = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Forget this key');
     expect(forget).toBeDefined();
+  });
+
+  it('prints no key for the rows it could not check, during an outage', async () => {
+    // Every lookup failing is every row unchecked: the page used to print
+    // every key held here in full.
+    mount(() => Promise.reject(new TypeError('Failed to fetch')));
+    await settle();
+    expect(container.textContent).toContain('2 apps could not be checked');
+    expect(container.textContent).not.toContain(KEY_A);
+    expect(container.textContent).not.toContain(KEY_B);
+    expect(container.querySelectorAll('code').length).toBe(0);
   });
 
   it('forgets a key only after an explicit confirmed click, and only that slug', async () => {

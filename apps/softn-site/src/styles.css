@@ -1457,6 +1457,9 @@ main:focus-visible {
 .star-btn:hover {
   transform: scale(1.12);
 }
+.star-btn[aria-disabled='true'] {
+  cursor: progress;
+}
 .star-input-hint {
   font-size: 0.75rem;
   color: var(--dim);
@@ -2056,6 +2059,7 @@ main:focus-visible {
 .comment-form input[type='text'],
 .comment-form textarea,
 .field input[type='text'],
+.field input[type='password'],
 .field textarea {
   font: inherit;
   color: var(--paper);
@@ -2645,6 +2649,29 @@ main:focus-visible {
 .yours-name {
   font-family: var(--display);
   font-weight: 700;
+}
+/* A row that has opened its key replacement is tall: its picture and its
+   button stay level with its name rather than floating to the middle. */
+.yours-item:has(.key-replace > p, .key-replaced) {
+  align-items: start;
+}
+.key-replace {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  width: 100%;
+}
+.key-replace > p {
+  margin: 0;
+}
+.key-replaced {
+  width: 100%;
+  border-left: 3px solid var(--mint);
+  padding-left: 0.85rem;
+}
+.key-replaced .keybox-row {
+  margin: 0.5rem 0;
 }
 .update-section {
   background: var(--ink-2);

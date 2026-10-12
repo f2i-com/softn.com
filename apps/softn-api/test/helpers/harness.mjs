@@ -32,7 +32,7 @@ export const HAVE_PHP = php.status === 0;
  * summary as a pass. Now each test is skipped with the reason, and the
  * first file to load says it once on stderr.
  */
-export const NO_PHP_REASON = 'php is not on PATH, so the directory API was not tested (install PHP 8.1+ with zip and mbstring; see apps/softn-api/README.md, Tests)';
+export const NO_PHP_REASON = 'php is not on PATH, so the directory API was not tested (install PHP 8.1+ with zip, zlib and mbstring; see apps/softn-api/README.md, Tests)';
 export const skip = { skip: HAVE_PHP ? false : NO_PHP_REASON };
 if (!HAVE_PHP && !globalThis.__softnApiNoPhpWarned) {
   globalThis.__softnApiNoPhpWarned = true;

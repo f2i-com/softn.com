@@ -177,7 +177,7 @@ final class Cors
     {
         if (str_starts_with($path, '/admin/')) return true;
         if ($method === 'PATCH' || $method === 'DELETE') return true;
-        return $method === 'POST' && (bool) preg_match('#^/apps/[^/]+/(versions|thumbnail)$#', $path);
+        return $method === 'POST' && (bool) preg_match('#^/apps/[^/]+/(versions|thumbnail|key)$#', $path);
     }
 
     /**

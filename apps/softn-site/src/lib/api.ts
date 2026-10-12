@@ -460,6 +460,17 @@ export async function unpublish(slug: string, editKey: string): Promise<void> {
 }
 
 /**
+ * Give the app a new edit key in place of `editKey`. From this answer on the
+ * old key opens nothing, wherever it is kept: another browser, a script, a
+ * backup. Keeping the new one is the caller's to do.
+ */
+export async function replaceKey(slug: string, editKey: string): Promise<{ editKey: string; app: AppCard }> {
+  const r = await call<{ editKey: unknown; app: AppCard }>(`/apps/${encodeURIComponent(slug)}/key`, { method: 'POST', headers: { 'X-Edit-Key': editKey } });
+  if (!isEditKey(r.editKey)) throw new ApiError(502, "The directory's answer held no new key. If the old key is refused from now on, the site owner can issue a new one.");
+  return { editKey: r.editKey, app: r.app };
+}
+
+/**
  * Count a play. Fire and forget: the caller is about to leave for the runtime,
  * and nothing about opening an app may wait on this. `keepalive` lets the
  * request outlive the page; the timeout keeps a counter endpoint that never

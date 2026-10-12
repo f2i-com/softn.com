@@ -6,6 +6,7 @@ import {
   getApp,
   publish,
   rememberKey,
+  replaceKey,
   savedKey,
   savedKeys,
   savedKeysUnreadable,
@@ -205,6 +206,103 @@ export function KeyBackupDownload({ label = 'Download backup' }: { label?: strin
         <p className="form-error" role="alert">
           {error}
         </p>
+      )}
+    </div>
+  );
+}
+
+/** What a key replacement left: the new key, and how keeping it here went (null: it was not to be kept). */
+export interface ReplacedKey {
+  key: string;
+  kept: KeyStoreResult | null;
+}
+
+/**
+ * Replace an app's edit key: for a key that may have been seen by someone
+ * else, since a key is all it takes to publish over the app, change it or
+ * take it down. It asks first, because everything else holding the current
+ * key (another browser, a script, a backup) stops working at once. `run`
+ * makes the replacement and keeps the new key where the caller keeps keys;
+ * this says what became of the old one, shows the new one once, and offers
+ * a backup of the keys this browser now holds.
+ */
+export function ReplaceKey({ run, disabled = false, compact = false }: { run: () => Promise<ReplacedKey>; disabled?: boolean; compact?: boolean }): React.ReactElement {
+  const [stage, setStage] = useState<'idle' | 'confirm' | 'busy'>('idle');
+  const [replaced, setReplaced] = useState<ReplacedKey | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const go = async () => {
+    setStage('busy');
+    setError(null);
+    try {
+      setReplaced(await run());
+    } catch (err) {
+      setError(err instanceof ApiError && (err.status === 401 || err.status === 403) ? 'That edit key does not open this app, so nothing was replaced.' : errorText(err));
+    } finally {
+      setStage('idle');
+    }
+  };
+  return (
+    <div className="key-replace">
+      {stage === 'confirm' ? (
+        <p className="muted">
+          Replace it? Anything that uses the current key (another browser, a script, a backup) stops working until it is given the new one.{' '}
+          <button type="button" className="link-btn" onClick={() => void go()}>
+            Yes, replace it
+          </button>{' '}
+          <button type="button" className="link-btn" onClick={() => setStage('idle')}>
+            Keep the current key
+          </button>
+        </p>
+      ) : (
+        <button
+          type="button"
+          className={compact ? 'link-btn' : 'cta'}
+          disabled={disabled || stage === 'busy'}
+          onClick={() => {
+            setReplaced(null);
+            setError(null);
+            setStage('confirm');
+          }}
+        >
+          {stage === 'busy' ? 'Replacing…' : 'Replace key'}
+        </button>
+      )}
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      {replaced && (
+        <div className="key-replaced">
+          <p role="status">
+            <strong>The key is replaced.</strong> The old key no longer works anywhere: not in other browsers, not in scripts, and not in
+            backups made before now. Give the new one to whatever needs it.
+          </p>
+          <div className="keybox-row">
+            <code className="keybox-key">{replaced.key}</code>
+            <button
+              type="button"
+              className="cta"
+              onClick={async () => {
+                setCopied(await copyText(replaced.key));
+                setTimeout(() => setCopied(false), 1200);
+              }}
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          {replaced.kept === 'stored' ? (
+            <>
+              <p className="muted">It is kept in this browser in place of the old one. A backup made before now holds the old key, which opens nothing: download a new one.</p>
+              <KeyBackupDownload label="Download a new backup" />
+            </>
+          ) : replaced.kept === null ? (
+            <p className="form-error">It is not kept in this browser, as you asked. Copy it now: once you leave this page it is not shown again.</p>
+          ) : (
+            <KeyKeptNotice kept={replaced.kept} />
+          )}
+        </div>
       )}
     </div>
   );
@@ -451,13 +549,19 @@ export async function lookupOwnedApps(slugs: string[], signal?: AbortSignal, loo
  * dropped connection while the page loaded deleted the only proof of
  * ownership of every app in the list, silently. Now a lookup that fails
  * keeps its row, says why and offers a retry; a confirmed 404 keeps its
- * row too, with the key it holds and a button to forget it on purpose.
+ * row too, with a button to forget its key on purpose.
+ *
+ * A key is printed only when the person asks for it ("Show key"). Every row
+ * that was gone or could not be checked used to print its key in full, which
+ * during an outage was every key this browser held, on screen for anyone
+ * looking or recording it. A row that loaded can have its key replaced.
  */
 export function YourApps({ lookup }: { lookup?: typeof getApp } = {}): React.ReactElement | null {
   const [apps, setApps] = useState<OwnedApp[] | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [keys, setKeys] = useState<Record<string, string>>(() => savedKeys());
   const [confirmForget, setConfirmForget] = useState<string | null>(null);
+  const [shownKeys, setShownKeys] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const unreadable = savedKeysUnreadable();
   const slugs = Object.keys(keys);
@@ -535,6 +639,15 @@ export function YourApps({ lookup }: { lookup?: typeof getApp } = {}): React.Rea
                       <span className="muted">
                         v{a.version} · {runsLabel(a.runs)} · updated {formatDate(a.updatedAt)}
                       </span>
+                      <ReplaceKey
+                        compact
+                        run={async () => {
+                          const r = await replaceKey(a.slug, key);
+                          const kept = rememberKey(a.slug, r.editKey);
+                          setKeys(savedKeys());
+                          return { key: r.editKey, kept };
+                        }}
+                      />
                     </div>
                     <a className="cta" href={`/publish?update=${encodeURIComponent(a.slug)}`}>
                       Update
@@ -562,7 +675,20 @@ export function YourApps({ lookup }: { lookup?: typeof getApp } = {}): React.Rea
                       </span>
                     ) : (
                       <span className="muted">
-                        Key <code className="batch-key">{key}</code>{' '}
+                        Its key is kept in this browser.{' '}
+                        {shownKeys.includes(entry.slug) && (
+                          <>
+                            <code className="batch-key">{key}</code>{' '}
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          className="link-btn"
+                          aria-expanded={shownKeys.includes(entry.slug)}
+                          onClick={() => setShownKeys((shown) => (shown.includes(entry.slug) ? shown.filter((s) => s !== entry.slug) : [...shown, entry.slug]))}
+                        >
+                          {shownKeys.includes(entry.slug) ? 'Hide key' : 'Show key'}
+                        </button>{' '}
                         {entry.state === 'missing' && (
                           <button type="button" className="link-btn" onClick={() => setConfirmForget(entry.slug)}>
                             Forget this key
@@ -1245,7 +1371,9 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
  */
 function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { slug: string; categories: Category[] } & CategoriesStatus): React.ReactElement {
   const [app, setApp] = useState<AppDetail | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  /** Why the app did not load; `missing` is the directory saying 404, the one failure a retry cannot fix. */
+  const [loadError, setLoadError] = useState<{ message: string; missing: boolean } | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [key, setKey] = useState(() => savedKey(slug) ?? '');
   const [remember, setRemember] = useState(true);
   const [name, setName] = useState('');
@@ -1278,20 +1406,26 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
         document.title = `Update ${a.name} — SoftN`;
       })
       .catch((e) => {
-        if (!ac.signal.aborted) setLoadError(e instanceof Error ? e.message : String(e));
+        if (!ac.signal.aborted) setLoadError({ message: e instanceof Error ? e.message : String(e), missing: e instanceof ApiError && e.status === 404 });
       });
     return () => ac.abort();
-  }, [slug]);
+  }, [slug, loadAttempt]);
 
   const keyOk = /^[0-9a-f]{40}$/i.test(key.trim());
-  const withKey = async (label: string, fn: (k: string) => Promise<void>) => {
+  /**
+   * Run an owner action with the key in the field, then keep that key in
+   * this browser if asked to. An action after which there is no key to keep
+   * says so with `{ keep: false }`: unpublishing forgot the app's key and
+   * this then wrote it straight back.
+   */
+  const withKey = async (label: string, fn: (k: string) => Promise<{ keep: false } | void>) => {
     if (!keyOk || busy) return;
     setBusy(label);
     setError(null);
     setDone(null);
     try {
-      await fn(key.trim());
-      if (remember) {
+      const outcome = await fn(key.trim());
+      if (remember && outcome?.keep !== false) {
         const kept = rememberKey(slug, key.trim());
         if (kept !== 'stored') setDone((d) => `${d ?? ''} The key could not be kept in this browser; keep your own copy.`.trim());
       }
@@ -1345,11 +1479,23 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
       <main className="publish">
         <div className="wrap wrap-narrow">
           <div className="empty" role="alert">
-            <p className="eyebrow">Not here</p>
+            <p className="eyebrow">{loadError.missing ? 'Not here' : 'Not loaded'}</p>
             <h1 className="page-title">Could not load that app.</h1>
-            <p className="muted">{loadError}</p>
-            <p>
-              <a className="cta cta-primary" href="/apps">
+            <p className="muted">{loadError.message}</p>
+            <p className="app-actions">
+              {!loadError.missing && (
+                <button
+                  type="button"
+                  className="cta cta-primary"
+                  onClick={() => {
+                    setLoadError(null);
+                    setLoadAttempt((n) => n + 1);
+                  }}
+                >
+                  Try again
+                </button>
+              )}
+              <a className={loadError.missing ? 'cta cta-primary' : 'cta'} href="/apps">
                 Browse the directory
               </a>
             </p>
@@ -1442,7 +1588,8 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
               >
                 forget it
               </button>
-              ; otherwise leave it, in case the directory was the problem.
+              ; otherwise leave it, in case the directory was the problem. A key that was replaced (from another browser, say) is refused
+              everywhere: use the new one, or ask the site owner for one.
             </p>
           )}
           <KeyImport onImported={() => setKey(savedKey(slug) ?? key)} />
@@ -1592,6 +1739,26 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
           </div>
         </section>
 
+        <section className="update-section">
+          <h2 className="section-title">Replace the key</h2>
+          <p className="muted">
+            If this key may have been seen by anyone else (copied from this browser, pasted somewhere, in a backup someone else has),
+            replace it. The new key does everything this one did, and this one stops working everywhere.
+          </p>
+          <ReplaceKey
+            disabled={!keyOk || busy !== null}
+            run={async () => {
+              const r = await replaceKey(slug, key.trim());
+              // The new key goes where the old one was kept, and is kept if
+              // asked to; the old one opens nothing now, wherever it is.
+              const kept = remember || savedKey(slug) !== null ? rememberKey(slug, r.editKey) : null;
+              setKey(r.editKey);
+              setRefusedSavedKey(false);
+              return { key: r.editKey, kept };
+            }}
+          />
+        </section>
+
         <section className="update-section update-danger">
           <h2 className="section-title">Take it down</h2>
           <p className="muted">
@@ -1613,6 +1780,7 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
                     await unpublish(slug, k);
                     forgetKey(slug);
                     navigate('/apps');
+                    return { keep: false };
                   })
                 }
               >

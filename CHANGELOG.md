@@ -49,6 +49,9 @@ section here. Write the section before tagging. Headings are the tag
 - Release scripts: archives carry UTC timestamps, so they are the same bytes in every time zone; the third-party notices list three packages Builder's web build ships; stale cache files no longer go into the backend archives.
 - Desktop and Android app: which app's saved data a page may use is decided by the native side from the file you opened, so an app can no longer read or change another installed app's data; opening a new version of an installed app with that app's data is asked in a native dialog; the page has no file system access on Android. Existing installations are carried over once, on the first start of this version.
 - Desktop Builder: a bundle open in the Builder can no longer write files saved earlier or open dialogs of its own; files are opened and saved by the app, which can write only the file chosen for the project now open, and a saved file's previous contents are kept as `<name>.bak`.
+- Directory: an edit key can be replaced (`POST /api/apps/{slug}/key`, and Replace key on the site's update page and Your apps); the old key stops working everywhere at once. Anyone who may have run a stranger's app on v0.0.19 or earlier in the browser that holds their keys should replace them.
+- Directory: bundles are read exactly as the runtime reads them, so it refuses what the runtime refuses and lists what the runtime will run (including an older manifest's permissions and a byte order mark in front of a JSON file). PHP's zlib extension is now required.
+- Site: Your apps shows a key only when asked; unpublishing forgets the key; the update page can retry; the star rating works from the keyboard.
 
 ## v0.0.19
 

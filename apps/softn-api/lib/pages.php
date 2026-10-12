@@ -184,7 +184,7 @@ final class Pages
             } finally {
                 $zip->close();
             }
-            $manifest = is_string($text) ? json_decode($text, true, 32) : null;
+            $manifest = is_string($text) ? json_decode(Bundle::jsonText($text), true, 32) : null;
             $theme = is_array($manifest) && is_array($manifest['config'] ?? null) ? ($manifest['config']['theme'] ?? null) : null;
             $mode = is_array($theme) ? ($theme['mode'] ?? null) : null;
             return $mode === 'light' || $mode === 'dark' ? $mode : null;

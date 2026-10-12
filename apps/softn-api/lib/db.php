@@ -79,6 +79,9 @@ final class Config
                     // [count, seconds] per visitor
                     'publish' => [10, 3600],
                     'version' => [30, 3600],
+                    // Replacing an edit key (POST /apps/{slug}/key); an owner
+                    // replacing the key of every app they hold, at once.
+                    'rekey' => [30, 3600],
                     'comment' => [10, 600],
                     'rate' => [60, 600],
                     'run' => [120, 60],

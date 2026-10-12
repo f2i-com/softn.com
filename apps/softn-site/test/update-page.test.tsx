@@ -19,12 +19,14 @@ import { createRoot, type Root } from 'react-dom/client';
 import { strToU8, zipSync } from 'fflate';
 import type { AppDetail } from '../src/lib/api';
 
-const { getApp } = vi.hoisted(() => ({ getApp: vi.fn() }));
+const { getApp, unpublish } = vi.hoisted(() => ({ getApp: vi.fn(), unpublish: vi.fn() }));
 vi.mock('../src/lib/api', async () => ({
   ...(await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api')),
   getApp,
+  unpublish,
 }));
 
+import { ApiError, savedKeys } from '../src/lib/api';
 import { PublishPage } from '../src/pages/PublishPage';
 import { stashDroppedBundles, takeDroppedBundles } from '../src/lib/dropped';
 
@@ -80,6 +82,7 @@ beforeEach(() => {
   takeDroppedBundles();
   getApp.mockReset();
   getApp.mockImplementation(async (slug: string) => detail(slug));
+  unpublish.mockReset();
   // jsdom's File has no arrayBuffer(); FileReader does the job.
   Object.defineProperty(File.prototype, 'arrayBuffer', {
     configurable: true,
@@ -135,6 +138,50 @@ describe('the update page', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/could not be read as a picture/i);
     const use = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Use this picture')!;
     expect(use.disabled).toBe(true);
+  });
+
+  it('forgets the key of an app it unpublished, with "Keep it in this browser" checked', async () => {
+    // Every action stored the key it used once it succeeded, unpublishing
+    // included: the key was forgotten and then written straight back, so
+    // "Your apps" listed the app as gone with a key that opened nothing.
+    localStorage.setItem('softn.site.editKeys', JSON.stringify({ notes: 'a'.repeat(40), other: 'b'.repeat(40) }));
+    unpublish.mockResolvedValue(undefined);
+    // Unpublishing goes on to the directory, which scrolls; jsdom has no scrolling.
+    vi.stubGlobal('scrollTo', vi.fn());
+    await mountUpdate('notes');
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+    const press = async (label: string) => {
+      const b = [...container.querySelectorAll('button')].find((x) => x.textContent === label)!;
+      await act(async () => {
+        b.click();
+      });
+      await settle();
+    };
+    await press('Unpublish Notes');
+    await press('Yes, unpublish it');
+    expect(unpublish).toHaveBeenCalledWith('notes', 'a'.repeat(40));
+    expect(savedKeys()).toEqual({ other: 'b'.repeat(40) });
+  });
+
+  it('offers to try again when the app could not be loaded, and loads it when asked', async () => {
+    getApp.mockRejectedValueOnce(new ApiError(500, 'The directory answered 500.'));
+    await mountUpdate('notes');
+    expect(container.textContent).toContain('The directory answered 500.');
+    const retry = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Try again');
+    expect(retry).toBeDefined();
+    await act(async () => {
+      retry!.click();
+    });
+    await settle();
+    expect(getApp).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('h1')?.textContent).toBe('Notes');
+  });
+
+  it('offers no retry for an app the directory says is not there', async () => {
+    getApp.mockRejectedValue(new ApiError(404, 'No such app.'));
+    await mountUpdate('gone');
+    expect(container.textContent).toContain('No such app.');
+    expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Try again')).toBe(false);
   });
 
   it('says the same on the form for a new app', async () => {

@@ -317,7 +317,7 @@ test('a bundle with two entries of one name is refused at publication', skip, as
 
 test('health names the extensions the API needs, and warns about any that are missing', skip, async () => {
   const h = (await s.api('GET', '/api/health')).json;
-  assert.deepEqual(Object.keys(h.extensions).sort(), ['dom', 'mbstring', 'pdo_sqlite', 'zip']);
+  assert.deepEqual(Object.keys(h.extensions).sort(), ['dom', 'mbstring', 'pdo_sqlite', 'zip', 'zlib']);
   for (const [name, loaded] of Object.entries(h.extensions)) {
     const probe = spawnSync('php', ['-r', `echo extension_loaded(${JSON.stringify(name)}) ? 'y' : 'n';`], { encoding: 'utf8' });
     assert.equal(loaded, probe.stdout === 'y', name);

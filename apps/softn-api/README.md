@@ -9,7 +9,7 @@ takes a zip upload.
 
 ## Requirements
 
-- PHP 8.1 or newer with `zip` and `mbstring`; `pdo_sqlite` is needed only for legacy migration and apps that use server-side storage, and `dom` for SVG icons (without it every SVG icon is dropped). `GET /api/health` lists all four under `extensions` and names any that is missing under `warnings`
+- PHP 8.1 or newer with `zip`, `zlib` and `mbstring`; `pdo_sqlite` is needed only for legacy migration and apps that use server-side storage, and `dom` for SVG icons (without it every SVG icon is dropped). `GET /api/health` lists all five under `extensions` and names any that is missing under `warnings`. `zlib` is needed since the bundle checks under "What a bundle has to be"; nearly every PHP build has it, and without it nothing is published or listed
 - A writable `data/` directory beside `api/` (the build creates it; `GET /api/health` reports whether it is writable)
 - Upload limits large enough for a bundle; `api/.user.ini` asks for 64 MB on PHP-FPM and CGI hosts, and `GET /api/health` says whether the host agreed (see "Limits")
 
@@ -120,6 +120,54 @@ and replacing the file. An ordinary editor or file-copy command does not
 participate in the API's locking protocol and can overwrite newer counters.
 Back up while requests are stopped or hold that same lock for a consistent
 snapshot. Do not replace the whole app.json just to change a category.
+
+## What a bundle has to be
+
+The directory lists what it reads from a bundle (its name, the capabilities
+and storage policies it declares) and the browser runs what the runtime's
+reader reads (`packages/@softn/bundle-format/src/zip.ts`). The two have to
+read the same archive, or the directory lists one app while the browser
+runs another. PHP's `ZipArchive` is libzip, which reads some archives
+differently from that reader, so `Bundle::inspect` (in `lib/bundle.php`)
+walks the archive itself, exactly as the runtime's reader does, and refuses
+what that reader refuses, with the reason in the reply:
+
+- more than one end record naming a central directory, a ZIP64 end record
+  or ZIP64 sizes, two different entry counts, a central directory that does
+  not end where the end record begins or does not hold the entries it
+  counts;
+- an entry flagged encrypted in either header, compressed with anything but
+  stored or deflate, stored with two different sizes, declaring more than
+  50 MB, sharing its bytes with another entry, without a local header, or
+  running past the end of the file;
+- an entry an Info-ZIP Unicode Path field gives a second name, and two
+  entries of one name;
+- a deflate stream that inflates past the size its entry declares, does not
+  reach its end, or comes out at another size or checksum than declared:
+  every file in the bundle is inflated and checked, as the runtime does
+  when it reads them.
+
+It also refuses what the runtime would drop or read another way: a path
+that climbs out of the bundle, is absolute, sits on a drive, has an empty
+or `.` segment or a NUL; a path written with backslashes; a name that is
+not UTF-8 (libzip reads one as CP437 and the runtime with replacement
+characters, so the two would list different files). Then libzip has to see
+the same entries under the same names, because the source viewer and the
+pages still read stored bundles through it.
+
+`test/bundle-agreement.test.mjs` puts each of these archives, and the
+honest ones zip tools write, to both readers. As the runtime does, a
+`manifest.json` or `permission.json` behind a UTF-8 byte order mark is read
+past the mark, and a bundle with no `permission.json` is read for the older
+`permissions` block of its manifest (`network` is `net`, `filesystem` is
+`files`).
+
+These rules apply to every bundle the catalogue reads, not only to new
+uploads: a bundle already in a folder that fails them is skipped the next
+time it is inspected (when it changes, or by the sweep within
+`cacheSweepSeconds`), with the reason in the error log, as any invalid
+bundle is. Checking every file costs a few milliseconds a bundle (about
+50 ms for an 18 MB one on the machine the tests ran on).
 
 ## Concurrency and cache
 
@@ -323,7 +371,7 @@ address the site is reached at. Two things depend on it:
   by its path. `GET /api/health` reports `siteOrigin` and a line under
   `warnings` while it is unset.
 - The routes that take an edit key or the admin key — `PATCH` and `DELETE
-  /api/apps/{slug}`, `POST .../versions` and `.../thumbnail`, everything
+  /api/apps/{slug}`, `POST .../versions`, `.../thumbnail` and `.../key`, everything
   under `/api/admin/` — answer a browser page on the site's own origin only:
   `siteOrigin`, the origin the request was addressed to (so a site with no
   configuration works from its own pages), and any origin listed in
@@ -489,11 +537,29 @@ Moderation uses an **admin key**, generated into `data/config.json` on first
 run and sent as `X-Admin-Key`. Seeded demo apps have no edit key, so only the
 admin can change them.
 
+A key can be replaced. `POST /api/apps/{slug}/key` with the current key
+in `X-Edit-Key` answers `{"editKey": …}` with a new one, and from that
+request on the old key is refused everywhere it worked: the owner routes,
+and the publisher's side of the app's own storage, for every browser,
+script and backup that holds it. The site's "Replace key" button calls it.
+Do this for a key that may have been seen by anyone else: until 2026-10
+an app's markup could reach the page's `window` on the site's origin,
+where the site keeps the keys it was given, so a key kept in a browser
+that played someone else's app before then may have been copied. It is
+rate-limited per visitor like a new version (`limits.rekey`, thirty an
+hour), counted after the key is checked. A backup restored from before a
+replacement brings the old key's hash back with it. A replacement is first
+come: someone who copied a key can replace it too, and the owner's key is
+refused from then on. Only the admin can give such an app back, by issuing
+the owner a new key with the admin key, as for a lost one.
+
 A lost edit key cannot be recovered, only replaced: the admin can do
-everything the key did, and can issue a new one by writing the SHA-256 of a
-fresh random key into `edit_key_hash` in the app's `app.json` (with the API
-stopped or `catalog.lock` held). To rotate the admin key, replace
-`adminKey` in `data/config.json`; the next request reads it.
+everything the key did, and can issue a new one with the same route and
+`X-Admin-Key`, which is not rate-limited. An app with no key (a seeded
+demo, a folder the operator added) is the site's, and the route refuses
+it with a `409` rather than hand it to whoever receives a key. To rotate
+the admin key, replace `adminKey` in `data/config.json`; the next request
+reads it.
 
 Visitors are identified by a salted hash of their address, used for rate
 limits and one rating per person per app. An IPv6 address counts as its /64
@@ -518,6 +584,7 @@ Nothing else about a visitor is kept.
 | `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`) |
 | `POST /api/apps/{slug}/thumbnail` | Replace the picture (`X-Edit-Key`) |
 | `DELETE /api/apps/{slug}` | Unpublish (`X-Edit-Key`) |
+| `POST /api/apps/{slug}/key` | Replace the edit key (`X-Edit-Key`, or `X-Admin-Key` for a lost one). Answers with the new key; the old one is refused from then on. See "Ownership" |
 | `POST /api/apps/{slug}/remix` | Publish a new app that records this one as its parent. Same fields as publish; the bundle is optional and defaults to the parent's |
 | `POST /api/apps/{slug}/comments` | `{name, body}` |
 | `POST /api/apps/{slug}/rating` | `{stars}`, one per visitor |

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 
 function Star({ fill, size = 14 }: { fill: number; size?: number }): React.ReactElement {
   // fill is 0..1 of the star, so a 4.5 average shows half a fifth star.
@@ -38,26 +38,63 @@ export function Stars({ average, count, size = 14, showCount = true }: { average
   );
 }
 
-/** Five stars a visitor can press. `mine` is what they gave before, if anything. */
+/**
+ * Five stars a visitor can press. `mine` is what they gave before, if anything.
+ *
+ * A radio group to a screen reader, so it is one stop in the tab order (the
+ * star last moved to, else the one given, else the first) and the arrow keys,
+ * Home and End move within it. They move and light the stars without voting:
+ * a vote is a request that replaces the visitor's last one, and a keyboard
+ * user crossing from one star to the fourth would otherwise have voted three
+ * times. Enter, Space or a click gives the star that has focus. While a vote
+ * is on its way the stars refuse another but stay enabled: a disabled button
+ * loses focus, and the keyboard user was left outside the group.
+ */
 export function StarInput({ mine, onRate, busy }: { mine: number | null; onRate: (stars: number) => void; busy?: boolean }): React.ReactElement {
   const [hover, setHover] = useState(0);
+  const [current, setCurrent] = useState<number | null>(null);
+  const stars = useRef<Array<HTMLButtonElement | null>>([]);
   const shown = hover || mine || 0;
+  const stop = current ?? mine ?? 1;
+  const moveTo = (n: number) => {
+    const to = ((n - 1 + 5) % 5) + 1;
+    setCurrent(to);
+    stars.current[to - 1]?.focus();
+  };
+  const onKeyDown = (e: React.KeyboardEvent, n: number) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') moveTo(n + 1);
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') moveTo(n - 1);
+    else if (e.key === 'Home') moveTo(1);
+    else if (e.key === 'End') moveTo(5);
+    else return;
+    e.preventDefault();
+  };
   return (
     <div className="star-input" role="radiogroup" aria-label="Rate this app">
       {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
+          ref={(el) => {
+            stars.current[n - 1] = el;
+          }}
           type="button"
           role="radio"
           aria-checked={mine === n}
           aria-label={`${n} star${n === 1 ? '' : 's'}`}
+          aria-disabled={busy ? true : undefined}
+          tabIndex={n === stop ? 0 : -1}
           className={`star-btn ${n <= shown ? 'on' : ''}`}
-          disabled={busy}
           onMouseEnter={() => setHover(n)}
           onMouseLeave={() => setHover(0)}
-          onFocus={() => setHover(n)}
+          onFocus={() => {
+            setHover(n);
+            setCurrent(n);
+          }}
           onBlur={() => setHover(0)}
-          onClick={() => onRate(n)}
+          onKeyDown={(e) => onKeyDown(e, n)}
+          onClick={() => {
+            if (!busy) onRate(n);
+          }}
         >
           <Star size={26} fill={n <= shown ? 1 : 0} />
         </button>

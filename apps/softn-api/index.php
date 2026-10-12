@@ -111,6 +111,7 @@ $routes = [
     ['GET', '#^/apps/([^/]+)/icon$#', 'icon'],
     ['GET', '#^/apps/([^/]+)/source$#', 'source'],
     ['POST', '#^/apps/([^/]+)/versions$#', 'addVersion'],
+    ['POST', '#^/apps/([^/]+)/key$#', 'replaceKey'],
     ['POST', '#^/apps/([^/]+)/remix$#', 'remix'],
     ['GET', '#^/apps/([^/]+)/comments$#', 'comments'],
     ['POST', '#^/apps/([^/]+)/comments$#', 'addComment'],
@@ -256,6 +257,7 @@ function handle(string $handler, array $args, Request $req): Response
                     'PATCH /api/apps/{slug}  (X-Edit-Key; JSON fields)',
                     'POST /api/apps/{slug}/thumbnail  (X-Edit-Key)',
                     'DELETE /api/apps/{slug}  (X-Edit-Key)',
+                    'POST /api/apps/{slug}/key  (X-Edit-Key; answers with a new edit key, and the old one stops working)',
                     'POST /api/apps/{slug}/remix  (same fields as publish; bundle optional)',
                     'POST /api/apps/{slug}/comments  {name, body}',
                     'POST /api/apps/{slug}/rating  {stars}',
@@ -278,6 +280,7 @@ function handle(string $handler, array $args, Request $req): Response
             $warnings = [];
             foreach ([
                 'zip' => 'reading bundles: nothing can be published',
+                'zlib' => 'checking a bundle\'s compressed files: nothing can be published or listed',
                 'mbstring' => 'text handling: most routes fail',
                 'pdo_sqlite' => 'per-app storage and the legacy import',
                 'dom' => 'checking SVG icons: every SVG icon is dropped',
@@ -287,7 +290,7 @@ function handle(string $handler, array $args, Request $req): Response
             }
             // Without these the catalogue cannot even be read; say so rather
             // than fail on the first bundle it inspects.
-            if (!$extensions['zip'] || !$extensions['mbstring']) {
+            if (!$extensions['zip'] || !$extensions['zlib'] || !$extensions['mbstring']) {
                 return Response::json(['ok' => false, 'error' => 'A PHP extension the directory needs is missing.', 'php' => PHP_VERSION, 'extensions' => $extensions, 'warnings' => $warnings], 503);
             }
             try {
@@ -500,6 +503,23 @@ function handle(string $handler, array $args, Request $req): Response
             }
             if ($file === null) throw new ApiError(400, 'No bundle was sent.');
             return Response::json(['ok' => true, 'app' => Apps::addVersion($slug, $file, $req->field('notes'), $byAdmin)], 201);
+        }
+
+        case 'replaceKey': {
+            // A key is the only proof of ownership and a bearer secret: one
+            // that may have been copied stays good until it is replaced. The
+            // check and the write are under the one catalogue lock this
+            // request holds from resolveSlug to the reply, so two requests
+            // with the same key cannot both replace it. Counted like a new
+            // version: after the key is checked, and not for the admin, who
+            // uses this to hand an owner who lost theirs a new one.
+            $slug = Apps::resolveSlug($args[0]);
+            Apps::requireOwner($req, $slug);
+            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) {
+                Db::rateLimit('rekey', Config::limitKey($req->ip));
+            }
+            $key = Apps::replaceKey($slug);
+            return Response::json(['ok' => true, 'editKey' => $key, 'app' => Apps::card(Apps::row($slug, true))]);
         }
 
         case 'remix': {
