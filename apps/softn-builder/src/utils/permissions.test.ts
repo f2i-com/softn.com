@@ -51,8 +51,8 @@ describe('buildPermissionJson', () => {
 
   it('reads back what it wrote', () => {
     const json = buildPermissionJson({ ...decl, capabilities: [...decl.capabilities] })!;
-    // Read from a file, the declaration says it has one to be written back to (untouchedRoundTrip.test.ts).
-    expect(readPermissionJson(json)).toEqual({ ...decl, capabilities: ['net', 'storage'], file: true });
+    // Read from a file, the declaration says it has one to be written back to, and holds it (untouchedRoundTrip.test.ts).
+    expect(readPermissionJson(json)).toEqual({ ...decl, capabilities: ['net', 'storage'], file: true, source: json });
   });
 
   it('drops a capability the schema does not know rather than carrying it', () => {
@@ -107,7 +107,7 @@ describe('an exported bundle', () => {
       iconPath: 'assets/icon.png',
     });
     const loaded = await loadBundle(bytes);
-    expect(loaded.permissions).toEqual({ ...decl, capabilities: ['net', 'storage'], file: true });
+    expect(loaded.permissions).toEqual({ ...decl, capabilities: ['net', 'storage'], file: true, source: buildPermissionJson({ ...decl, capabilities: [...decl.capabilities] }) });
     expect(loaded.iconDataUrl).toBe(PNG_DATA_URL);
   });
 

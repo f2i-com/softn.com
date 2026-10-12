@@ -22,6 +22,7 @@ section here. Write the section before tagging. Headings are the tag
 - A function the page calls while drawing that reads large state no longer copies that state out of the engine every tick (34 ms to 0.7 ms per tick at 4,000 records).
 - Studio: one project open in two tabs no longer blocks saving in the second tab. A save merges with what the other tab saved: changes to different parts are all kept and brought into both tabs, and a file both tabs changed is named in the status bar with "Keep this tab's version". After storage did not answer at start-up, Try again opens the project Studio was opening.
 - Studio: the AI is told that timers work in page logic and where they do not, and a timer written in markup is answered with the logic function to write instead; a page the app imports, previewed or checked on its own, has the app's logic, so its calls to the app's functions are no longer reported as undefined; Enter that confirms an input-method candidate no longer adds a page, collection or plan note.
+- Builder: permission.json is written back as it came. An export, even of an untouched project, dropped the app's id (which sync is scoped by) and capability limits such as the AI model sources the app may load; an edited declaration keeps them.
 
 ## v0.0.19
 

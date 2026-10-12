@@ -11,6 +11,14 @@
  * The names are the capability schema's; the storage policies are the
  * schema's too, and Builder knows the collections, so it can declare a
  * policy for each.
+ *
+ * A file holds more than that: the app's identity (`app.id`, which its sync
+ * rooms are scoped by), the limits a capability is declared with
+ * (`ai.allowedSources`, `mic.maxSeconds`, ...), and capabilities a newer
+ * schema has. The Builder wrote only what it models, so an export of an app
+ * nobody had touched took all of that out of it. The file is kept as it was
+ * read, and written back as it came, or with only what the Builder models
+ * changed in it.
  */
 
 import { CAPABILITIES, inspectDeclaration, type Capability, type StoragePolicy } from '@softn/core';
@@ -30,6 +38,8 @@ export interface PermissionDeclaration {
    * file, and is written back as one (buildPermissionJson).
    */
   file?: boolean;
+  /** The file as it was read, which is written back with only what is declared here changed in it. */
+  source?: string;
 }
 
 export function emptyDeclaration(): PermissionDeclaration {
@@ -49,6 +59,10 @@ export function emptyDeclaration(): PermissionDeclaration {
  * declares what the file it replaces declared.
  */
 export function buildPermissionJson(decl: PermissionDeclaration): string | null {
+  if (decl.source !== undefined) {
+    const kept = keptPermissionJson(decl.source, decl);
+    if (kept !== null) return kept;
+  }
   const permissions: Record<string, Record<string, unknown>> = {};
   for (const name of CAPABILITIES) {
     if (!decl.capabilities.includes(name)) continue;
@@ -68,7 +82,64 @@ export function buildPermissionJson(decl: PermissionDeclaration): string | null 
   return JSON.stringify({ permissions }, null, 2);
 }
 
-/** A declaration read back from a bundle's permission.json; unknown or malformed parts are dropped. */
+/** The parts of a declaration the Builder models, in one spelling, for comparing two. */
+function modelled(decl: PermissionDeclaration): string {
+  return JSON.stringify([
+    [...decl.capabilities].sort(),
+    decl.allowedHosts.map((host) => host.trim()).filter(Boolean),
+    decl.allowHttp,
+    Object.entries(decl.storagePolicies).filter(([, policy]) => policy && policy !== 'public').sort(([a], [b]) => a.localeCompare(b)),
+  ]);
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * The file `source` with `decl` written into it: as it is when it declares
+ * what `decl` does, else with the capabilities `decl` asks for, `net`'s
+ * hosts and `storage`'s policies changed, and everything else in it kept.
+ * Null for a file that is not a JSON object, which is written anew.
+ */
+function keptPermissionJson(source: string, decl: PermissionDeclaration): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  if (modelled(readPermissionJson(source)) === modelled(decl)) return source;
+
+  const was = isRecord(parsed.permissions) ? parsed.permissions : {};
+  const permissions: Record<string, unknown> = {};
+  for (const [name, entry] of Object.entries(was)) {
+    // A capability not asked for is not written, as the Builder writes none it does not ask for.
+    if ((CAPABILITIES as readonly string[]).includes(name) && !decl.capabilities.includes(name as Capability)) continue;
+    permissions[name] = entry;
+  }
+  for (const name of CAPABILITIES) {
+    if (!decl.capabilities.includes(name)) continue;
+    const entry: Record<string, unknown> = { ...(isRecord(permissions[name]) ? permissions[name] : {}), enabled: true };
+    if (name === 'net') {
+      const hosts = decl.allowedHosts.map((h) => h.trim()).filter(Boolean);
+      if (hosts.length > 0) entry.allowed_hosts = hosts;
+      else delete entry.allowed_hosts;
+      if (decl.allowHttp) entry.allow_http = true;
+      else if ('allow_http' in entry) entry.allow_http = false;
+    }
+    if (name === 'storage') {
+      const named = isRecord(entry.collections) ? entry.collections : {};
+      // A collection the file names as public stays named while it is.
+      const policies = Object.fromEntries(Object.entries(decl.storagePolicies).filter(([collection, p]) => p && (p !== 'public' || collection in named)));
+      if (Object.keys(policies).length > 0) entry.collections = policies;
+      else delete entry.collections;
+    }
+    permissions[name] = entry;
+  }
+  return JSON.stringify({ ...parsed, permissions }, null, 2);
+}
+
+/** A declaration read back from a bundle's permission.json; unknown or malformed parts are dropped from it, and kept in the file. */
 export function readPermissionJson(text: string): PermissionDeclaration {
   let parsed: unknown;
   try {
@@ -86,6 +157,7 @@ export function readPermissionJson(text: string): PermissionDeclaration {
     allowHttp: net?.allow_http === true,
     storagePolicies: report.storagePolicies,
     file: true,
+    source: text,
   };
 }
 

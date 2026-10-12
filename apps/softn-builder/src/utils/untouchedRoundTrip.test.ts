@@ -139,16 +139,6 @@ describe('a permission.json that declares nothing', () => {
     expect(json(out.get('permission.json'))).toEqual({ permissions: {} });
   });
 
-  it('is what a declaration that turns everything off comes to as well', async () => {
-    // "Empty" is a file in which nothing is enabled: no `permissions`, an
-    // empty one, or entries that are each switched off.
-    for (const written of ['{}', '{ "permissions": { "net": { "enabled": false } } }']) {
-      await open(studioBundle({ permission: written }));
-      const out = await exported();
-      expect(json(out.get('permission.json')), written).toEqual({ permissions: {} });
-    }
-  });
-
   it('is kept through a saved session, and is not made for a bundle that had no file', async () => {
     await open(studioBundle());
     commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(captureSession('design'))));
@@ -158,6 +148,17 @@ describe('a permission.json that declares nothing', () => {
     expect((await exported()).has('permission.json')).toBe(false);
   });
 
+  it('leaves as the file it came as, however it spells nothing', async () => {
+    // "Empty" is a file in which nothing is enabled: no `permissions`, an
+    // empty one, or entries that are each switched off. Each was written
+    // as `{ "permissions": {} }`, which declares the same; it is not
+    // rewritten now that the file is kept as it came.
+    for (const written of ['{}', '{ "permissions": { "net": { "enabled": false } } }', '{ "permissions": {} }']) {
+      await open(studioBundle({ permission: written }));
+      expect(text((await exported()).get('permission.json')), written).toBe(written);
+    }
+  });
+
   it('stays the file it is when something is declared and then taken away again', async () => {
     await open(studioBundle());
     const project = useProjectStore.getState();
@@ -165,6 +166,60 @@ describe('a permission.json that declares nothing', () => {
     expect(json((await exported()).get('permission.json'))).toEqual({ permissions: { net: { enabled: true } } });
     useProjectStore.getState().setPermissions({ ...useProjectStore.getState().permissions, capabilities: [] });
     expect(json((await exported()).get('permission.json'))).toEqual({ permissions: {} });
+  });
+});
+
+describe('a permission.json with more in it than the Builder shows', () => {
+  // As the demos and FormLogic's exports write them. `app.id` is what an
+  // app's sync rooms are scoped by (core, sync-room-security.ts); the limits
+  // are read by the runtime (`ai.allowedSources` keeps a model to the
+  // sources named, `mic.maxSeconds` caps a recording). The Builder models the
+  // capabilities, `net`'s hosts and `storage`'s policies, and wrote only
+  // those: every demo that declared more lost it in an untouched export, and
+  // a FormLogic app saved back from the Visual Builder lost its `app.id`.
+  const WRITTEN = `{
+  "app": { "id": "com.example.chat", "name": "Chat", "version": "1.0.0" },
+  "permissions": {
+    "ai": { "enabled": true, "maxModelSizeMB": 600, "allowedSources": ["bundle", "huggingface"] },
+    "net": { "enabled": true, "allowed_hosts": ["huggingface.co"], "allow_http": false },
+    "mic": { "enabled": true, "maxSeconds": 20 },
+    "hologram": { "enabled": true }
+  }
+}
+`;
+  const permission = async () => json((await exported()).get('permission.json')) as { app?: unknown; permissions: Record<string, Record<string, unknown>> };
+
+  it('leaves untouched as it came, byte for byte', async () => {
+    await open(studioBundle({ permission: WRITTEN }));
+    expect(text((await exported()).get('permission.json'))).toBe(WRITTEN);
+  });
+
+  it('keeps what the Builder does not show when what it does show is changed', async () => {
+    await open(studioBundle({ permission: WRITTEN }));
+    const project = useProjectStore.getState();
+    project.setPermissions({ ...project.permissions, capabilities: ['net', 'mic', 'storage'], allowedHosts: ['huggingface.co', 'cdn.example.com'], storagePolicies: { books: 'private' } });
+    const out = await permission();
+    expect(out.app).toEqual({ id: 'com.example.chat', name: 'Chat', version: '1.0.0' });
+    expect(out.permissions).toEqual({
+      // Turned off in the Builder: gone, as the Builder writes a capability it does not ask for.
+      net: { enabled: true, allowed_hosts: ['huggingface.co', 'cdn.example.com'], allow_http: false },
+      mic: { enabled: true, maxSeconds: 20 },
+      // A capability this Builder does not know is not its to take away.
+      hologram: { enabled: true },
+      storage: { enabled: true, collections: { books: 'private' } },
+    });
+  });
+
+  it('keeps it through a saved session', async () => {
+    await open(studioBundle({ permission: WRITTEN }));
+    commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(captureSession('design'))));
+    expect(text((await exported()).get('permission.json'))).toBe(WRITTEN);
+    const project = useProjectStore.getState();
+    project.setPermissions({ ...project.permissions, allowHttp: true });
+    const out = await permission();
+    expect(out.app).toEqual({ id: 'com.example.chat', name: 'Chat', version: '1.0.0' });
+    expect(out.permissions.ai).toEqual({ enabled: true, maxModelSizeMB: 600, allowedSources: ['bundle', 'huggingface'] });
+    expect(out.permissions.net).toEqual({ enabled: true, allowed_hosts: ['huggingface.co'], allow_http: true });
   });
 });
 
@@ -303,5 +358,7 @@ describe('opened and exported with nothing touched', () => {
     expect(Object.keys(after)).toEqual(Object.keys(before));
     // And no file is added to the archive or left out of it.
     expect([...output.keys()].sort()).toEqual([...input.keys()].sort());
+    // What the app declares it needs is the file it came with.
+    expect(text(output.get('permission.json'))).toBe(text(input.get('permission.json')));
   });
 });
