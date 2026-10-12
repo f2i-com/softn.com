@@ -197,8 +197,14 @@ export class Lexer {
     //
     // Not inside an expression, where `<` is a comparison — the mirror of the
     // guard `>` already has below. Without this, `{count < limit}` lexed as a
-    // tag open and the rest of the element was consumed as markup.
-    if (this.ch === '<' && this.inExpression === 0 && this.inControlFlow === 0) {
+    // tag open and the rest of the element was consumed as markup. Nor in
+    // words, where it cannot begin a tag (see ltOpensMarkup).
+    if (
+      this.ch === '<' &&
+      this.inExpression === 0 &&
+      this.inControlFlow === 0 &&
+      (this.inTag || this.ltOpensMarkup(this.position))
+    ) {
       return this.readTagStart();
     }
 
@@ -1061,7 +1067,11 @@ export class Lexer {
     const next = this.source[i] ?? '';
     const after = this.source[i + 1] ?? '';
     const startsText =
-      next !== '' && next !== '<' && next !== '{' && next !== '#' && !(next === '/' && after === '/');
+      next !== '' &&
+      !(next === '<' && this.ltOpensMarkup(i)) &&
+      next !== '{' &&
+      next !== '#' &&
+      !(next === '/' && after === '/');
     if (startsText) return this.readTextContent();
     const opensTag = next === '<' && /[A-Za-z_$]/.test(after);
     if ((next === '{' || opensTag) && !sawNewline) {
@@ -1084,7 +1094,7 @@ export class Lexer {
     const startPos = this.position;
 
     let content = '';
-    while (this.ch !== '' && this.ch !== '<' && this.ch !== '{') {
+    while (this.ch !== '' && !(this.ch === '<' && this.ltOpensMarkup(this.position)) && this.ch !== '{') {
       // Check for escape sequences
       if (this.ch === '\\') {
         const nextCh = this.peekChar();
@@ -1382,6 +1392,17 @@ export class Lexer {
       startPos,
       this.position
     );
+  }
+
+  /**
+   * Whether the `<` at `at` can begin markup: a tag, a closing tag or a
+   * comment. One followed by anything else is words, as HTML reads it:
+   * `1 < 2`, `I <3 it`, `a <= b`. Read as a tag, the rest of the paragraph
+   * became an element named "" and the page drew "Unknown component: <>"
+   * under a diagnostic about spreading attributes.
+   */
+  private ltOpensMarkup(at: number): boolean {
+    return /[A-Za-z_$/!>]/.test(this.source[at + 1] ?? '');
   }
 
   /**

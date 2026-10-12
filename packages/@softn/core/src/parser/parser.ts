@@ -1407,6 +1407,28 @@ export class Parser {
     } else {
       // Fallback to undefined handler
       handler = createIdentifier('undefined', this.currentLoc());
+      // `@click="save()"` is how other frameworks write a handler. Here the
+      // quotes make it words, and the button had no handler and nothing to
+      // say so. It still has none, and now the page says what to write. A
+      // warning: the page runs, and the Builder, which takes an error for a
+      // page it cannot write back as written, could write this one and still
+      // can.
+      if (this.curTokenIs(TokenType.STRING)) {
+        const written = this.curToken.literal.trim();
+        const event = `@${name}${modifiers.map((modifier) => `.${modifier}`).join('')}`;
+        const braced =
+          written === ''
+            ? '{…}'
+            : /^[A-Za-z_$][\w$]*$/.test(written)
+              ? `{${written}}`
+              : `{() => ${written}}`;
+        this.diagnostics.push({
+          message: `${event} takes its handler in braces, not in quotes: write ${event}=${braced}`,
+          severity: 'warning',
+          loc,
+        });
+        this.nextToken();
+      }
     }
 
     return modifiers.length > 0
@@ -1455,7 +1477,7 @@ export class Parser {
   /**
    * Parse an if block
    */
-  private parseIfBlock(): IfBlock {
+  private parseIfBlock(head?: SourceLocation): IfBlock {
     const loc = this.currentLoc();
     this.nextToken(); // consume 'if'
 
@@ -1511,13 +1533,13 @@ export class Parser {
       this.nextToken();
 
       if (this.curTokenIs(TokenType.ELSEIF)) {
-        alternate = this.parseIfBlock();
+        alternate = this.parseIfBlock(head ?? loc);
         return { type: 'IfBlock', condition, consequent, alternate, loc };
       } else if (this.curTokenIs(TokenType.ELSE) && this.peekToken.type === TokenType.IF) {
         // `#else if (…)`: the lexer keeps the header open for exactly this
         // spelling, and it is the same chain link `#elseif (…)` makes.
         this.nextToken(); // consume 'else'; parseIfBlock consumes the 'if'
-        alternate = this.parseIfBlock();
+        alternate = this.parseIfBlock(head ?? loc);
         return { type: 'IfBlock', condition, consequent, alternate, loc };
       } else if (this.curTokenIs(TokenType.ELSE)) {
         this.nextToken();
@@ -1561,9 +1583,34 @@ export class Parser {
     if (this.curTokenIs(TokenType.HASH) && this.peekToken.type === TokenType.END) {
       this.nextToken();
       this.nextToken();
+    } else {
+      this.reportMissingEnd('#if', head ?? loc);
     }
 
     return { type: 'IfBlock', condition, consequent, alternate, loc };
+  }
+
+  /**
+   * A block that reached the end of its element, or of the page, with no
+   * `#end`. It still ends there, as it always has; what changes is that the
+   * page says so. Silently, everything after a forgotten `#end` was shown
+   * only when the condition held, or once per item, and `#endif` — how other
+   * template languages close a block — is words here and did the same.
+   *
+   * A warning and not an error: the page still runs, and an editor that can
+   * write it back still can (the Builder treats an error as a page it cannot
+   * write without loss).
+   */
+  private reportMissingEnd(block: '#if' | '#each', loc: SourceLocation): void {
+    const where = this.curTokenIs(TokenType.EOF) ? 'the page' : 'the element it is in';
+    let message = `This ${block} has no #end, so it runs to the end of ${where}. Write #end where it should stop`;
+    const between = this.source.slice(loc.start, this.curToken.start);
+    const other = /#(?:endif|endeach|endfor|end-if|end_if|\/if|\/each)\b/i.exec(between);
+    if (other) {
+      const line = loc.line + (between.slice(0, other.index).match(/\n/g)?.length ?? 0);
+      message += ` ("${other[0]}" on line ${line} is not one: SoftN closes every block with #end)`;
+    }
+    this.diagnostics.push({ message, severity: 'warning', loc });
   }
 
   /**
@@ -1733,6 +1780,8 @@ export class Parser {
     if (this.curTokenIs(TokenType.HASH) && this.peekToken.type === TokenType.END) {
       this.nextToken();
       this.nextToken();
+    } else {
+      this.reportMissingEnd('#each', loc);
     }
 
     return {
@@ -2164,6 +2213,55 @@ export class Parser {
     return expr;
   }
 
+  /**
+   * The body of an arrow, after its `=>`.
+   *
+   * `() => { a = 1; b = 2 }` is a block of statements, which markup does not
+   * read (the language reference says so). Its braces were read as a record
+   * being made, so what the page said was about a record: a default written
+   * in one, then a stray ";". The body is still read as it was, since a page
+   * may lean on what part of it does; what changes is that a body in braces
+   * that does not read as a record is reported once, as the block it is.
+   */
+  private parseArrowBody(): Expression {
+    if (!this.curTokenIs(TokenType.EXPR_START)) return this.parseExpression();
+    const loc = this.currentLoc();
+    const firstDiagnostic = this.diagnostics.length;
+    const body = this.parseExpression();
+    // A record and nothing else is how the braces read without a word said;
+    // `{ save() }` read as calling the record `{ save }`, which throws when
+    // the button is pressed, and so did nothing with nothing to say why.
+    // That one is a warning, as reading it was silent before: the Builder
+    // takes an error for a page it cannot write back as written, and it could
+    // write that page. One that was reported before stays an error.
+    const reported = this.diagnostics.length > firstDiagnostic;
+    if (reported || body.type !== 'ObjectExpression') {
+      this.diagnostics.splice(firstDiagnostic);
+      // A ";" is the block going on: step over the rest of it, to its "}",
+      // so the expression that holds the arrow closes where it was written.
+      if (this.curTokenIs(TokenType.SEMICOLON)) {
+        let depth = 0;
+        while (!this.curTokenIs(TokenType.EOF)) {
+          if (this.curTokenIs(TokenType.EXPR_START)) depth++;
+          else if (this.curTokenIs(TokenType.EXPR_END) && depth-- === 0) {
+            this.nextToken();
+            break;
+          }
+          this.nextToken();
+        }
+      }
+      this.diagnostics.push({
+        message:
+          'An arrow whose body is in braces, () => { … }, is a block of statements, and markup reads none: ' +
+          'what runs is not what is written. Put the statements in a logic function and call it, as in ' +
+          '@click={() => save()}',
+        severity: reported ? 'error' : 'warning',
+        loc,
+      });
+    }
+    return body;
+  }
+
   private parsePrimary(): Expression {
     const loc = this.currentLoc();
 
@@ -2176,7 +2274,7 @@ export class Parser {
         this.nextToken(); // consume )
         if (this.curTokenIs(TokenType.ARROW)) {
           this.nextToken();
-          const body = this.parseExpression();
+          const body = this.parseArrowBody();
           return { type: 'ArrowFunctionExpression', params: [], body, async: false, loc };
         }
         return createIdentifier('undefined', loc);
@@ -2211,7 +2309,7 @@ export class Parser {
           this.dropInvalidTargets(firstDiagnostic);
           this.dropCoverDefaults(firstDiagnostic);
           this.nextToken(); // consume =>
-          const body = this.parseExpression();
+          const body = this.parseArrowBody();
           const params: string[] = [];
           for (const param of patterns) patternNames(param.pattern, params);
           const plain = patterns.every(
@@ -2230,7 +2328,7 @@ export class Parser {
           loc,
         });
         this.nextToken(); // consume =>
-        const body = this.parseExpression();
+        const body = this.parseArrowBody();
         return { type: 'ArrowFunctionExpression', params: [], body, async: false, loc };
       }
 
@@ -2309,7 +2407,7 @@ export class Parser {
       this.nextToken();
       if (this.curTokenIs(TokenType.ARROW)) {
         this.nextToken();
-        const body = this.parseExpression();
+        const body = this.parseArrowBody();
         return { type: 'ArrowFunctionExpression', params: [name], body, async: false, loc };
       }
       return createIdentifier(name, loc);
@@ -2658,7 +2756,52 @@ export class Parser {
     while (token.type === TokenType.COMMENT && this.lexer.inExpressionContext()) {
       token = this.lexer.nextToken();
     }
+    this.noteMistakesIn(token);
     return token;
+  }
+
+  /**
+   * Two things written in a page's words that do not do what was meant, said
+   * where they are written. Every token passes here once, as it is read.
+   *
+   * - `// note</p>`: in markup `//` begins a comment wherever a new piece of
+   *   the page begins (after an expression or an element too), and the
+   *   comment runs to the end of the line, closing tag and all. What was said
+   *   was a mismatched tag at the parent's closing tag, lines away. A line of
+   *   markup commented out, `// <Button>Save</Button>`, opens what it closes
+   *   and is not this.
+   * - `#elif` and `#elsif` at the start of a line: other template languages'
+   *   `#elseif`. Not a block here, so they were words, drawn inside the
+   *   branch before them along with the branch they meant to start.
+   */
+  private noteMistakesIn(token: Token): void {
+    if (token.type === TokenType.COMMENT && this.source.startsWith('//', token.start)) {
+      const closing = /<\/([A-Za-z][\w.:-]*)\s*>/.exec(token.literal);
+      if (closing && !token.literal.slice(0, closing.index).includes(`<${closing[1]}`)) {
+        const words = token.literal.slice(0, closing.index).trim();
+        this.diagnostics.push({
+          message:
+            `This // comment runs to the end of its line and takes the "${closing[0]}" after it with it. ` +
+            `Put the comment on a line of its own, or write the words in braces, as in {"// ${words}"}`,
+          severity: 'error',
+          loc: { line: token.line, column: token.column, start: token.start, end: token.end },
+        });
+      }
+      return;
+    }
+    if (token.type !== TokenType.TEXT) return;
+    const written = this.source.slice(token.start, token.end);
+    for (const match of written.matchAll(/#(elif|elsif)\b/g)) {
+      const at = token.start + match.index;
+      const lineStart = this.source.lastIndexOf('\n', at - 1) + 1;
+      if (this.source.slice(lineStart, at).trim() !== '') continue;
+      const line = token.line + (this.source.slice(token.start, at).match(/\n/g)?.length ?? 0);
+      this.diagnostics.push({
+        message: `"${match[0]}" is not a SoftN block, so it is shown as words: write #elseif (or #else if)`,
+        severity: 'warning',
+        loc: { line, column: at - lineStart + 1, start: at, end: at + match[0].length },
+      });
+    }
   }
 
   private curTokenIs(type: TokenType): boolean {
