@@ -100,7 +100,9 @@ function normaliseOption(option: SelectOption | SelectOptionGroup | string | num
     }
     return option;
   }
-  return { value: String(option), label: String(option) };
+  // Its own value, so choosing `2` from `options={[1, 2, 3]}` hands back the
+  // number, as Radio and SegmentedControl do; it is shown as text.
+  return { value: option as string, label: String(option) };
 }
 
 /**

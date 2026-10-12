@@ -10,9 +10,22 @@ import { tabbableWithin } from './layer-stack';
 /** How long the pointer may spend crossing the gap to a hover popover. */
 const HOVER_CLOSE_DELAY = 120;
 
+/**
+ * The trigger and the popup's content. A page can give a prop only text, so
+ * a Popover opened from a Button or an Icon could not be written in one.
+ * Without `trigger`, the first child is the trigger and the rest is the
+ * content; the space a page writes between them is no child.
+ */
+function triggerAndContent(trigger: React.ReactNode, children: React.ReactNode): [React.ReactNode, React.ReactNode] {
+  if (trigger !== undefined && trigger !== null && trigger !== '') return [trigger, children];
+  const parts = React.Children.toArray(children).filter((child) => !(typeof child === 'string' && child.trim() === ''));
+  return [parts[0], parts.slice(1)];
+}
+
 export interface PopoverProps {
   /** Trigger element */
   trigger: React.ReactNode;
+  // Without it, the first child is the trigger (see triggerAndContent).
   /** Popover content */
   children?: React.ReactNode;
   /** Placement of the popover */
@@ -54,6 +67,7 @@ export function Popover({
   className,
   style,
 }: PopoverProps): React.ReactElement {
+  const [triggerNode, content] = triggerAndContent(trigger, children);
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const containerRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLSpanElement>(null);
@@ -98,7 +112,7 @@ export function Popover({
     const wrapper = triggerRef.current;
     if (!wrapper) return;
     setWrapperIsButton(tabbableWithin(wrapper).filter((el) => el !== wrapper).length === 0);
-  }, [trigger]);
+  }, [triggerNode]);
 
   // The trigger control announces what it opens and whether it is open.
   useEffect(() => {
@@ -387,7 +401,7 @@ export function Popover({
             }
           : {})}
       >
-        {trigger}
+        {triggerNode}
       </span>
       {isOpen && (
         <div
@@ -399,7 +413,7 @@ export function Popover({
           style={popoverStyle}
         >
           {showArrow && <div aria-hidden="true" style={getArrowStyles()} />}
-          {children}
+          {content}
         </div>
       )}
     </span>

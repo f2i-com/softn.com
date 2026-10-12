@@ -106,7 +106,9 @@ export const PERMISSION_INFO: Record<string, { label: string; description: strin
   // ai, gpu and sync are enforced by the runtime and were once missing here, so
   // a bundle asking for them was described as "No specific permissions
   // requested" — the dialog granted what it declined to name. sync is the one
-  // that matters most: it replicates the app's database to peers.
+  // that matters most: it replicates the app's database to the person's other
+  // devices, peer to peer and through the sync server its manifest names, which
+  // starts only with this declaration and the person's yes.
   ai: {
     label: 'AI models',
     description: 'Download and run machine-learning models in your browser.',
@@ -131,8 +133,8 @@ export const PERMISSION_INFO: Record<string, { label: string; description: strin
     ),
   },
   sync: {
-    label: 'Peer-to-peer sync',
-    description: "Replicate this app's database to other devices over the network.",
+    label: 'Sync',
+    description: "Replicate this app's database to your other devices, directly or through its sync server.",
     icon: svg(
       <>
         <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.6-4.2" />

@@ -65,6 +65,21 @@ const toolbarButtons: ToolbarButton[] = [
 /** Commands that are on or off for the selection, reported as `aria-pressed`. */
 const TOGGLE_COMMANDS = new Set(['bold', 'italic', 'underline', 'strikeThrough', 'insertUnorderedList', 'insertOrderedList']);
 
+/** Schemes a link may have: a web, mail or phone address, nothing a click would run. */
+const LINK_SCHEMES = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
+/**
+ * The address typed into the link field, as the link's href, or null when it
+ * is not one a link may have. Without a scheme it is a web address.
+ */
+function linkAddress(typed: string): string | null {
+  const text = typed.trim();
+  if (!text) return null;
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text);
+  if (!scheme) return /\s/.test(text) ? null : `https://${text}`;
+  return LINK_SCHEMES.has(scheme[1].toLowerCase() + ':') ? text : null;
+}
+
 function queryState(command: string): boolean {
   try {
     return typeof document.queryCommandState === 'function' && document.queryCommandState(command);
@@ -93,6 +108,15 @@ export function RichTextEditor({
   const [isEmpty, setIsEmpty] = useState(true);
   const [focused, setFocused] = useState(false);
   const [pressed, setPressed] = useState<Record<string, boolean>>({});
+  // The Link button's field. It used `prompt()`, which a sandboxed frame
+  // refuses, so the button did nothing where apps run. `linkRange` is the
+  // selection when the field opened: focus in the field takes it from the
+  // editor, and it is put back before the link is made.
+  const [linking, setLinking] = useState(false);
+  const [linkText, setLinkText] = useState('');
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const linkRange = useRef<Range | null>(null);
+  const linkFieldRef = useRef<HTMLInputElement>(null);
   /** The toolbar is one tab stop; arrow keys move between its buttons. */
   const [toolbarIndex, setToolbarIndex] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -175,14 +199,19 @@ export function RichTextEditor({
     (command: string, value?: string) => {
       if (disabled || readOnly) return;
 
+      if (command === 'createLink') {
+        const selection = document.getSelection?.();
+        const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+        linkRange.current = range && editorRef.current?.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
+        setLinkText('');
+        setLinkError(null);
+        setLinking(true);
+        return;
+      }
+
       editorRef.current?.focus();
 
-      if (command === 'createLink') {
-        const url = prompt('Enter URL:', 'https://');
-        if (url) {
-          document.execCommand(command, false, url);
-        }
-      } else if (command === 'formatBlock' && value) {
+      if (command === 'formatBlock' && value) {
         document.execCommand(command, false, `<${value}>`);
       } else {
         document.execCommand(command, false, value);
@@ -193,6 +222,76 @@ export function RichTextEditor({
     },
     [disabled, readOnly, handleInput, refreshPressed]
   );
+
+  useEffect(() => {
+    if (linking) linkFieldRef.current?.focus();
+  }, [linking]);
+
+  /** Focus back in the editor, on the selection it had when the link field opened. */
+  const restoreSelection = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+    const range = linkRange.current;
+    const selection = document.getSelection?.();
+    if (range && selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }, []);
+
+  const closeLink = useCallback(() => {
+    setLinking(false);
+    setLinkError(null);
+    restoreSelection();
+  }, [restoreSelection]);
+
+  const applyLink = useCallback(() => {
+    const href = linkAddress(linkText);
+    if (!href) {
+      setLinkError('Enter a web, mail or phone address: https://…, mailto:… or tel:…');
+      return;
+    }
+    setLinking(false);
+    setLinkError(null);
+    restoreSelection();
+    const editor = editorRef.current;
+    const range = linkRange.current;
+    if (!editor) return;
+    if (!range || range.collapsed) {
+      // Nothing was selected: the address is the link's text, where the
+      // caret was (or at the end).
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.textContent = href;
+      if (range) range.insertNode(anchor);
+      else editor.appendChild(anchor);
+      const selection = document.getSelection?.();
+      if (selection) {
+        const after = document.createRange();
+        after.setStartAfter(anchor);
+        after.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(after);
+      }
+    } else {
+      document.execCommand('createLink', false, href);
+    }
+    linkRange.current = null;
+    handleInput();
+    refreshPressed();
+  }, [linkText, restoreSelection, handleInput, refreshPressed]);
+
+  const handleLinkKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applyLink();
+    } else if (e.key === 'Escape') {
+      // Prevented, so a Modal or Drawer around the editor stays open.
+      e.preventDefault();
+      closeLink();
+    }
+  };
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -292,6 +391,34 @@ export function RichTextEditor({
     position: 'relative',
   };
 
+  const linkRowStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: '0.375rem',
+    padding: '0.5rem',
+    borderBottom: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+    background: 'var(--color-surface-hover, rgba(255, 255, 255, 0.04))',
+  };
+
+  const linkFieldStyle: React.CSSProperties = {
+    flex: '1 1 12rem',
+    minWidth: 0,
+    padding: '0.375rem 0.5rem',
+    border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+    borderRadius: '0.25rem',
+    background: 'var(--color-surface, transparent)',
+    color: 'var(--color-text, inherit)',
+    font: 'inherit',
+    fontSize: '0.8125rem',
+  };
+
+  const linkErrorStyle: React.CSSProperties = {
+    flexBasis: '100%',
+    fontSize: '0.75rem',
+    color: 'var(--color-error-500, currentColor)',
+  };
+
   const placeholderStyle: React.CSSProperties = {
     position: 'absolute',
     top: '1rem',
@@ -331,6 +458,7 @@ export function RichTextEditor({
                 title={button.label}
                 aria-label={button.label}
                 aria-pressed={TOGGLE_COMMANDS.has(button.command) ? !!pressed[button.command] : undefined}
+                aria-expanded={button.command === 'createLink' ? linking : undefined}
                 tabIndex={index === toolbarIndex ? 0 : -1}
                 onFocus={() => setToolbarIndex(index)}
                 style={
@@ -358,6 +486,37 @@ export function RichTextEditor({
               </button>
             </React.Fragment>
           ))}
+        </div>
+      )}
+      {linking && (
+        <div role="group" aria-label="Add a link" style={linkRowStyle}>
+          <input
+            ref={linkFieldRef}
+            type="url"
+            inputMode="url"
+            aria-label="Link address"
+            aria-invalid={linkError ? true : undefined}
+            aria-describedby={linkError ? `${editorId}-link-error` : undefined}
+            placeholder="https://"
+            value={linkText}
+            onChange={(e) => {
+              setLinkText(e.target.value);
+              setLinkError(null);
+            }}
+            onKeyDown={handleLinkKeyDown}
+            style={linkFieldStyle}
+          />
+          <button type="button" onClick={applyLink} style={toolbarButtonStyle}>
+            Add link
+          </button>
+          <button type="button" onClick={closeLink} style={toolbarButtonStyle}>
+            Cancel
+          </button>
+          {linkError && (
+            <span id={`${editorId}-link-error`} role="alert" style={linkErrorStyle}>
+              {linkError}
+            </span>
+          )}
         </div>
       )}
       <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column' }}>

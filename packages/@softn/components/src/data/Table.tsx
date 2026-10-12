@@ -7,6 +7,7 @@
 import React from 'react';
 import { choice } from '../utils/choice';
 import { presentRows, recordRows } from '../utils/rows';
+import { sortRows } from '../utils/sort';
 
 export interface Column<T> {
   /** Column key (maps to data property) */
@@ -162,9 +163,27 @@ export function Table<T extends Record<string, unknown>>({
 }: TableProps<T>): React.ReactElement {
   const sizes = choice(sizeStyles, size, 'md');
   // Bound to rows that have not arrived, the table is empty, not an error.
-  const data = presentRows<T>(rawData);
+  const given = presentRows<T>(rawData);
   const columns = recordRows<Column<T>>(rawColumns);
   const captionId = React.useId();
+
+  // Without `onSort` the table sorts its rows itself: a sortable header was
+  // a button that did nothing. It starts from the sort the page names, and
+  // follows it when the page changes it. With `onSort` the page sorts, and
+  // the rows are drawn in the order it gives them.
+  const [ownSort, setOwnSort] = React.useState({ column: sortColumn, direction: sortDirection });
+  const [seenSort, setSeenSort] = React.useState({ column: sortColumn, direction: sortDirection });
+  if (seenSort.column !== sortColumn || seenSort.direction !== sortDirection) {
+    setSeenSort({ column: sortColumn, direction: sortDirection });
+    setOwnSort({ column: sortColumn, direction: sortDirection });
+  }
+  const sortsItself = !onSort;
+  const activeColumn = sortsItself ? ownSort.column : sortColumn;
+  const activeDirection = (sortsItself ? ownSort.direction : sortDirection) === 'desc' ? 'desc' : 'asc';
+  const data = React.useMemo(() => {
+    const by = sortsItself ? columns.find((column) => column.key === activeColumn && column.sortable) : undefined;
+    return by ? sortRows(given, (row) => row[by.key], activeDirection) : given;
+  }, [given, columns, sortsItself, activeColumn, activeDirection]);
 
   const getRowKey = (row: T, index: number): string => {
     if (typeof rowKey === 'function') {
@@ -174,10 +193,10 @@ export function Table<T extends Record<string, unknown>>({
   };
 
   const handleSort = (column: Column<T>) => {
-    if (!column.sortable || !onSort) return;
-
-    const newDirection = sortColumn === column.key && sortDirection === 'asc' ? 'desc' : 'asc';
-    onSort(column.key, newDirection);
+    if (!column.sortable) return;
+    const newDirection = activeColumn === column.key && activeDirection === 'asc' ? 'desc' : 'asc';
+    if (onSort) onSort(column.key, newDirection);
+    else setOwnSort({ column: column.key, direction: newDirection });
   };
 
   const containerStyle: React.CSSProperties = {
@@ -248,8 +267,8 @@ export function Table<T extends Record<string, unknown>>({
   // Get aria-sort value for sortable columns
   const getAriaSort = (column: Column<T>): 'ascending' | 'descending' | 'none' | undefined => {
     if (!column.sortable) return undefined;
-    if (sortColumn === column.key) {
-      return sortDirection === 'asc' ? 'ascending' : 'descending';
+    if (activeColumn === column.key) {
+      return activeDirection === 'asc' ? 'ascending' : 'descending';
     }
     return 'none';
   };
@@ -298,7 +317,7 @@ export function Table<T extends Record<string, unknown>>({
                     }}
                   >
                     {column.header}
-                    <SortIcon active={sortColumn === column.key} direction={sortDirection} />
+                    <SortIcon active={activeColumn === column.key} direction={activeDirection} />
                   </button>
                 ) : (
                   column.header

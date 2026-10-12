@@ -17,6 +17,7 @@ import type { SoftNRenderContext, SoftNComponent } from '@softn/core';
 import { mount, click, type, check } from './dom';
 import { Select } from '../src/form/Select';
 import { Radio } from '../src/form/Radio';
+import { SegmentedControl } from '../src/form/SegmentedControl';
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -30,13 +31,16 @@ function press(element: Element | null | undefined, key: string): void {
 }
 
 /** A page of `.ui` source over real state, as the runtime keeps it. */
-function App({ source, initial }: { source: string; initial: Record<string, unknown> }) {
+function App({ source, initial, writes = [] }: { source: string; initial: Record<string, unknown>; writes?: unknown[] }) {
   const [state, setState] = useState(initial);
   const registry = new ComponentRegistry();
-  registry.registerAll({ Select, Radio } as unknown as Record<string, SoftNComponent>);
+  registry.registerAll({ Select, Radio, SegmentedControl } as unknown as Record<string, SoftNComponent>);
   const context = {
     state,
-    setState: (path: string, value: unknown) => setState((previous) => ({ ...previous, [path]: value })),
+    setState: (path: string, value: unknown) => {
+      writes.push(value);
+      setState((previous) => ({ ...previous, [path]: value }));
+    },
     data: {},
     props: {},
     functions: {},
@@ -107,5 +111,48 @@ describe('Radio with numbers for values', () => {
     expect(radios(container).map((r) => r.checked)).toEqual([true, false]);
     check(radios(container)[1]);
     expect(radios(container).map((r) => r.checked)).toEqual([false, true]);
+  });
+});
+
+/**
+ * What each of the three hands back when an option is chosen: the option's
+ * own value, as SegmentedControl always has. Radio handed back the text of a
+ * numbered option ("12" for 12), and Select the text of a bare number ("2"
+ * for `options={[1, 2, 3]}`), so `:bind` stored text where the options held
+ * numbers and `count === 2` was false after a pick.
+ */
+describe('the value a choice hands back', () => {
+  const pick = {
+    Radio: (container: HTMLElement, index: number) => check(radios(container)[index]),
+    Select: (container: HTMLElement, index: number) => {
+      click(trigger(container));
+      click(Array.from(container.querySelectorAll('[role="option"]'))[index]);
+    },
+    SegmentedControl: (container: HTMLElement, index: number) => click(Array.from(container.querySelectorAll('[role="radio"]'))[index]),
+  };
+
+  it.each(Object.keys(pick) as Array<keyof typeof pick>)('%s: a number for a numbered option, given as a record or bare', (tag) => {
+    for (const options of ['people', '[1, 2, 3]']) {
+      const writes: unknown[] = [];
+      const { container, unmount } = mount(<App source={`<${tag} :bind={owner} options={${options}} />`} initial={{ owner: null, people: PEOPLE }} writes={writes} />);
+      pick[tag](container, 1);
+      expect(writes, `${tag} ${options}`).toEqual([options === 'people' ? 12 : 2]);
+      unmount();
+    }
+  });
+
+  it.each(Object.keys(pick) as Array<keyof typeof pick>)('%s: text for an option that is text', (tag) => {
+    const writes: unknown[] = [];
+    const { container, unmount } = mount(<App source={`<${tag} :bind={plan} options={["solo", "team"]} />`} initial={{ plan: null }} writes={writes} />);
+    pick[tag](container, 1);
+    expect(writes).toEqual(['team']);
+    unmount();
+  });
+
+  it('Radio tells its own onChange the value too, with the event after it', () => {
+    const seen: unknown[] = [];
+    const { container } = mount(<Radio name="n" options={PEOPLE as never} onChange={(value) => seen.push(value)} />);
+    check(radios(container)[0]);
+    expect(seen).toEqual([7]);
   });
 });

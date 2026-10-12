@@ -190,3 +190,21 @@ describe('consent', () => {
     expect(diffCapabilities(['net', 'files'], ['net', 'camera'])).toEqual({ added: ['files'], removed: ['camera'] });
   });
 });
+
+describe('the sync capability, described', () => {
+  it('names both ways an app replicates its database, directly and through its sync server', () => {
+    // `sync` covers server sync as well as peer sync since a server sync
+    // started only when the bundle declares it and the person allows it. The
+    // dialog called it "Peer-to-peer sync", which was no longer all of it.
+    act(() =>
+      root.render(
+        <PermissionBar appName="Notes" config={{ permissions: { sync: { enabled: true } } }} capabilities={['sync']} appRootRef={{ current: null }} onAllow={() => {}} />
+      )
+    );
+    act(() => button('What this means').click());
+    const dialog = host.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).not.toContain('Peer-to-peer');
+    expect(dialog.textContent).toContain('Sync');
+    expect(dialog.textContent).toContain('directly or through its sync server');
+  });
+});

@@ -41,8 +41,12 @@ export interface DatePickerProps {
   error?: boolean | string;
   /** Date format for display */
   format?: 'yyyy-mm-dd' | 'mm/dd/yyyy' | 'dd/mm/yyyy';
+  // The day chosen as text, "YYYY-MM-DD" (null when the date is cleared),
+  // which is what `:bind` stores; then the same text ("" when cleared). It
+  // was handed a Date, which did not survive JSON, storage or sync; a Date, a
+  // timestamp or an ISO string is still taken as `value`.
   /** Change handler */
-  onChange?: (date: Date | null, dateString: string) => void;
+  onChange?: (date: string | null, dateString: string) => void;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -275,7 +279,8 @@ export function DatePicker({
       // a controlling parent — it showed a date the parent had not accepted.
       if (value === undefined) setSelectedDate(date);
       closeCalendar(true);
-      onChange?.(date, formatDateForInput(date));
+      const text = formatDateForInput(date);
+      onChange?.(text, text);
     },
     [onChange, value, isDateDisabled, closeCalendar]
   );
@@ -287,7 +292,8 @@ export function DatePicker({
       if (date) {
         setViewDate(date);
       }
-      onChange?.(date, e.target.value);
+      const text = formatDateForInput(date);
+      onChange?.(text || null, text);
     },
     [onChange, value]
   );

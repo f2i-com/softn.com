@@ -920,11 +920,10 @@ export function NavItem({
   onClick,
   active = false,
   collapsed = false,
-  variant: _variant = 'default',
+  variant = 'default',
   className,
   style,
 }: NavItemProps): React.ReactElement {
-  // _variant can be used for future styling variants
   const handleClick = () => {
     onClick?.();
   };
@@ -954,16 +953,34 @@ export function NavItem({
     position: 'relative',
   };
 
-  const activeStyle: React.CSSProperties = active
-    ? {
-        background: 'var(--color-primary, #6366f1)',
-        color: 'var(--color-primary-text, white)',
-      }
-    : {};
+  // What the variant draws, current page or not. Default fills the current
+  // page with the primary colour; ghost never fills, and marks the current
+  // page with a light wash and full text colour; primary is filled either
+  // way, an action in a list of places, and a shade deeper when current.
+  const kind = variant === 'ghost' || variant === 'primary' ? variant : 'default';
+  const primary = 'var(--color-primary, #6366f1)';
+  const variantStyle: React.CSSProperties =
+    kind === 'primary'
+      ? {
+          background: active ? `var(--color-primary-600, ${primary})` : primary,
+          color: 'var(--color-primary-text, white)',
+        }
+      : !active
+        ? {}
+        : kind === 'ghost'
+          ? {
+              background: 'var(--color-surface-hover, rgba(255, 255, 255, 0.06))',
+              color: 'var(--color-text, inherit)',
+              fontWeight: 600,
+            }
+          : {
+              background: primary,
+              color: 'var(--color-primary-text, white)',
+            };
 
   const buttonStyle: React.CSSProperties = {
     ...baseStyle,
-    ...activeStyle,
+    ...variantStyle,
     ...style,
   };
 
@@ -985,10 +1002,13 @@ export function NavItem({
   return (
     <>
       <style>{`
-        .softn-nav-item:hover:not(.active) {
+        .softn-nav-item:hover:not(.active):not(.softn-nav-item--primary) {
           background: var(--nav-item-hover-bg, rgba(255, 255, 255, 0.06)) !important;
           color: var(--nav-item-hover-text, rgba(255, 255, 255, 0.95)) !important;
           transform: translateX(2px);
+        }
+        .softn-nav-item--primary:hover:not(.active) {
+          filter: brightness(1.08);
         }
         .softn-nav-item:active {
           transform: scale(0.98) translateX(0);
@@ -1024,7 +1044,7 @@ export function NavItem({
       `}</style>
       <button
         type="button"
-        className={`softn-nav-item ${active ? 'active' : ''} ${collapsed ? 'collapsed' : ''} ${className || ''}`}
+        className={`softn-nav-item softn-nav-item--${kind} ${active ? 'active' : ''} ${collapsed ? 'collapsed' : ''} ${className || ''}`}
         style={buttonStyle}
         onClick={handleClick}
         data-page={page}

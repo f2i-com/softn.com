@@ -47,7 +47,8 @@ export interface RadioProps {
 /**
  * `options={['a', 'b']}` is what SmartForm and Select accept, and here it
  * rendered a row of unlabelled radios with no value. A missing list renders
- * no options rather than throwing.
+ * no options rather than throwing. A bare option keeps its own value: a
+ * number stays a number, which is what choosing it hands back.
  */
 function normaliseOptions(options: unknown): RadioOption[] {
   if (!Array.isArray(options)) return [];
@@ -56,7 +57,7 @@ function normaliseOptions(options: unknown): RadioOption[] {
     .map((option) =>
       typeof option === 'object'
         ? (option as RadioOption)
-        : { value: String(option), label: String(option) }
+        : { value: option as string, label: String(option) }
     );
 }
 
@@ -122,8 +123,12 @@ export function Radio({
     }
   }, [value]);
 
+  // The chosen option's own value, as SegmentedControl and Select hand back:
+  // the input only carries it as text, so a numbered option (a record's id)
+  // was stored as "12" where the options held 12.
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newValue = e.target.value;
+    const chosen = items.find((option) => String(option.value) === e.target.value);
+    const newValue = chosen ? chosen.value : e.target.value;
     if (!isControlled) {
       setInternalValue(newValue);
     }
@@ -200,7 +205,7 @@ export function Radio({
           const isDisabled = disabled || option.disabled;
           return (
             <label
-              key={option.value}
+              key={String(option.value)}
               style={{
                 ...optionStyle,
                 opacity: isDisabled ? 0.6 : 1,
@@ -210,7 +215,7 @@ export function Radio({
               <input
                 type="radio"
                 name={groupName}
-                value={option.value}
+                value={String(option.value)}
                 checked={sameChoice(selectedValue, option.value)}
                 disabled={isDisabled}
                 onChange={handleChange}

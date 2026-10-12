@@ -6,6 +6,7 @@
 
 import * as React from 'react';
 import { presentRows } from '../utils/rows';
+import { sortRows } from '../utils/sort';
 
 /**
  * A row, when nothing more specific is known about it. The grid is usually fed
@@ -73,6 +74,20 @@ function gridColumns<T>(given: unknown, data: T[]): DataGridColumn<T>[] {
   return keys.map((key) => ({ key, header: key }));
 }
 
+/** What a row holds for a column: through its accessor when it has one, else by its key. */
+function cellValue<T>(row: T, column: DataGridColumn<T>): unknown {
+  if (column.accessor) {
+    if (typeof column.accessor === 'function') {
+      return column.accessor(row);
+    }
+    return row[column.accessor];
+  }
+  // A column's key is a string chosen at run time, so the row is read as the
+  // keyed record it is in practice rather than through `T`, which may be any
+  // shape at all.
+  return (row as unknown as Row)[column.key];
+}
+
 export interface DataGridProps<T = Row> {
   /** The columns; without them, a column for each field of the rows */
   columns?: Array<DataGridColumn<T> | string>;
@@ -114,8 +129,8 @@ export function DataGrid<T = Row>({
   bordered = true,
   striped = false,
   hoverable = true,
-  sortKey,
-  sortDirection = 'asc',
+  sortKey: givenSortKey,
+  sortDirection: givenSortDirection = 'asc',
   onSort,
   filters: rawFilters,
   onFilterChange,
@@ -132,8 +147,19 @@ export function DataGrid<T = Row>({
   // A grid is routinely bound to rows that have not arrived: `data.length`
   // of undefined threw into the error boundary where an empty grid belonged.
   // A row that is not there (a hole in the list) is not a row.
-  const data = React.useMemo(() => presentRows<T>(rawData), [rawData]);
-  const columns = React.useMemo(() => gridColumns<T>(rawColumns, data), [rawColumns, data]);
+  const rows = React.useMemo(() => presentRows<T>(rawData), [rawData]);
+  const columns = React.useMemo(() => gridColumns<T>(rawColumns, rows), [rawColumns, rows]);
+  // Without `onSort` the grid sorts its rows itself (see Table): it starts
+  // from the sort the page names and follows it when the page changes it.
+  const [ownSort, setOwnSort] = React.useState({ key: givenSortKey, direction: givenSortDirection });
+  const [seenSort, setSeenSort] = React.useState({ key: givenSortKey, direction: givenSortDirection });
+  if (seenSort.key !== givenSortKey || seenSort.direction !== givenSortDirection) {
+    setSeenSort({ key: givenSortKey, direction: givenSortDirection });
+    setOwnSort({ key: givenSortKey, direction: givenSortDirection });
+  }
+  const sortsItself = !onSort;
+  const sortKey = sortsItself ? ownSort.key : givenSortKey;
+  const sortDirection: 'asc' | 'desc' = (sortsItself ? ownSort.direction : givenSortDirection) === 'desc' ? 'desc' : 'asc';
   const filters = rawFilters !== null && typeof rawFilters === 'object' ? rawFilters : {};
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = React.useState(0);
@@ -175,18 +201,14 @@ export function DataGrid<T = Row>({
     return (row[keyField] as string | number) ?? index;
   };
 
-  const getCellValue = (row: T, column: DataGridColumn<T>): unknown => {
-    if (column.accessor) {
-      if (typeof column.accessor === 'function') {
-        return column.accessor(row);
-      }
-      return row[column.accessor];
-    }
-    // A column's key is a string chosen at run time, so the row is read as the
-    // keyed record it is in practice rather than through `T`, which may be any
-    // shape at all.
-    return (row as unknown as Row)[column.key];
-  };
+  const getCellValue = cellValue;
+
+  // The rows in the order they are drawn: sorted by the grid itself when the
+  // page gave no `onSort`, as the page gave them otherwise.
+  const data = React.useMemo(() => {
+    const by = sortsItself ? columns.find((column) => column.key === sortKey && column.sortable) : undefined;
+    return by ? sortRows(rows, (row) => cellValue(row, by), sortDirection) : rows;
+  }, [rows, columns, sortsItself, sortKey, sortDirection]);
 
   // Virtual scrolling calculations. A row height of zero or less (or not a
   // number) would divide by zero; it is read as the default.
@@ -207,10 +229,9 @@ export function DataGrid<T = Row>({
   };
 
   const handleSort = (key: string) => {
-    if (onSort) {
-      const newDirection = sortKey === key && sortDirection === 'asc' ? 'desc' : 'asc';
-      onSort(key, newDirection);
-    }
+    const newDirection = sortKey === key && sortDirection === 'asc' ? 'desc' : 'asc';
+    if (onSort) onSort(key, newDirection);
+    else setOwnSort({ key, direction: newDirection });
   };
 
   const handleRowSelect = (rowKey: string | number) => {
