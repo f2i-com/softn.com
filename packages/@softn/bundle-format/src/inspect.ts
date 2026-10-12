@@ -8,10 +8,11 @@
  * or the runtime will refuse; warnings are what will make the listing worse
  * than it needs to be.
  *
- * The site keeps its own copy of this (apps/softn-site/src/lib/inspectBundle.ts),
- * because it does not depend on the engine; a test holds the two equal over
- * fixtures. The declaration is read by {@link inspectDeclaration}, which is
- * also what the runtime enforces.
+ * The site, which does not depend on the engine, imports this module as it
+ * is (apps/softn-site/src/lib/inspectBundle.ts). The directory's side of each
+ * check is apps/softn-api/lib/bundle.php, in PHP, and can only be kept equal
+ * by hand: a limit added there needs its line here. The declaration is read
+ * by {@link inspectDeclaration}, which is also what the runtime enforces.
  */
 
 import { openBundleArchive } from './zip';
@@ -45,6 +46,9 @@ export interface BundleInspection {
 const MAX_ENTRIES = 4000;
 const MAX_UNCOMPRESSED = 128 * 1024 * 1024;
 const MAX_ICON_BYTES = 512 * 1024;
+/** The two JSON files are decoded whole by the directory, so it caps them before reading. */
+const MAX_MANIFEST_BYTES = 256 * 1024;
+const MAX_PERMISSION_BYTES = 64 * 1024;
 /** Not limits — sizes past which a bundle is slow to open on a phone. */
 const LARGE_FILE_BYTES = 8 * 1024 * 1024;
 const LARGE_BUNDLE_BYTES = 48 * 1024 * 1024;
@@ -106,23 +110,64 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
+/**
+ * A UTF-8 byte order mark, which some editors put in front of a file. The
+ * decoder below drops it, as the runtime's does, so the JSON parses here; the
+ * directory's `json_decode` does not, and refuses the file as invalid JSON.
+ */
+function startsWithByteOrderMark(bytes: Uint8Array): boolean {
+  return bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+}
+
+function byteOrderMarkProblem(file: string): string {
+  return `The ${file} starts with a byte order mark, which the directory reads as invalid JSON. Save it as UTF-8 without one.`;
+}
+
+function unpackedTooLarge(total: number): string {
+  return `The bundle unpacks to ${fmt(total)}; the directory takes at most 128 MB.`;
+}
+
 /** Inspect bundle bytes. Never throws: an archive that will not open is a report with one error. */
 export function inspectBundle(bytes: Uint8Array): BundleInspection {
   let entries: Map<string, Uint8Array>;
   let unsafe: string[];
+  let backslashed: string[];
   try {
     const archive = openBundleArchive(bytes);
+    // The directory's two limits on the archive as a whole are read off its
+    // index, before anything is inflated. The reader's own limits are several
+    // times the directory's (500 MB against 128), so unpacking first spent up
+    // to 500 MB of this tab to learn what the index already said. The count
+    // is of records, folders included, because that is what the directory
+    // counts.
+    const names = archive.names();
+    const declared = names.reduce((n, name) => n + (archive.declaredSize(name) ?? 0), 0);
+    const over: string[] = [];
+    if (archive.recordCount() > MAX_ENTRIES) {
+      over.push(`The bundle has ${archive.recordCount()} entries, folders included; the directory takes at most ${MAX_ENTRIES}.`);
+    }
+    if (declared > MAX_UNCOMPRESSED) over.push(unpackedTooLarge(declared));
+    if (over.length > 0) {
+      const report = over.map((text): BundleReportLine => ({ level: 'error', text }));
+      return { ...nothingRead(), files: names.length, bytes: declared, report, problem: report[0].text };
+    }
     entries = archive.readAll();
     unsafe = archive.unsafeNames();
+    backslashed = archive.backslashNames();
   } catch {
     return inspectEntries(null);
   }
   const inspection = inspectEntries(entries);
-  if (unsafe.length === 0) return inspection;
-  // The archive reader drops escape attempts so the runtime can open the rest;
-  // the inspector refuses the bundle instead, as the directory always has.
+  if (unsafe.length === 0 && backslashed.length === 0) return inspection;
+  // The archive reader drops escape attempts so the runtime can open the rest,
+  // and reads a backslash as a slash; the inspector refuses the bundle
+  // instead, as the directory always has.
   const report = [
     ...unsafe.map((p): BundleReportLine => ({ level: 'error', text: `The bundle has a file with an unsafe path: ${p}` })),
+    ...backslashed.map((p): BundleReportLine => ({
+      level: 'error',
+      text: `The bundle has a file whose path is written with backslashes: ${p}. The directory refuses those; zip the bundle with forward slashes.`,
+    })),
     ...inspection.report,
   ];
   return { ...inspection, report, problem: report.find((l) => l.level === 'error')?.text ?? null };
@@ -133,11 +178,9 @@ export function inspectBundle(bytes: Uint8Array): BundleInspection {
  * is it after unzipping. Studio and Builder call this on the files they hold
  * rather than zipping first.
  */
-export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleInspection {
-  const report: BundleReportLine[] = [];
-  const error = (text: string) => report.push({ level: 'error', text });
-  const warn = (text: string) => report.push({ level: 'warn', text });
-  const finish = (partial: Partial<BundleInspection>): BundleInspection => ({
+/** An inspection that learned nothing about the bundle, for a report to be laid over. */
+function nothingRead(): Omit<BundleInspection, 'report' | 'problem'> {
+  return {
     name: '',
     version: '',
     description: '',
@@ -149,6 +192,15 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     execution: 'main',
     pythonPackages: [],
     iconDataUrl: null,
+  };
+}
+
+export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleInspection {
+  const report: BundleReportLine[] = [];
+  const error = (text: string) => report.push({ level: 'error', text });
+  const warn = (text: string) => report.push({ level: 'warn', text });
+  const finish = (partial: Partial<BundleInspection>): BundleInspection => ({
+    ...nothingRead(),
     ...partial,
     report,
     problem: report.find((l) => l.level === 'error')?.text ?? null,
@@ -162,7 +214,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   const total = paths.reduce((n, k) => n + entries.get(k)!.length, 0);
   if (paths.length === 0) error('The bundle is empty.');
   if (paths.length > MAX_ENTRIES) error(`The bundle has ${paths.length} files; the directory takes at most ${MAX_ENTRIES}.`);
-  if (total > MAX_UNCOMPRESSED) error(`The bundle unpacks to ${fmt(total)}; the directory takes at most 128 MB.`);
+  if (total > MAX_UNCOMPRESSED) error(unpackedTooLarge(total));
   for (const p of paths) {
     if (p.startsWith('/') || p.includes('\\') || /(^|\/)\.\.(\/|$)/.test(p)) error(`The bundle has a file with an unsafe path: ${p}`);
   }
@@ -173,6 +225,10 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     error('The bundle has no manifest.json.');
     return finish({ files: paths.length, bytes: total });
   }
+  if (manifestBytes.length > MAX_MANIFEST_BYTES) {
+    error(`The manifest.json is larger than ${fmt(MAX_MANIFEST_BYTES)}; the directory will refuse the bundle.`);
+  }
+  if (startsWithByteOrderMark(manifestBytes)) error(byteOrderMarkProblem('manifest.json'));
   let manifest: {
     name?: unknown;
     version?: unknown;
@@ -241,6 +297,10 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   let storagePolicies: Record<string, string> = {};
   const perm = entries.get('permission.json');
   if (perm) {
+    if (perm.length > MAX_PERMISSION_BYTES) {
+      error(`The permission.json is larger than ${fmt(MAX_PERMISSION_BYTES)}; the directory will refuse the bundle.`);
+    }
+    if (startsWithByteOrderMark(perm)) error(byteOrderMarkProblem('permission.json'));
     let declaration: unknown = null;
     let parsed = false;
     try {

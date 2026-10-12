@@ -11,3 +11,10 @@ page-to-page hand-off. No engine, no React, one dependency (`fflate`).
 
 A change here changes the contract: keep every existing `.softn` file
 opening exactly as before, and add a test that pins the behaviour.
+
+`npm test -w @softn/bundle-format` runs this package's own tests: archives
+no writer produces (`test/zip-hostile.test.ts`, written with the byte-level
+writer in `test/craft.ts`), the inspector against the directory's limits, and
+the declaration schema. The reader's other tests are core's
+(`packages/@softn/core/test/bundle-*.test.ts`), which import these modules
+through core's paths.

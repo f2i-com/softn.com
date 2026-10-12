@@ -661,9 +661,13 @@ function generateFunctions(functions: FunctionDef[], stateVars: StateVar[]): str
       // Replace state variable assignments with setState calls
       let body = f.body;
 
-      // Replace `foo = value` with `setFoo(value)` for state vars
+      // Replace `foo = value` with `setFoo(value)` for state vars. The `=`
+      // must be an assignment's: not the first of `==` or `===`, which made
+      // `if (foo === 0) { foo = 1; }` into `setFoo(== 0) { foo = 1);`, and
+      // not the `=>` of an arrow function whose parameter has the same name.
+      // The name must stand alone, so `other.foo = 1` is left to `other`.
       for (const v of stateVars) {
-        const assignRegex = new RegExp(`\\b${v.name}\\s*=\\s*(.+?)(?:;|$)`, 'g');
+        const assignRegex = new RegExp(`(?<![\\w$.])${v.name}\\s*=(?![=>])\\s*(.+?)(?:;|$)`, 'g');
         body = body.replace(assignRegex, (_, value) => {
           return `set${capitalize(v.name)}(${value.trim()});`;
         });

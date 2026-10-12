@@ -5,6 +5,9 @@
   "description": "The .softn bundle contract every SoftN surface shares: the archive reader, the inspector, permission declarations and the page-to-page hand-off. No engine, no React.",
   "license": "Apache-2.0",
   "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./zip": "./src/zip.ts",

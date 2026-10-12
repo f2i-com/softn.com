@@ -34,12 +34,42 @@
  * builder therefore bypassed every defence the other two paths had.
  */
 
-import { inflateSync } from 'fflate';
+import { Inflate, inflateSync } from 'fflate';
 
 export const MAX_ZIP_INPUT_BYTES = 200 * 1024 * 1024; // 200 MB
 const MAX_ZIP_ENTRIES = 10_000;
 const MAX_ZIP_TOTAL_BYTES = 500 * 1024 * 1024; // 500 MB
 const MAX_ZIP_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+
+/**
+ * How much of a deflate stream is inflated before what it has produced is
+ * compared with what its entry declared. Deflate expands at most 1032 to 1,
+ * so this is also the most a stream can run past its declaration before the
+ * reader notices: about 67 MB of output, a fraction of a second. A smaller
+ * slice would notice sooner and cost an honest archive the same: what a
+ * stream fed in slices produces is copied a few times on its way out,
+ * whatever their size (measured at about twice the time for data that does
+ * not compress). That is why a stream that fits in one slice is not sliced.
+ */
+const INFLATE_SLICE_BYTES = 64 * 1024;
+
+/**
+ * A slice that produces nothing is the stream waiting for the rest of a
+ * block, and the longest wait is for a stored block: 65535 bytes behind a
+ * five-byte header. Once this many slices in a row have produced nothing the
+ * stream is not waiting. It has ended, and what follows it is not part of it.
+ */
+const IDLE_PUSHES_AT_END = Math.ceil((65535 + 5) / INFLATE_SLICE_BYTES);
+
+/**
+ * How many entries of one archive may fail to inflate before it is read no
+ * further. A stream is stopped within a slice of running past its declared
+ * size, and one that turns out not to be deflate fails within a slice too,
+ * but each can have cost that slice at deflate's best ratio first. One bad
+ * entry in a bundle is corruption and leaves the rest readable. Thousands,
+ * each taking its slice, is everything the size caps were there to stop.
+ */
+const MAX_FAILED_STREAMS = 4;
 
 /**
  * How much declared payload one warm-up step inflates before yielding. Two
@@ -60,6 +90,8 @@ interface DeclaredEntry {
   compressedSize: number;
   uncompressedSize: number;
   dataOffset: number;
+  /** The name as the archive spells it, when that is with backslashes. */
+  writtenAs?: string;
 }
 
 /**
@@ -67,9 +99,11 @@ interface DeclaredEntry {
  *
  * fflate decompresses to the *declared* size and verifies nothing, so a bundle
  * that understates a size is silently truncated to it. Comparing the length
- * back against the declaration does not help: the lie is self-consistent. Only
- * the checksum catches it, and without it the same file reads differently here
- * than in any other reader.
+ * back against the declaration does not help: the lie is self-consistent. The
+ * checksum catches it as long as the archive kept the whole file's, and
+ * without it the same file reads differently here than in any other reader.
+ * An archive that declares the checksum of the shortened bytes as well gets
+ * past both, which is why `inflateEntry` watches the stream itself.
  */
 const CRC_TABLE = (() => {
   const table = new Int32Array(256);
@@ -89,9 +123,36 @@ function crc32(bytes: Uint8Array): number {
   return (c ^ -1) >>> 0;
 }
 
+/**
+ * The name an Info-ZIP Unicode Path extra field (0x7075) gives an entry, or
+ * null when the record carries none that a reader would act on. `start` and
+ * `end` bound the record's extra fields; `headerName` is the name's bytes as
+ * the record holds them.
+ *
+ * The field is one version byte, the CRC-32 of the header name it was written
+ * for, then the path. A reader that uses it (libzip does) takes the path only
+ * when the version is 1 and that CRC is the CRC of the header name in front
+ * of it; a field left behind by a rename fails that and is ignored, here as
+ * there.
+ */
+function unicodePathName(data: Uint8Array, view: DataView, start: number, end: number, headerName: Uint8Array, decoder: TextDecoder): string | null {
+  for (let at = start; at + 4 <= end; ) {
+    const id = view.getUint16(at, true);
+    const length = view.getUint16(at + 2, true);
+    if (at + 4 + length > end) return null;
+    if (id === 0x7075 && length >= 5) {
+      if (data[at + 4] !== 1 || view.getUint32(at + 5, true) !== crc32(headerName)) return null;
+      return decoder.decode(data.subarray(at + 9, at + 4 + length)).replace(/\\/g, '/');
+    }
+    at += 4 + length;
+  }
+  return null;
+}
+
 function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const EOCD_SIGNATURE = 0x06054b50;
+  const EOCD64_LOCATOR_SIGNATURE = 0x07064b50;
   const CEN_SIGNATURE = 0x02014b50;
   const LFH_SIGNATURE = 0x04034b50;
   const MAX_COMMENT = 0xffff;
@@ -105,13 +166,35 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     // the central directory it describes, so require that to fit.
     const candidateSize = view.getUint32(i + 12, true);
     const candidateOffset = view.getUint32(i + 16, true);
-    if (candidateOffset + candidateSize <= i) {
+    if (candidateOffset + candidateSize > i) continue;
+    if (eocdOffset < 0) {
       eocdOffset = i;
-      break;
+      continue;
+    }
+    // The scan goes on past the record it will use, because not every reader
+    // uses that one: this one takes the last, libzip 1.7 (the PHP zip
+    // extension on Ubuntu 24.04) weighs every record in the last 64 KB and
+    // can keep an earlier one. Two records that each lead to a directory with
+    // entries are two archives in one file, and the directory would list one
+    // while the browser ran the other. An archive stored inside a bundle does
+    // not trip this: its record's offset is counted from its own first byte,
+    // and there is no directory at that offset of the bundle.
+    const candidateEntries = view.getUint16(i + 10, true);
+    if (candidateEntries > 0 && candidateOffset + 4 <= i && view.getUint32(candidateOffset, true) === CEN_SIGNATURE) {
+      throw new Error('Corrupt ZIP: more than one end-of-central-directory record names a directory');
     }
   }
   if (eocdOffset < 0) {
     throw new Error('Invalid ZIP: missing end-of-central-directory');
+  }
+
+  // A ZIP64 end record is found through a locator in the 20 bytes before the
+  // ordinary one, and readers that know ZIP64 (libzip before 1.11, Python)
+  // take the directory from it whenever the locator is there, whatever the
+  // ordinary record says. This reader does not read ZIP64, so an archive
+  // carrying one would be read from a directory other readers never look at.
+  if (eocdOffset >= 20 && view.getUint32(eocdOffset - 20, true) === EOCD64_LOCATOR_SIGNATURE) {
+    throw new Error('ZIP64 bundles are not supported');
   }
 
   // The two entry counts are separate 16-bit fields and nothing in the format
@@ -125,6 +208,22 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
   }
   const entryCount = entriesThisDisk;
   const centralDirOffset = view.getUint32(eocdOffset + 16, true);
+  const centralDirEnd = centralDirOffset + view.getUint32(eocdOffset + 12, true);
+  // The directory has to end where the end record begins. Python's zipfile
+  // and Info-ZIP's unzip read a gap there as the length of something put in
+  // front of the archive, and add it to the directory's offset and to every
+  // entry's; this reader and libzip use the offsets as written. A second
+  // directory in the gap was a second archive for the first two. An archive
+  // that really has bytes in front, with its offsets counting them, has no
+  // gap and still opens.
+  if (centralDirEnd !== eocdOffset) {
+    throw new Error('Corrupt ZIP: central directory does not end at the end-of-central-directory record');
+  }
+  // And it has to hold exactly the records the end record counts. Readers
+  // differ here too: this one counted records and ignored the size, Python's
+  // zipfile reads until the size is used up, libzip refuses an archive in
+  // which the two disagree.
+  const countAndSizeDisagree = 'Corrupt ZIP: central directory size and entry count disagree';
 
   if (entryCount > MAX_ZIP_ENTRIES) {
     throw new Error('Bundle has too many files');
@@ -133,15 +232,22 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
   const declared: DeclaredEntry[] = [];
   const seenLocalHeaders = new Set<number>();
   const seenNames = new Set<string>();
-  const decoder = new TextDecoder();
+  // `ignoreBOM` keeps a leading U+FEFF in the name. The default drops it, and
+  // then the bytes EF BB BF "permission.json" are permission.json to this
+  // reader and to no other.
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
   let offset = centralDirOffset;
   let totalUncompressed = 0;
   let totalCompressed = 0;
   for (let i = 0; i < entryCount; i++) {
-    if (offset + 46 > data.byteLength || view.getUint32(offset, true) !== CEN_SIGNATURE) {
+    if (offset + 46 > centralDirEnd) {
+      throw new Error(countAndSizeDisagree);
+    }
+    if (view.getUint32(offset, true) !== CEN_SIGNATURE) {
       throw new Error('Invalid ZIP central directory entry');
     }
 
+    const flags = view.getUint16(offset + 8, true);
     const method = view.getUint16(offset + 10, true);
     const declaredCrc = view.getUint32(offset + 16, true);
     const compressedSize = view.getUint32(offset + 20, true);
@@ -150,9 +256,19 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     const extraLength = view.getUint16(offset + 30, true);
     const commentLength = view.getUint16(offset + 32, true);
     const localHeaderOffset = view.getUint32(offset + 42, true);
+    const recordEnd = offset + 46 + fileNameLength + extraLength + commentLength;
+    if (recordEnd > centralDirEnd) {
+      throw new Error(countAndSizeDisagree);
+    }
 
     if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) {
       throw new Error('ZIP64 bundles are not supported');
+    }
+    // Bit 0: the entry's bytes are encrypted. The directory refuses such a
+    // bundle and a reader that honours the flag asks for a password; this
+    // one would have read whatever sits behind it as plain.
+    if (flags & 1) {
+      throw new Error('Encrypted bundles are not supported');
     }
     if (method !== METHOD_STORED && method !== METHOD_DEFLATE) {
       throw new Error(`Unsupported compression method in bundle: ${method}`);
@@ -194,6 +310,9 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     if (view.getUint32(localHeaderOffset, true) !== LFH_SIGNATURE) {
       throw new Error('Corrupt ZIP: invalid local file header');
     }
+    if (view.getUint16(localHeaderOffset + 6, true) & 1) {
+      throw new Error('Encrypted bundles are not supported');
+    }
 
     // The name and extra field of the *local* header may differ in length from
     // the central directory's copy, so the payload can only be located here.
@@ -205,7 +324,20 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     }
 
     const nameBytes = data.slice(offset + 46, offset + 46 + fileNameLength);
-    const name = decoder.decode(nameBytes).replace(/\\/g, '/');
+    const written = decoder.decode(nameBytes);
+    const name = written.replace(/\\/g, '/');
+
+    // An Info-ZIP Unicode Path field is a second name for the entry. libzip,
+    // which is the directory's reader, uses it in place of the header's when
+    // the field's checksum matches; this reader never looked. One entry could
+    // so be permission.json to the browser and a text file to the directory.
+    // A field that repeats the header's name changes nothing and is left
+    // alone.
+    const extraStart = offset + 46 + fileNameLength;
+    const unicodeName = unicodePathName(data, view, extraStart, extraStart + extraLength, nameBytes, decoder);
+    if (unicodeName !== null && unicodeName !== name) {
+      throw new Error(`Corrupt ZIP: an entry is named both ${name} and ${unicodeName}`);
+    }
 
     // Two records under one name mean the archive has no single meaning. Names
     // take part in no checksum, so both records pass every integrity check, and
@@ -224,31 +356,88 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
       compressedSize,
       uncompressedSize,
       dataOffset,
+      ...(written === name ? {} : { writtenAs: written }),
     });
 
-    offset += 46 + fileNameLength + extraLength + commentLength;
+    offset = recordEnd;
+  }
+  if (offset !== centralDirEnd) {
+    throw new Error(countAndSizeDisagree);
   }
 
   return declared;
 }
 
+/** A deflate stream that produced more than its entry declared. */
+class EntryOverrun extends Error {
+  constructor(name: string) {
+    super(`Corrupt bundle: size mismatch for ${name}: its stream inflates past the size it declares`);
+  }
+}
+
 /**
- * Produce one entry's bytes, allocating no more than it declared.
+ * Inflate one entry's stream, doing no more work than its declared size
+ * allows for.
  *
  * fflate writes into the buffer it is handed and never grows it, and a write
- * past the end of a typed array is discarded rather than resized — so an entry
- * whose deflate stream expands beyond its declared size costs the declared size
- * and no more. What comes back is then short or wrong, and the checksum below
- * refuses it.
+ * past the end of a typed array is discarded. That bounds the memory an
+ * entry costs and nothing else: the stream is still decoded to its end, and
+ * what comes back is the first `uncompressedSize` bytes of it. This used to
+ * rely on the checksum to refuse that, but the size and the checksum are
+ * both the archive's to declare. An entry could declare the first sixteen
+ * bytes of a longer file with their CRC and be read as those sixteen bytes,
+ * and a 2 MB archive declaring one byte kept the thread inflating 2 GB.
+ *
+ * So the stream is watched. A short one is inflated in one call into a
+ * buffer a byte longer than declared, and the extra byte being written is
+ * the overrun. A long one is fed a slice at a time, and what each slice
+ * produced is counted before the next is fed.
  */
+function inflateEntry(raw: Uint8Array, entry: DeclaredEntry): Uint8Array {
+  const size = entry.uncompressedSize;
+  if (raw.length <= INFLATE_SLICE_BYTES) {
+    const produced = inflateSync(raw, { out: new Uint8Array(size + 1) });
+    if (produced.length > size) throw new EntryOverrun(entry.name);
+    // A copy of exactly what was produced: a worker transfers the buffer
+    // behind an entry, so the buffer has to be the entry and nothing more.
+    return produced.slice();
+  }
+
+  const out = new Uint8Array(size);
+  let written = 0;
+  let overrun = false;
+  let idle = 0;
+  const inflater = new Inflate((chunk) => {
+    idle = chunk.length === 0 ? idle + 1 : 0;
+    if (chunk.length > size - written) {
+      overrun = true;
+      return;
+    }
+    out.set(chunk, written);
+    written += chunk.length;
+  });
+  for (let at = 0; at < raw.length; at += INFLATE_SLICE_BYTES) {
+    const end = Math.min(at + INFLATE_SLICE_BYTES, raw.length);
+    inflater.push(raw.subarray(at, end), end === raw.length);
+    if (overrun) throw new EntryOverrun(entry.name);
+    // Bytes after the stream's last block are ignored, as `inflateSync`
+    // ignores them. They must not be fed either: fflate keeps what it could
+    // not use and copies it in front of every later slice.
+    if (idle >= IDLE_PUSHES_AT_END) break;
+  }
+  return written === size ? out : out.subarray(0, written);
+}
+
+/** Produce one entry's bytes, allocating no more than it declared. */
 function extractEntry(data: Uint8Array, entry: DeclaredEntry): Uint8Array {
   const raw = data.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize);
   if (entry.method === METHOD_STORED) {
     return raw.slice();
   }
   try {
-    return inflateSync(raw, { out: new Uint8Array(entry.uncompressedSize) });
-  } catch {
+    return inflateEntry(raw, entry);
+  } catch (err) {
+    if (err instanceof EntryOverrun) throw err;
     throw new Error(`Corrupt bundle: could not decompress ${entry.name}`);
   }
 }
@@ -270,14 +459,14 @@ function verifyEntry(content: Uint8Array, entry: DeclaredEntry): Uint8Array {
   return content;
 }
 
+/** A name that points outside the bundle: absolute, climbing, on a drive, or cut short by a NUL. */
+function isEscapingName(path: string): boolean {
+  return path.startsWith('/') || path.includes('..') || path.includes('\0') || /^[a-zA-Z]:/.test(path);
+}
+
 /** Names that cannot refer to a file inside a bundle, and are only ever escapes. */
 function isUnsafeEntryName(path: string): boolean {
-  if (
-    path.startsWith('/') ||
-    path.includes('..') ||
-    path.includes('\0') ||
-    /^[a-zA-Z]:/.test(path)
-  ) {
+  if (isEscapingName(path)) {
     return true;
   }
   // `.` and empty segments survive the substring checks above but still make a
@@ -339,6 +528,12 @@ export interface BundleWarmOptions {
  * `names`, `has`, `declaredSize` — still answers, so a host can tell "was never
  * in the bundle" from "is no longer held".
  *
+ * A corrupt entry fails alone and the rest stay readable, with one limit. An
+ * entry whose stream does not inflate, because it runs past the size declared
+ * for it or is not deflate at all, fails like any other; after the fourth
+ * such entry the archive reads nothing it does not already hold, and says so
+ * on every read (`MAX_FAILED_STREAMS`).
+ *
  * Two things keep the memory this costs to what is in use. A caller that has
  * taken what it needs from an entry — a host that decoded a text entry into
  * the string it will keep — can `forget()` it, which drops the bytes and
@@ -364,10 +559,14 @@ export class BundleArchive {
   private readonly entries = new Map<string, DeclaredEntry>();
   /**
    * Names the central directory carried that no file inside a bundle can have
-   * (see `openBundleArchive`). The runtime ignores them; the inspector reports
-   * them, because an archive that tries to escape is not one to publish.
+   * (see `openBundleArchive`), and directory entries that point outside it.
+   * The runtime ignores them; the inspector reports them, because an archive
+   * that tries to escape is not one to publish.
    */
   private readonly unsafe: string[] = [];
+  /** Names the archive spells with backslashes, as it spells them. They are indexed with slashes. */
+  private readonly backslashed: string[] = [];
+  private readonly records: number;
   private readonly memo = new Map<string, Uint8Array>();
   /**
    * Entries whose own bytes failed verification, remembered so a renderer
@@ -383,6 +582,15 @@ export class BundleArchive {
    * answers before a failure is recorded and a failure is never memoised.
    */
   private readonly produced = new Set<string>();
+  /**
+   * How many entries' streams have failed to inflate, by running long or by
+   * not being deflate at all, and the error every read not already held
+   * throws once that reaches `MAX_FAILED_STREAMS`. Each such failure can
+   * have cost a slice of deflate at its best ratio, work the declared sizes
+   * never accounted for.
+   */
+  private failedStreams = 0;
+  private spent: Error | null = null;
   private held = 0;
 
   constructor(data: Uint8Array) {
@@ -390,8 +598,17 @@ export class BundleArchive {
       throw new Error('Bundle too large');
     }
     this.data = data;
-    for (const entry of readCentralDirectory(data)) {
-      if (entry.name.endsWith('/')) continue;
+    const records = readCentralDirectory(data);
+    this.records = records.length;
+    for (const entry of records) {
+      if (entry.writtenAs !== undefined) this.backslashed.push(entry.writtenAs);
+      if (entry.name.endsWith('/')) {
+        // A directory entry holds nothing to read, but one that climbs out is
+        // as much an escape attempt as a file that does, and the directory
+        // refuses the bundle for it.
+        if (isEscapingName(entry.name)) this.unsafe.push(entry.name);
+        continue;
+      }
       if (isUnsafeEntryName(entry.name)) {
         this.unsafe.push(entry.name);
         continue;
@@ -403,6 +620,24 @@ export class BundleArchive {
   /** Entry names dropped at open because they could only ever be escapes. */
   unsafeNames(): string[] {
     return [...this.unsafe];
+  }
+
+  /**
+   * Entry names the archive writes with backslashes, as written. The index
+   * holds them with slashes and the runtime reads them so; the directory
+   * refuses a bundle that has one, which is why the inspector asks.
+   */
+  backslashNames(): string[] {
+    return [...this.backslashed];
+  }
+
+  /**
+   * How many records the central directory holds: the files `names()` lists,
+   * and also folders and the names dropped as unsafe. A reader that counts
+   * entries without sorting them, as the directory does, counts these.
+   */
+  recordCount(): number {
+    return this.records;
   }
 
   /** Every file the bundle holds, in central-directory order. */
@@ -452,6 +687,7 @@ export class BundleArchive {
     const failed = this.failures.get(name);
     if (failed) throw failed;
     if (this.lifecycle === 'released') throw new Error('Bundle archive released');
+    if (this.spent) throw this.spent;
     if (!this.data) {
       throw new Error(`Bundle archive compacted: ${name} was forgotten and cannot be read again`);
     }
@@ -459,7 +695,17 @@ export class BundleArchive {
     this.charge(entry);
     let content: Uint8Array;
     try {
-      content = verifyEntry(extractEntry(this.data, entry), entry);
+      let produced: Uint8Array;
+      try {
+        produced = extractEntry(this.data, entry);
+      } catch (err) {
+        this.failedStreams += 1;
+        if (this.failedStreams >= MAX_FAILED_STREAMS) {
+          this.spent = new Error(`Corrupt bundle: ${this.failedStreams} of its entries did not inflate, and no more of it is read`);
+        }
+        throw err;
+      }
+      content = verifyEntry(produced, entry);
     } catch (err) {
       this.held -= entry.uncompressedSize;
       this.failures.set(name, err as Error);

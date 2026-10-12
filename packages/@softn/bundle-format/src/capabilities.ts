@@ -108,7 +108,9 @@ export const STORAGE_POLICY_INFO: Record<StoragePolicy, StoragePolicyInfo> = {
 
 /** What a page can say about a storage policy, known to this build or not. */
 export function describeStoragePolicy(policy: string): StoragePolicyInfo {
-  return (STORAGE_POLICY_INFO as Record<string, StoragePolicyInfo>)[policy] ?? { label: policy, summary: 'a policy this build does not describe' };
+  // Asked through `isStoragePolicy`, not by indexing: a plain object answers
+  // "constructor" with a function it inherited.
+  return isStoragePolicy(policy) ? STORAGE_POLICY_INFO[policy] : { label: policy, summary: 'a policy this build does not describe' };
 }
 
 export function isStoragePolicy(name: string): name is StoragePolicy {
@@ -201,5 +203,10 @@ function readStoragePolicies(collections: unknown, report: DeclarationReport): v
 
 /** The policy that governs one collection under a declaration: named, else the default, else shared. */
 export function storagePolicyFor(policies: Record<string, StoragePolicy> | undefined, collection: string): StoragePolicy {
-  return policies?.[collection] ?? policies?.['*'] ?? 'public';
+  // Own entries only. "constructor" is a collection name the schema accepts,
+  // and a declaration that does not mention it would otherwise answer with
+  // the function every object inherits under that name.
+  const declared = (name: string): StoragePolicy | undefined =>
+    policies && Object.prototype.hasOwnProperty.call(policies, name) ? policies[name] : undefined;
+  return declared(collection) ?? declared('*') ?? 'public';
 }
