@@ -20,6 +20,7 @@ use tauri_plugin_cli::CliExt;
 use tauri_plugin_dialog::DialogExt;
 use tracing::info;
 
+mod consent;
 mod net;
 
 /// State for the opened file path
@@ -46,18 +47,46 @@ fn canonical(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Whether looking `path` up on disk stays on this machine's own drives. On Windows a path
+/// may name another machine (`\\host\share\...`, in any of its spellings) or a device, and
+/// merely resolving one makes Windows connect and sign in to that host.
+fn is_on_this_machine(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        match path.components().next() {
+            Some(Component::Prefix(prefix)) => {
+                matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+            }
+            _ => true,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        true
+    }
+}
+
 impl OpenableFiles {
+    /// Record a file the user chose, under the path it was chosen by and under the one
+    /// spelling of the file on disk.
     fn allow(&self, path: &Path) {
         if let Ok(mut set) = self.paths.lock() {
+            set.insert(path.to_path_buf());
             set.insert(canonical(path));
         }
     }
 
+    /// `path` is whatever the page sent. A path exactly as the user chose it is permitted as
+    /// written. Any other is looked up on disk to find which file it names, and only when
+    /// that look stays on this machine: the page does not get to make this process reach
+    /// for a host of its choosing.
     fn permits(&self, path: &Path) -> bool {
-        self.paths
-            .lock()
-            .map(|set| set.contains(&canonical(path)))
-            .unwrap_or(false)
+        let Ok(set) = self.paths.lock() else {
+            return false;
+        };
+        set.contains(path) || (is_on_this_machine(path) && set.contains(&canonical(path)))
     }
 }
 
@@ -66,6 +95,9 @@ impl OpenableFiles {
 fn remember_opened(app: &tauri::AppHandle, path: &str) {
     if let Some(files) = app.try_state::<OpenableFiles>() {
         files.allow(Path::new(path));
+    }
+    if let Some(consent) = app.try_state::<consent::Consent>() {
+        consent.bundle_opened(Path::new(path));
     }
 }
 
@@ -129,6 +161,7 @@ async fn pick_softn_bundle(app: tauri::AppHandle) -> Result<Option<String>, Stri
         return Err("Only .softn files can be opened".to_string());
     }
     app.state::<OpenableFiles>().allow(&path);
+    app.state::<consent::Consent>().bundle_opened(&path);
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
@@ -153,6 +186,23 @@ async fn backup_database(
     xdb::tauri::export_database(db_manager, app_id, target.to_string_lossy().to_string()).await
 }
 
+/// Whether `backup` is a snapshot `backup_database` wrote for the database in `directory`:
+/// a `pre-upgrade-*.sqlite` file directly inside it. `backup` is whatever the page sent, so
+/// as in `OpenableFiles::permits` it is looked up on disk only when that stays on this
+/// machine; the path `backup_database` returned matches as written.
+#[cfg(desktop)]
+fn is_own_snapshot(directory: &Path, backup: &Path) -> bool {
+    let named = backup
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("pre-upgrade-") && name.ends_with(".sqlite"));
+    named
+        && backup.parent().is_some_and(|parent| {
+            parent == directory
+                || (is_on_this_machine(backup) && canonical(parent) == canonical(directory))
+        })
+}
+
 /// Restore an app's database from a snapshot `backup_database` wrote (local
 /// scope: this device only). Only a `pre-upgrade-*.sqlite` file inside the
 /// database's own directory is accepted.
@@ -167,17 +217,44 @@ async fn restore_database(
     backup: String,
 ) -> Result<xdb::tauri::ImportOutcome, String> {
     let db_path = PathBuf::from(xdb::tauri::get_db_path(db_manager.clone(), app_id.clone())?);
-    let directory = canonical(db_path.parent().ok_or("The database has no parent directory")?);
-    let source = PathBuf::from(&backup);
-    let name = source
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("The backup path has no file name")?;
-    let inside = source.parent().map(canonical).is_some_and(|parent| parent == directory);
-    if !inside || !name.starts_with("pre-upgrade-") || !name.ends_with(".sqlite") {
+    let directory = db_path.parent().ok_or("The database has no parent directory")?;
+    if !is_own_snapshot(directory, Path::new(&backup)) {
         return Err("Only a pre-upgrade snapshot beside the database can be restored".to_string());
     }
     xdb::tauri::import_database(app, db_manager, network, control, app_id, backup, Some("local".to_string())).await
+}
+
+/// Whether a change to the peer network settings switches on something that is off now.
+fn turns_peer_sync_on(
+    current: &xdb::tauri::NetworkSettings,
+    enabled: bool,
+    discovery: Option<bool>,
+    listen: Option<bool>,
+) -> bool {
+    enabled
+        && (!current.enabled
+            || (discovery == Some(true) && !current.discovery)
+            || (listen == Some(true) && !current.listen))
+}
+
+/// XDB's `set_network_enabled`, behind a question. Turning peer sync on makes this machine
+/// announce itself and share app data on the local network, and the setting is kept across
+/// restarts. The call can come from anything running in the page, so the person is asked
+/// here first (consent.rs). Turning it off, or leaving it as it is, needs no question.
+#[tauri::command]
+async fn set_network_enabled(
+    app: tauri::AppHandle,
+    network: State<'_, xdb::tauri::SharedNetworkState>,
+    control: State<'_, xdb::tauri::SharedNetworkControl>,
+    consent: State<'_, consent::Consent>,
+    enabled: bool,
+    discovery: Option<bool>,
+    listen: Option<bool>,
+) -> Result<xdb::tauri::NetworkSettings, String> {
+    if turns_peer_sync_on(&control.settings(), enabled, discovery, listen) {
+        consent.require_peer_sync(&app).await?;
+    }
+    xdb::tauri::set_network_enabled(app, network, control, enabled, discovery, listen).await
 }
 
 /// Get the file path from CLI arguments (for double-click opening)
@@ -187,19 +264,33 @@ fn get_opened_file(state: State<'_, OpenedFile>) -> Option<String> {
     guard.clone()
 }
 
-/// Read a cached .softn bundle from the app cache directory (for Android intent-opened files)
-#[tauri::command]
-fn read_cached_bundle(app: tauri::AppHandle, filename: String) -> Result<Vec<u8>, String> {
+/// Where the cached bundle called `filename` is: directly inside `cache_dir`, or nowhere.
+fn cached_bundle_path(cache_dir: &Path, filename: &str) -> Result<PathBuf, String> {
     // Reject filenames with path separators or traversal
     if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
         return Err("Invalid filename".to_string());
     }
-    let cache_dir = app.path().app_cache_dir()
-        .map_err(|e| format!("Failed to get cache dir: {}", e))?;
-    let path = cache_dir.join(&filename);
+    // The name must also be one the path parser reads as a single file name. On Windows
+    // `D:app.softn` is a drive and a name: joined to a folder it leaves the folder for
+    // drive D's current directory. A colon anywhere else there names a stream of a file.
+    let mut parts = Path::new(filename).components();
+    let one_name = matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None));
+    if !one_name || (cfg!(windows) && filename.contains(':')) {
+        return Err("Invalid filename".to_string());
+    }
+    let path = cache_dir.join(filename);
     if !is_softn_path(&path.to_string_lossy()) {
         return Err("Only .softn files can be read".to_string());
     }
+    Ok(path)
+}
+
+/// Read a cached .softn bundle from the app cache directory (for Android intent-opened files)
+#[tauri::command]
+fn read_cached_bundle(app: tauri::AppHandle, filename: String) -> Result<Vec<u8>, String> {
+    let cache_dir = app.path().app_cache_dir()
+        .map_err(|e| format!("Failed to get cache dir: {}", e))?;
+    let path = cached_bundle_path(&cache_dir, &filename)?;
     fs::read(&path).map_err(|e| format!("Failed to read cached file: {}", e))
 }
 
@@ -292,6 +383,7 @@ pub fn run() {
             path: Mutex::new(None),
         })
         .manage(OpenableFiles::default())
+        .manage(consent::Consent::default())
         // A drop onto the window is a choice made with the pointer, outside
         // the page: record it before the webview's own drop handler can ask
         // to read it (Tauri forwards the event to the page asynchronously,
@@ -299,9 +391,11 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 let files = window.state::<OpenableFiles>();
+                let consent = window.state::<consent::Consent>();
                 for path in paths {
                     if is_softn_path(&path.to_string_lossy()) {
                         files.allow(path);
+                        consent.bundle_opened(path);
                     }
                 }
             }
@@ -331,7 +425,7 @@ pub fn run() {
                     xdb::tauri::get_db_stats,
                     xdb::tauri::get_network_status,
                     xdb::tauri::get_network_settings,
-                    xdb::tauri::set_network_enabled,
+                    set_network_enabled,
                     xdb::tauri::resume_sync,
                     xdb::tauri::recover_restore,
                     xdb::tauri::reconcile_network,
@@ -361,7 +455,7 @@ pub fn run() {
                     xdb::tauri::get_db_stats,
                     xdb::tauri::get_network_status,
                     xdb::tauri::get_network_settings,
-                    xdb::tauri::set_network_enabled,
+                    set_network_enabled,
                     xdb::tauri::resume_sync,
                     xdb::tauri::recover_restore,
                     xdb::tauri::reconcile_network,
@@ -442,4 +536,161 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache_dir() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\Users\someone\AppData\Local\com.softn.runtime")
+        } else {
+            PathBuf::from("/data/user/0/com.softn.runtime/cache")
+        }
+    }
+
+    #[test]
+    fn a_cached_bundle_is_a_file_directly_inside_the_cache_folder() {
+        let cache = cache_dir();
+        assert_eq!(cached_bundle_path(&cache, "opened-1.softn").unwrap(), cache.join("opened-1.softn"));
+        assert_eq!(cached_bundle_path(&cache, "My App.SOFTN").unwrap(), cache.join("My App.SOFTN"));
+        for name in ["", ".", "..", "../other.softn", "sub/app.softn", "sub\\app.softn", "/etc/app.softn", "app.txt", "app.softn/"] {
+            assert!(cached_bundle_path(&cache, name).is_err(), "{:?} was accepted", name);
+        }
+    }
+
+    /// `D:app.softn` has no separator and no `..`, and joined to a folder it still names a
+    /// file in drive D's current directory.
+    #[cfg(windows)]
+    #[test]
+    fn a_cached_bundle_name_cannot_name_another_drive_or_a_stream() {
+        let cache = cache_dir();
+        for name in ["D:app.softn", "C:app.softn", "c:app.softn", "notes.txt:app.softn", "app.softn::$DATA"] {
+            match cached_bundle_path(&cache, name) {
+                Err(_) => {}
+                Ok(path) => panic!("{:?} was accepted as {}", name, path.display()),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_a_path_on_this_machine_is_looked_up_on_disk() {
+        for path in [
+            r"\\files.example.net\share\app.softn",
+            "//files.example.net/share/app.softn",
+            r"\\?\UNC\files.example.net\share\app.softn",
+            r"\\.\pipe\app.softn",
+            r"\\?\GLOBALROOT\Device\Mup\files.example.net\share\app.softn",
+        ] {
+            assert!(!is_on_this_machine(Path::new(path)), "{} would be resolved", path);
+        }
+        for path in [r"C:\Users\someone\app.softn", r"\\?\C:\Users\someone\app.softn", r"apps\app.softn", r"\apps\app.softn", "D:app.softn"] {
+            assert!(is_on_this_machine(Path::new(path)), "{} would not be resolved", path);
+        }
+    }
+
+    #[test]
+    fn a_bundle_is_readable_under_any_spelling_of_the_file_that_was_opened() {
+        let dir = std::env::temp_dir().join(format!("softn-loader-openable-{}", std::process::id()));
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        let opened = dir.join("app.softn");
+        let other = dir.join("other.softn");
+        fs::write(&opened, b"PK").unwrap();
+        fs::write(&other, b"PK").unwrap();
+
+        let files = OpenableFiles::default();
+        files.allow(&opened);
+        assert!(files.permits(&opened));
+        assert!(files.permits(&dir.join("sub").join("..").join("app.softn")));
+        assert!(!files.permits(&other));
+        assert!(!files.permits(&dir.join("missing.softn")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Whatever the desktop page may call, a bundle drawn in that page may call too. The page
+    /// asks this side for its file picker (`pick_softn_bundle`), so it needs no dialog, file
+    /// or shell plugin of its own, and a bundle is not handed native dialogs to word as it likes.
+    #[test]
+    fn the_desktop_page_is_granted_no_dialog_file_or_shell_plugin() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let granted: Vec<&str> = capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|permission| permission.as_str().or_else(|| permission["identifier"].as_str()).unwrap())
+            .collect();
+        assert!(granted.contains(&"core:default"));
+        for permission in &granted {
+            for plugin in ["dialog:", "fs:", "shell:", "opener:"] {
+                assert!(!permission.starts_with(plugin), "the desktop page is granted {}", permission);
+            }
+        }
+    }
+
+    #[test]
+    fn only_switching_peer_sync_on_is_a_question() {
+        let settings = |enabled, discovery, listen| xdb::tauri::NetworkSettings { enabled, discovery, listen };
+        let off = settings(false, true, true);
+        assert!(turns_peer_sync_on(&off, true, None, None));
+        assert!(turns_peer_sync_on(&off, true, Some(false), Some(false)));
+        // Off stays off, and switching off is never a question.
+        assert!(!turns_peer_sync_on(&off, false, Some(true), Some(true)));
+        let on = settings(true, false, false);
+        assert!(!turns_peer_sync_on(&on, false, None, None));
+        // On already: the same settings again are not a question, a part newly on is.
+        assert!(!turns_peer_sync_on(&on, true, None, None));
+        assert!(!turns_peer_sync_on(&on, true, Some(false), Some(false)));
+        assert!(turns_peer_sync_on(&on, true, Some(true), None));
+        assert!(turns_peer_sync_on(&on, true, None, Some(true)));
+        assert!(!turns_peer_sync_on(&settings(true, true, true), true, Some(true), Some(true)));
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn only_a_snapshot_beside_the_database_can_be_restored() {
+        let dir = std::env::temp_dir().join(format!("softn-loader-snapshot-{}", std::process::id()));
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("pre-upgrade-19a.sqlite"), b"").unwrap();
+        fs::write(dir.join("sub").join("pre-upgrade-19a.sqlite"), b"").unwrap();
+
+        assert!(is_own_snapshot(&dir, &dir.join("pre-upgrade-19a.sqlite")));
+        assert!(is_own_snapshot(&dir, &dir.join("sub").join("..").join("pre-upgrade-19a.sqlite")));
+        assert!(!is_own_snapshot(&dir, &dir.join("sub").join("pre-upgrade-19a.sqlite")));
+        assert!(!is_own_snapshot(&dir, &dir.join("data.sqlite")));
+        assert!(!is_own_snapshot(&dir, &dir.join("pre-upgrade-19a.sqlite.txt")));
+        assert!(!is_own_snapshot(&dir, Path::new("pre-upgrade-19a.sqlite")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(all(desktop, windows))]
+    #[test]
+    fn a_snapshot_path_on_another_machine_is_refused_as_written() {
+        let dir = std::env::temp_dir();
+        // 192.0.2.1 is a documentation address: resolving this path would wait on it.
+        let started = std::time::Instant::now();
+        assert!(!is_own_snapshot(&dir, Path::new(r"\\192.0.2.1\share\pre-upgrade-19a.sqlite")));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "the path was looked up over the network");
+        // A database that itself lives on a share restores from the path it was backed up to.
+        let share = Path::new(r"\\?\UNC\files.example.net\profiles\someone\xdb");
+        assert!(is_own_snapshot(share, &share.join("pre-upgrade-19a.sqlite")));
+    }
+
+    /// A share the user opened a bundle from stays readable by the path it was opened with,
+    /// which needs no look at the disk; another path on some other machine is refused without
+    /// one, because looking would make Windows sign in to whatever host the page named.
+    #[cfg(windows)]
+    #[test]
+    fn a_path_on_another_machine_is_judged_as_written() {
+        let files = OpenableFiles::default();
+        let opened = Path::new(r"\\?\UNC\files.example.net\share\app.softn");
+        files.paths.lock().unwrap().insert(opened.to_path_buf());
+        assert!(files.permits(opened));
+        // 192.0.2.1 is a documentation address: resolving this path would wait on it.
+        let started = std::time::Instant::now();
+        assert!(!files.permits(Path::new(r"\\192.0.2.1\share\app.softn")));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "the path was looked up over the network");
+    }
 }

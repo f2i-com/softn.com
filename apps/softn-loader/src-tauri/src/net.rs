@@ -106,28 +106,84 @@ fn client(timeout: Duration) -> Result<reqwest::Client, String> {
     builder.build().map_err(|e| format!("The network client could not start: {}", e))
 }
 
-/// Make one request the granted `net` entry permits.
-#[tauri::command]
-pub async fn net_fetch(request: NetRequest) -> Result<NetResponse, String> {
+/// The statuses the page's `fetch` treats as a redirect. The rest of the 3xx range sends the
+/// request nowhere (304 answers a conditional request, 300 offers a choice) and reaches the
+/// script as any other status does.
+fn is_redirect(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+/// Headers the script does not get to write: where the request goes, and how its body is
+/// framed. The page's `fetch` drops these without a word, and so does this. `Host` is the
+/// one the grant depends on: sent as written it asks the allowed host's server for another
+/// site at the same address, which is a destination `allowed_hosts` does not name.
+fn is_reserved_header(name: &str) -> bool {
+    const RESERVED: [&str; 9] = [
+        "host",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+        "te",
+        "trailer",
+        "upgrade",
+        "expect",
+    ];
+    let name = name.trim().to_ascii_lowercase();
+    RESERVED.contains(&name.as_str()) || name.starts_with("proxy-")
+}
+
+/// The request as it will be sent: to the destination the grant permits, with the script's
+/// method, headers and body.
+fn outgoing(client: &reqwest::Client, request: NetRequest) -> Result<reqwest::RequestBuilder, String> {
     let url = check_destination(&request.url, request.allow_http, &request.allowed_hosts)?;
     let method = request.method.as_deref().unwrap_or("GET").to_ascii_uppercase();
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| format!("Invalid request method: {}", method))?;
 
-    let mut outgoing = client(timeout_for(request.timeout_ms))?.request(method, url);
+    let mut outgoing = client.request(method, url);
     for (name, value) in request.headers.unwrap_or_default() {
+        if is_reserved_header(&name) {
+            continue;
+        }
         outgoing = outgoing.header(name, value);
     }
     if let Some(body) = request.body.filter(|body| !body.is_empty()) {
         outgoing = outgoing.body(body);
     }
+    Ok(outgoing)
+}
 
-    let mut response = outgoing
+/// Make one request the granted `net` entry permits.
+#[tauri::command]
+pub async fn net_fetch(
+    app: tauri::AppHandle,
+    consent: tauri::State<'_, crate::consent::Consent>,
+    request: NetRequest,
+) -> Result<NetResponse, String> {
+    // What the rules themselves refuse is refused before anyone is asked about them.
+    check_destination(&request.url, request.allow_http, &request.allowed_hosts)?;
+    // The rules arrive with the request, from a page that also runs the bundle, so they may
+    // be any caller's invention. Whether the network may be used under them is asked of
+    // the person here (consent.rs), once for the bundle that is open.
+    #[cfg(desktop)]
+    consent
+        .require_net(&app, &crate::consent::NetPolicy::new(request.allow_http, &request.allowed_hosts))
+        .await?;
+    #[cfg(not(desktop))]
+    let _ = (&app, &consent);
+    send(request).await
+}
+
+/// Send one request and read its response under the size cap.
+async fn send(request: NetRequest) -> Result<NetResponse, String> {
+    let timeout = timeout_for(request.timeout_ms);
+    let mut response = outgoing(&client(timeout)?, request)?
         .send()
         .await
         .map_err(|e| format!("Network request failed: {}", e))?;
     let status = response.status();
-    if status.is_redirection() {
+    if is_redirect(status.as_u16()) {
         return Err(format!(
             "Network request failed: the server redirected ({}), and redirects are not followed",
             status.as_u16()
@@ -236,6 +292,81 @@ mod tests {
         assert_eq!(timeout_for(Some(3_600_000.0)), Duration::from_millis(60_000));
     }
 
+    fn request(url: &str, headers: &[(&str, &str)]) -> NetRequest {
+        NetRequest {
+            url: url.to_string(),
+            method: Some("post".to_string()),
+            headers: Some(headers.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect()),
+            body: Some("{}".to_string()),
+            timeout_ms: None,
+            allow_http: false,
+            allowed_hosts: hosts(&["api.example.com"]),
+        }
+    }
+
+    #[test]
+    fn a_script_cannot_ask_an_allowed_host_for_another_site() {
+        // `Host` as the script wrote it would reach a second site served from the allowed
+        // host's address, which is the destination `allowed_hosts` exists to rule out.
+        let client = client(timeout_for(None)).unwrap();
+        let built = outgoing(
+            &client,
+            request(
+                "https://api.example.com/v1/items",
+                &[("Host", "intranet.example.net"), ("X-Api-Key", "k1"), ("Content-Type", "application/json")],
+            ),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(built.url().host_str(), Some("api.example.com"));
+        assert_eq!(built.headers().get("host"), None);
+        // What the script may say is sent as written.
+        assert_eq!(built.headers().get("x-api-key").unwrap(), "k1");
+        assert_eq!(built.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(built.method(), "POST");
+    }
+
+    #[test]
+    fn a_script_does_not_frame_the_request_itself() {
+        let client = client(timeout_for(None)).unwrap();
+        let built = outgoing(
+            &client,
+            request(
+                "https://api.example.com/v1/items",
+                &[
+                    ("content-length", "0"),
+                    ("Transfer-Encoding", "chunked"),
+                    ("Connection", "upgrade"),
+                    ("Upgrade", "websocket"),
+                    ("TE", "trailers"),
+                    ("Trailer", "X-Sum"),
+                    ("Keep-Alive", "timeout=600"),
+                    ("Expect", "100-continue"),
+                    ("Proxy-Authorization", "Basic eDp5"),
+                    ("Authorization", "Bearer t"),
+                ],
+            ),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        let sent: Vec<&str> = built.headers().keys().map(|name| name.as_str()).collect();
+        assert_eq!(sent, vec!["authorization"], "only the script's own header is left");
+    }
+
+    #[test]
+    fn only_a_redirect_is_refused_as_one() {
+        for status in [301, 302, 303, 307, 308] {
+            assert!(is_redirect(status), "{} is a redirect", status);
+        }
+        // 304 answers a conditional request and 300 offers a choice: neither sends the
+        // request anywhere, and the page's `fetch` hands both to the script.
+        for status in [200, 204, 300, 304, 305, 306, 400, 404, 500] {
+            assert!(!is_redirect(status), "{} is not a redirect", status);
+        }
+    }
+
     #[test]
     fn a_request_the_grant_does_not_permit_is_never_sent() {
         let request = NetRequest {
@@ -247,7 +378,7 @@ mod tests {
             allow_http: false,
             allowed_hosts: hosts(&["api.example.com"]),
         };
-        let refused = tauri::async_runtime::block_on(net_fetch(request)).unwrap_err();
+        let refused = tauri::async_runtime::block_on(send(request)).unwrap_err();
         assert_eq!(refused, "Host not allowed: evil.example.net");
     }
 }

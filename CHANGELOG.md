@@ -44,6 +44,7 @@ section here. Write the section before tagging. Headings are the tag
 - Rust backend host: each message of a pull is read by the index, not by sorting the table; pushes reach other clients in the order they were stored; the pusher of an update to a deleted record is told it is deleted.
 - PHP backend host: a migration the deadline keeps stopping answers `migration_stopped` (on `/api/meta` too) and `setup.php` names it; a migration is not held to a request's opcode limit, so a large seed INSERT runs again.
 - Directory: a storage collection name with a line break after it is refused.
+- Desktop app: network access and peer sync are confirmed in a native dialog once per opened app, in addition to the permission bar, and a "Don't allow" stands until the app is opened again; a script's `Host` and framing headers are not sent; a 304 reaches the script; a cached-bundle name or a network path can no longer point outside what the person opened; the page no longer has the dialog plugin.
 
 ## v0.0.19
 
