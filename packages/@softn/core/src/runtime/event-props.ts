@@ -31,6 +31,7 @@ export function extractEventProps(event: Event): Record<string, unknown> {
     props.shiftKey = event.shiftKey;
     props.metaKey = event.metaKey;
     props.repeat = event.repeat;
+    props.isComposing = event.isComposing === true;
     return props;
   }
 
