@@ -4080,12 +4080,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
 
 [[package]]
-name = "unicode-id-start"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81b79ad29b5e19de4260020f8919b443b2ef0277d242ce532ec7b7a2cc8b6007"
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4784,9 +4778,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zipp-numparse"
+version = "0.0.23"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.23#407b81cd6d20776b9c83b6afee692927e9a0f659"
+dependencies = [
+ "num-bigint 0.5.1",
+ "num-traits",
+]
+
+[[package]]
 name = "zipp-regress"
 version = "0.11.1"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.22#4a9a9124ed05a20f340379e1517c693b70e020e5"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.23#407b81cd6d20776b9c83b6afee692927e9a0f659"
 dependencies = [
  "dynasm",
  "dynasmrt",
@@ -4796,8 +4799,8 @@ dependencies = [
 
 [[package]]
 name = "zipp-vm"
-version = "0.0.22"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.22#4a9a9124ed05a20f340379e1517c693b70e020e5"
+version = "0.0.23"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.23#407b81cd6d20776b9c83b6afee692927e9a0f659"
 dependencies = [
  "dynasm",
  "dynasmrt",
@@ -4805,7 +4808,7 @@ dependencies = [
  "num-traits",
  "rustc-hash",
  "self_cell",
- "unicode-id-start",
+ "zipp-numparse",
  "zipp-regress",
 ]
 

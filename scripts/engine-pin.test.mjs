@@ -41,13 +41,20 @@ test('the Rust host takes zipp-vm from the release the browser engine was instal
 
 // A tag names a commit only until it moves; the lock records which one cargo
 // built, and that has to be the commit the browser engine reports.
-test('Cargo.lock resolves zipp-vm and zipp-regress to that release\'s commit', () => {
-  for (const name of ['zipp-vm', 'zipp-regress']) {
+// Every crate cargo takes from the ZIPP repository is held to it, not only the
+// two named: 0.0.23 brought zipp-numparse in through zipp-vm.
+test('Cargo.lock resolves zipp-vm, zipp-regress and every other ZIPP crate to that release\'s commit', () => {
+  const repository = source.repository.replace(/\.git$/, '');
+  const fromZipp = [...lock.matchAll(/\[\[package\]\]\s+name = "([^"]+)"\s+version = "[^"]*"\s+source = "git\+([^?#"]+)[^"]*"/g)]
+    .filter((entry) => entry[2].replace(/\.git$/, '') === repository)
+    .map((entry) => entry[1]);
+  for (const name of ['zipp-vm', 'zipp-regress']) assert.ok(fromZipp.includes(name), `Cargo.lock has ${name} from ${repository}`);
+  for (const name of fromZipp) {
     const entry = lock.match(new RegExp(`\\[\\[package\\]\\]\\s+name = "${name}"\\s+version = "[^"]*"\\s+source = "([^"]+)"`));
     assert.ok(entry, `Cargo.lock has ${name}`);
     const pinned = entry[1].match(/^git\+([^?#]+)\?tag=([^#]+)#([0-9a-f]{40})$/);
     assert.ok(pinned, `${name} comes from a git tag: ${entry[1]}`);
-    assert.equal(pinned[1].replace(/\.git$/, ''), source.repository.replace(/\.git$/, ''), `${name} repository`);
+    assert.equal(pinned[1].replace(/\.git$/, ''), repository, `${name} repository`);
     assert.equal(pinned[2], cargoTag, `${name} is locked at the Cargo tag`);
     assert.equal(pinned[3], source.revision, `${name} is locked at commit ${pinned[3]}, the installed engine was built from ${source.revision}`);
   }
