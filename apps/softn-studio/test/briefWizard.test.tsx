@@ -81,4 +81,29 @@ describe('the brief wizard', () => {
     expect([...useVFSStore.getState().files.keys()].sort()).toEqual(scaffolded);
     expect(useVFSStore.getState().readFile('ui/main.ui')).not.toBe('<App />');
   });
+
+  // Enter also confirms a candidate in an input method (Japanese, Chinese, Korean). The page and
+  // collection fields took that Enter as "add": a name half typed became a page, and the field
+  // was emptied under the input method. The chat and the file editor already let it pass.
+  it.each([{ isComposing: true }, { keyCode: 229 }])('adds a page or a collection on Enter, not on the Enter that confirms a candidate (%j)', (composing) => {
+    useWorkspaceStore.setState({ brief: BRIEF });
+    act(() => root.render(<BriefWizard onBack={() => {}} onSubmit={() => {}} />));
+    for (let i = 0; i < 3 && !host.querySelector('#brief-pages'); i++) act(() => button('Next').click());
+    for (const [id, kind] of [['brief-pages', 'page'], ['brief-collections', 'collection']] as const) {
+      const input = host.querySelector<HTMLInputElement>(`#${id}`)!;
+      const type = (value: string) => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+        act(() => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
+      };
+      const added = () => [...host.querySelectorAll(`button[aria-label^="Remove ${kind} "]`)].map((b) => b.getAttribute('aria-label')!.slice(`Remove ${kind} `.length));
+      type('予約');
+      act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...composing })));
+      expect(added(), kind).toEqual([]);
+      expect(input.value).toBe('予約');
+      type('予約一覧');
+      act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+      expect(added(), kind).toEqual(['予約一覧']);
+      expect(input.value).toBe('');
+    }
+  });
 });

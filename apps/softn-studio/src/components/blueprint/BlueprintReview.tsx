@@ -169,7 +169,8 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               id="blueprint-revision-note"
               value={revisionInput}
               onChange={(event) => setRevisionInput(event.target.value)}
-              onKeyDown={(event) => { if (event.key === 'Enter') applyRevisionHint(); }}
+              // Not the Enter that confirms an input method's candidate: that added the half-typed note.
+              onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) applyRevisionHint(); }}
               placeholder="Add another page, tighten auth, or note a revision for the next pass..."
               aria-labelledby="blueprint-revision-title"
               style={styles.revisionInput}

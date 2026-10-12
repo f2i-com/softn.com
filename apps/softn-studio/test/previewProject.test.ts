@@ -144,6 +144,56 @@ describe('Studio preview composition', () => {
   });
 });
 
+/**
+ * A page the app imports is placed in the shell's scope when the app runs: it
+ * reads the shell's state and calls its functions, and its own logic joins
+ * the shell's one block. Shown on its own it was composed with its own logic
+ * alone, so a page that calls the shell's functions was an error here (and in
+ * the agent's check of that page) that the running app never shows.
+ */
+describe('a page the app imports, shown on its own', () => {
+  const shellApp = (page: string, extra: Array<{ path: string; content: string }> = []) => project([
+    { path: 'manifest.json', content: JSON.stringify({ name: 'Counter', main: 'ui/main.ui', files: { ui: ['ui/main.ui', 'ui/pages/count.ui'] } }) },
+    {
+      path: 'ui/main.ui',
+      content: '<import CountPage from="./pages/count.ui" />\n\n<logic>\nlet count = 3\nfunction bump() {\n  count = count + 1\n}\n</logic>\n\n<App>\n  <Heading level={1}>The shell</Heading>\n  <CountPage />\n</App>\n',
+    },
+    { path: 'ui/pages/count.ui', content: page },
+    ...extra,
+  ]);
+
+  it("has the app's logic: the shell's, and its own once", () => {
+    const page = '<Stack>\n  <Text>Count {count} of {limit}</Text>\n  <Button @click={() => bump()}>One more</Button>\n</Stack>\n\n<logic>\nlet limit = 10\n</logic>\n';
+    const { source, languages } = composed(shellApp(page), 'ui/pages/count.ui');
+    expect(languages).toEqual(['javascript']);
+    expect(source.match(/let count = 3/g)).toHaveLength(1);
+    expect(source.match(/function bump\(\)/g)).toHaveLength(1);
+    expect(source.match(/let limit = 10/g)).toHaveLength(1);
+    expect(source.match(/<logic>/g)).toHaveLength(1);
+    // The page's markup, first, so its lines keep their numbers; not the shell's.
+    expect(source.startsWith('<Stack>\n  <Text>Count {count} of {limit}</Text>')).toBe(true);
+    expect(source).not.toContain('The shell');
+  });
+
+  it('has none of it when no page of the app imports it, and the main page is as it was', () => {
+    const page = '<Text>Count {count}</Text>\n';
+    const files = shellApp(page, [{ path: 'ui/pages/loose.ui', content: '<Text>Loose {count}</Text>\n' }]);
+    expect(composed(files, 'ui/pages/loose.ui').source).not.toContain('let count');
+    const main = composed(files).source;
+    expect(main).toContain('The shell');
+    expect(main.match(/let count = 3/g)).toHaveLength(1);
+  });
+
+  it('has the Python modules of an app whose logic is Python', () => {
+    const composition = composed(project(READING_LIST_PYTHON.files), 'ui/pages/home.ui');
+    expect(composition.languages).toContain('python');
+    expect(composition.python?.modules).toEqual(['shelf', 'main']);
+    expect(composition.python?.files.main).toContain('def goal_label():');
+    expect(composition.source).toContain('<Heading level={2}>Home</Heading>');
+    expect(composition.source).not.toContain('{appDescription}');
+  });
+});
+
 describe('template comment stripping in the preview', () => {
   it('keeps markup between a MIME wildcard and a later */ in the template', () => {
     const source = '<FileChooser accept="image/*" />\n<Text>Keep me</Text>\n<Text>{a */ b}</Text>';

@@ -155,4 +155,30 @@ describe('BlueprintReview', () => {
     expect(document.activeElement).toBe(controls[controls.length - 1]);
     behind.remove();
   });
+
+  // Enter also confirms an input method's candidate: the note field took it as "add the note"
+  // and added the half-typed text to the plan, emptying the field under the input method.
+  it.each([{ isComposing: true }, { keyCode: 229 }])('adds a note on Enter, not on the Enter that confirms a candidate (%j)', (composing) => {
+    const blueprint: Blueprint = {
+      appName: 'Notes', target: 'web', style: 'minimal',
+      pages: [{ id: 'p1', name: 'Home', layout: 'stack', components: [] }],
+      collections: [], navigation: { type: 'tabs', items: ['Home'] }, risks: [], assumptions: [],
+    };
+    const brief: ProjectBrief = { appName: 'Notes', description: 'A notes app', target: 'web', style: 'minimal', pages: ['Home'], collections: [], authNeeded: false, referenceImages: [] };
+    useWorkspaceStore.setState({ blueprint, brief, taskGraph: [] });
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    const input = document.getElementById('blueprint-revision-note') as HTMLInputElement;
+    const type = (value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      act(() => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    };
+    type('ログイン');
+    act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...composing })); });
+    expect(useWorkspaceStore.getState().blueprint?.assumptions).toEqual([]);
+    expect(input.value).toBe('ログイン');
+    type('ログインを追加');
+    act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    expect(useWorkspaceStore.getState().blueprint?.assumptions).toEqual(['Revision note: ログインを追加']);
+    expect(input.value).toBe('');
+  });
 });

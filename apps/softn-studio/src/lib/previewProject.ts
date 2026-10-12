@@ -64,8 +64,11 @@ export function composePreviewProject(files: Map<string, VFSFile>, mainPath: str
   }
 
   try {
-    const composed = composeBundleSource(text, mainPath, manifestLogicPaths(files));
-    const outer = outerDataBlocks(text, mainPath, getBundleEntryPath(files));
+    const logicPaths = manifestLogicPaths(files);
+    const app = appAround(text, mainPath, getBundleEntryPath(files));
+    const page = composeBundleSource(text, mainPath, logicPaths);
+    const composed = app ? withAppLogic(page, composeBundleSource(text, app, logicPaths)) : page;
+    const outer = app ? outerDataBlocks(text, mainPath, app) : '';
     return {
       ok: true,
       composition: {
@@ -116,25 +119,64 @@ function dataBlocksOf(source: string): string[] {
 }
 
 /**
+ * The app's main page, when `page` is one of the pages it imports and not
+ * the main page itself; null otherwise. Such a page is placed inside the app
+ * when it runs (every page of a scaffolded app is, by the shell), and shown
+ * on its own it is given what it has there: below, the declarations and the
+ * logic of the app around it. A page nothing imports is not part of the app,
+ * and is given nothing: what it reads without declaring is empty.
+ */
+function appAround(text: ReadonlyMap<string, string>, page: string, entry: string | null): string | null {
+  if (!entry || entry === page || !/\.ui$/i.test(entry)) return null;
+  return importClosure(text, entry).includes(page) ? entry : null;
+}
+
+/**
  * The `<data>` declarations a page is given by the app around it, when it is
  * shown on its own.
  *
  * A page gets its collections from `<data>` blocks: its own, and those of
- * the pages it imports, which the composer joins to it. So a page that is
- * itself imported (every page of a scaffolded app is, by the shell) reads
- * what the shell declares whenever the app runs, and declares nothing of its
- * own. Shown on its own, with only what it declares, it would be a row of
- * empty lists that the running app never shows. It is given the declarations
- * of the app's main page and of the other pages that page imports, which is
- * what it has there. A page nothing imports gets nothing: it is not part of
- * the app, and what it reads without declaring is empty.
+ * the pages it imports, which the composer joins to it. So a page the app
+ * imports reads what the shell declares whenever the app runs, and declares
+ * nothing of its own. Shown on its own, with only what it declares, it would
+ * be a row of empty lists that the running app never shows. It is given the
+ * declarations of the app's main page and of the other pages that page
+ * imports, which is what it has there.
  */
-function outerDataBlocks(text: ReadonlyMap<string, string>, page: string, entry: string | null): string {
-  if (!entry || entry === page || !/\.ui$/i.test(entry)) return '';
-  const app = importClosure(text, entry);
-  if (!app.includes(page)) return '';
+function outerDataBlocks(text: ReadonlyMap<string, string>, page: string, app: string): string {
   const own = new Set(importClosure(text, page));
-  return app.filter((path) => !own.has(path)).flatMap((path) => dataBlocksOf(text.get(path) ?? '')).join('\n');
+  return importClosure(text, app).filter((path) => !own.has(path)).flatMap((path) => dataBlocksOf(text.get(path) ?? '')).join('\n');
+}
+
+/**
+ * Where the composer's one logic block begins in what it composed, or -1 when
+ * it added none. It adds the block last, after taking every `<logic>` out of
+ * the markup, and only when it found logic, which is when it names a logic
+ * base path.
+ */
+function logicBlockStart(composed: ComposedBundleSource): number {
+  return composed.logicBasePath === undefined ? -1 : composed.source.indexOf('\n<logic>\n');
+}
+
+/**
+ * A page the app imports, with the logic of the app around it.
+ *
+ * An imported page is an include: when the app runs it reads the shell's
+ * state and calls the shell's functions, and its own `<logic>` joins the
+ * shell's one block. Composed on its own it had its own logic alone, so a
+ * page that shows the shell's state or calls its functions (the Python
+ * example's Home page does) was drawn with errors and empty values here, and
+ * the agent's check of it said the shell's functions were not defined. It is
+ * given the app's whole logic block in place of its own: that block already
+ * holds the page's logic, once, in the order the runtime runs it. The page's
+ * markup stays first, so its lines keep their numbers. An app that does not
+ * compose is refused here as Run refuses it.
+ */
+function withAppLogic(page: ComposedBundleSource, app: ComposedBundleSource): ComposedBundleSource {
+  const pageLogic = logicBlockStart(page);
+  const appLogic = logicBlockStart(app);
+  const markup = pageLogic === -1 ? page.source : page.source.slice(0, pageLogic);
+  return { ...app, source: appLogic === -1 ? markup : markup + app.source.slice(appLogic) };
 }
 
 /**

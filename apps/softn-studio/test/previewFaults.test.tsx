@@ -154,6 +154,26 @@ describe('the agent, told about a loop that never ends', () => {
     ]);
   }, 30_000);
 
+  // Page logic runs timers now, and a callback that throws is reported on its own line: the check
+  // is to hand it to the model as an error of the app, with what the callback threw.
+  it('is told of a timer callback that throws, as an error of the app', async () => {
+    const failing = '\nfunction _init() {\n  setTimeout(() => {\n    let missing = null\n    count = missing.length\n  }, 30)\n}\n';
+    const report = await browserEnvironment.checkApp(vfs(project(logic(failing))), { blueprint: null });
+    expect(report.ok).toBe(false);
+    expect(report.errors).toEqual([expect.stringMatching(/^ui\/main\.ui \(render\): \[SoftN\] A timer callback in the logic failed: TypeError: Cannot read properties of null \(reading 'length'\)/)]);
+  }, 30_000);
+
+  // run_app_function reads the state when the call returns and then stops the app, so a timer the
+  // call set never fires there: "State did not change" read as a timer that does nothing.
+  it('is told by run_app_function that a timer the call set was not waited for', async () => {
+    const later = '\nfunction later() {\n  setTimeout(() => {\n    count = 5\n  }, 0)\n}\n';
+    const result = await runAppFunction(vfs(project(logic(later))), { name: 'later' });
+    expect(result.text).toMatch(/^later\(\) returned undefined\nState did not change\.\nTimers are not waited for here:/);
+    expect(result.text).toMatch(/call what the callback does as a function of its own/);
+    // A page whose logic sets no timer is told nothing of them.
+    expect((await runAppFunction(vfs(project(logic())), { name: 'add' })).text).not.toMatch(/Timers/);
+  }, 30_000);
+
   it('is told that the function did not return when run_app_function meets one', async () => {
     const result = await runAppFunction(vfs(project(logic())), { name: 'spin' });
     expect(result.ok).toBe(false);
@@ -265,6 +285,17 @@ describe('the preview of an app whose logic has stopped', () => {
     await act(async () => { button('Add one')!.click(); });
     await settle();
     expect(container.textContent).toContain('Count: 1');
+    expect(takePreviewFaults('loop-project')).toEqual([logged[0].slice('[App] '.length)]);
+  }, 60_000);
+
+  it('logs a timer callback that throws, and tells the next run', async () => {
+    const failing = logic('\nfunction _init() {\n  setTimeout(() => {\n    let missing = null\n    count = missing.length\n  }, 50)\n}\n');
+    useVFSStore.getState().hydrateFiles(Object.entries(project(failing)).map(([path, content]) => ({ path, content })));
+    await act(async () => { root.render(<VisualCanvas />); });
+    await settle(1500);
+    const logged = useWorkspaceStore.getState().consoleOutput.filter((line) => line.startsWith('[App] '));
+    expect(logged).toEqual([expect.stringMatching(/^\[App\] A timer callback in the logic failed: .*reading 'length'/)]);
+    expect(container.querySelector('.st-live')?.textContent).toBe('Running');
     expect(takePreviewFaults('loop-project')).toEqual([logged[0].slice('[App] '.length)]);
   }, 60_000);
 

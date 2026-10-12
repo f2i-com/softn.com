@@ -86,7 +86,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
     name: 'check_app',
     description:
       'Check the app the way the runtime will run it: the bundle inspector and composer, then a real render of the main page (or the page given). Reports parse errors, composer refusals, script and Python load errors, runtime exceptions and console errors, and every name the markup uses that nothing defines — a handler calling a function the logic lacks, :bind to a name that is not state, a read of a name that is not state, a function, a computed value, a <data> alias or a loop variable — each with its file and line. Studio also runs it automatically after each step that changes files.',
-    inputSchema: { type: 'object', properties: { page: str('A .ui file to render instead of the manifest\'s main. Optional.') }, required: [] },
+    inputSchema: { type: 'object', properties: { page: str('A .ui file to render instead of the manifest\'s main; a page the app imports is rendered with the app\'s logic and <data> around it, as it runs. Optional.') }, required: [] },
   },
   {
     name: 'inspect_preview',
@@ -97,7 +97,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
   {
     name: 'run_app_function',
     description:
-      'Call one of the app\'s logic functions in a fresh, isolated runtime (the same engine as the preview), after its top level and _init() have run. Reports the return value, the state before and after (as a diff) and any error. Pass setup_calls to call other functions first — e.g. set new_task then call add_task, then read the state.',
+      'Call one of the app\'s logic functions in a fresh, isolated runtime (the same engine as the preview), after its top level and _init() have run. Reports the return value, the state before and after (as a diff) and any error; a timer the call sets is not waited for. Pass setup_calls to call other functions first — e.g. set new_task then call add_task, then read the state.',
     inputSchema: {
       type: 'object',
       properties: {

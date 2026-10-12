@@ -1002,6 +1002,11 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
         ? `${call} ${stop.startsWith(`${request.name} ran`) || stop.includes(` in ${request.name} ran`) ? 'did not return' : 'was not run'}: ${stop}`
         : `${call} returned ${preview(value)}`,
       changed.length > 0 ? `State changed:\n${changed.join('\n')}` : 'State did not change.',
+      // The state is read when the call returns and the app is stopped after it, so a timer the
+      // call set never fires here; without this, an unchanged state read as a timer that does nothing.
+      ...(!composition.python && /\bset(?:Timeout|Interval)\s*\(/.test(block?.code ?? '')
+        ? ['Timers are not waited for here: what a setTimeout or setInterval callback changes later is not in the state above. To test it, call what the callback does as a function of its own.']
+        : []),
       ...(said.length > 0 ? [`Console:\n${said.slice(0, 10).map((l) => `  ${l}`).join('\n')}`] : []),
     ].join('\n');
     return { ok: errors.length === 0, text };

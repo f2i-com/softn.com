@@ -142,11 +142,13 @@ describe('the pages Studio writes itself', () => {
       const whole = await browserEnvironment.checkApp(files, { blueprint: null });
       expect(whole.errors, example.id).toEqual([]);
       expect(whole.rendered, example.id).toMatch(/Piranesi/);
-      // One page on its own has the shell's collections. (It does not have the shell's logic:
-      // the Python example's page calls functions of it, and is told so, as it was before.)
+      // One page on its own has what the shell gives it when the app runs: its collections, and
+      // its logic. The Python example's page calls the shell's functions, and was told they were
+      // not defined when it was checked on its own.
       const home = await browserEnvironment.checkApp(files, { blueprint: null, page: 'ui/pages/home.ui' });
-      expect(home.errors.filter((error) => /collection|<data>/.test(error)), example.id).toEqual([]);
+      expect(home.errors, example.id).toEqual([]);
       expect(home.rendered, example.id).toMatch(/Piranesi/);
+      if (example.files.some((file) => file.content.includes('def goal_label'))) expect(home.rendered, example.id).toMatch(/Goal: 12 books this year/);
     }
   }, 120_000);
 });

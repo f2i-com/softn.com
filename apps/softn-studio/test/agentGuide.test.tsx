@@ -21,6 +21,7 @@ import { registerAllBuiltins } from '@softn/components';
 import { SoftNRenderer, composeBundleSource, configureZippWasmSource } from '@softn/core';
 import { buildGuide, JAVASCRIPT_APP_EXAMPLE, PRIVATE_BACKEND_SECTION, projectHasBackend, PYTHON_APP_EXAMPLE } from '../src/lib/agent/guide';
 import { COMPONENT_INDEX } from '../src/lib/agent/knowledge';
+import { buildAgentSystemPrompt } from '../src/lib/agent/prompt';
 import { buildPreviewXDBState, composePreviewProject } from '../src/lib/previewProject';
 import type { VFSFile } from '../src/types/studio';
 
@@ -241,4 +242,44 @@ describe('the private backend section', () => {
       expect(PRIVATE_BACKEND_SECTION).toContain(`\`${binding}(sql, params)\``);
     }
   });
+});
+
+describe('what the prompt says of assets', () => {
+  // The guide says a file in the bundle is named through asset("…") and that a bare path loads
+  // nothing; the rules above it told the agent to reference an existing asset "by path".
+  it('tells the agent to name an existing binary asset through asset(), as the guide does', () => {
+    const prompt = buildAgentSystemPrompt('openai');
+    const rule = prompt.split('\n').find((line) => /binary assets/.test(line));
+    expect(rule).toMatch(/asset\("assets\//);
+    expect(rule).not.toMatch(/by path\.$/);
+  });
+});
+
+describe('what the guide says of timers', () => {
+  // The guide told the agent to use <Loop> for any timer: setTimeout and setInterval did nothing
+  // in page logic then. The runtime runs all four now, in page logic only.
+  it('says the four work in page logic, and where they do not', () => {
+    const js = buildGuide({ python: false, torch: false, backend: true, style: 'clean' });
+    const logic = js.slice(js.indexOf('## .logic Syntax'), js.indexOf('## Capabilities'));
+    for (const name of ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval']) expect(logic).toContain(`\`${name}\``);
+    expect(logic).toMatch(/work in page logic/);
+    expect(logic).toMatch(/`requestAnimationFrame` is not available/);
+    expect(logic).not.toMatch(/For a timer or game clock use/);
+    expect(PRIVATE_BACKEND_SECTION).toMatch(/no timers in server logic/);
+    expect(logic).toMatch(/do not work in backend \(server\) logic/);
+    const py = buildGuide({ python: true, torch: true, style: 'clean' });
+    expect(py).toMatch(/Not available in Python:[^\n]*timers/);
+    expect(py).not.toMatch(/from a button or a timer/);
+  });
+
+  it('is true of the runtime: a timeout set in page logic runs, and what it writes is drawn', async () => {
+    const files = vfs({
+      'ui/main.ui': '<logic src="../logic/main.logic" />\n<App>\n  <Text>{label}</Text>\n</App>',
+      'logic/main.logic': 'let label = "waiting"\n\nfunction _init() {\n  setTimeout(() => {\n    label = "done"\n  }, 20)\n}\n',
+      'manifest.json': JSON.stringify({ name: 'Timer', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: ['logic/main.logic'] } }),
+    });
+    const { errors, text } = await renderApp(files, 'StudioGuideTimer');
+    expect(errors).toEqual([]);
+    expect(text()).toContain('done');
+  }, 30_000);
 });

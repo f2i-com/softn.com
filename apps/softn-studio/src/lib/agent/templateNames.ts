@@ -94,8 +94,31 @@ function isCallbackProp(tag: string, name: string): boolean {
 const UNAVAILABLE_GLOBALS = new Set([
   'WeakMap', 'Promise', 'Intl', 'RegExp', 'Symbol', 'BigInt', 'Error', 'Reflect', 'Function',
   'console', 'window', 'document', 'globalThis', 'localStorage', 'sessionStorage', 'navigator', 'location', 'fetch',
-  'setTimeout', 'setInterval', 'structuredClone', 'crypto', 'performance',
+  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'structuredClone', 'crypto', 'performance',
 ]);
+
+/** Timers: page logic (JavaScript) has these four, markup has none of them. */
+const LOGIC_TIMERS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval']);
+const LOOP_EXAMPLE = '<Loop interval={100} running={running} @tick={() => step()} />';
+
+/**
+ * What to say of a timer named in the markup, or null for a name that is not
+ * one: why it does nothing there, and what to write instead. Page logic in
+ * JavaScript runs the four timers, so the way is a logic function that sets
+ * one; Python logic has none, and nothing in SoftN has requestAnimationFrame.
+ * Without this the name was "not defined by the logic", which a model answers
+ * by defining a function of that name.
+ */
+function timerAdvice(name: string, python: boolean, event: string | undefined): { why: string; instead: string } | null {
+  if (!LOGIC_TIMERS.has(name) && name !== 'requestAnimationFrame') return null;
+  if (python) return { why: 'Python logic does not have', instead: `For a delay or a clock use ${LOOP_EXAMPLE}.` };
+  if (name === 'requestAnimationFrame') return { why: 'SoftN does not have', instead: `For a clock use ${LOOP_EXAMPLE}, or setInterval in a logic function.` };
+  const [verb, fn] = name.startsWith('clear') ? ['clears', 'stopTimer'] : ['sets', 'startTimer'];
+  return {
+    why: "works in the page's logic and not in markup",
+    instead: `Call a logic function that ${verb} the timer: function ${fn}() { ${name}(…) }, then ${event ? `${event}={() => ${fn}()}` : `{${fn}()}`}.`,
+  };
+}
 
 /** What the page's logic exposes, as the runtime loaded it. */
 export interface LogicNames {
@@ -473,7 +496,10 @@ export function checkTemplateNames(input: NameCheckInput): { errors: string[]; w
           const where = ref.event ? `${ref.event} calls ${name}${ref.kind === 'call' ? '()' : ''}` : `{${name}(…)} calls ${name}()`;
           const effect = ref.event ? 'so it does nothing when it fires' : 'so it renders nothing';
           const pool = [...logic.functions, ...helpers];
-          if (logic.state.has(name) || aliases.has(name)) {
+          const timer = timerAdvice(name, input.python, ref.event);
+          if (timer && !logic.state.has(name) && !aliases.has(name)) {
+            report(file.path, `call:${name}`, ref.line, () => `${where}, which ${timer.why} — ${effect}. ${timer.instead}`);
+          } else if (logic.state.has(name) || aliases.has(name)) {
             report(file.path, `call:${name}`, ref.line, () => `${where}, but ${name} is ${logic.state.has(name) ? 'state' : 'a <data> collection'}, not a function — ${effect}. ${functionsText()}`);
           } else {
             report(file.path, `call:${name}`, ref.line, () => `${where}, which the logic does not define — ${effect}.${suggest(name, pool)} ${functionsText()}`);
@@ -500,6 +526,11 @@ export function checkTemplateNames(input: NameCheckInput): { errors: string[]; w
         }
         case 'read': {
           if (isValue(name, local) || assigned.has(name)) break;
+          const timer = timerAdvice(name, input.python, ref.event);
+          if (timer) {
+            report(file.path, `read:${name}`, ref.line, () => `${name} is read here, which ${timer.why} — so it is undefined here. ${timer.instead}`);
+            break;
+          }
           if (UNAVAILABLE_GLOBALS.has(name)) {
             report(file.path, `read:${name}`, ref.line, () => `${name} is not available in templates, so it is undefined there (templates have ${TEMPLATE_GLOBALS.filter((g) => /^[A-Z]/.test(g) && g !== 'NaN' && g !== 'Infinity').join(', ')} and the helpers). Compute the value in a logic function and call it.`);
             break;

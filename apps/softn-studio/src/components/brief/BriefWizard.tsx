@@ -34,6 +34,12 @@ const hover = (rest: string, over: string) => ({
   onMouseLeave: (e: React.MouseEvent<HTMLElement>) => { e.currentTarget.style.background = rest; },
 });
 
+// Enter also confirms an input method's candidate (Japanese, Chinese, Korean); that Enter used
+// to add the half-typed name as a page. Safari can report the composition as finished on that
+// keydown but still marks it with the IME key code.
+const addsOnEnter = (e: React.KeyboardEvent): boolean =>
+  e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229;
+
 export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) => {
   const { setBrief, setProjectName, setMode, setBlueprint, setTaskGraph, setActivePage, addConsoleOutput, brief: existingBrief } = useWorkspaceStore();
   const { providers, activeProviderId, setActiveProvider } = useAIStore();
@@ -412,7 +418,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     style={s.tagInput}
                     value={pageInput}
                     onChange={(e) => setPageInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { addTag('pages', pageInput); setPageInput(''); } }}
+                    onKeyDown={(e) => { if (addsOnEnter(e)) { addTag('pages', pageInput); setPageInput(''); } }}
                     placeholder="e.g., Dashboard, Settings, Profile..."
                     autoFocus
                   />
@@ -450,7 +456,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     style={s.tagInput}
                     value={collInput}
                     onChange={(e) => setCollInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { addTag('collections', collInput); setCollInput(''); } }}
+                    onKeyDown={(e) => { if (addsOnEnter(e)) { addTag('collections', collInput); setCollInput(''); } }}
                     placeholder="e.g., Tasks, Users, Categories..."
                   />
                   <button

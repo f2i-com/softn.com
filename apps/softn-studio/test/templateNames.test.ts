@@ -10,7 +10,7 @@ import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import * as core from '@softn/core';
 import { browserEnvironment, formatCheckReport, templateNameErrors } from '../src/lib/agent/appCheck';
-import { editDistance, nearestName, ON_PROPS_THAT_ARE_VALUES, TEMPLATE_GLOBALS } from '../src/lib/agent/templateNames';
+import { checkTemplateNames, editDistance, nearestName, ON_PROPS_THAT_ARE_VALUES, TEMPLATE_GLOBALS } from '../src/lib/agent/templateNames';
 import type { VFSFile } from '../src/types/studio';
 import { APP } from './helpers/agentHarness';
 
@@ -131,6 +131,33 @@ describe('undefined names in the markup', () => {
       'ui/main.ui',
     );
     expect(errors).toEqual([expect.stringMatching(/^ui\/main\.ui line 11: window is not available in templates, so it is undefined there \(templates have Number, String, Boolean, Array, Date, Map, Set, Math, JSON, Object/)]);
+  });
+
+  // Timers run in page logic and not in markup. A timer written in a handler was told only that
+  // "the logic does not define" setTimeout, which a model answers by defining one.
+  it('says a timer written in the markup belongs in a logic function, where timers work', async () => {
+    const { errors } = await templateNameErrors(
+      page('  <Button @click={() => setTimeout(() => add(), 500)}>Later</Button>\n  <Button @click={() => clearInterval(count)}>Stop</Button>\n  <Button @click={() => requestAnimationFrame(() => add())}>Frame</Button>'),
+      'ui/main.ui',
+    );
+    const text = errors.join('\n');
+    expect(text).toMatch(/^ui\/main\.ui line 4: @click calls setTimeout\(\), which works in the page's logic and not in markup — so it does nothing when it fires\. Call a logic function that sets the timer: function startTimer\(\) \{ setTimeout\(…\) \}, then @click=\{\(\) => startTimer\(\)\}\./m);
+    expect(text).toMatch(/line 5: @click calls clearInterval\(\), which works in the page's logic and not in markup — so it does nothing when it fires\. Call a logic function that clears the timer: function stopTimer\(\) \{ clearInterval\(…\) \}, then @click=\{\(\) => stopTimer\(\)\}\./);
+    expect(text).toMatch(/line 6: @click calls requestAnimationFrame\(\), which SoftN does not have — so it does nothing when it fires\. For a clock use <Loop interval=\{100\} running=\{running\} @tick=\{\(\) => step\(\)\} \/>, or setInterval in a logic function\./);
+    expect(text).not.toMatch(/Did you mean/);
+    expect(errors).toHaveLength(3);
+  });
+
+  it('says a Python page has no timers, and what to use for a clock', () => {
+    const doc = core.parse('<App>\n  <Button @click={() => setTimeout(() => add(), 500)}>Later</Button>\n</App>');
+    const { errors } = checkTemplateNames({
+      files: [{ path: 'ui/main.ui', doc, importedTags: new Set() }],
+      logic: { state: new Set(), functions: new Set(['add']), computed: new Set() },
+      dataNames: [],
+      helpers: Object.keys(core.builtinHelpers),
+      python: true,
+    });
+    expect(errors).toEqual([expect.stringMatching(/^ui\/main\.ui line 2: @click calls setTimeout\(\), which Python logic does not have — so it does nothing when it fires\. For a delay or a clock use <Loop interval=\{100\} running=\{running\} @tick=\{\(\) => step\(\)\} \/>\./)]);
   });
 
   it('checks an imported component in its own file, with its declared props, and not the props its tag was given', async () => {
