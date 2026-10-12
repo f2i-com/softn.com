@@ -8,6 +8,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { choice } from '../utils/choice';
+import { describedBy, domAttributes } from '../utils/domAttributes';
 
 export interface InputProps {
   /** Input id (generated when omitted) */
@@ -183,10 +184,15 @@ export function Input({
   onKeyDown,
   className,
   style,
+  ...rest
 }: InputProps): React.ReactElement {
   const generatedId = React.useId();
   const inputId = id ?? generatedId;
   const helperId = `${inputId}-helper`;
+  // The page's `data-…` and `aria-…` go on the field, the element a person
+  // types in and a screen reader names: `aria-label` is how a field with no
+  // label on screen, a search box, is named at all.
+  const attributes = domAttributes(rest);
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [internalValue, setInternalValue] = useState(value ?? defaultValue ?? '');
@@ -455,6 +461,7 @@ export function Input({
         )}
         {leftElement && !showSearchIcon && <div style={leftElementStyle}>{leftElement}</div>}
         <input
+          {...attributes}
           ref={inputRef}
           id={inputId}
           type={type}
@@ -485,7 +492,7 @@ export function Input({
           className={className}
           style={computedStyle}
           aria-invalid={hasError}
-          aria-describedby={helperText || errorMessage ? helperId : undefined}
+          aria-describedby={describedBy(attributes['aria-describedby'], helperText || errorMessage ? helperId : undefined)}
         />
         {/* Clear button or custom right element */}
         {showClearButton && (

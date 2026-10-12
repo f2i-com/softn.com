@@ -16,11 +16,28 @@
 
 import { useEffect, useRef, type RefObject } from 'react';
 
-const layers: symbol[] = [];
+const layers: Array<{ id: symbol; ref: RefObject<HTMLElement | null> }> = [];
 
-/** Whether `layer` is the topmost open modal layer. */
+/**
+ * Whether a layer's element is on screen. A runtime keeps an app it is not
+ * showing mounted under `display: none`, and a dialog left open there is
+ * still on the stack: it took Tab and Escape for the whole page, moving focus
+ * into a box no one could see.
+ */
+function isShown(element: HTMLElement | null): boolean {
+  if (!element?.isConnected || element.closest('[hidden], [inert]')) return false;
+  for (let node: Element | null = element; node; node = node.parentElement) {
+    if (getComputedStyle(node).display === 'none') return false;
+  }
+  return true;
+}
+
+/** Whether `layer` is the topmost open modal layer on screen. */
 function isTop(layer: symbol): boolean {
-  return layers[layers.length - 1] === layer;
+  for (let index = layers.length - 1; index >= 0; index--) {
+    if (isShown(layers[index].ref.current)) return layers[index].id === layer;
+  }
+  return false;
 }
 
 const TABBABLE = [
@@ -70,7 +87,7 @@ export function useModalLayer(
   useEffect(() => {
     if (!active || typeof document === 'undefined') return;
     const layer = Symbol('modal-layer');
-    layers.push(layer);
+    layers.push({ id: layer, ref });
 
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const root = ref.current;
@@ -115,7 +132,7 @@ export function useModalLayer(
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      const index = layers.lastIndexOf(layer);
+      const index = layers.findIndex((entry) => entry.id === layer);
       if (index >= 0) layers.splice(index, 1);
       if (previouslyFocused && previouslyFocused.isConnected && typeof previouslyFocused.focus === 'function') {
         previouslyFocused.focus();

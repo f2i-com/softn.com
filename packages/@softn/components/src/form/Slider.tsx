@@ -7,6 +7,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { choice } from '../utils/choice';
+import { controlAttributes, givenLabel } from '../utils/domAttributes';
 
 export interface SliderProps {
   /** Current value */
@@ -94,7 +95,7 @@ export function Slider({
   showTooltip = true,
   tooltipAlwaysVisible = false,
   formatTooltip,
-  ariaLabel = 'Value',
+  ariaLabel,
   marks = false,
   size = 'md',
   variant = 'primary',
@@ -105,7 +106,12 @@ export function Slider({
   onChangeEnd,
   className,
   style,
+  ...rest
 }: SliderProps): React.ReactElement {
+  // The page's `id` and `aria-…` on the thumb, which is the slider a person
+  // focuses; `aria-label` written as an attribute names it as `ariaLabel`
+  // does. Its `data-…` go with the class.
+  const { control: attributes, styled } = controlAttributes(rest);
   const [internalValue, setInternalValue] = useState(defaultValue);
   const [isDragging, setIsDragging] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
@@ -336,7 +342,10 @@ export function Slider({
   const thumbHoverStyle: React.CSSProperties = {
     ...thumbStyle,
     transform: 'translate(-50%, -50%) scale(1.15)',
-    boxShadow: `0 0 0 4px ${activeColor}33, 0 2px 8px rgba(0, 0, 0, 0.3)`,
+    // The fill colour at a fifth of its strength. It is often `var(…)` or a
+    // colour's name, after which two hex digits of alpha (`…33`) are no
+    // colour at all: the browser dropped the whole shadow while hovered.
+    boxShadow: `0 0 0 4px color-mix(in srgb, ${activeColor} 20%, transparent), 0 2px 8px rgba(0, 0, 0, 0.3)`,
   };
 
   const tooltipStyle: React.CSSProperties = {
@@ -373,6 +382,7 @@ export function Slider({
 
   return (
     <div
+      {...styled}
       className={className}
       style={containerStyle}
       onMouseEnter={() => setIsHovering(true)}
@@ -390,13 +400,14 @@ export function Slider({
             user was skipped straight past it and could not set the value at
             all — on a form that may require it. */}
         <div
+          {...attributes}
           role="slider"
           tabIndex={disabled ? -1 : 0}
           aria-valuemin={min}
           aria-valuemax={max}
           aria-valuenow={value}
           aria-valuetext={formatValue(value)}
-          aria-label={ariaLabel}
+          aria-label={ariaLabel ?? givenLabel(attributes) ?? 'Value'}
           aria-disabled={disabled || undefined}
           aria-orientation="horizontal"
           style={isDragging || isHovering ? thumbHoverStyle : thumbStyle}

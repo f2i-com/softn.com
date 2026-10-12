@@ -8,6 +8,7 @@
 import React, { useState, useCallback, useId } from 'react';
 import { focusRing, isFocusVisible } from './focus';
 import { choice } from '../utils/choice';
+import { controlAttributes, describedBy } from '../utils/domAttributes';
 
 export interface SwitchProps {
   /** Input name */
@@ -82,6 +83,7 @@ export function Switch({
   onChange,
   className,
   style,
+  ...rest
 }: SwitchProps): React.ReactElement {
   const [isChecked, setIsChecked] = useState(defaultChecked ?? false);
   const [isHovered, setIsHovered] = useState(false);
@@ -89,6 +91,9 @@ export function Switch({
   const isControlled = checked !== undefined;
   const currentChecked = isControlled ? checked : isChecked;
   const descriptionId = useId();
+  // The page's `id` and `aria-…` on the switch itself, its `data-…` with the
+  // class (see Checkbox).
+  const { control: attributes, styled } = controlAttributes(rest);
 
   const sizes = choice(sizeValues, size, 'md');
 
@@ -210,6 +215,7 @@ export function Switch({
 
   return (
     <label
+      {...styled}
       className={className}
       style={containerStyle}
       onMouseEnter={handleMouseEnter}
@@ -217,6 +223,7 @@ export function Switch({
     >
       <div style={trackWrapperStyle}>
         <input
+          {...attributes}
           type="checkbox"
           name={name}
           checked={currentChecked}
@@ -227,7 +234,7 @@ export function Switch({
           style={hiddenInputStyle}
           role="switch"
           aria-checked={currentChecked}
-          aria-describedby={description ? descriptionId : undefined}
+          aria-describedby={describedBy(attributes['aria-describedby'], description ? descriptionId : undefined)}
         />
         <div style={trackStyle} aria-hidden="true">
           <div style={thumbStyle} />

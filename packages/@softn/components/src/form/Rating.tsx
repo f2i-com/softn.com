@@ -11,6 +11,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { cssPaint } from '../utils/egress';
 import { focusRing, isFocusVisible } from './focus';
 import { choice } from '../utils/choice';
+import { domAttributes, givenLabel } from '../utils/domAttributes';
 
 export interface RatingProps {
   /** The score */
@@ -64,11 +65,16 @@ export function Rating({
   size = 'md',
   character = '★',
   color,
-  ariaLabel = 'Rating',
+  ariaLabel: namedAs,
   onChange,
   className,
   style,
+  ...rest
 }: RatingProps): React.ReactElement {
+  // The page's `id`, `data-…` and `aria-…`, on the stars as a whole;
+  // `aria-label` written as an attribute names them as `ariaLabel` does.
+  const attributes = domAttributes(rest);
+  const ariaLabel = namedAs ?? givenLabel(attributes) ?? 'Rating';
   const count = Number.isFinite(max) && max >= 1 ? Math.min(20, Math.floor(max)) : 5;
   // Any value at all is the app's to hold, an empty one included: `:bind`
   // hands an unset state in as "", and that is a score of nothing. Treating
@@ -106,6 +112,7 @@ export function Rating({
   if (readOnly) {
     return (
       <span
+        {...attributes}
         className={className}
         style={containerStyle}
         role="img"
@@ -167,6 +174,7 @@ export function Rating({
 
   return (
     <span
+      {...attributes}
       className={className}
       style={containerStyle}
       role="radiogroup"

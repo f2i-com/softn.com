@@ -105,6 +105,78 @@ describe('a component of the page', () => {
   });
 });
 
+/**
+ * Each form control, with the element a person focuses and a screen reader
+ * names. That element is where its `id` and `aria-…` belong: a field with no
+ * label on screen (a search box, a checkbox in a table row) is named by
+ * `aria-label`, and was not named at all. Its `data-…` go where its class
+ * goes, so a rule the page writes for both finds one element.
+ */
+const CONTROLS: Array<[tag: string, extra: string, control: string]> = [
+  ['Input', '', 'input'],
+  ['TextArea', '', 'textarea'],
+  ['Select', ' options={["a", "b"]}', '[role="combobox"]'],
+  ['Checkbox', '', 'input[type="checkbox"]'],
+  ['Switch', '', '[role="switch"]'],
+  ['Radio', ' options={["a", "b"]}', '[role="radiogroup"]'],
+  ['Slider', '', '[role="slider"]'],
+  ['NumberInput', '', '[role="spinbutton"]'],
+  ['DatePicker', '', 'input[type="text"]'],
+  ['SegmentedControl', ' options={["a", "b"]}', '[role="radiogroup"]'],
+  ['Rating', '', '[role="radiogroup"]'],
+  ['ColorPicker', '', 'button[aria-haspopup="dialog"]'],
+];
+
+describe('a form control', () => {
+  it.each(CONTROLS)('<%s> carries its id and aria attributes on the control, its data attributes with its class', (tag, extra, control) => {
+    const { container, unmount } = page(
+      `<${tag} id="given-${tag}" className="pick" data-kind="field" data-on={on} aria-label="Named" aria-describedby="hint"${extra} />`,
+      { on: true }
+    );
+    const styled = container.querySelectorAll('[data-kind="field"]');
+    expect(styled, `${tag}: one element carries the data attributes`).toHaveLength(1);
+    expect(styled[0].classList.contains('pick'), `${tag}: with the class`).toBe(true);
+    expect(styled[0].getAttribute('data-on')).toBe('true');
+    expect(container.querySelectorAll('.pick[data-on="true"]')).toHaveLength(1);
+    const named = container.querySelectorAll(`#given-${tag}`);
+    expect(named, `${tag}: one element has the id`).toHaveLength(1);
+    const element = named[0];
+    expect(element.matches(control), `${tag}: on ${control}, not ${element.outerHTML.slice(0, 80)}`).toBe(true);
+    expect(element.getAttribute('aria-label') ?? '').toMatch(/^Named\b/);
+    expect((element.getAttribute('aria-describedby') ?? '').split(' ')).toContain('hint');
+    unmount();
+  });
+
+  it('keeps the help a field points at itself beside the help the page points at', () => {
+    const { container, unmount } = page('<Input aria-describedby="hint" helperText="Your work address" /><Select aria-describedby="hint" error="Pick one" options={["a"]} />');
+    for (const field of [container.querySelector('input')!, container.querySelector('[role="combobox"]')!]) {
+      const ids = (field.getAttribute('aria-describedby') ?? '').split(' ');
+      expect(ids).toContain('hint');
+      const own = ids.filter((id) => id !== 'hint');
+      expect(own).toHaveLength(1);
+      expect(document.getElementById(own[0])?.textContent).toMatch(/Your work address|Pick one/);
+    }
+    unmount();
+  });
+
+  it.each([
+    ['Select', ' options={["a"]}', '[role="combobox"]'],
+    ['Radio', ' options={["a"]}', '[role="radiogroup"]'],
+    ['ColorPicker', '', 'button[aria-haspopup="dialog"]'],
+  ])('<%s> with no label of its own is named by the element the page points at', (tag, extra, control) => {
+    const { container, unmount } = page(`<h2 id="heading">Accent</h2><${tag} aria-labelledby="heading"${extra} />`);
+    expect(container.querySelector(control)?.getAttribute('aria-labelledby')).toBe('heading');
+    unmount();
+  });
+
+  it('is named by what the page writes over the name it gives itself', () => {
+    const { container, unmount } = page('<Slider aria-label="Volume" /><Rating aria-label="Service" />');
+    expect(container.querySelector('[role="slider"]')?.getAttribute('aria-label')).toBe('Volume');
+    expect(container.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Service');
+    unmount();
+  });
+});
+
 describe('a Split written on one line', () => {
   it('has the two panes it was given, not the space between them', () => {
     // A space on one line between two elements is a space on the page, so

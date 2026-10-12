@@ -159,14 +159,16 @@ export function Modal({
     onEscape: closeOnEscape
       ? () => {
           if (loading && preventCloseOnLoading) return;
-          onClose();
+          // A page may open a Modal with `open={…}` and give it no close
+          // handler; Escape and the overlay then do nothing, not throw.
+          onClose?.();
         }
       : undefined,
   });
 
   const handleClose = useCallback(() => {
     if (loading && preventCloseOnLoading) return;
-    onClose();
+    onClose?.();
   }, [loading, preventCloseOnLoading, onClose]);
 
   const handleOverlayClick = useCallback(

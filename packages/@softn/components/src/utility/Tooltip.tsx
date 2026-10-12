@@ -566,16 +566,27 @@ export function Tooltip({
     }
   }, [interactive, triggers, hide]);
 
-  const triggerContent = useMemo(() => {
-    if (!isOpen || !React.isValidElement(children) || children.type === React.Fragment) {
-      return children;
-    }
-    const child = children as React.ReactElement<{ 'aria-describedby'?: string }>;
-    const existing = child.props['aria-describedby'];
-    return React.cloneElement(child, {
-      'aria-describedby': existing ? `${existing} ${tooltipId}` : tooltipId,
-    });
-  }, [children, isOpen, tooltipId]);
+  // While it shows, the tooltip is the description of the control it is on,
+  // said on that control's element. It used to be cloned onto the child,
+  // which from a page is the renderer's error boundary around the control
+  // (or a list of children): the control was never told.
+  useEffect(() => {
+    if (!isOpen) return;
+    const control = Array.from(
+      containerRef.current?.querySelectorAll<HTMLElement>(
+        'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"]), [contenteditable]:not([contenteditable="false"])'
+      ) ?? []
+    ).find((element) => !tooltipRef.current?.contains(element));
+    if (!control) return;
+    const ids = (control.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
+    if (ids.includes(tooltipId)) return;
+    control.setAttribute('aria-describedby', [...ids, tooltipId].join(' '));
+    return () => {
+      const left = (control.getAttribute('aria-describedby') ?? '').split(/\s+/).filter((id) => id && id !== tooltipId);
+      if (left.length > 0) control.setAttribute('aria-describedby', left.join(' '));
+      else control.removeAttribute('aria-describedby');
+    };
+  }, [isOpen, tooltipId]);
 
   // Spans, not divs: a tooltip goes around inline content — a word in a
   // sentence, an icon in a label — and a <div> inside a <p> is invalid markup
@@ -593,7 +604,7 @@ export function Tooltip({
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
     >
-      {triggerContent}
+      {children}
       <span
         ref={tooltipRef}
         id={tooltipId}

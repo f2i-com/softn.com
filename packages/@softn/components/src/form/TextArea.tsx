@@ -7,6 +7,7 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { choice } from '../utils/choice';
+import { describedBy, domAttributes } from '../utils/domAttributes';
 
 export interface TextAreaProps {
   /** Textarea id (generated when omitted) */
@@ -105,10 +106,13 @@ export function TextArea({
   onBlur,
   className,
   style,
+  ...rest
 }: TextAreaProps): React.ReactElement {
   const generatedId = React.useId();
   const textareaId = id ?? generatedId;
   const helperId = `${textareaId}-helper`;
+  // The page's `data-…` and `aria-…`, on the field (see Input).
+  const attributes = domAttributes(rest);
   const [isFocused, setIsFocused] = useState(false);
   // Typed text is counted as it changes; a controlled value is counted from
   // the value, so a parent that resets the field resets the count with it.
@@ -263,6 +267,7 @@ export function TextArea({
 
   const textareaElement = (
     <textarea
+      {...attributes}
       id={textareaId}
       ref={textareaRef}
       name={name}
@@ -285,7 +290,7 @@ export function TextArea({
       className={className}
       style={computedStyle}
       aria-invalid={hasError}
-      aria-describedby={helperText || errorMessage ? helperId : undefined}
+      aria-describedby={describedBy(attributes['aria-describedby'], helperText || errorMessage ? helperId : undefined)}
     />
   );
 

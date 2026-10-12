@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { controlAttributes, describedBy } from '../utils/domAttributes';
 
 export interface DatePickerProps {
   /** Input id (generated when omitted) */
@@ -175,9 +176,13 @@ export function DatePicker({
   onChange,
   className,
   style,
+  ...rest
 }: DatePickerProps): React.ReactElement {
   const generatedId = React.useId();
   const inputId = id ?? generatedId;
+  // The page's `aria-…` on the field, its `data-…` with the class (see
+  // controlAttributes).
+  const { control: attributes, styled } = controlAttributes(rest);
   const errorId = `${inputId}-error`;
   const dialogId = `${inputId}-calendar`;
   const headingId = `${inputId}-calendar-heading`;
@@ -553,6 +558,7 @@ export function DatePicker({
   return (
     <div
       ref={containerRef}
+      {...styled}
       className={className}
       style={containerStyle}
       onBlur={(e) => {
@@ -575,6 +581,7 @@ export function DatePicker({
       )}
       <div style={inputContainerStyle}>
         <input
+          {...attributes}
           ref={inputRef}
           id={inputId}
           type="text"
@@ -595,7 +602,7 @@ export function DatePicker({
           aria-controls={isOpen ? dialogId : undefined}
           aria-required={required || undefined}
           aria-invalid={hasError}
-          aria-describedby={errorMessage ? errorId : undefined}
+          aria-describedby={describedBy(attributes['aria-describedby'], errorMessage ? errorId : undefined)}
         />
         {/*
           A read-only input is barred from constraint validation, so `required`

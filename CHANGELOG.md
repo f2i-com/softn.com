@@ -9,6 +9,7 @@ section here. Write the section before tagging. Headings are the tag
 ## Unreleased
 
 - An app embedded in FormLogic is drawn in the side its project declares, as it is everywhere else it runs. The frame FormLogic embeds handed the theme provider only FormLogic's own light or dark, so a project made dark was dark in the web runtime and light inside a light FormLogic. It now hands over the manifest's `config.theme.mode` as well: `"light"` or `"dark"` wins over FormLogic's theme, a page's own `<App theme>` still wins over both, and `"system"`, or no mode, follows FormLogic as before. Nothing changes for an app that declares no side, and FormLogic takes this with the release that carries it.
+- Components: a Drawer sits at the edge it names (its style set every side again with `undefined`, so it stayed wherever it was in the page); divided and bordered Lists draw their lines and Tooltips describe their control when written in a page; form controls keep the page's `id`, `aria-*` and `data-*`, so `<Input aria-label="Search">` has a name; Select and Radio show a numbered option as chosen, and a searchable Select with number values no longer throws; a dialog left open in an app the runtime is not showing no longer takes Tab and Escape; a Modal or Drawer with no close handler no longer throws on Escape.
 
 ## v0.0.19
 

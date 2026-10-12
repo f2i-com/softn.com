@@ -9,6 +9,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { choice } from '../utils/choice';
+import { controlAttributes, givenLabel } from '../utils/domAttributes';
 
 export interface NumberInputProps {
   /** The number */
@@ -91,8 +92,12 @@ export function NumberInput({
   onChange,
   className,
   style,
+  ...rest
 }: NumberInputProps): React.ReactElement {
   const config = choice(sizeConfig, size, 'md');
+  // The page's `id` and `aria-…` on the field, its `data-…` with the class
+  // (see controlAttributes).
+  const { control: attributes, styled } = controlAttributes(rest);
   const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
   const low = Number.isFinite(min as number) ? (min as number) : undefined;
   const high = Number.isFinite(max as number) ? (max as number) : undefined;
@@ -265,7 +270,7 @@ export function NumberInput({
   const stepDisabled = disabled || readOnly;
 
   return (
-    <div className={className} style={wrapperStyle}>
+    <div {...styled} className={className} style={wrapperStyle}>
       {!hideControls && (
         <button
           type="button"
@@ -280,6 +285,7 @@ export function NumberInput({
         </button>
       )}
       <input
+        {...attributes}
         type="text"
         inputMode={places > 0 ? 'decimal' : 'numeric'}
         role="spinbutton"
@@ -289,7 +295,7 @@ export function NumberInput({
         disabled={disabled}
         readOnly={readOnly}
         autoComplete="off"
-        aria-label={ariaLabel}
+        aria-label={ariaLabel ?? givenLabel(attributes)}
         aria-valuenow={current ?? undefined}
         aria-valuemin={low}
         aria-valuemax={high}

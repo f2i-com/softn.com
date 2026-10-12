@@ -124,6 +124,75 @@ describe('Modal and Drawer as modal layers', () => {
     expect(document.activeElement).toBe(button('Save'));
   });
 
+  it('leaves the keyboard alone while it is not shown: a dialog left open in a hidden tab', () => {
+    // A runtime keeps an app it is not showing mounted under `display: none`.
+    // Its open dialog took Tab for the whole page and sent focus into a box
+    // no one could see.
+    const closeHidden = vi.fn();
+    mount(
+      <>
+        <div style={{ display: 'none' }}>
+          <Modal open onClose={closeHidden} title="Left open" disableAnimation>
+            <button>Hidden</button>
+          </Modal>
+        </div>
+        <button>Shown</button>
+      </>
+    );
+    const shown = button('Shown');
+    focus(shown);
+    expect(key(shown, 'Tab').defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(shown);
+    expect(key(shown, 'Escape').defaultPrevented).toBe(false);
+    expect(closeHidden).not.toHaveBeenCalled();
+  });
+
+  it('answers Escape for the dialog that is shown, under one opened later in a hidden tab', () => {
+    const closeShown = vi.fn();
+    const closeHidden = vi.fn();
+    mount(
+      <Modal open onClose={closeShown} title="Shown" disableAnimation>
+        <button>Inside</button>
+      </Modal>
+    );
+    const other = mount(<div style={{ display: 'none' }} />);
+    const later = mountRoot(
+      <Modal open onClose={closeHidden} title="Hidden" disableAnimation>
+        <button>Behind</button>
+      </Modal>
+    );
+    mounted.push(later);
+    other.container.firstElementChild!.appendChild(later.container);
+    key(button('Inside'), 'Escape');
+    expect(closeShown).toHaveBeenCalledTimes(1);
+    expect(closeHidden).not.toHaveBeenCalled();
+  });
+
+  it('does not throw on Escape or a click outside when the page gave it nothing to close with', () => {
+    const errors: unknown[] = [];
+    const record = (event: ErrorEvent) => {
+      errors.push(event.error);
+      event.preventDefault();
+    };
+    window.addEventListener('error', record);
+    mount(
+      <>
+        <Modal open title="Info" disableAnimation {...({} as { onClose: () => void })}>
+          <button>Fine</button>
+        </Modal>
+        <Drawer open title="Panel" {...({} as { onClose: () => void })}>
+          <p>Body</p>
+        </Drawer>
+      </>
+    );
+    key(button('Fine'), 'Escape');
+    for (const backdrop of Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).map((d) => d.previousElementSibling ?? d.parentElement)) {
+      if (backdrop) click(backdrop);
+    }
+    window.removeEventListener('error', record);
+    expect(errors).toEqual([]);
+  });
+
   it('keeps focus on a dialog with nothing to tab to', () => {
     mount(
       <Modal open onClose={() => {}} showCloseButton={false} ariaLabel="Notice" disableAnimation>

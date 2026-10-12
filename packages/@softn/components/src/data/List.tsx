@@ -49,6 +49,9 @@ const spacingValues: Record<string, string> = {
   lg: '1rem',
 };
 
+/** What a List tells the items in it. */
+const ListContext = React.createContext<{ padding?: string; hoverable: boolean }>({ hoverable: false });
+
 export function List({
   variant = 'default',
   spacing = 'md',
@@ -59,6 +62,9 @@ export function List({
   children,
 }: ListProps): React.ReactElement {
   const Tag = ordered ? 'ol' : 'ul';
+  const listId = `softn-list-${React.useId().replace(/:/g, '')}`;
+  const padding = spacingValues[spacing];
+  const items = React.useMemo(() => ({ padding, hoverable }), [padding, hoverable]);
 
   const listStyle: React.CSSProperties = {
     listStyle: 'none',
@@ -72,32 +78,22 @@ export function List({
     ...style,
   };
 
+  // The items are told their spacing through context and given their lines
+  // by a rule, not by cloning them. From a page each item arrives inside the
+  // renderer's error boundary, so a style cloned onto it went to the
+  // boundary: a divided list drew no lines and none of its spacing.
+  const lines =
+    variant === 'divided' || variant === 'bordered'
+      ? `[data-softn-list="${listId}"] > li + li { border-top: 1px solid var(--color-border, rgba(255, 255, 255, 0.08)); }`
+      : '';
+
   return (
-    <Tag className={className} style={listStyle}>
-      {React.Children.map(children, (child, index) => {
-        if (React.isValidElement<ListItemProps>(child)) {
-          return React.cloneElement(child, {
-            ...child.props,
-            style: {
-              ...child.props.style,
-              ...(variant === 'divided' &&
-                index > 0 && {
-                  borderTop: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
-                }),
-              ...(variant === 'bordered' &&
-                index > 0 && {
-                  borderTop: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
-                }),
-              padding: spacingValues[spacing],
-              ...(hoverable && {
-                cursor: 'pointer',
-              }),
-            },
-          } as ListItemProps);
-        }
-        return child;
-      })}
-    </Tag>
+    <>
+      {lines && <style>{lines}</style>}
+      <Tag data-softn-list={listId} className={className} style={listStyle}>
+        <ListContext.Provider value={items}>{children}</ListContext.Provider>
+      </Tag>
+    </>
   );
 }
 
@@ -112,15 +108,16 @@ export function ListItem({
   children,
 }: ListItemProps): React.ReactElement {
   const [isHovered, setIsHovered] = React.useState(false);
+  const list = React.useContext(ListContext);
 
   const itemStyle: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
     gap: '0.75rem',
-    padding: '0.75rem',
+    padding: list.padding ?? '0.75rem',
     backgroundColor: active ? 'var(--color-primary-50, rgba(99, 102, 241, 0.1))' : isHovered && !disabled ? 'var(--color-gray-50, rgba(255, 255, 255, 0.03))' : 'transparent',
     color: disabled ? 'var(--color-text-disabled, #52525b)' : 'var(--color-text, #ececf0)',
-    cursor: disabled ? 'not-allowed' : onClick ? 'pointer' : 'default',
+    cursor: disabled ? 'not-allowed' : onClick || list.hoverable ? 'pointer' : 'default',
     transition: 'background-color 180ms cubic-bezier(0.16, 1, 0.3, 1)',
     opacity: disabled ? 0.6 : 1,
     ...style,

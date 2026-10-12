@@ -70,8 +70,9 @@ export function Drawer({
   }, [open]);
 
   const handleOverlayClick = useCallback(() => {
+    // A page may give no close handler (see Modal).
     if (closeOnOverlay) {
-      onClose();
+      onClose?.();
     }
   }, [closeOnOverlay, onClose]);
 
@@ -90,15 +91,22 @@ export function Drawer({
     transition: 'opacity 250ms cubic-bezier(0.16, 1, 0.3, 1)',
   };
 
+  // Held to the edge it names and the two beside it. These were written as
+  // `[position]: 0` followed by all four sides, the two across it set to
+  // `undefined`, and a later key wins: the named side was lost, and the
+  // drawer was drawn wherever it sat in the page.
+  const edges: React.CSSProperties = isHorizontal
+    ? { top: 0, bottom: 0, [position]: 0 }
+    : { left: 0, right: 0, [position]: 0 };
+
   const drawerStyle: React.CSSProperties = {
     position: 'fixed',
-    [position]: 0,
-    top: isHorizontal ? 0 : undefined,
-    bottom: isHorizontal ? 0 : undefined,
-    left: !isHorizontal ? 0 : undefined,
-    right: !isHorizontal ? 0 : undefined,
+    ...edges,
     [isHorizontal ? 'width' : 'height']: size,
     [isHorizontal ? 'height' : 'width']: '100%',
+    // A size wider than a phone (or taller than a short window) is cut to
+    // the screen, so the close button in its far corner stays on it.
+    [isHorizontal ? 'maxWidth' : 'maxHeight']: isHorizontal ? '100vw' : '100vh',
     background: 'var(--color-surface, #16161a)',
     boxShadow: '-4px 0 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.04)',
     zIndex: 1001,

@@ -7,6 +7,7 @@
 import React, { useState, useCallback, useRef, useEffect, useId } from 'react';
 import { cssPaint } from '../utils/egress';
 import { choice } from '../utils/choice';
+import { controlAttributes, givenLabel } from '../utils/domAttributes';
 
 export interface ColorPickerProps {
   /** Current color value (hex) */
@@ -109,7 +110,12 @@ export function ColorPicker({
   onChange,
   className,
   style,
+  ...rest
 }: ColorPickerProps): React.ReactElement {
+  // The page's `id` and `aria-…` on the button that opens the palette;
+  // `aria-label` written as an attribute names it, with the colour. Its
+  // `data-…` go with the class.
+  const { control: attributes, styled } = controlAttributes(rest);
   const presets = (Array.isArray(givenPresets) ? givenPresets : DEFAULT_PRESETS).filter((color) => typeof color === 'string');
   const [selectedColor, setSelectedColor] = useState(() => shownColor(value, defaultValue));
   const [inputValue, setInputValue] = useState(selectedColor);
@@ -290,6 +296,7 @@ export function ColorPicker({
   return (
     <div
       ref={containerRef}
+      {...styled}
       className={className}
       style={containerStyle}
       onKeyDown={(e) => {
@@ -317,6 +324,7 @@ export function ColorPicker({
         reaches, so a keyboard user could not open the palette at all.
       */}
       <button
+        {...attributes}
         ref={triggerRef}
         type="button"
         style={triggerStyle}
@@ -325,8 +333,8 @@ export function ColorPicker({
         aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-controls={isOpen ? panelId : undefined}
-        aria-labelledby={label ? `${labelId} ${baseId}-value` : undefined}
-        aria-label={label ? undefined : `Colour ${selectedColor}`}
+        aria-labelledby={label ? `${labelId} ${baseId}-value` : (attributes['aria-labelledby'] as string | undefined)}
+        aria-label={label ? undefined : `${givenLabel(attributes) ?? 'Colour'} ${selectedColor}`}
       >
         <span aria-hidden="true" style={{ ...swatchStyle, display: 'block' }} />
         {showInput && (

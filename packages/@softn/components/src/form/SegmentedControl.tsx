@@ -10,6 +10,7 @@
 import React, { useRef, useState } from 'react';
 import { focusRing, isFocusVisible } from './focus';
 import { choice } from '../utils/choice';
+import { domAttributes, givenLabel } from '../utils/domAttributes';
 
 export interface SegmentedOption {
   /** What choosing the option gives */
@@ -78,8 +79,11 @@ export function SegmentedControl({
   onChange,
   className,
   style,
+  ...rest
 }: SegmentedControlProps): React.ReactElement {
   const items = normalise(options);
+  // The page's `id`, `data-…` and `aria-…`, on the group (see Rating).
+  const attributes = domAttributes(rest);
   const config = choice(sizeConfig, size, 'md');
   // Any value at all is the app's to hold: `:bind` hands an unset state in
   // as "", which is nothing chosen, not leave to keep a choice of its own
@@ -160,10 +164,11 @@ export function SegmentedControl({
 
   return (
     <div
+      {...attributes}
       className={className}
       style={trackStyle}
       role="radiogroup"
-      aria-label={ariaLabel}
+      aria-label={ariaLabel ?? givenLabel(attributes)}
       aria-disabled={disabled || undefined}
       onKeyDown={onKeyDown}
     >

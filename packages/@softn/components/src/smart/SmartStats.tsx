@@ -358,7 +358,10 @@ export function SmartStats({
           width: size === 'lg' ? '3rem' : '2.5rem',
           height: size === 'lg' ? '3rem' : '2.5rem',
           borderRadius: 'var(--radius-md, 0.5rem)',
-          background: isGradient ? 'rgba(255, 255, 255, 0.2)' : `${tint}20`,
+          // The tint at an eighth of its strength. Written as `${tint}20` it
+          // was a colour only for a six-digit hex: a theme variable or a
+          // colour's name drew no square at all.
+          background: isGradient ? 'rgba(255, 255, 255, 0.2)' : `color-mix(in srgb, ${tint} 12.5%, transparent)`,
           color: isGradient ? 'var(--color-surface, #16161a)' : tint,
           flexShrink: 0,
         };

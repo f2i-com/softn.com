@@ -6,6 +6,7 @@
 
 import React from 'react';
 import { choice } from '../utils/choice';
+import { controlAttributes, describedBy } from '../utils/domAttributes';
 
 export interface RadioOption {
   /** Option value */
@@ -59,6 +60,16 @@ function normaliseOptions(options: unknown): RadioOption[] {
     );
 }
 
+/**
+ * Whether the chosen value is this option's. Compared as text: a radio hands
+ * back what it was chosen as text, so an option whose value is a number (a
+ * record's id) was shown unchecked as soon as it was picked, and a number in
+ * state never matched options written as `[1, 2, 3]`, which are read as text.
+ */
+function sameChoice(a: unknown, b: unknown): boolean {
+  return a !== undefined && a !== null && b !== undefined && b !== null && String(a) === String(b);
+}
+
 const sizeValues: Record<string, { radio: string; text: string; gap: string }> = {
   sm: { radio: '0.875rem', text: '0.875rem', gap: '0.375rem' },
   md: { radio: '1rem', text: '0.875rem', gap: '0.5rem' },
@@ -78,6 +89,7 @@ export function Radio({
   onChange,
   className,
   style,
+  ...rest
 }: RadioProps): React.ReactElement {
   const sizes = choice(sizeValues, size, 'md');
   const hasError = Boolean(error);
@@ -88,6 +100,9 @@ export function Radio({
   // Radios group by name; without one each would be a group of its own and
   // the arrow keys would move nowhere.
   const groupName = name || `${baseId}-radio`;
+  // The page's `id` and `aria-…` on the group: a group with no label on
+  // screen is named by `aria-label`. Its `data-…` go with the class.
+  const { control: attributes, styled } = controlAttributes(rest);
   const items = React.useMemo(() => normaliseOptions(options), [options]);
 
   const [internalValue, setInternalValue] = React.useState(value ?? defaultValue ?? '');
@@ -166,17 +181,18 @@ export function Radio({
   };
 
   return (
-    <div className={className} style={containerStyle}>
+    <div {...styled} className={className} style={containerStyle}>
       {label && (
         <span id={labelId} style={labelStyle}>
           {label}
         </span>
       )}
       <div
+        {...attributes}
         role="radiogroup"
-        aria-labelledby={label ? labelId : undefined}
+        aria-labelledby={label ? labelId : (attributes['aria-labelledby'] as string | undefined)}
         aria-invalid={hasError || undefined}
-        aria-describedby={errorMessage ? errorId : undefined}
+        aria-describedby={describedBy(attributes['aria-describedby'], errorMessage ? errorId : undefined)}
         aria-disabled={disabled || undefined}
         style={optionsContainerStyle}
       >
@@ -195,7 +211,7 @@ export function Radio({
                 type="radio"
                 name={groupName}
                 value={option.value}
-                checked={selectedValue === option.value}
+                checked={sameChoice(selectedValue, option.value)}
                 disabled={isDisabled}
                 onChange={handleChange}
                 style={radioStyle}

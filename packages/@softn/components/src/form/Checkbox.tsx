@@ -8,6 +8,7 @@
 import React, { useState, useCallback, useId } from 'react';
 import { focusRing, isFocusVisible } from './focus';
 import { choice } from '../utils/choice';
+import { controlAttributes, describedBy } from '../utils/domAttributes';
 
 export interface CheckboxProps {
   /** Input name */
@@ -58,6 +59,7 @@ export function Checkbox({
   onChange,
   className,
   style,
+  ...rest
 }: CheckboxProps): React.ReactElement {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [isHovered, setIsHovered] = useState(false);
@@ -67,6 +69,10 @@ export function Checkbox({
   const isControlled = checked !== undefined;
   const isChecked = isControlled ? checked : internalChecked;
   const descriptionId = useId();
+  // The page's `id` and `aria-…` on the box itself: a checkbox with no label
+  // on screen (one per row of a table) is named by `aria-label`. Its `data-…`
+  // go with the class (see controlAttributes).
+  const { control: attributes, styled } = controlAttributes(rest);
 
   React.useEffect(() => {
     if (inputRef.current) {
@@ -194,6 +200,7 @@ export function Checkbox({
 
   return (
     <label
+      {...styled}
       className={className}
       style={containerStyle}
       onMouseEnter={handleMouseEnter}
@@ -201,6 +208,7 @@ export function Checkbox({
     >
       <div style={checkboxWrapperStyle}>
         <input
+          {...attributes}
           ref={inputRef}
           type="checkbox"
           name={name}
@@ -211,7 +219,7 @@ export function Checkbox({
           onBlur={handleBlur}
           style={hiddenInputStyle}
           aria-invalid={error || undefined}
-          aria-describedby={description ? descriptionId : undefined}
+          aria-describedby={describedBy(attributes['aria-describedby'], description ? descriptionId : undefined)}
         />
         <div style={checkboxStyle} aria-hidden="true">
           {indeterminate ? (

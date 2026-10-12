@@ -7,6 +7,7 @@
 
 import React, { useState, useRef, useEffect, useCallback, useMemo, useId } from 'react';
 import { choice } from '../utils/choice';
+import { controlAttributes, describedBy } from '../utils/domAttributes';
 
 export interface SelectOption {
   value: string;
@@ -102,6 +103,22 @@ function normaliseOption(option: SelectOption | SelectOptionGroup | string | num
   return { value: String(option), label: String(option) };
 }
 
+/**
+ * Whether a value and an option's value are the same choice. They are
+ * compared as text: an option's value is often a record's numeric id while
+ * the state holds it as text, or the other way round (`options={[1, 2]}` is
+ * read as "1" and "2"). Compared strictly, the chosen option was not shown
+ * and the field showed its placeholder over a value it held.
+ */
+function sameChoice(a: unknown, b: unknown): boolean {
+  return a !== undefined && a !== null && b !== undefined && b !== null && String(a) === String(b);
+}
+
+/** An option's label or value as text to search, whatever it was given as. */
+function searchText(text: unknown): string {
+  return text === undefined || text === null ? '' : String(text).toLowerCase();
+}
+
 // Flatten options for easier searching
 function flattenOptions(options: SelectOptions): SelectOption[] {
   if (!Array.isArray(options)) return [];
@@ -143,6 +160,7 @@ export function Select({
   onBlur,
   className,
   style,
+  ...rest
 }: SelectProps): React.ReactElement {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -165,6 +183,9 @@ export function Select({
   const listboxId = `${baseId}-listbox`;
   const errorId = `${baseId}-error`;
   const optionId = (index: number) => `${baseId}-option-${index}`;
+  // The page's `id` and `aria-…` on the trigger, the element that is focused
+  // and named; its `data-…` with the class (see controlAttributes).
+  const { control: attributes, styled } = controlAttributes(rest);
 
   const value = controlledValue !== undefined ? controlledValue : internalValue;
   const hasError = Boolean(error);
@@ -196,11 +217,11 @@ export function Select({
       .map((opt) => {
         if (isOptionGroup(opt)) {
           const filtered = opt.options.filter(
-            (o) => o.label.toLowerCase().includes(query) || o.value.toLowerCase().includes(query)
+            (o) => searchText(o.label).includes(query) || searchText(o.value).includes(query)
           );
           return filtered.length > 0 ? { ...opt, options: filtered } : null;
         }
-        return opt.label.toLowerCase().includes(query) || opt.value.toLowerCase().includes(query)
+        return searchText(opt.label).includes(query) || searchText(opt.value).includes(query)
           ? opt
           : null;
       })
@@ -213,13 +234,13 @@ export function Select({
   const selectedLabels = useMemo(() => {
     if (multiple) {
       const values = Array.isArray(value) ? value : [];
-      return values.map((v) => allOptions.find((o) => o.value === v)?.label ?? v).join(', ');
+      return values.map((v) => allOptions.find((o) => sameChoice(o.value, v))?.label ?? v).join(', ');
     }
     // A value the options do not (yet) list shows as itself, as each value of
     // a multi-select already did — not as the placeholder beside a clear
     // button that clears something invisible.
-    if (typeof value !== 'string' || value === '') return '';
-    return allOptions.find((o) => o.value === value)?.label ?? value;
+    if ((typeof value !== 'string' && typeof value !== 'number') || value === '') return '';
+    return String(allOptions.find((o) => sameChoice(o.value, value))?.label ?? value);
   }, [value, allOptions, multiple]);
 
   /** The next enabled option from `from` in direction `step`, or -1. */
@@ -236,7 +257,9 @@ export function Select({
   /** Open the list with the selected option (or the first enabled one) highlighted. */
   const openList = useCallback(() => {
     const selected = flatFilteredOptions.findIndex(
-      (o) => !o.disabled && (Array.isArray(value) ? value.includes(o.value) : o.value === value)
+      (o) =>
+        !o.disabled &&
+        (Array.isArray(value) ? value.some((v) => sameChoice(v, o.value)) : sameChoice(o.value, value))
     );
     setHighlightedIndex(selected >= 0 ? selected : findEnabled(0, 1));
     setIsOpen(true);
@@ -256,8 +279,8 @@ export function Select({
         const currentValues = Array.isArray(value) ? value : [];
         let newValues: string[];
 
-        if (currentValues.includes(optionValue)) {
-          newValues = currentValues.filter((v) => v !== optionValue);
+        if (currentValues.some((v) => sameChoice(v, optionValue))) {
+          newValues = currentValues.filter((v) => !sameChoice(v, optionValue));
         } else {
           if (maxSelections && currentValues.length >= maxSelections) {
             return;
@@ -375,7 +398,7 @@ export function Select({
           for (let n = 0; n < count; n++) {
             const index = (((from + n) % count) + count) % count;
             const option = flatFilteredOptions[index];
-            if (!option.disabled && option.label.toLowerCase().startsWith(state.text)) {
+            if (!option.disabled && searchText(option.label).startsWith(state.text)) {
               if (!isOpen) setIsOpen(true);
               setHighlightedIndex(index);
               break;
@@ -592,9 +615,9 @@ export function Select({
   // Check if value is selected (for multi-select)
   const isValueSelected = (optionValue: string): boolean => {
     if (multiple) {
-      return Array.isArray(value) && value.includes(optionValue);
+      return Array.isArray(value) && value.some((v) => sameChoice(v, optionValue));
     }
-    return value === optionValue;
+    return sameChoice(value, optionValue);
   };
 
   const renderOption = (option: SelectOption, index: number) => {
@@ -787,7 +810,7 @@ export function Select({
     );
   };
 
-  const hasValue = multiple ? Array.isArray(value) && value.length > 0 : Boolean(value);
+  const hasValue = multiple ? Array.isArray(value) && value.length > 0 : value !== undefined && value !== null && value !== '';
 
   const activeDescendant =
     isOpen && !searchable && !loading && flatFilteredOptions[highlightedIndex]
@@ -828,6 +851,7 @@ export function Select({
       */}
       <div
         ref={containerRef}
+        {...styled}
         className={className}
         style={containerStyle}
         onKeyDown={handleKeyDown}
@@ -843,6 +867,7 @@ export function Select({
         {/* `value={choice}` is null until something is chosen: an empty field, not a null handed to React. */}
         <input type="hidden" name={name} value={Array.isArray(value) ? value.join(',') : (value ?? '')} />
         <div
+          {...attributes}
           ref={triggerRef}
           tabIndex={disabled ? -1 : 0}
           style={triggerStyle}
@@ -861,8 +886,8 @@ export function Select({
           aria-haspopup="listbox"
           aria-controls={isOpen && !loading && flatFilteredOptions.length > 0 ? listboxId : undefined}
           aria-activedescendant={activeDescendant}
-          aria-labelledby={label ? labelId : undefined}
-          aria-describedby={errorMessage ? errorId : undefined}
+          aria-labelledby={label ? labelId : (attributes['aria-labelledby'] as string | undefined)}
+          aria-describedby={describedBy(attributes['aria-describedby'], errorMessage ? errorId : undefined)}
           aria-invalid={hasError || undefined}
           aria-required={required || undefined}
           aria-disabled={disabled}
