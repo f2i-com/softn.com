@@ -218,15 +218,12 @@ test('draws a record relationship and preserves its model and data through expor
   await bundle.saveAs(savedPath);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
+  // The export kept the project as saved, so opening the file asks nothing.
+  // (This waited for a browser confirm that never came, and passed regardless.)
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open', exact: true }).click();
   await (await chooser).setFiles(savedPath);
-  // The picker first, then the Builder's own question (utils/confirm.ts): a
-  // native confirm asked nothing in the desktop app.
-  const replace = page.getByRole('alertdialog', { name: 'Unsaved changes', exact: true });
-  await expect(replace).toContainText('Open a new project? Unsaved changes will be lost.');
-  await replace.getByRole('button', { name: 'Discard and open', exact: true }).click();
-  await expect(replace).toHaveCount(0);
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
   await expect(page.getByTitle('Fieldnotes', { exact: true })).toHaveText('Fieldnotes');
   await page.getByRole('button', { name: 'Data', exact: true }).click();
   await page.getByRole('tab', { name: 'Relationships · 1', exact: true }).click();
@@ -261,5 +258,46 @@ test('draws a record relationship and preserves its model and data through expor
   await expect(page.locator('.react-flow__node')).toHaveCount(2);
   await expect(page.getByRole('table').getByRole('combobox').first()).toHaveValue(linkedId);
   await log.attach('builder-relationships');
+  expect(log.uncaught).toEqual([]);
+});
+
+// The Builder asks in its own dialog (utils/confirm.ts) before Open replaces
+// unsaved work: the browser's confirm asked nothing in the desktop app, where
+// it returned a Promise that read as yes. The picker comes first, then the
+// question; Cancel keeps the work, and the focus starts there.
+test('asks in its own dialog before Open replaces unsaved work, and Cancel keeps it', async ({ page }, testInfo) => {
+  const log = watchConsole(page, testInfo);
+  await page.goto('/builder/?open=%2Fexamples%2FFieldnotes.softn');
+  await expect(page.getByTitle('Fieldnotes', { exact: true })).toBeVisible();
+  const bytes = await (await page.request.get('/examples/Fieldnotes.softn')).body();
+  const file = { name: 'Fieldnotes.softn', mimeType: 'application/octet-stream', buffer: bytes };
+
+  const theme = page.getByRole('radiogroup', { name: 'Project theme', exact: true }).first();
+  const chosen = await theme.getByRole('radio', { checked: true }).textContent();
+  const other = chosen === 'Dark' ? 'Light' : 'Dark';
+  await theme.getByRole('radio', { name: other, exact: true }).click();
+  await expect(page.getByText('Unsaved', { exact: true }).first()).toBeVisible();
+
+  const replace = page.getByRole('alertdialog', { name: 'Unsaved changes', exact: true });
+  let chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await (await chooser).setFiles(file);
+  await expect(replace).toContainText('Open a new project? Unsaved changes will be lost.');
+  await expect(replace.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  // The page behind is out of reach while it asks.
+  await page.keyboard.press('Control+o');
+  await expect(replace).toHaveCount(1);
+  await replace.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(replace).toHaveCount(0);
+  await expect(theme.getByRole('radio', { name: other, exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByText('Unsaved', { exact: true }).first()).toBeVisible();
+
+  chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await (await chooser).setFiles(file);
+  await replace.getByRole('button', { name: 'Discard and open', exact: true }).click();
+  await expect(replace).toHaveCount(0);
+  await expect(theme.getByRole('radio', { name: chosen!, exact: true })).toHaveAttribute('aria-checked', 'true');
+  await log.attach('builder-confirm');
   expect(log.uncaught).toEqual([]);
 });
