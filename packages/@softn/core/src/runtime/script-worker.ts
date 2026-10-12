@@ -16,7 +16,9 @@ import {
   SnapshotLocalStorageBridge,
 } from './script-worker-bridges';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
+import { TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { deepEqual } from './vm-state';
+import { setEngineFaultSink } from './engine-output';
 import { readsOfDrawnFunctions } from './drawn-functions';
 
 // Type-only import from script-runtime (no runtime dependency on DOM-heavy module)
@@ -42,7 +44,35 @@ const workerState: Record<string, unknown> = {};
 // Engine-provided bindings, not script state. `host` is in the symbol map
 // because the engine exposes it for two-way syncing, but syncing it as a state
 // variable would round-trip its methods through the host and back.
-const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn']);
+const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn', ...TIMER_PREAMBLE_NAMES]);
+
+/**
+ * The runtime's own lines about a failed call ("[SoftN] ..."), which the
+ * engine's output would otherwise print in this worker's console, where no
+ * host is listening. Every entry hands them to the page; see afterEntry.
+ */
+const faults: string[] = [];
+setEngineFaultSink((line) => faults.push(line));
+
+/** What an entry that threw threw, as the page is to say it. */
+function failureOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * afterEntry for an entry whose script code may have thrown. A failure is
+ * handed back beside what the script changed before it threw, as the
+ * main-thread runtime keeps that; only where the engine itself is gone and
+ * nothing can be read is it sent as the entry's error.
+ */
+function afterFailedEntry(failure: string | undefined): Record<string, unknown> {
+  try {
+    const entry = afterEntry();
+    return failure === undefined ? entry : { ...entry, failure };
+  } catch (error) {
+    throw failure === undefined ? error : new Error(failure);
+  }
+}
 
 /** Engine steps one re-entry may spend in the worker; see where it is applied. */
 const WORKER_INSTRUCTION_BUDGET = 1_000_000_000;
@@ -181,6 +211,7 @@ function afterEntry(): Record<string, unknown> {
     eventTypes: adapter.getEventListenerTypes(),
     dbMutations: dbBridge.flushMutations(),
     lsMutations: lsBridge.flushMutations(),
+    faults: faults.splice(0),
   };
 }
 
@@ -281,11 +312,17 @@ self.onmessage = async (evt: MessageEvent) => {
         );
       }
 
-      // Compile and run. The `softn.*` namespace is the same preamble the
-      // main-thread runtime prepends; its calls queue in the engine and the
-      // main thread drains them from every entry's result.
+      // Compile and run. The `softn.*` namespace and the timers are the same
+      // preambles the main-thread runtime prepends; their calls queue in the
+      // engine and the main thread drains them from every entry's result.
       const externalPreamble = typeof payload.externalPreamble === 'string' ? payload.externalPreamble : '';
-      const fullCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + externalPreamble + resolvedCode;
+      const fullCode =
+        VM_BRIDGE_PREAMBLE +
+        SOFTN_BRIDGE_PREAMBLE +
+        timerPreamble(resolvedCode) +
+        externalPreamble +
+        resolvedCode +
+        TIMER_TRAILER;
       mainStateDirty = false;
       symbolMap = await wasmAdapter.initializeScript(fullCode);
 
@@ -346,8 +383,14 @@ self.onmessage = async (evt: MessageEvent) => {
       const name = payload.name as string;
       const args = (payload.args || []) as unknown[];
       beforeEntry(payload);
-      const result = wasmAdapter.callFunction(name, args);
-      self.postMessage({ id, ok: true, result: { result, ...afterEntry() } });
+      let result: unknown;
+      let failure: string | undefined;
+      try {
+        result = wasmAdapter.callFunction(name, args);
+      } catch (error) {
+        failure = failureOf(error);
+      }
+      self.postMessage({ id, ok: true, result: { result, ...afterFailedEntry(failure) } });
       return;
     }
 
@@ -356,8 +399,13 @@ self.onmessage = async (evt: MessageEvent) => {
     if (type === 'resolve_host_call') {
       if (!wasmAdapter || !symbolMap) throw new Error('runtime_not_initialized');
       beforeEntry(payload);
-      wasmAdapter.resolveHostCallback(Number(payload.callId), payload.result);
-      self.postMessage({ id, ok: true, result: afterEntry() });
+      let failure: string | undefined;
+      try {
+        wasmAdapter.resolveHostCallback(Number(payload.callId), payload.result);
+      } catch (error) {
+        failure = failureOf(error);
+      }
+      self.postMessage({ id, ok: true, result: afterFailedEntry(failure) });
       return;
     }
 
@@ -368,11 +416,16 @@ self.onmessage = async (evt: MessageEvent) => {
     if (type === 'dispatch_event') {
       if (!wasmAdapter || !symbolMap) throw new Error('runtime_not_initialized');
       beforeEntry(payload);
-      wasmAdapter.dispatchEvent(
-        String(payload.eventType),
-        (payload.event || {}) as Record<string, unknown>
-      );
-      self.postMessage({ id, ok: true, result: afterEntry() });
+      let failure: string | undefined;
+      try {
+        wasmAdapter.dispatchEvent(
+          String(payload.eventType),
+          (payload.event || {}) as Record<string, unknown>
+        );
+      } catch (error) {
+        failure = failureOf(error);
+      }
+      self.postMessage({ id, ok: true, result: afterFailedEntry(failure) });
       return;
     }
 

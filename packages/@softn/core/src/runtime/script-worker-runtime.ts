@@ -25,6 +25,8 @@ import {
   getSyncModuleCache,
 } from './script-runtime';
 import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
+import { LogicTimers } from './logic-timers';
+import { printRuntimeLine } from './engine-output';
 
 type WorkerPayloadMap = {
   init: Record<string, unknown>;
@@ -41,6 +43,10 @@ type EntryResult = {
   eventTypes?: string[];
   dbMutations?: DBMutation[];
   lsMutations?: LSMutation[];
+  /** The runtime's lines the engine wrote in the worker, to be printed on the page. */
+  faults?: string[];
+  /** What the script code the entry ran threw; what it changed first is in the rest. */
+  failure?: string;
 };
 
 export interface WorkerRuntimeOptions {
@@ -257,6 +263,12 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    * compiles the script, so a grant given later applies at the next load.
    */
   private accelGranted = false;
+  /**
+   * The script's timers. The engine is in the worker but the clock is kept
+   * here, beside the other host calls; a wait that comes due is answered as a
+   * `resolve_host_call`, like any of them. See logic-timers.ts.
+   */
+  private readonly timers = new LogicTimers((callId) => this.timerDue(callId));
 
   constructor(
     context: ScriptContext,
@@ -639,6 +651,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       this.watchdog = null;
     }
     this.unanswered.clear();
+    this.timers.dispose();
     if (typeof window !== 'undefined') {
       for (const [type, listener] of this.nativeListeners) window.removeEventListener(type, listener);
     }
@@ -699,6 +712,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   // ==========================================================================
 
   async loadScript(script: CodeBlock): Promise<ScriptLoadResult> {
+    // A wait a previous script asked for holds a call id this one will reuse.
+    this.timers.clear();
     const res = await this.call<{
       state: Record<string, unknown>;
       functionNames: string[];
@@ -732,37 +747,23 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
 
     const makeAsyncFn = (name: string) => async (...args: unknown[]) => {
       const safeArgs = args.map(a => sanitizeForPostMessage(a));
-
-      // Send DB/LS snapshots only when data has actually changed (dirty flag).
-      // When only specific collections changed, send a delta instead of the
-      // full snapshot to reduce structured-clone overhead across the worker boundary.
-      const payload: Record<string, unknown> = { name, args: safeArgs };
-      if (this.dbDirty) {
-        const fullData = this.getDBSnapshot();
-        if (this.dbDirtyCollections !== null && this.dbDirtyCollections.size > 0) {
-          // Send only the changed collections as a delta
-          const delta: Record<string, unknown[]> = {};
-          for (const col of this.dbDirtyCollections) {
-            delta[col] = fullData[col] || [];
-          }
-          payload.dbDelta = delta;
-        } else {
-          // Full snapshot (initial load or unknown which collections changed)
-          payload.dbSnapshot = fullData;
-        }
-        this.dbDirty = false;
-        this.dbDirtyCollections = new Set();
-      }
-      if (this.lsDirty) {
-        payload.lsSnapshot = this.getLocalStorageSnapshot();
-        this.lsDirty = false;
-      }
-      // syncStatus and savedSyncRoom are tiny — always send for correctness
-      payload.syncStatus = this.getSyncStatus();
-      payload.savedSyncRoom = this.getSavedSyncRoom();
+      const payload: Record<string, unknown> = { name, args: safeArgs, ...this.storagePayload() };
 
       const t0 = performance.now();
-      const out = await this.call<EntryResult & { result: unknown }>('call_fn', payload);
+      let out: EntryResult & { result: unknown };
+      try {
+        out = await this.call<EntryResult & { result: unknown }>('call_fn', payload);
+      } catch (err) {
+        // A worker that is gone stays the caller's to hear about. Anything
+        // else is a call that failed, said and answered as the main-thread
+        // runtime says and answers it, so the app goes on: the rejection
+        // used to reach a caller that does not wait on it, and surfaced as
+        // an uncaught rejection that named no function.
+        if (this.terminated) throw err;
+        console.error(`[SoftN] Error executing function ${name}:`, err instanceof Error ? err.message : String(err));
+        return undefined;
+      }
+      if (out.failure !== undefined) console.error(`[SoftN] Error executing function ${name}:`, out.failure);
       const elapsed = performance.now() - t0;
       this.perfCallCount++;
       this.perfTotalMs += elapsed;
@@ -801,6 +802,59 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       syncFunctions: syncFns,
       computed,
     };
+  }
+
+  /**
+   * The storage the worker's snapshots need before an entry that runs the
+   * script's own code.
+   *
+   * DB/LS snapshots are sent only when data has actually changed (dirty
+   * flag). When only specific collections changed, a delta goes instead of
+   * the full snapshot, to reduce structured-clone overhead across the worker
+   * boundary.
+   */
+  private storagePayload(): Record<string, unknown> {
+    const payload: Record<string, unknown> = {};
+    if (this.dbDirty) {
+      const fullData = this.getDBSnapshot();
+      if (this.dbDirtyCollections !== null && this.dbDirtyCollections.size > 0) {
+        // Send only the changed collections as a delta
+        const delta: Record<string, unknown[]> = {};
+        for (const col of this.dbDirtyCollections) {
+          delta[col] = fullData[col] || [];
+        }
+        payload.dbDelta = delta;
+      } else {
+        // Full snapshot (initial load or unknown which collections changed)
+        payload.dbSnapshot = fullData;
+      }
+      this.dbDirty = false;
+      this.dbDirtyCollections = new Set();
+    }
+    if (this.lsDirty) {
+      payload.lsSnapshot = this.getLocalStorageSnapshot();
+      this.lsDirty = false;
+    }
+    // syncStatus and savedSyncRoom are tiny — always send for correctness
+    payload.syncStatus = this.getSyncStatus();
+    payload.savedSyncRoom = this.getSavedSyncRoom();
+    return payload;
+  }
+
+  /**
+   * A timer of the script's came due, or was stopped early: answer its wait in
+   * the worker, where its callback runs as a handler would, with the storage
+   * a handler would see. Each answer starts a chain of its own, so an interval
+   * is not ended by the limit on one chain of host calls.
+   */
+  private timerDue(callId: number): void {
+    if (this.disposed) return;
+    this.call<EntryResult>('resolve_host_call', { callId, result: null, ...this.storagePayload() })
+      .then((out) => {
+        if (out.failure !== undefined) console.error('[SoftN] A timer callback in the logic failed:', out.failure);
+        return this.applyEntry(out);
+      })
+      .catch((err) => console.error('[SoftN] A timer callback in the logic failed:', err));
   }
 
   updateContext(newState: Record<string, unknown>): void {
@@ -871,11 +925,14 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    */
   private async applyEntry(out: EntryResult, rounds = { n: 0 }): Promise<void> {
     if (this.disposed) return;
+    for (const line of out.faults ?? []) printRuntimeLine(line);
     void this.applyDBMutations(out.dbMutations || []);
     this.applyLSMutations(out.lsMutations || []);
     this.applyState(out.state || {});
     if (Array.isArray(out.eventTypes)) this.bridgeEventTypes(out.eventTypes);
-    const calls = Array.isArray(out.hostCalls) ? out.hostCalls : [];
+    // Timers keep their own clock and are not run one after another with the
+    // rest: see LogicTimers.
+    const calls = this.timers.take(Array.isArray(out.hostCalls) ? out.hostCalls : []);
     for (const call of calls) {
       if (++rounds.n > MAX_HOST_CALL_ROUNDS) {
         console.error(
@@ -904,6 +961,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         console.error('[SoftN] Error resolving host callback:', err);
         return;
       }
+      if (next.failure !== undefined) console.error('[SoftN] Error resolving host callback:', next.failure);
       await this.applyEntry(next, rounds);
     }
   }
@@ -936,8 +994,15 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
           syncStatus: this.getSyncStatus(),
           savedSyncRoom: this.getSavedSyncRoom(),
         })
-          .then((out) => this.applyEntry(out))
-          .catch((err) => console.warn(`[SoftN Worker] ${eventType} handler failed: ${String(err)}`));
+          .then((out) => {
+            if (out.failure !== undefined) {
+              console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, out.failure);
+            }
+            return this.applyEntry(out);
+          })
+          .catch((err) =>
+            console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, String(err))
+          );
       };
       // The high-frequency events cross once a frame, combined by the policy
       // the type chooses and delivered in the order they happened — the same

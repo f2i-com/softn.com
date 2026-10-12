@@ -811,7 +811,16 @@ export class HostJsAdapter implements LogicEngine {
     const symbol = this.symbolMap.get(name);
     const fn = symbol ? this.slots[symbol.index].get() : undefined;
     if (typeof fn !== 'function') throw new Error(`host-js: no such function '${name}'`);
-    return project((fn as (...args: unknown[]) => unknown)(...sanitizeArgs(args)));
+    const result = (fn as (...args: unknown[]) => unknown)(...sanitizeArgs(args));
+    // An async function's promise crosses as nothing, as ZIPP's does, and a
+    // rejection after that is said the way ZIPP's adapter says it, naming
+    // the function, rather than as an uncaught rejection that names none.
+    if (result !== null && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') {
+      (result as Promise<unknown>).then(undefined, (error: unknown) => {
+        console.error(`[SoftN] Error executing function ${name}:`, error);
+      });
+    }
+    return project(result);
   }
 
   callFunctionSync(name: string, args: unknown[]): unknown {

@@ -136,6 +136,54 @@ function storageFailure(operation: string, key: string, cause: unknown): Error {
 const ACCEL_SYNC_OPS = ['accel.compile', 'accel.make', 'accel.state', 'accel.run', 'accel.install'] as const;
 
 // ============================================================================
+// Async functions the host calls
+// ============================================================================
+
+/**
+ * The function an async function of the script is entered through when the
+ * host calls it, put after the script by {@link asyncEntrySource} and kept
+ * out of the symbol map the host is given.
+ *
+ * ZIPP hands the host no promise: a call to an async function answers null,
+ * and a rejection after that goes nowhere, so a handler that threw was
+ * silent. This calls the function as the engine would, and if it answers a
+ * promise, has the guest write the runtime's line for a failed call when it
+ * rejects, naming the function (`engine-output.ts` prints it as an error).
+ * The rejection is otherwise left alone.
+ */
+const ASYNC_ENTRY = '__zippSoftnEnter';
+
+/**
+ * {@link ASYNC_ENTRY} for `names`. Each is reached by its own name, in the
+ * script's scope, so the function called is the one the host would have
+ * called; a name the script does not declare at its top level is undefined
+ * there, and the call fails as the host's direct call would.
+ */
+function asyncEntrySource(names: ReadonlySet<string>): string {
+  const cases = [...names]
+    .map((name) => `case ${JSON.stringify(name)}: fn = typeof ${name} === "function" ? ${name} : undefined; break;`)
+    .join('\n    ');
+  return `
+;function ${ASYNC_ENTRY}(name, args) {
+  var fn;
+  switch (name) {
+    ${cases}
+  }
+  if (typeof fn !== "function") throw new TypeError(name + " is not a function");
+  var result = fn(...args);
+  if (result !== null && typeof result === "object" && typeof result.then === "function") {
+    result.then(undefined, function (error) {
+      var said;
+      try { said = String(error); } catch (_) { said = "an error that cannot be shown"; }
+      console.error("[SoftN] Error executing function " + name + ": " + said);
+    });
+  }
+  return result;
+}
+`;
+}
+
+// ============================================================================
 // ZippWasmAdapter
 // ============================================================================
 
@@ -153,6 +201,8 @@ export class ZippWasmAdapter {
   private instructionBudget: number | undefined = undefined;
   /** Names accumulated by `register*` calls, flushed once before `initScript`. */
   private pendingSyncCapabilities = new Set<string>();
+  /** The script's async functions, entered through {@link ASYNC_ENTRY}. */
+  private asyncFunctions: ReadonlySet<string> = new Set();
 
   private constructor(wasm: Engine) {
     this.wasm = wasm;
@@ -482,6 +532,13 @@ export class ZippWasmAdapter {
   async initializeScript(code: string): Promise<Map<string, SymbolInfo>> {
     await ensureWasm();
 
+    // The async functions the host may call, entered through a function of
+    // this adapter's that says when one rejects (see ASYNC_ENTRY).
+    this.asyncFunctions = new Set(
+      [...code.matchAll(/\basync\s+function\s+([A-Za-z_$][\w$]*)/g)].map((match) => match[1])
+    );
+    if (this.asyncFunctions.size > 0) code += asyncEntrySource(this.asyncFunctions);
+
     // Grant exactly what registration wired, in the one call the engine allows.
     // This is the last statement before compilation on purpose: the allowlist is
     // replaced rather than unioned, and the db/localStorage/clipboard bridges
@@ -515,6 +572,7 @@ export class ZippWasmAdapter {
 
     this.symbolMap = new Map();
     for (const [name, info] of Object.entries(symbolMapObj)) {
+      if (name === ASYNC_ENTRY) continue;
       this.symbolMap.set(name, { index: info.index, scope: info.scope as SymbolScope });
     }
 
@@ -621,6 +679,20 @@ export class ZippWasmAdapter {
   }
 
   callFunction(name: string, args: unknown[]): unknown {
+    if (!this.asyncFunctions.has(name)) return this.callDirect(name, args);
+    // An async function answers a promise, which reaches the host as null:
+    // whether it went on to reject only the guest can see. So it is entered
+    // through ASYNC_ENTRY, which says so as the runtime's other failures are
+    // said, naming the function. The function itself runs as before.
+    return this.callDirect(ASYNC_ENTRY, [name, args]);
+  }
+
+  /** Same as {@link callFunction}, for a value the caller needs now; no promise is awaited. */
+  callFunctionSync(name: string, args: unknown[]): unknown {
+    return this.callDirect(name, args);
+  }
+
+  private callDirect(name: string, args: unknown[]): unknown {
     this.renewBudget();
     try {
       return this.wasm.callFunction(name, sanitizeArgs(args));
@@ -634,11 +706,6 @@ export class ZippWasmAdapter {
     } finally {
       this.flushOutput();
     }
-  }
-
-  /** Same as {@link callFunction} — the engine is synchronous. */
-  callFunctionSync(name: string, args: unknown[]): unknown {
-    return this.callFunction(name, args);
   }
 
   /**

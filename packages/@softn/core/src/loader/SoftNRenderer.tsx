@@ -975,6 +975,12 @@ export function SoftNRenderer({
                 return { ...prev, componentState: newState };
               });
             },
+            // State only a drawn function reads moved in the engine: the page
+            // holds no copy of it, so it is drawn again with what it holds.
+            redraw: () => {
+              if (!mountedRef.current || stale) return;
+              setState((prev) => ({ ...prev, componentState: { ...prev.componentState } }));
+            },
             data: {},
             xdb: createPersistentXDBModule(appId),
             nav: createMockNavModule(),

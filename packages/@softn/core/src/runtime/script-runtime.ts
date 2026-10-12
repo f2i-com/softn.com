@@ -24,6 +24,8 @@ import {
 import { SandboxHost } from './sandbox-host';
 import { readZipText } from './zip-text';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
+import { LogicTimers, TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from './logic-timers';
+import { placeSyntaxError } from './logic-syntax';
 import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
@@ -83,6 +85,13 @@ export interface ScriptContext {
   setState: (path: string, value: unknown) => void;
   /** Batch multiple state changes into a single React setState call (optional optimization) */
   batchSetState?: (changes: Record<string, unknown>) => void;
+  /**
+   * Draw the page again, though no state it holds has changed: state that
+   * only a function the page calls while it is drawn reads has moved in the
+   * engine. Optional; a host without it has such state copied to the page
+   * instead, which is slower and has the same effect.
+   */
+  redraw?: () => void;
 
   // XDB data
   data: Record<string, XDBRecord[]>;
@@ -426,7 +435,14 @@ export function detectWorkerIncompatibilities(code: string): string[] {
  * as user state variables.
  */
 const EXTERNAL_VALUES_VAR = '__softnExternalValues';
-const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn', EXTERNAL_VALUES_VAR]);
+const BRIDGE_VARS = new Set([
+  'window',
+  'navigator',
+  'host',
+  'softn',
+  EXTERNAL_VALUES_VAR,
+  ...TIMER_PREAMBLE_NAMES,
+]);
 const EXTERNAL_FUNCTION_RESERVED_NAMES = new Set([...BRIDGE_VARS, 'db', 'localStorage']);
 
 /**
@@ -838,6 +854,9 @@ export class SoftNScriptRuntime {
 
   async loadScript(script: CodeBlock): Promise<ScriptLoadResult> {
     const useHostBridges = this.runtimeMode === 'main';
+    // A wait a previous script asked for holds a call id this one will reuse.
+    this.timers.clear();
+    this.heldFromLoad = [];
 
     // 0. Create the logic engine (the ZIPP adapter unless a host configured
     // one). A Python app asks for one that can run Python, and an engine that
@@ -959,11 +978,13 @@ export class SoftNScriptRuntime {
       writtenCode = extFnPreamble + resolvedCode;
 
       // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
-      // window/navigator/db/localStorage/host itself) then SoftN's own.
-      const bridges = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble;
-      const scriptCode = bridges + resolvedCode;
+      // window/navigator/db/localStorage/host itself) then SoftN's own, and
+      // the timers (logic-timers.ts).
+      const bridges =
+        VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble;
+      const scriptCode = bridges + resolvedCode + TIMER_TRAILER;
       const fullCode = computedPreamble
-        ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble
+        ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble + TIMER_TRAILER
         : scriptCode;
 
       // 5. Compile + run the full .logic code in the WASM VM.
@@ -977,7 +998,7 @@ export class SoftNScriptRuntime {
       try {
         symbolMap = await this.vmEngine.initializeScript(fullCode);
       } catch (compileError) {
-        if (!computedCompiled) throw compileError;
+        if (!computedCompiled) throw await placeSyntaxError(compileError, resolvedCode);
         console.warn(
           '[SoftN] A `$:` declaration could not be compiled, so all of them fall back ' +
             'to per-render evaluation. The script itself is unaffected. Cause:',
@@ -996,7 +1017,11 @@ export class SoftNScriptRuntime {
         this.vmEngine = await createLogicEngine();
         if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
         if (useHostBridges) this.installHostBridges();
-        symbolMap = await this.vmEngine.initializeScript(scriptCode);
+        try {
+          symbolMap = await this.vmEngine.initializeScript(scriptCode);
+        } catch (error) {
+          throw await placeSyntaxError(error, resolvedCode);
+        }
       }
     }
     this.symbolMap = symbolMap;
@@ -1075,6 +1100,11 @@ export class SoftNScriptRuntime {
     // only an event runs is not followed, which is what keeps a game's large
     // state in the engine: `tick` reads all of it, and is never drawn. Where
     // a drawn function cannot be followed, everything is mirrored.
+    //
+    // What only such a function reads is watched rather than copied (see
+    // partitionStateVars): the page reads it through the function, from the
+    // engine, and needs to know only that it moved.
+    let readOnlyWhenDrawn: ReadonlySet<string> = new Set();
     if (this.observedStateNames) {
       const reads = readsOfDrawnFunctions({
         code: writtenCode,
@@ -1089,11 +1119,16 @@ export class SoftNScriptRuntime {
         this.observedStateNames = null;
       } else if (reads.names.size > 0) {
         const observed = new Set(this.observedStateNames);
-        for (const name of reads.names) observed.add(name);
+        const added = new Set<string>();
+        for (const name of reads.names) {
+          if (!observed.has(name)) added.add(name);
+          observed.add(name);
+        }
         this.observedStateNames = observed;
+        readOnlyWhenDrawn = added;
       }
     }
-    this.partitionStateVars(stateVarNames, symbolMap);
+    this.partitionStateVars(stateVarNames, symbolMap, readOnlyWhenDrawn);
     debug(
       `[SoftN] Script loaded: ${functionNames.length} functions, ${this.stateVarNames.length} state vars` +
         (this.vmOwnedStateNames.length
@@ -1148,12 +1183,108 @@ export class SoftNScriptRuntime {
       }
     }
 
+    // A timer the top level set waited for the first call into the script,
+    // which for an app without `_init` is the first click. Start it once the
+    // host has had the result: a macrotask, so an `_init` the renderer calls
+    // straight away still goes first and drains the queue as it always has,
+    // and this finds nothing left to do.
+    this.loadEntry = setTimeout(() => {
+      this.loadEntry = null;
+      void this.startTopLevelTimers();
+    }, 0);
+
     return {
       state: initialState,
       functions,
       syncFunctions,
       computed,
     };
+  }
+
+  /** The look made after `loadScript`, until it runs; see the end of `loadScript`. */
+  private loadEntry: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Host calls the top level queued beside its timers, held for the next
+   * drain. They wait for the next entry into the script, as they always have
+   * (a click, usually, and now a timer coming due as well): one that plays a
+   * sound or opens a picker then runs inside that click, where the browser
+   * allows it, and would be refused if it ran as the page loads.
+   */
+  private heldFromLoad: PendingHostCall[] = [];
+
+  /** Start the timers the top level set, if nothing has drained them yet. */
+  private async startTopLevelTimers(): Promise<void> {
+    await this.vmCallLock;
+    if (this.disposed || !this.vmEngine || this.vmEngine.terminated) return;
+    let release: (() => void) | undefined;
+    this.vmCallLock = new Promise<void>((r) => {
+      release = r;
+    });
+    try {
+      this.heldFromLoad.push(...this.timers.take(this.vmEngine.drainPendingHostCalls()));
+    } catch (error) {
+      console.error('[SoftN] Error starting the timers the script set as it loaded:', error);
+    } finally {
+      release!();
+    }
+  }
+
+  /** What the script queued for the host, after anything held from the load. */
+  private drainHostCalls(): PendingHostCall[] {
+    const drained = this.vmEngine!.drainPendingHostCalls();
+    if (this.heldFromLoad.length === 0) return drained;
+    const held = this.heldFromLoad;
+    this.heldFromLoad = [];
+    return [...held, ...drained];
+  }
+
+  /** The script's timers, on the host's clock; see logic-timers.ts. */
+  private readonly timers = new LogicTimers((callId) => this.timerDue(callId));
+  /** Timers that came due and wait for one entry to answer them all. */
+  private dueTimers: number[] = [];
+  private timerEntryQueued = false;
+
+  private timerDue(callId: number): void {
+    this.dueTimers.push(callId);
+    this.answerDueTimers();
+  }
+
+  /**
+   * Answer every timer that is due in one entry into the engine, as a handler
+   * is run: the callbacks' writes reach the page together and the page is
+   * drawn once. Timers that come due while that entry waits for the engine
+   * join it, so a page with many timers cannot fill the call queue.
+   */
+  private answerDueTimers(): void {
+    if (this.timerEntryQueued || this.dueTimers.length === 0) return;
+    this.timerEntryQueued = true;
+    let entered = false;
+    void this.enterVM('timer callbacks', false, () => {
+      entered = true;
+      const due = this.dueTimers;
+      this.dueTimers = [];
+      for (const callId of due) {
+        try {
+          this.vmEngine!.resolveHostCallback(callId, null);
+        } catch (error) {
+          // One callback failing does not stop the others, and an interval
+          // has already asked for its next wait.
+          console.error('[SoftN] A timer callback in the logic failed:', error);
+        }
+      }
+    }).finally(() => {
+      this.timerEntryQueued = false;
+      if (this.disposed || this.vmEngine?.terminated) {
+        this.timers.dispose();
+        this.dueTimers = [];
+        return;
+      }
+      if (entered) this.answerDueTimers();
+      // Not let in because the call queue is full: try again shortly rather
+      // than lose a callback, or an interval, for good.
+      else setTimeout(() => this.answerDueTimers(), 16);
+    });
   }
 
   /**
@@ -1176,159 +1307,167 @@ export class SoftNScriptRuntime {
     options?: { droppable?: boolean }
   ): (...args: unknown[]) => Promise<unknown> {
     const droppable = options?.droppable ?? false;
+    return (...args: unknown[]): Promise<unknown> =>
+      this.enterVM(name, droppable, () => this.vmEngine!.callFunction(name, args));
+  }
+
+  /**
+   * Enter the engine the way a handler does, with `run` as what happens
+   * inside: the page's state goes in first, what the script changed comes
+   * back to the page after, and the host calls it queued are run. A function
+   * the page calls and a timer that comes due both enter this way.
+   */
+  private async enterVM(name: string, droppable: boolean, run: () => unknown): Promise<unknown> {
     // Droppable calls (rapid-fire events) are dropped at the soft limit.
     // Critical calls (user interactions) are only dropped at the hard limit.
     const QUEUE_SOFT_LIMIT = 32;
     const QUEUE_HARD_LIMIT = 128;
+    // A runtime that has been torn down answers nothing. Without this, a
+    // 30 Hz game loop keeps landing calls on the disposed engine — each one
+    // an "engine is disposed" error in the console — until its renderer
+    // notices.
+    if (this.disposed) return undefined;
+    if (this.vmEngine?.terminated) {
+      if (!this.terminationLogged) {
+        this.terminationLogged = true;
+        console.error(`[SoftN] The script engine has stopped (a call exceeded its budget or failed to compile); ignoring ${name} and later calls until the app is reloaded.`);
+      }
+      return undefined;
+    }
+    // Guard against unbounded queue growth from rapid async events.
+    if (droppable && this.vmCallQueueDepth >= QUEUE_SOFT_LIMIT) {
+      // Safe to drop: rapid-fire events are superseded by the next one
+      return undefined;
+    }
+    if (this.vmCallQueueDepth >= QUEUE_HARD_LIMIT) {
+      console.error(
+        `[SoftN] Dropping VM call to ${name}: hard queue limit reached (${this.vmCallQueueDepth})`
+      );
+      return undefined;
+    }
+    this.vmCallQueueDepth++;
 
-    return async (...args: unknown[]): Promise<unknown> => {
-      // A runtime that has been torn down answers nothing. Without this, a
-      // 30 Hz game loop keeps landing calls on the disposed engine — each one
-      // an "engine is disposed" error in the console — until its renderer
-      // notices.
-      if (this.disposed) return undefined;
-      if (this.vmEngine?.terminated) {
-        if (!this.terminationLogged) {
-          this.terminationLogged = true;
-          console.error(`[SoftN] The script engine has stopped (a call exceeded its budget or failed to compile); ignoring ${name} and later calls until the app is reloaded.`);
-        }
-        return undefined;
-      }
-      // Guard against unbounded queue growth from rapid async events.
-      if (droppable && this.vmCallQueueDepth >= QUEUE_SOFT_LIMIT) {
-        // Safe to drop: rapid-fire events are superseded by the next one
-        return undefined;
-      }
-      if (this.vmCallQueueDepth >= QUEUE_HARD_LIMIT) {
-        console.error(
-          `[SoftN] Dropping VM call to ${name}: hard queue limit reached (${this.vmCallQueueDepth})`
-        );
-        return undefined;
-      }
-      this.vmCallQueueDepth++;
+    // Acquire the lock — serializes async VM calls to prevent concurrent
+    // stack corruption. Uses a release-function pattern (not .then() chaining)
+    // to avoid unbounded promise chain growth.
+    await this.vmCallLock;
+    let release: (() => void) | undefined;
+    this.vmCallLock = new Promise<void>((r) => {
+      release = r;
+    });
+    // The wait for the lock is where a tear-down usually lands: the calls
+    // queued behind the one that was running when the grant rebuilt the
+    // runtime would otherwise each wake up and hit a corpse.
+    if (this.disposed) {
+      this.vmCallQueueDepth--;
+      release!();
+      return undefined;
+    }
 
-      // Acquire the lock — serializes async VM calls to prevent concurrent
-      // stack corruption. Uses a release-function pattern (not .then() chaining)
-      // to avoid unbounded promise chain growth.
-      await this.vmCallLock;
-      let release: (() => void) | undefined;
-      this.vmCallLock = new Promise<void>((r) => {
-        release = r;
-      });
-      // The wait for the lock is where a tear-down usually lands: the calls
-      // queued behind the one that was running when the grant rebuilt the
-      // runtime would otherwise each wake up and hit a corpse.
-      if (this.disposed) {
-        this.vmCallQueueDepth--;
-        release!();
-        return undefined;
-      }
+    const t0 = performance.now();
+    try {
+      this.asyncCallInProgress = true;
+      // Async call may change state — invalidate sync cache preemptively.
+      this.syncCallCache.clear();
 
-      const t0 = performance.now();
+      const tSyncStart = performance.now();
+      this.syncReactStateToVM();
+      this.syncExternalFunctionsToVM();
+      // Sync real browser window → VM window
+      this.syncWindowToVM();
+      // The function reads `$:` values as they are for the state it is
+      // called with, not as they were when the script loaded.
+      this.settleComputedIfStale();
+      this._perfSyncToVMMs += performance.now() - tSyncStart;
+
+      // Suppress XDB notifications during the WASM call — all db mutations
+      // within the function are batched into a single notification per collection
+      // at the end, instead of firing on every individual create/update/delete.
+      // This eliminates O(n) re-queries when functions like startHand() do 20+ mutations.
+      this.xdbService?.suppressNotifications();
+
+      // WASM engine takes plain JS args directly — no conversion needed
+      const tWasm = performance.now();
+      const result = run();
+      this._perfWasmMs += performance.now() - tWasm;
+
+      return result;
+    } catch (error) {
+      console.error(`[SoftN] Error executing function ${name}:`, error);
+      return undefined;
+    } finally {
+      // Resume XDB notifications — fires one 'refresh' per affected collection.
+      this.xdbService?.resumeNotifications();
+
+      // Whatever it changed, the `$:` values are worked out from.
+      this.computedMayHaveMoved();
+
+      // Always sync state back, even if the VM function threw mid-execution.
+      // Partial state mutations before the error should be reflected in the UI.
+      // Drain pending host calls while we still hold the lock, but DON'T await
+      // their execution — that would block other VM calls (e.g. movement ticks)
+      // for the entire duration of async operations like AI generation.
+      let pendingCalls: unknown[] | null = null;
       try {
-        this.asyncCallInProgress = true;
-        // Async call may change state — invalidate sync cache preemptively.
-        this.syncCallCache.clear();
+        // Disposed during the call: there is no engine left to read back from.
+        if (!this.disposed) {
+          const tSyncReact = performance.now();
+          this.syncVMStateToReact();
+          this.syncWindowFromVM();
+          this._perfSyncToReactMs += performance.now() - tSyncReact;
 
-        const tSyncStart = performance.now();
-        this.syncReactStateToVM();
-        this.syncExternalFunctionsToVM();
-        // Sync real browser window → VM window
-        this.syncWindowToVM();
-        // The function reads `$:` values as they are for the state it is
-        // called with, not as they were when the script loaded.
-        this.settleComputedIfStale();
-        this._perfSyncToVMMs += performance.now() - tSyncStart;
-
-        // Suppress XDB notifications during the WASM call — all db mutations
-        // within the function are batched into a single notification per collection
-        // at the end, instead of firing on every individual create/update/delete.
-        // This eliminates O(n) re-queries when functions like startHand() do 20+ mutations.
-        this.xdbService?.suppressNotifications();
-
-        // WASM engine takes plain JS args directly — no conversion needed
-        const tWasm = performance.now();
-        const result = this.vmEngine!.callFunction(name, args);
-        this._perfWasmMs += performance.now() - tWasm;
-
-        return result;
-      } catch (error) {
-        console.error(`[SoftN] Error executing function ${name}:`, error);
-        return undefined;
-      } finally {
-        // Resume XDB notifications — fires one 'refresh' per affected collection.
-        this.xdbService?.resumeNotifications();
-
-        // Whatever it changed, the `$:` values are worked out from.
-        this.computedMayHaveMoved();
-
-        // Always sync state back, even if the VM function threw mid-execution.
-        // Partial state mutations before the error should be reflected in the UI.
-        // Drain pending host calls while we still hold the lock, but DON'T await
-        // their execution — that would block other VM calls (e.g. movement ticks)
-        // for the entire duration of async operations like AI generation.
-        let pendingCalls: unknown[] | null = null;
-        try {
-          // Disposed during the call: there is no engine left to read back from.
-          if (!this.disposed) {
-            const tSyncReact = performance.now();
-            this.syncVMStateToReact();
-            this.syncWindowFromVM();
-            this._perfSyncToReactMs += performance.now() - tSyncReact;
-
-            // Drain pending host calls while holding the lock
-            if (this.vmEngine) {
-              const pending = this.vmEngine.drainPendingHostCalls();
-              if (pending.length > 0) {
-                pendingCalls = pending;
-              }
+          // Drain pending host calls while holding the lock
+          if (this.vmEngine) {
+            const pending = this.drainHostCalls();
+            if (pending.length > 0) {
+              pendingCalls = pending;
             }
-
-            // After each async call, discover any new VM event listeners and
-            // window.__ properties — this bridges keyboard/mouse handlers
-            // registered in _init() or other functions to real browser events.
-            this.bridgeEventListeners();
-            this.discoverWindowSyncKeys();
           }
-        } catch (syncError) {
-          console.error(`[SoftN] Error syncing state after ${name}:`, syncError);
-        }
-        this.asyncCallInProgress = false;
-        this.vmCallQueueDepth--;
-        release!();
 
-        // Process pending host calls OUTSIDE the lock so other VM calls
-        // (e.g. movementTick) can execute while async host operations
-        // (e.g. AI model generation) are in progress.
-        if (pendingCalls) {
-          await this.processPendingHostCallsUnlocked(pendingCalls as PendingHostCall[]);
+          // After each async call, discover any new VM event listeners and
+          // window.__ properties — this bridges keyboard/mouse handlers
+          // registered in _init() or other functions to real browser events.
+          this.bridgeEventListeners();
+          this.discoverWindowSyncKeys();
         }
-
-        // Performance reporting
-        const elapsed = performance.now() - t0;
-        this._perfCallCount++;
-        this._perfTotalMs += elapsed;
-        const now = performance.now();
-        if (now - this._perfLastReport > 5000) {
-          const n = this._perfCallCount;
-          debug(
-            `[SoftN Perf] ${n} calls in 5s | avg=${(this._perfTotalMs / n).toFixed(1)}ms` +
-              ` | wasm=${(this._perfWasmMs / n).toFixed(1)}ms` +
-              ` | syncToVM=${(this._perfSyncToVMMs / n).toFixed(1)}ms` +
-              ` | syncToReact=${(this._perfSyncToReactMs / n).toFixed(1)}ms` +
-              ` | changedVars=${(this._perfChangedVars / n).toFixed(1)}/tick` +
-              ` | stateVars=${this.stateVarNames.length}`
-          );
-          this._perfCallCount = 0;
-          this._perfTotalMs = 0;
-          this._perfWasmMs = 0;
-          this._perfSyncToVMMs = 0;
-          this._perfSyncToReactMs = 0;
-          this._perfChangedVars = 0;
-          this._perfLastReport = now;
-        }
+      } catch (syncError) {
+        console.error(`[SoftN] Error syncing state after ${name}:`, syncError);
       }
-    };
+      this.asyncCallInProgress = false;
+      this.vmCallQueueDepth--;
+      release!();
+
+      // Process pending host calls OUTSIDE the lock so other VM calls
+      // (e.g. movementTick) can execute while async host operations
+      // (e.g. AI model generation) are in progress.
+      if (pendingCalls) {
+        await this.processPendingHostCallsUnlocked(pendingCalls as PendingHostCall[]);
+      }
+
+      // Performance reporting
+      const elapsed = performance.now() - t0;
+      this._perfCallCount++;
+      this._perfTotalMs += elapsed;
+      const now = performance.now();
+      if (now - this._perfLastReport > 5000) {
+        const n = this._perfCallCount;
+        debug(
+          `[SoftN Perf] ${n} calls in 5s | avg=${(this._perfTotalMs / n).toFixed(1)}ms` +
+            ` | wasm=${(this._perfWasmMs / n).toFixed(1)}ms` +
+            ` | syncToVM=${(this._perfSyncToVMMs / n).toFixed(1)}ms` +
+            ` | syncToReact=${(this._perfSyncToReactMs / n).toFixed(1)}ms` +
+            ` | changedVars=${(this._perfChangedVars / n).toFixed(1)}/tick` +
+            ` | stateVars=${this.stateVarNames.length}`
+        );
+        this._perfCallCount = 0;
+        this._perfTotalMs = 0;
+        this._perfWasmMs = 0;
+        this._perfSyncToVMMs = 0;
+        this._perfSyncToReactMs = 0;
+        this._perfChangedVars = 0;
+        this._perfLastReport = now;
+      }
+    }
   }
 
   /**
@@ -1353,12 +1492,24 @@ export class SoftNScriptRuntime {
    * {@link syncReactStateToVM} walks the same list, so an excluded variable is
    * never written back either — otherwise a full push would overwrite the live
    * VM value with the copy the host stopped updating.
+   *
+   * Among the synced, state that only a function the page calls while it is
+   * drawn reads (`readOnlyWhenDrawn`) is watched rather than copied. The page
+   * reads it through that function, which reads the engine's own, so what the
+   * page needs is to be drawn again when it moves: its digest is compared like
+   * the others' and the page is drawn again, and its value is neither read out
+   * nor written back. Copied, a list of 4,000 records that one such function
+   * counts was about 35 ms of every tick of a game loop. This needs a host
+   * that can be asked to draw the page ({@link ScriptContext.redraw}) and an
+   * engine that digests in place; without both it is copied as before.
    */
   private partitionStateVars(
     names: string[],
-    symbolMap: Map<string, { index: number; scope: SymbolScope }>
+    symbolMap: Map<string, { index: number; scope: SymbolScope }>,
+    readOnlyWhenDrawn: ReadonlySet<string> = new Set()
   ): void {
     const observed = this.observedStateNames;
+    this.watchedStateSet = new Set();
     if (!observed) {
       this.stateVarNames = names;
       this.stateVarIndices = names.map((name) => symbolMap.get(name)!.index);
@@ -1375,6 +1526,24 @@ export class SoftNScriptRuntime {
     this.stateVarIndices = synced.map((name) => symbolMap.get(name)!.index);
     this.vmOwnedStateNames = vmOwned;
     this.vmOwnedStateSet = new Set(vmOwned);
+    if (readOnlyWhenDrawn.size > 0 && this.context.redraw && this.engineDigests()) {
+      this.watchedStateSet = new Set(synced.filter((name) => readOnlyWhenDrawn.has(name)));
+    }
+  }
+
+  /** Synced state the page is drawn again for when it moves, and never holds a copy of. */
+  private watchedStateSet: ReadonlySet<string> = new Set();
+
+  /** Whether the engine can digest globals in place; an empty ask is enough to tell. */
+  private engineDigests(): boolean {
+    const engine = this.vmEngine as unknown as {
+      getGlobalsFingerprint?: (indices: number[]) => number[] | null;
+    } | null;
+    try {
+      return Array.isArray(engine?.getGlobalsFingerprint?.([]));
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -1463,9 +1632,18 @@ export class SoftNScriptRuntime {
     this.syncCallCache.clear();
     this.computedMayHaveMoved();
     if (dirty === null || vmDirty) {
-      // Full sync: first call or worker pushed new state
-      const values = this.stateVarNames.map((name) => this.context.state[name]);
-      this.vmEngine.setGlobalsBatch(this.stateVarIndices, values);
+      // Full sync: first call or worker pushed new state. Watched state is
+      // left out: the page's copy of it is the one from when the script
+      // loaded, and pushing it would put that back over the live value.
+      const watched = this.watchedStateSet;
+      const indices: number[] = [];
+      const values: unknown[] = [];
+      for (let i = 0; i < this.stateVarNames.length; i++) {
+        if (watched.has(this.stateVarNames[i])) continue;
+        indices.push(this.stateVarIndices[i]);
+        values.push(this.context.state[this.stateVarNames[i]]);
+      }
+      this.vmEngine.setGlobalsBatch(indices, values);
       // The cached digests describe what the host last READ. They are used to
       // decide whether React still matches the VM, so they stop being an answer
       // to that question the moment anything moves React's copy on its own.
@@ -1480,7 +1658,7 @@ export class SoftNScriptRuntime {
       const indices: number[] = [];
       const values: unknown[] = [];
       for (const key of dirty) {
-        if (this.vmOwnedStateSet.has(key)) continue;
+        if (this.vmOwnedStateSet.has(key) || this.watchedStateSet.has(key)) continue;
         const sym = this.symbolMap!.get(key);
         if (sym) {
           indices.push(sym.index);
@@ -1564,6 +1742,12 @@ export class SoftNScriptRuntime {
     let namesToCheck: string[] = this.stateVarNames;
     let nextFingerprints: number[] | null = null;
 
+    // Watched state is never read (see partitionStateVars). A digest of it
+    // that moved draws the page again, and so does any doubt, the same doubt
+    // that reads everything else.
+    const watched = this.watchedStateSet;
+    let watchedMoved = watched.size > 0;
+
     const fingerprints = this.readFingerprints();
     if (fingerprints) {
       nextFingerprints = fingerprints;
@@ -1571,16 +1755,22 @@ export class SoftNScriptRuntime {
       if (previous && previous.length === fingerprints.length) {
         indicesToCheck = [];
         namesToCheck = [];
+        watchedMoved = false;
         for (let i = 0; i < fingerprints.length; i++) {
           // NaN never equals itself, so an "unknown" digest reads. That is the
           // behaviour we want and the reason this is not written as !==.
           if (fingerprints[i] !== previous[i]) {
+            if (watched.has(this.stateVarNames[i])) {
+              watchedMoved = true;
+              continue;
+            }
             indicesToCheck.push(this.stateVarIndices[i]);
             namesToCheck.push(this.stateVarNames[i]);
           }
         }
         if (indicesToCheck.length === 0 && !FINGERPRINT_AUDIT()) {
           this.stateVarFingerprints = nextFingerprints;
+          if (watchedMoved) this.context.redraw?.();
           return;
         }
       }
@@ -1595,6 +1785,10 @@ export class SoftNScriptRuntime {
     if (auditing) {
       indicesToCheck = this.stateVarIndices;
       namesToCheck = this.stateVarNames;
+    }
+    if (watched.size > 0 && namesToCheck === this.stateVarNames) {
+      indicesToCheck = this.stateVarIndices.filter((_, i) => !watched.has(this.stateVarNames[i]));
+      namesToCheck = this.stateVarNames.filter((name) => !watched.has(name));
     }
 
     const allValues = this.vmEngine.getGlobalsBatch(indicesToCheck) as unknown[];
@@ -1612,7 +1806,7 @@ export class SoftNScriptRuntime {
     if (auditing && skipped) {
       for (let i = 0; i < namesToCheck.length; i++) {
         const name = namesToCheck[i];
-        const wasSkipped = !skipped.has(this.stateVarIndices[i]);
+        const wasSkipped = !skipped.has(indicesToCheck[i]);
         if (wasSkipped && name in changes) {
           console.error(
             '[SoftN] FINGERPRINT MISS: ' + name + ' was reported unchanged but its value moved'
@@ -1624,7 +1818,10 @@ export class SoftNScriptRuntime {
 
     const changedKeys = Object.keys(changes);
     this._perfChangedVars += changedKeys.length;
-    if (changedKeys.length === 0) return;
+    if (changedKeys.length === 0) {
+      if (watchedMoved) this.context.redraw?.();
+      return;
+    }
     // Use batch setter if available (single React setState call for all changes)
     if (this.context.batchSetState) {
       this.context.batchSetState(changes);
@@ -1845,7 +2042,15 @@ export class SoftNScriptRuntime {
 
         // Dispatch to VM handlers (runs synchronously in WASM)
         this.settleComputedIfStale();
-        this.vmEngine.dispatchEvent(eventType, eventObj);
+        try {
+          this.vmEngine.dispatchEvent(eventType, eventObj);
+        } catch (error) {
+          // Said as a handler's failure is, and the app goes on, with what
+          // the listener changed before it threw. It used to leave the
+          // browser's own listener as an uncaught error that named no part of
+          // the app, and skip the drawing below.
+          console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, error);
+        }
         this.computedMayHaveMoved();
         // And what a function answered the page from. An answer is kept for
         // the rest of a drawing, and let go by a call of the script's or by
@@ -1869,7 +2074,7 @@ export class SoftNScriptRuntime {
         // handler sat in the queue until the next function call happened to
         // release it. Not awaited: the handler has returned and the browser
         // event is over; the calls resolve into the VM as they complete.
-        const pending = this.vmEngine.drainPendingHostCalls();
+        const pending = this.drainHostCalls();
         if (pending.length > 0) void this.processPendingHostCallsUnlocked(pending);
       };
 
@@ -1939,9 +2144,17 @@ export class SoftNScriptRuntime {
     }
     this.nativeListeners.clear();
     this.bridgedEventTypes.clear();
-    // A frame already requested must not fire into a disposed engine.
+    // A frame already requested must not fire into a disposed engine, and
+    // neither may a timer the script set.
     for (const coalescer of this.eventCoalescers) coalescer.dispose();
     this.eventCoalescers = [];
+    this.timers.dispose();
+    this.dueTimers = [];
+    this.heldFromLoad = [];
+    if (this.loadEntry !== null) {
+      clearTimeout(this.loadEntry);
+      this.loadEntry = null;
+    }
     clearCapturedKeys();
     this.syncCallCache.clear();
     this.externalFunctionNames = [];
@@ -2224,7 +2437,9 @@ export class SoftNScriptRuntime {
   private async processPendingHostCallsUnlocked(initialPending: PendingHostCall[]): Promise<void> {
     if (!this.vmEngine) return;
 
-    let pending = initialPending;
+    // Timers keep their own clock and are not run one after another with the
+    // rest: see LogicTimers.
+    let pending = this.timers.take(initialPending);
     let totalResolved = 0;
     while (pending.length > 0) {
       for (const call of pending) {
@@ -2305,7 +2520,7 @@ export class SoftNScriptRuntime {
         release2 = r;
       });
       try {
-        pending = this.vmEngine.drainPendingHostCalls();
+        pending = this.timers.take(this.drainHostCalls());
       } finally {
         release2!();
       }

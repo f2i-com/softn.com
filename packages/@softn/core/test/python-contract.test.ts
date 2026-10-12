@@ -21,6 +21,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { SOFTN_BRIDGE_PREAMBLE } from '../src/runtime/softn-preamble';
+import { TIMER_CLEAR, TIMER_WAIT, timerPreamble } from '../src/runtime/logic-timers';
 import {
   PYTHON_CAPABILITY_KINDS,
   PYTHON_NAMESPACES,
@@ -50,6 +51,18 @@ describe('one capability set, two languages', () => {
     // `executeHostCall` and falls off the end of its switch.
     for (const kind of PYTHON_CAPABILITY_KINDS) {
       expect(SOFTN_BRIDGE_PREAMBLE).toContain(`host.call("${kind}"`);
+    }
+  });
+
+  // The timers are JavaScript's own functions, not a `softn.*` capability, and
+  // a Python app has nothing to write for them yet (its clock is the page's
+  // `<Loop>`). So their kinds are left out of the list above on purpose, and
+  // out of the preamble that list is read from.
+  it('leaves the JavaScript timers out of the capability set', () => {
+    expect(timerPreamble('')).toContain(`host.call("${TIMER_WAIT}"`);
+    for (const kind of [TIMER_WAIT, TIMER_CLEAR]) {
+      expect(SOFTN_BRIDGE_PREAMBLE).not.toContain(`host.call("${kind}"`);
+      expect(PYTHON_CAPABILITY_KINDS).not.toContain(kind);
     }
   });
 

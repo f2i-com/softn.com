@@ -420,9 +420,8 @@ function label() { return "tally is " + tally }
     expect(text('.label')).toBe(whenNamed);
   }, 60_000);
 
-  // The wait a script can make: a call to the host, answered later. (A
-  // `setTimeout` inside logic is never called back by this engine, on a page
-  // that names its state or not, so there is no such case to hold.)
+  // The waits a script can make: a call to the host, answered later, and a
+  // timer, which is one (logic-timers.ts).
   it('in the callback of a host call that is answered later', async () => {
     await mount(
       `<logic>
@@ -441,6 +440,25 @@ function label() { return "tally is " + tally }
           return { ok: true };
         },
       }
+    );
+    expect(text('.label')).toBe('tally is 1');
+    await click('bump');
+    await settle(150);
+    expect(text('.label')).toBe('tally is 2');
+  }, 60_000);
+
+  it('in the callback of a timer the logic set', async () => {
+    await mount(
+      `<logic>
+let tally = 1
+function bump() { setTimeout(function () { tally = tally + 1 }, 30) }
+function label() { return "tally is " + tally }
+</logic>
+<div>
+  ${BUMP}
+  <p class="label">{label()}</p>
+</div>`,
+      '.label'
     );
     expect(text('.label')).toBe('tally is 1');
     await click('bump');
