@@ -13,8 +13,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { installFakeIndexedDB } from '@softn/test-utils/fake-indexeddb';
-import { beginNewProjectSession, getSaveStatus, keepThisTabsVersion, startProjectAutosave, type AutosaveController } from '../src/lib/projectSession';
-import { loadProjectRecord, saveProjectRecord, type PersistedFile, type ProjectRecord } from '../src/lib/persistence';
+import { beginNewProjectSession, currentRevision, getSaveStatus, keepThisTabsVersion, startProjectAutosave, type AutosaveController } from '../src/lib/projectSession';
+import { deleteProjectRecord, loadProjectRecord, loadRecentProjects, removeRecentProject, saveProjectRecord, type PersistedFile, type ProjectRecord } from '../src/lib/persistence';
 import { useAIStore, useEditStore, useVFSStore, useWorkspaceStore } from '../src/stores';
 import { beginHandEdit, saveHandEdit } from '../src/lib/handEdit';
 
@@ -237,6 +237,125 @@ describe('two tabs on one project', () => {
     expect(getSaveStatus()).toMatchObject({ reason: 'conflict', parts: 'ui/notes.ui' });
     expect((await loadProjectRecord(id))?.files.map((f) => f.path).filter((p) => /notes/i.test(p))).toEqual(['ui/Notes.ui']);
     expect([...useVFSStore.getState().files.keys()].filter((p) => /notes/i.test(p))).toEqual(['ui/notes.ui']);
+  });
+
+  // The choice was taken to be about ui/notes.ui alone, which the other tab does not have: its
+  // ui/Notes.ui met this tab's file again at the save, and the button did nothing, every time.
+  it('keeps this tab’s spelling of such a file when asked to, in place of the other tab’s', async () => {
+    const id = await savedProject();
+    await otherTabSaves(id, withFile('ui/Notes.ui', '<Text>From the other tab</Text>'));
+    useVFSStore.getState().createFile('ui/notes.ui', '<Text>From this tab</Text>');
+    await autosave!.flush();
+    expect(getSaveStatus()).toMatchObject({ reason: 'conflict', parts: 'ui/notes.ui' });
+
+    expect(await keepThisTabsVersion()).toEqual({ ok: true });
+    expect(getSaveStatus().state).toBe('saved');
+    const stored = (await loadProjectRecord(id))!.files.filter((f) => /notes/i.test(f.path));
+    expect(stored.map((f) => [f.path, f.content])).toEqual([['ui/notes.ui', '<Text>From this tab</Text>']]);
+    expect([...useVFSStore.getState().files.keys()].filter((p) => /notes/i.test(p))).toEqual(['ui/notes.ui']);
+  });
+
+  it('names the project in the list as the save left it, when the other tab renamed it', async () => {
+    const id = await savedProject();
+    expect(loadRecentProjects().find((entry) => entry.id === id)?.name).toBe('Notes');
+    await otherTabSaves(id, (record) => ({ ...record, workspace: { ...record.workspace, projectName: 'Field notes' } }));
+    useVFSStore.getState().updateFile('ui/main.ui', '<Text>Main, from this tab</Text>');
+    expect(await autosave!.flush()).toEqual({ ok: true });
+    expect((await loadProjectRecord(id))?.workspace.projectName).toBe('Field notes');
+    expect(useWorkspaceStore.getState().projectName).toBe('Field notes');
+    // The list said "Notes" again until this tab's next save.
+    expect(loadRecentProjects().find((entry) => entry.id === id)?.name).toBe('Field notes');
+  });
+
+  // Deleted from the list in another tab while it is open here. This tab is not told, and what
+  // it holds is the only copy there is: its next save writes the project again, whole, with
+  // this tab's version of anything a conflict had kept out of storage.
+  it('saves the project again, whole, after another tab deleted it', async () => {
+    const id = await savedProject();
+    await otherTabSaves(id, withFile('ui/main.ui', '<Text>Main, from the other tab</Text>'));
+    useVFSStore.getState().updateFile('ui/main.ui', '<Text>Main, from this tab</Text>');
+    await autosave!.flush();
+    expect(getSaveStatus()).toMatchObject({ reason: 'conflict', parts: 'ui/main.ui' });
+
+    expect(await deleteProjectRecord(id)).toEqual({ ok: true });
+    removeRecentProject(id);
+    expect(await loadProjectRecord(id)).toBeNull();
+    useVFSStore.getState().updateFile('ui/about.ui', '<Text>About, from this tab</Text>');
+    expect(await autosave!.flush()).toEqual({ ok: true });
+    expect(getSaveStatus().state).toBe('saved');
+    const stored = (await loadProjectRecord(id))!;
+    expect(Object.fromEntries(stored.files.map((f) => [f.path, f.content]))).toEqual({
+      'ui/main.ui': '<Text>Main, from this tab</Text>',
+      'ui/about.ui': '<Text>About, from this tab</Text>',
+    });
+    expect(stored.workspace.projectName).toBe('Notes');
+    expect(loadRecentProjects().find((entry) => entry.id === id)?.name).toBe('Notes');
+  });
+
+  // A merged save brings the other tab's parts into the stores when it lands. The stores can hold
+  // another project by then (the open one deleted from the list, which starts a new session
+  // without waiting for a save): the other tab's file and chat were put into that project.
+  it('brings nothing into a project that took this one’s place while the save was on its way', async () => {
+    const id = await savedProject();
+    await otherTabSaves(id, (record) => ({
+      ...withFile('ui/new.ui', '<Text>New, from the other tab</Text>')(record),
+      session: { ...record.session, messages: [{ id: 'theirs', role: 'user', content: 'From the other tab', timestamp: 2000 }], tokensUsed: 500 },
+    }));
+    let land!: () => void;
+    const landed = new Promise<void>((resolve) => { land = resolve; });
+    autosave!.stop();
+    autosave = startProjectAutosave({
+      debounceMs: 10,
+      save: async (record, lastSeen, reconcile) => {
+        const result = await saveProjectRecord(record, lastSeen, reconcile);
+        await landed;
+        return result;
+      },
+    });
+    useVFSStore.getState().updateFile('ui/main.ui', '<Text>Main, from this tab</Text>');
+    const saving = autosave.flush();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const next = beginNewProjectSession();
+    useWorkspaceStore.getState().setProjectName('Another project');
+    useVFSStore.getState().createFile('ui/main.ui', '<Text>Another project</Text>');
+    const revision = currentRevision();
+    land();
+    expect(await saving).toEqual({ ok: true });
+
+    expect(useWorkspaceStore.getState().projectId).toBe(next);
+    expect([...useVFSStore.getState().files.keys()]).toEqual(['ui/main.ui']);
+    expect(useAIStore.getState().messages).toEqual([]);
+    expect(useAIStore.getState().tokensUsed).toBe(0);
+    expect(currentRevision()).toBe(revision);
+    // The project that was saved is whole in storage, and the one open now saves as itself.
+    expect((await loadProjectRecord(id))?.files.map((f) => f.path).sort()).toEqual(['ui/about.ui', 'ui/main.ui', 'ui/new.ui']);
+    expect(await autosave.flush()).toEqual({ ok: true });
+    expect((await loadProjectRecord(next))?.files.map((f) => f.path)).toEqual(['ui/main.ui']);
+    expect((await loadProjectRecord(next))?.session.messages).toEqual([]);
+  });
+
+  // The choice was made on what this tab last had from storage, and a save on its way put that
+  // back as it was when it landed: the button did nothing, and said nothing.
+  it('keeps this tab’s version when asked while a save is on its way', async () => {
+    const id = await savedProject();
+    await otherTabSaves(id, withFile('ui/main.ui', '<Text>Main, from the other tab</Text>'));
+    useVFSStore.getState().updateFile('ui/main.ui', '<Text>Main, from this tab</Text>');
+    await autosave!.flush();
+    expect(getSaveStatus()).toMatchObject({ reason: 'conflict', parts: 'ui/main.ui' });
+
+    useVFSStore.getState().updateFile('ui/about.ui', '<Text>About, from this tab</Text>');
+    const saving = autosave!.flush();
+    // The save has read what this tab last had from storage, and is writing.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getSaveStatus().state).toBe('saving');
+    const kept = keepThisTabsVersion();
+    await saving;
+    expect(await kept).toEqual({ ok: true });
+    expect(getSaveStatus().state).toBe('saved');
+    expect(await storedFile(id, 'ui/main.ui')).toBe('<Text>Main, from this tab</Text>');
+    expect(await storedFile(id, 'ui/about.ui')).toBe('<Text>About, from this tab</Text>');
   });
 
   it('does not save over a stored copy it cannot read whole', async () => {

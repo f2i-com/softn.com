@@ -10,7 +10,9 @@
  *
  * The lock's name carries this tab's own id: an exclusive lock that another
  * Studio tab already held would leave this one queued — and unprotected —
- * behind it.
+ * behind it. It carries the run's id as well, which is how another tab with
+ * the same project open knows the run is being worked on (see the end of
+ * this file).
  *
  * Whether the tab was in the background is written to sessionStorage, which
  * outlives a reload of the same tab, so a run found interrupted after a
@@ -62,7 +64,7 @@ export function holdPageForRun(runId: string): void {
   try {
     const locks = typeof navigator === 'undefined' ? undefined : (navigator as Navigator & { locks?: LockManager }).locks;
     if (locks && typeof locks.request === 'function') {
-      void locks.request(`${RUN_LOCK_NAME}:${tabId}`, { mode: 'exclusive' }, () => held).catch(() => {});
+      void locks.request(`${RUN_LOCK_NAME}:${tabId}:${runId}`, { mode: 'exclusive' }, () => held).catch(() => {});
     }
   } catch {
     // No Web Locks here: the prompt below is all the protection there is.
@@ -130,4 +132,105 @@ export function wasInBackground(runId: string): boolean {
   } catch {
     return false;
   }
+}
+
+// --- Runs that are another tab's ---------------------------------------------
+
+/**
+ * A run is a chat message, saved with the project, and a tab takes in what
+ * another tab saves as it is saved (lib/projectSession.ts). So a run one tab
+ * is driving shows in every tab that has the project open, and those tabs do
+ * not drive it. Without this they took it for a run their own reload had cut
+ * short: "Stopped", with Continue, which starts a second agent on the same
+ * files while the first is still at work, or still to be resumed.
+ *
+ * Two ways of knowing. The lock above, which a tab holds while its run works
+ * or waits for the person and which names the run: asked for when a timeline
+ * shows such a run, and again every few seconds while it does, so that a tab
+ * that has been closed stops counting. And what a save of another tab's
+ * brought in: a run still open in it is that tab's from that moment. This is
+ * all there is for a run that tab has paused, which holds no lock, and all
+ * there is anywhere the browser has no Web Locks (a page not served
+ * securely). A paused run so known stays that tab's until a save says it has
+ * ended or this page is loaded again; one first met when the project is
+ * opened cannot be told from one a reload cut short, and is taken for that.
+ */
+
+/** How often the locks are asked for while a run that may be another tab's is on screen. */
+export const RUNS_ELSEWHERE_ASKED_EVERY_MS = 3_000;
+
+/** A run another tab is driving: at work there (or waiting for the person), or paused there. */
+export type RunElsewhere = 'working' | 'paused';
+
+/** Runs other tabs hold their pages for, as the locks last said. */
+let locked: ReadonlySet<string> = new Set();
+/** Runs a save of another tab's brought in while they were still open there. */
+const seen = new Map<string, RunElsewhere>();
+const watchers = new Set<() => void>();
+let asking: ReturnType<typeof setInterval> | null = null;
+
+function tellWatchers(): void {
+  for (const watcher of watchers) watcher();
+}
+
+/** How another tab holds `runId`, as last known, or null when none is known to. */
+export function runInAnotherTab(runId: string): RunElsewhere | null {
+  return locked.has(runId) ? 'working' : seen.get(runId) ?? null;
+}
+
+/** A run a save of another tab's brought in, as that tab left it: open there, or ended. */
+export function noteRunFromAnotherTab(runId: string, state: RunElsewhere | 'ended'): void {
+  if ((state === 'ended' ? undefined : state) === seen.get(runId)) return;
+  if (state === 'ended') seen.delete(runId);
+  else seen.set(runId, state);
+  tellWatchers();
+}
+
+/** Ask which runs other tabs hold their pages for. Where there are no locks to ask, what is known stays. */
+async function askForRunsElsewhere(): Promise<void> {
+  const locks = typeof navigator === 'undefined' ? undefined : (navigator as Navigator & { locks?: LockManager }).locks;
+  if (!locks || typeof locks.query !== 'function') return;
+  try {
+    const { held } = await locks.query();
+    const mine = `${RUN_LOCK_NAME}:${tabId}:`;
+    const next = new Set<string>();
+    for (const lock of held ?? []) {
+      const name = lock.name ?? '';
+      if (!name.startsWith(`${RUN_LOCK_NAME}:`) || name.startsWith(mine)) continue;
+      // After the name and the tab's id; a run's id is taken whole, colons and all.
+      const runId = name.slice(RUN_LOCK_NAME.length + 1).split(':').slice(1).join(':');
+      if (runId) next.add(runId);
+    }
+    let changed = next.size !== locked.size || [...next].some((id) => !locked.has(id));
+    locked = next;
+    // A run seen at work whose lock is gone: its tab was closed, or has paused or ended it,
+    // which that tab's next save says.
+    for (const [runId, state] of seen) {
+      if (state !== 'working' || next.has(runId)) continue;
+      seen.delete(runId);
+      changed = true;
+    }
+    if (changed) tellWatchers();
+  } catch {
+    // The locks could not be asked: what is known stays.
+  }
+}
+
+/**
+ * Be told when what is known of other tabs' runs changes, and keep it
+ * current for as long as anyone is listening. Returns the way to stop.
+ */
+export function watchRunsInOtherTabs(watcher: () => void): () => void {
+  watchers.add(watcher);
+  if (watchers.size === 1) {
+    void askForRunsElsewhere();
+    asking = setInterval(() => void askForRunsElsewhere(), RUNS_ELSEWHERE_ASKED_EVERY_MS);
+  }
+  return () => {
+    watchers.delete(watcher);
+    if (watchers.size === 0 && asking !== null) {
+      clearInterval(asking);
+      asking = null;
+    }
+  };
 }

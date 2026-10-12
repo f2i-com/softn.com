@@ -33,7 +33,7 @@ import type { SuppliedFiles } from '../changeset';
 import { browserEnvironment, formatCheckReport, type AgentEnvironment } from './appCheck';
 import { executeTool, type ToolOutcome } from './executeTool';
 import { addUsage, cacheWeights, effectiveTokens, runEffective, type CacheWeights } from './budget';
-import { holdPageForRun, releasePageForRun, wasInBackground } from './keepAlive';
+import { holdPageForRun, releasePageForRun, runInAnotherTab, wasInBackground } from './keepAlive';
 import { buildAgentSystemPrompt, buildProjectContext } from './prompt';
 import { takePreviewFaults } from '../previewFaults';
 import { saveAndFindConflicts } from '../projectSession';
@@ -336,9 +336,13 @@ function latestRequest(): string | undefined {
   return [...useAIStore.getState().messages].reverse().find((m) => m.role === 'user')?.content;
 }
 
-/** The statuses a run saved by an earlier page can be left in when the page went away mid-run. */
+/**
+ * The statuses a run saved by an earlier page can be left in when the page went away mid-run.
+ * A run another tab is driving is in one of them too, and is not such a run: its page has not
+ * gone away (keepAlive.ts).
+ */
 export function wasInterrupted(run: AgentRunRecord): boolean {
-  return !isRunLive(run.id) && !run.continuedBy && (run.status === 'running' || run.status === 'waiting' || run.status === 'paused');
+  return !isRunLive(run.id) && !run.continuedBy && (run.status === 'running' || run.status === 'waiting' || run.status === 'paused') && runInAnotherTab(run.id) === null;
 }
 
 /** Why a run found interrupted stopped, in the person's words. */

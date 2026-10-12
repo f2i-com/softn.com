@@ -28,7 +28,8 @@ import {
   type SaveResult,
 } from './persistence';
 import { boundJournal, persistJournal, readPersistedJournal } from './undoJournal';
-import { PROJECT_FIELDS, baseAfterMerge, describeParts, hasConflicts, mergeProjectRecords, type MergeOutcome, type MergeParts } from './projectMerge';
+import { noteRunFromAnotherTab } from './agent/keepAlive';
+import { PROJECT_FIELDS, baseAfterMerge, describeParts, hasConflicts, hasParts, mergeProjectRecords, type MergeOutcome, type MergeParts } from './projectMerge';
 import { DEFAULT_MAX_OUTPUT_TOKENS, PREVIOUS_DEFAULT_MAX_OUTPUT_TOKENS } from './aiProvider';
 
 /**
@@ -107,7 +108,16 @@ let syncedPinned = false;
  * What the last merged save could not write: the parts both tabs changed,
  * and the record it wrote, which holds the other tab's version of them.
  */
-let lastConflicts: { parts: MergeParts; written: ProjectRecord } | null = null;
+interface ReportedConflicts {
+  parts: MergeParts;
+  written: ProjectRecord;
+}
+let lastConflicts: ReportedConflicts | null = null;
+
+/** Whether the stores still hold the project a save or a reading was of: while it was awaited another may have taken its place. */
+function holdsProject(projectId: string): boolean {
+  return useWorkspaceStore.getState().projectId === projectId;
+}
 
 function resetSynced(record: ProjectRecord | null): void {
   synced = record;
@@ -393,6 +403,12 @@ function bringIn(collected: ProjectRecord, merge: MergeOutcome): MergeParts {
       const index = messages.findIndex((m) => m.id === id);
       if ((index < 0 ? undefined : messages[index]) !== wroteMessages.get(id)) continue;
       const message = mergedMessages.get(id);
+      // An agent run the other tab saved while it still had it open is that tab's to drive: the
+      // timeline here says so, in place of offering to continue it (agent/keepAlive.ts).
+      if (message?.run) {
+        const status = message.run.status;
+        noteRunFromAnotherTab(message.run.id, status === 'running' || status === 'waiting' ? 'working' : status === 'paused' ? 'paused' : 'ended');
+      }
       messages = [...messages];
       if (!message) messages.splice(index, 1);
       else if (index >= 0) messages[index] = message;
@@ -617,12 +633,15 @@ let legacyPendingId: string | null = null;
  * for as long as nobody touched it. Taking in is the same merge as a save. A
  * tab with work of its own not saved yet saves it, merged, once; a tab with
  * none only reads, brings in what the other tab changed and writes nothing,
- * so hearing of a save never makes a save, and two tabs cannot set each
- * other off. Nothing this tab holds and has not saved is put over: a part
- * changed in both is a conflict, said in the bar, as at any save. A tab in
- * the middle of an agent run takes saves in the same way; a file it brings
- * in gets a new version, so the agent's next write to it is refused until
- * the agent has read it again (executeTool.ts).
+ * so hearing of a save does not make a save, and two tabs cannot set each
+ * other off. (One thing counts as work not saved yet though the tab is not
+ * touched: its version of a part a conflict kept out of storage, once the
+ * other tab has put its own back as it was. That is saved, once.) Nothing
+ * this tab holds and has not saved is put over: a part changed in both is a
+ * conflict, said in the bar, as at any save. A tab in the middle of an agent
+ * run takes saves in the same way; a file it brings in gets a new version,
+ * so the agent's next write to it is refused until the agent has read it
+ * again (executeTool.ts).
  */
 export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveController {
   const debounceMs = options.debounceMs ?? 800;
@@ -662,9 +681,17 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
       : undefined;
     const result = await save(record, lastSeen, reconcile);
     if (stopped) return result;
+    const merged = merge as MergeOutcome | null;
+    const written = merged ? merged.record : record;
+    // Another project took this one's place while its save was on its way (the open project
+    // deleted from the list starts a new session without waiting for one). The save stands and
+    // the other tabs are told of it. What it took from storage is not brought in, and its
+    // result is not said in the bar: the stores and the bar are that other project's now.
+    if (!holdsProject(record.projectId)) {
+      if (result.ok && channel) announceSaved(record.projectId, written.revision);
+      return result;
+    }
     if (result.ok) {
-      const merged = merge as MergeOutcome | null;
-      const written = merged ? merged.record : record;
       if (merged && base) {
         settleMerge(record, base, merged, rev);
       } else {
@@ -673,10 +700,11 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
       }
       if (channel) announceSaved(record.projectId, written.revision);
       saveActiveProjectId(record.projectId);
+      // As it was written: after a merge the name may be the one another tab gave it.
       saveRecentProject({
         id: record.projectId,
-        name: record.workspace.projectName || 'Untitled app',
-        target: record.workspace.blueprint?.target ?? 'web',
+        name: written.workspace.projectName || 'Untitled app',
+        target: written.workspace.blueprint?.target ?? 'web',
         lastModified: new Date(record.savedAt).toLocaleString(),
       });
       reportSaved(rev, record.savedAt, now());
@@ -708,15 +736,23 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
     const base = synced !== null && synced.projectId === record.projectId ? synced : null;
     if (!base || lastSaved === null) return NOTHING_TO_SAVE;
     const read = await readProjectRecord(record.projectId);
-    if (stopped) return NOTHING_TO_SAVE;
+    if (stopped || !holdsProject(record.projectId)) return NOTHING_TO_SAVE;
     // Changed here while it was read: that is work to save, and the save merges.
     if (revision !== rev) return performSave();
     // A copy that does not read whole is not merged (saveProjectRecord says why at the next save).
     if (!read || read.leftOut.length > 0 || read.record.revision <= lastSaved.revision) return NOTHING_TO_SAVE;
     const stored = read.record;
-    // Nothing here differs from the base but what a conflict kept back, so the merge is what
-    // storage holds: there is nothing to write.
-    settleMerge(record, base, mergeProjectRecords(base, record, stored, stored.revision), rev);
+    const merged = mergeProjectRecords(base, record, stored, stored.revision);
+    // Nothing here differs from the base but what a conflict kept back. While the other tab's
+    // version of such a part stands, the merge is what storage holds and there is nothing to
+    // write. Once the other tab has put its own back as it was, the merge takes this tab's
+    // version, which storage does not hold: that is work to save. Settled unwritten it was
+    // called "Saved", and the next save this tab heard of put the stored copy over it here.
+    if (hasParts(merged.kept)) {
+      touchRevision();
+      return performSave();
+    }
+    settleMerge(record, base, merged, rev);
     reportSaved(revision, stored.savedAt, now());
     if (revision !== stored.revision) schedule();
     return NOTHING_TO_SAVE;
@@ -724,6 +760,17 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
 
   function pickUp(): void {
     chain = chain.then(performPickUp, performPickUp);
+  }
+
+  /**
+   * "Keep this tab's version", in its turn. The choice changes what this tab is taken to have
+   * had from storage, and a save on its way put that back as the save had found it when it
+   * landed: pressed during a save, the button did nothing.
+   */
+  function keep(reported: ReportedConflicts): Promise<SaveResult> {
+    const step = (): SaveResult | Promise<SaveResult> => (!stopped && takeAsSeen(reported) ? performSave() : NOTHING_TO_SAVE);
+    chain = chain.then(step, step);
+    return chain;
   }
 
   if (channel) {
@@ -765,8 +812,9 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
     schedule();
   }
 
-  const controller: AutosaveController = {
+  const controller: RunningAutosave = {
     flush: () => run(),
+    keep,
     stop: () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);
@@ -820,7 +868,10 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
 }
 
 /** The autosave that is running, for what has to save now from outside it. */
-let running: AutosaveController | null = null;
+interface RunningAutosave extends AutosaveController {
+  keep(reported: ReportedConflicts): Promise<SaveResult>;
+}
+let running: RunningAutosave | null = null;
 
 /**
  * Save now, where this tab autosaves the project, and answer the files the
@@ -843,16 +894,27 @@ export async function saveAndFindConflicts(): Promise<string[]> {
  * the choice was about the version that was reported.
  */
 export function keepThisTabsVersion(): Promise<SaveResult> {
-  const conflicts = lastConflicts;
+  const reported = lastConflicts;
+  if (!reported || !running) return Promise.resolve(NOTHING_TO_SAVE);
+  // Pressed twice, the choice is still made once, of the version that was reported.
+  lastConflicts = null;
+  return running.keep(reported);
+}
+
+/**
+ * Take the other tab's version of the parts in `reported` to be what this tab
+ * last had from storage, so that the next save writes this tab's over them.
+ * False when the stores no longer hold that project. A file is taken with
+ * every spelling of its path: where the two tabs' files differ in capitals
+ * alone, the other tab's is under a path this tab does not have.
+ */
+function takeAsSeen(reported: ReportedConflicts): boolean {
   const base = synced;
-  if (!conflicts || !base || !running) return Promise.resolve(NOTHING_TO_SAVE);
-  const { parts, written } = conflicts;
-  const theirFiles = byPath(written.files);
-  const files = base.files.filter((file) => !parts.files.includes(file.path));
-  for (const path of parts.files) {
-    const file = theirFiles.get(path);
-    if (file) files.push(file);
-  }
+  const { parts, written } = reported;
+  if (!base || base.projectId !== written.projectId || !holdsProject(base.projectId)) return false;
+  const folded = new Set(parts.files.map((path) => path.toLowerCase()));
+  const chosen = (file: PersistedFile) => folded.has(file.path.toLowerCase());
+  const files = [...base.files.filter((file) => !chosen(file)), ...written.files.filter(chosen)];
   const workspace: PersistedWorkspace = { ...base.workspace };
   for (const field of parts.fields) (workspace as unknown as Record<string, unknown>)[field] = written.workspace[field];
   const theirMessages = new Map(written.session.messages.map((m) => [m.id, m]));
@@ -864,7 +926,7 @@ export function keepThisTabsVersion(): Promise<SaveResult> {
   synced = { ...base, workspace, files, session: { ...base.session, messages } };
   lastConflicts = null;
   touchRevision();
-  return running.flush();
+  return true;
 }
 
 // --- Rename ------------------------------------------------------------------
@@ -898,9 +960,9 @@ export function renameProject(name: string): string | null {
 
 /**
  * Rename a saved project from the list, open in this tab or not. One that is
- * not is renamed in its record, written over only the copy that was read (a
- * save another tab makes in between refuses it), and the tabs that have it
- * open are told, as of any save.
+ * not is renamed in its record: the copy that was read, or the one a tab
+ * that has it open saved in between, and never an older copy over a newer.
+ * The tabs that have it open are told, as of any save.
  */
 export async function renameSavedProject(projectId: string, name: string): Promise<OpenOutcome> {
   const checked = checkName(name);
@@ -916,9 +978,13 @@ export async function renameSavedProject(projectId: string, name: string): Promi
   if (!read) return { ok: false, message: 'There is no saved copy of that project in this browser.' };
   // Written back whole, a record read with parts left out would lose them: it is opened first.
   if (read.leftOut.length > 0) return { ok: false, message: 'Its saved copy could not be read whole. Open it, then rename it.' };
-  const record = read.record;
-  const renamed: ProjectRecord = { ...record, revision: record.revision + 1, savedAt: Date.now(), workspace: { ...record.workspace, projectName: checked.name } };
-  const result = await saveProjectRecord(renamed, record.revision);
+  const rename = (from: ProjectRecord): ProjectRecord => ({ ...from, revision: from.revision + 1, savedAt: Date.now(), workspace: { ...from.workspace, projectName: checked.name } });
+  let renamed = rename(read.record);
+  // A tab that has it open may save between the reading and this write (a run saves at every
+  // step). The name is then put on the copy that tab saved, inside the write's own look at
+  // storage; refusing said the project had changed "in another tab after it was opened here",
+  // of a project that is not open here.
+  const result = await saveProjectRecord(renamed, read.record.revision, (stored) => (renamed = rename(stored)));
   if (!result.ok) return { ok: false, message: result.message };
   renameRecentProject(projectId, checked.name);
   announceSaved(projectId, renamed.revision);

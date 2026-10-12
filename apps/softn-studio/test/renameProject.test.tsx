@@ -84,6 +84,25 @@ describe('renaming, in the session', () => {
     expect(loadRecentProjects().find((entry) => entry.id === id)?.name).toBe('New name');
   });
 
+  // The record is read, then written with its new name. A tab that has the project open (a run
+  // saving at every step) can save in between: the rename was refused then, in words about a
+  // copy "in this tab" that is not there. The name is put on the copy the other tab just saved.
+  it('renames a saved project another tab saves at the same moment, on top of that save', async () => {
+    const id = await savedProject('Old name');
+    saveRecentProject({ id, name: 'Old name', target: 'web', lastModified: 'today' });
+    const stored = (await loadProjectRecord(id))!;
+    beginNewProjectSession();
+    const renaming = renameSavedProject(id, 'New name');
+    const other = saveProjectRecord({ ...stored, revision: stored.revision + 3, files: [{ ...stored.files[0], content: '<Text>Main, from the other tab</Text>' }] }, stored.revision);
+    expect(await other).toEqual({ ok: true });
+    expect(await renaming).toEqual({ ok: true });
+    const record = (await loadProjectRecord(id))!;
+    expect(record.workspace.projectName).toBe('New name');
+    expect(record.files[0].content).toBe('<Text>Main, from the other tab</Text>');
+    expect(record.revision).toBeGreaterThan(stored.revision + 3);
+    expect(loadRecentProjects().find((entry) => entry.id === id)?.name).toBe('New name');
+  });
+
   it('renames from the list the project open here, and its entry in the list at once', async () => {
     const id = await savedProject('Old name');
     saveRecentProject({ id, name: 'Old name', target: 'web', lastModified: 'today' });

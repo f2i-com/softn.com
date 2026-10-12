@@ -39,6 +39,7 @@ section here. Write the section before tagging. Headings are the tag
 - Vite plugin: a comparison of a state variable in a script block (`count === 0`) is no longer rewritten as an assignment.
 - Components: a Table or DataGrid that sorts its own rows gives a row click, a column's `render` and a cell edit the row's place in the list the page gave, not its place on screen, and a DataGrid whose rows have no key field keeps a selection on the row it was made on. Radio and Select tell record-valued options apart and `1` from `"1"`. RichTextEditor shows nothing for a null value, keeps the selection when Link is pressed twice, takes `example.com`, `example.com:8080/x` and `localhost:3000` as addresses, and no longer stops the form around it from submitting. DatePicker keeps its padding once cleared.
 - Web runtime: pressing one app, another, then the first again shows the first; an encrypted or ZIP64 archive is named as one. Single-file pages no longer restyle the app's own buttons.
+- Studio, one project in two tabs: an edit a conflict had kept out of storage is saved once the other tab takes its own version back, where it was called "Saved" and then replaced by the stored copy; an agent run working or paused in another tab is shown as that tab's and no longer offered Continue; "Keep this tab's version" works when pressed during a save and for two files that differ only in capitals; a rename made from the project list lands on top of a save another tab makes at the same moment, and the list keeps a name another tab gave.
 
 ## v0.0.19
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import type { ChatMessage } from '../../types/studio';
@@ -18,6 +18,7 @@ import {
   undoAgentStep,
   wasInterrupted,
 } from '../../lib/agent/runAgent';
+import { runInAnotherTab, watchRunsInOtherTabs } from '../../lib/agent/keepAlive';
 
 type IconName = React.ComponentProps<typeof Icon>['name'];
 
@@ -273,6 +274,9 @@ export function isReadableRun(run: unknown): run is AgentRunRecord {
   );
 }
 
+/** For a run that cannot be another tab's: nothing to be told of. */
+const watchNothing = () => () => {};
+
 export function RunTimeline({ message }: { message: ChatMessage }) {
   const run = message.run!;
   const agentState = useAIStore((s) => s.agentState);
@@ -281,6 +285,10 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
   const files = useVFSStore((s) => s.files);
   const [notice, setNotice] = useState<string | null>(null);
   const live = isRunLive(run.id);
+  // A run still open that this page does not drive is another tab's, or one a reload cut
+  // short: which, is asked for while it is shown (keepAlive.ts).
+  const mayBeElsewhere = !live && !run.continuedBy && (run.status === 'running' || run.status === 'waiting' || run.status === 'paused');
+  const elsewhere = useSyncExternalStore(mayBeElsewhere ? watchRunsInOtherTabs : watchNothing, () => (mayBeElsewhere ? runInAnotherTab(run.id) : null));
   // A run saved mid-way by an earlier session cannot be driven from here.
   // A run saved mid-way by a page that has since reloaded: its conversation is gone, its record is not.
   const interrupted = wasInterrupted(run);
@@ -302,6 +310,7 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
     resumeRef.current?.focus();
   }, [canContinue]);
   const reason = interrupted ? `${interruptionReason(run)} Continue starts a new run from its request, its plan and the files as they are now.` : run.reason;
+  const elsewhereNote = `This run is ${elsewhere === 'paused' ? 'paused' : 'working'} in another tab. ${elsewhere === 'paused' ? 'Resume it' : run.status === 'waiting' ? 'Answer it' : 'Stop it'} there; if that tab has been closed, reload this page to continue the run here.`;
 
   return (
     <section className="st-run" data-state={status} aria-label="Agent run">
@@ -323,7 +332,7 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
       </header>
       {/* Status for assistive technology: the state and what the agent is doing, not every row. */}
       <p className="st-visually-hidden" role="status" aria-live="polite">
-        {running ? `Agent ${currentStep || 'working'}` : `Agent run ${STATUS_TEXT[status].toLowerCase()}`}
+        {running && !live ? 'Agent working in another tab' : running ? `Agent ${currentStep || 'working'}` : `Agent run ${STATUS_TEXT[status].toLowerCase()}`}
       </p>
 
       {run.continues && <p className="st-run-reason">Continues the run above, which stopped when the page reloaded.</p>}
@@ -353,7 +362,8 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
           ),
         )}
         {running && live && run.live && <LiveRows reply={run.live} />}
-        {running && currentStep && !(live && run.live && (run.live.text || run.live.calls.length > 0)) && (
+        {/* What this page's own agent is doing now: not shown under a run another tab is working on. */}
+        {running && live && currentStep && !(run.live && (run.live.text || run.live.calls.length > 0)) && (
           <li className="st-run-now" aria-hidden="true">
             <span className="st-run-spinner" /> {currentStep}
             {live && run.live?.thinking && (run.live.thinkingTokens ?? 0) > 0 && (
@@ -372,12 +382,13 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
         </div>
       )}
       {reason && status !== 'running' && status !== 'finished' && <p className={`st-run-reason${status === 'failed' ? ' is-error' : ''}`}>{reason}</p>}
+      {elsewhere && <p className="st-run-reason">{elsewhereNote}</p>}
       {notice && <p className="st-run-notice" role="alert">{notice}</p>}
       {revertState.reason && !running && <p className="st-run-reason">{revertState.reason}</p>}
 
-      {(running || canContinue || revertable) && (
+      {((running && live) || canContinue || revertable) && (
         <div className="st-run-actions">
-          {running && (
+          {running && live && (
             <button type="button" className="st-btn st-btn-sm" onClick={() => { stoppedHere.current = true; stopAgentRun(run.id); }}>
               <Icon name="pause" size={13} /> Stop
             </button>

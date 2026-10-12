@@ -118,6 +118,36 @@ describe('a tab told of another tab’s save', () => {
     expect(await storedRevision()).toBe(revision);
   });
 
+  // A conflict kept tab B's main.ui out of storage. Tab A then puts its own back as it was
+  // (an undo), so the merge now takes tab B's: taking the save in settled that merge without
+  // writing it. Tab B said "Saved" over a storage that did not hold its file, and the next
+  // save it heard of put the stored copy over the file in tab B as well.
+  it('saves its own version of a part once the other tab has put its own back as it was', async () => {
+    B.stores.useVFSStore.getState().updateFile('ui/main.ui', '<Text>Main, from tab B</Text>');
+    vfsA.getState().updateFile('ui/main.ui', '<Text>Main, from tab A</Text>');
+    expect(await tabA!.flush()).toEqual({ ok: true });
+    await until('tab B to say ui/main.ui conflicts', () => B.session.getSaveStatus().state === 'failed');
+
+    vfsA.getState().updateFile('ui/main.ui', '<Text>Main</Text>');
+    expect(await tabA!.flush()).toEqual({ ok: true });
+    await until('tab B to settle', () => B.session.getSaveStatus().state !== 'failed');
+    await quiet();
+    // "Saved" is so: what tab B holds is what is stored.
+    expect(B.session.getSaveStatus()).toMatchObject({ state: 'saved' });
+    expect(await stored('ui/main.ui')).toBe('<Text>Main, from tab B</Text>');
+
+    // And a later save from tab A, of another file, does not take tab B's file from it.
+    await until('tab A to take in tab B’s main.ui', () => inA('ui/main.ui') === '<Text>Main, from tab B</Text>');
+    vfsA.getState().updateFile('ui/about.ui', '<Text>About, from tab A</Text>');
+    expect(await tabA!.flush()).toEqual({ ok: true });
+    await until('tab B to take in tab A’s about.ui', () => inB('ui/about.ui') === '<Text>About, from tab A</Text>');
+    expect(inB('ui/main.ui')).toBe('<Text>Main, from tab B</Text>');
+    expect(await stored('ui/main.ui')).toBe('<Text>Main, from tab B</Text>');
+    const revision = await storedRevision();
+    await quiet();
+    expect(await storedRevision()).toBe(revision);
+  });
+
   it('hears nothing of another project', async () => {
     const other = sessionA.beginNewProjectSession();
     wsA.getState().setProjectName('Elsewhere');

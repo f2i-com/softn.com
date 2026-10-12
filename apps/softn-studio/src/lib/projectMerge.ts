@@ -43,6 +43,8 @@ export interface MergeOutcome {
   record: ProjectRecord;
   /** Parts where the stored value was taken over this tab's: they are to be brought into this tab. */
   taken: MergeParts & { journal: string[] };
+  /** Parts the record holds as this tab has them, where storage holds something else: this tab's changes, which only a write puts in storage. */
+  kept: MergeParts;
   /** Parts both tabs changed: storage keeps the other tab's, this tab keeps its own. */
   conflicts: MergeParts;
 }
@@ -75,9 +77,10 @@ function mergeKeyed<T>(
   mine: ReadonlyMap<string, T>,
   theirs: ReadonlyMap<string, T>,
   eq: (a: T, b: T) => boolean,
-): { value: Map<string, T>; taken: string[]; conflicts: string[] } {
+): { value: Map<string, T>; taken: string[]; kept: string[]; conflicts: string[] } {
   const value = new Map<string, T>();
   const taken: string[] = [];
+  const kept: string[] = [];
   const conflicts: string[] = [];
   for (const key of new Set([...mine.keys(), ...theirs.keys(), ...base.keys()])) {
     const b = base.get(key);
@@ -89,13 +92,14 @@ function mergeKeyed<T>(
       if (!same(t, m, eq)) taken.push(key);
     } else if (same(t, b, eq) || same(m, t, eq)) {
       chosen = m;
+      if (!same(m, t, eq)) kept.push(key);
     } else {
       chosen = t;
       conflicts.push(key);
     }
     if (chosen !== undefined) value.set(key, chosen);
   }
-  return { value, taken, conflicts };
+  return { value, taken, kept, conflicts };
 }
 
 const byKey = <T>(items: readonly T[], key: (item: T) => string): Map<string, T> => new Map(items.map((item) => [key(item), item]));
@@ -193,12 +197,19 @@ export function mergeProjectRecords(base: ProjectRecord, mine: ProjectRecord, th
       messages: messages.taken,
       journal: journal.taken.filter((key) => !journal.conflicts.includes(key)),
     },
+    // Not the undo data: where both tabs trimmed an entry each keeps its own, and neither is work to write.
+    kept: { files: files.kept.filter((path) => !aliases.mine.includes(path)), fields: fields.kept as ProjectField[], messages: messages.kept },
     conflicts: { files: fileConflicts, fields: fields.conflicts as ProjectField[], messages: messages.conflicts },
   };
 }
 
+/** Whether `parts` names any part at all. */
+export function hasParts(parts: MergeParts): boolean {
+  return parts.files.length + parts.fields.length + parts.messages.length > 0;
+}
+
 export function hasConflicts(conflicts: MergeParts): boolean {
-  return conflicts.files.length + conflicts.fields.length + conflicts.messages.length > 0;
+  return hasParts(conflicts);
 }
 
 const FIELD_NAMES: Record<ProjectField, string> = {
