@@ -1550,6 +1550,13 @@ export function SoftNRenderer({
     });
   }, []);
 
+  // What a handler wrote that React has not drawn yet, handed to the logic now
+  // so that a function the same handler calls next reads it (see
+  // SoftNRenderContext.shareState). React's own update follows as above.
+  const shareComponentState = useCallback((changes: Record<string, unknown>) => {
+    scriptRuntimeRef.current?.updateContext(changes);
+  }, []);
+
   // Track previous initialState to detect changes from parent
   const prevInitialStateRef = useRef<Record<string, unknown>>(initialState);
 
@@ -1670,6 +1677,7 @@ export function SoftNRenderer({
     return {
       state: mergedState,
       setState: setComponentState,
+      shareState: shareComponentState,
       data: initialData as Record<string, never>,
       props: componentProps,
       computed: {
@@ -1688,6 +1696,7 @@ export function SoftNRenderer({
   }, [
     state.componentState,
     setComponentState,
+    shareComponentState,
     initialState,
     initialData,
     componentProps,
@@ -2348,6 +2357,19 @@ export function SoftNWithXDB({
     // directly. The flag is a dependency, so the grant re-runs this effect and
     // the socket opens then, with no reload.
     if (consentPending) return;
+    // And held to a declaration. The socket replicates the app's database to
+    // the server and through it to other devices, which is what
+    // permission.json's `sync` declares and the consent bar names, and a
+    // bundle that declared nothing, or shipped no permission.json, opened it
+    // with no one asked. The same rule as peer sync (db-sync-controls.ts).
+    if (stablePermissionConfig?.permissions?.sync?.enabled !== true) {
+      console.warn(
+        '[SoftN] Server sync not started: this app names a sync server (config.server.url in manifest.json) ' +
+          'and its permission.json does not declare sync. Add { "permissions": { "sync": { "enabled": true } } } ' +
+          'so the person can see it and allow it.'
+      );
+      return;
+    }
     // The bundle chose this host. If it also scoped itself to a host list, the
     // same list `softn.net.fetch` is held to applies here: a manifest must not
     // be a way past permission.json.

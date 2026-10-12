@@ -1469,21 +1469,31 @@ export class XDBService {
 
   /**
    * Upsert a record from the server (doesn't trigger push back to server).
+   *
+   * `keepLocalDelete` is for a record this device has deleted and the server
+   * has not yet answered that delete for: the record stays deleted here, as
+   * the server will have it once the delete lands. Otherwise the record is
+   * what the server says it is, a live record. The host weighs a delete by
+   * when it was made and keeps a record changed after it, sending the pusher
+   * the record as it stands; a tombstone kept whatever the server said hid
+   * that record on this device for good.
    */
-  upsertFromServer(collection: string, record: {
-    id: string;
-    collection: string;
-    data: Record<string, unknown>;
-    createdAt: string;
-    updatedAt: string;
-  }): void {
-    // An update delta carries no creation time and says nothing about deletion,
-    // so both come from the row already here. Without this, `created_at` was
-    // restamped to now — a record edited on another device jumped position in
-    // any list sorted by it — and `deleted: false` resurrected a record this
-    // device had already deleted.
-    // Deliberately not `get()`, which hides soft-deleted rows — the deleted
-    // ones are exactly the case this has to see.
+  upsertFromServer(
+    collection: string,
+    record: {
+      id: string;
+      collection: string;
+      data: Record<string, unknown>;
+      createdAt: string;
+      updatedAt: string;
+    },
+    keepLocalDelete = false
+  ): void {
+    // An update delta carries no creation time, so it comes from the row
+    // already here. Without this, `created_at` was restamped to now — a
+    // record edited on another device jumped position in any list sorted by
+    // it. Deliberately not `get()`, which hides soft-deleted rows — the
+    // deleted ones are a case this has to see.
     const existing = this.getAllCollectionData(collection).find((r) => r.id === record.id);
     const xdbRecord: XDBRecord = {
       id: record.id,
@@ -1491,7 +1501,7 @@ export class XDBService {
       data: record.data,
       created_at: record.createdAt || existing?.created_at || new Date().toISOString(),
       updated_at: record.updatedAt || new Date().toISOString(),
-      deleted: existing?.deleted ?? false,
+      deleted: keepLocalDelete && existing?.deleted === true,
     };
     this._mutationSource = 'server';
     this.writeRecord(collection, xdbRecord);

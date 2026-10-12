@@ -500,6 +500,16 @@ export interface ArrowFunctionExpression {
   params: string[];
   patterns?: ParamPattern[];
   body: Expression | string; // Expression for concise, string for block body
+  /**
+   * A block body, `{ count++; save() }`, as the expressions it runs one after
+   * another. Present when every statement in the block is one markup reads;
+   * `body` is then the block's source text, braces included, which is what a
+   * printer writes back. Absent for a block with a statement markup does not
+   * read (`if`, `let`, a loop), which runs nothing.
+   */
+  statements?: Expression[];
+  /** What a block body's `return` hands back, after its statements have run. */
+  returns?: Expression;
   async: boolean;
   loc: SourceLocation;
 }

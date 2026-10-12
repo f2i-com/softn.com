@@ -27,6 +27,7 @@ import {
   EventNode,
   BindingNode,
   Expression,
+  ArrowFunctionExpression,
   AssignmentOperator,
   ObjectExpression,
   SpreadElement,
@@ -177,6 +178,16 @@ const CLOSES_EXPRESSION: ReadonlySet<TokenType> = new Set([
 
 /** A short name for what an expression is, for a diagnostic about it. */
 /** What `{ name = value }` is told when it is a record being made and not a pattern. */
+/**
+ * Statements markup does not read in the body of an arrow: a block of them
+ * is reported and not run (see parseArrowBody). Each is a word that cannot
+ * begin an expression.
+ */
+const NOT_READ_STATEMENTS: ReadonlySet<string> = new Set([
+  'if', 'let', 'const', 'var', 'for', 'while', 'do', 'switch', 'try', 'throw',
+  'function', 'class', 'async', 'await', 'break', 'continue',
+]);
+
 const COVER_DEFAULT_MESSAGE =
   'A name with a default (name = value) inside { } is only read where a record is taken apart: ' +
   'as the parameter of an arrow, ({ name = value }) => …. In a record that is being made, write name: value';
@@ -2216,50 +2227,106 @@ export class Parser {
   /**
    * The body of an arrow, after its `=>`.
    *
-   * `() => { a = 1; b = 2 }` is a block of statements, which markup does not
-   * read (the language reference says so). Its braces were read as a record
-   * being made, so what the page said was about a record: a default written
-   * in one, then a stray ";". The body is still read as it was, since a page
-   * may lean on what part of it does; what changes is that a body in braces
-   * that does not read as a record is reported once, as the block it is.
+   * `() => { count++; save() }` is a block of statements. Its braces used to
+   * be read as a record being made, so `{ save() }` called the record
+   * `{ save }` and the button did nothing, and `{ a = 1; b = 2 }` ran half of
+   * itself under a diagnostic about a record. A block is read as the
+   * statements it holds, each an expression of the kind markup reads, ended
+   * by a ";" or a new line, and an optional last `return`. What markup does
+   * not read in one (`if`, `let`, a loop) leaves the block not run, and says
+   * so with why. Braces that hold a record, `() => { label: v }`, are read as
+   * the record they always were.
    */
-  private parseArrowBody(): Expression {
-    if (!this.curTokenIs(TokenType.EXPR_START)) return this.parseExpression();
+  private parseArrowBody(): Pick<ArrowFunctionExpression, 'body' | 'statements' | 'returns'> {
+    if (!this.curTokenIs(TokenType.EXPR_START) || this.bracesHoldARecord(this.curToken.start)) {
+      return { body: this.parseExpression() };
+    }
+    const open = this.curToken;
     const loc = this.currentLoc();
     const firstDiagnostic = this.diagnostics.length;
-    const body = this.parseExpression();
-    // A record and nothing else is how the braces read without a word said;
-    // `{ save() }` read as calling the record `{ save }`, which throws when
-    // the button is pressed, and so did nothing with nothing to say why.
-    // That one is a warning, as reading it was silent before: the Builder
-    // takes an error for a page it cannot write back as written, and it could
-    // write that page. One that was reported before stays an error.
-    const reported = this.diagnostics.length > firstDiagnostic;
-    if (reported || body.type !== 'ObjectExpression') {
-      this.diagnostics.splice(firstDiagnostic);
-      // A ";" is the block going on: step over the rest of it, to its "}",
-      // so the expression that holds the arrow closes where it was written.
+    this.nextToken(); // consume {
+    const statements: Expression[] = [];
+    let returns: Expression | undefined;
+    let cannot: string | null = null;
+    while (!this.curTokenIs(TokenType.EXPR_END) && !this.curTokenIs(TokenType.EOF)) {
       if (this.curTokenIs(TokenType.SEMICOLON)) {
-        let depth = 0;
-        while (!this.curTokenIs(TokenType.EOF)) {
-          if (this.curTokenIs(TokenType.EXPR_START)) depth++;
-          else if (this.curTokenIs(TokenType.EXPR_END) && depth-- === 0) {
-            this.nextToken();
-            break;
-          }
-          this.nextToken();
-        }
+        this.nextToken();
+        continue;
       }
+      if (returns !== undefined) {
+        cannot = 'nothing after a "return" would run';
+        break;
+      }
+      const word = this.curToken.literal;
+      if (NOT_READ_STATEMENTS.has(word) && !this.curTokenIs(TokenType.STRING)) {
+        cannot = `"${word}" is a statement markup does not read`;
+        break;
+      }
+      const statementStart = this.curToken.start;
+      if (this.curTokenIs(TokenType.RETURN)) {
+        this.nextToken();
+        returns =
+          this.curTokenIs(TokenType.SEMICOLON) || this.curTokenIs(TokenType.EXPR_END)
+            ? createIdentifier('undefined', this.currentLoc())
+            : this.parseExpression();
+      } else {
+        statements.push(this.parseExpression());
+      }
+      this.reportPendingOperand();
+      // A statement markup could not read as an expression has said so in
+      // its own words already.
+      if (this.diagnostics.length > firstDiagnostic) break;
+      if (this.curToken.start === statementStart) {
+        cannot = `"${this.curToken.literal}" is not something markup reads`;
+        break;
+      }
+      if (this.curTokenIs(TokenType.SEMICOLON) || this.curTokenIs(TokenType.EXPR_END)) continue;
+      // A new line ends a statement, as JavaScript's own reading does.
+      if (this.curToken.line > this.prevToken.line) continue;
+      cannot = 'two statements on one line need a ";" between them';
+      break;
+    }
+    const failed = cannot !== null || this.diagnostics.length > firstDiagnostic;
+    // Past the block's own "}", wherever reading it stopped.
+    let depth = 0;
+    let end = this.curToken.end;
+    while (!this.curTokenIs(TokenType.EOF)) {
+      if (this.curTokenIs(TokenType.EXPR_START)) depth++;
+      else if (this.curTokenIs(TokenType.EXPR_END) && depth-- === 0) {
+        end = this.curToken.end;
+        this.nextToken();
+        break;
+      }
+      this.nextToken();
+    }
+    const body = this.source.slice(open.start, end);
+    if (cannot !== null) {
       this.diagnostics.push({
         message:
-          'An arrow whose body is in braces, () => { … }, is a block of statements, and markup reads none: ' +
-          'what runs is not what is written. Put the statements in a logic function and call it, as in ' +
-          '@click={() => save()}',
-        severity: reported ? 'error' : 'warning',
+          `This handler's { } body cannot run: ${cannot}. Markup runs a body's expressions one after another, ` +
+          'as in @click={() => { count++; save() }}; anything more belongs in a logic function the handler calls',
+        severity: 'warning',
         loc,
       });
     }
-    return body;
+    if (failed) return { body };
+    return returns === undefined ? { body, statements } : { body, statements, returns };
+  }
+
+  /**
+   * Whether the braces at `at` hold a record rather than a block: nothing,
+   * a spread, a computed key, or a key followed by ":", "," or the closing
+   * brace. `() => { label: v }` has always been read as making a record, and
+   * still is; JavaScript would read it as a label, and a page that wrote it
+   * meant the record.
+   */
+  private bracesHoldARecord(at: number): boolean {
+    const rest = this.source.slice(at + 1);
+    const lead = /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*/.exec(rest)?.[0].length ?? 0;
+    const after = rest.slice(lead);
+    if (after.startsWith('}') || after.startsWith('...') || after.startsWith('[')) return true;
+    const key = /^(?:[\p{ID_Start}$_][\p{ID_Continue}$_]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\d+(?:\.\d+)?)\s*([:,}])/u.exec(after);
+    return key !== null;
   }
 
   private parsePrimary(): Expression {
@@ -2275,7 +2342,7 @@ export class Parser {
         if (this.curTokenIs(TokenType.ARROW)) {
           this.nextToken();
           const body = this.parseArrowBody();
-          return { type: 'ArrowFunctionExpression', params: [], body, async: false, loc };
+          return { type: 'ArrowFunctionExpression', params: [], ...body, async: false, loc };
         }
         return createIdentifier('undefined', loc);
       }
@@ -2316,8 +2383,8 @@ export class Parser {
             (param) => param.pattern.type === 'NamePattern' && !param.default && !param.rest
           );
           return plain
-            ? { type: 'ArrowFunctionExpression', params, body, async: false, loc }
-            : { type: 'ArrowFunctionExpression', params, patterns, body, async: false, loc };
+            ? { type: 'ArrowFunctionExpression', params, ...body, async: false, loc }
+            : { type: 'ArrowFunctionExpression', params, patterns, ...body, async: false, loc };
         }
         this.diagnostics.push({
           message:
@@ -2329,7 +2396,7 @@ export class Parser {
         });
         this.nextToken(); // consume =>
         const body = this.parseArrowBody();
-        return { type: 'ArrowFunctionExpression', params: [], body, async: false, loc };
+        return { type: 'ArrowFunctionExpression', params: [], ...body, async: false, loc };
       }
 
       if (items.length === 1 && items[0].type !== 'SpreadElement') {
@@ -2408,7 +2475,7 @@ export class Parser {
       if (this.curTokenIs(TokenType.ARROW)) {
         this.nextToken();
         const body = this.parseArrowBody();
-        return { type: 'ArrowFunctionExpression', params: [name], body, async: false, loc };
+        return { type: 'ArrowFunctionExpression', params: [name], ...body, async: false, loc };
       }
       return createIdentifier(name, loc);
     }

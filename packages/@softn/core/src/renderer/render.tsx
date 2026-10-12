@@ -47,6 +47,29 @@ import {
   describeSrcSetEgress,
   type EgressConfig,
 } from '../runtime/egress-policy';
+import { parseStatePath } from '../runtime/state-path';
+
+/**
+ * Write `value` at `path` in `state`, copying each record and list on the
+ * way rather than changing it: what the path passes through may be the
+ * page's own state, which only React writes.
+ */
+function writeStatePath(state: Record<string, unknown>, path: readonly string[], value: unknown): void {
+  if (path.length === 0) return;
+  let into: Record<string, unknown> | unknown[] = state;
+  for (let i = 0; i < path.length - 1; i++) {
+    const key = path[i];
+    const next: unknown = (into as Record<string, unknown>)[key];
+    const copy: Record<string, unknown> | unknown[] = Array.isArray(next)
+      ? [...next]
+      : next !== null && typeof next === 'object'
+        ? { ...(next as Record<string, unknown>) }
+        : {};
+    (into as Record<string, unknown>)[key] = copy;
+    into = copy;
+  }
+  (into as Record<string, unknown>)[path[path.length - 1]] = value;
+}
 
 // Maximum recursion depth for expression evaluation to prevent infinite loops
 const MAX_EVAL_DEPTH = 100;
@@ -216,6 +239,26 @@ type EventHandler = (...args: unknown[]) => unknown;
 function changedValue(event: unknown): unknown {
   const target = eventTarget(event);
   return target && 'value' in target ? target.value : event;
+}
+
+/**
+ * What `:bind` writes for a change: the field's value, and for a number
+ * field the number it holds. A field's `value` is always text, so `<input
+ * type="number" :bind={qty} />` made `qty` the string "5" and `qty + 1` in
+ * the logic "51". A number field that holds a finite number writes it as a
+ * number; one that is empty, or holds what is not a number, writes `''`, so a
+ * page's `qty === ''` still means nothing was entered. Decided by the field
+ * the event came from, so a component that hands on its input's event, as
+ * `<Input type="number">` does, binds the same way.
+ */
+function boundValue(event: unknown): unknown {
+  const target = eventTarget(event);
+  if (!target || !('value' in target)) return event;
+  const value = target.value;
+  if (target.type !== 'number' || typeof value !== 'string') return value;
+  if (value.trim() === '') return '';
+  const number = Number(value);
+  return Number.isFinite(number) ? number : '';
 }
 
 /** The `target` of something shaped like a DOM event, or `undefined` when it
@@ -1111,6 +1154,39 @@ function classText(value: unknown, depth = 0): string {
  * with the value fixed here. By tag name, as the checkable controls are:
  * a component is registered lazily and cannot be asked before it is drawn.
  */
+/**
+ * The components a `selectTo="path"` is wired for: the chosen row is written
+ * to `path` from their `onSelect` (see renderElement). By tag name, as
+ * BOUND_STATE is, and only where a component declares the prop.
+ */
+const SELECT_TO_TAGS: ReadonlySet<string> = new Set(['SmartGrid']);
+
+/**
+ * Write `value` at `path` as a page writes state: through the handler a
+ * parent gave for it (`on<Root>Change`, or `onUpdate`), not at all where the
+ * root is a read-only prop, or into the app's own state.
+ */
+function writeStateAt(path: string, value: unknown, context: SoftNRenderContext): void {
+  const rootVar = path.split('.')[0].split('[')[0]; // Handle array access
+  // Look for an external handler first (on[VarName]Change or onUpdate)
+  // This allows parent components to manage state externally
+  const updateHandler = context.functions[`on${capitalize(rootVar)}Change`] || context.functions['onUpdate'];
+  if (typeof updateHandler === 'function') {
+    updateHandler(path, value);
+  } else if (rootVar in context.props) {
+    // Props are read-only and no handler was provided
+    if (isDevelopment) {
+      console.warn(
+        `Cannot update prop "${path}" directly. Props are read-only. ` +
+          `Define an on${capitalize(rootVar)}Change or onUpdate handler to propagate changes.`
+      );
+    }
+  } else {
+    // It's internal state - update directly
+    context.setState(path, value);
+  }
+}
+
 const BOUND_STATE: Record<string, { prop: string; flag?: boolean; writes: Array<[callback: string, fixed?: unknown]> }> = {
   Modal: { prop: 'open', flag: true, writes: [['onClose', false]] },
   Drawer: { prop: 'open', flag: true, writes: [['onClose', false]] },
@@ -1403,24 +1479,7 @@ function renderElement(
         reportUnplacedWrite(binding.expression, context.locals);
         return;
       }
-      const rootVar = path.split('.')[0].split('[')[0]; // Handle array access
-      // Look for an external handler first (on[VarName]Change or onUpdate)
-      // This allows parent components to manage state externally
-      const updateHandler = context.functions[`on${capitalize(rootVar)}Change`] || context.functions['onUpdate'];
-      if (typeof updateHandler === 'function') {
-        updateHandler(path, newValue);
-      } else if (rootVar in context.props) {
-        // Props are read-only and no handler was provided
-        if (isDevelopment) {
-          console.warn(
-            `Cannot update prop "${path}" directly. Props are read-only. ` +
-              `Define an on${capitalize(rootVar)}Change or onUpdate handler to propagate changes.`
-          );
-        }
-      } else {
-        // It's internal state - update directly
-        context.setState(path, newValue);
-      }
+      writeStateAt(path, newValue, context);
     };
 
     // A callback the binding installs runs before one the page gave under
@@ -1476,14 +1535,30 @@ function renderElement(
           newValue = target ? Boolean(target.checked) : Boolean(eventOrValue);
         } else {
           // A native event's value, or the value a custom component such
-          // as Select passed directly.
-          newValue = changedValue(eventOrValue);
+          // as Select passed directly; a number field's as a number.
+          newValue = boundValue(eventOrValue);
         }
         writeBound(newValue);
       });
     } else {
       props[binding.name] = value;
     }
+  }
+
+  // `<SmartGrid selectTo="picked" />`: keep the row the person chooses in
+  // `picked`. The grid took the prop and did nothing with it, because a
+  // component cannot write app state; the renderer can. It is taken off the
+  // props, and the grid's `onSelect` writes the row first, by the rules
+  // `:bind` writes by, then calls what the page gave, so an `@select` sees
+  // the row written.
+  if (SELECT_TO_TAGS.has(node.tag) && typeof props.selectTo === 'string' && props.selectTo !== '') {
+    const path = props.selectTo;
+    delete props.selectTo;
+    const given = props.onSelect;
+    props.onSelect = (row: unknown, ...rest: unknown[]) => {
+      writeStateAt(path, row, context);
+      return typeof given === 'function' ? (given as (...a: unknown[]) => unknown)(row, ...rest) : undefined;
+    };
   }
 
   // Event handlers - use unified callback context
@@ -2594,35 +2669,48 @@ function evaluate(
 
     case 'ArrowFunctionExpression': {
       return (...args: unknown[]) => {
+        // The parameters are a layer over what was bound where the arrow
+        // was written. An argument that was not passed is `undefined`, which
+        // is what reading past the end of `args` gives.
+        const values = () => (expr.patterns ? boundParams(expr, args, context, locals, depth) : args);
+
+        if (expr.statements) {
+          // A block body, `{ count++; save() }`: each statement in turn, as
+          // the expressions they are, under the same rules. A write to state
+          // is made from a handler and refused while the page is drawn
+          // (stateWriteAllowed), as for any expression. The page's state is
+          // written when React next draws it, so the block reads its own
+          // writes from a copy kept here: `n = n + 1; n++` adds two.
+          const state: Record<string, unknown> = { ...context.state };
+          const block: SoftNRenderContext = {
+            ...context,
+            state,
+            setState: (path, value) => {
+              const parts = parseStatePath(path);
+              writeStatePath(state, parts, value);
+              context.setState(path, value);
+              // And to the logic, for a function a later statement calls.
+              if (parts.length > 0) context.shareState?.({ [parts[0]]: state[parts[0]] });
+            },
+          };
+          const scope = { names: expr.params, values: values(), parent: locals };
+          for (const statement of expr.statements) evaluate(statement, block, scope, depth + 1);
+          return expr.returns ? evaluate(expr.returns, block, scope, depth + 1) : undefined;
+        }
+
         if (typeof expr.body === 'string') {
-          // A block body is not executed here — running arbitrary statements is
-          // the script VM's job, not the renderer's.
-          //
-          // What matters is that it used to fail in complete silence. The
-          // diagnostic sat inside a `startsWith('return ')` branch, so the one
-          // shape that says nothing at all — `@click={() => { save() }}` — got
-          // no warning, returned undefined, and left a control that looks
-          // ordinary and does nothing when pressed. Nothing in the console,
-          // nothing on screen. Every block body reports itself now, and says
-          // what to write instead.
-          const bodyStr = expr.body.trim();
-          const suggestion = bodyStr.startsWith('return ')
-            ? bodyStr.slice('return '.length).replace(/;$/, '')
-            : bodyStr.replace(/;$/, '');
+          // A block body with a statement markup does not read (`if`, `let`,
+          // a loop) runs nothing; the parser said which and why. It used to
+          // fail in complete silence, so it says so here as well, when it is
+          // pressed, where a person is looking.
           console.error(
-            `[SoftN] This handler did not run: an arrow function with a { } body is not ` +
-              `evaluated in a template. Write it without the braces — ` +
-              `{() => ${suggestion || '…'}} — or move it into a <logic> function and ` +
-              `reference that.`
+            `[SoftN] This handler did not run: its { } body has a statement markup does not read ` +
+              `(${expr.body.replace(/\s+/g, ' ').slice(0, 80)}). Put it in a <logic> function and call that.`
           );
           return undefined;
         }
 
-        // The parameters are a layer over what was bound where the arrow
-        // was written. An argument that was not passed is `undefined`, which
-        // is what reading past the end of `args` gives.
-        const values = expr.patterns ? boundParams(expr, args, context, locals, depth) : args;
-        return evaluate(expr.body, context, { names: expr.params, values, parent: locals }, depth + 1);
+        return evaluate(expr.body, context, { names: expr.params, values: values(), parent: locals }, depth + 1);
       };
     }
 

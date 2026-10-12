@@ -74,6 +74,13 @@ export interface SoftNRenderContext {
   // State from script block
   state: RuntimeState;
   setState: (path: string, value: unknown) => void;
+  /**
+   * Hand the logic state the page has written and React has not yet drawn.
+   * A handler's block body, `{ n = 5; save() }`, calls this between its
+   * statements, so the logic function it calls next reads what it wrote.
+   * Optional: without it a logic call sees the write once the page is drawn.
+   */
+  shareState?: (changes: Record<string, unknown>) => void;
 
   // Data from XDB collections
   data: Record<string, XDBRecord[]>;

@@ -11,6 +11,11 @@
  * bundle chose, replicating the app's collections to it, opened on mount. It
  * appears in no requestedCapabilities list, so the bar can say "this app wants
  * to use the internet" while the socket is already up.
+ *
+ * It is replication of the app's database to other devices, which is what
+ * permission.json's `sync` declares and the bar names ("your other
+ * devices"), so it is held to that declaration as peer sync is: a bundle that
+ * does not declare `sync`, or ships no permission.json, opens no socket.
  */
 
 import { act } from 'react';
@@ -49,13 +54,19 @@ const withheld: PermissionConfig = {
 /** What it runs with after Allow. */
 const granted: PermissionConfig = {
   app: { name: 'Probe' },
+  permissions: { net: { enabled: true }, sync: { enabled: true } },
+} as PermissionConfig;
+
+/** A bundle that names a sync server and does not declare sync. */
+const undeclared: PermissionConfig = {
+  app: { name: 'Probe' },
   permissions: { net: { enabled: true } },
 } as PermissionConfig;
 
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
-async function render(config: PermissionConfig): Promise<void> {
+async function render(config: PermissionConfig | undefined): Promise<void> {
   container = document.createElement('div');
   document.body.appendChild(container);
   await act(async () => {
@@ -107,6 +118,21 @@ describe('a bundle whose manifest names a sync server', () => {
   it('opens it immediately when there is nothing to consent to', async () => {
     await render(granted);
     expect(dialled).toEqual([SERVER]);
+  });
+
+  it('opens none for a bundle that does not declare sync, and says what to declare', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await render(undeclared);
+    expect(dialled).toEqual([]);
+    expect(warn.mock.calls.some((call) => String(call[0]).startsWith('[SoftN] Server sync not started') && String(call[0]).includes('"sync": { "enabled": true }'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('opens none for a bundle that ships no permission.json', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await render(undefined);
+    expect(dialled).toEqual([]);
+    warn.mockRestore();
   });
 
   it('says so when the sync client cannot start, rather than running silently unsynced', async () => {

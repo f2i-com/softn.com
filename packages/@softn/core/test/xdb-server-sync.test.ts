@@ -340,6 +340,76 @@ describe('XDBServerSync', () => {
   });
 });
 
+/**
+ * A record this device deleted, which the server kept.
+ *
+ * The host weighs a delete by when it was made: one older than the record's
+ * last change is acknowledged without being applied, and the pusher is sent
+ * the record as it stands (apps/softn-host-rust/src/sync.rs). The client kept
+ * a record it had deleted deleted whatever an update delta said, so it went
+ * on hiding a record the server and every other device still had. Its own
+ * delete holds only while the server has not answered it; after that, what
+ * the server sends is the record.
+ */
+describe('a record deleted here that the server says still stands', () => {
+  const stamp = '2026-01-02T00:00:00Z';
+  const row = { id: 'n1', collection: 'notes', data: { title: 'final' }, createdAt: stamp, updatedAt: stamp };
+
+  /** A synced app with n1 on both sides, and n1 then deleted here. */
+  function deletedHere() {
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    socket.open();
+    authOk(socket);
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [row] });
+    expect(xdb.query('notes').map((r) => r.id)).toEqual(['n1']);
+    xdb.deleteFromCollection('notes', 'n1');
+    const pushed = socket.ofType('sync_push').flatMap((push) => push.ops as Array<Record<string, unknown>>);
+    const deleteOp = pushed.find((op) => op.operation === 'delete' && op.recordId === 'n1');
+    expect(deleteOp).toBeDefined();
+    const current = {
+      type: 'sync_delta',
+      ops: [{ id: 'cur1', collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'final' }, timestamp: stamp, clientId: 'server' }],
+    };
+    return { sync, socket, deleteOp: deleteOp!, current };
+  }
+
+  it('stays hidden while the delete has not been answered', () => {
+    const { sync, socket, current } = deletedHere();
+    try {
+      socket.receive(current);
+      expect(xdb.query('notes')).toEqual([]);
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('comes back when the server has answered the delete and sends the record as it stands', () => {
+    const { sync, socket, deleteOp, current } = deletedHere();
+    try {
+      socket.receive({ type: 'sync_ack', opIds: [deleteOp.id] });
+      socket.receive(current);
+      const shown = xdb.query('notes');
+      expect(shown.map((r) => r.id)).toEqual(['n1']);
+      expect(shown[0].data).toEqual({ title: 'final' });
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('comes back from a pull once the delete was refused', () => {
+    const { sync, socket, deleteOp } = deletedHere();
+    try {
+      socket.receive({ type: 'sync_reject', opId: deleteOp.id, reason: 'no' });
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row] });
+      expect(xdb.query('notes').map((r) => r.id)).toEqual(['n1']);
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
 describe('XDBServerSync with a token', () => {
   function ticketFetch(answer: () => Response) {
     const calls: Array<{ url: string; init: RequestInit }> = [];

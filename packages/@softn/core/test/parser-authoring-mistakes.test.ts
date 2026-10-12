@@ -10,10 +10,11 @@
  *   HTML reads a `<` that cannot begin a tag as text, and so does this now.
  * - `@click="save()"`, a handler written as a quoted string the way other
  *   frameworks spell it, gave the button no handler and no diagnostic.
- * - `@click={() => { save() }}`, an arrow with a block body, which markup
- *   does not read: its braces were read as a record, so `{ save() }` called
- *   the record `{ save }` and the button did nothing, with no diagnostic, and
- *   `{ a = 1; b = 2 }` was reported as a default written in a record.
+ * - `@click={() => { save() }}`, an arrow with a block body: its braces were
+ *   read as a record, so `{ save() }` called the record `{ save }` and the
+ *   button did nothing, with no diagnostic, and `{ a = 1; b = 2 }` was
+ *   reported as a default written in a record. It runs now; what in a body
+ *   cannot run is said, with why.
  * - An `#if` or `#each` with no `#end` took everything after it, up to the
  *   end of the element it stood in or of the page, and said nothing. `#endif`,
  *   which other template languages use, is words here, so it did the same.
@@ -71,19 +72,36 @@ describe('a handler written as a quoted string', () => {
 });
 
 describe('an arrow with a block body', () => {
-  // The docs say markup does not read `() => { … }`. The parser read the
-  // braces as a record, so what it said was about a record: a default
-  // written in one, and a stray ";".
-  it('is reported as the block it is, once', () => {
-    const block =
-      'An arrow whose body is in braces, () => { … }, is a block of statements, and markup reads none: ' +
-      'what runs is not what is written. Put the statements in a logic function and call it, as in @click={() => save()}';
-    expect(messages('<button @click={() => { a = a + 1; b = b + 2 }}>x</button>')).toEqual([`1: ${block}`]);
-    expect(messages('<button @click={(e) => { save(e) }}>x</button>')).toEqual([`1: ${block}`]);
-    expect(messages('<button @click={e => { save(e); close() }}>x</button>')).toEqual([`1: ${block}`]);
-    // Read without a word before, so a warning; reported before, so still an error.
-    expect(severities('<button @click={(e) => { save(e) }}>x</button>')).toEqual(['warning']);
-    expect(severities('<button @click={() => { a = a + 1; b = b + 2 }}>x</button>')).toEqual(['error']);
+  // `() => { save() }` is how a handler that does several things is written.
+  // Its braces were read as a record, so it did nothing (`{ save() }` called
+  // the record `{ save }`), or half of what was written. It runs now, one
+  // statement after another, as the author meant: what markup can say of a
+  // statement is what it can say of an expression. What it cannot say is
+  // reported, with why, and that handler does nothing.
+  it('is read as the statements it holds, with nothing to report', () => {
+    for (const source of [
+      '<button @click={() => { save() }}>x</button>',
+      '<button @click={(e) => { save(e); close() }}>x</button>',
+      '<button @click={() => {\n  count = count + 1\n  save()\n}}>x</button>',
+      '<button @click={() => { a = 1; b = 2; }}>x</button>',
+      '<Chart format={(v) => { return v * 2 }} />',
+      '<button @click={() => {}}>x</button>',
+    ]) {
+      expect(messages(source), source).toEqual([]);
+    }
+  });
+
+  it('says why a statement markup does not read cannot run', () => {
+    const cannot = (what: string) =>
+      `1: This handler's { } body cannot run: ${what}. Markup runs a body's expressions one after another, ` +
+      'as in @click={() => { count++; save() }}; anything more belongs in a logic function the handler calls';
+    expect(messages('<button @click={() => { if (ok) save() }}>x</button>')).toEqual([cannot('"if" is a statement markup does not read')]);
+    expect(messages('<button @click={() => { let n = 1; save(n) }}>x</button>')).toEqual([cannot('"let" is a statement markup does not read')]);
+    expect(messages('<button @click={() => { for (const t of items) save(t) }}>x</button>')).toEqual([cannot('"for" is a statement markup does not read')]);
+    expect(messages('<button @click={() => { save() close() }}>x</button>')).toEqual([
+      cannot('two statements on one line need a ";" between them'),
+    ]);
+    expect(severities('<button @click={() => { if (ok) save() }}>x</button>')).toEqual(['warning']);
   });
 
   it('is not confused with an arrow that makes a record', () => {

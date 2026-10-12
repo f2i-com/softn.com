@@ -529,19 +529,40 @@ export class XDBServerSync {
     sendBatch();
   }
 
+  /**
+   * The records this device has deleted and the server has not yet answered
+   * for, as `collection` and id. A record among them stays deleted whatever
+   * the server sends for it; once the server has answered, what it sends is
+   * the record (see `XDBService.upsertFromServer`).
+   */
+  private unansweredDeletes(): Set<string> {
+    const deleting = new Set<string>();
+    for (const ops of [this.pendingOps, this.inflightOps]) {
+      for (const op of ops.values()) {
+        if (op.operation === 'delete') deleting.add(`${op.collection}\u0000${op.recordId}`);
+      }
+    }
+    return deleting;
+  }
+
   /** Replace local collection data with the server's authoritative state. */
   private handleSyncState(collection: string, records: ServerRecord[], more?: PullCursor): void {
     // Apply each record from the server to the local XDB.
     // We use a batch approach: clear local data and re-insert.
     // For Phase 2, we use a simpler approach: upsert each record.
+    const deleting = this.unansweredDeletes();
     for (const record of records) {
-      this.xdb.upsertFromServer(collection, {
-        id: record.id,
-        collection: record.collection,
-        data: record.data,
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-      });
+      this.xdb.upsertFromServer(
+        collection,
+        {
+          id: record.id,
+          collection: record.collection,
+          data: record.data,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        },
+        deleting.has(`${collection}\u0000${record.id}`)
+      );
     }
     // The page was full, so the collection goes on: ask for the rest. A
     // collection past one page used to stop here, at its oldest ten
@@ -555,28 +576,38 @@ export class XDBServerSync {
 
   /** Apply live deltas from other clients. */
   private handleSyncDelta(ops: SyncOp[]): void {
+    const deleting = this.unansweredDeletes();
     for (const op of ops) {
+      const deletedHere = deleting.has(`${op.collection}\u0000${op.recordId}`);
       switch (op.operation) {
         case 'create':
           if (op.data) {
-            this.xdb.upsertFromServer(op.collection, {
-              id: op.recordId,
-              collection: op.collection,
-              data: op.data,
-              createdAt: op.timestamp,
-              updatedAt: op.timestamp,
-            });
+            this.xdb.upsertFromServer(
+              op.collection,
+              {
+                id: op.recordId,
+                collection: op.collection,
+                data: op.data,
+                createdAt: op.timestamp,
+                updatedAt: op.timestamp,
+              },
+              deletedHere
+            );
           }
           break;
         case 'update':
           if (op.data) {
-            this.xdb.upsertFromServer(op.collection, {
-              id: op.recordId,
-              collection: op.collection,
-              data: op.data,
-              createdAt: '',
-              updatedAt: op.timestamp,
-            });
+            this.xdb.upsertFromServer(
+              op.collection,
+              {
+                id: op.recordId,
+                collection: op.collection,
+                data: op.data,
+                createdAt: '',
+                updatedAt: op.timestamp,
+              },
+              deletedHere
+            );
           }
           break;
         case 'delete':

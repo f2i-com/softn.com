@@ -337,10 +337,10 @@ describe('a timer in logic', () => {
 });
 
 describe('what the top level of a script leaves, with no _init', () => {
-  // Only its timers start as the page loads. A `softn.*` call waits for the
-  // first call into the script, as it always has: one that plays a sound or
-  // opens a picker then runs inside that click, where the browser allows it.
-  it('starts its timers, and keeps its other host calls for the first call, in order', async () => {
+  // Run once the script has loaded, timers and `softn.*` calls alike, as the
+  // worker runtime runs them: on the main thread a call waited for the first
+  // call into the script, which for an app without `_init` was a click.
+  it('is run once the script has loaded, before the first call, in order', async () => {
     const { context, state } = makeContext();
     const asked: string[] = [];
     const handler: NetFetchHandler = async (url) => {
@@ -350,19 +350,53 @@ describe('what the top level of a script leaves, with no _init', () => {
     const runtime = makeRuntime(context, { netFetchHandler: handler });
     const loaded = await runtime.loadScript(
       script(`
-        let ticked = false
-        setTimeout(function () { ticked = true }, 150)
-        softn.net.fetch('https://api.test/top', {}, function () {})
+        let answered = 0
+        softn.net.fetch('https://api.test/top', {}, function (response) { answered = response.status })
         function go() { softn.net.fetch('https://api.test/go', {}, function () {}) }
       `)
     );
     Object.assign(state, loaded.state);
-    await sleep(40);
-    expect(asked).toEqual([]);
+    await until(() => state.answered === 200, 500);
+    expect(asked).toEqual(['https://api.test/top']);
     await loaded.functions.go();
     await until(() => asked.length === 2);
     expect(asked).toEqual(['https://api.test/top', 'https://api.test/go']);
-    await until(() => state.ticked === true);
+  });
+
+  it('has a listener it put on the window heard from the start, before the first call', async () => {
+    const { context, state } = makeContext();
+    const runtime = makeRuntime(context);
+    const loaded = await runtime.loadScript(
+      script(`
+        let keys = 0
+        window.addEventListener('keydown', function () { keys = keys + 1 })
+      `)
+    );
+    Object.assign(state, loaded.state);
+    await sleep(20);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+    expect(state.keys).toBe(1);
+  });
+
+  it('is run after an _init the host calls straight away, which drains it first, as before', async () => {
+    const { context, state } = makeContext();
+    const asked: string[] = [];
+    const handler: NetFetchHandler = async (url) => {
+      asked.push(url);
+      return { ok: true, status: 200, body: '', headers: {} };
+    };
+    const runtime = makeRuntime(context, { netFetchHandler: handler });
+    const loaded = await runtime.loadScript(
+      script(`
+        softn.net.fetch('https://api.test/top', {}, function () {})
+        function _init() { softn.net.fetch('https://api.test/init', {}, function () {}) }
+      `)
+    );
+    Object.assign(state, loaded.state);
+    void loaded.functions._init();
+    await until(() => asked.length === 2);
+    await sleep(20);
+    expect(asked).toEqual(['https://api.test/top', 'https://api.test/init']);
   });
 });
 

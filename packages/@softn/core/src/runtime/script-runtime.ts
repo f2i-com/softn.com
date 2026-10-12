@@ -856,7 +856,6 @@ export class SoftNScriptRuntime {
     const useHostBridges = this.runtimeMode === 'main';
     // A wait a previous script asked for holds a call id this one will reuse.
     this.timers.clear();
-    this.heldFromLoad = [];
 
     // 0. Create the logic engine (the ZIPP adapter unless a host configured
     // one). A Python app asks for one that can run Python, and an engine that
@@ -1183,14 +1182,16 @@ export class SoftNScriptRuntime {
       }
     }
 
-    // A timer the top level set waited for the first call into the script,
-    // which for an app without `_init` is the first click. Start it once the
-    // host has had the result: a macrotask, so an `_init` the renderer calls
-    // straight away still goes first and drains the queue as it always has,
-    // and this finds nothing left to do.
+    // What the top level queued (a timer, a `softn.*` call) or put on the
+    // window (a listener) waited for the first call into the script, which
+    // for an app without `_init` was the first click; the worker runtime
+    // takes it as the script loads. Take it once the host has had the
+    // result: a macrotask, so an `_init` the renderer calls straight away
+    // still goes first and takes it as it always has, and this finds nothing
+    // left to do.
     this.loadEntry = setTimeout(() => {
       this.loadEntry = null;
-      void this.startTopLevelTimers();
+      void this.runWhatTheTopLevelQueued();
     }, 0);
 
     return {
@@ -1205,38 +1206,28 @@ export class SoftNScriptRuntime {
   private loadEntry: ReturnType<typeof setTimeout> | null = null;
 
   /**
-   * Host calls the top level queued beside its timers, held for the next
-   * drain. They wait for the next entry into the script, as they always have
-   * (a click, usually, and now a timer coming due as well): one that plays a
-   * sound or opens a picker then runs inside that click, where the browser
-   * allows it, and would be refused if it ran as the page loads.
+   * Run the host calls the script's top level queued, timers among them, and
+   * hear the listeners it put on the window, if nothing has done so yet, as
+   * the worker runtime does at load. No script code runs here.
    */
-  private heldFromLoad: PendingHostCall[] = [];
-
-  /** Start the timers the top level set, if nothing has drained them yet. */
-  private async startTopLevelTimers(): Promise<void> {
+  private async runWhatTheTopLevelQueued(): Promise<void> {
     await this.vmCallLock;
     if (this.disposed || !this.vmEngine || this.vmEngine.terminated) return;
     let release: (() => void) | undefined;
     this.vmCallLock = new Promise<void>((r) => {
       release = r;
     });
+    let pending: PendingHostCall[] = [];
     try {
-      this.heldFromLoad.push(...this.timers.take(this.vmEngine.drainPendingHostCalls()));
+      pending = this.vmEngine.drainPendingHostCalls();
+      this.bridgeEventListeners();
+      this.discoverWindowSyncKeys();
     } catch (error) {
-      console.error('[SoftN] Error starting the timers the script set as it loaded:', error);
+      console.error('[SoftN] Error taking what the script queued as it loaded:', error);
     } finally {
       release!();
     }
-  }
-
-  /** What the script queued for the host, after anything held from the load. */
-  private drainHostCalls(): PendingHostCall[] {
-    const drained = this.vmEngine!.drainPendingHostCalls();
-    if (this.heldFromLoad.length === 0) return drained;
-    const held = this.heldFromLoad;
-    this.heldFromLoad = [];
-    return [...held, ...drained];
+    if (pending.length > 0) await this.processPendingHostCallsUnlocked(pending);
   }
 
   /** The script's timers, on the host's clock; see logic-timers.ts. */
@@ -1418,7 +1409,7 @@ export class SoftNScriptRuntime {
 
           // Drain pending host calls while holding the lock
           if (this.vmEngine) {
-            const pending = this.drainHostCalls();
+            const pending = this.vmEngine.drainPendingHostCalls();
             if (pending.length > 0) {
               pendingCalls = pending;
             }
@@ -2074,7 +2065,7 @@ export class SoftNScriptRuntime {
         // handler sat in the queue until the next function call happened to
         // release it. Not awaited: the handler has returned and the browser
         // event is over; the calls resolve into the VM as they complete.
-        const pending = this.drainHostCalls();
+        const pending = this.vmEngine.drainPendingHostCalls();
         if (pending.length > 0) void this.processPendingHostCallsUnlocked(pending);
       };
 
@@ -2150,7 +2141,6 @@ export class SoftNScriptRuntime {
     this.eventCoalescers = [];
     this.timers.dispose();
     this.dueTimers = [];
-    this.heldFromLoad = [];
     if (this.loadEntry !== null) {
       clearTimeout(this.loadEntry);
       this.loadEntry = null;
@@ -2520,7 +2510,7 @@ export class SoftNScriptRuntime {
         release2 = r;
       });
       try {
-        pending = this.timers.take(this.drainHostCalls());
+        pending = this.timers.take(this.vmEngine.drainPendingHostCalls());
       } finally {
         release2!();
       }
