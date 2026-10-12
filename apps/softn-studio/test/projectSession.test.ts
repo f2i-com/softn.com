@@ -149,10 +149,11 @@ describe('autosave', () => {
     autosave.stop();
   });
 
-  it('does not save over what another tab saved since this one opened the project, and says to reload', async () => {
+  it('does not save over what another tab saved since this one opened the project, and takes it in', async () => {
     // Nothing compared a save with what was stored. A second tab holding an older copy wrote
     // the whole of it back — old files, old chat — the moment anything in it changed, and
-    // switching a panel is a change.
+    // switching a panel is a change. Then every such save was refused until a reload; now it
+    // is merged with what the other tab saved (twoTabs.test.ts).
     const id = beginNewProjectSession();
     useWorkspaceStore.getState().setProjectName('Notes');
     useVFSStore.getState().createFile('ui/main.ui', '<Text>One</Text>');
@@ -164,16 +165,15 @@ describe('autosave', () => {
     await saveProjectRecord({ ...stored, revision: stored.revision + 5, files: stored.files.map((f) => ({ ...f, content: '<Text>From the other tab</Text>' })) });
 
     useWorkspaceStore.getState().setLeftPanel('files');
-    expect(await autosave.flush()).toMatchObject({ ok: false, reason: 'conflict' });
-    const status = getSaveStatus();
-    expect(status).toMatchObject({ state: 'failed', reason: 'conflict' });
-    expect(status.state === 'failed' ? status.message : '').toMatch(/changed in another tab.*Reload/);
+    expect(await autosave.flush()).toEqual({ ok: true });
+    expect(getSaveStatus()).toMatchObject({ state: 'saved' });
     expect((await loadProjectRecord(id))?.files[0].content).toBe('<Text>From the other tab</Text>');
+    expect(useVFSStore.getState().files.get('ui/main.ui')?.content).toBe('<Text>From the other tab</Text>');
 
-    // It stays refused: a later change here does not get through either.
+    // A later change here is made on top of the other tab's, and saves.
     useVFSStore.getState().updateFile('ui/main.ui', '<Text>Two</Text>');
-    expect((await autosave.flush()).ok).toBe(false);
-    expect((await loadProjectRecord(id))?.files[0].content).toBe('<Text>From the other tab</Text>');
+    expect(await autosave.flush()).toEqual({ ok: true });
+    expect((await loadProjectRecord(id))?.files[0].content).toBe('<Text>Two</Text>');
     autosave.stop();
   });
 

@@ -13,8 +13,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installFakeIndexedDB } from '@softn/test-utils/fake-indexeddb';
 import {
   DB_OPEN_DEADLINE_MS,
+  askStoreAgain,
   listProjectSummaries,
   loadProjectRecord,
   saveActiveProjectId,
@@ -22,7 +24,7 @@ import {
   type PersistedWorkspace,
   type ProjectRecord,
 } from '../src/lib/persistence';
-import { restoreSession } from '../src/lib/projectSession';
+import { beginNewProjectSession, claimWorkspace, reopenUnansweredProject, restoreSession } from '../src/lib/projectSession';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../src/stores';
 
 function memoryStorage() {
@@ -106,5 +108,57 @@ describe('a store that never answers', () => {
     void loadProjectRecord('p1');
     await vi.advanceTimersByTimeAsync(1);
     expect(opens).toBe(before + 1);
+  });
+});
+
+describe('Try again, once the store answers', () => {
+  // The start could not read the project it was to open, so it showed the dashboard and its
+  // Try again. Pressed with the store answering, that refreshed the list and nothing else: the
+  // project the start had been opening stayed closed until it was found and opened by hand.
+
+  /** A start against the silent store, then the store answering with `p1` saved in it. */
+  async function startSilentThenAnswer(): Promise<void> {
+    saveActiveProjectId('p1');
+    const start = await settledAfter(restoreSession(), DB_OPEN_DEADLINE_MS + 50);
+    expect(start.value).toMatchObject({ restored: false });
+    installFakeIndexedDB();
+    askStoreAgain();
+    await settledAfter(saveProjectRecord(record('p1')), 10);
+  }
+
+  it('opens the project the start could not', async () => {
+    await startSilentThenAnswer();
+    const { value } = await settledAfter(reopenUnansweredProject(), 10);
+    expect(value).toEqual({ ok: true });
+    expect(useWorkspaceStore.getState().projectId).toBe('p1');
+    expect(useVFSStore.getState().files.get('ui/main.ui')?.content).toBe('<App />');
+    // Once: a second Try again does not open it over itself.
+    expect((await settledAfter(reopenUnansweredProject(), 10)).value).toBeNull();
+  });
+
+  it('leaves alone what the person opened meanwhile', async () => {
+    await startSilentThenAnswer();
+    // An example opened while the store was silent: that is the project being worked on now.
+    claimWorkspace();
+    const exampleId = beginNewProjectSession();
+    useWorkspaceStore.getState().setProjectName('Reading list (example)');
+    useVFSStore.getState().createFile('ui/main.ui', '<Text>Example</Text>');
+    expect((await settledAfter(reopenUnansweredProject(), 10)).value).toBeNull();
+    expect(useWorkspaceStore.getState().projectId).toBe(exampleId);
+    expect(useVFSStore.getState().files.get('ui/main.ui')?.content).toBe('<Text>Example</Text>');
+  });
+
+  it('keeps waiting while the store still does not answer', async () => {
+    saveActiveProjectId('p1');
+    await settledAfter(restoreSession(), DB_OPEN_DEADLINE_MS + 50);
+    askStoreAgain();
+    const still = await settledAfter(reopenUnansweredProject(), DB_OPEN_DEADLINE_MS + 50);
+    expect(still.value).toMatchObject({ ok: false });
+    expect(useWorkspaceStore.getState().projectId).not.toBe('p1');
+    installFakeIndexedDB();
+    askStoreAgain();
+    await settledAfter(saveProjectRecord(record('p1')), 10);
+    expect((await settledAfter(reopenUnansweredProject(), 10)).value).toEqual({ ok: true });
+    expect(useWorkspaceStore.getState().projectId).toBe('p1');
   });
 });

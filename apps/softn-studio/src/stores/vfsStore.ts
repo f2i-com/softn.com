@@ -69,6 +69,15 @@ interface VFSState {
   revertJournaled(transactionIds: string[], what?: string): RevertResult;
   /** Restore a saved journal with a saved project. */
   hydrateJournal(entries: UndoEntry[]): void;
+  /**
+   * Bring in files another tab saved (lib/projectMerge.ts): content to place,
+   * or undefined for a file it deleted. Not something done in this tab, so
+   * not undoable here; and the units of the history and of the redo stack
+   * that touch these files are dropped, because putting back their images
+   * would put this tab's older copy over the other tab's change. Each file's
+   * version goes up, so a reply or a draft made from the older one is refused.
+   */
+  takeInFiles(changes: Array<{ path: string; content: string | Uint8Array | undefined; lastModifiedBy?: 'user' | 'ai' }>): void;
   readFile(path: string): string | Uint8Array | null;
   listFiles(prefix?: string): string[];
   getSnapshot(): Map<string, VFSFile>;
@@ -146,6 +155,18 @@ function nextVersion(floor: Map<string, number>, path: string, existing: VFSFile
 
 function newTransactionId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** `events` without the units that touch any of `paths`. A unit goes whole or stays whole. */
+function withoutUnitsTouching(events: VFSEvent[], paths: ReadonlySet<string>): VFSEvent[] {
+  const out: VFSEvent[] = [];
+  for (let start = 0; start < events.length; ) {
+    const end = unitEnd(events, start);
+    const unit = events.slice(start, end);
+    if (!unit.some((event) => paths.has(event.path))) out.push(...unit);
+    start = end;
+  }
+  return out.length === events.length ? events : out;
 }
 
 /** Apply the inverse of one event to `files`. */
@@ -354,6 +375,32 @@ export const useVFSStore = create<VFSState>((set, get) => ({
 
   hydrateJournal(entries) {
     set({ journal: boundJournal(entries) });
+  },
+
+  takeInFiles(changes) {
+    if (changes.length === 0) return;
+    set((s) => {
+      const files = new Map(s.files);
+      const versionFloor = new Map(s.versionFloor);
+      const now = Date.now();
+      for (const { path, content, lastModifiedBy } of changes) {
+        const existing = files.get(path);
+        if (content === undefined) {
+          files.delete(path);
+          continue;
+        }
+        files.set(path, {
+          path,
+          content,
+          mimeType: mimeFor(path),
+          lastModified: now,
+          lastModifiedBy: lastModifiedBy ?? 'user',
+          version: nextVersion(versionFloor, path, existing),
+        });
+      }
+      const paths = new Set(changes.map((change) => change.path));
+      return { files, history: withoutUnitsTouching(s.history, paths), undoStack: withoutUnitsTouching(s.undoStack, paths), versionFloor };
+    });
   },
 
   revertTransaction(transactionId) {

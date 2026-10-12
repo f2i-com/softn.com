@@ -845,6 +845,13 @@ const CHANGED_IN_ANOTHER_TAB: SaveResult = {
 };
 
 /**
+ * What to write in place of a record when the stored copy is newer than the
+ * one the writer last saw: the record to put, or why nothing is put. Called
+ * inside the save's transaction, so it must not wait for anything.
+ */
+export type ReconcileSave = (stored: ProjectRecord) => ProjectRecord | SaveResult;
+
+/**
  * Write one project record whole. Resolves only after the transaction has
  * committed: a put whose transaction aborts is a failed save, and the
  * previous revision of the record is untouched.
@@ -854,11 +861,14 @@ const CHANGED_IN_ANOTHER_TAB: SaveResult = {
  * work — the same project open in another tab — and is not written over:
  * the whole record is the unit of saving, so the tab holding the older copy
  * used to put its old files back in place of the newer ones the moment
- * anything in it changed. The look and the write share one transaction, so
- * nothing can be stored between them. Without it the write is unconditional
+ * anything in it changed. With `reconcile`, the newer copy is handed to it
+ * and what it answers is written instead (the tab's merge, projectMerge.ts);
+ * without it, or when the stored copy does not read whole, nothing is
+ * written. The look and the write share one transaction, so nothing can be
+ * stored between them. Without `lastSeenRevision` the write is unconditional
  * (a project's first save, the legacy migration).
  */
-export async function saveProjectRecord(record: ProjectRecord, lastSeenRevision?: number): Promise<SaveResult> {
+export async function saveProjectRecord(record: ProjectRecord, lastSeenRevision?: number, reconcile?: ReconcileSave): Promise<SaveResult> {
   let db: IDBDatabase;
   try {
     db = await openStudioDb();
@@ -868,11 +878,19 @@ export async function saveProjectRecord(record: ProjectRecord, lastSeenRevision?
   try {
     const tx = db.transaction(PROJECTS_STORE, 'readwrite');
     const store = tx.objectStore(PROJECTS_STORE);
+    let write = record;
     if (lastSeenRevision !== undefined) {
       const stored: unknown = await request(store.get(record.projectId));
-      if (isRecord(stored) && typeof stored.revision === 'number' && stored.revision > lastSeenRevision) return CHANGED_IN_ANOTHER_TAB;
+      if (isRecord(stored) && typeof stored.revision === 'number' && stored.revision > lastSeenRevision) {
+        // A part left out of the reading would be merged as the other tab having deleted it.
+        const read = reconcile ? readStoredRecord(stored, record.projectId) : null;
+        if (!reconcile || !read || read.leftOut.length > 0) return CHANGED_IN_ANOTHER_TAB;
+        const answer = reconcile(read.record);
+        if ('ok' in answer) return answer;
+        write = answer;
+      }
     }
-    await request(store.put(record, record.projectId));
+    await request(store.put(write, write.projectId));
     await committed(tx);
     return { ok: true };
   } catch (error) {
@@ -976,23 +994,32 @@ export function readStoredRecord(raw: unknown, projectId: string): ReadRecord | 
   };
 }
 
-/** The record for a project id, with what had to be left out of it, or null when there is none to open. */
-export async function readProjectRecord(projectId: string): Promise<ReadRecord | null> {
+/**
+ * The record for a project id, and whether the store answered at all: a
+ * store that did not answer in time may hold the record, which is not the
+ * same as a project with no saved copy.
+ */
+export async function readProjectRecordAnswer(projectId: string): Promise<{ answered: boolean; read: ReadRecord | null }> {
   let db: IDBDatabase;
   try {
     db = await openStudioDb();
-  } catch {
-    return null;
+  } catch (error) {
+    return { answered: !(error instanceof StoreSilentError), read: null };
   }
   try {
     const tx = db.transaction(PROJECTS_STORE, 'readonly');
     const raw: unknown = await request(tx.objectStore(PROJECTS_STORE).get(projectId));
-    return readStoredRecord(raw, projectId);
+    return { answered: true, read: readStoredRecord(raw, projectId) };
   } catch {
-    return null;
+    return { answered: true, read: null };
   } finally {
     db.close();
   }
+}
+
+/** The record for a project id, with what had to be left out of it, or null when there is none to open. */
+export async function readProjectRecord(projectId: string): Promise<ReadRecord | null> {
+  return (await readProjectRecordAnswer(projectId)).read;
 }
 
 /** The record for a project id, or null when there is none to open. */

@@ -1,7 +1,7 @@
 import { isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
 import React, { useState, useSyncExternalStore } from 'react';
 import { Icon } from './Icon';
-import { getSaveStatus, subscribeSaveStatus, type SaveStatus } from '../../lib/projectSession';
+import { getSaveStatus, keepThisTabsVersion, subscribeSaveStatus, type SaveStatus } from '../../lib/projectSession';
 import { exportCurrentProject } from './ProjectActions';
 
 /**
@@ -82,7 +82,13 @@ export function SaveStatusIndicator({ compact = false }: { compact?: boolean }):
         {label}
         {failed && !compact && <span style={styles.detail}> — {detail}</span>}
       </span>
-      {failed && (
+      {failed && status.parts && (
+        <button type="button" onClick={() => void keepThisTabsVersion()} style={styles.exportBtn} title={`Save this tab’s version of ${status.parts} over the one saved in the other tab`}>
+          <span>Keep this tab’s version</span>
+        </button>
+      )}
+      {/* On a phone the bar has room for one of the two; the project menu beside it has Export bundle. */}
+      {failed && !(compact && status.parts) && (
         <button type="button" onClick={() => void exportCurrentProject()} style={styles.exportBtn} title="Export the project in memory as a .softn file">
           <Icon name="export" size={12} />
           <span>Export bundle</span>

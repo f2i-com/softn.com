@@ -10,6 +10,7 @@ import {
   loadGlobalSettings,
   loadProjectRecord,
   readProjectRecord,
+  readProjectRecordAnswer,
   type ReadRecord,
   migrateLegacyProject,
   removeRecentProject,
@@ -20,11 +21,13 @@ import {
   sameProjectContent,
   decodeRecordFiles,
   type PersistedFile,
+  type PersistedWorkspace,
   type ProjectRecord,
   type SaveFailureReason,
   type SaveResult,
 } from './persistence';
-import { persistJournal, readPersistedJournal } from './undoJournal';
+import { boundJournal, persistJournal, readPersistedJournal } from './undoJournal';
+import { PROJECT_FIELDS, baseAfterMerge, describeParts, hasConflicts, mergeProjectRecords, type MergeOutcome, type MergeParts } from './projectMerge';
 import { DEFAULT_MAX_OUTPUT_TOKENS, PREVIOUS_DEFAULT_MAX_OUTPUT_TOKENS } from './aiProvider';
 
 /**
@@ -89,6 +92,28 @@ let revision = 0;
 let hydrating = false;
 let lastSaved: { projectId: string; revision: number } | null = null;
 
+/**
+ * What this tab last had from storage for the project in the stores, part by
+ * part: the record it opened or last wrote, or, after a merged save, what it
+ * holds of the merged record (lib/projectMerge.ts). A save that finds a newer
+ * stored copy, written by another tab, is merged against it. Null for a
+ * project not saved yet.
+ */
+let synced: ProjectRecord | null = null;
+/** A merge kept some part back: storage no longer holds what `synced` says for it, so every save merges. */
+let syncedPinned = false;
+/**
+ * What the last merged save could not write: the parts both tabs changed,
+ * and the record it wrote, which holds the other tab's version of them.
+ */
+let lastConflicts: { parts: MergeParts; written: ProjectRecord } | null = null;
+
+function resetSynced(record: ProjectRecord | null): void {
+  synced = record;
+  syncedPinned = false;
+  lastConflicts = null;
+}
+
 export function currentRevision(): number {
   return revision;
 }
@@ -118,7 +143,8 @@ export type SaveStatus =
   | { state: 'idle' }
   | { state: 'saving'; revision: number }
   | { state: 'saved'; revision: number; at: number }
-  | { state: 'failed'; revision: number; at: number; reason: SaveFailureReason; message: string };
+  /** `parts`: a merged save left out what both tabs changed, and these are they, in words; this tab's version of them can be kept. */
+  | { state: 'failed'; revision: number; at: number; reason: SaveFailureReason; message: string; parts?: string };
 
 let saveStatus: SaveStatus = { state: 'idle' };
 const statusListeners = new Set<() => void>();
@@ -181,6 +207,7 @@ export function beginNewProjectSession(): string {
   }
   revision = 0;
   lastSaved = null;
+  resetSynced(null);
   setSaveStatus({ state: 'idle' });
   return projectId;
 }
@@ -196,12 +223,24 @@ export function hasProjectContent(): boolean {
   return Boolean(ws.projectId) && (useVFSStore.getState().files.size > 0 || ws.projectName.trim().length > 0);
 }
 
+/** The workspace fields that are the project, as a record holds them. */
+function projectFields(): Pick<PersistedWorkspace, (typeof PROJECT_FIELDS)[number]> {
+  const ws = useWorkspaceStore.getState();
+  return {
+    projectName: ws.projectName,
+    brief: ws.brief ? (({ referenceImages: _referenceImages, ...rest }) => rest)(ws.brief) : null,
+    blueprint: ws.blueprint,
+    taskGraph: ws.taskGraph,
+    blueprintApproved: ws.blueprintApproved,
+    mode: ws.mode,
+  };
+}
+
 /** The stores as a record at revision `rev`, or null when there is no project. */
 export function collectProjectRecord(rev: number, now = Date.now()): ProjectRecord | null {
   const ws = useWorkspaceStore.getState();
   if (!ws.projectId) return null;
   const ai = useAIStore.getState();
-  const persistedBrief = ws.brief ? (({ referenceImages: _referenceImages, ...rest }) => rest)(ws.brief) : null;
   const files: PersistedFile[] = [];
   for (const file of useVFSStore.getState().files.values()) {
     files.push({
@@ -219,13 +258,8 @@ export function collectProjectRecord(rev: number, now = Date.now()): ProjectReco
     revision: rev,
     savedAt: now,
     workspace: {
-      projectName: ws.projectName,
+      ...projectFields(),
       projectId: ws.projectId,
-      brief: persistedBrief,
-      blueprint: ws.blueprint,
-      taskGraph: ws.taskGraph,
-      blueprintApproved: ws.blueprintApproved,
-      mode: ws.mode,
       leftPanel: ws.leftPanel,
       leftPanelExpanded: ws.leftPanelExpanded,
       // Kept for an older Studio (a cached service worker, say) opening
@@ -305,7 +339,91 @@ export function applyProjectRecord(record: ProjectRecord): void {
   }
   revision = record.revision;
   lastSaved = { projectId: record.projectId, revision: record.revision };
+  resetSynced(record);
   setSaveStatus({ state: 'saved', revision: record.revision, at: record.savedAt });
+}
+
+const byPath = (files: readonly PersistedFile[]) => new Map(files.map((file) => [file.path, file]));
+
+/**
+ * Bring into the stores what a merged save took from storage: the other tab's
+ * changes. A part is brought in only when this tab still holds what the save
+ * collected for it; one the person changed while the save was in flight is
+ * left as it is, and the next save meets both changes. Answers what was
+ * brought in. The undo data and the counters are always brought in.
+ */
+function bringIn(collected: ProjectRecord, merge: MergeOutcome): MergeParts {
+  const merged = merge.record;
+  const applied: MergeParts = { files: [], fields: [], messages: [] };
+  hydrating = true;
+  try {
+    const vfs = useVFSStore.getState();
+    const wroteFiles = byPath(collected.files);
+    const mergedFiles = byPath(merged.files);
+    const changes: Parameters<typeof vfs.takeInFiles>[0] = [];
+    for (const path of merge.taken.files) {
+      if (vfs.files.get(path)?.content !== wroteFiles.get(path)?.content) continue;
+      const file = mergedFiles.get(path);
+      changes.push({ path, content: file?.content, lastModifiedBy: file?.lastModifiedBy });
+      applied.files.push(path);
+    }
+    vfs.takeInFiles(changes);
+
+    const now = projectFields();
+    const patch: Record<string, unknown> = {};
+    for (const field of merge.taken.fields) {
+      if (JSON.stringify(now[field]) !== JSON.stringify(collected.workspace[field])) continue;
+      const value = merged.workspace[field];
+      if (field === 'brief') {
+        // The reference images are not saved: this tab's stay with the brief.
+        patch.brief = value ? { ...(value as object), referenceImages: useWorkspaceStore.getState().brief?.referenceImages ?? [] } : null;
+      } else {
+        patch[field] = field === 'mode' ? normalizeMode(String(value)) : value;
+      }
+      applied.fields.push(field);
+    }
+    if (applied.fields.length > 0) useWorkspaceStore.setState(patch);
+
+    const ai = useAIStore.getState();
+    const wroteMessages = new Map(collected.session.messages.map((m) => [m.id, m]));
+    const mergedMessages = new Map(merged.session.messages.map((m) => [m.id, m]));
+    let messages = ai.messages;
+    for (const id of merge.taken.messages) {
+      const index = messages.findIndex((m) => m.id === id);
+      if ((index < 0 ? undefined : messages[index]) !== wroteMessages.get(id)) continue;
+      const message = mergedMessages.get(id);
+      messages = [...messages];
+      if (!message) messages.splice(index, 1);
+      else if (index >= 0) messages[index] = message;
+      else {
+        const at = messages.findIndex((m) => m.timestamp > message.timestamp);
+        messages.splice(at < 0 ? messages.length : at, 0, message);
+      }
+      applied.messages.push(id);
+    }
+    const spent = (key: 'iterationsUsed' | 'tokensUsed' | 'filesChanged') => Math.max(0, ai[key] + merged.session[key] - collected.session[key]);
+    useAIStore.setState({
+      messages: messages.length > 200 ? messages.slice(-200) : messages,
+      iterationsUsed: spent('iterationsUsed'),
+      tokensUsed: spent('tokensUsed'),
+      filesChanged: spent('filesChanged'),
+    });
+
+    // Undo data: the other tab's new entries are added and the ones it used up go. One both
+    // have stays as this tab has it.
+    if (merge.taken.journal.length > 0) {
+      const taken = new Set(merge.taken.journal);
+      const theirs = readPersistedJournal({ version: 1, entries: (merged.undo?.entries ?? []).filter((entry) => taken.has(entry.id)) });
+      const journal = useVFSStore.getState().journal;
+      const have = new Set(journal.map((entry) => entry.id));
+      const kept = new Set((merged.undo?.entries ?? []).map((entry) => entry.id));
+      const next = [...journal.filter((entry) => !taken.has(entry.id) || kept.has(entry.id)), ...theirs.filter((entry) => !have.has(entry.id))];
+      useVFSStore.setState({ journal: boundJournal(next.sort((a, b) => a.at - b.at)) });
+    }
+  } finally {
+    hydrating = false;
+  }
+  return applied;
 }
 
 /** The person's provider settings into the AI store. */
@@ -430,13 +548,40 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
     if (!record) return NOTHING_TO_SAVE;
     if (isSavedAt(record.projectId, rev)) return NOTHING_TO_SAVE;
     setSaveStatus({ state: 'saving', revision: rev });
-    // The revision of this project this tab last read or wrote: the save is refused when
-    // storage holds a later one, which is another tab's work (see saveProjectRecord).
-    const lastSeen = lastSaved !== null && lastSaved.projectId === record.projectId ? lastSaved.revision : undefined;
-    const result = await save(record, lastSeen);
+    // The revision of this project this tab last read or wrote: when storage holds a later one,
+    // another tab saved since, and the save is merged with it part by part (projectMerge.ts).
+    // After a merge that kept a part back, storage is not what this tab last had whatever its
+    // revision, and every save is merged.
+    const seen = lastSaved !== null && lastSaved.projectId === record.projectId ? lastSaved.revision : undefined;
+    const lastSeen = seen !== undefined && syncedPinned ? -1 : seen;
+    const base = synced !== null && synced.projectId === record.projectId ? synced : null;
+    let merge: MergeOutcome | null = null;
+    const reconcile = base
+      ? (stored: ProjectRecord) => {
+          merge = mergeProjectRecords(base, record, stored, Math.max(rev, stored.revision + 1));
+          return merge.record;
+        }
+      : undefined;
+    const result = await save(record, lastSeen, reconcile);
     if (stopped) return result;
     if (result.ok) {
-      lastSaved = { projectId: record.projectId, revision: rev };
+      const merged = merge as MergeOutcome | null;
+      const written = merged ? merged.record : record;
+      if (merged && base) {
+        const applied = bringIn(record, merged);
+        const next = baseAfterMerge(base, record, merged.record, applied);
+        synced = next.base;
+        syncedPinned = next.pinned;
+        lastConflicts = hasConflicts(merged.conflicts) ? { parts: merged.conflicts, written: merged.record } : null;
+        // Above what either tab wrote, and still counting what changed here while the save was in flight.
+        revision = merged.record.revision + (revision - rev);
+        lastSaved = { projectId: record.projectId, revision: merged.record.revision };
+        const brought = describeParts(applied);
+        if (brought) useWorkspaceStore.getState().addConsoleOutput(`Brought in what another tab saved: ${brought}.`);
+      } else {
+        resetSynced(record);
+        lastSaved = { projectId: record.projectId, revision: rev };
+      }
       saveActiveProjectId(record.projectId);
       saveRecentProject({
         id: record.projectId,
@@ -444,18 +589,30 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
         target: record.workspace.blueprint?.target ?? 'web',
         lastModified: new Date(record.savedAt).toLocaleString(),
       });
-      setSaveStatus({ state: 'saved', revision: rev, at: record.savedAt });
+      if (lastConflicts) {
+        const parts = describeParts(lastConflicts.parts);
+        setSaveStatus({
+          state: 'failed',
+          revision: rev,
+          at: now(),
+          reason: 'conflict',
+          parts,
+          message: `${parts} changed in another tab as well as in this one, so this tab’s version was not saved over the other tab’s. The rest of this tab’s changes are saved. Keep this tab’s version, or reload to continue from the saved copy.`,
+        });
+      } else {
+        setSaveStatus({ state: 'saved', revision: rev, at: record.savedAt });
+      }
       if (legacyPendingId === record.projectId) {
         // The legacy snapshot's replacement has committed; read it back before
         // the old keys go, as the start-up migration would have.
         const readBack = await loadProjectRecord(record.projectId);
-        if (readBack && sameProjectContent(record, readBack)) {
+        if (readBack && sameProjectContent(written, readBack)) {
           clearLegacySnapshots();
           legacyPendingId = null;
         }
       }
       // Changes arrived while the write was in flight: they are the next save.
-      if (revision !== rev) schedule();
+      if (revision !== written.revision) schedule();
     } else {
       setSaveStatus({ state: 'failed', revision: rev, at: now(), reason: result.reason, message: result.message });
     }
@@ -490,6 +647,18 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
     touchRevision();
     schedule();
   }
+
+  const controller: AutosaveController = {
+    flush: () => run(),
+    stop: () => {
+      stopped = true;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      for (const unsubscribe of unsubscribers) unsubscribe();
+      if (running === controller) running = null;
+    },
+  };
+  running = controller;
 
   const unsubscribers = [
     useWorkspaceStore.subscribe((state, previous) => {
@@ -526,20 +695,57 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
     }),
   ];
 
-  return {
-    flush: () => run(),
-    stop: () => {
-      stopped = true;
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
-      for (const unsubscribe of unsubscribers) unsubscribe();
-    },
-  };
+  return controller;
+}
+
+/** The autosave that is running, for what has to save now from outside it. */
+let running: AutosaveController | null = null;
+
+/**
+ * After a merged save left out what both tabs changed: the person chose this
+ * tab's version of those parts. Each is taken to be made on top of the other
+ * tab's version the save met, so the next save writes it over that one;
+ * anything the other tab changed elsewhere is still merged as before. A part
+ * the other tab has changed again since is a conflict again, and is said so:
+ * the choice was about the version that was reported.
+ */
+export function keepThisTabsVersion(): Promise<SaveResult> {
+  const conflicts = lastConflicts;
+  const base = synced;
+  if (!conflicts || !base || !running) return Promise.resolve(NOTHING_TO_SAVE);
+  const { parts, written } = conflicts;
+  const theirFiles = byPath(written.files);
+  const files = base.files.filter((file) => !parts.files.includes(file.path));
+  for (const path of parts.files) {
+    const file = theirFiles.get(path);
+    if (file) files.push(file);
+  }
+  const workspace: PersistedWorkspace = { ...base.workspace };
+  for (const field of parts.fields) (workspace as unknown as Record<string, unknown>)[field] = written.workspace[field];
+  const theirMessages = new Map(written.session.messages.map((m) => [m.id, m]));
+  const messages = base.session.messages.filter((m) => !parts.messages.includes(m.id));
+  for (const id of parts.messages) {
+    const message = theirMessages.get(id);
+    if (message) messages.push(message);
+  }
+  synced = { ...base, workspace, files, session: { ...base.session, messages } };
+  lastConflicts = null;
+  touchRevision();
+  return running.flush();
 }
 
 // --- Restore and open -------------------------------------------------------
 
 export type RestoreOutcome = { restored: boolean; notice: string | null };
+
+/**
+ * The project the start was to open and could not, because the store did not
+ * answer in time, with the workspace generation that start held. The
+ * dashboard says the store did not answer and offers Try again; pressed once
+ * the store answers, that refreshed the list and nothing else, so the project
+ * the start had been opening stayed closed until it was found in the list.
+ */
+let unanswered: { projectId: string; generation: number } | null = null;
 
 /**
  * What the tab starts with.
@@ -556,15 +762,17 @@ export type RestoreOutcome = { restored: boolean; notice: string | null };
  */
 export async function restoreSession(now = Date.now()): Promise<RestoreOutcome> {
   const claim = claimWorkspace();
+  unanswered = null;
   applyGlobalSettings();
   const activeId = loadActiveProjectId();
   if (activeId) {
-    const read = await readProjectRecord(activeId);
+    const { answered, read } = await readProjectRecordAnswer(activeId);
     if (!ownsWorkspace(claim.generation)) return { restored: false, notice: null };
     if (read) {
       applyProjectRecord(read.record);
       return { restored: true, notice: announceLeftOut(read) };
     }
+    if (!answered) unanswered = { projectId: activeId, generation: claim.generation };
   }
   const migration = await migrateLegacyProject(now);
   if (!ownsWorkspace(claim.generation)) return { restored: false, notice: null };
@@ -590,6 +798,7 @@ export async function restoreSession(now = Date.now()): Promise<RestoreOutcome> 
   // save of it commits and reads back. The saved status is honest about
   // where it stands.
   lastSaved = null;
+  resetSynced(null);
   legacyPendingId = migration.record.projectId;
   setSaveStatus({
     state: 'failed',
@@ -605,6 +814,32 @@ export async function restoreSession(now = Date.now()): Promise<RestoreOutcome> 
 }
 
 export type OpenOutcome = { ok: true } | { ok: false; message: string };
+
+/**
+ * Open the project the start could not ask the store for, now that it may
+ * answer. Null when there is none, or when something has taken the workspace
+ * since the start (a new app, an example, an import, a project opened from
+ * the list): that is the project being worked on now, and it is not replaced.
+ * While the store still does not answer, the project is kept for the next try.
+ */
+export async function reopenUnansweredProject(): Promise<OpenOutcome | null> {
+  const pending = unanswered;
+  if (!pending || !ownsWorkspace(pending.generation) || hasProjectContent() || loadActiveProjectId() !== pending.projectId) {
+    unanswered = null;
+    return null;
+  }
+  const claim = claimWorkspace();
+  unanswered = { projectId: pending.projectId, generation: claim.generation };
+  const { answered, read } = await readProjectRecordAnswer(pending.projectId);
+  if (!ownsWorkspace(claim.generation)) return null;
+  if (!answered) return { ok: false, message: 'This browser’s storage still did not answer.' };
+  unanswered = null;
+  if (!read) return { ok: false, message: 'There is no saved copy of that project in this browser.' };
+  applyProjectRecord(read.record);
+  const notice = announceLeftOut(read);
+  if (notice) useWorkspaceStore.getState().addConsoleOutput(notice);
+  return { ok: true };
+}
 
 /**
  * A project that opened with parts of its save left out (persistence.ts,

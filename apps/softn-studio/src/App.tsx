@@ -56,6 +56,7 @@ import {
   ownsWorkspace,
   readOpenLink,
   releaseWorkspace,
+  reopenUnansweredProject,
   restoreSession,
   startProjectAutosave,
   type AutosaveController,
@@ -402,6 +403,20 @@ const App: React.FC = () => {
     return outcome;
   }, [checkpointBeforeReplace, refreshRecent]);
 
+  /**
+   * Try again, after the store did not answer: the list is made again and,
+   * when the start could not open the project it was opening, that project
+   * is opened now, unless something else has been opened since.
+   */
+  const handleRetryStore = useCallback(async () => {
+    askStoreAgain();
+    await refreshRecent();
+    const reopened = await reopenUnansweredProject();
+    if (!reopened?.ok) return;
+    setView('editor');
+    void refreshRecent();
+  }, [refreshRecent]);
+
   const handleRemoveRecent = useCallback((id: string) => {
     removeRecentProject(id);
     void refreshRecent();
@@ -479,7 +494,7 @@ const App: React.FC = () => {
             onOpenExample={(example) => void handleOpenExample(example)}
             recentProjects={recentProjects}
             storeSilent={storeSilent}
-            onRetryStore={() => { askStoreAgain(); return refreshRecent(); }}
+            onRetryStore={handleRetryStore}
             ai={isHostedEditor() ? undefined : {
               gate: needsProviderSetup({ hosted: false, providerCount, setupSkipped }),
               onSkip: () => useAIStore.getState().setSetupSkipped(true),

@@ -12,9 +12,10 @@
  * from. The agent may write the file while the draft is open, and so may an
  * undo, a revert or a redo in the History panel; so the draft remembers the
  * file it began from, and a save is refused, with nothing written, when the
- * file is no longer that one. (A write made in another tab does not reach
- * this tab's files at all: it is the autosave that refuses to put this tab's
- * project over it, persistence.ts, and says the project changed in another tab.) While a run is working nothing is saved at all: the agent would be
+ * file is no longer that one. (A write made in another tab reaches this tab's
+ * files when this tab next saves: the save brings in what the other tab
+ * changed and this one did not, lib/projectMerge.ts, with a new version, so
+ * a draft made from the older file is refused the same way.) While a run is working nothing is saved at all: the agent would be
  * building on a file changing under it. (The agent's side has the same rule
  * already: a file the person saved after the agent read it is refused to the
  * agent's next write as "changed since you read it", executeTool.ts.)
@@ -101,7 +102,7 @@ export function saveHandEdit(options: { evenIfNotJson?: boolean } = {}): HandSav
     return {
       ok: false,
       kind: 'changed',
-      message: `${path} was changed while you were editing it, by the AI or by an undo in History. Your changes were not saved, and nothing was written over. Reload the file to start again from what it is now (what you typed here is discarded), or keep editing to copy your changes out first.`,
+      message: `${path} was changed while you were editing it, by the AI, by an undo in History or in another tab. Your changes were not saved, and nothing was written over. Reload the file to start again from what it is now (what you typed here is discarded), or keep editing to copy your changes out first.`,
     };
   }
   if (draft.text === draft.baseText) {

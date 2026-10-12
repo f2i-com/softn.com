@@ -20,6 +20,7 @@ section here. Write the section before tagging. Headings are the tag
 - Logic: `setTimeout`, `setInterval`, `clearTimeout` and `clearInterval` work in page logic, on the main thread and in the worker, and what a callback writes is drawn. Before, a timer set in a function never fired and one set at the top level stopped the app loading. They are cleared when the app stops, and a callback that throws is reported. Not in markup, Python logic or backend logic.
 - Logic: an async function that throws, a listener the logic put on `window` that throws, and any handler that throws in worker mode are reported as `[SoftN] Error executing function <name>:` like any other handler error, where they went unreported or unnamed. A syntax error in logic quotes the line it is on.
 - A function the page calls while drawing that reads large state no longer copies that state out of the engine every tick (34 ms to 0.7 ms per tick at 4,000 records).
+- Studio: one project open in two tabs no longer blocks saving in the second tab. A save merges with what the other tab saved: changes to different parts are all kept and brought into both tabs, and a file both tabs changed is named in the status bar with "Keep this tab's version". After storage did not answer at start-up, Try again opens the project Studio was opening.
 
 ## v0.0.19
 
