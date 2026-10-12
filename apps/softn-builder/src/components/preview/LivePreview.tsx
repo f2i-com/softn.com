@@ -176,6 +176,19 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
+/**
+ * What is drawn in the app's place when it could not go on: its logic threw
+ * as it started, or its page could not be drawn. While it is there the
+ * header says the app has stopped; it went on saying "Running" over it.
+ */
+function StoppedInPlace({ onShown, children }: { onShown: (shown: boolean) => void; children: ReactNode }) {
+  useEffect(() => {
+    onShown(true);
+    return () => onShown(false);
+  }, [onShown]);
+  return <>{children}</>;
+}
+
 type DevicePreset = 'desktop' | 'tablet' | 'mobile';
 
 const DEVICE_LABELS: Record<DevicePreset, string> = { desktop: 'Desktop', tablet: 'Tablet', mobile: 'Phone' };
@@ -330,6 +343,9 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   // which was leaving Preview and coming back, if a person thought of it.
   const [run, setRun] = useState(0);
   const [stopped, setStopped] = useState(false);
+  // The renderer draws a failure in the app's place (StoppedInPlace), which
+  // the strip of what the logic reported leaves to it.
+  const [failedInPlace, setFailedInPlace] = useState(false);
 
   // Mount indicator
   useEffect(() => {
@@ -428,14 +444,16 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   const dimensions = deviceDimensions[device];
 
   const renderError = (err: Error) => (
-    <div style={styles.error}>
-      <div style={{ fontWeight: 600, marginBottom: 8 }}>Preview Error</div>
-      <div style={{ fontFamily: 'monospace', fontSize: 12 }}>{err.message}</div>
-      <details style={{ marginTop: 12 }}>
-        <summary style={{ cursor: 'pointer' }}>Stack trace</summary>
-        <pre style={{ fontSize: 10, overflow: 'auto', maxHeight: 200 }}>{err.stack}</pre>
-      </details>
-    </div>
+    <StoppedInPlace onShown={setFailedInPlace}>
+      <div style={styles.error}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Preview Error</div>
+        <div style={{ fontFamily: 'monospace', fontSize: 12 }}>{err.message}</div>
+        <details style={{ marginTop: 12 }}>
+          <summary style={{ cursor: 'pointer' }}>Stack trace</summary>
+          <pre style={{ fontSize: 10, overflow: 'auto', maxHeight: 200 }}>{err.stack}</pre>
+        </details>
+      </div>
+    </StoppedInPlace>
   );
 
   // Check if content is very large (just for warning, will still render)
@@ -552,14 +570,18 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       );
 
       const errorFallback = (err: Error) => (
-        <div style={styles.error} role="alert">
-          <div style={{ fontWeight: 600, marginBottom: 8 }}>The app stopped with an error</div>
-          <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{err.message}</div>
-        </div>
+        <StoppedInPlace onShown={setFailedInPlace}>
+          <div style={styles.error} role="alert">
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>The app stopped with an error</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{err.message}</div>
+          </div>
+        </StoppedInPlace>
       );
 
+      // Each start of the app has boundaries of its own, so a restart starts
+      // again a page that could not be drawn as well as an engine.
       const preview = (
-        <PreviewErrorBoundary fallback={renderError}>
+        <PreviewErrorBoundary key={run} fallback={renderError}>
           <PreviewComponent
             key={run}
             source={cleanSource}
@@ -590,7 +612,7 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       if (ThemeProviderComponent) {
         return (
           <DeviceViewport width={dimensions.width} height={dimensions.height}>
-            <PreviewErrorBoundary fallback={renderError}>
+            <PreviewErrorBoundary key={run} fallback={renderError}>
               {/* The project's theme as its declaration, as a runtime is
                   handed it, and not as an editor's switch (utils/previewTheme.ts). */}
               <ThemeProviderComponent {...previewThemeProps(themeMode)}>
@@ -639,16 +661,22 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       <div style={styles.header}>
         <span style={styles.title}>
           Preview
-          {!error && !isLoading && source.trim() && !stopped && (
+          {!error && !isLoading && source.trim() && !stopped && !failedInPlace && (
             <span style={styles.live} data-preview-live="true">
               <span style={styles.liveDot} aria-hidden="true" />
               Running
             </span>
           )}
-          {!error && !isLoading && source.trim() && stopped && (
+          {!error && !isLoading && source.trim() && (stopped || failedInPlace) && (
             <span className="bl-badge" data-tone="warn" data-preview-live="false">
               Stopped
             </span>
+          )}
+          {/* The strip has its own way back for a logic that stopped; this is for a failure drawn in the app's place. */}
+          {!error && !isLoading && source.trim() && failedInPlace && !stopped && (
+            <button type="button" className="bl-btn bl-btn-sm" data-action="restart-preview" onClick={() => setRun((n) => n + 1)}>
+              Restart preview
+            </button>
           )}
         </span>
         <div style={styles.controls}>

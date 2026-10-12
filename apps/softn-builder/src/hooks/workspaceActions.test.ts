@@ -92,3 +92,57 @@ it('keeps phone Save/Open keys available without opening hidden desktop panels',
   expect(actions.save).toHaveBeenCalledOnce(); expect(actions.open).toHaveBeenCalledOnce();
   expect(actions.create).not.toHaveBeenCalled(); expect(actions.changeView).not.toHaveBeenCalled();
 });
+
+// The view keys were not heard with the focus in a field or a code editor, so
+// from the Code view, where the focus is in the editor, Ctrl+1 did nothing
+// (and the browser took it, to go to its first tab) while the shortcuts
+// listed it. No field and no code editor uses them for text; the code editor
+// uses Ctrl+1 to Ctrl+7 only as the second key of its Ctrl+K chord, which
+// folds the code to that level, and that is left to it.
+function codeEditorHarness(actions: WorkspaceShortcutActions) {
+  function Harness() {
+    useWorkspaceShortcuts(actions);
+    return React.createElement('div', { className: 'monaco-editor' }, React.createElement('textarea', { className: 'inputarea' }));
+  }
+  act(() => root.render(React.createElement(Harness)));
+  return host.querySelector('textarea')!;
+}
+const views = (patch: Partial<WorkspaceShortcutActions> = {}): WorkspaceShortcutActions => ({ blocked: false, narrow: false, save: vi.fn(), open: vi.fn(), create: vi.fn(), export: vi.fn(), shortcuts: vi.fn(), changeView: vi.fn(), ...patch });
+
+it('changes the view from inside a code editor', () => {
+  const actions = views();
+  const editor = codeEditorHarness(actions);
+  expect(press('1', { ctrlKey: true }, editor).defaultPrevented).toBe(true);
+  expect(actions.changeView).toHaveBeenCalledWith('design');
+  press('3', { metaKey: true }, editor);
+  expect(actions.changeView).toHaveBeenLastCalledWith('preview');
+});
+
+it('leaves the second key of the code editor\'s Ctrl+K chord to it', () => {
+  const actions = views();
+  const editor = codeEditorHarness(actions);
+  expect(press('k', { ctrlKey: true }, editor).defaultPrevented).toBe(false);
+  // Ctrl let go and pressed again between the two keys is still the chord.
+  press('Control', { ctrlKey: true }, editor);
+  expect(press('1', { ctrlKey: true }, editor).defaultPrevented).toBe(false);
+  expect(actions.changeView).not.toHaveBeenCalled();
+  // The chord is over: the next is a view key again.
+  press('2', { ctrlKey: true }, editor);
+  expect(actions.changeView).toHaveBeenCalledWith('data');
+});
+
+it('changes the view from a field, which has no use for the keys, and commits a name being typed first', () => {
+  const actions = shortcutHarness();
+  const field = host.querySelector('textarea')!;
+  expect(press('4', { ctrlKey: true }, field).defaultPrevented).toBe(true);
+  expect(actions.changeView).toHaveBeenCalledWith('code');
+  const name = document.createElement('input');
+  name.setAttribute('data-schema-name', '');
+  host.append(name);
+  name.focus();
+  const committed = vi.fn();
+  name.addEventListener('blur', committed);
+  press('1', { ctrlKey: true }, name);
+  expect(committed).toHaveBeenCalledOnce();
+  expect(actions.changeView).toHaveBeenLastCalledWith('design');
+});

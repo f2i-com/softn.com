@@ -23,6 +23,7 @@ section here. Write the section before tagging. Headings are the tag
 - Studio: one project open in two tabs no longer blocks saving in the second tab. A save merges with what the other tab saved: changes to different parts are all kept and brought into both tabs, and a file both tabs changed is named in the status bar with "Keep this tab's version". After storage did not answer at start-up, Try again opens the project Studio was opening.
 - Studio: the AI is told that timers work in page logic and where they do not, and a timer written in markup is answered with the logic function to write instead; a page the app imports, previewed or checked on its own, has the app's logic, so its calls to the app's functions are no longer reported as undefined; Enter that confirms an input-method candidate no longer adds a page, collection or plan note.
 - Builder: permission.json is written back as it came. An export, even of an untouched project, dropped the app's id (which sync is scoped by) and capability limits such as the AI model sources the app may load; an edited declaration keeps them.
+- Builder: Preview says Stopped, and offers Restart, when the app's logic throws as it starts or its page cannot be drawn, where it went on saying Running; Ctrl+1 to Ctrl+4 switch views from a text field or the code editor too, as the shortcuts list says.
 
 ## v0.0.19
 

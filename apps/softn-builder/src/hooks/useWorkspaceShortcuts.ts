@@ -37,12 +37,23 @@ export interface WorkspaceShortcutActions {
   changeView: (view: ViewMode) => void;
 }
 
+/** Keys that are held with another, and are no key of a chord on their own. */
+const MODIFIER_KEYS = new Set(['Control', 'Meta', 'Shift', 'Alt']);
+
 export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
   useEffect(() => {
+    // Whether the last key, in a code editor, was Ctrl+K: the code editor's
+    // chord, whose second key may be Ctrl and a digit (fold to that level).
+    let chordStarted = false;
     const keyDown = (event: KeyboardEvent) => {
       const current = actionsRef.current;
+      let inChord = false;
+      if (!MODIFIER_KEYS.has(event.key)) {
+        inChord = chordStarted;
+        chordStarted = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && event.target instanceof HTMLElement && event.target.closest('.monaco-editor') !== null;
+      }
       if (event.isComposing || current.blocked) return;
       // F6 goes to the next panel and Shift+F6 to the one before, a code
       // editor included: Tab indents there, and stopped there for good.
@@ -109,9 +120,19 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
           else redoCanvas();
           return;
         }
-        if (isInput || current.narrow || event.shiftKey) return;
+        if (current.narrow || event.shiftKey) return;
+        // Heard wherever the focus is: no field and no code editor uses
+        // them for text, and from the Code view, where the focus is in the
+        // editor, Ctrl+1 did nothing (and the browser took it, for its first
+        // tab). The code editor's own use of them, as the second key of its
+        // Ctrl+K chord, is left to it.
         const views: Record<string, ViewMode> = { '1': 'design', '2': 'data', '3': 'preview', '4': 'code' };
-        if (views[key]) { event.preventDefault(); current.changeView(views[key]); }
+        if (views[key] && !inChord) {
+          event.preventDefault();
+          // A schema name commits on blur, as for Save above.
+          if (target?.matches('[data-schema-name]')) target.blur();
+          current.changeView(views[key]);
+        }
       } else if (key === '?' && !isInput && !current.narrow) {
         event.preventDefault(); current.shortcuts();
       }
