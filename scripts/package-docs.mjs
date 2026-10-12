@@ -5,27 +5,50 @@
  * the archive so that `docs/index.html` lands at `<document root>/docs/index.html`,
  * replacing the folder that is there. Nothing outside `docs/` changes.
  *
- *   node scripts/package-docs.mjs [--out release]
+ *   node scripts/package-docs.mjs [--out release] [--allow-dirty]
  *
  * The archive is `softn-docs-<version>-<commit>.zip` (the version from
- * package.json, the commit from HEAD) with a `.sha256` beside it, written by
- * the same writer as the release archives: the `.br`/`.gz` twins and the
- * fonts are stored, everything else deflated, and every entry is read back
- * and compared. A short README.md at the archive root says where it goes.
+ * package.json, the commit dist/ was built from) with a `.sha256` beside it.
+ * It is made only from a dist/ whose BUILD-INFO.json says it was built from
+ * HEAD, from a clean tree unless --allow-dirty, with nothing in docs/ that
+ * names a path on the build machine; it used to be named for HEAD whatever
+ * dist/docs/ had been built from. It is written by the same writer as the
+ * release archives: the `.br`/`.gz` twins and the fonts are stored,
+ * everything else deflated, and every entry is read back and compared. A
+ * short README.md at the archive root says where it goes.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readArchive, writeArchive } from './lib/archive.mjs';
+import { buildInfoProblem, headRevision } from './lib/build-info.mjs';
+import { buildMachinePaths } from './lib/build-paths.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const docs = path.join(root, 'dist', 'docs');
+const dist = path.join(root, 'dist');
+const docs = path.join(dist, 'docs');
 const outDir = path.resolve(root, process.argv.includes('--out') ? process.argv[process.argv.indexOf('--out') + 1] : 'release');
-if (!fs.existsSync(path.join(docs, 'index.html'))) throw new Error('Build the site first (npm run build:site); dist/docs/index.html is missing.');
+
+function fail(message) {
+  console.error(`package-docs: ${message}`);
+  process.exit(1);
+}
+
+if (!fs.existsSync(path.join(docs, 'index.html')) || !fs.existsSync(path.join(dist, 'BUILD-INFO.json'))) {
+  fail('Build the site first (npm run build:site); dist/docs/index.html or dist/BUILD-INFO.json is missing.');
+}
+let head;
+try {
+  head = headRevision(root);
+} catch {
+  fail('This is not a git checkout, so what dist/ was built from cannot be checked against it.');
+}
+const info = JSON.parse(fs.readFileSync(path.join(dist, 'BUILD-INFO.json'), 'utf8'));
+const stale = buildInfoProblem(info, head, { allowDirty: process.argv.includes('--allow-dirty') });
+if (stale) fail(stale);
 
 const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
-const commit = execFileSync('git', ['rev-parse', '--short=10', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const commit = info.softn.revision.slice(0, 10);
 const name = `softn-docs-v${version}-${commit}.zip`;
 
 const entries = new Map();
@@ -37,6 +60,8 @@ function collect(dir, relative) {
   }
 }
 collect(docs, 'docs');
+const machine = buildMachinePaths(dist, [...entries.keys()], root);
+if (machine.length > 0) fail(`${machine.slice(0, 10).join('; ')}. Build the site again (npm run build:site).`);
 entries.set('README.md', Buffer.from(`# SoftN documentation ${version} (${commit})
 
 The \`/docs/\` section of softn.com on its own, for updating a running site

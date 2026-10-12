@@ -20,6 +20,18 @@ function softn_setup_json(string $file, string $name): array {
 if(PHP_VERSION_ID<80100)softn_setup_stop('PHP '.PHP_VERSION.' is too old; the backend needs PHP 8.1 or newer. If the server has several, run setup with the one the web server uses.');
 umask(0077);
 $root=__DIR__;
+// --migration-deadline=SECONDS: how long this run's check of the app may take
+// to apply its migrations, where a request has the runner's 20 seconds. A
+// migration that needs longer is stopped on every request and, after three
+// stops, not started again (README-RUNTIME.md, Startup diagnostics); this is
+// how it is applied. Only this run is given it: http.php starts the runner
+// with an environment of its own.
+$migrationDeadline=null;
+foreach(array_slice($argv??[],1) as $arg) {
+    if(!str_starts_with($arg,'--migration-deadline'))continue;
+    if(!preg_match('/^--migration-deadline=([1-9][0-9]{0,4})$/',$arg,$m)||(int)$m[1]>86400)softn_setup_stop('--migration-deadline takes a whole number of seconds from 1 to 86400, for example --migration-deadline=600.');
+    $migrationDeadline=(int)$m[1];
+}
 // The rules http.php applies; setup starts the runner exactly as a request does.
 if(!is_file($root.'/request.php'))softn_setup_stop('request.php is missing beside setup.php. Upload the whole backend/ folder from the archive again.');
 require_once $root.'/request.php';
@@ -67,7 +79,8 @@ try {
     if(is_file($root.'/bin/node'))@chmod($root.'/bin/node',0700);
     for($i=0;$i<4;$i++){ $f=@fopen($root.'/private/slot-'.$i.'.lock','c');if($f)fclose($f); }
     echo "Setup complete. Run PHP/Apache as this directory's owner. Review private/config.json for this application's operator settings.\n";
-    $problems=softn_setup_checks($root);
+    if($migrationDeadline!==null)echo "Migrations may run for up to $migrationDeadline s in this run's check of the app, a migration stopped three times included. Requests made meanwhile wait for the database and may be told it is busy (503 database_busy).\n";
+    $problems=softn_setup_checks($root,$migrationDeadline);
     foreach($problems as $problem)fwrite(STDERR,'WARNING: '.$problem."\n");
     // What these checks cannot see. Said, not failed on: neither is wrong on every host.
     if($account===0)fwrite(STDERR,"NOTE: setup ran as root, so private/ and the database belong to root and the web server's PHP cannot read them (requests will answer 503 private_permissions). Hand the backend folder to the web server's PHP account (chown -R) or run setup as it.\n");
@@ -98,10 +111,11 @@ try {
  * version and process functions, and whether the bundled Node starts on this
  * machine (a Linux x86-64 binary does not run on ARM, musl or a noexec mount)
  * and, with an application installed, answers /api/meta. Each problem is one
- * line; the empty list means the backend is ready.
+ * line; the empty list means the backend is ready. `$migrationDeadline`
+ * (seconds) is how long the app's check may take to apply its migrations.
  * @return list<string>
  */
-function softn_setup_checks(string $root): array {
+function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
     $problems=[];
     if(PHP_VERSION_ID<80100)$problems[]='PHP '.PHP_VERSION.' is too old; the backend needs PHP 8.1 or newer.';
     foreach(['proc_open','proc_get_status','proc_terminate','proc_close'] as $name)
@@ -116,9 +130,9 @@ function softn_setup_checks(string $root): array {
     // What the runner says on stderr is kept (in a temporary file, so that it
     // can never fill a pipe nobody is reading): it is the reason, where the
     // answer on stdout is only a label. It used to go to /dev/null.
-    $run=function(array $command,string $input='') use($root):?array {
+    $run=function(array $command,string $input='',array $env=[]) use($root):?array {
         $errors=tmpfile();
-        $process=@proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$errors?:['pipe','w']],$pipes,$root,['PATH'=>'/usr/bin:/bin','TZ'=>'UTC','NODE_NO_WARNINGS'=>'1']);
+        $process=@proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$errors?:['pipe','w']],$pipes,$root,['PATH'=>'/usr/bin:/bin','TZ'=>'UTC','NODE_NO_WARNINGS'=>'1']+$env);
         if(!is_resource($process))return null;
         fwrite($pipes[0],$input);fclose($pipes[0]);
         $out=stream_get_contents($pipes[1]);fclose($pipes[1]);
@@ -142,16 +156,22 @@ function softn_setup_checks(string $root): array {
     }
     // Started as a request starts it (request.php softn_runner_command): a
     // Node that refuses one of those flags fails here, not on every request.
-    $meta=$run(softn_runner_command($root),json_encode(['path'=>'/api/meta','method'=>'GET','query'=>new stdClass(),'headers'=>new stdClass(),'body'=>new stdClass(),'client_ip'=>'0.0.0.0','photos'=>extension_loaded('gd')]));
+    $meta=$run(softn_runner_command($root),json_encode(['path'=>'/api/meta','method'=>'GET','query'=>new stdClass(),'headers'=>new stdClass(),'body'=>new stdClass(),'client_ip'=>'0.0.0.0','photos'=>extension_loaded('gd')]),
+        // runner.mjs and request-worker.mjs read it (migrations.mjs setupDeadlineMs).
+        $migrationDeadline===null?[]:['SOFTN_SETUP_DEADLINE_MS'=>(string)($migrationDeadline*1000)]);
     $answer=$meta===null?null:json_decode($meta['out'],true);
     // The runner's own line names the stage and gives the reason (wasm-host.mjs logFailure); Node's own says why it would not start.
     $said=$meta===null||$meta['said']===[]?'':' It said: '.implode(' | ',$meta['said']);
     // A runner its deadline ended while a migration ran says which one
     // (runner.mjs); "check bin/node" sent the operator the wrong way.
     if(!is_array($answer))$problems[]=(str_contains($said,' was stopped at the ')
-        ?'A database migration did not finish before the runner\'s deadline and was rolled back; after three such stops it is not started again (see README-RUNTIME.md, Startup diagnostics, migration_stopped).'
+        ?'A database migration did not finish before the runner\'s deadline and was rolled back; after three such stops it is not started again. Run setup with --migration-deadline=SECONDS to give it longer (see README-RUNTIME.md, Startup diagnostics, migration_stopped).'
         :'The backend runner did not answer. Check that bin/node and runner.mjs are intact.').$said;
-    elseif(($answer['status']??0)!==200)$problems[]='The application does not start: '.($answer['body']['diagnostic']??$answer['body']['code']??'unknown').' (see README-RUNTIME.md, Startup diagnostics).'.$said;
+    elseif(($answer['status']??0)!==200) {
+        $diagnostic=$answer['body']['diagnostic']??$answer['body']['code']??'unknown';
+        $problems[]='The application does not start: '.$diagnostic.' (see README-RUNTIME.md, Startup diagnostics).'
+            .($diagnostic==='migration_stopped'?' Run setup again with --migration-deadline=SECONDS, long enough for the migration, to apply it.':'').$said;
+    }
     else echo 'Application '.($answer['body']['appId']??'?').' '.($answer['body']['version']??'').' answers /api/meta.'.(isset($answer['body']['unservedRoutes'])?' Routes this host does not serve: '.count($answer['body']['unservedRoutes']).'.':'')."\n";
     return $problems;
 }

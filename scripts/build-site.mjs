@@ -34,6 +34,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { precompressTree } from './precompress-assets.mjs';
+import { dropMachineMaps } from './lib/build-paths.mjs';
 import { buildSite as buildDocs } from '../docs/scripts/build-docs.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -957,6 +958,11 @@ console.log(`
 Documentation: ${docsResult.pages} guides, ${docsResult.files} files under ${docsResult.basePath}`);
 run(['run', 'licenses:site']);
 writeBuildInfo();
+// Before the twins are made. The service workers' maps name the temporary
+// file workbox bundled each worker from and the checkout's own path in every
+// import; the apps' maps, relative to the build, stay for reading error
+// reports (lib/build-paths.mjs, and package-site.mjs refuses what is left).
+for (const map of dropMachineMaps(outDir)) console.log(`Left out ${map}: it names paths on this machine`);
 precompressAssets();
 
 console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);

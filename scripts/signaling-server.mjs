@@ -1,11 +1,18 @@
 /**
  * Local y-webrtc signaling server for P2P data sync.
  * Run with: node scripts/signaling-server.mjs
+ *
+ * It relays what any peer sends to every peer on the same topic, with no
+ * sign-in, so it listens on this machine alone (127.0.0.1). It listened on
+ * every interface, where anyone on the network could join a topic. To try
+ * it from another device, name an interface: HOST=0.0.0.0 (or one address).
+ * PORT is 4444 unless set.
  */
 import { WebSocketServer } from 'ws';
 import http from 'http';
 
 const port = process.env.PORT || 4444;
+const host = process.env.HOST || '127.0.0.1';
 const wss = new WebSocketServer({ noServer: true });
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -101,6 +108,8 @@ server.on('upgrade', (req, socket, head) => {
   });
 });
 
-server.listen(port, () => {
-  console.log(`Signaling server running on ws://localhost:${port}`);
+server.listen(port, host, () => {
+  const { address, port: bound, family } = server.address();
+  const shown = family === 'IPv6' ? `[${address}]` : address;
+  console.log(`Signaling server running on ws://${shown}:${bound}`);
 });

@@ -516,7 +516,6 @@ pub fn run() {
                     scoped_xdb::request_sync,
                     scoped_xdb::import_records,
                     scoped_xdb::reset_collection,
-                    xdb::tauri::get_db_base_dir,
                 ]
             }
             #[cfg(not(desktop))]
@@ -529,7 +528,7 @@ pub fn run() {
                     pick_softn_bundle,
                     // As on the desktop. XDB's export_database and import_database took a
                     // path from the page (write or read any file this app can), and
-                    // get_db_path told it where the databases live.
+                    // get_db_path and get_db_base_dir told it where the databases live.
                     scoped_xdb::backup_database,
                     restore_database,
                     import_installations,
@@ -555,7 +554,6 @@ pub fn run() {
                     scoped_xdb::request_sync,
                     scoped_xdb::import_records,
                     scoped_xdb::reset_collection,
-                    xdb::tauri::get_db_base_dir,
                 ]
             }
         })
@@ -808,9 +806,28 @@ mod tests {
             for command in list.lines().map(|line| line.trim().trim_end_matches(',')).filter(|line| line.starts_with("xdb::tauri::")) {
                 let name = command.trim_start_matches("xdb::tauri::");
                 assert!(
-                    ["get_network_status", "get_network_settings", "resume_sync", "recover_restore", "reconcile_network", "get_db_base_dir"].contains(&name),
+                    ["get_network_status", "get_network_settings", "resume_sync", "recover_restore", "reconcile_network"].contains(&name),
                     "{} is registered as xdb wrote it, so the page names the app",
                     command
+                );
+            }
+        }
+    }
+
+    /// The page is not told where the data lives. It reads and writes through the commands
+    /// above, which name no path; a folder's path is of use only to a bundle looking for a
+    /// way to the files, and says whose account they are in. xdb's `get_db_base_dir` was
+    /// registered, and no page asked for it.
+    #[test]
+    fn the_page_is_not_told_where_the_data_lives() {
+        let source = include_str!("lib.rs");
+        for handler in source.split("generate_handler![").skip(1).take(2) {
+            let list = &handler[..handler.find(']').unwrap()];
+            for name in ["get_db_base_dir", "get_db_path"] {
+                assert!(
+                    !list.lines().any(|line| line.trim().trim_end_matches(',').rsplit("::").next() == Some(name)),
+                    "{} is registered",
+                    name
                 );
             }
         }

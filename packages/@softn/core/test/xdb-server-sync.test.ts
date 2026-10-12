@@ -398,6 +398,33 @@ describe('a record deleted here that the server says still stands', () => {
     }
   });
 
+  it('comes back when the server sends the record as it stands before it acknowledges the delete', () => {
+    const { sync, socket, deleteOp } = deletedHere();
+    try {
+      // The host answers the delete it did not apply under the delete's own id.
+      const answer = { id: deleteOp.id as string, collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'final' }, timestamp: stamp, clientId: 'server' };
+      socket.receive({ type: 'sync_delta', ops: [answer] });
+      expect(xdb.query('notes').map((r) => r.id)).toEqual(['n1']);
+      socket.receive({ type: 'sync_ack', opIds: [deleteOp.id] });
+      expect(xdb.query('notes').map((r) => r.id)).toEqual(['n1']);
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('stays hidden for the answer to another op, and for another client\'s edit', () => {
+    const { sync, socket, deleteOp } = deletedHere();
+    try {
+      const edit = { collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'final' }, timestamp: stamp };
+      // Another device's op ids are made as this one's are, and may match.
+      socket.receive({ type: 'sync_delta', ops: [{ ...edit, id: deleteOp.id, clientId: 'c9' }] });
+      socket.receive({ type: 'sync_delta', ops: [{ ...edit, id: 'op_1_1', clientId: 'server' }] });
+      expect(xdb.query('notes')).toEqual([]);
+    } finally {
+      sync.disconnect();
+    }
+  });
+
   it('comes back from a pull once the delete was refused', () => {
     const { sync, socket, deleteOp } = deletedHere();
     try {
@@ -406,6 +433,72 @@ describe('a record deleted here that the server says still stands', () => {
       expect(xdb.query('notes').map((r) => r.id)).toEqual(['n1']);
     } finally {
       sync.disconnect();
+    }
+  });
+});
+
+/**
+ * The host weighs an edit by its stamp against the record's last change, and
+ * stamps what it writes itself (a hook's `db.update`) by its own clock. An
+ * edit stamped by a device clock behind the host's lost to any such write
+ * made in the gap: acknowledged, not applied, and sent back undone. Edits are
+ * stamped in the host's time, from the `serverTime` of its `auth_ok`.
+ */
+describe("an edit is stamped in the host's time", () => {
+  const device = '2026-03-01T12:00:00.000Z';
+  const later = (iso: string, ms: number) => new Date(Date.parse(iso) + ms).toISOString();
+  const minute = 60_000;
+  const pushed = (socket: FakeSocket) =>
+    socket.ofType('sync_push').flatMap((push) => push.ops as Array<{ data: { text: string }; timestamp: string }>);
+
+  it('when the device clock is behind, made offline or online, and sent again unchanged', () => {
+    vi.useFakeTimers({ now: new Date(device) });
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', reconnectDelay: 10 });
+    sync.connect();
+    const first = FakeSocket.made[0];
+    try {
+      xdb.create('notes', { text: 'offline' });
+      vi.advanceTimersByTime(minute);
+      first.open();
+      // The host's clock is ten minutes ahead of this device's.
+      first.receive({ type: 'auth_ok', clientId: 'c1', serverTime: later(device, 11 * minute) });
+      first.receive({ type: 'sync_state', collection: 'notes', records: [] });
+      xdb.create('notes', { text: 'online' });
+      const stamps = pushed(first).map((op) => [op.data.text, op.timestamp]);
+      expect(stamps).toEqual([
+        ['offline', later(device, 10 * minute)],
+        ['online', later(device, 11 * minute)],
+      ]);
+      // Unanswered, they go again on the next connection as they went.
+      first.drop();
+      vi.advanceTimersByTime(minute);
+      const second = FakeSocket.made[1];
+      second.open();
+      second.receive({ type: 'auth_ok', clientId: 'c2', serverTime: later(device, 32 * minute) });
+      second.receive({ type: 'sync_state', collection: 'notes', records: [] });
+      expect(pushed(second).map((op) => [op.data.text, op.timestamp])).toEqual(stamps);
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('not when the clocks are within a second, or the host gave no time it can read', () => {
+    for (const serverTime of [later(device, 400), 'soon', undefined]) {
+      vi.useFakeTimers({ now: new Date(device) });
+      FakeSocket.made = [];
+      const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
+      sync.connect();
+      const socket = FakeSocket.made[0];
+      try {
+        socket.open();
+        socket.receive({ type: 'auth_ok', clientId: 'c1', serverTime });
+        xdb.create('notes', { text: String(serverTime) });
+        socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+        expect(pushed(socket).map((op) => op.timestamp)).toEqual([device]);
+      } finally {
+        sync.disconnect();
+        vi.useRealTimers();
+      }
     }
   });
 });

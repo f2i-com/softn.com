@@ -30,6 +30,7 @@ import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync,spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const runtime=join(here,'../runtime');
@@ -175,7 +176,7 @@ test('a migration the deadline stopped is said where the operator looks: /api/me
   // setup's own check is a request: its runner is ended at the twenty seconds.
   const first=setup();
   assert.equal(first.status,1,first.stdout+first.stderr);
-  assert.match(first.stderr,/WARNING: A database migration did not finish before the runner's deadline and was rolled back; after three such stops it is not started again \(see README-RUNTIME\.md, Startup diagnostics, migration_stopped\)\. It said: softn: startup stage database_migrations: migration 001\.sql was stopped at the 20 s deadline \(1 of 3\)/);
+  assert.match(first.stderr,/WARNING: A database migration did not finish before the runner's deadline and was rolled back; after three such stops it is not started again\. Run setup with --migration-deadline=SECONDS to give it longer \(see README-RUNTIME\.md, Startup diagnostics, migration_stopped\)\. It said: softn: startup stage database_migrations: migration 001\.sql was stopped at the 20 s deadline \(1 of 3\)/);
   assert.doesNotMatch(first.stderr,/bin\/node and runner\.mjs are intact/);
   // The third stop, written as the runner writes it.
   const note=join(d.backend,'private/data/migration-stopped.json');
@@ -187,11 +188,45 @@ test('a migration the deadline stopped is said where the operator looks: /api/me
   assert.match(meta.log,/softn-host GET \/api\/meta: softn: startup stage migration_stopped: Migration 001\.sql was stopped at the deadline 3 times and is not started again until it changes or migration-stopped\.json is removed from the private data folder/);
   const told=setup();
   assert.equal(told.status,1,told.stdout+told.stderr);
-  assert.match(told.stderr,/WARNING: The application does not start: migration_stopped \(see README-RUNTIME\.md, Startup diagnostics\)\. It said: softn: startup stage migration_stopped: Migration 001\.sql was stopped at the deadline 3 times/);
+  assert.match(told.stderr,/WARNING: The application does not start: migration_stopped \(see README-RUNTIME\.md, Startup diagnostics\)\. Run setup again with --migration-deadline=SECONDS, long enough for the migration, to apply it\. It said: softn: startup stage migration_stopped: Migration 001\.sql was stopped at the deadline 3 times/);
   // Changed, it runs, and the app answers.
   writeFileSync(join(d.backend,'app/server/migrations/001.sql'),'CREATE TABLE slow(n INTEGER);');
   assert.equal(d.ask('GET','/api/ping').status,200);
   assert.ok(!existsSync(note));
+});
+
+test('setup.php --migration-deadline gives its own run longer and applies a migration stopped three times',t=>{
+  // A migration that needs longer than a request's twenty seconds is stopped
+  // on every request, and setup's check ran under the same deadline: after
+  // three stops the app was down until the migration changed. The option is
+  // passed to setup's run alone. Three stops are written here as the runner
+  // writes them, for a migration that is quick, so the test does not wait.
+  const d=deployment(t,{ownNode:true});
+  const sql='CREATE TABLE quick(n INTEGER); INSERT INTO quick VALUES (7);';
+  mkdirSync(join(d.backend,'app/server/migrations'));
+  writeFileSync(join(d.backend,'app/server/migrations/001.sql'),sql);
+  writeFileSync(join(d.backend,'app/manifest.json'),JSON.stringify({id:'http-runner',version:'1.0.0',main:'ui/main.ui',server:{entry:'server/main.logic',requires:{apiVersion:1,capabilities:['sql']},
+    database:{kind:'private-sqlite',migrations:['server/migrations/001.sql']},routes:ROUTES}}));
+  const note=join(d.backend,'private/data/migration-stopped.json');
+  writeFileSync(note,JSON.stringify({name:'server/migrations/001.sql',sha256:createHash('sha256').update(sql).digest('hex'),stops:3}));
+  const setup=(...args)=>spawnSync('php',[join(d.backend,'setup.php'),...args],{encoding:'utf8',timeout:60000});
+  // Without it, as before: refused, and told how to apply it.
+  const plain=setup();
+  assert.equal(plain.status,1,plain.stdout+plain.stderr);
+  assert.match(plain.stderr,/WARNING: The application does not start: migration_stopped/);
+  // A request is refused too; it never carries setup's deadline.
+  assert.equal(JSON.parse(d.ask('GET','/api/meta').text).diagnostic,'migration_stopped');
+  for(const wrong of ['--migration-deadline','--migration-deadline=0','--migration-deadline=86401','--migration-deadline=ten']) {
+    const refused=setup(wrong);
+    assert.equal(refused.status,1,wrong);
+    assert.match(refused.stderr,/^--migration-deadline takes a whole number of seconds from 1 to 86400, for example --migration-deadline=600\.\n$/,wrong);
+  }
+  const given=setup('--migration-deadline=600');
+  assert.equal(given.status,0,given.stdout+given.stderr);
+  assert.match(given.stdout,/Migrations may run for up to 600 s in this run's check of the app, a migration stopped three times included\./);
+  assert.match(given.stdout,/Application http-runner 1\.0\.0 answers \/api\/meta\./);
+  assert.ok(!existsSync(note),'the note of the stops is left behind');
+  assert.equal(d.ask('GET','/api/ping').status,200);
 });
 
 test('setup.php starts the runner as a request does and says why an app does not start',t=>{

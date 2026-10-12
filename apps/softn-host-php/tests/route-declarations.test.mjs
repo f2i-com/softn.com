@@ -526,6 +526,40 @@ test('only a migration the runner\'s own deadline stopped is counted: not one en
   assert.equal(JSON.parse(readFileSync(note,'utf8')).stops,1);
 });
 
+test('setup\'s run may be given longer, and applies a migration no request can, stopped three times or not',t=>{
+  // A migration that needs longer than the runner's deadline was stopped on
+  // every request and, after three stops, never started again; setup.php's
+  // own check runs under the same deadline, so the app was down for good.
+  // `php setup.php --migration-deadline=SECONDS` passes this variable to its
+  // own run of the runner and to nothing else (http.php starts the runner
+  // with an environment of its own). The request's deadline is shortened
+  // here, as in the tests above, and the migration takes a few seconds.
+  const m=manifest([{method:'GET',path:'/api/ping',handler:'ping'}]);
+  m.server.database.migrations.push('server/migrations/002.sql');
+  const b=backend(m);
+  t.after(b.close);
+  writeFileSync(join(b.root,'app/server/migrations/002.sql'),'CREATE TABLE slow(n INTEGER); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 40000000) INSERT INTO slow SELECT count(*) FROM c;');
+  const note=join(b.root,'private/data/migration-stopped.json');
+  const ask=(extra={})=>spawnSync(process.execPath,['--disable-proto=throw',join(b.root,'runner.mjs')],{
+    input:JSON.stringify({path:'/api/ping',method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}),encoding:'utf8',timeout:180000,
+    env:{...process.env,SOFTN_BACKEND_ROOT:b.root,NODE_NO_WARNINGS:'1',SOFTN_RUNNER_DEADLINE_MS:'1500',...extra}});
+  for(const attempt of [1,2,3])assert.ok(ask().stderr.includes(`was stopped at the 1.5 s deadline (${attempt} of 3)`));
+  assert.equal(JSON.parse(ask().stdout).body.diagnostic,'migration_stopped');
+  // A setup deadline that is not a whole number of milliseconds up to a day is no setup deadline.
+  for(const wrong of ['0','-5','1.5','86400001','soon'])
+    assert.equal(JSON.parse(ask({SOFTN_SETUP_DEADLINE_MS:wrong}).stdout).body.diagnostic,'migration_stopped',wrong);
+  const setup=ask({SOFTN_SETUP_DEADLINE_MS:'120000'});
+  assert.equal(setup.status,0,setup.stderr);
+  assert.deepEqual(JSON.parse(setup.stdout),{status:200,body:{ok:true,path:'/api/ping'}});
+  assert.ok(!existsSync(note),'the note of the stops is left behind');
+  // Applied once, it is applied: a request is served at once.
+  const after=ask();
+  assert.equal(after.status,0,after.stderr);
+  assert.deepEqual(JSON.parse(after.stdout),{status:200,body:{ok:true,path:'/api/ping'}});
+  const db=new DatabaseSync(join(b.root,'private/data/application.sqlite'));
+  try{assert.deepEqual({...db.prepare('SELECT n FROM slow').get()},{n:40000000});}finally{db.close();}
+});
+
 test('text that is not ASCII reaches the handler whole, however the runner is fed',t=>{
   const b=backend(manifest([{method:'POST',path:'/api/text',handler:'text',transaction:'none'}]));
   t.after(b.close);

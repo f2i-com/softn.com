@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {join,dirname,relative,isAbsolute,basename} from 'node:path';
 import {createWasmHost,validateWasmSource,logFailure} from './wasm-host.mjs';
-import {applyMigration} from './migrations.mjs';
+import {applyMigration,setupDeadlineMs} from './migrations.mjs';
 import {SQL_LIMITS} from './sql.mjs';
 import {configureRecordEvents} from './record-events.mjs';
 import {invokeWithHook} from './request-hook.mjs';
@@ -135,8 +135,11 @@ try {
     // there, and the runner is told which one is running before each starts.
     // Each stop rolled it back, and every request after started it again and
     // held the write lock until it was stopped too; after three it is not
-    // started again until its file changes or the note is removed.
+    // started again until its file changes or the note is removed, or
+    // setup.php is run with a deadline of its own for it
+    // (--migration-deadline), whose run starts it whatever the note says.
     const stoppedNote=join(data,'migration-stopped.json');
+    const operatorRun=setupDeadlineMs(process.env)!==null;
     let stopped=null;try{stopped=JSON.parse(readFileSync(stoppedNote,'utf8'));}catch{}
     for(const name of migrations) {
       const sql=readFileSync(inside(name),'utf8'),hash=createHash('sha256').update(sql).digest('hex');
@@ -147,9 +150,9 @@ try {
       // as a migration that failed or does not match the ledger, and the
       // one place that said otherwise was the log: the app stays down until
       // somebody acts, so /api/meta and setup.php have to say what on.
-      if(stopped?.name===name&&stopped.sha256===hash&&stopped.stops>=MIGRATION_ATTEMPTS) {
+      if(!operatorRun&&stopped?.name===name&&stopped.sha256===hash&&stopped.stops>=MIGRATION_ATTEMPTS) {
         startupStage='migration_stopped';
-        throw new Error(`Migration ${fileName} was stopped at the deadline ${stopped.stops} times and is not started again until it changes or migration-stopped.json is removed from the private data folder`);
+        throw new Error(`Migration ${fileName} was stopped at the deadline ${stopped.stops} times and is not started again until it changes or migration-stopped.json is removed from the private data folder, or setup.php is run with --migration-deadline=SECONDS to apply it`);
       }
       parentPort?.postMessage({migration:{name,file:fileName,sha256:hash,marker:stoppedNote,attempts:MIGRATION_ATTEMPTS}});
       applyMigration(db,sql);db.prepare('INSERT INTO _migrations VALUES(?,?,?)').run(name,hash,Math.floor(Date.now()/1000));

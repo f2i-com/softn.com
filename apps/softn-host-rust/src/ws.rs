@@ -1,4 +1,4 @@
-use crate::sync::{ServerMessage, SyncManager, SyncOp};
+use crate::sync::{Audience, ServerMessage, SyncManager, SyncOp};
 use crate::util;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
@@ -17,9 +17,16 @@ const MAX_OPS_PER_PUSH: usize = 1000;
 /// If no data is received from the client within this period, assume the
 /// connection is dead (e.g. mobile lost signal, laptop asleep) and clean up.
 const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
-/// Outbound channel capacity — large enough to absorb burst from sync_pull
-/// responses without blocking the reader task.
+/// Outbound channel capacity: room for a push's answers (one a refused op)
+/// without holding up the reader. A pull's messages are held to
+/// PULL_MESSAGES_HELD of it.
 const OUT_CHANNEL_SIZE: usize = 512;
+/// How many messages of a pull a connection holds at once: the one leaving
+/// and the next, read while it leaves. A pull was read as fast as the store
+/// gave it, into the outbound channel, so a client that asked for a large
+/// pull and stopped reading had up to OUT_CHANNEL_SIZE messages of up to a
+/// megabyte each held for it until its socket was given up on.
+const PULL_MESSAGES_HELD: usize = 2;
 /// Timeout for sending single-message responses (errors, acks, etc.).
 /// If the writer can't drain within this, the client is irrecoverably slow.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -44,6 +51,24 @@ const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const WRITER_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// How long the writer is given to finish once the reader has gone.
 const WRITER_DRAIN: std::time::Duration = SEND_TIMEOUT_BULK;
+/// How long a pull waits for one of its messages to leave before it reads
+/// the next: as long as the writer gives one message, and a little more.
+/// A writer that gives up drops what it holds, and the wait ends then.
+const PULL_PLACE_WAIT: std::time::Duration = WRITER_SEND_TIMEOUT.saturating_add(SEND_TIMEOUT);
+
+/// A message for the writer. A pull's message carries its place among the
+/// pull's PULL_MESSAGES_HELD, given back once the message has left (or the
+/// writer has given up and dropped it).
+struct Outbound {
+    message: ServerMessage,
+    place: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl From<ServerMessage> for Outbound {
+    fn from(message: ServerMessage) -> Self {
+        Outbound { message, place: None }
+    }
+}
 
 /// The sink, with a deadline on everything sent through it.
 ///
@@ -110,20 +135,20 @@ async fn finish_writer(mut writer: tokio::task::JoinHandle<()>, wait: std::time:
 /// via a dedicated watch channel, guaranteeing the reason is delivered even
 /// when the mpsc channel is completely full.
 async fn send_response(
-    out_tx: &mpsc::Sender<ServerMessage>,
+    out_tx: &mpsc::Sender<Outbound>,
     close_reason_tx: &watch::Sender<Option<String>>,
     msg: ServerMessage,
 ) -> bool {
-    send_response_with_timeout(out_tx, close_reason_tx, msg, SEND_TIMEOUT).await
+    send_response_with_timeout(out_tx, close_reason_tx, msg.into(), SEND_TIMEOUT).await
 }
 
 /// Like `send_response` but with a caller-specified timeout.
 /// Used for bulk transfers (sync_pull/sync_push) where slow mobile clients
 /// need more time to drain large payloads without being disconnected.
 async fn send_response_with_timeout(
-    out_tx: &mpsc::Sender<ServerMessage>,
+    out_tx: &mpsc::Sender<Outbound>,
     close_reason_tx: &watch::Sender<Option<String>>,
-    msg: ServerMessage,
+    msg: Outbound,
     timeout: std::time::Duration,
 ) -> bool {
     match tokio::time::timeout(timeout, out_tx.send(msg)).await {
@@ -177,7 +202,7 @@ pub async fn handle_ws(
     // The writer task owns ws_tx and drains both broadcast messages and
     // outbound responses from the reader, so broadcast delivery is never
     // blocked by slow sync operations.
-    let (out_tx, out_rx) = mpsc::channel::<ServerMessage>(OUT_CHANNEL_SIZE);
+    let (out_tx, out_rx) = mpsc::channel::<Outbound>(OUT_CHANNEL_SIZE);
     let broadcast_rx = sync.subscribe();
 
     // Dedicated watch channel for terminal close reasons. When send_response
@@ -204,8 +229,8 @@ pub async fn handle_ws(
 /// before the process exits.
 async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
     sink: S,
-    mut out_rx: mpsc::Receiver<ServerMessage>,
-    mut broadcast_rx: broadcast::Receiver<(String, ServerMessage)>,
+    mut out_rx: mpsc::Receiver<Outbound>,
+    mut broadcast_rx: broadcast::Receiver<(Audience, Arc<ServerMessage>)>,
     cid: String,
     mut shutdown_rx: watch::Receiver<bool>,
     close_reason_rx: watch::Receiver<Option<String>>,
@@ -221,8 +246,9 @@ async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
             // Messages from the reader (sync responses, errors, etc.)
             msg = out_rx.recv() => {
                 match msg {
-                    Some(server_msg) => {
-                        if let Ok(json) = serde_json::to_string(&server_msg) {
+                    // A pull's place is given back as the message leaves.
+                    Some(Outbound { message, place: _place }) => {
+                        if let Ok(json) = serde_json::to_string(&message) {
                             if ws_tx.send(Message::Text(json.into())).await.is_err() {
                                 break;
                             }
@@ -245,13 +271,14 @@ async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
                     }
                 }
             }
-            // Broadcast from other clients' sync_push
+            // The sync stream: other clients' pushes, and what the store
+            // said of this client's own (sync.rs Audience).
             result = broadcast_rx.recv() => {
                 match result {
-                    Ok((sender_id, msg)) => {
-                        // Don't echo back to sender
-                        if sender_id != cid {
-                            if let Ok(json) = serde_json::to_string(&msg) {
+                    Ok((audience, msg)) => {
+                        // A push is not echoed back to its sender.
+                        if audience.reaches(&cid) {
+                            if let Ok(json) = serde_json::to_string(&*msg) {
                                 if ws_tx.send(Message::Text(json.into())).await.is_err() {
                                     break;
                                 }
@@ -316,9 +343,11 @@ async fn reader_task(
     ws_rx: &mut futures_util::stream::SplitStream<WebSocket>,
     sync: &Arc<SyncManager>,
     cid: &str,
-    out_tx: &mpsc::Sender<ServerMessage>,
+    out_tx: &mpsc::Sender<Outbound>,
     close_reason_tx: &watch::Sender<Option<String>>,
 ) {
+    // The places a pull's messages take in this connection (PULL_MESSAGES_HELD).
+    let pull_places = Arc::new(tokio::sync::Semaphore::new(PULL_MESSAGES_HELD));
     loop {
         // Idle timeout: if no data arrives within IDLE_TIMEOUT, assume the
         // connection is dead and break to trigger cleanup.
@@ -392,6 +421,18 @@ async fn reader_task(
                         // collection it names.
                         let mut first = true;
                         loop {
+                            // The next message is read once it has a place,
+                            // which is once the message two before it has
+                            // left: a pull goes as fast as its client takes
+                            // it, and holds no sync permit while it waits.
+                            let place = match tokio::time::timeout(PULL_PLACE_WAIT, pull_places.clone().acquire_owned()).await {
+                                Ok(Ok(place)) => place,
+                                _ => {
+                                    tracing::warn!("A sync pull's messages were not taken for {}s — dropping the connection", PULL_PLACE_WAIT.as_secs());
+                                    let _ = close_reason_tx.send(Some("Connection too slow — disconnecting to force re-sync".into()));
+                                    return;
+                                }
+                            };
                             // A sync permit bounds concurrent blocking tasks.
                             // Without this, a flood of slow sync_pull requests could exhaust
                             // Tokio's 512-thread spawn_blocking pool, starving all other I/O.
@@ -446,7 +487,7 @@ async fn reader_task(
                                 }
                             };
                             let Some(message) = message else { break };
-                            if !send_response_with_timeout(out_tx, close_reason_tx, message, SEND_TIMEOUT_BULK).await {
+                            if !send_response_with_timeout(out_tx, close_reason_tx, Outbound { message, place: Some(place) }, SEND_TIMEOUT_BULK).await {
                                 return;
                             }
                         }
@@ -520,7 +561,7 @@ async fn reader_task(
                             }
                         };
                         for resp in responses {
-                            if !send_response_with_timeout(out_tx, close_reason_tx, resp, SEND_TIMEOUT_BULK).await {
+                            if !send_response_with_timeout(out_tx, close_reason_tx, resp.into(), SEND_TIMEOUT_BULK).await {
                                 return;
                             }
                         }
@@ -549,8 +590,11 @@ async fn reader_task(
     }
 }
 
+/// The server's time, as `auth_ok` gives it: to the millisecond, since a
+/// client stamps its edits in it (@softn/core xdb-server-sync.ts). Whole
+/// seconds left a client up to a second behind the server.
 fn iso_now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[cfg(test)]
@@ -586,20 +630,95 @@ mod writer_tests {
     #[tokio::test]
     async fn the_writer_gives_up_on_a_peer_that_takes_nothing() {
         let closes = Arc::new(AtomicUsize::new(0));
-        let (out_tx, out_rx) = mpsc::channel::<ServerMessage>(4);
-        let (_broadcast_tx, broadcast_rx) = broadcast::channel::<(String, ServerMessage)>(4);
+        let (out_tx, out_rx) = mpsc::channel::<Outbound>(4);
+        let (_broadcast_tx, broadcast_rx) = broadcast::channel::<(Audience, Arc<ServerMessage>)>(4);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let (_reason_tx, reason_rx) = watch::channel::<Option<String>>(None);
         let writer = tokio::spawn(writer_task(
             Stalled(closes.clone()), out_rx, broadcast_rx, "peer".into(), shutdown_rx, reason_rx,
             std::time::Duration::from_millis(100),
         ));
-        out_tx.send(ServerMessage::Error { message: "one".into() }).await.unwrap();
-        out_tx.send(ServerMessage::Error { message: "two".into() }).await.unwrap();
+        out_tx.send(ServerMessage::Error { message: "one".into() }.into()).await.unwrap();
+        out_tx.send(ServerMessage::Error { message: "two".into() }.into()).await.unwrap();
         let ended = tokio::time::timeout(std::time::Duration::from_secs(3), writer).await;
         assert!(ended.is_ok(), "the writer was still inside a send its peer will never take");
         // One send ran out of time. The goodbye after it was not waited for as well.
         assert_eq!(closes.load(Ordering::Relaxed), 0);
+    }
+
+    /// A peer that takes everything, and keeps the text of each message.
+    struct Recording(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl futures_util::Sink<Message> for Recording {
+        type Error = std::io::Error;
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, message: Message) -> Result<(), Self::Error> {
+            if let Message::Text(text) = message {
+                self.0.lock().unwrap().push(text.to_string());
+            }
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Each connection is sent what the sync stream holds for it: other
+    /// clients' pushes, never its own, and what the store said of its own
+    /// pushes, which no other connection is sent.
+    #[tokio::test]
+    async fn a_connection_is_sent_what_the_stream_holds_for_it() {
+        for (cid, expected) in [("a", vec!["for a", "from b"]), ("b", vec!["from a"])] {
+            let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (out_tx, out_rx) = mpsc::channel::<Outbound>(4);
+            let (stream, broadcast_rx) = broadcast::channel::<(Audience, Arc<ServerMessage>)>(8);
+            let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+            let (_reason_tx, reason_rx) = watch::channel::<Option<String>>(None);
+            let writer = tokio::spawn(writer_task(
+                Recording(sent.clone()), out_rx, broadcast_rx, cid.into(), shutdown_rx, reason_rx,
+                std::time::Duration::from_secs(5),
+            ));
+            for (audience, text) in [
+                (Audience::Others("a".into()), "from a"),
+                (Audience::Only("a".into()), "for a"),
+                (Audience::Others("b".into()), "from b"),
+            ] {
+                stream.send((audience, Arc::new(ServerMessage::Error { message: text.into() }))).unwrap();
+            }
+            // The last item is for both: once it is through, the rest are too.
+            stream.send((Audience::Others("c".into()), Arc::new(ServerMessage::Error { message: "end".into() }))).unwrap();
+            let waited = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while !sent.lock().unwrap().iter().any(|text| text.contains("\"end\"")) {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            }).await;
+            assert!(waited.is_ok(), "{cid} was never sent the last item");
+            drop(out_tx);
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), writer).await;
+            let got: Vec<String> = sent.lock().unwrap().iter()
+                .map(|text| serde_json::from_str::<serde_json::Value>(text).unwrap()["message"].as_str().unwrap().to_string())
+                .filter(|text| text != "end")
+                .collect();
+            assert_eq!(got, expected, "{cid}");
+        }
+    }
+
+    #[test]
+    fn the_server_time_is_given_to_the_millisecond() {
+        let now = iso_now();
+        assert!(chrono::DateTime::parse_from_rfc3339(&now).is_ok(), "{now}");
+        assert!(to_the_millisecond(&now), "{now}");
+    }
+
+    /// `2026-10-12T08:35:38.523Z`: three digits of fraction, then `Z`.
+    fn to_the_millisecond(time: &str) -> bool {
+        let Some((_, fraction)) = time.split_once('.') else { return false };
+        fraction.len() == 4 && fraction.ends_with('Z') && fraction[..3].bytes().all(|b| b.is_ascii_digit())
     }
 
     /// Once the reader has gone the writer is waited for, not waited on.

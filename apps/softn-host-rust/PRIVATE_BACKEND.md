@@ -566,10 +566,16 @@ past it is refused (`sync_reject`, "Record too large after this update"). A
 few updates of new keys used to grow one record without end. A record already
 past the limit can still be made smaller.
 
-A pull is read a message at a time, each once the one before has gone, so the
-server holds one message of it and not every collection it names; the
-messages are the ones it always was. A pull under way waits for a sync permit
-between messages rather than stopping part-way.
+A pull is read a message at a time, and a connection holds two of its
+messages at most: the one leaving and the next, which is read once the one
+before that has left. So a pull goes as fast as its client takes it, and the
+server holds two messages of it, not every collection it names; the messages
+are the ones it always was. It used to read on as fast as the store gave
+them, into the connection's queue: a client that asked for a large pull and
+stopped reading had up to 512 messages of up to a megabyte held for it until
+its socket was given up on. A pull under way waits for a sync permit between
+messages rather than stopping part-way, and holds none while it waits for its
+client.
 Each message is read by the index on (collection,
 server_received_at, id), from the record the one before ended on. The full
 pull's query ordered by `COALESCE(server_received_at, '')`, which no index
@@ -586,6 +592,23 @@ An update for a record that has been deleted is refused (`sync_reject`), as
 it always was, and its pusher is also sent the record as it stands, a
 `delete` in a `sync_delta`. A full pull sends no deleted records, so that
 device went on showing a record that was deleted everywhere else.
+
+An update or a delete is weighed by when it was made (its op's timestamp):
+one made before the record's last change is acknowledged and not applied,
+and its pusher is sent the record as it stands in a `sync_delta` whose op
+comes from `server` under the id of the op it answers (for a push that edited
+a record and then deleted it, the delete's). That record, and the
+acknowledgement just before it, travel in the same stream as the other
+clients' edits, in the order the store wrote them. They went with the push's
+answer, on the connection's own queue, and an edit stored after the record
+was read could reach the pusher first and then be undone there by the older
+record. A write the server makes itself (a hook's `db.update`) is stamped by
+the server's clock, so a device whose clock was behind lost the edits it made
+just after one. `auth_ok`'s `serverTime` is now given to the millisecond, and
+the runtime's client stamps its edits in the server's time from it; a client
+from before that stamps them by its own clock. `forceServerTimestamps` stamps
+every edit by the server's clock instead, at the cost of an offline edit's
+own time.
 
 A push is one transaction and one saved CRDT document per collection it
 touches. The document is as large as the collection, and it used to be

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 
 function leb(value) {
   const bytes=[];
@@ -12,54 +12,173 @@ function leb(value) {
   return Buffer.from(bytes);
 }
 
-test('hosting ZIP deflates valid raw WASM, preserves compressed twins and restores exact bytes',()=>{
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'softn-zip-test-'));
-  try {
-    const scripts=path.join(root,'scripts'),dist=path.join(root,'dist');
-    fs.mkdirSync(scripts);fs.mkdirSync(path.join(dist,'data'),{recursive:true});
-    fs.mkdirSync(path.join(scripts,'lib'));
-    for(const name of ['package-site.mjs','release-packages.mjs','release-explainers.mjs','lib/archive.mjs'])fs.copyFileSync(new URL('./'+name,import.meta.url),path.join(scripts,name));
-    const payload=Buffer.concat([Buffer.from([7]),Buffer.from('fixture'),Buffer.alloc(65536)]);
-    const wasm=Buffer.concat([Buffer.from([0,97,115,109,1,0,0,0,0]),leb(payload.length),payload]);
-    assert.doesNotThrow(()=>new WebAssembly.Module(wasm));
-    const gz=zlib.gzipSync(wasm);
-    const files={
-      'index.html':Buffer.from('<!doctype html><title>Test</title>'),
-      '.htaccess':Buffer.from('Options -Indexes\n'),
-      'data/.htaccess':Buffer.from('Require all denied\n'),
-      'data/README.txt':Buffer.from('Private runtime state.\n'),
-      'BUILD-INFO.json':Buffer.from(JSON.stringify({builtAt:'2026-01-01T00:00:00Z',softn:{revision:'0'.repeat(40),dirty:false},zipp:{version:'0.0.15'}})),
-      'engine.wasm':wasm,
-      'engine.wasm.gz':gz,
-    };
-    for(const [name,bytes] of Object.entries(files))fs.writeFileSync(path.join(dist,name),bytes);
-    const out=path.join(root,'release');
-    execFileSync(process.execPath,[path.join(scripts,'package-site.mjs'),'--tag','v0.0.0-test','--out',out],{stdio:'pipe'});
-    // The packager writes the explainer into dist/ before packaging; the archive must carry it too.
-    files['README.md']=fs.readFileSync(path.join(dist,'README.md'));
-    assert.ok(files['README.md'].toString().startsWith('# Start here: The complete softn.com website'));
-    const zip=fs.readFileSync(path.join(out,fs.readdirSync(out).find(name=>name.endsWith('.zip'))));
-    const entries=new Map();let offset=0;
-    while(zip.readUInt32LE(offset)===0x04034b50){
-      const method=zip.readUInt16LE(offset+8),size=zip.readUInt32LE(offset+18);
-      const length=zip.readUInt16LE(offset+26),extra=zip.readUInt16LE(offset+28);
-      const name=zip.toString('utf8',offset+30,offset+30+length);
-      const start=offset+30+length+extra,packed=zip.subarray(start,start+size);
-      const bytes=method===8?zlib.inflateRawSync(packed):packed;
-      assert.deepEqual(bytes,files[name],name);
-      entries.set(name,{method,size});offset=start+size;
-    }
-    assert.equal(entries.size,Object.keys(files).length);
-    assert.equal(entries.get('engine.wasm').method,8);
-    assert.ok(entries.get('engine.wasm').size<wasm.length/10);
-    assert.equal(entries.get('engine.wasm.gz').method,0);
-    assert.equal(entries.get('engine.wasm.gz').size,gz.length);
-  } finally {
-    const checked=fs.realpathSync(root);
-    assert.equal(path.dirname(checked),fs.realpathSync(os.tmpdir()));
-    assert.ok(path.basename(checked).startsWith('softn-zip-test-'));
-    fs.rmSync(checked,{recursive:true,force:true});
+/**
+ * A checkout of its own for the packagers to run in: the scripts and what
+ * they import under scripts/, a git repository with one commit (the HEAD a
+ * build must come from), a package.json, and dist/ as build:site leaves it,
+ * with BUILD-INFO.json naming that commit. Not this checkout: the packagers
+ * look at the checkout they are in.
+ */
+function siteCheckout(t,files={}){
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'softn-zip-test-')));
+  t.after(()=>{
+    assert.equal(path.dirname(root),fs.realpathSync(os.tmpdir()));
+    assert.ok(path.basename(root).startsWith('softn-zip-test-'));
+    fs.rmSync(root,{recursive:true,force:true});
+  });
+  const scripts=path.join(root,'scripts'),dist=path.join(root,'dist');
+  fs.mkdirSync(path.join(scripts,'lib'),{recursive:true});
+  for(const name of ['package-site.mjs','package-docs.mjs','release-packages.mjs','release-explainers.mjs'])fs.copyFileSync(new URL('./'+name,import.meta.url),path.join(scripts,name));
+  for(const name of fs.readdirSync(new URL('./lib/',import.meta.url)))
+    if(name.endsWith('.mjs')&&!name.endsWith('.test.mjs'))fs.copyFileSync(new URL('./lib/'+name,import.meta.url),path.join(scripts,'lib',name));
+  fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({version:'0.0.0'}));
+  const git=(...args)=>execFileSync('git',['-c','user.name=fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false',...args],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+  git('init','-q');
+  git('commit','-q','--allow-empty','-m','fixture');
+  const head=git('rev-parse','HEAD');
+  const buildInfo=(softn)=>Buffer.from(JSON.stringify({builtAt:'2026-01-01T00:00:00Z',softn,zipp:{version:'0.0.15'}}));
+  const all={
+    'index.html':Buffer.from('<!doctype html><title>Test</title>'),
+    '.htaccess':Buffer.from('Options -Indexes\n'),
+    'data/.htaccess':Buffer.from('Require all denied\n'),
+    'data/README.txt':Buffer.from('Private runtime state.\n'),
+    'BUILD-INFO.json':buildInfo({revision:head,dirty:false}),
+    ...files,
+  };
+  for(const [name,bytes] of Object.entries(all)){
+    fs.mkdirSync(path.dirname(path.join(dist,name)),{recursive:true});
+    fs.writeFileSync(path.join(dist,name),bytes);
   }
+  const out=path.join(root,'release');
+  const run=(script,args)=>spawnSync(process.execPath,[path.join(scripts,script),...args],{cwd:root,encoding:'utf8'});
+  return {
+    root,dist,out,head,files:all,git,
+    built:(softn)=>fs.writeFileSync(path.join(dist,'BUILD-INFO.json'),buildInfo(softn)),
+    packSite:(...args)=>run('package-site.mjs',['--tag','v0.0.0-test','--out',out,...args]),
+    packDocs:(...args)=>run('package-docs.mjs',['--out',out,...args]),
+    archives:()=>fs.existsSync(out)?fs.readdirSync(out).filter(name=>name.endsWith('.zip')):[],
+  };
+}
+
+test('hosting ZIP deflates valid raw WASM, preserves compressed twins and restores exact bytes',t=>{
+  const payload=Buffer.concat([Buffer.from([7]),Buffer.from('fixture'),Buffer.alloc(65536)]);
+  const wasm=Buffer.concat([Buffer.from([0,97,115,109,1,0,0,0,0]),leb(payload.length),payload]);
+  assert.doesNotThrow(()=>new WebAssembly.Module(wasm));
+  const gz=zlib.gzipSync(wasm);
+  const site=siteCheckout(t,{
+    'engine.wasm':wasm,
+    'engine.wasm.gz':gz,
+    // A source map whose sources are where the build put them, relative: shipped.
+    'web/assets/index.js':Buffer.from('console.log(1);\n//# sourceMappingURL=index.js.map\n'),
+    'web/assets/index.js.map':Buffer.from(JSON.stringify({version:3,file:'index.js',sources:['../../../../packages/x/src/index.ts'],sourcesContent:['console.log(1)'],mappings:'AAAA'})),
+  });
+  const files={...site.files};
+  const packed=site.packSite();
+  assert.equal(packed.status,0,packed.stderr);
+  // The packager writes the explainer into dist/ before packaging; the archive must carry it too.
+  files['README.md']=fs.readFileSync(path.join(site.dist,'README.md'));
+  assert.ok(files['README.md'].toString().startsWith('# Start here: The complete softn.com website'));
+  const zip=fs.readFileSync(path.join(site.out,site.archives()[0]));
+  const entries=new Map();let offset=0;
+  while(zip.readUInt32LE(offset)===0x04034b50){
+    const method=zip.readUInt16LE(offset+8),size=zip.readUInt32LE(offset+18);
+    const length=zip.readUInt16LE(offset+26),extra=zip.readUInt16LE(offset+28);
+    const name=zip.toString('utf8',offset+30,offset+30+length);
+    const start=offset+30+length+extra,packed=zip.subarray(start,start+size);
+    const bytes=method===8?zlib.inflateRawSync(packed):packed;
+    assert.deepEqual(bytes,files[name],name);
+    entries.set(name,{method,size});offset=start+size;
+  }
+  assert.equal(entries.size,Object.keys(files).length);
+  assert.equal(entries.get('engine.wasm').method,8);
+  assert.ok(entries.get('engine.wasm').size<wasm.length/10);
+  assert.equal(entries.get('engine.wasm.gz').method,0);
+  assert.equal(entries.get('engine.wasm.gz').size,gz.length);
+});
+
+/**
+ * An archive is named for a release, and BUILD-INFO.json inside it says
+ * which commit was built: the two must be one. dist/ is not rebuilt by the
+ * packager, and one left from an earlier build (the dist/ beside this test
+ * when it was written was built from another commit, from a dirty tree) was
+ * packaged under whatever tag it was given.
+ */
+test('the site is not packaged from a dist built from another commit than HEAD',t=>{
+  const site=siteCheckout(t);
+  site.git('commit','-q','--allow-empty','-m','later');
+  const stale=site.packSite();
+  assert.equal(stale.status,1,stale.stdout);
+  assert.match(stale.stderr,new RegExp(`dist/ was built from ${site.head.slice(0,10)}, not from HEAD \\(${site.git('rev-parse','HEAD').slice(0,10)}\\)`));
+  assert.deepEqual(site.archives(),[]);
+  // Rebuilt from HEAD it is packaged; one with no revision at all is not.
+  site.built({revision:site.git('rev-parse','HEAD'),dirty:false});
+  assert.equal(site.packSite().status,0);
+  site.built({dirty:false});
+  const unnamed=site.packSite();
+  assert.equal(unnamed.status,1);
+  assert.match(unnamed.stderr,/BUILD-INFO\.json names no SoftN revision/);
+});
+
+/**
+ * Source maps ship, for reading an error report against the build that
+ * made it, but the build machine's own paths do not: the service workers'
+ * maps named the temporary file workbox wrote (C:/Users/<name>/AppData/...)
+ * and carried the checkout's path in every import. build-site.mjs leaves
+ * such maps out; the packager refuses a dist that still has one, or any
+ * file that names the checkout it was built in.
+ */
+test('the site is not packaged with a source map or a file that names a path on the build machine',t=>{
+  for(const [name,body,said] of [
+    ['web/sw.js.map',JSON.stringify({version:3,file:'sw.js',sources:['C:/Users/someone/AppData/Local/Temp/0123abcd/sw.js'],mappings:'AAAA'}),/web\/sw\.js\.map names a path on the build machine \(C:\/Users\/someone\/AppData\/Local\/Temp\/0123abcd\/sw\.js\)/],
+    ['web/sw.js.map',JSON.stringify({version:3,file:'sw.js',sources:['/tmp/0123abcd/sw.js'],mappings:'AAAA'}),/web\/sw\.js\.map names a path on the build machine \(\/tmp\/0123abcd\/sw\.js\)/],
+    ['web/a.js.map',JSON.stringify({version:3,file:'a.js',sourceRoot:'file:///home/runner/work/',sources:['a.ts'],mappings:'AAAA'}),/web\/a\.js\.map names a path on the build machine/],
+  ]){
+    const site=siteCheckout(t,{[name]:Buffer.from(body)});
+    const refused=site.packSite();
+    assert.equal(refused.status,1,name+' '+refused.stdout);
+    assert.match(refused.stderr,said);
+    assert.deepEqual(site.archives(),[]);
+  }
+  // The checkout's own path, in any file the site serves, however it is spelt there.
+  const BACKSLASH=String.fromCharCode(92);
+  const forward=p=>p.split(BACKSLASH).join('/'),back=p=>p.split('/').join(BACKSLASH);
+  for(const [name,text] of [
+    // In a map's JSON: forward slashes, and backslashes as JSON writes them (doubled).
+    ['app.js.map',root=>JSON.stringify({version:3,sources:['src/app.ts'],sourcesContent:[`import x from '${forward(root)}/node_modules/x/index.mjs';`],mappings:'AAAA'})],
+    ['app.js.map',root=>JSON.stringify({version:3,sources:['src/app.ts'],sourcesContent:[`import x from '${back(root+'/node_modules/x/index.mjs')}';`],mappings:'AAAA'})],
+    // In a script, as Windows writes it.
+    ['web/app.js',root=>`// built in ${back(root)}\n`],
+  ]){
+    const site=siteCheckout(t);
+    fs.mkdirSync(path.dirname(path.join(site.dist,name)),{recursive:true});
+    fs.writeFileSync(path.join(site.dist,name),text(site.root));
+    const refused=site.packSite();
+    assert.equal(refused.status,1,name+' '+refused.stdout);
+    assert.ok(refused.stderr.includes(`${name} names the checkout this was built in`),refused.stderr);
+    assert.deepEqual(site.archives(),[]);
+  }
+});
+
+/**
+ * The documentation alone is named for the commit it was built from, and
+ * is only packaged from a dist built from HEAD: it was named for HEAD,
+ * whatever dist/docs/ had been built from.
+ */
+test('the documentation is packaged only from a dist built from HEAD, and named for it',t=>{
+  const site=siteCheckout(t,{'docs/index.html':Buffer.from('<!doctype html><title>Docs</title>')});
+  const packed=site.packDocs();
+  assert.equal(packed.status,0,packed.stderr);
+  assert.deepEqual(site.archives(),[`softn-docs-v0.0.0-${site.head.slice(0,10)}.zip`]);
+  fs.rmSync(site.out,{recursive:true});
+  site.git('commit','-q','--allow-empty','-m','later');
+  const stale=site.packDocs();
+  assert.equal(stale.status,1,stale.stdout);
+  assert.match(stale.stderr,/dist\/ was built from [0-9a-f]{10}, not from HEAD/);
+  assert.deepEqual(site.archives(),[]);
+  // Built from HEAD with uncommitted changes: refused unless asked for.
+  site.built({revision:site.git('rev-parse','HEAD'),dirty:true});
+  assert.equal(site.packDocs().status,1);
+  assert.equal(site.packDocs('--allow-dirty').status,0);
 });
 
 /**

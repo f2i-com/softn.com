@@ -13,6 +13,10 @@
  * The plain-language README.md from scripts/release-packages.mjs is written
  * into dist/ first, so it is the first thing a person sees after unzipping.
  *
+ * dist/ is packaged only when BUILD-INFO.json says it was built from HEAD
+ * (from a clean tree, unless --allow-dirty), and when nothing in it names a
+ * path on the build machine (lib/build-info.mjs, lib/build-paths.mjs).
+ *
  * The writing itself — store the already-compressed files, deflate the rest,
  * refuse zip64, read the finished file back and compare every entry byte for
  * byte, write the `.sha256` sidecar — is scripts/lib/archive.mjs, shared with
@@ -27,6 +31,8 @@ import { fileURLToPath } from 'node:url';
 import { engineLabel } from './release-packages.mjs';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 import { writeArchive } from './lib/archive.mjs';
+import { buildInfoProblem, headRevision } from './lib/build-info.mjs';
+import { buildMachinePaths } from './lib/build-paths.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = path.join(root, 'dist');
@@ -71,11 +77,16 @@ if (!fs.existsSync(path.join(distDir, 'index.html')) || !fs.existsSync(infoPath)
   fail('dist/ is missing or incomplete. Run `npm run build:site` first.');
 }
 const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
-if (info.softn?.dirty && !allowDirty) {
-  fail(
-    'BUILD-INFO.json says the tree was dirty when dist/ was built. A release is built from a clean checkout; pass --allow-dirty for a local trial.'
-  );
+// Built from this checkout's HEAD, which is what the tag names: a dist/
+// left from an earlier build was packaged under whatever tag it was given.
+let head;
+try {
+  head = headRevision(root);
+} catch {
+  fail('This is not a git checkout, so what dist/ was built from cannot be checked against it.');
 }
+const stale = buildInfoProblem(info, head, { allowDirty });
+if (stale) fail(stale);
 if (!fs.existsSync(path.join(distDir, '.htaccess'))) {
   fail('dist/.htaccess is missing; the archive would deploy without its server rules.');
 }
@@ -111,6 +122,12 @@ for (const required of DATA_KEEP) {
 }
 for (const name of files) {
   if (/\.sqlite$/.test(name) || name === 'data/config.json' || name === 'data/seeded') fail(`${name}: the directory's state must not ship`);
+}
+// Source maps ship, for reading an error report against this build; the
+// build machine's paths do not (lib/build-paths.mjs).
+const machine = buildMachinePaths(distDir, files, root);
+if (machine.length > 0) {
+  fail(`${machine.slice(0, 10).join('; ')}${machine.length > 10 ? `; and ${machine.length - 10} more` : ''}. Build the site again (npm run build:site), which leaves such maps out.`);
 }
 
 // ---------------------------------------------------------------------------

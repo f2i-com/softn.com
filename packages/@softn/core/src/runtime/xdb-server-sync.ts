@@ -115,6 +115,19 @@ function retryAfterMs(response: Response): number {
     : 0;
 }
 
+/**
+ * How far a host's clock is ahead of this device's, in milliseconds, from
+ * the `serverTime` its `auth_ok` gave and this device's time when it came.
+ * Under a second counts as none: the network's delay is part of any
+ * difference, and older hosts give the time in whole seconds.
+ */
+function clockOffset(serverTime: unknown, now: number): number {
+  const server = typeof serverTime === 'string' ? Date.parse(serverTime) : NaN;
+  if (!Number.isFinite(server)) return 0;
+  const offset = server - now;
+  return Math.abs(offset) < 1000 ? 0 : offset;
+}
+
 interface ServerRecord {
   id: string;
   collection: string;
@@ -164,6 +177,19 @@ export class XDBServerSync {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private retryAttempts = 0;
   private opCounter = 0;
+  /**
+   * How far the host's clock is ahead of this device's, in milliseconds, as
+   * its `auth_ok` said (`serverTime`); 0 until one has.
+   */
+  private clockOffset = 0;
+  /**
+   * When each op not yet sent was made, by this device's clock. It is
+   * stamped in the host's time when it is first sent: the host weighs an
+   * edit by its stamp against the record's last change, and stamps what it
+   * writes itself (a hook's `db.update`) by its own clock, so an edit from
+   * a device whose clock was behind lost to any such write made in the gap.
+   */
+  private madeAt = new Map<string, number>();
   private connected = false;
   private destroyed = false;
   private xdbUnsubscribe: (() => void) | null = null;
@@ -391,6 +417,7 @@ export class XDBServerSync {
       case 'auth_ok':
         this.clientId = msg.clientId;
         this.serverTime = msg.serverTime;
+        this.clockOffset = clockOffset(msg.serverTime, Date.now());
         this.connected = true;
         this.reconnectAttempts = 0;
         this.listeners.connect.forEach((fn) => fn());
@@ -517,8 +544,14 @@ export class XDBServerSync {
       return true;
     };
     for (const op of Array.from(this.pendingOps.values())) {
-      // Stamped now: an op queued before auth knew no client id.
+      // Stamped now: an op queued before auth knew no client id, nor the
+      // host's time. An op sent before keeps the time it was sent with.
       op.clientId = this.clientId ?? op.clientId;
+      const made = this.madeAt.get(op.id);
+      if (made !== undefined) {
+        op.timestamp = new Date(made + this.clockOffset).toISOString();
+        this.madeAt.delete(op.id);
+      }
       const size = JSON.stringify(op).length + 1;
       if (batch.length > 0 && (batch.length >= MAX_OPS_PER_PUSH || bytes + size > MAX_PUSH_BYTES)) {
         if (!sendBatch()) return;
@@ -533,13 +566,14 @@ export class XDBServerSync {
    * The records this device has deleted and the server has not yet answered
    * for, as `collection` and id. A record among them stays deleted whatever
    * the server sends for it; once the server has answered, what it sends is
-   * the record (see `XDBService.upsertFromServer`).
+   * the record (see `XDBService.upsertFromServer`). `answered` are ops the
+   * server is answering now with their records as they stand.
    */
-  private unansweredDeletes(): Set<string> {
+  private unansweredDeletes(answered: ReadonlySet<string> = new Set()): Set<string> {
     const deleting = new Set<string>();
     for (const ops of [this.pendingOps, this.inflightOps]) {
       for (const op of ops.values()) {
-        if (op.operation === 'delete') deleting.add(`${op.collection}\u0000${op.recordId}`);
+        if (op.operation === 'delete' && !answered.has(op.id)) deleting.add(`${op.collection}\u0000${op.recordId}`);
       }
     }
     return deleting;
@@ -576,7 +610,13 @@ export class XDBServerSync {
 
   /** Apply live deltas from other clients. */
   private handleSyncDelta(ops: SyncOp[]): void {
-    const deleting = this.unansweredDeletes();
+    // The host sends this device the record as it stands for an op of its
+    // own that it did not apply, from "server" and under that op's id. A
+    // delete answered so is answered, whether its acknowledgement comes
+    // before the record or after it: kept hidden until the acknowledgement,
+    // a record sent first stayed hidden until the next full pull.
+    const answered = new Set(ops.filter((op) => op.clientId === 'server').map((op) => op.id));
+    const deleting = this.unansweredDeletes(answered);
     for (const op of ops) {
       const deletedHere = deleting.has(`${op.collection}\u0000${op.recordId}`);
       switch (op.operation) {
@@ -635,14 +675,16 @@ export class XDBServerSync {
       // Don't re-push mutations that came from the server
       if (event.source === 'server') return;
 
-      const opId = `op_${Date.now()}_${++this.opCounter}`;
+      const made = Date.now();
+      const opId = `op_${made}_${++this.opCounter}`;
       const op: SyncOp = {
         id: opId,
         collection: event.collection,
         operation: event.type as 'create' | 'update' | 'delete',
         recordId: event.recordId,
         data: event.data,
-        timestamp: new Date().toISOString(),
+        // In the host's time once it is sent (flushPendingOps).
+        timestamp: new Date(made).toISOString(),
         clientId: this.clientId ?? 'unknown',
       };
 
@@ -650,6 +692,7 @@ export class XDBServerSync {
       // come first, so a mutation made offline was never queued at all and
       // the "flush on reconnect" step had nothing to flush.
       this.pendingOps.set(opId, op);
+      this.madeAt.set(opId, made);
       this.flushPendingOps();
     });
   }

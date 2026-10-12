@@ -1,4 +1,15 @@
 import {migrationAuthorizer} from './sql.mjs';
+/**
+ * The deadline setup.php's own run of the runner was given for migrations
+ * (`php setup.php --migration-deadline=SECONDS`), in milliseconds, or null.
+ * Only setup.php sets this variable, and http.php starts the runner with an
+ * environment of its own, so no request ever carries it. A whole number of
+ * milliseconds from 1 to a day; anything else is none.
+ */
+export function setupDeadlineMs(env) {
+  const text=env.SOFTN_SETUP_DEADLINE_MS;
+  return typeof text==='string'&&/^[1-9][0-9]{0,7}$/.test(text)&&Number(text)<=86_400_000?Number(text):null;
+}
 const hostNames=db=>new Set(db.prepare("SELECT name FROM sqlite_master WHERE substr(name,1,1)='_'").all().map(r=>r.name));
 // Schema scripts are guest bundle input too. The authorizer (sql.mjs, the Rust
 // host's rules) denies ATTACH/PRAGMA/transactions, extension loading, virtual

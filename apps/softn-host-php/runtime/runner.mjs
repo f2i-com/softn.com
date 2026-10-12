@@ -1,5 +1,6 @@
 import {Worker} from 'node:worker_threads';
 import {readFileSync,writeFileSync,writeSync} from 'node:fs';
+import {setupDeadlineMs} from './migrations.mjs';
 // The supervising thread never enters guest WASM or SQLite. Its independent
 // deadline remains effective during synchronous host work and if PHP exits.
 // It ends the process with a signal: process.exit waits for the worker
@@ -14,7 +15,9 @@ process.stdin.setEncoding('utf8');
 // setup.php start the runner with an environment of their own that does not
 // carry this variable, and anything outside 1 to 20,000 is the twenty seconds.
 const shortened=Number(process.env.SOFTN_RUNNER_DEADLINE_MS);
-const DEADLINE_MS=Number.isInteger(shortened)&&shortened>=1&&shortened<=20_000?shortened:20_000;
+// setup.php's own run, and only it, may be given longer, for a migration no
+// request can finish (setup.php --migration-deadline; migrations.mjs).
+const DEADLINE_MS=setupDeadlineMs(process.env)??(Number.isInteger(shortened)&&shortened>=1&&shortened<=20_000?shortened:20_000);
 // The migration the worker is applying, as it says before it starts one
 // (request-worker.mjs), or null.
 let migration=null;

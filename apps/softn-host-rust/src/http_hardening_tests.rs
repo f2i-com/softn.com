@@ -1060,3 +1060,57 @@ fn the_native_store_reads_a_filtered_collection() {
     assert_eq!(call(&mut bridges, &["notes", "[1]"]).as_array().unwrap().len(), 3);
     assert_eq!(call(&mut bridges, &["notes", "not json"]).as_array().unwrap().len(), 3);
 }
+
+/// One WebSocket text frame as a client sends it: masked.
+fn client_text_frame(text: &str) -> Vec<u8> {
+    let payload = text.as_bytes();
+    assert!(payload.len() < 126);
+    let mask = [0x12u8, 0x34, 0x56, 0x78];
+    let mut frame = vec![0x81, 0x80 | payload.len() as u8];
+    frame.extend_from_slice(&mask);
+    frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+    frame
+}
+
+/// A client that asks for a large pull and then takes nothing has a message
+/// or two of it read and held for it, not the pull. The pull was read as fast
+/// as the store gave it into the connection's queue of 512 messages of up to
+/// a megabyte each, all held until the socket was given up on, two minutes
+/// on; PRIVATE_BACKEND.md said one.
+#[tokio::test]
+async fn a_pull_nobody_reads_is_not_read_ahead_of_the_socket() {
+    let ctx = legacy_app(serde_json::json!({}));
+    {
+        // Each record is its own message: two do not fit under a megabyte.
+        let text = "x".repeat(600 * 1024);
+        ctx.db.write().with_batch(|db| {
+            for i in 0..64 {
+                db.upsert_record(xdb::Record {
+                    id: format!("n{i:02}"), collection: "notes".into(), data: serde_json::json!({"text": text}),
+                    created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
+                })?;
+            }
+            Ok(())
+        }).unwrap();
+    }
+    let sync = ctx.sync_manager.clone();
+    let addr = serve(ctx).await;
+    let host = addr.to_string();
+    // A small window, so that the pull is held up here and not in the kernel.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut stream = socket.connect(addr).await.unwrap();
+    stream.write_all(upgrade(&host, "", &format!("http://{host}")).as_bytes()).await.unwrap();
+    let mut status = [0u8; 12];
+    stream.read_exact(&mut status).await.unwrap();
+    assert_eq!(&status[9..12], b"101");
+    stream.write_all(&client_text_frame(r#"{"type":"sync_pull","collections":["notes"]}"#)).await.unwrap();
+
+    // As far as the host will read ahead, it has in two seconds.
+    let read = || sync.pull_messages.load(std::sync::atomic::Ordering::Relaxed);
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let held = read();
+    assert!(held > 0, "the pull was never started");
+    assert!(held <= 8, "{held} of the pull's 64 messages were read for a client that takes nothing");
+    drop(stream);
+}

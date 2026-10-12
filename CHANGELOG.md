@@ -56,6 +56,10 @@ section here. Write the section before tagging. Headings are the tag
 - Studio: an agent run whose changes the browser will not store is told so, and its finish ends the run as stopped with the reason, never as finished; a project deleted in one tab is no longer written back by another tab, which says "Deleted in another tab" and offers Keep it or Close it; chat messages from two tabs keep each tab's order.
 - Builder: a keypress with no key no longer throws; Create handler with a logic file open writes into the page's own logic; an app with only an older manifest `permissions` block shows what the runtime grants it; a .xdb the Builder cannot read is kept unchanged in the export instead of being dropped.
 - Components: Select and SegmentedControl tell `1` from `"1"` and record values apart. Single-file hosts: an app download has a 30-minute overall limit as well as the one-minute stall limit.
+- Server sync: the current record sent back to a device whose edit was overtaken reaches it in the order the store wrote it, where it could arrive after a newer edit and undo it there; edits are stamped in the host's time, so a device whose clock is behind no longer loses edits made just after a server-side write; a record deleted here whose delete the host skipped comes back whichever message arrives first. `auth_ok.serverTime` is given to the millisecond.
+- Rust backend host: a pull holds at most two messages for its connection, where a client that stopped reading could have up to 512 one-megabyte messages held for it.
+- PHP backend host: `php backend/setup.php --migration-deadline=SECONDS` applies a migration that needs longer than a request's 20 seconds, including one stopped three times.
+- Release scripts: package-site and package-docs package only a dist/ built from HEAD and refuse any file naming a path on the build machine; build-site leaves out the service workers' source maps, which named the build machine's files. The local signaling server listens on 127.0.0.1 unless `HOST` says otherwise. Desktop app: the page can no longer ask for the data folder's path.
 
 ## v0.0.19
 

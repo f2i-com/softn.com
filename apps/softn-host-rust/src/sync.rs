@@ -360,6 +360,26 @@ pub enum ServerMessage {
     Error { message: String },
 }
 
+/// Which connections a message in the sync stream is for. Every connection
+/// reads the one stream, in the order the store wrote it, and lets through
+/// what is for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Audience {
+    /// Every connection but the one that pushed: its own ops, stored.
+    Others(String),
+    /// That one connection alone: what the store says of its push.
+    Only(String),
+}
+
+impl Audience {
+    pub fn reaches(&self, client_id: &str) -> bool {
+        match self {
+            Audience::Others(sender) => sender != client_id,
+            Audience::Only(target) => target == client_id,
+        }
+    }
+}
+
 /// A pull under way: the collections still to read and, in the one being
 /// read, the last record read and the message being filled. See
 /// [`SyncManager::pull_step`].
@@ -444,7 +464,10 @@ pub struct SyncManager {
     /// AFTER_HOOK_BUDGET, in milliseconds.
     after_hook_budget_ms: std::sync::atomic::AtomicU64,
     max_storage_bytes: u64,
-    broadcast_tx: broadcast::Sender<(String, ServerMessage)>,
+    /// The sync stream: each item once per connection, which lets through
+    /// what is for it ([`Audience`]). Shared, so a message meant for one
+    /// connection is not copied for every other.
+    broadcast_tx: broadcast::Sender<(Audience, Arc<ServerMessage>)>,
     runtime: Option<Arc<ServerRuntime>>,
     /// Batch hook: validates all ops in a single RPC call (preferred).
     has_before_sync_batch: bool,
@@ -473,6 +496,9 @@ pub struct SyncManager {
     connections: Arc<std::sync::Mutex<OpenConnections>>,
     max_connections: usize,
     max_connections_per_visitor: usize,
+    /// Pull messages read, for the tests that count them.
+    #[cfg(test)]
+    pub pull_messages: std::sync::atomic::AtomicUsize,
 }
 
 impl SyncManager {
@@ -552,6 +578,8 @@ impl SyncManager {
             connections: Arc::new(std::sync::Mutex::new(OpenConnections::default())),
             max_connections,
             max_connections_per_visitor,
+            #[cfg(test)]
+            pull_messages: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -582,7 +610,7 @@ impl SyncManager {
         self.max_connections_per_visitor
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<(String, ServerMessage)> {
+    pub fn subscribe(&self) -> broadcast::Receiver<(Audience, Arc<ServerMessage>)> {
         self.broadcast_tx.subscribe()
     }
 
@@ -762,6 +790,15 @@ impl SyncManager {
     /// a collection with nothing in it still answered, the last message of a
     /// full page carrying where the next page begins.
     pub fn pull_step(&self, pull: &mut Pull) -> Option<ServerMessage> {
+        let message = self.read_pull_message(pull);
+        #[cfg(test)]
+        if message.is_some() {
+            self.pull_messages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        message
+    }
+
+    fn read_pull_message(&self, pull: &mut Pull) -> Option<ServerMessage> {
         loop {
             let collection = pull.collections.get(pull.next)?.clone();
             if !is_valid_collection_name(&collection) {
@@ -860,13 +897,25 @@ impl SyncManager {
     /// after-hooks. The connection does the two halves itself
     /// ([`Self::apply_sync_push`], [`Self::run_after_sync`]) so the answer is
     /// not kept waiting on the hooks.
+    ///
+    /// Returns what the pusher is told: the answer, then what the sync
+    /// stream carried for it alone.
     #[cfg(test)]
     pub fn handle_sync_push(
         &self,
         ops: Vec<SyncOp>,
         client_id: &str,
     ) -> Vec<ServerMessage> {
-        let (responses, accepted) = self.apply_sync_push(ops, client_id);
+        let mut stream = self.subscribe();
+        let (mut responses, accepted) = self.apply_sync_push(ops, client_id);
+        let mine = Audience::Only(client_id.to_string());
+        loop {
+            match stream.try_recv() {
+                Ok((audience, message)) if audience == mine => responses.push((*message).clone()),
+                Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
         self.run_after_sync(&accepted);
         responses
     }
@@ -1139,6 +1188,9 @@ impl SyncManager {
         // the time spent holding db.write() is exclusively I/O. Never add RPC
         // calls, network requests, or expensive computation inside this block.
         let mut accepted_ops = Vec::new();
+        // The acknowledgement of overtaken ops and the records they were
+        // overtaken on, for the pusher alone.
+        let mut to_pusher: Option<(Vec<String>, Vec<SyncOp>)> = None;
         if !validated_ops.is_empty() {
             // Collect op IDs before moving ops into the transaction closure,
             // so we can reference them in error paths after the move.
@@ -1162,8 +1214,9 @@ impl SyncManager {
                 let mut batch_rejected = Vec::new();
                 let mut batch_replayed = Vec::new();
                 // The records overtaken edits were for, and the deleted ones
-                // updates were refused for, each with the first such op:
-                // their pusher is sent them as they stand.
+                // updates were refused for, each with the first such op (or
+                // an overtaken delete of it): their pusher is sent them as
+                // they stand.
                 let mut batch_overtaken: Vec<(String, String)> = Vec::new();
 
                 for mut op in validated_ops {
@@ -1212,8 +1265,16 @@ impl SyncManager {
                         let weighed = op.operation == "delete" || (op.operation == "update" && !record.deleted);
                         let was_overtaken = weighed && overtaken(&op.timestamp, &record.updated_at);
                         let deleted_already = op.operation == "update" && record.deleted;
-                        if (was_overtaken || deleted_already) && !batch_overtaken.iter().any(|(id, _)| *id == record.id) {
-                            batch_overtaken.push((record.id.clone(), op.id.clone()));
+                        if was_overtaken || deleted_already {
+                            match batch_overtaken.iter_mut().find(|(id, _)| *id == record.id) {
+                                None => batch_overtaken.push((record.id.clone(), op.id.clone())),
+                                // An overtaken delete is the op the record
+                                // answers: its pusher hides the record until
+                                // that delete is answered, and knows the
+                                // answer by its id.
+                                Some(entry) if op.operation == "delete" => entry.1 = op.id.clone(),
+                                Some(_) => {}
+                            }
                         }
                         if was_overtaken {
                             batch_replayed.push(op.id.clone());
@@ -1306,18 +1367,14 @@ impl SyncManager {
                     }
                     if !batch_replayed.is_empty() {
                         tracing::debug!("sync_push: {} op(s) already applied or overtaken by a newer edit, acknowledged without writing", batch_replayed.len());
-                        responses.push(ServerMessage::SyncAck { op_ids: batch_replayed });
                     }
-                    // The pusher had applied its overtaken edits to its own
-                    // copy, and would go on showing them: it is sent each
-                    // record as it stands, a delta like any other, and only
-                    // it. It goes after the acknowledgement above on purpose:
-                    // a client keeps a record it deleted hidden only while
-                    // that delete is unanswered, so a skipped delete's record
-                    // comes back on the device that pushed it
-                    // (`XDBServerSync.unansweredDeletes` in @softn/core).
-                    if !batch_current.is_empty() {
-                        responses.push(ServerMessage::SyncDelta { ops: batch_current });
+                    if batch_current.is_empty() {
+                        if !batch_replayed.is_empty() {
+                            responses.push(ServerMessage::SyncAck { op_ids: batch_replayed });
+                        }
+                    } else {
+                        // Sent below, with the stream of other clients' edits.
+                        to_pusher = Some((batch_replayed, batch_current));
                     }
                     accepted_ops = batch_accepted;
                 }
@@ -1329,6 +1386,27 @@ impl SyncManager {
                         reason: "Database transaction failed — retry later".into(),
                     });
                 }
+            }
+            // The pusher had applied its overtaken edits to its own copy,
+            // and would go on showing them: it is sent each record as it
+            // stands, a delta like any other, and only it. Sent here, in the
+            // stream of other clients' edits and while the writer lock is
+            // held, it reaches the pusher in the order the record was read
+            // among those edits. It went with the push's answer, on the
+            // connection's own queue, which the connection interleaves with
+            // that stream as the two are ready: an edit stored after the
+            // read could arrive first, and the older record then undid it on
+            // the pusher's screen. The acknowledgement of the ops it answers
+            // goes just before it, in the same stream, as it went before it
+            // in the answer: a client keeps a record it deleted hidden only
+            // while that delete is unanswered, so a skipped delete's record
+            // comes back on the device that pushed it
+            // (`XDBServerSync.unansweredDeletes` in @softn/core).
+            if let Some((replayed, current)) = to_pusher {
+                if !replayed.is_empty() {
+                    let _ = self.broadcast_tx.send((Audience::Only(client_id.to_string()), Arc::new(ServerMessage::SyncAck { op_ids: replayed })));
+                }
+                let _ = self.broadcast_tx.send((Audience::Only(client_id.to_string()), Arc::new(ServerMessage::SyncDelta { ops: current })));
             }
             // Broadcast to the other clients while the writer lock is still
             // held, so that pushes are sent on in the order they were stored.
@@ -1342,7 +1420,7 @@ impl SyncManager {
                 };
                 let _ = self
                     .broadcast_tx
-                    .send((client_id.to_string(), delta));
+                    .send((Audience::Others(client_id.to_string()), Arc::new(delta)));
             }
             drop(db);
         }
@@ -1829,7 +1907,7 @@ mod tests {
         assert_eq!(acked(&offline), vec!["u1"], "{offline:?}");
         assert!(rejected(&offline).is_empty(), "{offline:?}");
         assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
-        assert!(deltas.try_recv().is_err(), "an overtaken update was broadcast");
+        assert!(!reaches_another(&drained(&mut deltas), "a"), "an overtaken update was broadcast");
     }
 
     /// The ops of the `sync_delta` messages in a push's answer: what the
@@ -1867,7 +1945,7 @@ mod tests {
             assert_eq!(current[0].data, Some(serde_json::json!({"title":"final", "body":"b"})));
             assert_eq!(current[0].timestamp, newer.timestamp);
         }
-        assert!(others.try_recv().is_err(), "another client was sent something");
+        assert!(!reaches_another(&drained(&mut others), "a"), "another client was sent something");
         // A record deleted since is told as deleted.
         sync.handle_sync_push(vec![stamped(op("d2", "notes", "delete", "n1", serde_json::json!({})), 3)], "b");
         let mut others = sync.broadcast_tx.subscribe();
@@ -1875,7 +1953,108 @@ mod tests {
         let current = told(&answer);
         assert_eq!(current.len(), 1, "{answer:?}");
         assert_eq!((current[0].operation.as_str(), current[0].record_id.as_str()), ("delete", "n1"));
-        assert!(others.try_recv().is_err(), "another client was sent something");
+        assert!(!reaches_another(&drained(&mut others), "a"), "another client was sent something");
+    }
+
+    /// Everything the sync stream holds now.
+    fn drained(stream: &mut broadcast::Receiver<(Audience, Arc<ServerMessage>)>) -> Vec<(Audience, Arc<ServerMessage>)> {
+        let mut out = Vec::new();
+        while let Ok(item) = stream.try_recv() {
+            out.push(item);
+        }
+        out
+    }
+
+    /// Of what the stream held, what `client`'s connection lets through, in order.
+    fn reaching(items: &[(Audience, Arc<ServerMessage>)], client: &str) -> Vec<ServerMessage> {
+        items.iter().filter(|(audience, _)| audience.reaches(client)).map(|(_, message)| (**message).clone()).collect()
+    }
+
+    /// Whether anything the stream held reaches a connection other than `client`'s.
+    fn reaches_another(items: &[(Audience, Arc<ServerMessage>)], client: &str) -> bool {
+        items.iter().any(|(audience, _)| *audience != Audience::Only(client.to_string()))
+    }
+
+    /// The record as it stands, sent to the pusher of an overtaken edit,
+    /// reaches it in the order the store saw it among the other clients'
+    /// edits. It went with the push's answer, on the connection's own queue,
+    /// which the connection's writer interleaves with the stream of other
+    /// clients' edits in whatever order the two are ready: an edit stored
+    /// after it could reach the pusher first and then be undone there by
+    /// the older record, which the device went on showing.
+    #[test]
+    fn the_record_as_it_stands_reaches_its_pusher_in_the_order_it_was_read() {
+        let (sync, _db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
+        sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"second"})), 10)], "b");
+        let mut stream = sync.subscribe();
+        // a's edit was made offline before b's: overtaken. Then c edits.
+        let answer = sync.apply_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30)], "a").0;
+        sync.handle_sync_push(vec![stamped(op("u3", "notes", "update", "n1", serde_json::json!({"title":"third"})), 1)], "c");
+
+        let to_a = reaching(&drained(&mut stream), "a");
+        let shape: Vec<(&str, Vec<String>)> = to_a.iter().map(|message| match message {
+            ServerMessage::SyncAck { op_ids } => ("ack", op_ids.clone()),
+            ServerMessage::SyncDelta { ops } => ("delta", ops.iter().map(|op| format!("{} {}", op.id, op.data.as_ref().unwrap()["title"])).collect()),
+            other => panic!("{other:?}"),
+        }).collect();
+        assert_eq!(shape, vec![
+            ("ack", vec!["u1".to_string()]),
+            ("delta", vec!["u1 \"second\"".to_string()]),
+            ("delta", vec!["u3 \"third\"".to_string()]),
+        ], "{answer:?}");
+        // Said once: the answer itself carries neither.
+        assert!(acked(&answer).is_empty() && told(&answer).is_empty(), "{answer:?}");
+        // And nobody else is sent a's.
+        sync.apply_sync_push(vec![stamped(op("u0", "notes", "update", "n1", serde_json::json!({"title":"older"})), 40)], "a");
+        let held = drained(&mut stream);
+        assert!(reaching(&held, "b").is_empty() && reaching(&held, "c").is_empty(), "{held:?}");
+    }
+
+    /// One push that edits a record and then deletes it, both overtaken: the
+    /// record as it stands answers the delete. The pusher keeps a record it
+    /// deleted hidden until that delete is answered (@softn/core
+    /// `XDBServerSync.unansweredDeletes`), and it knows the answer by the
+    /// op's id; under the edit's id the record stayed hidden there until the
+    /// delete's acknowledgement came, which it may do after the record.
+    #[test]
+    fn the_record_as_it_stands_answers_an_overtaken_delete_of_the_same_push() {
+        let (sync, _db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
+        sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10)], "b");
+        let answer = sync.handle_sync_push(vec![
+            stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 40),
+            stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 30),
+        ], "a");
+        let current = told(&answer);
+        assert_eq!(current.len(), 1, "{answer:?}");
+        assert_eq!((current[0].id.as_str(), current[0].operation.as_str()), ("d1", "update"), "{answer:?}");
+        let mut ids = acked(&answer);
+        ids.sort();
+        assert_eq!(ids, vec!["d1", "u1"]);
+    }
+
+    /// An edit is weighed by the time on the device that made it, and a
+    /// write the server makes itself (a hook's `db.update`) by the server's
+    /// clock. An edit from a device whose clock is behind the server's,
+    /// made after such a write, is acknowledged and not applied, and the
+    /// device is sent the record back. Stamped in the server's time, as the
+    /// runtime's client now stamps its edits (from `auth_ok.serverTime`,
+    /// @softn/core xdb-server-sync.ts), the same edit applies.
+    #[test]
+    fn an_edit_stamped_by_a_clock_behind_the_servers_loses_to_a_server_write() {
+        let (sync, db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
+        db.write().update_record("n1", serde_json::json!({"seen": true})).unwrap();
+        // Made just now on a device ten minutes behind.
+        let behind = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"edited"})), 10)], "a");
+        assert_eq!(acked(&behind), vec!["u1"], "{behind:?}");
+        assert_eq!(told(&behind).len(), 1, "{behind:?}");
+        assert_eq!(db.write().get_record("n1").unwrap().data["title"], "first", "the edit was applied");
+        let in_server_time = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"edited"})), 0)], "a");
+        assert_eq!(acked(&in_server_time), vec!["u2"]);
+        assert!(told(&in_server_time).is_empty(), "{in_server_time:?}");
+        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"edited", "seen": true}));
     }
 
     /// The client sends an op again until it is acknowledged. An update whose
@@ -2099,7 +2278,7 @@ mod tests {
             assert_eq!(current[0].data, None);
         }
         assert!(db.write().get_record("n1").unwrap().deleted);
-        assert!(others.try_recv().is_err(), "another client was sent something");
+        assert!(!reaches_another(&drained(&mut others), "a"), "another client was sent something");
         // An update for a record that was never there has nothing to be told.
         let missing = sync.handle_sync_push(vec![op("u-missing", "notes", "update", "nobody", serde_json::json!({"title":"x"}))], "a");
         assert_eq!(rejected(&missing), vec!["u-missing"]);
@@ -2461,12 +2640,13 @@ mod tests {
             let mut sent = Vec::new();
             loop {
                 match deltas.blocking_recv() {
-                    Ok((_, ServerMessage::SyncDelta { ops })) => {
+                    Ok((_, message)) if matches!(*message, ServerMessage::SyncDelta { .. }) => {
+                        let ServerMessage::SyncDelta { ops } = &*message else { unreachable!() };
                         for op in ops {
                             if op.record_id == "end" {
                                 return sent;
                             }
-                            sent.push(op.record_id);
+                            sent.push(op.record_id.clone());
                         }
                     }
                     // What a slow listener missed is left out; what it has is still in order.
