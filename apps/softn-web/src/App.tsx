@@ -422,6 +422,8 @@ function App(): React.ReactElement {
   openTabsRef.current = openTabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  /** Cached apps whose open from Home is still loading, by record id. */
+  const openingCachedRef = useRef(new Set<string>());
   // Selection belongs to the last user navigation, including requests still
   // reading the cache before they have a placeholder or a real tab.
   const navigationRevisionRef = useRef(0);
@@ -1216,6 +1218,11 @@ function App(): React.ReactElement {
 
   const handleOpenCached = useCallback(
     (app: CachedApp) => {
+      // A tab is found below only once its load has finished, so a second
+      // press while the first is loading (a double click, Enter held down)
+      // opened the app again: two copies over one database. The first press
+      // stands, and keeps the navigation it claimed.
+      if (openingCachedRef.current.has(app.id)) return;
       const isForeground = claimNavigation();
       // By identity, not by label. Two cached apps can legitimately share a
       // name — that is precisely what content-addressed identity allows, and
@@ -1228,7 +1235,10 @@ function App(): React.ReactElement {
         setActiveTabId(existingTab.id);
         return;
       }
-      void processBundleData(app.bundleData, `${app.name}.softn`, app.id, undefined, app.directorySlug, undefined, isForeground);
+      openingCachedRef.current.add(app.id);
+      void processBundleData(app.bundleData, `${app.name}.softn`, app.id, undefined, app.directorySlug, undefined, isForeground).finally(
+        () => openingCachedRef.current.delete(app.id)
+      );
     },
     [processBundleData, claimNavigation]
   );
@@ -1577,21 +1587,19 @@ function App(): React.ReactElement {
     const handlePopState = () => {
       claimNavigation();
       const { appName } = parseAppUrl();
+
+      // The address carries a name; the tab being looked at wins a tie. An
+      // app that is not open as a tab is Home.
+      const tab = appName ? findTabForUrlName(openTabsRef.current, appName, activeTabIdRef.current) : undefined;
+      const next = tab ? tab.id : null;
+
+      // The address is already the browser's: the sync above is told not to
+      // write it. Only when the selection changes, because only then does the
+      // sync run: Back to a closed app while Home was showing left the flag
+      // set, and the next app opened ran under the closed one's address.
+      if (next === activeTabIdRef.current) return;
       skipNextUrlPushRef.current = true;
-
-      if (!appName) {
-        setActiveTabId(null);
-        return;
-      }
-
-      // The address carries a name; the tab being looked at wins a tie.
-      const tab = findTabForUrlName(openTabsRef.current, appName, activeTabIdRef.current);
-      if (tab) {
-        setActiveTabId(tab.id);
-      } else {
-        // App not open as a tab — go Home
-        setActiveTabId(null);
-      }
+      setActiveTabId(next);
     };
 
     window.addEventListener('popstate', handlePopState);

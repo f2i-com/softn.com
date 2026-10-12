@@ -3,7 +3,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), theme: vi.fn(), files: new Map<string, string>() }));
+const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), theme: vi.fn(), files: new Map<string, string>(), id: { value: 'bundle-test' }, failCompose: { value: false } }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: bridge.open }));
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: bridge.drag }) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: bridge.title }) }));
@@ -19,7 +19,14 @@ vi.mock('@softn/core', async (importOriginal) => ({
   classifyAsset: () => ({ binary: false, mime: 'text/plain' }),
   readBundleEntries: () => new Map([...bridge.files].map(([name, text]) => [name, new TextEncoder().encode(text)])),
 }));
-vi.mock('../src/bundleRuntime', () => ({ computeBundleAppId: async () => 'bundle-test', loadBundleXDBData: async () => 0, processBundleSource: () => ({ source: '<Text>App</Text>', preIncludedLogicPaths: [] }) }));
+vi.mock('../src/bundleRuntime', () => ({
+  computeBundleAppId: async () => bridge.id.value,
+  loadBundleXDBData: async () => 0,
+  processBundleSource: () => {
+    if (bridge.failCompose.value) throw new Error('Main file not found: main.ui');
+    return { source: '<Text>App</Text>', preIncludedLogicPaths: [] };
+  },
+}));
 
 let host: HTMLDivElement;
 let root: Root;
@@ -31,6 +38,8 @@ beforeEach(async () => {
   vi.stubGlobal('__ANDROID__', false);
   localStorage.clear();
   bridge.files.clear();
+  bridge.id.value = 'bundle-test';
+  bridge.failCompose.value = false;
   bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', main: 'main.ui', files: {} }));
   bridge.files.set('main.ui', '<Text>App</Text>');
   Object.defineProperty(window, '__TAURI__', { value: { core: { invoke: bridge.invoke }, event: { listen: bridge.listen } }, configurable: true });
@@ -235,4 +244,103 @@ it("honours the manifest's config.theme.mode as the web runtime does", async () 
   bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', main: 'main.ui', files: {} }));
   await click('Open app');
   expect((bridge.theme.mock.lastCall?.[0] as Record<string, unknown>).declaredMode).toBeUndefined();
+});
+
+it('opens an app whose manifest names its icon with something that is not text', async () => {
+  // The web runtime and the single-app shell skip such an icon; the loader
+  // called toLowerCase on it and refused to open the app.
+  bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', main: 'main.ui', files: {}, icon: ['icon.png'] }));
+  await mount();
+  await click('Open app');
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.textContent).toContain('Running the selected app');
+});
+
+it('puts the data back when an upgrade was staged and the package then fails to open', async () => {
+  // A staged upgrade is finished only once the new package starts; a failure
+  // before it starts restores the pre-upgrade backup and drops the staging.
+  // A failure after the staging but before the app was handed to the runtime
+  // (a main file that is missing) showed the plain error and left the
+  // staging, the backup unused and the older package gated.
+  bridge.invoke.mockImplementation(async (command: string) =>
+    command === 'get_opened_file' ? null
+      : command === 'pick_softn_bundle' ? bridge.open()
+        : command === 'backup_database' ? 'C:/data/backup-1.db'
+          : command === 'restore_database' ? undefined
+            : [1]);
+  await mount();
+  bridge.id.value = 'bundle-a';
+  await click('Open app');
+  expect(host.textContent).toContain('Running the selected app');
+
+  bridge.id.value = 'bundle-b';
+  bridge.failCompose.value = true;
+  bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', version: '2', main: 'main.ui', files: {} }));
+  await click('Open app');
+  await click('Upgrade this installation');
+  await act(async () => {
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(bridge.invoke.mock.calls.some(([command]) => command === 'restore_database')).toBe(true);
+  const registry = JSON.parse(localStorage.getItem('softn-loader:installations') ?? '{}');
+  expect(registry.installations?.['bundle-a']?.pendingUpgrade).toBeUndefined();
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Main file not found');
+});
+
+it('asks whether a package is an upgrade as a dialog: focus on Cancel, Tab kept inside, Escape cancels', async () => {
+  await mount();
+  bridge.id.value = 'bundle-a';
+  await click('Open app');
+  bridge.id.value = 'bundle-b';
+  await click('Open app');
+  const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog).not.toBeNull();
+  // On the answer that changes nothing, not left on the button behind it.
+  expect(document.activeElement?.textContent).toBe('Cancel');
+  const buttons = [...dialog.querySelectorAll('button')];
+  const tab = (shiftKey: boolean) => {
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+    act(() => {
+      document.activeElement?.dispatchEvent(event);
+    });
+    return event;
+  };
+  expect(tab(false).defaultPrevented).toBe(true);
+  expect(document.activeElement).toBe(buttons[0]);
+  expect(tab(true).defaultPrevented).toBe(true);
+  expect(document.activeElement).toBe(buttons[buttons.length - 1]);
+  await act(async () => {
+    document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  expect(host.querySelector('[role="dialog"]')).toBeNull();
+  expect(bridge.invoke.mock.calls.some(([command]) => command === 'backup_database')).toBe(false);
+});
+
+it('says what became of the data after a failed upgrade under StrictMode too, as the desktop app runs in development', async () => {
+  // StrictMode runs an effect, cleans it up and runs it again. The restore
+  // was started by the first run, whose answer was then thrown away, and the
+  // second found nothing left to do: "Restoring…" stayed up, with the way
+  // back disabled.
+  bridge.invoke.mockImplementation(async (command: string) =>
+    command === 'get_opened_file' ? null
+      : command === 'pick_softn_bundle' ? bridge.open()
+        : command === 'backup_database' ? 'C:/data/backup-1.db'
+          : command === 'restore_database' ? undefined
+            : [1]);
+  const { default: App } = await import('../src/App');
+  await act(async () => root.render(<React.StrictMode><App /></React.StrictMode>));
+  bridge.id.value = 'bundle-a';
+  await click('Open app');
+  bridge.id.value = 'bundle-b';
+  bridge.failCompose.value = true;
+  bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', version: '2', main: 'main.ui', files: {} }));
+  await click('Open app');
+  await click('Upgrade this installation');
+  await act(async () => {
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  const home = [...host.querySelectorAll('button')].find((node) => node.textContent === 'Back to runtime home');
+  expect(home?.disabled).toBe(false);
+  expect(host.textContent).not.toContain('Restoring the data from the pre-upgrade backup');
+  expect(bridge.invoke.mock.calls.filter(([command]) => command === 'restore_database')).toHaveLength(1);
 });

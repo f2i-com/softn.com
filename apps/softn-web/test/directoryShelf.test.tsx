@@ -163,3 +163,37 @@ describe('runtime directory integration', () => {
     expect(container.querySelector('[aria-label="Run stale"]')).toBeNull();
   });
 });
+
+describe('an app on Home whose manifest description is not text', () => {
+  it('is drawn without it, and Home is still drawn', async () => {
+    // A manifest's description is written by the bundle's author; one written
+    // as `{ "en": "…" }` threw while Home was drawn, and the whole runtime went
+    // blank, again on every reload, because the record kept it.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply([])));
+    const odd = {
+      id: 'odd',
+      name: 'Odd',
+      version: '1.0.0',
+      description: { en: 'An app' } as unknown as string,
+      bundleData: new Uint8Array(),
+      cachedAt: 1,
+      lastOpened: 1,
+    };
+    act(() =>
+      root.render(
+        <Launcher
+          apps={[odd]}
+          onOpenFile={vi.fn()}
+          onOpenCached={vi.fn()}
+          onRemove={vi.fn()}
+          onExportData={vi.fn()}
+          onImportData={vi.fn()}
+          onAdoptData={vi.fn()}
+        />
+      )
+    );
+    await settle();
+    expect(container.textContent).toContain('Odd');
+    expect(container.querySelector('.softn-launcher-card-desc')).toBeNull();
+  });
+});

@@ -489,6 +489,11 @@ function activateOnKey(run: () => void) {
   return (event: React.KeyboardEvent) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     if (event.target !== event.currentTarget) return;
+    // A key held down is one press, as it is on a real button.
+    if (event.repeat) {
+      event.preventDefault();
+      return;
+    }
     event.preventDefault();
     run();
   };
@@ -666,7 +671,12 @@ export function Launcher({
                           <div className="softn-launcher-card-meta">v{app.version}</div>
                         </div>
                       </div>
-                      {app.description && <div className="softn-launcher-card-desc">{app.description}</div>}
+                      {/* The manifest's own words, cached as they came: one written
+                          as `{ "en": "…" }` threw here, and Home, and with it the
+                          whole runtime, went blank on every load. */}
+                      {typeof app.description === 'string' && app.description && (
+                        <div className="softn-launcher-card-desc">{app.description}</div>
+                      )}
                       <div className="softn-launcher-card-foot">
                         Opened {formatDate(app.lastOpened).toLowerCase()}
                         <span className="softn-launcher-offline" data-state={offline.state} title={offline.title}>

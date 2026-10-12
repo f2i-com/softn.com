@@ -116,6 +116,23 @@ describe('PermissionBar', () => {
     expect(document.activeElement).toBe(host.querySelector('[data-testid="app-root"]'));
   });
 
+  it('leaves the keyboard to the app on screen while its tab is hidden', () => {
+    // A runtime keeps a tab it is not showing mounted under display: none.
+    // The detail dialog left open there took the next Escape on the page, and
+    // the app being looked at never saw it.
+    act(() => root.render(<Host />));
+    act(() => button('What this means').click());
+    host.style.display = 'none';
+    const other = document.createElement('button');
+    document.body.append(other);
+    other.focus();
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => other.dispatchEvent(escape));
+    expect(escape.defaultPrevented).toBe(false);
+    expect(host.querySelector('[role="dialog"]')).not.toBeNull();
+    other.remove();
+  });
+
   it("speaks the host's words where they differ", () => {
     act(() =>
       root.render(

@@ -186,4 +186,45 @@ describe('runtime entry and navigation ownership', () => {
     expect(createObjectURL.mock.calls[0]?.[0]).toMatchObject({ size: bytes.byteLength, type: 'application/octet-stream' });
     expect(download).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ['a double click', (card: HTMLElement) => { card.click(); card.click(); }],
+    ['Enter held down', (card: HTMLElement) => {
+      for (const repeat of [false, true, true]) card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, repeat }));
+    }],
+  ])('opens a card on Home once for %s', async (_, press) => {
+    // Two tabs of one app ran two copies over one database, each listed as
+    // running, each installed for offline use.
+    cache.apps = [{ id: 'notes', name: 'Notes', version: '1.0.0', bundleData: bundle('Notes'), cachedAt: 1, lastOpened: 1 }];
+    vi.stubGlobal('fetch', vi.fn(async () => emptyDirectory()));
+    await mount('/');
+    const card = container.querySelector<HTMLElement>('[aria-label="Open Notes"]')!;
+    act(() => press(card));
+    await settle();
+    await click('.softn-frame-home');
+    expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(1);
+  });
+
+  it('gives the next app its own address after Back lands on one that is no longer open', async () => {
+    cache.apps = [
+      { id: 'a', name: 'Alpha', version: '1.0.0', bundleData: bundle('Alpha'), cachedAt: 1, lastOpened: 2 },
+      { id: 'b', name: 'Beta', version: '1.0.0', bundleData: bundle('Beta'), cachedAt: 1, lastOpened: 1 },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => emptyDirectory()));
+    await mount('/');
+    await click('[aria-label="Open Alpha"]');
+    expect(window.location.pathname).toBe('/app/Alpha');
+    await click('.softn-frame-close');
+    expect(window.location.pathname).toBe('/');
+    // Back lands on Alpha's entry, and Alpha is closed: Home stays.
+    window.history.replaceState({}, '', '/app/Alpha');
+    act(() => {
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await settle();
+    expect(container.querySelector('[aria-label="Open Beta"]')).toBeTruthy();
+    await click('[aria-label="Open Beta"]');
+    expect(document.title).toBe('Beta');
+    expect(window.location.pathname).toBe('/app/Beta');
+  });
 });

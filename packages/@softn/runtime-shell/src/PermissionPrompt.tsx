@@ -222,6 +222,15 @@ const APP_ICON_PLACEHOLDER = (
   </svg>
 );
 
+/** Whether an element is on screen: connected, and under nothing drawn as `display: none`. */
+function isShown(element: HTMLElement | null): boolean {
+  if (!element?.isConnected) return false;
+  for (let node: Element | null = element; node; node = node.parentElement) {
+    if (getComputedStyle(node).display === 'none') return false;
+  }
+  return true;
+}
+
 export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClose, wording }: PermissionPromptProps): React.ReactElement {
   const requested = getRequestedPermissions(permissions, wording);
   const titleId = useId();
@@ -243,6 +252,9 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
     closeRef.current?.focus({ preventScroll: true });
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // A runtime keeps a tab it is not showing mounted under display: none;
+      // left open there, this took the next Escape from the app on screen.
+      if (!isShown(cardRef.current)) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         onClose();

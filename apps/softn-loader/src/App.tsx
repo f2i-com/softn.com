@@ -167,7 +167,10 @@ async function setWindowIconFromBundle(
   binaryFiles: Map<string, Uint8Array>,
   manifest: BundleManifest
 ): Promise<void> {
-  if (!manifest.icon) return;
+  // The manifest is the bundle's, read as it came: an icon written as a list
+  // or a number stopped the app opening here, where the web runtime and the
+  // single-app shell skip it.
+  if (typeof manifest.icon !== 'string' || !manifest.icon) return;
 
   const lowerIconPath = manifest.icon.toLowerCase();
   if (
@@ -238,6 +241,9 @@ function App(): React.ReactElement {
   const [installationChoice, setInstallationChoice] = useState<LoaderChoice | null>(null);
   const upgradeInProgress = useRef<UpgradeInProgress | null>(null);
   const [upgradeNotice, setUpgradeNotice] = useState<string | null>(null);
+  // Set when a load failed after it staged an upgrade: the failure is shown
+  // as UpgradeAwareError, which restores the backup and drops the staging.
+  const [failedWhileUpgrading, setFailedWhileUpgrading] = useState(false);
   const [assetResolver, setAssetResolver] = useState<AppAssetResolver>();
   const [serverConfig, setServerConfig] = useState(() => resolveServerConfig());
   // `softn.net.fetch` goes through the native side, under the config the app
@@ -436,6 +442,7 @@ function App(): React.ReactElement {
       try {
         setLoading(true);
         setError(null);
+        setFailedWhileUpgrading(false);
 
         let rawData: number[] | Uint8Array;
 
@@ -621,6 +628,11 @@ function App(): React.ReactElement {
       } catch (err) {
         if (!active) return;
         cleanup();
+        // A failure after this load staged an upgrade is the package failing
+        // to start, as much as one the runtime reports: the data goes back to
+        // the pre-upgrade backup. Shown as the plain error, the staging and
+        // the backup were left behind and the older package stayed gated.
+        setFailedWhileUpgrading(upgradeInProgress.current !== null);
         setError(err instanceof Error ? err : new Error(String(err)));
         setLoading(false);
         setAssetResolver(undefined);
@@ -642,6 +654,7 @@ function App(): React.ReactElement {
     setBundlePath(null);
     setLoading(false);
     setError(null);
+    setFailedWhileUpgrading(false);
     setManifest(null);
     setMainSource('');
     setRuntimeAppId(null);
@@ -667,6 +680,7 @@ function App(): React.ReactElement {
     {installationChoice?.kind === 'recovery-required' && <RecoveryRequiredDialog choice={installationChoice} />}
     {!bundlePath && !loading ? <DesktopWelcome onOpen={openFilePicker} canOpen={isTauri || isMobile} dragging={isDragOver} error={error} />
       : loading ? <div className="desktop-state" role="status"><Spinner size="lg" /><p>Opening {bundlePath?.split(/[/\\]/).pop() || 'your app'}…</p></div>
+      : error && failedWhileUpgrading ? <UpgradeAwareError error={error} upgrade={upgradeInProgress} onHome={goHome} />
       : error ? <div className="desktop-state" role="alert"><h1>We couldn’t open this app</h1><p className="desktop-error">{error.message}</p><p>{bundlePath}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>
       // The side the project declares (the manifest's `config.theme.mode`, as
       // written) over this shell's own theme and the device, as in the web
@@ -726,12 +740,19 @@ function App(): React.ReactElement {
  */
 function UpgradeAwareError({ error, upgrade, onHome }: { error: Error; upgrade: React.MutableRefObject<UpgradeInProgress | null>; onHome: () => void }) {
   const [outcome, setOutcome] = useState<AbandonOutcome | null>(upgrade.current ? null : { restored: false, finalized: false, message: '' });
+  // The restore is started once and its answer kept: StrictMode runs this
+  // effect twice, and the second run used to find the upgrade already taken
+  // and the first run's answer thrown away, leaving "Restoring…" up for good.
+  const restoring = useRef<Promise<AbandonOutcome> | null>(null);
   useEffect(() => {
-    const pending = upgrade.current;
-    if (!pending) return;
-    upgrade.current = null;
+    if (!restoring.current) {
+      const pending = upgrade.current;
+      if (!pending) return;
+      upgrade.current = null;
+      restoring.current = abandonUpgrade(pending, restoreFromBackup);
+    }
     let alive = true;
-    void abandonUpgrade(pending, restoreFromBackup).then(result => { if (alive) setOutcome(result); });
+    void restoring.current.then(result => { if (alive) setOutcome(result); });
     return () => { alive = false; };
   }, [upgrade]);
   return <div className="desktop-state" role="alert">
@@ -742,16 +763,61 @@ function UpgradeAwareError({ error, upgrade, onHome }: { error: Error; upgrade: 
   </div>;
 }
 
+/**
+ * A question asked before anything is opened behaves as the dialog it is
+ * marked as: focus moves onto the answer that changes nothing, Tab stays
+ * among its answers, Escape gives that answer, and focus goes back to where
+ * it was once the question is gone. Marked `aria-modal` with none of that,
+ * focus stayed on the button behind it and Escape did nothing.
+ */
+function useQuestion(cancel: () => void) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const answer = useRef(cancel);
+  answer.current = cancel;
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    cancelRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        answer.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]), select:not([disabled]), input:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'));
+      if (controls.length === 0) return;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      const active = document.activeElement;
+      const outside = !dialog.contains(active);
+      if (event.shiftKey ? outside || active === first : outside || active === last) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
+  return { dialogRef, cancelRef };
+}
+
 /** The installation registry could not be read: decide before anything is opened (R2-SN-03). */
 function RegistryDamagedDialog({ choice }: { choice: RegistryDamagedChoice & { resolve: (decision: LoaderDecision) => void } }) {
-  return <div className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="registry-damaged-title" data-testid="registry-damaged">
+  const { dialogRef, cancelRef } = useQuestion(() => choice.resolve({ kind: 'cancel' }));
+  return <div ref={dialogRef} className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="registry-damaged-title" data-testid="registry-damaged">
     <h1 id="registry-damaged-title">Installation records are damaged</h1>
     <p>The record of which packages belong to which installed data could not be read ({choice.reason}). Until it is resolved, no package can be matched to existing data, so nothing was opened.</p>
     <p>{choice.quarantineKey ? `The damaged record was kept under "${choice.quarantineKey}" in this runtime's storage for recovery.` : 'The damaged record could not be copied aside; it is still in place.'}</p>
     <p><strong>Discard the damaged records</strong> starts a fresh registry: installed apps keep their data on disk, but each package will be matched again when it is next opened (it may ask whether it is a new app or an upgrade).</p>
     <div className="desktop-actions">
       <button className="desktop-button" onClick={() => choice.resolve({ kind: 'discard' })}>Discard damaged records</button>
-      <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
+      <button ref={cancelRef} className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
     </div>
   </div>;
 }
@@ -772,7 +838,8 @@ function RegistryDamagedDialog({ choice }: { choice: RegistryDamagedChoice & { r
  */
 function RecoveryRequiredDialog({ choice }: { choice: RecoveryRequiredChoice & { resolve: (decision: LoaderDecision) => void } }) {
   const { recovery } = choice;
-  return <div className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="recovery-required-title" data-testid="recovery-required">
+  const { dialogRef, cancelRef } = useQuestion(() => choice.resolve({ kind: 'cancel' }));
+  return <div ref={dialogRef} className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="recovery-required-title" data-testid="recovery-required">
     <h1 id="recovery-required-title">{choice.name || 'This app'} needs recovery</h1>
     <p>On {new Date(recovery.at).toLocaleString()} an upgrade of this installation failed and its data could not be put back from the pre-upgrade backup ({recovery.reason}). Until that backup is restored, no package is run against this data.</p>
     <p><strong>Restore the backup and retry</strong> restores the verified pre-upgrade snapshot again. The installation is unblocked only when both the restore and its record succeed; otherwise it stays blocked and says why.</p>
@@ -780,14 +847,15 @@ function RecoveryRequiredDialog({ choice }: { choice: RecoveryRequiredChoice & {
     <p className="desktop-muted">Backup: <code>{recovery.backup}</code></p>
     <div className="desktop-actions">
       <button className="desktop-button" onClick={() => choice.resolve({ kind: 'retry-restore' })}>Restore the backup and retry</button>
-      <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
+      <button ref={cancelRef} className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
     </div>
   </div>;
 }
 
 function UnresolvedUpgradeDialog({ choice }: { choice: UnresolvedUpgradeChoice & { resolve: (decision: LoaderDecision) => void } }) {
   const pending: PendingUpgrade = choice.pending;
-  return <div className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="upgrade-unresolved-title" data-testid="upgrade-unresolved">
+  const { dialogRef, cancelRef } = useQuestion(() => choice.resolve({ kind: 'cancel' }));
+  return <div ref={dialogRef} className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="upgrade-unresolved-title" data-testid="upgrade-unresolved">
     <h1 id="upgrade-unresolved-title">An upgrade of {choice.name || 'this app'} was not finished</h1>
     <p>On {new Date(pending.at).toLocaleString()} an upgrade of this installation to package <code>{shortIdentity(pending.to)}</code>{pending.version ? ` (version ${pending.version})` : ''} was approved, but that package never confirmed it started. Its data may already have been changed, so the package you opened will not run against it until this is resolved.</p>
     <p><strong>Restore the backup and open this version</strong> puts the data back to the verified pre-upgrade snapshot taken at approval time and clears the unfinished upgrade. Changes the newer package made after that snapshot are discarded.</p>
@@ -795,7 +863,7 @@ function UnresolvedUpgradeDialog({ choice }: { choice: UnresolvedUpgradeChoice &
     <p className="desktop-muted">Backup: <code>{pending.backup}</code></p>
     <div className="desktop-actions">
       <button className="desktop-button" onClick={() => choice.resolve({ kind: 'rollback' })}>Restore the backup and open this version</button>
-      <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
+      <button ref={cancelRef} className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
     </div>
   </div>;
 }
@@ -803,7 +871,8 @@ function UnresolvedUpgradeDialog({ choice }: { choice: UnresolvedUpgradeChoice &
 function InstallationChoiceDialog({ choice }: { choice: InstallationChoice & { resolve: (decision: LoaderDecision) => void } }) {
   const [target, setTarget] = useState<string>(choice.candidates[0]?.dataId ?? '');
   const selected = choice.candidates.find(c => c.dataId === target);
-  return <div className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="installation-choice-title" data-testid="installation-choice">
+  const { dialogRef, cancelRef } = useQuestion(() => choice.resolve({ kind: 'cancel' }));
+  return <div ref={dialogRef} className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="installation-choice-title" data-testid="installation-choice">
     <h1 id="installation-choice-title">Is this a new version of {choice.name || 'this app'}?</h1>
     <p>The file you opened is a different package from the one installed under this name. Its contents have not been checked by a publisher signature, so only you can say whether it belongs to the same app.</p>
     <dl className="desktop-identity">
@@ -820,7 +889,7 @@ function InstallationChoiceDialog({ choice }: { choice: InstallationChoice & { r
     <div className="desktop-actions">
       <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'new' })}>Open as a new app</button>
       <button className="desktop-button" disabled={!selected} onClick={() => selected && choice.resolve({ kind: 'upgrade', dataId: selected.dataId })}>Upgrade this installation</button>
-      <button className="desktop-button" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
+      <button ref={cancelRef} className="desktop-button" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
     </div>
   </div>;
 }
