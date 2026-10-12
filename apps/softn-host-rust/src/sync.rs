@@ -246,6 +246,52 @@ const MAX_PULL_COLLECTIONS: usize = 100;
 /// Past timestamps are always trusted — they represent legitimate offline edits.
 const MAX_FUTURE_DRIFT_SECS: i64 = 5 * 60; // 5 minutes
 
+/// Whether an edit stamped `op_time` was made before the record's last
+/// change, stamped `record_time`: the edit was overtaken, and does not apply.
+/// Compared as times, not as text: a client writes `…Z` to the millisecond,
+/// and a record written by xdb's own update carries the server's clock as
+/// `+00:00` to the nanosecond. A time that does not parse decides nothing,
+/// and the op applies as it did before edits were weighed.
+fn overtaken(op_time: &str, record_time: &str) -> bool {
+    match (
+        chrono::DateTime::parse_from_rfc3339(op_time),
+        chrono::DateTime::parse_from_rfc3339(record_time),
+    ) {
+        (Ok(op), Ok(record)) => op < record,
+        _ => false,
+    }
+}
+
+/// A record as it stands, as an op any client applies from a `sync_delta`:
+/// an update carrying its whole data, or a delete. `answering` is the id of
+/// the overtaken op it is sent for.
+fn as_it_stands(record: xdb::Record, answering: String) -> SyncOp {
+    SyncOp {
+        id: answering,
+        collection: record.collection,
+        operation: if record.deleted { "delete" } else { "update" }.into(),
+        record_id: record.id,
+        data: if record.deleted { None } else { Some(record.data) },
+        timestamp: record.updated_at,
+        client_id: "server".into(),
+    }
+}
+
+/// An update's fields laid over the record's, as xdb's `update_record`
+/// merges them: one name at a time, the update's winning; anything but an
+/// object on either side, and the update's data replaces the record's.
+fn merged(existing: serde_json::Value, incoming: serde_json::Value) -> serde_json::Value {
+    match (existing, incoming) {
+        (serde_json::Value::Object(mut fields), serde_json::Value::Object(incoming)) => {
+            for (name, value) in incoming {
+                fields.insert(name, value);
+            }
+            serde_json::Value::Object(fields)
+        }
+        (_, incoming) => incoming,
+    }
+}
+
 /// Validate a collection name: must be non-empty, alphanumeric + dash/underscore,
 /// and at most 64 characters. Rejects names that could cause issues in queries.
 fn is_valid_collection_name(name: &str) -> bool {
@@ -1005,6 +1051,9 @@ impl SyncManager {
                 let mut batch_accepted = Vec::new();
                 let mut batch_rejected = Vec::new();
                 let mut batch_replayed = Vec::new();
+                // The records overtaken edits were for, each with the first
+                // such op: their pusher is sent them as they stand.
+                let mut batch_overtaken: Vec<(String, String)> = Vec::new();
 
                 for mut op in validated_ops {
                     // xdb finds a record by id alone. An op names a collection,
@@ -1012,15 +1061,16 @@ impl SyncManager {
                     // lives in another collection would otherwise let an op
                     // "in notes" update, delete or (by INSERT OR REPLACE)
                     // overwrite a record the hook never saw.
-                    let exists = match db.get_record(&op.record_id) {
+                    let existing = match db.get_record(&op.record_id) {
                         Ok(existing) if existing.collection != op.collection => {
                             batch_rejected.push((op.id.clone(), "recordId belongs to another collection".to_string()));
                             continue;
                         }
-                        Ok(_) => true,
-                        Err(xdb::DbError::NotFound(_)) => false,
+                        Ok(existing) => Some(existing),
+                        Err(xdb::DbError::NotFound(_)) => None,
                         Err(e) => return Err(e),
                     };
+                    let exists = existing.is_some();
                     // A create for an id that is already here is a create
                     // that already happened: the client sends every op again
                     // until it is acknowledged, and an acknowledgement can be
@@ -1033,6 +1083,26 @@ impl SyncManager {
                     if exists && op.operation == "create" {
                         batch_replayed.push(op.id.clone());
                         continue;
+                    }
+                    // Last writer wins, by the time each edit was made: the
+                    // op's timestamp, as clamped above. An update or a delete
+                    // made before the record last changed was overtaken by
+                    // that change: an edit made offline and pushed after a
+                    // newer one, or one sent again after its acknowledgement
+                    // was lost and another client's edit landed. Applied, it
+                    // undid the newer edit. It is acknowledged, so the client
+                    // stops sending it, and nothing is written, broadcast or
+                    // handed to the after-sync hooks. An update for a deleted
+                    // record is refused below, as it always was.
+                    if let Some(record) = &existing {
+                        let weighed = op.operation == "delete" || (op.operation == "update" && !record.deleted);
+                        if weighed && overtaken(&op.timestamp, &record.updated_at) {
+                            batch_replayed.push(op.id.clone());
+                            if !batch_overtaken.iter().any(|(id, _)| *id == record.id) {
+                                batch_overtaken.push((record.id.clone(), op.id.clone()));
+                            }
+                            continue;
+                        }
                     }
                     let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
                         "create" => {
@@ -1048,11 +1118,23 @@ impl SyncManager {
                             };
                             db.upsert_record(record).map(|_| None)
                         }
-                        "update" => {
-                            let data = op.data.clone().unwrap_or(serde_json::json!({}));
-                            db.update_record(&op.record_id, data).map(|_| None)
-                        }
-                        "delete" => db.delete_record(&op.record_id).map(|_| None),
+                        // The record keeps the time its edit was made, as a
+                        // create always has: that is what the next edit is
+                        // weighed against. xdb's update_record and
+                        // delete_record stamp the server's clock instead, so
+                        // the row is written whole here, with update_record's
+                        // merge, and its creation time kept.
+                        "update" => match existing {
+                            Some(record) if !record.deleted => {
+                                let data = merged(record.data, op.data.clone().unwrap_or(serde_json::json!({})));
+                                db.upsert_record(xdb::Record { data, updated_at: op.timestamp.clone(), ..record }).map(|_| None)
+                            }
+                            _ => Err(xdb::DbError::NotFound(op.record_id.clone())),
+                        },
+                        "delete" => match existing {
+                            Some(record) => db.upsert_record(xdb::Record { updated_at: op.timestamp.clone(), deleted: true, ..record }).map(|_| None),
+                            None => Err(xdb::DbError::NotFound(op.record_id.clone())),
+                        },
                         other => Err(xdb::DbError::NotFound(format!(
                             "Unknown operation: {}",
                             other
@@ -1073,11 +1155,20 @@ impl SyncManager {
                     }
                 }
 
-                Ok((batch_accepted, batch_rejected, batch_replayed))
+                // Read once the whole push is in, so a later op of the same
+                // push for the same record is part of what is sent.
+                let mut batch_current = Vec::new();
+                for (id, answering) in batch_overtaken {
+                    if let Ok(record) = db.get_record(&id) {
+                        batch_current.push(as_it_stands(record, answering));
+                    }
+                }
+
+                Ok((batch_accepted, batch_rejected, batch_replayed, batch_current))
             });
 
             match batch_result {
-                Ok((batch_accepted, batch_rejected, batch_replayed)) => {
+                Ok((batch_accepted, batch_rejected, batch_replayed, batch_current)) => {
                     for (op_id, reason) in batch_rejected {
                         responses.push(ServerMessage::SyncReject {
                             op_id,
@@ -1085,8 +1176,16 @@ impl SyncManager {
                         });
                     }
                     if !batch_replayed.is_empty() {
-                        tracing::debug!("sync_push: {} create(s) already applied, acknowledged without writing", batch_replayed.len());
+                        tracing::debug!("sync_push: {} op(s) already applied or overtaken by a newer edit, acknowledged without writing", batch_replayed.len());
                         responses.push(ServerMessage::SyncAck { op_ids: batch_replayed });
+                    }
+                    // The pusher had applied its overtaken edits to its own
+                    // copy, and would go on showing them: it is sent each
+                    // record as it stands, a delta like any other, and only
+                    // it. (A client keeps a record it deleted itself deleted
+                    // whatever an update delta says; that is the client's.)
+                    if !batch_current.is_empty() {
+                        responses.push(ServerMessage::SyncDelta { ops: batch_current });
                     }
                     accepted_ops = batch_accepted;
                 }
@@ -1554,6 +1653,143 @@ mod tests {
         assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
         // And no peer is told to apply the stale payload.
         assert!(deltas.try_recv().is_err(), "a replayed create was broadcast");
+    }
+
+    /// An op as a client stamps it, `minutes` before now.
+    fn stamped(mut op: SyncOp, minutes: i64) -> SyncOp {
+        op.timestamp = (chrono::Utc::now() - chrono::Duration::minutes(minutes))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        op
+    }
+
+    /// Last writer wins, by the times the clients stamped their edits: an
+    /// edit made offline before another client's, and pushed after it, is
+    /// acknowledged, so the client stops sending it, and not applied.
+    #[test]
+    fn a_stale_offline_update_does_not_overwrite_a_newer_one() {
+        let (sync, db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
+        let newer = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10)], "b");
+        assert_eq!(acked(&newer), vec!["u2"]);
+
+        let mut deltas = sync.broadcast_tx.subscribe();
+        let offline = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30)], "a");
+        assert_eq!(acked(&offline), vec!["u1"], "{offline:?}");
+        assert!(rejected(&offline).is_empty(), "{offline:?}");
+        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
+        assert!(deltas.try_recv().is_err(), "an overtaken update was broadcast");
+    }
+
+    /// The ops of the `sync_delta` messages in a push's answer: what the
+    /// pushing client alone is sent.
+    fn told(responses: &[ServerMessage]) -> Vec<SyncOp> {
+        responses.iter().flat_map(|m| match m {
+            ServerMessage::SyncDelta { ops } => ops.clone(),
+            _ => Vec::new(),
+        }).collect()
+    }
+
+    /// The client that pushed an overtaken edit had applied it to its own
+    /// copy already. It is sent the record as it stands, in a `sync_delta`
+    /// it applies as it applies any other, so it does not go on showing an
+    /// edit the server dropped. Nobody else is sent anything.
+    #[test]
+    fn the_pusher_of_an_overtaken_edit_is_sent_the_record_as_it_stands() {
+        let (sync, _db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first", "body":"b"})), 60)], "a");
+        let newer = stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10);
+        sync.handle_sync_push(vec![newer.clone()], "b");
+        // An edit in time is answered as ever: acknowledged, nothing sent back.
+        assert!(told(&sync.handle_sync_push(vec![stamped(op("c2", "notes", "create", "n2", serde_json::json!({"title":"x"})), 5)], "a")).is_empty());
+
+        let mut others = sync.broadcast_tx.subscribe();
+        for stale in [
+            stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30),
+            stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 20),
+        ] {
+            let answer = sync.handle_sync_push(vec![stale.clone()], "a");
+            assert_eq!(acked(&answer), vec![stale.id.clone()], "{answer:?}");
+            let current = told(&answer);
+            assert_eq!(current.len(), 1, "{answer:?}");
+            assert_eq!((current[0].operation.as_str(), current[0].collection.as_str(), current[0].record_id.as_str()), ("update", "notes", "n1"));
+            assert_eq!(current[0].data, Some(serde_json::json!({"title":"final", "body":"b"})));
+            assert_eq!(current[0].timestamp, newer.timestamp);
+        }
+        assert!(others.try_recv().is_err(), "another client was sent something");
+        // A record deleted since is told as deleted.
+        sync.handle_sync_push(vec![stamped(op("d2", "notes", "delete", "n1", serde_json::json!({})), 3)], "b");
+        let mut others = sync.broadcast_tx.subscribe();
+        let answer = sync.handle_sync_push(vec![stamped(op("d0", "notes", "delete", "n1", serde_json::json!({})), 40)], "a");
+        let current = told(&answer);
+        assert_eq!(current.len(), 1, "{answer:?}");
+        assert_eq!((current[0].operation.as_str(), current[0].record_id.as_str()), ("delete", "n1"));
+        assert!(others.try_recv().is_err(), "another client was sent something");
+    }
+
+    /// The client sends an op again until it is acknowledged. An update whose
+    /// acknowledgement was lost, sent again after another client's newer
+    /// edit, does not undo that edit; sent again with nothing in between, it
+    /// leaves the record as it was.
+    #[test]
+    fn an_update_sent_again_after_a_lost_ack_is_harmless() {
+        let (sync, db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
+        let u1 = stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30);
+        assert_eq!(acked(&sync.handle_sync_push(vec![u1.clone()], "a")), vec!["u1"]);
+        assert_eq!(acked(&sync.handle_sync_push(vec![u1.clone()], "a")), vec!["u1"]);
+        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"draft"}));
+
+        sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10)], "b");
+        let again = sync.handle_sync_push(vec![u1], "a");
+        assert_eq!(acked(&again), vec!["u1"], "{again:?}");
+        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
+    }
+
+    /// Edits in the order they were made apply as they always did, in one
+    /// push or several, and the record keeps the time of the edit that made
+    /// it what it is: the time later edits are weighed against.
+    #[test]
+    fn updates_in_order_still_apply_and_keep_their_time() {
+        let (sync, db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first", "body":"b"})), 60)], "a");
+        let second = stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"third"})), 20);
+        let pushed = sync.handle_sync_push(vec![
+            stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"second"})), 30),
+            second.clone(),
+        ], "a");
+        let mut ids = acked(&pushed);
+        ids.sort();
+        assert_eq!(ids, vec!["u1", "u2"]);
+        let record = db.write().get_record("n1").unwrap();
+        assert_eq!(record.data, serde_json::json!({"title":"third", "body":"b"}), "an update still merges into the record");
+        assert_eq!(record.updated_at, second.timestamp);
+        // An op the client did not stamp is stamped by the server, now, and applies.
+        let unstamped = sync.handle_sync_push(vec![op("u3", "notes", "update", "n1", serde_json::json!({"title":"fourth"}))], "b");
+        assert_eq!(acked(&unstamped), vec!["u3"]);
+        assert_eq!(db.write().get_record("n1").unwrap().data["title"], "fourth");
+    }
+
+    /// A delete is weighed the same way: one made before a newer edit does
+    /// not remove it; one made after does, and keeps its time. An update for
+    /// a deleted record is refused, as it was.
+    #[test]
+    fn deletes_are_weighed_by_their_time_too() {
+        let (sync, db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
+        sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10)], "b");
+        let stale = sync.handle_sync_push(vec![stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 30)], "a");
+        assert_eq!(acked(&stale), vec!["d1"], "{stale:?}");
+        let record = db.write().get_record("n1").unwrap();
+        assert!(!record.deleted, "a delete made before the newer edit removed it");
+        assert_eq!(record.data, serde_json::json!({"title":"final"}));
+
+        let delete = stamped(op("d2", "notes", "delete", "n1", serde_json::json!({})), 5);
+        assert_eq!(acked(&sync.handle_sync_push(vec![delete.clone()], "a")), vec!["d2"]);
+        let record = db.write().get_record("n1").unwrap();
+        assert!(record.deleted);
+        assert_eq!(record.updated_at, delete.timestamp);
+        let late = sync.handle_sync_push(vec![stamped(op("u3", "notes", "update", "n1", serde_json::json!({"title":"late"})), 1)], "b");
+        assert_eq!(rejected(&late), vec!["u3"], "{late:?}");
     }
 
     #[test]

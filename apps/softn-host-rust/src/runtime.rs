@@ -1575,6 +1575,43 @@ mod isolation_tests {
         }
     }
 
+    /// A handler, a hook and the script's top level run once and are done:
+    /// nothing a timer would run later ever runs. Each of the four timer
+    /// functions is an Error that says so, as on the PHP host
+    /// (apps/softn-host-php/tests/route-declarations.test.mjs), where the
+    /// engine's own setTimeout kept its callback for ever, or stopped the
+    /// engine at the top level.
+    #[test]
+    fn a_timer_in_server_logic_is_an_error_that_says_so() {
+        let runtime = one_worker(r#"
+            function timers(req) {
+                var said = {};
+                ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'].forEach(function (name) {
+                    try {
+                        var timer = ({setTimeout: setTimeout, setInterval: setInterval, clearTimeout: clearTimeout, clearInterval: clearInterval})[name];
+                        timer(function () {}, 10);
+                        said[name] = 'nothing';
+                    } catch (e) { said[name] = e.message; }
+                });
+                return {status: 200, body: said};
+            }
+            function timerLeftAlone(req) { setTimeout(function () {}, 10); return {status: 200, body: {ok: true}}; }
+        "#);
+        let said = runtime.call("timers", vec![serde_json::json!({})]).unwrap();
+        for name in ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] {
+            assert_eq!(said["body"][name], format!("{name} is not available in server logic: nothing runs after the handler returns."), "{said}");
+        }
+        let left = runtime.call("timerLeftAlone", vec![serde_json::json!({})]).unwrap_err();
+        assert!(left.contains("setTimeout is not available in server logic"), "{left}");
+        // At the top level the script does not load, and says why.
+        let top = ServerRuntime::new(|| BridgeSet {
+            db: None, http: None, fs: None, env: None, sql: None, crypto: None,
+            allow_time: false, development: false, allow_photos: false, app_config: serde_json::Value::Null,
+        }, Some(1)).unwrap();
+        let refused = top.init("setTimeout(function () {}, 1000);\nfunction ping(req) { return {status: 200, body: {}}; }".to_string()).unwrap_err();
+        assert!(refused.contains("setTimeout is not available in server logic"), "{refused}");
+    }
+
     /// `-0` in a body is `-0` in the handler. The PHP host hands the body to
     /// its runner as the client's own text, so it keeps the sign too (it
     /// used to decode the body and write `0`); this holds the two together.

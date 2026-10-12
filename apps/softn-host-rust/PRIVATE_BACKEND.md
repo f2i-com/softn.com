@@ -205,6 +205,10 @@ Supported script bindings:
 | `softn.time.now/age/parseZoned/format`                    | Trusted epoch clock, calendar age in a chosen timezone, validated IANA local time                  |
 | `softn.media.sanitizePhoto(dataUrl)`                      | Optional `photos` capability; sanitized image and thumbnail                                        |
 
+There are no timers. `setTimeout`, `setInterval`, `clearTimeout` and
+`clearInterval` throw an Error saying so, on this host and the PHP host alike:
+a handler runs once and nothing runs after it returns.
+
 `softn.config` is the manifest's `config.app` object, key for key, with the two
 flags the operator owns set over it: an app key named `development` or `photos`
 is replaced, so a bundle cannot turn development mode on for itself. The PHP

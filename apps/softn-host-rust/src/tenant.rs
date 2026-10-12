@@ -152,10 +152,10 @@ impl TenantManager {
                 if RESERVED_TENANT_IDS.contains(&id) {
                     return Some(format!("Tenant ID '{}' is reserved (conflicts with global route)", id));
                 }
-                // Case-insensitively: on Windows and macOS `App` and `app`
-                // are one data directory, so two such tenants would share a
-                // database.
-                if tenants.keys().any(|k: &String| k.eq_ignore_ascii_case(id)) {
+                // By `tenant_key`: on Windows and macOS `App` and `app` are
+                // one data directory, and on Windows `app.` is too, so two
+                // such tenants would share a database.
+                if tenants.keys().any(|k: &String| tenant_key(k) == tenant_key(id)) {
                     return Some(format!("Duplicate tenant ID '{}'", id));
                 }
                 None
@@ -241,6 +241,15 @@ fn tenant_data_dir(data_dir_base: Option<&Path>, bundle_path: &Path, tenant_id: 
     }
 }
 
+/// What makes two tenant ids one tenant: the data directory they name. Case
+/// is set aside, as Windows and macOS set it aside in a directory name, and
+/// so are the dots at the end, which Windows drops from one: `Shop`, `shop`
+/// and `shop.` are one directory there. Held to on every system, so a set of
+/// bundles loads the same tenants wherever it is served.
+fn tenant_key(id: &str) -> String {
+    id.trim_end_matches('.').to_ascii_lowercase()
+}
+
 /// The id a bundle will claim, read without unpacking or running anything:
 /// `manifest.id`, else `manifest.name`, as `load_tenant` takes it.
 fn peek_tenant_id(path: &Path) -> Option<String> {
@@ -277,7 +286,7 @@ fn contested_losers(candidates: &[(String, PathBuf)], data_dir_base: Option<&Pat
     let mut claims: HashMap<String, Vec<(&String, &PathBuf, String)>> = HashMap::new();
     for (name, path) in candidates {
         if let Some(id) = peek_tenant_id(path) {
-            claims.entry(id.to_ascii_lowercase()).or_default().push((name, path, id));
+            claims.entry(tenant_key(&id)).or_default().push((name, path, id));
         }
     }
     let mut losers = HashMap::new();
@@ -360,6 +369,14 @@ fn load_tenant(
             "Tenant ID '{}' contains invalid characters (must be alphanumeric, dash, underscore, or dot)",
             tenant_id
         ));
+    }
+    // Dots alone name the data directory itself or its parent: `..` does
+    // everywhere, and on Windows, which drops the dots at the end of a
+    // directory name, `...` is the directory every tenant's is in. An id
+    // that only ends in dots is a tenant of its own unless another's is the
+    // same without them (see `tenant_key`).
+    if tenant_id.bytes().all(|b| b == b'.') {
+        return Err(format!("Tenant ID '{}' must not be dots alone", tenant_id));
     }
     // Before the data directory is so much as named: see the caller.
     if let Some(reason) = refuse_id(&tenant_id) {
@@ -521,6 +538,46 @@ mod tests {
         bundle(&root.join("bundles").join("lower"), "shop");
         let manager = TenantManager::load(&root.join("bundles"), Some(&root.join("data")), Some(1), false).unwrap();
         assert_eq!(manager.tenant_ids().len(), 1, "{:?}", manager.tenant_ids());
+    }
+
+    /// Windows drops the dots at the end of a directory name: `shop.` and
+    /// `shop..` are the directory `shop`, and a name of dots alone is the
+    /// data directory itself or its parent. Ids that are one once their
+    /// trailing dots and their case are set aside are one tenant, on every
+    /// system alike, and the bundles after the first are refused as a case
+    /// twin is: a bundle claiming `shop.` cannot open the `shop` tenant's
+    /// database. An id of dots alone is refused. A name that only ends in
+    /// dots, with no twin, is a tenant as it always was.
+    #[test]
+    fn tenant_ids_that_differ_only_in_trailing_dots_are_one_tenant() {
+        let root = std::env::temp_dir().join(format!("softn-tenants-dot-{}", uuid::Uuid::new_v4()));
+        let bundles = root.join("bundles");
+        bundle(&bundles.join("a"), "shop");
+        bundle(&bundles.join("b"), "shop.");
+        // With no id the name is the tenant id, and a name may end in dots.
+        for (dir, name) in [("c", "Shop.."), ("d", "..."), ("e", "Notes...")] {
+            std::fs::create_dir_all(bundles.join(dir)).unwrap();
+            let manifest = serde_json::json!({"name": name, "version": "1"});
+            std::fs::write(bundles.join(dir).join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        }
+        let data = root.join("data");
+        let manager = TenantManager::load(&bundles, Some(&data), Some(1), false).unwrap();
+        let mut ids = manager.tenant_ids();
+        ids.sort();
+        // On Windows that name's database does not open, as before: SQLite
+        // keeps the dots its directory lost. Elsewhere it is served.
+        assert_eq!(ids, if cfg!(windows) { vec!["shop"] } else { vec!["Notes...", "shop"] });
+        // `shop`, and `Notes...` (which Windows names `Notes`): nothing of the others'.
+        assert_eq!(std::fs::read_dir(&data).unwrap().count(), 2);
+        assert_eq!(std::fs::read_to_string(data.join("shop").join(OWNER_FILE)).unwrap(), "a", "another bundle wrote itself into the shop's record");
+        // The rule itself, on its own: dots alone are refused, a name that
+        // only ends in them is not (on Windows it then fails to open its
+        // database, which is another matter).
+        let (shutdown, _) = tokio::sync::watch::channel(false);
+        let alone = |dir: &str| load_tenant(&bundles.join(dir), Some(&root.join("alone")), Some(1), false, &shutdown, &|_| None).err();
+        assert!(alone("d").is_some_and(|e| e.contains("dots alone")), "{:?}", alone("d"));
+        assert!(!alone("e").is_some_and(|e| e.starts_with("Tenant ID")), "{:?}", alone("e"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A bundle that may not be the tenant it names is refused before

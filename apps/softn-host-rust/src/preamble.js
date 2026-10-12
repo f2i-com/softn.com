@@ -130,6 +130,20 @@ var console = {
   info: function (a, b, c, d, e, f, g, h, i, j) { env.log("INFO", __zFmt(a, b, c, d, e, f, g, h, i, j)); },
 };
 
+// Timers are errors that say what is wrong. A handler or a hook runs once
+// and is done, so nothing a timer would call ever runs: the engine's own
+// setTimeout kept the callback for ever inside a function, and at the top
+// level held the worker for the whole delay; the other three were not
+// defined. The PHP host's shim (runtime/wasm-host.mjs) says the same. An
+// app's own function of one of these names comes later and is its own.
+function __softnNoTimer(name) {
+  throw new Error(name + ' is not available in server logic: nothing runs after the handler returns.');
+}
+function setTimeout() { __softnNoTimer('setTimeout'); }
+function setInterval() { __softnNoTimer('setInterval'); }
+function clearTimeout() { __softnNoTimer('clearTimeout'); }
+function clearInterval() { __softnNoTimer('clearInterval'); }
+
 // Server API v1: capability-scoped native bridges.
 function __softnRpc(kind, args) {
   var values = [kind];

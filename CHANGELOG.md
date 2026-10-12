@@ -15,6 +15,7 @@ section here. Write the section before tagging. Headings are the tag
 - FormLogic embedding: an app whose backend call times out keeps that call's slot until FormLogic answers, so one slow action no longer gets the app's next calls refused; Builder and Studio inside FormLogic show a slow save as saved once FormLogic confirms it, where they said "not saved" after 60 s.
 - Directory: a bundle icon that claims a picture larger than a thumbnail may be (8192 px a side, 16 megapixels) is dropped for the placeholder, as an oversized thumbnail is refused.
 - PHP backend host: app SQL cannot ATTACH another database or prepare oversized statements (100 parameters, 100,000 opcodes); a migration the 20 s deadline keeps stopping is named in the log and, after three stops, answered 503 instead of retried on every request; `setTimeout` and the other timers in server logic throw an error that says they cannot run, where they did nothing or crashed the engine; a still WebP photo whose bytes contain "ANIM" is no longer refused as animated.
+- Rust backend host: a synced update or delete older than the record's last change is acknowledged and not applied, so a stale offline edit or a re-sent update no longer overwrites a newer one, and the device that sent it is given the current record; a bundle claiming `shop.` can no longer open the `shop` tenant's database on Windows; timers in server logic throw an error that says they cannot run.
 
 ## v0.0.19
 
