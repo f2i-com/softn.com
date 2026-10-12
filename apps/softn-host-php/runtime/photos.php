@@ -77,6 +77,17 @@ function png_is_animated(string $data): bool {
     return false;
 }
 
+/**
+ * Whether a WebP is an animated one: it is in the extended format, and the
+ * animation flag of its VP8X header is set. That is what the Rust host's
+ * decoder reads. The check was "the bytes ANIM anywhere in the file", the
+ * same mistake png_is_animated was written to undo: a still photo whose
+ * metadata or compressed data held those letters was refused as animated.
+ */
+function webp_is_animated(string $data): bool {
+    return strlen($data)>=21&&substr($data,12,4)==='VP8X'&&(ord($data[20])&0x02)!==0;
+}
+
 function sanitize_photo(mixed $url): array {
     if(!is_string($url)||strlen($url)>5600000||!preg_match('~^data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$~D',$url,$match))throw new RuntimeException('format');
     $data=base64_decode($match[2],true);
@@ -85,7 +96,7 @@ function sanitize_photo(mixed $url): array {
     if(!$size||$size[0]<32||$size[1]<32||$size[0]>8192||$size[1]>8192||$size[0]*$size[1]>16000000||!in_array($size[2],[IMAGETYPE_JPEG,IMAGETYPE_PNG,IMAGETYPE_WEBP],true))throw new RuntimeException('dimensions');
     // $size[2] is what the bytes are, whatever the label called them: a PNG a
     // browser labelled image/jpeg (it goes by the file's extension) is a PNG.
-    if(($size[2]===IMAGETYPE_PNG&&png_is_animated($data))||($size[2]===IMAGETYPE_WEBP&&str_contains($data,'ANIM')))throw new RuntimeException('animation');
+    if(($size[2]===IMAGETYPE_PNG&&png_is_animated($data))||($size[2]===IMAGETYPE_WEBP&&webp_is_animated($data)))throw new RuntimeException('animation');
     $image=@imagecreatefromstring($data);if(!$image)throw new RuntimeException('decode');
     $orientation=$size[2]===IMAGETYPE_JPEG?photo_orientation($data):1;
     try {

@@ -13,19 +13,23 @@
  */
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readFileSync,mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 
 const [major,minor]=process.versions.node.split('.').map(Number);
 const skip=major<24||major===24&&minor<19?'Node 24.19 or newer (node:sqlite setAuthorizer)':false;
 if(skip)console.warn(`WARNING: tests/sql-parity.test.mjs skipped: ${skip}. See apps/softn-host-php/README.md, Validation.`);
 const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
 const {DatabaseSync}=skip?{}:await import('node:sqlite');
-const {createSql}=skip?{}:await import('../runtime/sql.mjs');
+const {createSql,SQL_LIMITS}=skip?{}:await import('../runtime/sql.mjs');
 const {applyMigration}=skip?{}:await import('../runtime/migrations.mjs');
 const parity=JSON.parse(readFileSync(new URL('./sql-parity.json',import.meta.url),'utf8'));
 
 function database() {
-  const db=new DatabaseSync(':memory:');
+  // With the limits a request's connection has (runtime/sql.mjs), as the
+  // Rust host's runs open its connection with its own.
+  const db=new DatabaseSync(':memory:',{limits:SQL_LIMITS});
   db.exec(parity.schema);
   return db;
 }
@@ -62,6 +66,46 @@ test('request-time SQL: the shared list is allowed and refused as the contract s
     else if(c.result!==undefined){try{assert.deepEqual(plain(result),c.result);}catch{wrong.push(`result of ${c.sql}: ${JSON.stringify(result)}`);}}
   }
   assert.deepEqual(wrong,[]);
+});
+
+test('the request connection refuses a new statement at each of its limits, and reads every database written without them',()=>{
+  // SQL_LIMITS (runtime/sql.mjs). node:sqlite takes a key it does not know
+  // without a word, so each is tried at its bound: a Node that stopped
+  // enforcing one would fail here, not leave it off.
+  const db=new DatabaseSync(':memory:',{limits:SQL_LIMITS});
+  try {
+    const refused=sql=>{try{db.prepare(sql);return null;}catch(e){return e.message;}};
+    // ATTACH is a function call when it is prepared; the limit is met when it runs.
+    assert.throws(()=>db.prepare("ATTACH ':memory:' AS other").run(),/too many attached databases/);
+    assert.equal(refused('SELECT ?100'),null);
+    assert.match(refused('SELECT ?101')??'',/variable number must be between \?1 and \?100/);
+    // SQLite holds the opcode count as its array of opcodes grows, a step at
+    // a time, so the bound is a little under 100,000: half of it is taken,
+    // twice it is not.
+    const cases=n=>'SELECT CASE 0 '+Array.from({length:n},(_,i)=>`WHEN ${i} THEN ${i}`).join(' ')+' END';
+    assert.equal(refused(cases(15_000)),null);
+    assert.match(refused(cases(70_000))??'',/out of memory/);
+  } finally {db.close();}
+  // What an app may already have stored on this host stays readable: a value
+  // over 2 MiB, a table of 250 columns, a CHECK 150 terms deep and a schema
+  // statement of 300 KB, each written before there were limits.
+  const values=Array.from({length:50_000},(_,i)=>i).join(',');
+  const wide=Array.from({length:250},(_,i)=>`c${i} INTEGER`).join(',');
+  const deep=Array.from({length:150},(_,i)=>`a = ${i}`).join(' OR ');
+  const file=join(mkdtempSync(join(tmpdir(),'softn-limits-')),'old.sqlite');
+  const old=new DatabaseSync(file);
+  old.exec(`CREATE TABLE big(v TEXT); INSERT INTO big VALUES (printf('%.*c', ${3*1024*1024}, 'x'));
+    CREATE TABLE wide(${wide}); INSERT INTO wide(c0) VALUES (1);
+    CREATE TABLE deep(a INTEGER CHECK (${deep})); INSERT INTO deep VALUES (3);
+    CREATE TABLE listed(a INTEGER CHECK (a IN (${values}))); INSERT INTO listed VALUES (7);`);
+  old.close();
+  const now=new DatabaseSync(file,{limits:SQL_LIMITS});
+  try {
+    assert.equal(now.prepare('SELECT length(v) AS n FROM big').get().n,3*1024*1024);
+    assert.equal(now.prepare('SELECT c0 FROM wide').get().c0,1);
+    assert.equal(now.prepare('SELECT a FROM deep').get().a,3);
+    assert.equal(now.prepare('SELECT a FROM listed').get().a,7);
+  } finally {now.close();}
 });
 
 test('a migration may be 1,000,000 bytes and no more, which the Rust host takes too',()=>{

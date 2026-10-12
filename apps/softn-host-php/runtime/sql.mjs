@@ -4,6 +4,21 @@ import {constants as C} from 'node:sqlite';
 // `single_statement`), so an app behaves the same on either;
 // tests/sql-parity.json is the shared list both can be checked against.
 
+/**
+ * Of the limits the Rust host sets on its connection (bridges/sql.rs
+ * open_connection), the ones that only refuse a statement being prepared or
+ * run: no attached database, 100 parameters, 100,000 opcodes. Its others
+ * would also be met reading what an app has already stored on this host,
+ * which never had them: a value or row over 2 MiB (the length limit), a
+ * table of more than 200 columns, and a CHECK or DEFAULT deeper than 100 or
+ * a schema statement longer than 256 KiB (which SQLite parses again on
+ * every open) would each leave the data, or the whole database, unreadable.
+ * None of these bounds memory or time: SQLite here takes PRAGMA
+ * hard_heap_limit without enforcing it and node:sqlite has no progress
+ * handler, so a long statement is stopped only by the runner's deadline.
+ */
+export const SQL_LIMITS=Object.freeze({attach:0,variableNumber:100,vdbeOp:100_000});
+
 /** Functions app SQL may call, at request time and in migrations. */
 export const RUNTIME_FUNCTIONS=new Set(['count','min','max','sum','avg','total','coalesce','ifnull','nullif','length','lower','upper',
   'trim','ltrim','rtrim','substr','substring','replace','instr','abs','round','like','glob','typeof','unicode','char','hex','quote']);

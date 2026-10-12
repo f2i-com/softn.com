@@ -1,11 +1,12 @@
 import {DatabaseSync} from 'node:sqlite';
-import {workerData} from 'node:worker_threads';
+import {workerData,parentPort} from 'node:worker_threads';
 import {readFileSync,lstatSync,realpathSync,chmodSync,mkdirSync,writeFileSync,readdirSync,rmSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {join,dirname,relative,isAbsolute} from 'node:path';
+import {join,dirname,relative,isAbsolute,basename} from 'node:path';
 import {createWasmHost,validateWasmSource,logFailure} from './wasm-host.mjs';
 import {applyMigration} from './migrations.mjs';
+import {SQL_LIMITS} from './sql.mjs';
 import {configureRecordEvents} from './record-events.mjs';
 import {invokeWithHook} from './request-hook.mjs';
 // The operator may select an isolated app installation while sharing the trusted
@@ -13,6 +14,8 @@ import {invokeWithHook} from './request-hook.mjs';
 const root=realpathSync(process.env.SOFTN_BACKEND_ROOT || dirname(fileURLToPath(import.meta.url)));
 const contained=(parent,child)=>{const path=relative(parent,child);return path!==''&&!isAbsolute(path)&&path!=='..'&&!path.startsWith('..'+(process.platform==='win32'?'\\':'/'));};
 let db;
+/** How many times the runner's deadline may stop one migration before it is not started again. */
+const MIGRATION_ATTEMPTS=3;
 /**
  * Note that a rate bucket is over its limit for this minute, where http.php
  * looks before it does anything else (request.php softn_rate_marker): one
@@ -109,7 +112,7 @@ try {
   startupStage='database_open';
   const file=join(data,'application.sqlite');
   try{if(lstatSync(file).isSymbolicLink())throw new Error('Invalid database');}catch(e){if(e.code!=='ENOENT')throw e;}
-  db=new DatabaseSync(file,{allowExtension:false});chmodSync(file,0o600);
+  db=new DatabaseSync(file,{allowExtension:false,limits:SQL_LIMITS});chmodSync(file,0o600);
   // Lock waits are three seconds, as on the Rust host, and the wait is set
   // before anything that can meet a lock: with journal_mode first, a request
   // opening the database while another was closing its connection failed at
@@ -128,12 +131,25 @@ try {
     if(migrations.some(name=>typeof name!=='string'))throw new Error('Invalid migration list');
     migrations.sort((a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b)));
     if(migrations.some((name,i)=>i>0&&name===migrations[i-1]))throw new Error('Duplicate migration path');
+    // A migration the runner's deadline stopped (runner.mjs) is written down
+    // there, and the runner is told which one is running before each starts.
+    // Each stop rolled it back, and every request after started it again and
+    // held the write lock until it was stopped too; after three it is not
+    // started again until its file changes or the note is removed.
+    const stoppedNote=join(data,'migration-stopped.json');
+    let stopped=null;try{stopped=JSON.parse(readFileSync(stoppedNote,'utf8'));}catch{}
     for(const name of migrations) {
       const sql=readFileSync(inside(name),'utf8'),hash=createHash('sha256').update(sql).digest('hex');
       const old=db.prepare('SELECT sha256 FROM _migrations WHERE name=?').get(name);
       if(old){if(old.sha256!==hash)throw new Error('Migration mismatch');continue;}
+      const fileName=basename(name);
+      if(stopped?.name===name&&stopped.sha256===hash&&stopped.stops>=MIGRATION_ATTEMPTS)
+        throw new Error(`Migration ${fileName} was stopped at the deadline ${stopped.stops} times and is not started again until it changes or migration-stopped.json is removed from the private data folder`);
+      parentPort?.postMessage({migration:{name,file:fileName,sha256:hash,marker:stoppedNote,attempts:MIGRATION_ATTEMPTS}});
       applyMigration(db,sql);db.prepare('INSERT INTO _migrations VALUES(?,?,?)').run(name,hash,Math.floor(Date.now()/1000));
+      parentPort?.postMessage({migration:null});
     }
+    if(stopped)rmSync(stoppedNote,{force:true});
     const listed=new Set(migrations);
     if(db.prepare('SELECT name FROM _migrations').all().some(row=>!listed.has(row.name)))throw new Error('Deployment removed a previously applied migration');
     startupStage='request_limits';

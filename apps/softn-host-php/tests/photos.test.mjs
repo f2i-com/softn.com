@@ -143,7 +143,17 @@ $inputs=[
 if(function_exists('imagewebp')) {
   $webp=picture(64,64,'webp');
   $inputs['still webp']=url($webp,'webp');
-  $inputs['animated webp']=url($webp.'ANIM','webp');
+  // The extended format: a VP8X header whose flags say what follows.
+  $chunk=fn(string $type,string $data): string => $type.pack('V',strlen($data)).$data.(strlen($data)%2?"\\0":'');
+  $riff=fn(string $chunks): string => 'RIFF'.pack('V',4+strlen($chunks)).'WEBP'.$chunks;
+  $side=substr(pack('V',63),0,3);
+  $canvas=fn(int $flags): string => $chunk('VP8X',chr($flags)."\\0\\0\\0".$side.$side);
+  $frame=substr($webp,12);
+  // Two frames of the still picture behind the animation flag: an animated WebP.
+  $frames=$chunk('ANMF',"\\0\\0\\0\\0\\0\\0".$side.$side."\\x64\\0\\0\\0".$frame);
+  $inputs['animated webp']=url($riff($canvas(0x02).$chunk('ANIM',"\\0\\0\\0\\0\\0\\0").$frames.$frames),'webp');
+  // A still one whose XMP mentions an ANIMAL.
+  $inputs['a still webp with ANIM in its metadata']=url($riff($canvas(0x04).$frame.$chunk('XMP ','<x:xmpmeta xmlns:x="adobe:ns:meta/">ANIMAL</x:xmpmeta>')),'webp');
 }
 $out=[];
 foreach(json_decode(stream_get_contents(STDIN),true) as $name) {
@@ -185,6 +195,11 @@ test('what a photo is, and whether it moves, is read from its bytes, as on the R
   const got=refusals(['a png with acTL in a comment','a png called a jpeg','a jpeg called a png','an animated png called a jpeg','animated png','a type it does not take']);
   assert.deepEqual(got,{'a png with acTL in a comment':'accepted','a png called a jpeg':'accepted','a jpeg called a png':'accepted',
     'an animated png called a jpeg':'animation','animated png':'animation','a type it does not take':'format'});
+  // The same for WebP, which was "the four bytes ANIM anywhere": it is the
+  // animation flag of the extended header, as the Rust host's decoder reads it.
+  const webp=refusals(['a still webp with ANIM in its metadata','animated webp']);
+  if(webp['animated webp']!=='skipped')
+    assert.deepEqual(webp,{'a still webp with ANIM in its metadata':'accepted','animated webp':'animation'});
 });
 
 test('what shows through a see-through photo is white, which the Rust host is held to as well',()=>{

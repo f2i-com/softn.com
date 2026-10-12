@@ -43,6 +43,8 @@ function settings(req){return {status:200,body:softn.config};}
 function boom(req){softn.sql.execute("UPDATE counter SET value=value+5",[]);throw new Error("boom at /home/app/secret.txt with\\ttab");}
 function sneak(req){softn.sql.execute("UPDATE counter SET value=value+7",[]);return {status:200,body:{ok:true}};}
 function big(req){var s=new Array((req.query.n|0)+1).join("x");return {status:200,body:softn.sql.first("SELECT length(?) AS n",[s])};}
+function timers(req){var said={};['setTimeout','setInterval','clearTimeout','clearInterval'].forEach(function(name){try{var timer=({setTimeout:setTimeout,setInterval:setInterval,clearTimeout:clearTimeout,clearInterval:clearInterval})[name];timer(function(){},10);said[name]='nothing';}catch(e){said[name]=e.message;}});return {status:200,body:said};}
+function timerLeftAlone(req){setTimeout(function(){},10);return {status:200,body:{ok:true}};}
 function text(req){return {status:200,body:{text:req.body.text}};}
 function age(req){return {status:200,body:{plain:softn.time.age("2000-01-01"),zoned:softn.time.age("2000-01-01","UTC"),bad:softn.time.age("not a date")}};}
 function bump(req){return {status:200,body:softn.sql.execute("UPDATE counter SET value=value+1",[])};}
@@ -419,6 +421,65 @@ test('a host call carries 2 MiB of arguments, as on the Rust host',t=>{
   const over=b.logged({method:'GET',path:'/api/big',query:{n:'2200000'}});
   assert.equal(over.status,500);
   assert.match(over.stderr,/softn: handler big: Host call arguments exceed 2117152 bytes: sql\.first/);
+});
+
+test('a timer in server logic is an error that says so, where the engine queued it for ever or stopped',t=>{
+  // A request ends when its handler returns, so nothing a timer would run
+  // later ever runs. The engine's own setTimeout kept the callback and never
+  // called it inside a function, and at the top level stopped the engine
+  // ("can't sleep"). Each of the four is now an Error a handler can catch.
+  const b=backend(manifest([
+    {method:'GET',path:'/api/timers',handler:'timers'},
+    {method:'GET',path:'/api/left',handler:'timerLeftAlone'},
+  ]));
+  t.after(b.close);
+  const said=b.invoke({method:'GET',path:'/api/timers'});
+  assert.equal(said.status,200,JSON.stringify(said));
+  for(const name of ['setTimeout','setInterval','clearTimeout','clearInterval'])
+    assert.equal(said.body[name],`${name} is not available in server logic: nothing runs after the handler returns.`,name);
+  // Not caught: the request fails, and the log says why.
+  const left=b.logged({method:'GET',path:'/api/left'});
+  assert.equal(left.status,500,JSON.stringify(left));
+  assert.match(left.stderr,/softn: handler timerLeftAlone: .*setTimeout is not available in server logic/);
+  // At the top level of the script: the app does not start, and the log says why.
+  writeFileSync(join(b.root,'app/server/main.logic'),SOURCE+'\nsetTimeout(function(){},1000);\n');
+  const top=b.logged({method:'GET',path:'/api/timers'});
+  assert.equal(top.status,503,JSON.stringify(top));
+  assert.match(top.stderr,/setTimeout is not available in server logic/);
+});
+
+test('a migration the deadline stops is named in the log, and after three stops is not tried again until it changes',t=>{
+  // Migrations run in the first request's transaction. One that takes longer
+  // than the runner's deadline was killed with nothing in the log, rolled
+  // back, and started again by every request after, each holding a worker
+  // slot and the write lock until it was killed too. The deadline is
+  // shortened here; http.php starts the runner with an environment that
+  // does not carry it.
+  const m=manifest([{method:'GET',path:'/api/ping',handler:'ping'}]);
+  m.server.database.migrations.push('server/migrations/002.sql');
+  const b=backend(m);
+  t.after(b.close);
+  const slow='CREATE TABLE slow(n INTEGER); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 4000000000) INSERT INTO slow SELECT count(*) FROM c;';
+  writeFileSync(join(b.root,'app/server/migrations/002.sql'),slow);
+  const ask=()=>spawnSync(process.execPath,['--disable-proto=throw',join(b.root,'runner.mjs')],{
+    input:JSON.stringify({path:'/api/ping',method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}),encoding:'utf8',timeout:30000,
+    env:{...process.env,SOFTN_BACKEND_ROOT:b.root,NODE_NO_WARNINGS:'1',SOFTN_RUNNER_DEADLINE_MS:'1500'}});
+  for(const attempt of [1,2,3]) {
+    const r=ask();
+    assert.notEqual(r.status,0,'the deadline stopped the runner');
+    assert.ok(r.stderr.includes(`softn: startup stage database_migrations: migration 002.sql was stopped at the 1.5 s deadline (${attempt} of 3)`),r.stderr);
+  }
+  // The fourth request is told at once, and the log says how to try again.
+  const refused=ask();
+  assert.equal(refused.status,0,refused.stderr);
+  assert.deepEqual(JSON.parse(refused.stdout),{status:503,body:{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:'database_migrations'}});
+  assert.match(refused.stderr,/softn: startup stage database_migrations: Migration 002\.sql was stopped at the deadline 3 times/);
+  // Changed, it is tried again, and once it has run nothing of the stops is left.
+  writeFileSync(join(b.root,'app/server/migrations/002.sql'),'CREATE TABLE slow(n INTEGER);');
+  const fixed=ask();
+  assert.equal(fixed.status,0,fixed.stderr);
+  assert.deepEqual(JSON.parse(fixed.stdout),{status:200,body:{ok:true,path:'/api/ping'}});
+  assert.ok(!existsSync(join(b.root,'private/data/migration-stopped.json')));
 });
 
 test('text that is not ASCII reaches the handler whole, however the runner is fed',t=>{

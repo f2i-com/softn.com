@@ -23,7 +23,18 @@ softn.time.now=function(){return __softnCall('time.now',[]);};
 softn.time.parseZoned=function(d,t,z){return __softnCall('time.parseZoned',[d,t,z]);};
 softn.time.format=function(t,z){return __softnCall('time.format',[t,z]);};
 softn.time.age=function(d,z){return __softnCall('time.age',[d,z]);};
+function __softnNoTimer(name){throw new Error(name+' is not available in server logic: nothing runs after the handler returns.');}
+function setTimeout(){__softnNoTimer('setTimeout');}
+function setInterval(){__softnNoTimer('setInterval');}
+function clearTimeout(){__softnNoTimer('clearTimeout');}
+function clearInterval(){__softnNoTimer('clearInterval');}
 `;
+// The timers above are errors that say what is wrong. A handler runs once
+// and the request ends when it returns, so nothing a timer would call ever
+// runs. The engine's own setTimeout kept the callback for ever inside a
+// function, and at the top level stopped the engine ("can't sleep"); the
+// other three were not defined. The Rust host's preamble.js says the same.
+// An app's own function of one of these names comes later and is its own.
 
 function initialize() {
   if(!initialized){
