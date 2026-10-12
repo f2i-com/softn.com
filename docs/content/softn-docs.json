@@ -1967,7 +1967,7 @@
             },
             {
               "type": "paragraph",
-              "text": "A handler bound by name receives an argument: for most events, a plain-data summary of the browser event, and for `@change` and `@input`, the new value. It is never the live DOM event, so there is no `preventDefault` or `event.target`; a modifier does that job. Write an arrow, `@click={() => save()}`, to call a function without it; Python apps need that form for functions with no parameters."
+              "text": "A handler bound by name receives an argument: for most events, a plain-data summary of the browser event, and for `@change` and `@input`, the new value. It is never the live DOM event, so there is no `preventDefault` or `event.target`; a modifier does that job. An arrow that names a parameter, `@keydown={(e) => e.key === \"Enter\" && add()}`, is given the same summary, with `e.preventDefault()` and `e.stopPropagation()` added, and `e.target` and `e.currentTarget` as records of what the element holds (`value`, `checked`, `dataset`, its size); that is not the live event either, and it leads to no element, document or window. Write an arrow, `@click={() => save()}`, to call a function without it; Python apps need that form for functions with no parameters."
             },
             {
               "type": "code",

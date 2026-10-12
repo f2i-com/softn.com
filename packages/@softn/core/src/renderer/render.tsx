@@ -27,6 +27,7 @@ import {
   cssResourceReferences,
   isRemoteUrl,
   isSafeUrl,
+  DOCUMENT_NAMED_TAGS,
   TOP_LAYER_ATTRIBUTES,
   URL_ATTRIBUTES,
 } from './sanitize-html';
@@ -48,6 +49,7 @@ import {
   type EgressConfig,
 } from '../runtime/egress-policy';
 import { parseStatePath } from '../runtime/state-path';
+import { markupValue } from './host-values';
 
 /**
  * Write `value` at `path` in `state`, copying each record and list on the
@@ -82,11 +84,16 @@ const MAX_EVAL_DEPTH = 100;
  * `#each (key in Object.keys(totals))` is how a map is listed. `null` and
  * `undefined` answer an empty list, because data that has not loaded yet is
  * the usual reason a template meets them.
+ *
+ * They list what markup may hold (host-values.ts), going in and coming out:
+ * `list.map(Object.entries)` is the browser calling these on whatever the
+ * list holds, with no expression in between to check it.
  */
 const TEMPLATE_OBJECT = Object.freeze({
-  keys: (value: unknown) => Object.keys(Object(value ?? {})),
-  values: (value: unknown) => Object.values(Object(value ?? {})),
-  entries: (value: unknown) => Object.entries(Object(value ?? {})),
+  keys: (value: unknown) => Object.keys(Object(markupValue(value) ?? {})),
+  values: (value: unknown) => Object.values(Object(markupValue(value) ?? {})).map(markupValue),
+  entries: (value: unknown) =>
+    Object.entries(Object(markupValue(value) ?? {})).map(([key, held]): [string, unknown] => [key, markupValue(held)]),
 });
 
 /**
@@ -668,6 +675,19 @@ function isWithheldUrl(name: string, value: string, policy: EgressPolicy): boole
       ? describeSrcSetEgress(value, policy)
       : describeMarkupEgress(value, policy);
   return !verdict.allowed;
+}
+
+/**
+ * Drop the `name` of an element the document answers to by name, which would
+ * stand in for one of `document`'s own members; see
+ * {@link DOCUMENT_NAMED_TAGS}. Any casing, because the browser lowercases an
+ * attribute's name on an HTML element whatever React was given.
+ */
+function dropDocumentName(props: SoftNProps, tag: string): void {
+  if (!DOCUMENT_NAMED_TAGS.has(tag.toLowerCase())) return;
+  for (const name of Object.keys(props)) {
+    if (name.toLowerCase() === 'name') delete props[name];
+  }
 }
 
 /**
@@ -1574,9 +1594,10 @@ function renderElement(
     // callback, and several pass plain data — DPad gives `@press` the direction
     // pressed, and dropping it left every on-screen control doing nothing while
     // the keyboard path still worked. Where the argument really is a DOM event,
-    // the VM adapter's allowlist already reduces it to null before it can reach
-    // a script (see `sanitizeArgs`), and a handler written in the template is
-    // entitled to the event anyway.
+    // neither kind of handler holds it: the VM adapter reduces it to a plain
+    // record before it can reach a script (see `sanitizeArgs`), and an arrow
+    // written in the template is given that record with `preventDefault()`
+    // and the element's own values added (see `markupValue`).
     return (...args: unknown[]) => fn(...args);
   };
 
@@ -1680,6 +1701,7 @@ function renderElement(
   if (typeof FinalComponent === 'string') {
     sanitizeUrlProps(props, node.tag, egressPolicy);
     dropTopLayerProps(props);
+    dropDocumentName(props, FinalComponent);
   } else {
     sanitizeComponentUrlProps(props, node.tag, egressPolicy);
   }
@@ -2223,6 +2245,9 @@ function takeApart(
   values: unknown[],
   defaults?: (expr: Expression) => unknown
 ): void {
+  // As markup holds it (host-values.ts), at every depth: `({ view: { eval } })`
+  // would otherwise read through an event to the window inside one pattern.
+  value = markupValue(value);
   if (pattern.type === 'NamePattern') {
     values.push(value);
     return;
@@ -2355,7 +2380,7 @@ function evaluate(
       // arrow's parameter hides a state variable of the same name.
       for (let scope = locals; scope; scope = scope.parent) {
         const at = scope.names.indexOf(expr.name);
-        if (at !== -1) return scope.values[at];
+        if (at !== -1) return markupValue(scope.values[at]);
       }
       // Then state, data, computed, props, functions, then JS globals.
       //
@@ -2364,10 +2389,10 @@ function evaluate(
       // resolved to `Object` itself — from which `defineProperty(__proto__, …)`
       // is a short step to running arbitrary code from a template.
       if (Object.hasOwn(context.state, expr.name)) {
-        return context.state[expr.name];
+        return markupValue(context.state[expr.name]);
       }
       if (Object.hasOwn(context.data, expr.name)) {
-        return context.data[expr.name];
+        return markupValue(context.data[expr.name]);
       }
       if (Object.hasOwn(context.computed, expr.name)) {
         // A computed is stored as a thunk — `() => callComputed(name)` — because
@@ -2377,10 +2402,10 @@ function evaluate(
         // rendered its source into the page:
         //   (...r)=>{let i={...t,state:{...t.state}};if(e.para
         const value = context.computed[expr.name];
-        return typeof value === 'function' ? (value as () => unknown)() : value;
+        return markupValue(typeof value === 'function' ? (value as () => unknown)() : value);
       }
       if (Object.hasOwn(context.props, expr.name)) {
-        return context.props[expr.name];
+        return markupValue(context.props[expr.name]);
       }
       if (Object.hasOwn(context.functions, expr.name)) {
         return context.functions[expr.name];
@@ -2497,11 +2522,11 @@ function evaluate(
         const prop = evaluate(expr.property, context, locals, depth + 1);
         const safeKey = getSafeMemberKey(prop);
         if (safeKey === null) return undefined;
-        return target[safeKey];
+        return markupValue(target[safeKey]);
       } else if (expr.property.type === 'Identifier') {
         const safeKey = getSafeMemberKey(expr.property.name);
         if (safeKey === null) return undefined;
-        return target[safeKey];
+        return markupValue(target[safeKey]);
       }
 
       return undefined;
@@ -2565,7 +2590,7 @@ function evaluate(
           return undefined;
         }
         // Bind `this` for method calls (arr.filter, str.toUpperCase, etc.)
-        return thisObj != null ? fn.apply(thisObj, args) : fn(...args);
+        return markupValue(thisObj != null ? fn.apply(thisObj, args) : fn(...args));
       }
 
       return undefined;
@@ -2668,7 +2693,11 @@ function evaluate(
     }
 
     case 'ArrowFunctionExpression': {
-      return (...args: unknown[]) => {
+      return (...given: unknown[]) => {
+        // Whoever calls this (an event, a component's callback, `list.map`)
+        // may hand it a piece of the browser; markup holds none
+        // (host-values.ts).
+        const args = given.map(markupValue);
         // The parameters are a layer over what was bound where the arrow
         // was written. An argument that was not passed is `undefined`, which
         // is what reading past the end of `args` gives.

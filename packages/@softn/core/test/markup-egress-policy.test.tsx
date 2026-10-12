@@ -20,7 +20,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { parse } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
 import type { SoftNProps, SoftNRenderContext } from '../src/types';
-import type { EgressConfig } from '../src/runtime/egress-policy';
+import { filterSignalingUrls, type EgressConfig } from '../src/runtime/egress-policy';
 
 function StubImage(props: SoftNProps): React.ReactElement {
   return React.createElement('img', {
@@ -125,4 +125,27 @@ describe('a host that publishes no permission config', () => {
   it('is not enforcing, so a preview outside any bundle still shows remote images', () => {
     expect(html(`<img src="${CDN}"/>`, null)).toContain('cdn.example');
   });
+});
+
+describe('a permission.json that says something other than true', () => {
+  // The file is a stranger's JSON, read as it came. The consent bar, the
+  // directory's listing and softn.net.fetch all take `net` as granted only
+  // for `"enabled": true`; the markup policy took anything truthy, so
+  // `"enabled": "false"` or `1` was an app that asked for no network
+  // anywhere a person could see and still sent state out from an <img>.
+  for (const enabled of ['false', 'true', 'yes', 1, {}, []]) {
+    it(`does not take net.enabled ${JSON.stringify(enabled)} as granted`, () => {
+      const config = { permissions: { net: { enabled } } } as unknown as EgressConfig;
+      expect(html(`<img src="${CDN}"/>`, config)).not.toContain('cdn.example');
+      expect(filterSignalingUrls(['wss://cdn.example/room'], config).allowed).toEqual([]);
+    });
+  }
+
+  for (const allow_http of ['false', 'true', 1]) {
+    it(`does not take net.allow_http ${JSON.stringify(allow_http)} as plain HTTP allowed`, () => {
+      const config = { permissions: { net: { enabled: true, allow_http } } } as unknown as EgressConfig;
+      expect(html(`<img src="http://cdn.example/x.png"/>`, config)).not.toContain('cdn.example');
+      expect(html(`<img src="${CDN}"/>`, config)).toContain('cdn.example');
+    });
+  }
 });

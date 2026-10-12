@@ -325,6 +325,21 @@ export const TOP_LAYER_ATTRIBUTES = new Set([
   'command',
 ]);
 
+/**
+ * Elements a document answers to by name.
+ *
+ * `<img name="createElement">` makes `document.createElement` that image for
+ * as long as it is on the page, and `document`'s own members give way to it:
+ * React draws with `createElement`, so the next thing drawn threw and the page
+ * went blank, the host's own interface with it. Any name does it (`body`,
+ * `querySelector`, a feature a library tests for), so no list of bad names
+ * holds; these elements carry no `name` at all, from markup or from sanitized
+ * HTML. A field keeps its `name`: the document does not answer to those.
+ * (`iframe`, `embed` and `object` are answered to as well and are not let
+ * through in the first place.)
+ */
+export const DOCUMENT_NAMED_TAGS = new Set(['img', 'form', 'iframe', 'embed', 'object']);
+
 /** SVG elements that only describe shapes — no scripting, no external loads. */
 const SVG_TAGS = new Set([
   'svg',
@@ -467,6 +482,10 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
         continue;
       }
       if (TOP_LAYER_ATTRIBUTES.has(name)) {
+        node.removeAttribute(attr.name);
+        continue;
+      }
+      if (name === 'name' && DOCUMENT_NAMED_TAGS.has(tag)) {
         node.removeAttribute(attr.name);
         continue;
       }

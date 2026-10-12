@@ -68,7 +68,7 @@ export function describeNetDestination(
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     return deny(`Scheme not allowed: ${parsed.protocol}`);
   }
-  if (parsed.protocol === 'http:' && !net?.allow_http) {
+  if (parsed.protocol === 'http:' && net?.allow_http !== true) {
     return deny(
       `HTTP not allowed (only HTTPS). Set net.allow_http in permission.json to allow: ${url}`
     );
@@ -148,7 +148,7 @@ export function describeMarkupEgress(
     return deny('Withheld until the user answers the permission bar');
   }
   const net = config.permissions?.net;
-  if (!net?.enabled) {
+  if (net?.enabled !== true) {
     return deny(
       'Network access not permitted: the bundle loads a remote resource but declares no ' +
         '{ "net": { "enabled": true } } in permission.json'
@@ -180,7 +180,7 @@ export function filterSignalingUrls(
     let verdict: EgressVerdict;
     if (!config) verdict = ALLOW;
     else if (config.consentPending) verdict = deny('Withheld until the user answers the permission bar');
-    else if (!config.permissions?.net?.enabled) {
+    else if (config.permissions?.net?.enabled !== true) {
       verdict = deny('Network access not permitted: a signalling server needs { "net": { "enabled": true } }');
     } else verdict = describeSocketDestination(candidate, config.permissions.net);
     if (verdict.allowed) allowed.push(candidate);

@@ -78,7 +78,7 @@ export function createSyncControls(options: SyncControlsOptions): SyncControls {
       // replication of the whole database opened itself for exactly the
       // bundles the rest of the model trusts least. An absent config is a
       // refusal, as checkPermission('sync') has always answered.
-      if (!permissionConfig?.permissions?.sync?.enabled) {
+      if (permissionConfig?.permissions?.sync?.enabled !== true) {
         refuse(permissionConfig?.consentPending ? 'pending' : 'denied');
         return;
       }
