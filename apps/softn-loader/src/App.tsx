@@ -32,13 +32,13 @@ import { grantKey, hasSavedGrant, requestedCapabilities, saveGrant, withheldPerm
 import { PermissionBar, DESKTOP_WORDING, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import { createNativeFetch, createNativeNetFetch } from './nativeNetFetch';
 import { shortIdentity, type PendingUpgrade } from './installations';
+import { bindDataIdentity, chooseDataIdentity } from './nativeIdentity';
 import {
   UpgradeBlockedError,
   abandonUpgrade,
   finishUpgrade,
   resolveDataIdentity,
   type AbandonOutcome,
-  type InstallationChoice,
   type LoaderDecision,
   type LoaderQuestion,
   type RecoveryRequiredChoice,
@@ -254,28 +254,18 @@ function App(): React.ReactElement {
     return invoke && permissionConfig ? createNativeNetFetch(permissionConfig, invoke) : undefined;
   }, [permissionConfig]);
 
-  // Open a file picker to choose a .softn file. On the desktop the native
-  // side opens the picker and records the choice, so only files the person
-  // chose can be read back (see read_softn_bundle in src-tauri); on Android
-  // the plugin's picker returns a content URI that plugin-fs reads.
+  // Open a file picker to choose a .softn file. The native side opens the
+  // picker and records the choice, so only files the person chose can be read
+  // back (see read_softn_bundle in src-tauri), and the file chosen last is the
+  // app whose data the page may use (data_identity.rs). On Android the picker
+  // returns a content URI, which the native side reads too: the page there has
+  // no file system plugin, which read every app's database.
   const openFilePicker = async () => {
     try {
-      if (!isMobile) {
-        const invoke = tauriInvoke();
-        if (!invoke) throw new Error('the native file picker is not available in this environment');
-        const selected = await invoke('pick_softn_bundle');
-        if (typeof selected === 'string' && selected) selectBundle(selected);
-        return;
-      }
-      const { open } = await import('@tauri-apps/plugin-dialog');
-      const selected = await open({
-        // On Android, custom extensions may not be filterable, so accept all files
-        filters: [],
-        multiple: false,
-      });
-      if (selected) {
-        selectBundle(selected as string);
-      }
+      const invoke = tauriInvoke();
+      if (!invoke) throw new Error('the native file picker is not available in this environment');
+      const selected = await invoke('pick_softn_bundle');
+      if (typeof selected === 'string' && selected) selectBundle(selected);
     } catch (err) {
       setError(new Error(`Unable to open the file picker: ${err instanceof Error ? err.message : String(err)}`));
     }
@@ -451,12 +441,8 @@ function App(): React.ReactElement {
           const filename = bundlePath!.replace('__intent__:', '');
           // @ts-expect-error - Tauri invoke
           rawData = await window.__TAURI__?.core?.invoke('read_cached_bundle', { filename });
-        } else if (isMobile && bundlePath!.startsWith('content://')) {
-          // Android content URI: read via plugin-fs
-          const { readFile } = await import('@tauri-apps/plugin-fs');
-          rawData = await readFile(bundlePath!);
         } else {
-          // Desktop: read via Rust command
+          // A path, or on Android the content URI the picker returned: read via Rust command
           // @ts-expect-error - Tauri invoke
           rawData = await window.__TAURI__?.core?.invoke('read_softn_bundle', {
             path: bundlePath,
@@ -510,18 +496,25 @@ function App(): React.ReactElement {
 
         // Data identity (audit SN-03): the digest is the integrity identity;
         // the data namespace may be an installation this package upgrades.
+        // Which data the page may use is the native side's decision
+        // (nativeIdentity.ts): every step below that touches data binds it
+        // there first, and "is this a new version of an installed app?" is
+        // asked there, in a native dialog nothing in this page can answer.
         upgradeInProgress.current = null;
         setUpgradeNotice(null);
+        const bindTo = (dataId: string, start = false) => bindDataIdentity(resolvedAppId, dataId, parsedManifest, start);
         const identity = await resolveDataIdentity(
           resolvedAppId,
           parsedManifest,
-          question => new Promise<LoaderDecision>(resolve => {
-            if (!active) { resolve({ kind: 'cancel' }); return; }
-            pendingQuestion = resolve;
-            setInstallationChoice({ ...question, resolve: decision => { pendingQuestion = null; setInstallationChoice(null); resolve(decision); } });
-          }),
-          backupBeforeUpgrade,
-          restoreFromBackup,
+          question => question.kind === 'upgrade'
+            ? chooseDataIdentity(question)
+            : new Promise<LoaderDecision>(resolve => {
+              if (!active) { resolve({ kind: 'cancel' }); return; }
+              pendingQuestion = resolve;
+              setInstallationChoice({ ...question, resolve: decision => { pendingQuestion = null; setInstallationChoice(null); resolve(decision); } });
+            }),
+          async dataId => { await bindTo(dataId); return backupBeforeUpgrade(dataId); },
+          async (dataId, backup) => { await bindTo(dataId); return restoreFromBackup(dataId, backup); },
           undefined,
           { get aborted() { return !active; } }
         );
@@ -534,6 +527,12 @@ function App(): React.ReactElement {
           return;
         }
         const dataId = identity.dataId;
+        // Bound before a staged upgrade is marked as in progress: a refusal
+        // here leaves the staging for the next open to resume, and is not the
+        // package failing to start, which would restore the backup. The last
+        // bind for this open: the app is started on this data and no other.
+        await bindTo(dataId, true);
+        if (!active) return;
         upgradeInProgress.current = identity.upgrade ?? null;
 
         // Lock screen orientation if configured (mobile only)
@@ -674,7 +673,6 @@ function App(): React.ReactElement {
     : null;
 
   return <DesktopShell contentRef={contentRef} themeBox={THEME_BOX} appName={bundlePath ? _manifest?.name : undefined} chrome={consentBar} onHome={goHome} onOpen={openFilePicker} canOpen={isTauri || isMobile}>
-    {installationChoice?.kind === 'upgrade' && <InstallationChoiceDialog choice={installationChoice} />}
     {installationChoice?.kind === 'registry-damaged' && <RegistryDamagedDialog choice={installationChoice} />}
     {installationChoice?.kind === 'upgrade-unresolved' && <UnresolvedUpgradeDialog choice={installationChoice} />}
     {installationChoice?.kind === 'recovery-required' && <RecoveryRequiredDialog choice={installationChoice} />}
@@ -823,10 +821,6 @@ function RegistryDamagedDialog({ choice }: { choice: RegistryDamagedChoice & { r
 }
 
 /**
- * "This package is not the one that was installed" (audit SN-03). Shows both
- * identities and what each choice means, and never defaults to inheriting.
- */
-/**
  * An upgrade of this installation to another package never finished
  * (R3-SN-01): the newer package may already have changed the data, so this
  * older package is not run against it until the person decides.
@@ -864,32 +858,6 @@ function UnresolvedUpgradeDialog({ choice }: { choice: UnresolvedUpgradeChoice &
     <div className="desktop-actions">
       <button className="desktop-button" onClick={() => choice.resolve({ kind: 'rollback' })}>Restore the backup and open this version</button>
       <button ref={cancelRef} className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
-    </div>
-  </div>;
-}
-
-function InstallationChoiceDialog({ choice }: { choice: InstallationChoice & { resolve: (decision: LoaderDecision) => void } }) {
-  const [target, setTarget] = useState<string>(choice.candidates[0]?.dataId ?? '');
-  const selected = choice.candidates.find(c => c.dataId === target);
-  const { dialogRef, cancelRef } = useQuestion(() => choice.resolve({ kind: 'cancel' }));
-  return <div ref={dialogRef} className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="installation-choice-title" data-testid="installation-choice">
-    <h1 id="installation-choice-title">Is this a new version of {choice.name || 'this app'}?</h1>
-    <p>The file you opened is a different package from the one installed under this name. Its contents have not been checked by a publisher signature, so only you can say whether it belongs to the same app.</p>
-    <dl className="desktop-identity">
-      <dt>Package you opened</dt><dd><code>{shortIdentity(choice.bundleId)}</code>{choice.version ? ` · version ${choice.version}` : ''}</dd>
-      <dt>Installed data</dt>
-      <dd>
-        {choice.candidates.length > 1
-          ? <select value={target} onChange={event => setTarget(event.target.value)} aria-label="Installation to upgrade">{choice.candidates.map(c => <option key={c.dataId} value={c.dataId}>{c.name} · {shortIdentity(c.dataId)}{c.version ? ` · v${c.version}` : ''} · updated {new Date(c.updatedAt).toLocaleDateString()}</option>)}</select>
-          : <><code>{shortIdentity(target)}</code>{selected?.version ? ` · version ${selected.version}` : ''} · installed {selected ? new Date(selected.createdAt).toLocaleDateString() : ''}</>}
-      </dd>
-    </dl>
-    <p><strong>Upgrade this installation</strong> keeps its saved records: a verified backup of the database is taken first (the upgrade stops if that fails), the new package&apos;s starting data is only added for records that do not exist yet, and if the new package fails to start the data is restored from that backup. Reopening the previous file reaches the same records, but that is not a rollback of changes the new package made. Permissions are not carried over; this package&apos;s own permission list applies.</p>
-    <p><strong>Open as a new app</strong> starts with fresh data and leaves the installed app untouched. Choose this if you do not trust where this file came from: a package that merely repeats the name must not read the installed app&apos;s records.</p>
-    <div className="desktop-actions">
-      <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'new' })}>Open as a new app</button>
-      <button className="desktop-button" disabled={!selected} onClick={() => selected && choice.resolve({ kind: 'upgrade', dataId: selected.dataId })}>Upgrade this installation</button>
-      <button ref={cancelRef} className="desktop-button" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
     </div>
   </div>;
 }

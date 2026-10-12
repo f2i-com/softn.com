@@ -7,11 +7,16 @@ import '@softn/brand/tokens.css';
 import '@softn/brand/bar.css';
 import { apply, readChoice, resolve } from '@softn/brand';
 import App from './App';
+import { handOverRegistry } from './nativeIdentity';
 
 apply(resolve(readChoice()));
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+// Before anything is drawn: the native side takes this page's installation
+// registry only while no bundle has been read in this run (nativeIdentity.ts).
+void handOverRegistry().finally(() => {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+});

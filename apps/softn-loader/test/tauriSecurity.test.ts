@@ -12,14 +12,16 @@ function directive(csp: string, name: string): string[] {
 }
 
 describe('what the desktop webview may reach', () => {
-  it('gives desktop page script no file system plugin; Android keeps what reads a content URI', () => {
-    // The desktop reads bundles through its own commands. plugin-fs there let
-    // page script read the app-data folder: every app's database and its
-    // pre-upgrade snapshots.
-    const desktop: string[] = readJson('capabilities/default.json').permissions;
-    const android: string[] = readJson('capabilities/android.json').permissions;
-    expect(desktop.filter((permission) => permission.startsWith('fs:'))).toEqual([]);
-    expect(android).toEqual(expect.arrayContaining(['fs:default', 'fs:allow-read-file']));
+  it('gives page script no file system or dialog plugin, on the desktop or on Android', () => {
+    // Bundles are picked and read through the runtime's own commands on both.
+    // plugin-fs let page script read the app-data folder: every app's
+    // database and its pre-upgrade snapshots. On Android `fs:default` granted
+    // that folder, and `fs:allow-read-file` read any file:// or content:// URL
+    // with no scope check at all.
+    for (const file of ['capabilities/default.json', 'capabilities/android.json']) {
+      const granted: string[] = readJson(file).permissions;
+      expect(granted.filter((permission) => /^(fs|dialog):/.test(permission)), file).toEqual([]);
+    }
   });
 
   it('keeps connect-src narrow, since a bundle\'s requests are made natively', () => {

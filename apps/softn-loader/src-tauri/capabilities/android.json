@@ -9,11 +9,6 @@
     "core:window:default",
     "core:event:default",
     "core:event:allow-listen",
-    "core:event:allow-emit",
-    "dialog:default",
-    "fs:default",
-    "fs:allow-read-file",
-    "fs:allow-appcache-read",
-    "fs:allow-appcache-write"
+    "core:event:allow-emit"
   ]
 }

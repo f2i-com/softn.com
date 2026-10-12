@@ -16,12 +16,15 @@ use tauri::{Emitter, Manager, State};
 use tauri::image::Image;
 #[cfg(desktop)]
 use tauri_plugin_cli::CliExt;
-#[cfg(desktop)]
 use tauri_plugin_dialog::DialogExt;
 use tracing::info;
 
 mod consent;
+pub mod data_identity;
 mod net;
+pub mod scoped_xdb;
+
+use data_identity::DataIdentity;
 
 /// State for the opened file path
 struct OpenedFile {
@@ -90,15 +93,25 @@ impl OpenableFiles {
     }
 }
 
+/// The person chose `path` (the picker, a drop, the command line, a file opened from the
+/// file manager, a second launch): the webview may read it, and it is the app open now for
+/// the consent questions and for whose data the page may use.
+fn bundle_chosen(app: &tauri::AppHandle, path: &Path) {
+    if let Some(files) = app.try_state::<OpenableFiles>() {
+        files.allow(path);
+    }
+    if let Some(consent) = app.try_state::<consent::Consent>() {
+        consent.bundle_opened(path);
+    }
+    if let Some(identity) = app.try_state::<DataIdentity>() {
+        identity.bundle_chosen(path);
+    }
+}
+
 /// Record a bundle the user opened from outside the window (CLI, file
 /// association, second instance) so the webview may read it.
 fn remember_opened(app: &tauri::AppHandle, path: &str) {
-    if let Some(files) = app.try_state::<OpenableFiles>() {
-        files.allow(Path::new(path));
-    }
-    if let Some(consent) = app.try_state::<consent::Consent>() {
-        consent.bundle_opened(Path::new(path));
-    }
+    bundle_chosen(app, Path::new(path));
 }
 
 /// The largest icon a bundle may hand the window: a 1 MiB file and, after
@@ -120,14 +133,27 @@ fn is_softn_path(path: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("softn"))
 }
 
+/// Whether `path` is an Android content URI, which is what the system picker returns there.
+fn is_content_uri(path: &str) -> bool {
+    cfg!(mobile) && path.starts_with("content://")
+}
+
 /// Read a .softn bundle file from disk (binary ZIP format). Only a file the
-/// user opened through this process (see `OpenableFiles`) can be read.
+/// user opened through this process (see `OpenableFiles`) can be read. The bytes
+/// of the file the person chose last are the bundle open now (data_identity.rs).
 #[tauri::command]
-fn read_softn_bundle(files: State<'_, OpenableFiles>, path: String) -> Result<Vec<u8>, String> {
+fn read_softn_bundle(
+    #[allow(unused_variables)] app: tauri::AppHandle,
+    files: State<'_, OpenableFiles>,
+    identity: State<'_, DataIdentity>,
+    path: String,
+) -> Result<Vec<u8>, String> {
+    let uri = is_content_uri(&path);
     let path = PathBuf::from(&path);
 
-    // Ensure it's a .softn file
-    if !is_softn_path(&path.to_string_lossy()) {
+    // Ensure it's a .softn file. A content URI names no extension; it is read only when the
+    // person picked it in this side's picker, which on Android cannot filter by one.
+    if !uri && !is_softn_path(&path.to_string_lossy()) {
         return Err("Only .softn files can be read".to_string());
     }
 
@@ -135,12 +161,31 @@ fn read_softn_bundle(files: State<'_, OpenableFiles>, path: String) -> Result<Ve
         return Err("This file was not opened through the app; use Open, drop it onto the window, or open it from your file manager".to_string());
     }
 
+    #[cfg(mobile)]
+    if uri {
+        let bytes = read_content_uri(&app, &path.to_string_lossy())?;
+        identity.bundle_read(&path, &bytes);
+        return Ok(bytes);
+    }
+
     // Check if file exists
     if !path.exists() {
         return Err(format!("File not found: {}", path.display()));
     }
 
-    fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))
+    let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    identity.bundle_read(&path, &bytes);
+    Ok(bytes)
+}
+
+/// Read what a content URI the person picked names, through the file system plugin.
+#[cfg(mobile)]
+fn read_content_uri(app: &tauri::AppHandle, uri: &str) -> Result<Vec<u8>, String> {
+    use tauri_plugin_fs::FsExt;
+    let url = url::Url::parse(uri).map_err(|e| format!("Not a file the picker returned: {}", e))?;
+    app.fs()
+        .read(tauri_plugin_fs::FilePath::Url(url))
+        .map_err(|e| format!("Failed to read file: {}", e))
 }
 
 /// Open the system file picker for one `.softn` file, record the choice as
@@ -160,37 +205,26 @@ async fn pick_softn_bundle(app: tauri::AppHandle) -> Result<Option<String>, Stri
     if !is_softn_path(&path.to_string_lossy()) {
         return Err("Only .softn files can be opened".to_string());
     }
-    app.state::<OpenableFiles>().allow(&path);
-    app.state::<consent::Consent>().bundle_opened(&path);
+    bundle_chosen(&app, &path);
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
-/// Snapshot an app's database beside itself before an upgrade and return the
-/// snapshot's path. Wraps XDB's export so the webview never learns or chooses
-/// a file system path: the location is always the database's own directory.
-#[cfg(desktop)]
+/// The picker on Android, run here for the same reason: the page is given no file system or
+/// dialog plugin of its own. The system picker cannot filter by extension there and returns a
+/// content URI, which `read_softn_bundle` reads through the file system plugin.
+#[cfg(mobile)]
 #[tauri::command]
-async fn backup_database(
-    db_manager: State<'_, xdb::tauri::SharedDbManager>,
-    app_id: Option<String>,
-) -> Result<String, String> {
-    let db_path = PathBuf::from(xdb::tauri::get_db_path(db_manager.clone(), app_id.clone())?);
-    let directory = db_path
-        .parent()
-        .ok_or("The database has no parent directory")?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let target = directory.join(format!("pre-upgrade-{:x}.sqlite", stamp));
-    xdb::tauri::export_database(db_manager, app_id, target.to_string_lossy().to_string()).await
+async fn pick_softn_bundle(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let Some(file) = app.dialog().file().blocking_pick_file() else { return Ok(None) };
+    let chosen = file.to_string();
+    bundle_chosen(&app, Path::new(&chosen));
+    Ok(Some(chosen))
 }
 
-/// Whether `backup` is a snapshot `backup_database` wrote for the database in `directory`:
-/// a `pre-upgrade-*.sqlite` file directly inside it. `backup` is whatever the page sent, so
-/// as in `OpenableFiles::permits` it is looked up on disk only when that stays on this
-/// machine; the path `backup_database` returned matches as written.
-#[cfg(desktop)]
+/// Whether `backup` is a snapshot `backup_database` (scoped_xdb.rs) wrote for the database in
+/// `directory`: a `pre-upgrade-*.sqlite` file directly inside it. `backup` is whatever the page
+/// sent, so as in `OpenableFiles::permits` it is looked up on disk only when that stays on
+/// this machine; the path `backup_database` returned matches as written.
 fn is_own_snapshot(directory: &Path, backup: &Path) -> bool {
     let named = backup
         .file_name()
@@ -205,23 +239,65 @@ fn is_own_snapshot(directory: &Path, backup: &Path) -> bool {
 
 /// Restore an app's database from a snapshot `backup_database` wrote (local
 /// scope: this device only). Only a `pre-upgrade-*.sqlite` file inside the
-/// database's own directory is accepted.
-#[cfg(desktop)]
+/// database's own directory is accepted, and only for the app open now.
 #[tauri::command]
 async fn restore_database(
     app: tauri::AppHandle,
     db_manager: State<'_, xdb::tauri::SharedDbManager>,
     network: State<'_, xdb::tauri::SharedNetworkState>,
     control: State<'_, xdb::tauri::SharedNetworkControl>,
+    identity: State<'_, DataIdentity>,
     app_id: Option<String>,
     backup: String,
 ) -> Result<xdb::tauri::ImportOutcome, String> {
+    let app_id = Some(identity.require(app_id.as_deref())?);
     let db_path = PathBuf::from(xdb::tauri::get_db_path(db_manager.clone(), app_id.clone())?);
     let directory = db_path.parent().ok_or("The database has no parent directory")?;
     if !is_own_snapshot(directory, Path::new(&backup)) {
         return Err("Only a pre-upgrade snapshot beside the database can be restored".to_string());
     }
     xdb::tauri::import_database(app, db_manager, network, control, app_id, backup, Some("local".to_string())).await
+}
+
+/// Take over the page's installation registry, once, before any bundle has run in the page
+/// (data_identity.rs says why then and never after).
+#[tauri::command]
+fn import_installations(
+    identity: State<'_, DataIdentity>,
+    registry: Option<String>,
+) -> Result<data_identity::ImportSummary, String> {
+    identity.import_page_registry(registry.as_deref())
+}
+
+/// Let the data commands use `data_id`'s data for the bundle open now (`bundle_id`, the digest
+/// the page computed). Its own data, or data the person let it use before, needs nothing;
+/// another installed app's data is put to the person in a native dialog. `start` marks the
+/// runtime's last bind before it starts the app; after it, this open binds nothing else.
+#[tauri::command]
+async fn bind_data_identity(
+    app: tauri::AppHandle,
+    identity: State<'_, DataIdentity>,
+    bundle_id: String,
+    data_id: String,
+    name: Option<String>,
+    version: Option<String>,
+    start: Option<bool>,
+) -> Result<(), String> {
+    identity
+        .require_bind(&app, &bundle_id, &data_id, name.as_deref(), version.as_deref(), start == Some(true))
+        .await
+}
+
+/// The bundle open now is new to this runtime and repeats an installed app's name: ask the
+/// person, in a native dialog, whether it is a new version of that app (src/upgradeFlow.ts).
+#[tauri::command]
+async fn choose_data_identity(
+    app: tauri::AppHandle,
+    identity: State<'_, DataIdentity>,
+    bundle_id: String,
+    candidates: Vec<String>,
+) -> Result<data_identity::Choice, String> {
+    identity.require_choice(&app, &bundle_id, &candidates).await
 }
 
 /// Whether a change to the peer network settings switches on something that is off now.
@@ -285,13 +361,17 @@ fn cached_bundle_path(cache_dir: &Path, filename: &str) -> Result<PathBuf, Strin
     Ok(path)
 }
 
-/// Read a cached .softn bundle from the app cache directory (for Android intent-opened files)
+/// Read a cached .softn bundle from the app cache directory (for Android intent-opened files).
+/// The page names the file, so reading one is not the person choosing it: these bytes do not
+/// become the bundle open now, and give no app's data.
 #[tauri::command]
-fn read_cached_bundle(app: tauri::AppHandle, filename: String) -> Result<Vec<u8>, String> {
+fn read_cached_bundle(app: tauri::AppHandle, identity: State<'_, DataIdentity>, filename: String) -> Result<Vec<u8>, String> {
     let cache_dir = app.path().app_cache_dir()
         .map_err(|e| format!("Failed to get cache dir: {}", e))?;
     let path = cached_bundle_path(&cache_dir, &filename)?;
-    fs::read(&path).map_err(|e| format!("Failed to read cached file: {}", e))
+    let bytes = fs::read(&path).map_err(|e| format!("Failed to read cached file: {}", e))?;
+    identity.bundle_handed_over();
+    Ok(bytes)
 }
 
 /// Set the window icon from raw image bytes (PNG format)
@@ -387,16 +467,17 @@ pub fn run() {
         // A drop onto the window is a choice made with the pointer, outside
         // the page: record it before the webview's own drop handler can ask
         // to read it (Tauri forwards the event to the page asynchronously,
-        // so this handler runs first).
+        // so this handler runs first). The page opens the first .softn file
+        // dropped, so that one is the app open now.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 let files = window.state::<OpenableFiles>();
-                let consent = window.state::<consent::Consent>();
-                for path in paths {
-                    if is_softn_path(&path.to_string_lossy()) {
-                        files.allow(path);
-                        consent.bundle_opened(path);
-                    }
+                let mut softn = paths.iter().filter(|path| is_softn_path(&path.to_string_lossy()));
+                if let Some(first) = softn.next() {
+                    bundle_chosen(window.app_handle(), first);
+                }
+                for path in softn {
+                    files.allow(path);
                 }
             }
         })
@@ -410,28 +491,31 @@ pub fn run() {
                     net::net_fetch,
                     pick_softn_bundle,
                     set_window_icon,
-                    backup_database,
+                    scoped_xdb::backup_database,
                     restore_database,
-                    // XDB P2P Database commands
-                    xdb::tauri::create_record,
-                    xdb::tauri::update_record,
-                    xdb::tauri::update_records,
-                    xdb::tauri::delete_record,
-                    xdb::tauri::upsert_record,
-                    xdb::tauri::get_record,
-                    xdb::tauri::get_collection,
-                    xdb::tauri::get_collections,
-                    xdb::tauri::clear_collection,
-                    xdb::tauri::get_db_stats,
+                    import_installations,
+                    bind_data_identity,
+                    choose_data_identity,
+                    // XDB P2P Database commands, held to the app open now
+                    scoped_xdb::create_record,
+                    scoped_xdb::update_record,
+                    scoped_xdb::update_records,
+                    scoped_xdb::delete_record,
+                    scoped_xdb::upsert_record,
+                    scoped_xdb::get_record,
+                    scoped_xdb::get_collection,
+                    scoped_xdb::get_collections,
+                    scoped_xdb::clear_collection,
+                    scoped_xdb::get_db_stats,
                     xdb::tauri::get_network_status,
                     xdb::tauri::get_network_settings,
                     set_network_enabled,
                     xdb::tauri::resume_sync,
                     xdb::tauri::recover_restore,
                     xdb::tauri::reconcile_network,
-                    xdb::tauri::request_sync,
-                    xdb::tauri::import_records,
-                    xdb::tauri::reset_collection,
+                    scoped_xdb::request_sync,
+                    scoped_xdb::import_records,
+                    scoped_xdb::reset_collection,
                     xdb::tauri::get_db_base_dir,
                 ]
             }
@@ -442,29 +526,35 @@ pub fn run() {
                     read_cached_bundle,
                     get_opened_file,
                     net::net_fetch,
-                    // XDB P2P Database commands
-                    xdb::tauri::create_record,
-                    xdb::tauri::update_record,
-                    xdb::tauri::update_records,
-                    xdb::tauri::delete_record,
-                    xdb::tauri::upsert_record,
-                    xdb::tauri::get_record,
-                    xdb::tauri::get_collection,
-                    xdb::tauri::get_collections,
-                    xdb::tauri::clear_collection,
-                    xdb::tauri::get_db_stats,
+                    pick_softn_bundle,
+                    // As on the desktop. XDB's export_database and import_database took a
+                    // path from the page (write or read any file this app can), and
+                    // get_db_path told it where the databases live.
+                    scoped_xdb::backup_database,
+                    restore_database,
+                    import_installations,
+                    bind_data_identity,
+                    choose_data_identity,
+                    // XDB P2P Database commands, held to the app open now
+                    scoped_xdb::create_record,
+                    scoped_xdb::update_record,
+                    scoped_xdb::update_records,
+                    scoped_xdb::delete_record,
+                    scoped_xdb::upsert_record,
+                    scoped_xdb::get_record,
+                    scoped_xdb::get_collection,
+                    scoped_xdb::get_collections,
+                    scoped_xdb::clear_collection,
+                    scoped_xdb::get_db_stats,
                     xdb::tauri::get_network_status,
                     xdb::tauri::get_network_settings,
                     set_network_enabled,
                     xdb::tauri::resume_sync,
                     xdb::tauri::recover_restore,
                     xdb::tauri::reconcile_network,
-                    xdb::tauri::request_sync,
-                    xdb::tauri::import_records,
-                    xdb::tauri::reset_collection,
-                    xdb::tauri::export_database,
-                    xdb::tauri::import_database,
-                    xdb::tauri::get_db_path,
+                    scoped_xdb::request_sync,
+                    scoped_xdb::import_records,
+                    scoped_xdb::reset_collection,
                     xdb::tauri::get_db_base_dir,
                 ]
             }
@@ -476,6 +566,12 @@ pub fn run() {
             info!("Initializing XDB local database (peer networking opt-in)...");
             xdb::tauri::setup_xdb(app)?;
             info!("XDB initialized successfully");
+
+            // Which app's data the page may use is decided from this side's own record, in
+            // the same folder as the databases. Managed before the command line is read: a
+            // file named there is the first app opened.
+            let data_dir = app.state::<xdb::tauri::SharedDbManager>().base_dir().clone();
+            app.manage(DataIdentity::open(&data_dir));
 
             // Desktop-only: Handle CLI arguments and set window icon
             #[cfg(desktop)]
@@ -630,6 +726,29 @@ mod tests {
         }
     }
 
+    /// The same on Android, where the page picked and read the bundle itself: `fs:default`
+    /// let it read the app's own folders, where every app's database and its snapshots are,
+    /// and `fs:allow-read-file` reads a `file://` or `content://` URL with no scope check at
+    /// all (tauri-plugin-fs, `resolve_file` on mobile). The picker and the read are this
+    /// side's now (`pick_softn_bundle`, `read_softn_bundle`).
+    #[test]
+    fn the_android_page_is_granted_no_dialog_or_file_plugin() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/android.json")).unwrap();
+        let granted: Vec<&str> = capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|permission| permission.as_str().or_else(|| permission["identifier"].as_str()).unwrap())
+            .collect();
+        assert!(granted.contains(&"core:default"));
+        for permission in &granted {
+            for plugin in ["dialog:", "fs:", "shell:", "opener:"] {
+                assert!(!permission.starts_with(plugin), "the Android page is granted {}", permission);
+            }
+        }
+    }
+
     #[test]
     fn only_switching_peer_sync_on_is_a_question() {
         let settings = |enabled, discovery, listen| xdb::tauri::NetworkSettings { enabled, discovery, listen };
@@ -648,7 +767,6 @@ mod tests {
         assert!(!turns_peer_sync_on(&settings(true, true, true), true, Some(true), Some(true)));
     }
 
-    #[cfg(desktop)]
     #[test]
     fn only_a_snapshot_beside_the_database_can_be_restored() {
         let dir = std::env::temp_dir().join(format!("softn-loader-snapshot-{}", std::process::id()));
@@ -665,7 +783,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[cfg(all(desktop, windows))]
+    #[cfg(windows)]
     #[test]
     fn a_snapshot_path_on_another_machine_is_refused_as_written() {
         let dir = std::env::temp_dir();
@@ -676,6 +794,26 @@ mod tests {
         // A database that itself lives on a share restores from the path it was backed up to.
         let share = Path::new(r"\\?\UNC\files.example.net\profiles\someone\xdb");
         assert!(is_own_snapshot(share, &share.join("pre-upgrade-19a.sqlite")));
+    }
+
+    /// Every XDB command that takes an app id is registered through the loader's own
+    /// wrapper, which holds it to the app the person opened. Registered from xdb directly,
+    /// the page's `appId` decides.
+    #[test]
+    fn no_xdb_command_that_takes_an_app_id_is_registered_directly() {
+        let source = include_str!("lib.rs");
+        let handlers = source.split("generate_handler![").skip(1).take(2);
+        for handler in handlers {
+            let list = &handler[..handler.find(']').unwrap()];
+            for command in list.lines().map(|line| line.trim().trim_end_matches(',')).filter(|line| line.starts_with("xdb::tauri::")) {
+                let name = command.trim_start_matches("xdb::tauri::");
+                assert!(
+                    ["get_network_status", "get_network_settings", "resume_sync", "recover_restore", "reconcile_network", "get_db_base_dir"].contains(&name),
+                    "{} is registered as xdb wrote it, so the page names the app",
+                    command
+                );
+            }
+        }
     }
 
     /// A share the user opened a bundle from stays readable by the path it was opened with,

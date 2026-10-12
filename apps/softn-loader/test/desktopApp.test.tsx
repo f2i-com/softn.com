@@ -3,8 +3,9 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), theme: vi.fn(), files: new Map<string, string>(), id: { value: 'bundle-test' }, failCompose: { value: false } }));
+const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), readFile: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), theme: vi.fn(), files: new Map<string, string>(), id: { value: 'bundle-test' }, failCompose: { value: false } }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: bridge.open }));
+vi.mock('@tauri-apps/plugin-fs', () => ({ readFile: bridge.readFile }));
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: bridge.drag }) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: bridge.title }) }));
 vi.mock('@softn/components', () => ({ registerAllBuiltins() {}, ThemeProvider: (props: Record<string, unknown> & { children: React.ReactNode }) => { bridge.theme(props); return props.children; }, Spinner: () => <span>Loading</span> }));
@@ -265,9 +266,10 @@ it('puts the data back when an upgrade was staged and the package then fails to 
   bridge.invoke.mockImplementation(async (command: string) =>
     command === 'get_opened_file' ? null
       : command === 'pick_softn_bundle' ? bridge.open()
-        : command === 'backup_database' ? 'C:/data/backup-1.db'
-          : command === 'restore_database' ? undefined
-            : [1]);
+        : command === 'choose_data_identity' ? { kind: 'upgrade', dataId: 'bundle-a' }
+          : command === 'backup_database' ? 'C:/data/backup-1.db'
+            : command === 'restore_database' ? undefined
+              : [1]);
   await mount();
   bridge.id.value = 'bundle-a';
   await click('Open app');
@@ -277,21 +279,50 @@ it('puts the data back when an upgrade was staged and the package then fails to 
   bridge.failCompose.value = true;
   bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', version: '2', main: 'main.ui', files: {} }));
   await click('Open app');
-  await click('Upgrade this installation');
   await act(async () => {
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   });
+  const commands = bridge.invoke.mock.calls.map(([command, args]) => `${command} ${(args as { dataId?: string; appId?: string } | undefined)?.dataId ?? (args as { appId?: string } | undefined)?.appId ?? ''}`.trim());
+  // The data is bound for the new package before it is backed up or put back.
+  expect(commands.slice(commands.indexOf('choose_data_identity'))).toEqual(expect.arrayContaining(['bind_data_identity bundle-a', 'backup_database bundle-a', 'restore_database bundle-a']));
+  expect(commands.indexOf('bind_data_identity bundle-a', commands.indexOf('choose_data_identity'))).toBeLessThan(commands.indexOf('backup_database bundle-a'));
   expect(bridge.invoke.mock.calls.some(([command]) => command === 'restore_database')).toBe(true);
   const registry = JSON.parse(localStorage.getItem('softn-loader:installations') ?? '{}');
   expect(registry.installations?.['bundle-a']?.pendingUpgrade).toBeUndefined();
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('Main file not found');
 });
 
-it('asks whether a package is an upgrade as a dialog: focus on Cancel, Tab kept inside, Escape cancels', async () => {
+it('asks whether a package is a new version of an installed app in the native dialog, not in the page', async () => {
+  // The answer lets the package read and change another app's records, so it
+  // is put where nothing running in the page can give it.
   await mount();
   bridge.id.value = 'bundle-a';
   await click('Open app');
+  bridge.invoke.mockClear();
   bridge.id.value = 'bundle-b';
+  bridge.invoke.mockImplementation(async (command: string) =>
+    command === 'pick_softn_bundle' ? bridge.open()
+      : command === 'choose_data_identity' ? { kind: 'cancel' }
+        : [1]);
+  await click('Open app');
+  expect(bridge.invoke.mock.calls).toContainEqual(['choose_data_identity', { bundleId: 'bundle-b', candidates: ['bundle-a'] }]);
+  expect(host.querySelector('[role="dialog"]')).toBeNull();
+  expect(bridge.invoke.mock.calls.some(([command]) => command === 'backup_database' || command === 'bind_data_identity')).toBe(false);
+  expect(host.textContent).toContain('Start with a .softn app');
+
+  // "Open as a new app" opens it on its own data.
+  bridge.invoke.mockImplementation(async (command: string) =>
+    command === 'pick_softn_bundle' ? bridge.open()
+      : command === 'choose_data_identity' ? { kind: 'new' }
+        : [1]);
+  await click('Open app');
+  expect(bridge.invoke.mock.calls).toContainEqual(['bind_data_identity', { bundleId: 'bundle-b', dataId: 'bundle-b', name: 'Fieldnotes', version: '', start: true }]);
+  expect(lastRun().appId).toBe('bundle-b');
+});
+
+it('asks its own questions as a dialog: focus on Cancel, Tab kept inside, Escape cancels', async () => {
+  localStorage.setItem('softn-loader:installations', '{ damaged');
+  await mount();
   await click('Open app');
   const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
   expect(dialog).not.toBeNull();
@@ -305,6 +336,7 @@ it('asks whether a package is an upgrade as a dialog: focus on Cancel, Tab kept 
     });
     return event;
   };
+  // Cancel is the last answer: Tab wraps to the first, Shift+Tab back to it.
   expect(tab(false).defaultPrevented).toBe(true);
   expect(document.activeElement).toBe(buttons[0]);
   expect(tab(true).defaultPrevented).toBe(true);
@@ -313,7 +345,8 @@ it('asks whether a package is an upgrade as a dialog: focus on Cancel, Tab kept 
     document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   });
   expect(host.querySelector('[role="dialog"]')).toBeNull();
-  expect(bridge.invoke.mock.calls.some(([command]) => command === 'backup_database')).toBe(false);
+  expect(localStorage.getItem('softn-loader:installations')).toBe('{ damaged');
+  expect(bridge.invoke.mock.calls.some(([command]) => command === 'bind_data_identity')).toBe(false);
 });
 
 it('says what became of the data after a failed upgrade under StrictMode too, as the desktop app runs in development', async () => {
@@ -324,9 +357,10 @@ it('says what became of the data after a failed upgrade under StrictMode too, as
   bridge.invoke.mockImplementation(async (command: string) =>
     command === 'get_opened_file' ? null
       : command === 'pick_softn_bundle' ? bridge.open()
-        : command === 'backup_database' ? 'C:/data/backup-1.db'
-          : command === 'restore_database' ? undefined
-            : [1]);
+        : command === 'choose_data_identity' ? { kind: 'upgrade', dataId: 'bundle-a' }
+          : command === 'backup_database' ? 'C:/data/backup-1.db'
+            : command === 'restore_database' ? undefined
+              : [1]);
   const { default: App } = await import('../src/App');
   await act(async () => root.render(<React.StrictMode><App /></React.StrictMode>));
   bridge.id.value = 'bundle-a';
@@ -335,7 +369,6 @@ it('says what became of the data after a failed upgrade under StrictMode too, as
   bridge.failCompose.value = true;
   bridge.files.set('manifest.json', JSON.stringify({ name: 'Fieldnotes', version: '2', main: 'main.ui', files: {} }));
   await click('Open app');
-  await click('Upgrade this installation');
   await act(async () => {
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -343,4 +376,46 @@ it('says what became of the data after a failed upgrade under StrictMode too, as
   expect(home?.disabled).toBe(false);
   expect(host.textContent).not.toContain('Restoring the data from the pre-upgrade backup');
   expect(bridge.invoke.mock.calls.filter(([command]) => command === 'restore_database')).toHaveLength(1);
+});
+
+function tamperedRegistry() {
+  // What a script in the page can write: app A's installation, with another
+  // bundle's digest added to the packages allowed to open its data.
+  const at = '2026-09-14T00:00:00.000Z';
+  localStorage.setItem('softn-loader:installations', JSON.stringify({ version: 1, installations: { 'bundle-a': {
+    dataId: 'bundle-a', name: 'Fieldnotes', bundleIds: ['bundle-a', 'bundle-evil'], createdAt: at, updatedAt: at, ledger: [],
+  } } }));
+}
+
+it('does not run a bundle on the data a registry entry written by the page maps it to, unless the native side binds it', async () => {
+  tamperedRegistry();
+  bridge.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === 'get_opened_file') return null;
+    if (command === 'pick_softn_bundle') return bridge.open();
+    if (command === 'bind_data_identity') {
+      if (args?.dataId !== args?.bundleId) throw 'Not opened: you chose not to open this app with that data';
+      return null;
+    }
+    return [1];
+  });
+  bridge.id.value = 'bundle-evil';
+  bridge.files.set('manifest.json', JSON.stringify({ name: 'Funny cats', main: 'main.ui', files: {} }));
+  await mount();
+  await click('Open app');
+  expect(bridge.runner.mock.calls.map(([props]) => props.appId)).not.toContain('bundle-a');
+  expect(bridge.invoke.mock.calls).toContainEqual(['bind_data_identity', { bundleId: 'bundle-evil', dataId: 'bundle-a', name: 'Funny cats', version: '', start: true }]);
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('you chose not to open this app with that data');
+});
+
+it('picks and reads a bundle on Android through the native side, which the page has no file system plugin to do', async () => {
+  vi.stubGlobal('__ANDROID__', true);
+  const picked = 'content://com.android.providers.downloads.documents/document/42';
+  bridge.invoke.mockImplementation(async (command: string) => command === 'get_opened_file' ? null : command === 'pick_softn_bundle' ? picked : [1]);
+  await mount();
+  await click('Open a .softn file');
+  expect(bridge.invoke.mock.calls).toContainEqual(['read_softn_bundle', { path: picked }]);
+  expect(bridge.invoke.mock.calls).toContainEqual(['bind_data_identity', { bundleId: 'bundle-test', dataId: 'bundle-test', name: 'Fieldnotes', version: '', start: true }]);
+  expect(bridge.open).not.toHaveBeenCalled();
+  expect(bridge.readFile).not.toHaveBeenCalled();
+  expect(host.textContent).toContain('Running the selected app');
 });

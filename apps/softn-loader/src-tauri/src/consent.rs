@@ -56,7 +56,7 @@ impl NetPolicy {
 }
 
 /// A name from the page or from a file, safe to put in a dialog: one line, and not long.
-fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     let cleaned: String = text.chars().filter(|c| !c.is_control()).take(HOST_CHARS_SHOWN).collect();
     if text.chars().count() > HOST_CHARS_SHOWN {
         format!("{}...", cleaned)
