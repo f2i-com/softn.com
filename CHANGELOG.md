@@ -8,6 +8,8 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+- Desktop Builder: it asks before it discards or deletes. Its questions were the browser's `window.confirm`, which in the desktop app returned at once and was read as a yes, so Open and New over unsaved work, the session restore, deleting a file, a folder or a collection and re-identifying records went ahead without asking (v0.0.19 showed the question after the action had been taken). They are now the Builder's own dialog, in the browser and on the desktop alike: Escape, a click outside and Cancel are no, and where going on loses something the focus starts on Cancel.
+
 ## v0.0.21
 
 - Upgrading from v0.0.19: some apps behave differently on purpose, each change described in its entry below. `:bind` on a number field writes a number; a DatePicker holds `"YYYY-MM-DD"` text, and Radio and Select hold the chosen option's own value; a handler with a block body runs its statements; an app connects to its sync server only when its `permission.json` declares `sync`, and a capability is granted only by `"enabled": true`; top-level `softn.*` calls and `window` listeners in an app with no `_init` start at load; timers in server logic throw an error that says they cannot run; a handler written in markup gets a plain event record, never the live DOM event; and Python programs on ZIPP v0.0.23 charge different step counts. A directory needs PHP's zlib extension, and anyone who may have run a stranger's app on v0.0.19 or earlier in the browser that holds their edit keys should replace those keys (Replace key, on the update page and in Your apps).

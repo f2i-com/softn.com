@@ -4,6 +4,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { useFilesStore } from '../../stores/filesStore';
+import { askConfirm } from '../../utils/confirm';
 import { useProjectStore } from '../../stores/projectStore';
 import { dockLogicFile, entryFileId, logicLanguageOf } from '../../utils/logicFiles';
 import { useShallow } from 'zustand/react/shallow';
@@ -694,14 +695,15 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     [nodes, renameFile, renameFolder, attempt]
   );
 
-  const handleDelete = useCallback(() => {
+  const handleDelete = useCallback(async () => {
     if (!contextMenu) return;
-    const node = nodes.get(contextMenu.nodeId);
+    const nodeId = contextMenu.nodeId;
+    const node = nodes.get(nodeId);
     if (!node) return;
 
     // The pages that use it are named in the question: one that imports a
     // deleted file is left importing nothing, and the export writes it so.
-    const users = useFilesStore.getState().usersOf(contextMenu.nodeId);
+    const users = useFilesStore.getState().usersOf(nodeId);
     const left = users.length === 0
       ? ''
       : `\n\n${users.join(', ')} ${users.length === 1 ? 'uses' : 'use'} ${node.type === 'folder' ? 'what is in it' : 'it'}, and will be left pointing at a file that is not there.`;
@@ -710,16 +712,19 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
         ? `Delete folder "${node.name}" and all its contents?`
         : `Delete file "${node.name}"?`) + left;
 
-    if (window.confirm(confirmMsg)) {
-      attempt(() => {
-        if (node.type === 'folder') {
-          deleteFolder(contextMenu.nodeId);
-        } else {
-          deleteFile(contextMenu.nodeId);
-        }
-      });
-    }
+    // The menu goes before the question; what is deleted is what was asked about, if it is still there.
     closeContextMenu();
+    const yes = await askConfirm(confirmMsg, {
+      title: node.type === 'folder' ? 'Delete folder' : 'Delete file', confirmLabel: 'Delete', danger: true,
+    });
+    if (!yes || !useFilesStore.getState().nodes.has(nodeId)) return;
+    attempt(() => {
+      if (node.type === 'folder') {
+        deleteFolder(nodeId);
+      } else {
+        deleteFile(nodeId);
+      }
+    });
   }, [contextMenu, nodes, deleteFile, deleteFolder, closeContextMenu, attempt]);
 
   // Close context menu when clicking outside

@@ -218,13 +218,15 @@ test('draws a record relationship and preserves its model and data through expor
   await bundle.saveAs(savedPath);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
-  page.once('dialog', async prompt => {
-    expect(prompt.message()).toBe('Open a new project? Unsaved changes will be lost.');
-    await prompt.accept();
-  });
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open', exact: true }).click();
   await (await chooser).setFiles(savedPath);
+  // The picker first, then the Builder's own question (utils/confirm.ts): a
+  // native confirm asked nothing in the desktop app.
+  const replace = page.getByRole('alertdialog', { name: 'Unsaved changes', exact: true });
+  await expect(replace).toContainText('Open a new project? Unsaved changes will be lost.');
+  await replace.getByRole('button', { name: 'Discard and open', exact: true }).click();
+  await expect(replace).toHaveCount(0);
   await expect(page.getByTitle('Fieldnotes', { exact: true })).toHaveText('Fieldnotes');
   await page.getByRole('button', { name: 'Data', exact: true }).click();
   await page.getByRole('tab', { name: 'Relationships · 1', exact: true }).click();

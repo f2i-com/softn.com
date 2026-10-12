@@ -72,5 +72,25 @@ module.exports = {
       files: ['packages/@softn/core/src/bundle/cli.ts'],
       rules: { 'no-console': 'off' },
     },
+    {
+      // In the desktop Builder, Tauri's dialog plugin makes these async: they
+      // return a Promise at once, which reads as yes, and asked nothing.
+      // The Builder asks with utils/confirm.ts.
+      files: ['apps/softn-builder/src/**/*.{ts,tsx}'],
+      excludedFiles: ['**/*.test.{ts,tsx}'],
+      rules: {
+        'no-restricted-properties': [
+          'error',
+          ...['confirm', 'alert', 'prompt'].flatMap((property) => [
+            { object: 'window', property, message: 'Ask with askConfirm (utils/confirm.ts): in the desktop app this is async and asks nothing.' },
+            { object: 'globalThis', property, message: 'Ask with askConfirm (utils/confirm.ts): in the desktop app this is async and asks nothing.' },
+          ]),
+        ],
+        'no-restricted-globals': [
+          'error',
+          ...['confirm', 'alert', 'prompt'].map((name) => ({ name, message: 'Ask with askConfirm (utils/confirm.ts): in the desktop app this is async and asks nothing.' })),
+        ],
+      },
+    },
   ],
 };

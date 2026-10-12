@@ -4,6 +4,7 @@
 
 import React, { useEffect, useId, useState } from 'react';
 import { useSchemaStore } from '../../stores/schemaStore';
+import { askConfirm } from '../../utils/confirm';
 import type { EntityDef, SchemaField, FieldType } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -393,9 +394,13 @@ export function EntityEditor() {
           className="bl-btn bl-btn-sm bl-btn-ghost"
           style={styles.dangerBtn}
           onClick={() => {
-            if (window.confirm(`Delete the collection "${entity.name}" and its records?`)) {
-              deleteEntity(entity.id);
-            }
+            const id = entity.id;
+            void askConfirm(`Delete the collection "${entity.name}" and its records?`, {
+              title: 'Delete collection', confirmLabel: 'Delete', danger: true,
+            }).then((yes) => {
+              // What is deleted is what was asked about, if it is still there.
+              if (yes && useSchemaStore.getState().entities.some((e) => e.id === id)) deleteEntity(id);
+            });
           }}
         >
           Delete collection

@@ -48,6 +48,7 @@ import { entryFileId } from './logicFiles';
 import { readThemeMode } from './themeMode';
 import { emptyDeclaration, withManifestPermissions } from './permissions';
 import { keepSavedPoint } from './savedPoint';
+import { askConfirm } from './confirm';
 import { gatherCollections, gatherRecords } from './buildProjectBundle';
 import { xdbText, type KeptXdb } from './bundleExporter';
 import { elementsEqual } from './elementsEqual';
@@ -809,7 +810,7 @@ export type RemoteOpenOutcome =
 export interface RemoteOpenDeps {
   fetchImpl?: typeof fetch;
   /** Asked when the initial workspace has unsaved edits by the time the bundle arrives. */
-  confirmReplace?: (message: string) => boolean;
+  confirmReplace?: (message: string) => boolean | Promise<boolean>;
   load?: (bytes: Uint8Array) => Promise<LoadedBundle>;
 }
 
@@ -821,7 +822,8 @@ export interface RemoteOpenDeps {
  * signal. An abort — ours, from a superseding action or unmount — is quiet.
  */
 export async function openRemoteBundle(url: URL, signal: AbortSignal, deps: RemoteOpenDeps = {}): Promise<RemoteOpenOutcome> {
-  const confirmReplace = deps.confirmReplace ?? ((message: string) => window.confirm(message));
+  const confirmReplace = deps.confirmReplace
+    ?? ((message: string) => askConfirm(message, { title: 'Unsaved changes', confirmLabel: 'Discard and open', danger: true }));
   const load = deps.load ?? loadBundle;
   const generation = useProjectStore.getState().workspaceGeneration;
   const superseded = () => signal.aborted || useProjectStore.getState().workspaceGeneration !== generation;
@@ -834,7 +836,7 @@ export async function openRemoteBundle(url: URL, signal: AbortSignal, deps: Remo
     const snapshot = prepareProjectSnapshot(await load(fetched.bytes));
     if (superseded()) return { kind: 'superseded' };
     if (useProjectStore.getState().isDirty) {
-      if (!confirmReplace(`Open ${snapshot.label} from the link? The edits made here since the page opened will be lost.`)) {
+      if (!(await confirmReplace(`Open ${snapshot.label} from the link? The edits made here since the page opened will be lost.`))) {
         return { kind: 'declined' };
       }
       // The question took time; the answer is for the workspace it was asked about.

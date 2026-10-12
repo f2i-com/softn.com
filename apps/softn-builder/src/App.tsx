@@ -36,6 +36,8 @@ import { saveProject, saveToHost } from './utils/saveProject';
 import { STUDIO_URL, RUNTIME_URL, PRODUCT_URLS } from './utils/siteUrls';
 import { forgetDesktopFile, isDesktop, openCompanionUrl, takeOpenedDesktopFile, type BundleFileHandle } from './utils/desktop';
 import { ToastContainer } from './components/feedback/ToastContainer';
+import { ConfirmDialog } from './components/feedback/ConfirmDialog';
+import { askConfirm, useConfirmStore } from './utils/confirm';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
 import { debug } from './utils/debug';
@@ -361,9 +363,10 @@ function App() {
     toast.success(`Created ${config.name}`);
   }, []);
 
-  const handleNew = useCallback(() => {
-    const isDirty = useProjectStore.getState().isDirty;
-    if (isDirty && !window.confirm('Create a new project? Unsaved changes will be lost.')) {
+  const handleNew = useCallback(async () => {
+    if (useProjectStore.getState().isDirty && !(await askConfirm('Create a new project? Unsaved changes will be lost.', {
+      title: 'Unsaved changes', confirmLabel: 'Discard and create new', danger: true,
+    }))) {
       return;
     }
     setShowNewProjectDialog(true);
@@ -399,7 +402,12 @@ function App() {
       // opened never costs the current project a confirmation.
       const snapshot = prepareProjectSnapshot(bundle);
       if (useProjectStore.getState().isDirty) {
-        if (!window.confirm('Open a new project? Unsaved changes will be lost.')) return;
+        const generation = useProjectStore.getState().workspaceGeneration;
+        if (!(await askConfirm('Open a new project? Unsaved changes will be lost.', {
+          title: 'Unsaved changes', confirmLabel: 'Discard and open', danger: true,
+        }))) return;
+        // The answer is for the project it was asked about.
+        if (useProjectStore.getState().workspaceGeneration !== generation) return;
       }
       // On the desktop the file it came from becomes the one Save writes,
       // and the one before it cannot be written, before its code can run.
@@ -458,17 +466,22 @@ function App() {
         return;
       }
       // A copy of unsaved work says so, and what of the project is not in it (utils/recoveryCopy.ts).
-      if (!window.confirm(restoreOffer(action.raw, joined.assets))) return;
-      try {
-        applySnapshotRef.current(snapshot);
-        // It was not saved when it was kept, and is not now: it says "Unsaved",
-        // leaving asks first, and undoing an edit does not make it saved.
-        if (recoveryOf(action.raw)) markUnsaved();
-      } catch (e) {
-        console.error('[App] Failed to restore session:', e);
-        quarantineSession(action.raw, e, assetsRaw);
-        toast.error(`Could not restore the session: ${e instanceof Error ? e.message : String(e)}. It was kept; download it from Export → Recovery.`);
-      }
+      // Asked in the Builder's own dialog, which may mount after this runs; the
+      // answer is for the workspace it was asked about.
+      const generation = useProjectStore.getState().workspaceGeneration;
+      void askConfirm(restoreOffer(action.raw, joined.assets), { title: 'Restore your work?', confirmLabel: 'Restore', cancelLabel: 'Not now' }).then((yes) => {
+        if (!yes || useProjectStore.getState().workspaceGeneration !== generation) return;
+        try {
+          applySnapshotRef.current(snapshot);
+          // It was not saved when it was kept, and is not now: it says "Unsaved",
+          // leaving asks first, and undoing an edit does not make it saved.
+          if (recoveryOf(action.raw)) markUnsaved();
+        } catch (e) {
+          console.error('[App] Failed to restore session:', e);
+          quarantineSession(action.raw, e, assetsRaw);
+          toast.error(`Could not restore the session: ${e instanceof Error ? e.message : String(e)}. It was kept; download it from Export → Recovery.`);
+        }
+      });
       return;
     }
 
@@ -553,7 +566,8 @@ function App() {
     flushCanvasToActiveFile();
     setView(next);
   }, []);
-  const modalOpen = showExportDialog || showNewProjectDialog || showShortcuts;
+  const confirmOpen = useConfirmStore((state) => state.queue.length > 0);
+  const modalOpen = showExportDialog || showNewProjectDialog || showShortcuts || confirmOpen;
 
   const handleExport = useCallback(() => {
     setShowExportDialog(true);
@@ -798,6 +812,7 @@ function App() {
           projectName={projectName} isDirty={projectDirty} isSaving={isSaving} onOpen={handleOpen} onSave={handleSave}
           onPreview={() => { flushCanvasToActiveFile(); setNarrowPreview(true); }} />
       </div>}
+      <ConfirmDialog />
       <ToastContainer />
       <PwaUpdater />
     </>;
@@ -850,6 +865,7 @@ function App() {
         onClose={() => setShowNewProjectDialog(false)}
         onCreate={handleCreateNewProject}
       />
+      <ConfirmDialog />
       <ToastContainer />
       <PwaUpdater />
     </div>

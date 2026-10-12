@@ -39,6 +39,8 @@ export interface WorkspaceShortcutActions {
 
 /** Keys that are held with another, and are no key of a chord on their own. */
 const MODIFIER_KEYS = new Set(['Control', 'Meta', 'Shift', 'Alt']);
+// A modal owns the keyboard: a dialog, and the Builder's yes-or-no question (components/feedback/ConfirmDialog.tsx).
+const MODAL = '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]';
 
 export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
   const actionsRef = useRef(actions);
@@ -63,7 +65,7 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
       // editor included: Tab indents there, and stopped there for good.
       if (event.key === 'F6' && !event.altKey && !event.ctrlKey && !event.metaKey) {
         const from = event.target instanceof HTMLElement ? event.target : null;
-        if (current.narrow || from?.closest('[role="dialog"][aria-modal="true"]')) return;
+        if (current.narrow || from?.closest(MODAL)) return;
         if (focusPanel(event.shiftKey ? -1 : 1)) {
           event.preventDefault(); event.stopPropagation();
         }
@@ -80,7 +82,7 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
         if (!step || event.ctrlKey || event.metaKey || !(event.shiftKey || vertical)) return;
         if (!current.canvas || current.narrow) return;
         const from = event.target instanceof HTMLElement ? event.target : null;
-        if (ownsTextKeys(from) || from?.closest('[role="dialog"][aria-modal="true"], select')) return;
+        if (ownsTextKeys(from) || from?.closest(`${MODAL}, select`)) return;
         event.preventDefault(); event.stopPropagation();
         if (!event.repeat || vertical) moveSelectedAndKeepFocus(step);
         return;
@@ -90,7 +92,7 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
       const key = event.key.toLowerCase();
       // Feature dialogs mounted inside a workspace panel do not participate
       // in App's top-level modal state. Their draft still owns the keyboard.
-      if (target?.closest('[role="dialog"][aria-modal="true"]')) {
+      if (target?.closest(MODAL)) {
         if ((event.ctrlKey || event.metaKey) && ((!event.shiftKey && ['s', 'o', 'n'].includes(key)) || (event.shiftKey && key === 'e'))) {
           event.preventDefault(); event.stopPropagation();
         }

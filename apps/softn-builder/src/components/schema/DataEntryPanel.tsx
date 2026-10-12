@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { toast, useNotificationStore } from '../../stores/notificationStore';
 import { describeReidentify } from '../../utils/reidentify';
+import { askConfirm } from '../../utils/confirm';
 import type { EntityDef, SchemaField } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -306,14 +307,17 @@ export function DataEntryPanel() {
   // fresh ids (utils/reidentify.ts). Confirmed first, with what will
   // happen spelled out; taken back in one step from the toast or the
   // footer until the next data edit.
-  const handleReidentify = (entity: EntityDef) => {
-    const store = useSchemaStore.getState();
-    const message = describeReidentify(entity, store.entities, {
-      seedData: store.seedData,
-      recordIdentity: store.recordIdentity,
-      tombstones: store.tombstones,
+  const handleReidentify = async (entity: EntityDef) => {
+    const asked = useSchemaStore.getState();
+    const message = describeReidentify(entity, asked.entities, {
+      seedData: asked.seedData,
+      recordIdentity: asked.recordIdentity,
+      tombstones: asked.tombstones,
     });
-    if (!window.confirm(message)) return;
+    if (!(await askConfirm(message, { title: 'Import as new', confirmLabel: 'Give them new ids' }))) return;
+    // The question took time: the collection must still be there to re-identify.
+    const store = useSchemaStore.getState();
+    if (!store.entities.some((e) => e.id === entity.id)) return;
     const outcome = store.reidentifyRecords(entity.id);
     if (!outcome) return;
     const remapped = outcome.remapped.map((r) => `${r.rows} in ${r.entityName}`).join(', ');
