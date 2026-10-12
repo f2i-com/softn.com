@@ -12,12 +12,17 @@ body,
 body {
   font-family: system-ui, sans-serif;
 }
+/* The page's ground and text, not a dark of the shell's own: the page that
+   serves this shell colours itself (dark for the standalone page; for the
+   side the app's project declares, where a server knows it), and once the
+   app is known, the theme colours the page. A fixed dark here drew a light
+   app's page dark while it loaded, between its light boot and the app. */
 .single-app {
   --softn-tab-bar-height: 0px;
   --softn-chrome-base: 0px;
   min-height: 100dvh;
-  background: #171821;
-  color: #f5f5f8;
+  background: transparent;
+  color: inherit;
 }
 .loading {
   min-height: 100dvh;
@@ -49,15 +54,19 @@ body {
   position: relative;
   contain: layout paint;
 }
-/* The shell's own screens (loading, could not open) carry the page's colours
-   themselves. They are drawn in the box the app is drawn in, and that box is
-   given the app's ground and text colour when its project declares the other
-   side from this deployment's theme; the button below keeps a dark
-   background of its own, so on a light app's ink it could not be read. */
+/* The shell's own screens (loading, could not open) inside the box the app
+   is drawn in take that box's colours: the app's ground and text when its
+   project declares the other side from this deployment's theme, the page's
+   otherwise. Their button is drawn from the text colour, so it reads on
+   either side. */
 .application-content .loading {
   min-height: 100%;
-  background: #171821;
-  color: #f5f5f8;
+  background: transparent;
+  color: inherit;
+}
+.loading button {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 32%, transparent);
 }
 /* The permission bar is the shared one from @softn/runtime-shell, which
    carries its own styles; it sits in .application-chrome and is measured

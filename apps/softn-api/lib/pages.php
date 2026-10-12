@@ -144,12 +144,53 @@ final class Pages
         // JSON_HEX_TAG has turned every < and > into \u003C and \u003E, so
         // nothing in a name or a description can close this element early.
         $origin = self::origin();
+        // The shell draws its boot screen dark, the `theme` above. An app
+        // whose project declares light is drawn light whatever that theme
+        // says, so its boot screen is too, rather than opening dark and
+        // turning light; the wheel takes the text colour, as the privately
+        // served page's does. Every other app gets the page it always got.
+        $boot = self::declaredSide($slug, $ver) === 'light'
+            ? '    <style>html,body{background:#f5f5f8;color:#171821}.wheel{border-color:color-mix(in srgb,currentColor 20%,transparent);border-top-color:currentColor}</style>' . "\n"
+            : '';
         $inject = '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n"
             . ($origin === null ? '' : '    <link rel="canonical" href="' . $e("$origin/app/$slug") . '" />' . "\n")
+            . $boot
             . '    <script type="application/json" id="softn-runtime-config">' . $config . '</script>' . "\n  </head>";
         $html = str_replace('</head>', $inject, $html);
         // The page names the latest version, which the next publish moves.
         return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
+    }
+
+    /**
+     * The side a version's project declares: `config.theme.mode` in its
+     * manifest when that is "light" or "dark", null for "system", for
+     * nothing and for anything else, which is what the rule in
+     * packages/@softn/components/src/theme/app-theme.ts reads. Null too when
+     * the bundle cannot be read: the page is then drawn as it always was.
+     *
+     * @param array<string, mixed> $ver
+     */
+    public static function declaredSide(string $slug, array $ver): ?string
+    {
+        try {
+            $zip = new ZipArchive();
+            // The path the bundle route serves; Apps::dir() would make a
+            // folder for an app that has none, on a page view.
+            if ($zip->open(Config::dataDir() . '/apps/' . $slug . '/' . (string) $ver['file'], ZipArchive::RDONLY) !== true) return null;
+            try {
+                $stat = $zip->statName('manifest.json');
+                if ($stat === false || (int) $stat['size'] > Bundle::MAX_MANIFEST_BYTES) return null;
+                $text = $zip->getFromName('manifest.json', Bundle::MAX_MANIFEST_BYTES);
+            } finally {
+                $zip->close();
+            }
+            $manifest = is_string($text) ? json_decode($text, true, 32) : null;
+            $theme = is_array($manifest) && is_array($manifest['config'] ?? null) ? ($manifest['config']['theme'] ?? null) : null;
+            $mode = is_array($theme) ? ($theme['mode'] ?? null) : null;
+            return $mode === 'light' || $mode === 'dark' ? $mode : null;
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**

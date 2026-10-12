@@ -248,6 +248,82 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     writeFileSync(join(root, 'private/serve.config.php'), config());
   });
 
+  it('draws the boot screen and the browser colours in the side the bundle declares, over the deployment theme', async () => {
+    // A project that declares light or dark is drawn in that side whatever
+    // the deployment's theme (components, theme/app-theme.ts). The page
+    // before the app and the browser's colours around it follow it, so a
+    // light app on a dark deployment does not open on a dark screen. The
+    // document itself keeps the deployment's side: the permission bar is
+    // drawn by it.
+    const declaring = (theme: unknown) =>
+      zipSync({
+        'manifest.json': strToU8(JSON.stringify({ ...manifest, config: { theme } })),
+        'ui/main.ui': strToU8('<App><Text>Hi</Text></App>'),
+        'logic/main.logic': strToU8('let n = 0'),
+      });
+    const ground = { light: '#f5f5f8', dark: '#171821' };
+    const ink = { light: '#171821', dark: '#f5f5f8' };
+    const cases: [string, unknown, 'light' | 'dark'][] = [
+      ['dark', { mode: 'light' }, 'light'],
+      ['dark', { mode: 'dark' }, 'dark'],
+      ['dark', { mode: 'system' }, 'dark'],
+      ['dark', { primary: '#ff0000' }, 'dark'],
+      ['dark', { mode: 'Light' }, 'dark'],
+      ['dark', { mode: 1 }, 'dark'],
+      ['dark', 'light', 'dark'],
+      ['light', { mode: 'dark' }, 'dark'],
+      ['light', { mode: 'system' }, 'light'],
+    ];
+    try {
+      for (const [deployment, theme, side] of cases) {
+        writeFileSync(join(root, 'private/declared.softn'), declaring(theme));
+        writeFileSync(
+          join(root, 'private/serve.config.php'),
+          config(`'bundle' => __DIR__ . '/declared.softn', 'theme' => '${deployment}',`)
+        );
+        const label = `${deployment} deployment, theme ${JSON.stringify(theme)}`;
+        const html = await (await fetch(`${origin}/`)).text();
+        expect(html, label).toContain(`<html lang="en" data-theme="${deployment}">`);
+        expect(html, label).toContain(`background: ${ground[side]};`);
+        expect(html, label).toContain(`color: ${ink[side]};`);
+        expect(html, label).toContain(`<meta name="theme-color" content="${ground[side]}" />`);
+        expect(html, label).toContain(
+          `<meta name="apple-mobile-web-app-status-bar-style" content="${side === 'dark' ? 'black-translucent' : 'default'}">`
+        );
+        const installed = await (await fetch(`${origin}/index.php?manifest`)).json();
+        expect(installed.theme_color, label).toBe(ground[side]);
+        expect(installed.background_color, label).toBe(ground[side]);
+        // The deployment's theme is still what the runtime falls back to.
+        const pack = await (
+          await fetch(`${origin}/index.php?source`, { headers: withCookie() })
+        ).json();
+        expect(pack.theme, label).toBe(deployment);
+      }
+      // Colours the operator chose are kept; only the defaults follow the app.
+      writeFileSync(join(root, 'private/declared.softn'), declaring({ mode: 'light' }));
+      writeFileSync(
+        join(root, 'private/serve.config.php'),
+        config(
+          `'bundle' => __DIR__ . '/declared.softn', 'theme' => 'dark', 'pwa' => ['themeColor' => '#123456', 'backgroundColor' => '#654321'],`
+        )
+      );
+      let html = await (await fetch(`${origin}/`)).text();
+      expect(html).toContain('<meta name="theme-color" content="#123456" />');
+      expect(html).toContain('background: #f5f5f8;');
+      const installed = await (await fetch(`${origin}/index.php?manifest`)).json();
+      expect(installed.theme_color).toBe('#123456');
+      expect(installed.background_color).toBe('#654321');
+      writeFileSync(
+        join(root, 'private/serve.config.php'),
+        config(`'bundle' => __DIR__ . '/declared.softn', 'theme' => 'dark', 'pwa' => false,`)
+      );
+      html = await (await fetch(`${origin}/`)).text();
+      expect(html).toContain('<meta name="theme-color" content="#f5f5f8" />');
+    } finally {
+      writeFileSync(join(root, 'private/serve.config.php'), config());
+    }
+  });
+
   it('cannot be framed by another site unless the operator lists it', async () => {
     // A page another site can frame can have its permission bar covered with a
     // look-alike and its Allow clicked for the visitor.

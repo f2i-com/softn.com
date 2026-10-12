@@ -859,6 +859,52 @@ test('a name with markup in it cannot break out of the play page', skip, async (
   await api('DELETE', `/api/apps/${json.app.slug}`, { headers: { 'X-Edit-Key': json.editKey } });
 });
 
+test('the play page opens in the side the app declares: a light app does not boot on a dark screen', skip, async () => {
+  resetRateLimits();
+  // The shell draws its boot screen dark, as the `theme` it is given; the
+  // runtime draws a project that declares light or dark in that side
+  // whatever the theme (components, theme/app-theme.ts). Only the two words
+  // count, and an app that declares neither gets the page it always got.
+  const { zipSync, strToU8 } = require('fflate');
+  const declaring = (name, theme) =>
+    zipSync({
+      'manifest.json': strToU8(JSON.stringify({ name, version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] }, config: { theme } })),
+      'ui/main.ui': strToU8('<App><Text>hello</Text></App>\n'),
+    });
+  const published = [];
+  try {
+    const cases = [
+      ['Side Light', { mode: 'light' }, true],
+      ['Side Dark', { mode: 'dark' }, false],
+      ['Side System', { mode: 'system' }, false],
+      ['Side None', { primary: '#336699' }, false],
+      ['Side Capital', { mode: 'Light' }, false],
+      ['Side Word', 'light', false],
+    ];
+    for (const [name, theme, light] of cases) {
+      const form = new FormData();
+      form.set('bundle', new Blob([declaring(name, theme)]), 'x.softn');
+      form.set('name', name);
+      const { status, json } = await api('POST', '/api/apps', { body: form });
+      assert.equal(status, 201, `${name}: ${JSON.stringify(json)}`);
+      published.push(json);
+      const html = await (await fetch(`${base}/play/${json.app.slug}`, { headers: { Accept: 'text/html' } })).text();
+      const config = JSON.parse(html.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+      assert.equal(config.theme, 'dark', `${name}: the deployment's theme is still the runtime's fallback`);
+      if (light) {
+        assert.match(html, /<style>html,body\{background:#f5f5f8;color:#171821\}/, `${name}: the boot screen is light`);
+        assert.match(html, /\.wheel\{border-color:color-mix\(in srgb,currentColor 20%,transparent\);border-top-color:currentColor\}/);
+        assert.ok(html.indexOf('<style>') < html.indexOf('</head>'), 'in the head, after the shell\'s own style');
+      } else {
+        // The test shell has no style of its own, so anything added would show.
+        assert.doesNotMatch(html, /<style|color-scheme|theme-color/, `${name}: the page is the one it always was`);
+      }
+    }
+  } finally {
+    for (const json of published) await api('DELETE', `/api/apps/${json.app.slug}`, { headers: { 'X-Edit-Key': json.editKey } });
+  }
+});
+
 /**
  * Empty the rate-limit windows. The publish window is ten an hour per
  * visitor and every test here is the same visitor; a test that publishes

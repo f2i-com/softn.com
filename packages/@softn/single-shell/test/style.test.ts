@@ -1,14 +1,17 @@
 /**
- * The shell's own screens stay the shell's.
+ * The shell's own screens take their ground and text from where they are
+ * drawn.
  *
- * "Loading" and "Unable to open this application" are drawn inside
- * `.application-content`, the box the app is drawn in. When an app's project
- * declares the other side from the deployment's `theme`, that box is given
- * the app's ground and text colour (@softn/components, ThemeProvider). The
- * shell's screens were written for the shell's dark page, and their button
- * keeps a dark background of its own: in a light app's box "Try again" became
- * dark text on a dark button. They carry the page's colours themselves now,
- * so they look as they did wherever they are drawn.
+ * "Loading" and "Unable to open this application" are drawn on the page
+ * before the app is known, and inside `.application-content`, the box the app
+ * is drawn in, while it starts. The page is coloured for the side the app's
+ * project declares where a server knows it (a directory's play page, the
+ * privately served page), and that box is given the app's ground and text
+ * colour when that side is not the deployment's (@softn/components,
+ * ThemeProvider). The shell painted both screens a fixed dark of its own
+ * over them, so a light app on a dark deployment opened light, turned dark
+ * while it loaded, and turned light again. Its "Try again" button is drawn
+ * from the text colour, so it reads on either side.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -29,11 +32,18 @@ function rule(selector: string): Record<string, string> {
   );
 }
 
-it('draws the shell’s own screens in the shell’s colours inside the app’s box', () => {
-  const page = rule('.single-app');
-  const screen = rule('.application-content .loading');
-  expect(page.background).toBeTruthy();
-  expect(page.color).toBeTruthy();
-  expect(screen.background).toBe(page.background);
-  expect(screen.color).toBe(page.color);
+const HEX = /#[0-9a-f]{3,8}\b/i;
+
+it.each(['.single-app', '.application-content .loading'])('%s draws on the ground it is drawn on, in its text colour', (selector) => {
+  const declared = rule(selector);
+  expect(declared.background ?? 'transparent').toBe('transparent');
+  expect(declared.color ?? 'inherit').toBe('inherit');
+  expect(declared['background-color']).toBeUndefined();
+});
+
+it('draws the button on the shell’s screens from the text colour, not a dark of its own', () => {
+  const button = rule('.loading button');
+  expect(button.background).toMatch(/currentColor/);
+  expect(button.background).not.toMatch(HEX);
+  expect(button.border ?? button['border-color']).toMatch(/currentColor/);
 });

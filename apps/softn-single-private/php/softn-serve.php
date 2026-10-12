@@ -249,7 +249,7 @@ function softn_config(string $private): array
     if (!is_int($cacheSeconds) || $cacheSeconds < 0 || $cacheSeconds > 31536000) softn_fail(503, 'cacheSeconds must be between 0 and 31536000.');
     $allowPrivateInWebroot = $raw['allowPrivateInWebroot'] ?? false;
     if (!is_bool($allowPrivateInWebroot)) softn_fail(503, 'allowPrivateInWebroot must be true or false.');
-    $pwa = softn_pwa_config($raw['pwa'] ?? true, $title, $theme);
+    $pwa = softn_pwa_config($raw['pwa'] ?? true, $title);
     // Which other sites may show the page in a frame. None but its own by default: a page
     // that another site can frame can have its permission bar covered with a
     // look-alike and its Allow clicked for the visitor (clickjacking).
@@ -273,8 +273,10 @@ function softn_config(string $private): array
  * The installable-app and link-preview settings: `'pwa' => true` (the default) takes every
  * default below, an array overrides some of them, `false` turns the whole layer off. Paths are
  * relative to the page's directory unless they are absolute http(s) URLs. Null means off.
+ * A colour the operator did not choose is null here: it is the ground of the side the app
+ * is drawn in (softn_side), which only the bundle can say.
  */
-function softn_pwa_config(mixed $raw, string $title, string $theme): ?array
+function softn_pwa_config(mixed $raw, string $title): ?array
 {
     if ($raw === false) return null;
     if ($raw === true || $raw === null) $raw = [];
@@ -284,16 +286,15 @@ function softn_pwa_config(mixed $raw, string $title, string $theme): ?array
     foreach (array_keys($raw) as $key) {
         if (!in_array($key, $known, true)) softn_fail(503, 'Unknown pwa setting in serve.config.php: ' . $key);
     }
-    $dark = $theme === 'dark';
     $shortName = $raw['shortName'] ?? softn_text_cut($title, 30);
     if (!is_string($shortName) || trim($shortName) === '' || softn_text_length($shortName) > 30) softn_fail(503, 'pwa.shortName must be 1 to 30 characters.');
-    $colour = static function (mixed $value, string $default, string $name): string {
-        if ($value === null) return $default;
+    $colour = static function (mixed $value, string $name): ?string {
+        if ($value === null) return null;
         if (!is_string($value) || !preg_match('/^#[0-9a-fA-F]{6}$/', $value)) softn_fail(503, $name . ' must be a #rrggbb colour.');
         return strtolower($value);
     };
-    $themeColor = $colour($raw['themeColor'] ?? null, $dark ? '#171821' : '#f5f5f8', 'pwa.themeColor');
-    $backgroundColor = $colour($raw['backgroundColor'] ?? null, $dark ? '#171821' : '#f5f5f8', 'pwa.backgroundColor');
+    $themeColor = $colour($raw['themeColor'] ?? null, 'pwa.themeColor');
+    $backgroundColor = $colour($raw['backgroundColor'] ?? null, 'pwa.backgroundColor');
     $display = $raw['display'] ?? 'standalone';
     if (!in_array($display, ['standalone', 'minimal-ui', 'fullscreen', 'browser'], true)) softn_fail(503, 'pwa.display must be standalone, minimal-ui, fullscreen or browser.');
     $orientation = $raw['orientation'] ?? 'any';
@@ -351,6 +352,28 @@ function softn_pwa_config(mixed $raw, string $title, string $theme): ?array
     ];
 }
 
+/**
+ * The side the page is drawn in before the app is, and the browser's colours
+ * around it: the side the bundle's project declares (`config.theme.mode`,
+ * "light" or "dark"), which the runtime draws the app in whatever the
+ * deployment's theme; the deployment's theme for "system", no mode or
+ * anything else. The rule is packages/@softn/components/src/theme/app-theme.ts.
+ * The page's `data-theme` stays the deployment's: the document around the
+ * app keeps that side, and the permission bar is drawn by it.
+ */
+function softn_side(array $config, array $manifest): string
+{
+    $theme = $manifest['config']->theme ?? null;
+    $mode = is_array($theme) ? ($theme['mode'] ?? null) : null;
+    return $mode === 'light' || $mode === 'dark' ? $mode : $config['theme'];
+}
+
+/** The ground of a side: behind the boot screen, and the browser's colour where the operator chose none. */
+function softn_ground(string $side): string
+{
+    return $side === 'dark' ? '#171821' : '#f5f5f8';
+}
+
 /** A pwa path resolved against the page directory: relative paths gain the directory, absolute URLs pass through. */
 function softn_pwa_url(string $value, string $base): string
 {
@@ -371,13 +394,13 @@ function softn_pwa_origin(array $pwa, string $base): ?string
 }
 
 /** The head tags that make the page installable and give links a card. */
-function softn_pwa_tags(array $config, string $endpoint, ?string $description): string
+function softn_pwa_tags(array $config, string $endpoint, ?string $description, string $side): string
 {
     $pwa = $config['pwa'];
     if ($pwa === null) return '';
     $escape = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
     $base = softn_cookie_path();
-    $dark = $config['theme'] === 'dark';
+    $dark = $side === 'dark';
     $lines = [
         '<link rel="manifest" href="' . $escape($endpoint . '?manifest') . '">',
         '<meta name="application-name" content="' . $escape($pwa['shortName']) . '">',
@@ -429,6 +452,7 @@ function softn_webmanifest(array $config, string $private): never
     $zip->close();
     $base = softn_cookie_path();
     $description = $config['description'] ?? (is_string($manifest['description'] ?? null) ? softn_text_cut($manifest['description'], 300) : null);
+    $ground = softn_ground(softn_side($config, $manifest));
     $icons = [];
     foreach ($pwa['icons'] as $icon) {
         $icon['src'] = softn_pwa_url($icon['src'], $base);
@@ -436,8 +460,8 @@ function softn_webmanifest(array $config, string $private): never
     }
     $out = [
         'id' => $base, 'name' => $config['title'], 'short_name' => $pwa['shortName'], 'start_url' => $base, 'scope' => $base,
-        'display' => $pwa['display'], 'orientation' => $pwa['orientation'], 'background_color' => $pwa['backgroundColor'],
-        'theme_color' => $pwa['themeColor'], 'lang' => $config['lang'], 'icons' => $icons,
+        'display' => $pwa['display'], 'orientation' => $pwa['orientation'], 'background_color' => $pwa['backgroundColor'] ?? $ground,
+        'theme_color' => $pwa['themeColor'] ?? $ground, 'lang' => $config['lang'], 'icons' => $icons,
     ];
     if ($description !== null) $out['description'] = $description;
     $json = json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -675,7 +699,7 @@ function softn_shell(array $config, string $private): never
     $endpoint = softn_endpoint();
     $escape = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
     $description = $config['description'] ?? (is_string($manifest['description'] ?? null) ? softn_text_cut($manifest['description'], 300) : null);
-    $dark = $config['theme'] === 'dark';
+    $side = softn_side($config, $manifest);
     $boot = json_encode(
         ['version' => 1, 'endpoint' => $endpoint, 'loadingText' => $config['loadingText']],
         JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
@@ -687,11 +711,11 @@ function softn_shell(array $config, string $private): never
     $page = strtr($template, [
         '{{LANG}}' => $escape($config['lang']),
         '{{TITLE}}' => $escape($config['title']),
-        '{{THEME}}' => $dark ? 'dark' : 'light',
-        '{{BACKGROUND}}' => $dark ? '#171821' : '#f5f5f8',
-        '{{THEME_COLOR}}' => $config['pwa'] === null ? ($dark ? '#171821' : '#f5f5f8') : $config['pwa']['themeColor'],
-        '{{PWA_TAGS}}' => softn_pwa_tags($config, $endpoint, $description),
-        '{{FOREGROUND}}' => $dark ? '#f5f5f8' : '#171821',
+        '{{THEME}}' => $config['theme'],
+        '{{BACKGROUND}}' => softn_ground($side),
+        '{{THEME_COLOR}}' => $config['pwa']['themeColor'] ?? softn_ground($side),
+        '{{PWA_TAGS}}' => softn_pwa_tags($config, $endpoint, $description, $side),
+        '{{FOREGROUND}}' => $side === 'dark' ? '#f5f5f8' : '#171821',
         '{{DESCRIPTION_TAG}}' => $description === null ? '' : '<meta name="description" content="' . $escape($description) . '">',
         '{{ICON_TAG}}' => $iconTag,
         '{{LOADING_TEXT}}' => $escape($config['loadingText']),
