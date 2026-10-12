@@ -52,6 +52,7 @@ section here. Write the section before tagging. Headings are the tag
 - Directory: an edit key can be replaced (`POST /api/apps/{slug}/key`, and Replace key on the site's update page and Your apps); the old key stops working everywhere at once. Anyone who may have run a stranger's app on v0.0.19 or earlier in the browser that holds their keys should replace them.
 - Directory: bundles are read exactly as the runtime reads them, so it refuses what the runtime refuses and lists what the runtime will run (including an older manifest's permissions and a byte order mark in front of a JSON file). PHP's zlib extension is now required.
 - Site: Your apps shows a key only when asked; unpublishing forgets the key; the update page can retry; the star rating works from the keyboard.
+- Bundle inspector (the site's pre-publish check, Studio and Builder): agrees with the directory on a byte order mark in front of a JSON file, reads an older manifest's permissions as the runtime grants them, and reports an entry name that is not UTF-8.
 
 ## v0.0.19
 

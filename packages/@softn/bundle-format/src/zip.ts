@@ -92,6 +92,18 @@ interface DeclaredEntry {
   dataOffset: number;
   /** The name as the archive spells it, when that is with backslashes. */
   writtenAs?: string;
+  /** The name's bytes are not UTF-8 text; `name` holds them read with replacement characters. */
+  notUtf8?: boolean;
+}
+
+/** Whether `bytes` are UTF-8 text. The reader's own decoder reads anything, with replacement characters. */
+function isUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -325,6 +337,7 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
 
     const nameBytes = data.slice(offset + 46, offset + 46 + fileNameLength);
     const written = decoder.decode(nameBytes);
+    const notUtf8 = !isUtf8(nameBytes);
     const name = written.replace(/\\/g, '/');
 
     // An Info-ZIP Unicode Path field is a second name for the entry. libzip,
@@ -357,6 +370,7 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
       uncompressedSize,
       dataOffset,
       ...(written === name ? {} : { writtenAs: written }),
+      ...(notUtf8 ? { notUtf8 } : {}),
     });
 
     offset = recordEnd;
@@ -566,6 +580,8 @@ export class BundleArchive {
   private readonly unsafe: string[] = [];
   /** Names the archive spells with backslashes, as it spells them. They are indexed with slashes. */
   private readonly backslashed: string[] = [];
+  /** Names whose bytes are not UTF-8 text, as this reader reads them. */
+  private readonly notUtf8: string[] = [];
   private readonly records: number;
   private readonly memo = new Map<string, Uint8Array>();
   /**
@@ -602,6 +618,7 @@ export class BundleArchive {
     this.records = records.length;
     for (const entry of records) {
       if (entry.writtenAs !== undefined) this.backslashed.push(entry.writtenAs);
+      if (entry.notUtf8) this.notUtf8.push(entry.name);
       if (entry.name.endsWith('/')) {
         // A directory entry holds nothing to read, but one that climbs out is
         // as much an escape attempt as a file that does, and the directory
@@ -629,6 +646,16 @@ export class BundleArchive {
    */
   backslashNames(): string[] {
     return [...this.backslashed];
+  }
+
+  /**
+   * Entry names whose bytes are not UTF-8 text, as this reader shows them
+   * (with replacement characters). PHP's ZipArchive reads such a name in code
+   * page 437, so the directory and the runtime would list different files;
+   * the directory refuses the bundle, which is why the inspector asks.
+   */
+  nonUtf8Names(): string[] {
+    return [...this.notUtf8];
   }
 
   /**

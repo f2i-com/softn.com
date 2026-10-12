@@ -55,6 +55,15 @@ describe('inspectBundle and the directory’s limits', () => {
     const inspection = inspectBundle(craftZip([...base, { name: '../outside/' }]).bytes);
     expect(inspection.problem).toBe('The bundle has a file with an unsafe path: ../outside/');
   });
+
+  it('reports an entry whose name is not UTF-8 text, which the directory refuses', () => {
+    // A name in a legacy code page, as an old Windows zip tool writes it: the
+    // runtime reads it with replacement characters, PHP's ZipArchive as code
+    // page 437, so the two would list different files.
+    const latin1 = Uint8Array.from([...enc('assets/caf'), 0xe9, ...enc('.png')]);
+    const inspection = inspectBundle(craftZip([...base, { name: latin1, data: new Uint8Array(4) }]).bytes);
+    expect(inspection.problem).toBe('The bundle has an entry whose name is not UTF-8 text. Zip it with a tool that writes UTF-8 names.');
+  });
 });
 
 describe('inspectEntries and the sizes the directory reads whole', () => {
@@ -67,22 +76,43 @@ describe('inspectEntries and the sizes the directory reads whole', () => {
     expect(inspection.name).toBe('Limits');
   });
 
-  it('refuses a manifest.json or permission.json that starts with a byte order mark', () => {
-    // Notepad's "UTF-8 with BOM". The runtime's decoder drops the mark and
-    // reads the file; PHP's json_decode does not, and the directory answers
-    // "not valid JSON" for a manifest the author can see nothing wrong with.
+  it('reads a manifest.json or permission.json that starts with a byte order mark, as the runtime and the directory do', () => {
+    // Notepad's "UTF-8 with BOM". The runtime's decoder drops the mark, and
+    // the directory now reads past it too, so it is not a problem to report.
     const bom = (bytes: Uint8Array) => Uint8Array.from([0xef, 0xbb, 0xbf, ...bytes]);
     const withBom = files();
     withBom.set('manifest.json', bom(MANIFEST));
     withBom.set('permission.json', bom(enc('{"permissions":{"net":{"enabled":true}}}')));
     const inspection = inspectEntries(withBom);
-    expect(errors(inspection.report)).toEqual([
-      'The manifest.json starts with a byte order mark, which the directory reads as invalid JSON. Save it as UTF-8 without one.',
-      'The permission.json starts with a byte order mark, which the directory reads as invalid JSON. Save it as UTF-8 without one.',
-    ]);
-    // The rest is still read, as the runtime reads it.
+    expect(errors(inspection.report)).toEqual([]);
     expect(inspection.name).toBe('Limits');
     expect(inspection.capabilities).toEqual(['net']);
+  });
+
+  it('reads what an older manifest asks for when there is no permission.json, as the runtime grants it', () => {
+    // `permissions: { network, filesystem }` in the manifest is what the
+    // runtime grants a bundle that ships no permission.json (extractPermissions
+    // in core); the directory lists it the same way. Reporting "declares
+    // nothing" under such an app was wrong about what it would get.
+    const legacy = files();
+    legacy.delete('permission.json');
+    legacy.set('manifest.json', enc(JSON.stringify({
+      name: 'Limits', version: '1.0.0', description: 'd', main: 'main.ui', icon: 'icon.png',
+      permissions: { network: true, filesystem: 1, camera: true },
+    })));
+    const inspection = inspectEntries(legacy);
+    expect(inspection.capabilities).toEqual(['net', 'files']);
+    const notes = inspection.report.map((l) => l.text);
+    expect(notes.some((t) => t.startsWith('No permission.json: the app declares nothing'))).toBe(false);
+    expect(notes).toContain('No permission.json: the manifest\'s older "permissions" block asks for net, files, which the runtime grants. Move them to a permission.json to declare them the current way.');
+
+    const nothing = files();
+    nothing.delete('permission.json');
+    nothing.set('manifest.json', enc(JSON.stringify({
+      name: 'Limits', version: '1.0.0', description: 'd', main: 'main.ui', icon: 'icon.png',
+      permissions: { network: false, filesystem: '' },
+    })));
+    expect(inspectEntries(nothing).capabilities).toEqual([]);
   });
 
   it('refuses a permission.json over 64 KB', () => {

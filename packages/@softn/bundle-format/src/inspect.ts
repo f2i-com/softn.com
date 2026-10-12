@@ -111,16 +111,20 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 /**
- * A UTF-8 byte order mark, which some editors put in front of a file. The
- * decoder below drops it, as the runtime's does, so the JSON parses here; the
- * directory's `json_decode` does not, and refuses the file as invalid JSON.
+ * What a bundle with no permission.json asks for in the older `permissions`
+ * block of its manifest, as the runtime grants it (extractPermissions in
+ * core's bundle/manifest.ts) and the directory lists it (legacyCapabilities in
+ * apps/softn-api/lib/bundle.php): `network` is net and `filesystem` is files,
+ * each when JavaScript counts its value as true. The block's other names
+ * gated nothing.
  */
-function startsWithByteOrderMark(bytes: Uint8Array): boolean {
-  return bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
-}
-
-function byteOrderMarkProblem(file: string): string {
-  return `The ${file} starts with a byte order mark, which the directory reads as invalid JSON. Save it as UTF-8 without one.`;
+function legacyCapabilities(legacy: unknown): string[] {
+  if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return [];
+  const block = legacy as Record<string, unknown>;
+  const capabilities: string[] = [];
+  if (block.network) capabilities.push('net');
+  if (block.filesystem) capabilities.push('files');
+  return capabilities;
 }
 
 function unpackedTooLarge(total: number): string {
@@ -132,6 +136,7 @@ export function inspectBundle(bytes: Uint8Array): BundleInspection {
   let entries: Map<string, Uint8Array>;
   let unsafe: string[];
   let backslashed: string[];
+  let notUtf8: string[];
   try {
     const archive = openBundleArchive(bytes);
     // The directory's two limits on the archive as a whole are read off its
@@ -154,11 +159,12 @@ export function inspectBundle(bytes: Uint8Array): BundleInspection {
     entries = archive.readAll();
     unsafe = archive.unsafeNames();
     backslashed = archive.backslashNames();
+    notUtf8 = archive.nonUtf8Names();
   } catch {
     return inspectEntries(null);
   }
   const inspection = inspectEntries(entries);
-  if (unsafe.length === 0 && backslashed.length === 0) return inspection;
+  if (unsafe.length === 0 && backslashed.length === 0 && notUtf8.length === 0) return inspection;
   // The archive reader drops escape attempts so the runtime can open the rest,
   // and reads a backslash as a slash; the inspector refuses the bundle
   // instead, as the directory always has.
@@ -168,6 +174,10 @@ export function inspectBundle(bytes: Uint8Array): BundleInspection {
       level: 'error',
       text: `The bundle has a file whose path is written with backslashes: ${p}. The directory refuses those; zip the bundle with forward slashes.`,
     })),
+    // The directory's words, once however many names: the name itself cannot be shown as written.
+    ...(notUtf8.length > 0
+      ? [{ level: 'error' as const, text: 'The bundle has an entry whose name is not UTF-8 text. Zip it with a tool that writes UTF-8 names.' }]
+      : []),
     ...inspection.report,
   ];
   return { ...inspection, report, problem: report.find((l) => l.level === 'error')?.text ?? null };
@@ -228,7 +238,6 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   if (manifestBytes.length > MAX_MANIFEST_BYTES) {
     error(`The manifest.json is larger than ${fmt(MAX_MANIFEST_BYTES)}; the directory will refuse the bundle.`);
   }
-  if (startsWithByteOrderMark(manifestBytes)) error(byteOrderMarkProblem('manifest.json'));
   let manifest: {
     name?: unknown;
     version?: unknown;
@@ -237,6 +246,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     icon?: unknown;
     config?: { execution?: unknown; python?: unknown };
     files?: Record<string, unknown>;
+    permissions?: unknown;
   };
   try {
     manifest = JSON.parse(decoder.decode(manifestBytes));
@@ -300,7 +310,6 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     if (perm.length > MAX_PERMISSION_BYTES) {
       error(`The permission.json is larger than ${fmt(MAX_PERMISSION_BYTES)}; the directory will refuse the bundle.`);
     }
-    if (startsWithByteOrderMark(perm)) error(byteOrderMarkProblem('permission.json'));
     let declaration: unknown = null;
     let parsed = false;
     try {
@@ -340,7 +349,15 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
       }
     }
   } else {
-    warn('No permission.json: the app declares nothing and gets no capability. Fine for an app that needs none.');
+    capabilities = legacyCapabilities(manifest.permissions);
+    if (capabilities.length > 0) {
+      warn(
+        `No permission.json: the manifest's older "permissions" block asks for ${capabilities.join(', ')}, which the runtime grants. ` +
+          'Move them to a permission.json to declare them the current way.'
+      );
+    } else {
+      warn('No permission.json: the app declares nothing and gets no capability. Fine for an app that needs none.');
+    }
   }
 
   let iconDataUrl: string | null = null;
