@@ -11,6 +11,7 @@ import { hasSavedGrant, saveGrant, withheldPermissions } from '@softn/runtime-sh
 import { PermissionBar } from '@softn/runtime-shell/PermissionBar';
 import type { AssetResolver } from '@softn/runtime-shell/bundleProcessor';
 import { loadApplication, type ConfigSource, type LoadedApplication } from './load';
+import { watchForStall } from './stall';
 import type { DirectoryConfig } from './config';
 import { installFavicon } from './favicon';
 import { loadHost, type HostBackendCall } from './host';
@@ -321,8 +322,9 @@ export function SingleApp({ source, backendCall }: { source: ConfigSource; backe
     let owned: LoadedApplication | null = null;
     let restoreFavicon: (() => void) | undefined;
     let active = true;
-    const timeout = setTimeout(() => controller.abort(), 60000);
-    void loadApplication(source, controller.signal)
+    // A minute with nothing arriving, not a minute in all: see stall.ts.
+    const stall = watchForStall(controller);
+    void loadApplication(source, controller.signal, stall.touch)
       .then(async (result) => {
         owned = result;
         // Before the app mounts, so its first action has somewhere to go. A
@@ -343,11 +345,11 @@ export function SingleApp({ source, backendCall }: { source: ConfigSource; backe
         reportFailure(error);
         setFailure({ error });
       })
-      .finally(() => clearTimeout(timeout));
+      .finally(() => stall.stop());
     return () => {
       active = false;
       controller.abort();
-      clearTimeout(timeout);
+      stall.stop();
       owned?.assets.dispose();
       restoreFavicon?.();
     };

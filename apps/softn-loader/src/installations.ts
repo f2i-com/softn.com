@@ -229,9 +229,22 @@ export function loadRegistry(storage: RegistryStorage): InstallationRegistry {
     return { ...emptyRegistry(), unavailable: { reason } };
   }
   if (!raw) return emptyRegistry();
+  // Copied aside under a name made from the damaged bytes, once: every read
+  // of the same damage used to write another copy under a new name, and a
+  // person who kept cancelling filled the storage that also holds the grants
+  // and the registry. A name already holding other bytes (two damages that
+  // hash alike) falls back to one made from the time, as before.
   const quarantine = (): string | null => {
-    let quarantineKey: string | null = `${REGISTRY_KEY}.corrupt.${Date.now().toString(36)}`;
-    try { storage.setItem(quarantineKey, raw as string); } catch { quarantineKey = null; }
+    const text = raw as string;
+    let quarantineKey: string | null = `${REGISTRY_KEY}.corrupt.${contentName(text)}`;
+    try {
+      const kept = storage.getItem(quarantineKey);
+      if (kept === text) return quarantineKey;
+      if (kept !== null) quarantineKey = `${REGISTRY_KEY}.corrupt.${Date.now().toString(36)}`;
+      storage.setItem(quarantineKey, text);
+    } catch {
+      quarantineKey = null;
+    }
     return quarantineKey;
   };
   const damaged = (reason: string, records: DamagedRecord[] = []): InstallationRegistry => {
@@ -263,6 +276,20 @@ export function loadRegistry(storage: RegistryStorage): InstallationRegistry {
   } catch (error) {
     return damaged(error instanceof Error ? error.message : String(error));
   }
+}
+
+/** A short name for some text, the same for the same text: 53 bits of cyrb53, in base 36. */
+function contentName(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
 /** The revision a stored (parsed) registry carries; 0 for one written before revisions existed. */

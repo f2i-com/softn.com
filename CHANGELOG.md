@@ -26,6 +26,7 @@ section here. Write the section before tagging. Headings are the tag
 - Builder: Preview says Stopped, and offers Restart, when the app's logic throws as it starts or its page cannot be drawn, where it went on saying Running; Ctrl+1 to Ctrl+4 switch views from a text field or the code editor too, as the shortcuts list says.
 - Builder: a project edited and then undone back to what was opened or saved no longer says Unsaved, and its recovery copy no longer offers the undone edits back; typing in the logic dock no longer re-reads the logic for every element of the page at each key (60 keys in a large app took 19 s).
 - Components, changes existing apps may notice: a DatePicker holds the chosen day as `"YYYY-MM-DD"` text (it held a `Date`, which storage and sync could not keep), and Radio and Select hold the chosen option's own value, a number for a numbered option (Radio held `"12"`). Sortable Table and DataGrid columns sort by themselves when the page gives no `onSort`; a Popover with no `trigger` takes its first child, a Button or an Icon, as the trigger; NavItem's `variant` works; RichTextEditor's link button no longer uses `prompt()`, which sandboxed frames block.
+- Single-app pages fail a download only when nothing has arrived for 60 seconds, where a slow download that was still arriving was cut off at 60 seconds in all; the desktop app copies a damaged registry aside once, not on every read; FormLogic's storage alert for an embedded app follows the theme.
 
 ## v0.0.19
 

@@ -153,7 +153,10 @@ export async function fetchBytes(
   // name. A directory hands out version-addressed bundles whose bytes never
   // change and whose digest the config pins, so those may use the browser's
   // cache: a second visit inside the server's max-age makes no request at all.
-  cache: RequestCache = 'no-store'
+  cache: RequestCache = 'no-store',
+  // Told whenever something arrives, the answer and then each piece of the
+  // body: what a stall deadline is reset by (see stall.ts).
+  progress?: () => void
 ): Promise<Uint8Array> {
   const response = await fetch(url, {
     signal,
@@ -161,6 +164,7 @@ export async function fetchBytes(
     cache,
     redirect: 'error',
   });
+  progress?.();
   if (!response.ok) throw Error('Required file could not be loaded');
   if (Number(response.headers.get('content-length')) > limit) {
     await response.body?.cancel();
@@ -178,6 +182,7 @@ export async function fetchBytes(
     for (;;) {
       const next = await reader.read();
       if (next.done) break;
+      progress?.();
       size += next.value.length;
       if (size > limit) {
         await reader.cancel();

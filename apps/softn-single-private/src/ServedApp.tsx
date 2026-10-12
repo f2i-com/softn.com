@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Application, Failure, Loading, type RunnableApplication } from '@softn/single-shell';
+import { Application, Failure, Loading, watchForStall, type RunnableApplication } from '@softn/single-shell';
 import type { BootConfig } from './boot';
 import { loadServedApplication } from './load';
 
@@ -11,8 +11,9 @@ export function ServedApp({ boot }: { boot: BootConfig }) {
     const controller = new AbortController();
     let owned: RunnableApplication | null = null;
     let active = true;
-    const timeout = setTimeout(() => controller.abort(), 60000);
-    void loadServedApplication(boot.endpoint, document.baseURI, controller.signal)
+    // A minute with nothing arriving, not a minute in all, as the shell's own page.
+    const stall = watchForStall(controller);
+    void loadServedApplication(boot.endpoint, document.baseURI, controller.signal, stall.touch)
       .then((result) => {
         owned = result;
         if (!active) {
@@ -29,11 +30,11 @@ export function ServedApp({ boot }: { boot: BootConfig }) {
         console.error('[SoftN] The application could not open:', error);
         setFailure({ error });
       })
-      .finally(() => clearTimeout(timeout));
+      .finally(() => stall.stop());
     return () => {
       active = false;
       controller.abort();
-      clearTimeout(timeout);
+      stall.stop();
       owned?.assets.dispose();
     };
   }, [boot.endpoint]);

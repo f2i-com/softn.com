@@ -165,3 +165,28 @@ describe('installation identity', () => {
     expect(shortIdentity('short')).toBe('short');
   });
 });
+
+describe('a damaged registry kept for recovery', () => {
+  it('is copied aside once for the same damage, however often it is read, and named the same each time', () => {
+    // Every read wrote a new copy under a new key: a person who kept
+    // cancelling filled the runtime's storage, which also holds the grants
+    // and the registry, with copies of the same bytes.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let now = 1_700_000_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => (now += 5));
+    const damaged = storage({ [REGISTRY_KEY]: '{"version":1,"installations":{"x":' });
+    const keys = Array.from({ length: 5 }, () => loadRegistry(damaged).damaged?.quarantineKey);
+    const copies = [...damaged.store.keys()].filter((k) => k.includes('.corrupt.'));
+    expect(copies).toHaveLength(1);
+    expect(new Set(keys)).toEqual(new Set([copies[0]]));
+    expect(damaged.store.get(copies[0])).toBe('{"version":1,"installations":{"x":');
+
+    // Other damage is other bytes, and is kept beside the first.
+    damaged.store.set(REGISTRY_KEY, '{"version":1,"installations":[');
+    const other = loadRegistry(damaged).damaged?.quarantineKey;
+    expect(other).not.toBe(copies[0]);
+    expect([...damaged.store.keys()].filter((k) => k.includes('.corrupt.'))).toHaveLength(2);
+    expect(damaged.store.get(other!)).toBe('{"version":1,"installations":[');
+    vi.restoreAllMocks();
+  });
+});

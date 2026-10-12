@@ -22,17 +22,18 @@ export interface ConfigSource {
   /** The page's inline configuration, as the JSON text it was written as. */
   inline?: string;
 }
-export async function loadApplication(from: string | ConfigSource, signal: AbortSignal) {
+/** `progress` is told whenever part of a download arrives (see stall.ts). */
+export async function loadApplication(from: string | ConfigSource, signal: AbortSignal, progress?: () => void) {
   const { configUrl, inline } = typeof from === 'string' ? { configUrl: from } : from;
   const decode = (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)) as unknown;
   const config = parseConfig(
-    inline !== undefined ? (JSON.parse(inline) as unknown) : decode(await fetchBytes(configUrl, signal, 16384)),
+    inline !== undefined ? (JSON.parse(inline) as unknown) : decode(await fetchBytes(configUrl, signal, 16384, 'no-store', progress)),
     configUrl
   );
   mark('softn:bundle-fetch:start');
   // An inline configuration names a version-addressed bundle with its digest
   // pinned, so the browser's cache may answer; see fetchBytes.
-  const bytes = await fetchBytes(config.bundle, signal, 32 * 1024 * 1024, inline !== undefined ? 'default' : 'no-store');
+  const bytes = await fetchBytes(config.bundle, signal, 32 * 1024 * 1024, inline !== undefined ? 'default' : 'no-store', progress);
   mark('softn:bundle-fetch:end');
   mark('softn:digest:start');
   const hash = await digest(bytes);
@@ -47,7 +48,7 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
   const { raw, ...app } = await assembleApplication({
     textFiles,
     readManifest: () => readManifest<BundleManifest>(textFiles),
-    sidecar: sidecar ? async () => decode(await fetchBytes(sidecar, signal, 65536)) : undefined,
+    sidecar: sidecar ? async () => decode(await fetchBytes(sidecar, signal, 65536, 'no-store', progress)) : undefined,
     // Identity comes from this origin's deployment config, not an untrusted manifest name.
     appId: 'single:' + new URL(configUrl).pathname + ':' + config.id,
     grantScope: configUrl + hash,

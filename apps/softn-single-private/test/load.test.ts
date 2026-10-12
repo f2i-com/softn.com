@@ -168,3 +168,21 @@ it('reads the side the project declares from the manifest the server passed on, 
   expect(silent.themeMode).toBeUndefined();
   silent.assets.dispose();
 });
+
+it('reports each piece of the pack as it arrives, so a slow download keeps its deadline moving', async () => {
+  // ServedApp gives the load a minute with nothing arriving, not a minute in
+  // all; the minute starts over each time this is told something arrived.
+  const text = new TextEncoder().encode(JSON.stringify(pack()));
+  const pieces = 4;
+  const size = Math.ceil(text.length / pieces);
+  vi.stubGlobal('fetch', async () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let i = 0; i < pieces; i++) controller.enqueue(text.subarray(i * size, (i + 1) * size));
+      controller.close();
+    },
+  })));
+  let arrived = 0;
+  const app = await loadServedApplication('/games/index.php', base, new AbortController().signal, () => arrived++);
+  expect(app.config.title).toBe('Example');
+  expect(arrived).toBeGreaterThanOrEqual(pieces);
+});

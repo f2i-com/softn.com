@@ -16,5 +16,6 @@ export {
   type SingleConfig,
 } from './config';
 export { installFavicon } from './favicon';
+export { watchForStall, STALL_MS, STALLED_MESSAGE, type StallWatch } from './stall';
 export { loadHost, type HostBackendCall, type HostFactory } from './host';
 export type { AssetResolver, BundleManifest } from '@softn/runtime-shell/bundleProcessor';

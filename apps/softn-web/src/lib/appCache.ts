@@ -983,6 +983,9 @@ export async function cacheApp(
   directorySlug?: string,
   requestedCapabilities?: string[]
 ): Promise<CachedApp | null> {
+  // The manifest is the bundle's, read as it came: a description written as
+  // `{ "en": "…" }` was stored as that and blanked Home when it was drawn.
+  const description = typeof manifest.description === 'string' ? manifest.description : undefined;
   try {
     const db = await getDB();
     const origin = await computeAppOrigin(bundleData);
@@ -1019,7 +1022,7 @@ export async function cacheApp(
         ...existing,
         origin,
         version: manifest.version,
-        description: manifest.description,
+        description,
         bundleData,
         lastOpened: Date.now(),
         icon: icon ?? existing.icon,
@@ -1046,7 +1049,7 @@ export async function cacheApp(
       origin,
       name: manifest.name,
       version: manifest.version,
-      description: manifest.description,
+      description,
       bundleData,
       cachedAt: Date.now(),
       lastOpened: Date.now(),

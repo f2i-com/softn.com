@@ -123,11 +123,13 @@ export function parsePack(input: unknown): SourcePack {
 export async function loadServedApplication(
   endpoint: string,
   base: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  // Told whenever part of the pack arrives (see the shell's stall.ts).
+  progress?: () => void
 ): Promise<RunnableApplication & { pack: SourcePack }> {
   const url = new URL(localUrl(endpoint, base));
   if (url.search || url.hash) throw Error('Invalid endpoint');
-  const bytes = await fetchBytes(url.href + '?source', signal, MAX_PACK_BYTES);
+  const bytes = await fetchBytes(url.href + '?source', signal, MAX_PACK_BYTES, 'no-store', progress);
   const pack = parsePack(JSON.parse(new TextDecoder().decode(bytes)));
   const textFiles = new Map(Object.entries(pack.text));
   const { raw: _manifest, ...app } = await assembleApplication({

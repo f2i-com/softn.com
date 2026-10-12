@@ -381,3 +381,24 @@ describe('getCachedAppByName', () => {
     expect(await getCachedAppByName('Nope')).toBeNull();
   });
 });
+
+describe('the description a cached app keeps', () => {
+  it('is the manifest’s text, or none when the manifest’s is not text', async () => {
+    // A manifest's description is the bundle author's, read as it came; one
+    // written as { "en": "…" } was stored that way and blanked Home when drawn.
+    const { db, table } = fakeIdb();
+    openDB.mockResolvedValue(db);
+    vi.stubGlobal('localStorage', fakeLocalStorage());
+    const cache = await freshCache();
+    const odd = await cache.cacheApp(bytes('odd'), { name: 'Odd', version: '1.0.0', description: { en: 'An app' } as unknown as string });
+    expect(odd?.description).toBeUndefined();
+    expect([...table.values()][0].description).toBeUndefined();
+
+    // The same bytes again, as an update of the record: still text or nothing.
+    const again = await cache.cacheApp(bytes('odd'), { name: 'Odd', version: '1.0.1', description: 42 as unknown as string });
+    expect(again?.description).toBeUndefined();
+
+    const plain = await cache.cacheApp(bytes('plain'), { name: 'Plain', version: '1.0.0', description: 'Notes for one person' });
+    expect(plain?.description).toBe('Notes for one person');
+  });
+});
