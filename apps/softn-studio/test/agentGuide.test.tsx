@@ -309,3 +309,17 @@ describe('what the guide says of a handler with a block body', () => {
     expect(text()).toMatch(/1\s*and\s*pressed/);
   }, 30_000);
 });
+
+describe('what the guide says a bound control holds', () => {
+  // A number field wrote text, a DatePicker a Date and a Radio the option's text; each holds what
+  // the logic would expect now, and logic written for the old values (`Number(qty)` is harmless,
+  // `picked.getFullYear()` is not) should not be what the model writes.
+  it('names the number field, the DatePicker and the choice controls', () => {
+    for (const python of [false, true]) {
+      const guide = buildGuide({ python, torch: false, style: 'clean' });
+      expect(guide).toMatch(/`<Input type="number" :bind=\{qty\} \/>` writes a number, and `''` while the field is empty/);
+      expect(guide).toMatch(/`<DatePicker :bind=\{day\} \/>` holds the day as text, `"2026-10-12"`/);
+      expect(guide).toMatch(/`Select`, `Radio` and `SegmentedControl` hold the chosen option's own value/);
+    }
+  });
+});
