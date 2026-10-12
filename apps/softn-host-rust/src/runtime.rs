@@ -1618,10 +1618,25 @@ mod isolation_tests {
     /// its large blocks (src/alloc.rs) no collection ran in this loop and all
     /// 1,200 megabytes were held at once, until the call ended. With the
     /// reports the engine collects on that growth and the peak stays in the
-    /// tens of megabytes; the bound leaves room for what the tests running
-    /// beside this one hold, since the figure is the process's.
+    /// tens of megabytes.
+    ///
+    /// The figure is the process's, so whatever a test running beside this
+    /// one holds at the time would be counted: it is measured in a process of
+    /// its own, this test binary started again to run this test alone.
     #[test]
     fn arrays_a_handler_drops_are_collected_while_it_runs() {
+        const ALONE: &str = "SOFTN_TEST_ALLOCATION_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let name = format!("{}::arrays_a_handler_drops_are_collected_while_it_runs", module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest));
+            let run = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--test-threads=1", "--nocapture"])
+                .env(ALONE, "1")
+                .output()
+                .unwrap();
+            let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+            assert!(run.status.success() && said.contains("1 passed"), "the measurement, run alone:\n{said}");
+            return;
+        }
         let runtime = one_worker(r#"
             function grow(req) {
                 var s = 0;
