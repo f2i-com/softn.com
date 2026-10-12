@@ -1823,7 +1823,7 @@
         "title": "The SoftN UI language | SoftN Docs",
         "description": "SoftN .ui syntax: components, expression props, what an expression may contain, event handlers and modifiers, two-way binding, class: and style: directives, conditionals, loops, and one page placed inside another."
       },
-      "updatedAt": "2026-10-10",
+      "updatedAt": "2026-10-12",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -1931,7 +1931,7 @@
             },
             {
               "type": "paragraph",
-              "text": "A variable can have any name JavaScript allows, including words markup also uses, such as `data`, `style`, `from` and `end`. An arrow with a block body, `() => { … }`, a `function` expression, `async` and `await`, regular expression literals, bitwise operators and a comma between two expressions are not read: the parser reports them, and the place for them is a logic function the expression calls. An assignment or `++` changes state when a handler runs it. Written in the body of the page, as in `{count++}`, it would run every time the page is drawn, so there it is worth its value and changes nothing."
+              "text": "A variable can have any name JavaScript allows, including words markup also uses, such as `data`, `style`, `from` and `end`. A `function` expression, `async` and `await`, regular expression literals, bitwise operators and a comma between two expressions are not read: the parser reports them, and the place for them is a logic function the expression calls. An assignment or `++` changes state when a handler runs it. Written in the body of the page, as in `{count++}`, it would run every time the page is drawn, so there it is worth its value and changes nothing."
             },
             {
               "type": "callout",
@@ -1953,7 +1953,7 @@
             },
             {
               "type": "paragraph",
-              "text": "`:bind` is two-way: what the person types is written back to the state variable. Any other `:` property, such as `:value={x}`, only shows the value. `@click` and the other `@` events call a handler."
+              "text": "`:bind` is two-way: what the person types is written back to the state variable. On a number field (`<input type=\"number\">` or `<Input type=\"number\">`) it writes a number while the field holds one, and `''` while it is empty or holds something that is not a number. Any other `:` property, such as `:value={x}`, only shows the value. `@click` and the other `@` events call a handler. A handler may have a block body, `@click={() => { count++; save() }}`: its statements run one after another, each an expression of the kind markup reads; `if`, `let` and loops belong in a logic function."
             },
             {
               "type": "code",
@@ -1963,7 +1963,7 @@
             },
             {
               "type": "paragraph",
-              "text": "`:bind` is also how a variable becomes a component’s own state when that state is not typed text. A `Modal`, `Drawer` or `Popover` is open while its variable is true and sets it false when the person closes it. A `Confirm` is shut by either answer, and `@confirm` still says which. `Tabs` holds the chosen tab’s key, `Pagination` the page, `Accordion` the keys of its open panels, and `Sidebar` whether it is collapsed. A handler written beside the binding, such as `@close`, runs as well, after the variable is written."
+              "text": "`:bind` is also how a variable becomes a component’s own state when that state is not typed text. A `Modal`, `Drawer` or `Popover` is open while its variable is true and sets it false when the person closes it. A `Confirm` is shut by either answer, and `@confirm` still says which. `Tabs` holds the chosen tab’s key, `Pagination` the page, `Accordion` the keys of its open panels, and `Sidebar` whether it is collapsed. A handler written beside the binding, such as `@close`, runs as well, after the variable is written. A `DatePicker` holds the day as text, `\"2026-10-12\"`, and `null` once it is cleared; `Radio`, `Select` and `SegmentedControl` hold the chosen option’s own value, a number for a numbered option. A `Popover` with no `trigger` takes its first child as the trigger, so a button or an icon can open it: `<Popover :bind={open}><Button>Help</Button><Text>…</Text></Popover>`."
             },
             {
               "type": "paragraph",
@@ -3694,7 +3694,7 @@
         "title": "Permissions and sandboxing | SoftN Docs",
         "description": "Understand SoftN permissions and sandboxing: permission.json, host grants, network allowlists, browser consent and private client-server boundaries."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-12",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -3746,7 +3746,7 @@
                 },
                 {
                   "term": "sync",
-                  "description": "Replicates data to the visitor’s other devices and to peers."
+                  "description": "Replicates the app’s database to the visitor’s other devices, by peer sync (`db.startSync`) or through the sync server the manifest names (`config.server.url`). Neither starts without this declaration and the person’s Allow."
                 },
                 {
                   "term": "storage",
@@ -4404,7 +4404,7 @@
         "title": "Host one app on its own website | SoftN Docs",
         "description": "Host a SoftN app on its own website with the single-app runtime: the build and package commands, every runtime.config.json field, permission modes, identity and the archive variants."
       },
-      "updatedAt": "2026-10-10",
+      "updatedAt": "2026-10-12",
       "sourceIds": [
         "softn-single-guide",
         "softn-package",
@@ -4524,7 +4524,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Any other key is refused. Limits: the configuration is capped at 16 KiB, a sidecar permission declaration at 64 KiB and the compressed bundle at 32 MiB; the shared bundle validator also applies its entry and decompression limits, and startup fetches are bounded to 60 seconds."
+              "text": "Any other key is refused. Limits: the configuration is capped at 16 KiB, a sidecar permission declaration at 64 KiB and the compressed bundle at 32 MiB; the shared bundle validator also applies its entry and decompression limits, and a startup download fails when nothing arrives for 60 seconds; a slow download that keeps arriving is not cut off."
             }
           ]
         },
