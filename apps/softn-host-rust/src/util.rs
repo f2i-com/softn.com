@@ -1,3 +1,16 @@
+/// A name as the directory that is made from it is really called. Windows
+/// drops the dots and spaces at the end of a directory's name: the data
+/// directory of `Notes...` is `Notes` there, and a database path built from
+/// the name as given (`Notes...\Notes....sqlite`) did not open. Elsewhere a
+/// name is its directory's name, unchanged, so no data moves.
+pub fn directory_name(name: &str) -> &str {
+    if cfg!(windows) {
+        name.trim_end_matches(['.', ' '])
+    } else {
+        name
+    }
+}
+
 /// Maximum JSON nesting depth for untrusted input.
 /// Prevents stack overflow from deeply nested payloads like `[[[[...]]]]`.
 /// serde_json has a built-in limit (~128), but we enforce a tighter limit

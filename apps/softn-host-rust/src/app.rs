@@ -59,7 +59,7 @@ impl AppContext {
                 // with a warning since this is volatile (moving the bundle creates
                 // a new empty database, appearing as data loss).
                 if let Some(ref id) = manifest.id {
-                    base.join("softn").join(id)
+                    base.join("softn").join(crate::util::directory_name(id))
                 } else {
                     tracing::warn!(
                         "No 'id' in manifest — data directory is derived from the bundle path. \

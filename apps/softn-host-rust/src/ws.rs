@@ -374,54 +374,79 @@ async fn reader_task(
                             Some((c.get("at")?.as_str()?.to_string(), c.get("id")?.as_str()?.to_string()))
                         });
 
-                        // Acquire a sync permit to bound concurrent blocking tasks.
-                        // Without this, a flood of slow sync_pull requests could exhaust
-                        // Tokio's 512-thread spawn_blocking pool, starving all other I/O.
-                        // Uses a short timeout to smooth out micro-bursts (e.g. dozens of
-                        // clients reconnecting after a network partition) instead of
-                        // immediately failing and forcing client-side retry logic.
-                        let permit = match tokio::time::timeout(
-                            PERMIT_WAIT,
-                            sync.sync_permits.clone().acquire_owned(),
-                        ).await {
-                            Ok(Ok(p)) => p,
-                            _ => {
-                                if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                                    message: "Server busy — too many concurrent sync operations, retry later".into(),
-                                }).await {
+                        let mut pull = match sync.start_pull(
+                            &collections, last_sync.as_deref(), last_id.as_deref(),
+                            cursor.as_ref().map(|(at, id)| (at.as_str(), id.as_str())),
+                        ) {
+                            Ok(pull) => pull,
+                            Err(refusal) => {
+                                if !send_response(out_tx, close_reason_tx, refusal).await {
                                     return;
                                 }
                                 continue;
                             }
                         };
-
-                        let sync_clone = sync.clone();
-                        let responses = match tokio::time::timeout(
-                            HANDLER_TIMEOUT,
-                            tokio::task::spawn_blocking(move || {
-                                let _permit = permit; // held until task completes
-                                sync_clone.handle_sync_pull(
-                                    &collections, last_sync.as_deref(), last_id.as_deref(),
-                                    cursor.as_ref().map(|(at, id)| (at.as_str(), id.as_str())),
-                                )
-                            }),
-                        ).await {
-                            Ok(Ok(r)) => r,
-                            Ok(Err(e)) => {
-                                tracing::error!("sync_pull task failed: {}", e);
-                                vec![ServerMessage::Error {
-                                    message: "Internal server error".into(),
-                                }]
-                            }
-                            Err(_) => {
-                                tracing::error!("sync_pull timed out");
-                                vec![ServerMessage::Error {
-                                    message: "Operation timed out".into(),
-                                }]
-                            }
-                        };
-                        for resp in responses {
-                            if !send_response_with_timeout(out_tx, close_reason_tx, resp, SEND_TIMEOUT_BULK).await {
+                        // A message at a time (SyncManager::pull_step), each
+                        // read once the one before has gone to the writer:
+                        // what a pull holds is one message, not every
+                        // collection it names.
+                        let mut first = true;
+                        loop {
+                            // A sync permit bounds concurrent blocking tasks.
+                            // Without this, a flood of slow sync_pull requests could exhaust
+                            // Tokio's 512-thread spawn_blocking pool, starving all other I/O.
+                            // The first step waits briefly, to smooth out micro-bursts (e.g.
+                            // dozens of clients reconnecting after a network partition)
+                            // instead of immediately failing and forcing client-side retry
+                            // logic; a pull under way waits for its turn, as long as a step
+                            // may take, rather than stop part-way.
+                            let wait = if first { PERMIT_WAIT } else { HANDLER_TIMEOUT };
+                            first = false;
+                            let permit = match tokio::time::timeout(
+                                wait,
+                                sync.sync_permits.clone().acquire_owned(),
+                            ).await {
+                                Ok(Ok(p)) => p,
+                                _ => {
+                                    if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
+                                        message: "Server busy — too many concurrent sync operations, retry later".into(),
+                                    }).await {
+                                        return;
+                                    }
+                                    break;
+                                }
+                            };
+                            let sync_clone = sync.clone();
+                            let step = tokio::time::timeout(
+                                HANDLER_TIMEOUT,
+                                tokio::task::spawn_blocking(move || {
+                                    let _permit = permit; // held for this step only
+                                    let message = sync_clone.pull_step(&mut pull);
+                                    (pull, message)
+                                }),
+                            ).await;
+                            let message = match step {
+                                Ok(Ok((back, message))) => {
+                                    pull = back;
+                                    message
+                                }
+                                Ok(Err(e)) => {
+                                    tracing::error!("sync_pull task failed: {}", e);
+                                    let _ = send_response(out_tx, close_reason_tx, ServerMessage::Error {
+                                        message: "Internal server error".into(),
+                                    }).await;
+                                    break;
+                                }
+                                Err(_) => {
+                                    tracing::error!("sync_pull timed out");
+                                    let _ = send_response(out_tx, close_reason_tx, ServerMessage::Error {
+                                        message: "Operation timed out".into(),
+                                    }).await;
+                                    break;
+                                }
+                            };
+                            let Some(message) = message else { break };
+                            if !send_response_with_timeout(out_tx, close_reason_tx, message, SEND_TIMEOUT_BULK).await {
                                 return;
                             }
                         }
@@ -472,11 +497,12 @@ async fn reader_task(
                         // The answer leaves the task as soon as the ops are
                         // stored and broadcast, before their after-hooks run.
                         let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
+                        // The permit goes once the push is stored, before its
+                        // after-hooks run (SyncManager::push_and_hook).
                         let mut task = tokio::task::spawn_blocking(move || {
-                            let _permit = permit; // held until task completes
-                            let (responses, accepted) = sync_clone.apply_sync_push(ops, &cid_clone);
-                            let _ = answer_tx.send(responses);
-                            sync_clone.run_after_sync(&accepted);
+                            sync_clone.push_and_hook(ops, &cid_clone, permit, |responses| {
+                                let _ = answer_tx.send(responses);
+                            });
                         });
                         let responses = match tokio::time::timeout(HANDLER_TIMEOUT, answer_rx).await {
                             Ok(Ok(r)) => r,

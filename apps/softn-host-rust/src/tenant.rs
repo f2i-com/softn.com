@@ -230,9 +230,9 @@ fn record_owner(data_dir: &Path, bundle_name: &str) {
 /// Where a tenant's data lives, by the rule `load_tenant` applies.
 fn tenant_data_dir(data_dir_base: Option<&Path>, bundle_path: &Path, tenant_id: &str) -> PathBuf {
     if let Some(base) = data_dir_base {
-        base.join(tenant_id)
+        base.join(crate::util::directory_name(tenant_id))
     } else if let Some(base) = dirs::data_dir() {
-        base.join("softn").join(tenant_id)
+        base.join("softn").join(crate::util::directory_name(tenant_id))
     } else {
         bundle_path.parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -564,19 +564,18 @@ mod tests {
         let manager = TenantManager::load(&bundles, Some(&data), Some(1), false).unwrap();
         let mut ids = manager.tenant_ids();
         ids.sort();
-        // On Windows that name's database does not open, as before: SQLite
-        // keeps the dots its directory lost. Elsewhere it is served.
-        assert_eq!(ids, if cfg!(windows) { vec!["shop"] } else { vec!["Notes...", "shop"] });
+        // Served on every system: on Windows its data directory is `Notes`,
+        // and its database is opened there.
+        assert_eq!(ids, vec!["Notes...", "shop"]);
         // `shop`, and `Notes...` (which Windows names `Notes`): nothing of the others'.
         assert_eq!(std::fs::read_dir(&data).unwrap().count(), 2);
         assert_eq!(std::fs::read_to_string(data.join("shop").join(OWNER_FILE)).unwrap(), "a", "another bundle wrote itself into the shop's record");
         // The rule itself, on its own: dots alone are refused, a name that
-        // only ends in them is not (on Windows it then fails to open its
-        // database, which is another matter).
+        // only ends in them is not.
         let (shutdown, _) = tokio::sync::watch::channel(false);
         let alone = |dir: &str| load_tenant(&bundles.join(dir), Some(&root.join("alone")), Some(1), false, &shutdown, &|_| None).err();
         assert!(alone("d").is_some_and(|e| e.contains("dots alone")), "{:?}", alone("d"));
-        assert!(!alone("e").is_some_and(|e| e.starts_with("Tenant ID")), "{:?}", alone("e"));
+        assert!(alone("e").is_none(), "{:?}", alone("e"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

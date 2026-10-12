@@ -360,6 +360,59 @@ pub enum ServerMessage {
     Error { message: String },
 }
 
+/// A pull under way: the collections still to read and, in the one being
+/// read, the last record read and the message being filled. See
+/// [`SyncManager::pull_step`].
+pub struct Pull {
+    collections: Vec<String>,
+    /// The collection being read.
+    next: usize,
+    last_sync: Option<String>,
+    last_id: Option<String>,
+    cursor: Option<(String, String)>,
+    page: i64,
+    /// The (server_received_at, id) of the last record read of this collection.
+    position: Option<(String, String)>,
+    /// Records read of this collection.
+    read: i64,
+    chunk: Vec<serde_json::Value>,
+    chunk_bytes: usize,
+    /// Whether a message of this collection has been sent.
+    sent: bool,
+}
+
+impl Pull {
+    fn next_collection(&mut self) {
+        self.next += 1;
+        self.position = None;
+        self.read = 0;
+        self.chunk = Vec::new();
+        self.chunk_bytes = 0;
+        self.sent = false;
+    }
+}
+
+/// A record as a pull sends it.
+fn pull_record(r: pool::SyncRecord) -> serde_json::Value {
+    let mut record = serde_json::json!({
+        "id": r.id,
+        "collection": r.collection,
+        "data": r.data,
+        "createdAt": r.created_at,
+        "updatedAt": r.updated_at,
+        // Server-assigned receipt timestamp for sync cursor pagination.
+        // Clients should use this (not updatedAt) as the lastSync cursor
+        // to avoid missing offline edits with past timestamps.
+        "serverReceivedAt": r.server_received_at,
+    });
+    // Include deleted flag for incremental sync so clients
+    // can remove locally cached records deleted on other devices.
+    if r.deleted {
+        record["deleted"] = serde_json::json!(true);
+    }
+    record
+}
+
 /// Where a full pull of one collection left off: the receipt time and id of
 /// the last record sent, which is the order pages are read in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -375,6 +428,12 @@ pub struct PullCursor {
 /// first attempt went on to commit.
 const BEFORE_HOOK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long the per-op after-sync hooks of one push may go on being started,
+/// as BEFORE_HOOK_BUDGET is for the before-hooks. The call under way when it
+/// is spent is held to a call's own time (runtime.rs WALL_TIME_MS), as the
+/// one batch hook is.
+const AFTER_HOOK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct SyncManager {
     db: ServerDb,
     db_path: PathBuf,
@@ -382,6 +441,8 @@ pub struct SyncManager {
     pull_page: std::sync::atomic::AtomicI64,
     /// BEFORE_HOOK_BUDGET, in milliseconds.
     before_hook_budget_ms: std::sync::atomic::AtomicU64,
+    /// AFTER_HOOK_BUDGET, in milliseconds.
+    after_hook_budget_ms: std::sync::atomic::AtomicU64,
     max_storage_bytes: u64,
     broadcast_tx: broadcast::Sender<(String, ServerMessage)>,
     runtime: Option<Arc<ServerRuntime>>,
@@ -475,6 +536,7 @@ impl SyncManager {
             db_path,
             pull_page: std::sync::atomic::AtomicI64::new(pool::MAX_COLLECTION_ROWS),
             before_hook_budget_ms: std::sync::atomic::AtomicU64::new(BEFORE_HOOK_BUDGET.as_millis() as u64),
+            after_hook_budget_ms: std::sync::atomic::AtomicU64::new(AFTER_HOOK_BUDGET.as_millis() as u64),
             max_storage_bytes,
             broadcast_tx,
             runtime,
@@ -636,6 +698,10 @@ impl SyncManager {
     /// missed by the `updated_at > ?` cursor.
     /// `cursor` continues a full pull of one collection from where a page
     /// that was full left off (the `more` of its last `sync_state`).
+    ///
+    /// The whole answer at once, as [`Self::pull_step`] gives it a message at
+    /// a time; the connection takes it a message at a time.
+    #[cfg(test)]
     pub fn handle_sync_pull(
         &self,
         collections: &[String],
@@ -643,126 +709,151 @@ impl SyncManager {
         last_id: Option<&str>,
         cursor: Option<(&str, &str)>,
     ) -> Vec<ServerMessage> {
+        let mut pull = match self.start_pull(collections, last_sync, last_id, cursor) {
+            Ok(pull) => pull,
+            Err(refusal) => return vec![refusal],
+        };
         let mut messages = Vec::new();
-        let page = self.pull_page.load(std::sync::atomic::Ordering::Relaxed).max(1);
-
-        let mut seen = std::collections::HashSet::new();
-        let collections: Vec<&String> = collections.iter().filter(|c| seen.insert(c.as_str())).collect();
-        if collections.len() > MAX_PULL_COLLECTIONS {
-            return vec![ServerMessage::Error {
-                message: format!("Too many collections in one sync_pull ({}, max {})", collections.len(), MAX_PULL_COLLECTIONS),
-            }];
+        while let Some(message) = self.pull_step(&mut pull) {
+            messages.push(message);
         }
+        messages
+    }
 
-        for collection in collections {
-            if !is_valid_collection_name(collection) {
-                messages.push(ServerMessage::Error {
+    /// A pull as it is asked for, read nothing yet; or its refusal.
+    pub fn start_pull(
+        &self,
+        collections: &[String],
+        last_sync: Option<&str>,
+        last_id: Option<&str>,
+        cursor: Option<(&str, &str)>,
+    ) -> Result<Pull, ServerMessage> {
+        let mut seen = std::collections::HashSet::new();
+        let collections: Vec<String> = collections.iter().filter(|c| seen.insert(c.as_str())).cloned().collect();
+        if collections.len() > MAX_PULL_COLLECTIONS {
+            return Err(ServerMessage::Error {
+                message: format!("Too many collections in one sync_pull ({}, max {})", collections.len(), MAX_PULL_COLLECTIONS),
+            });
+        }
+        Ok(Pull {
+            collections,
+            next: 0,
+            last_sync: last_sync.map(String::from),
+            last_id: last_id.map(String::from),
+            cursor: cursor.map(|(at, id)| (at.to_string(), id.to_string())),
+            page: self.pull_page.load(std::sync::atomic::Ordering::Relaxed).max(1),
+            position: None,
+            read: 0,
+            chunk: Vec::new(),
+            chunk_bytes: 0,
+            sent: false,
+        })
+    }
+
+    /// The next message of a pull, or None when it has said everything.
+    ///
+    /// A pull used to read every collection it named, up to a page of each,
+    /// into memory, and make all of its messages, before the first was sent:
+    /// a hundred collections of ten thousand records, held while a slow
+    /// client took its time over them. Now each step reads as far as one
+    /// message, and the next goes on from the last record it read, as a
+    /// cursor. The messages are the ones the whole answer was made of: by
+    /// collection, chunked by count and by bytes under the client's limit,
+    /// a collection with nothing in it still answered, the last message of a
+    /// full page carrying where the next page begins.
+    pub fn pull_step(&self, pull: &mut Pull) -> Option<ServerMessage> {
+        loop {
+            let collection = pull.collections.get(pull.next)?.clone();
+            if !is_valid_collection_name(&collection) {
+                pull.next_collection();
+                return Some(ServerMessage::Error {
                     message: format!("Invalid collection name: {}", collection),
                 });
-                continue;
             }
 
             // Read from the pool — concurrent with other reads and writes.
             let conn = match self.db.read() {
                 Ok(c) => c,
                 Err(e) => {
-                    messages.push(ServerMessage::Error {
+                    pull.next_collection();
+                    return Some(ServerMessage::Error {
                         message: format!("Read pool error: {}", e),
                     });
-                    continue;
                 }
             };
 
-            let records = if let Some(since) = last_sync {
-                // Incremental: only records changed since last sync.
-                // Includes deleted records so the client can remove them locally.
-                match pool::read_collection_since(&conn, collection, since, last_id) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!("Failed to query collection '{}' since '{}': {}", collection, since, e);
-                        Vec::new()
-                    }
-                }
-            } else {
-                // Full sync: the non-deleted records, a page at a time.
-                match pool::read_collection_page(&conn, collection, cursor, page) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!("Failed to query collection '{}': {}", collection, e);
-                        Vec::new()
-                    }
-                }
+            // Incremental, what changed since the client's point; full, the
+            // records a page at a time. Either goes on from the last record
+            // a step read.
+            let full = pull.last_sync.is_none();
+            let cap = if full { pull.page } else { pool::MAX_COLLECTION_ROWS };
+            let position = pull.position.clone();
+            let since = pull.last_sync.clone();
+            let last_id = pull.last_id.clone();
+            let cursor = pull.cursor.clone();
+            let from = match (&position, &since) {
+                (Some((at, id)), Some(_)) => pool::SyncFrom::Since { since: at, last_id: Some(id) },
+                (None, Some(since)) => pool::SyncFrom::Since { since, last_id: last_id.as_deref() },
+                (Some((at, id)), None) => pool::SyncFrom::Page { after: Some((at, id)) },
+                (None, None) => pool::SyncFrom::Page { after: cursor.as_ref().map(|(at, id)| (at.as_str(), id.as_str())) },
             };
+            let mut message = None;
+            let remaining = cap - pull.read;
+            if remaining > 0 {
+                let read = pool::visit_sync_records(&conn, &collection, from, remaining, &mut |record| {
+                    pull.read += 1;
+                    pull.position = Some((record.server_received_at.clone(), record.id.clone()));
+                    let record = pull_record(record);
+                    let size = serde_json::to_vec(&record).map(|b| b.len() + 1).unwrap_or(0);
+                    // Send in chunks to prevent oversized WebSocket frames and RAM spikes.
+                    let full_chunk = !pull.chunk.is_empty()
+                        && (pull.chunk.len() >= SYNC_PULL_CHUNK_SIZE || pull.chunk_bytes + size > SYNC_PULL_CHUNK_BYTES);
+                    if full_chunk {
+                        message = Some(ServerMessage::SyncState {
+                            collection: collection.clone(),
+                            records: std::mem::take(&mut pull.chunk),
+                            more: None,
+                        });
+                        pull.chunk_bytes = 0;
+                        pull.sent = true;
+                    }
+                    pull.chunk_bytes += size;
+                    pull.chunk.push(record);
+                    !full_chunk
+                });
+                if let Err(e) = read {
+                    tracing::warn!("Failed to read collection '{}' for a sync pull: {}", collection, e);
+                }
+            }
             drop(conn);
-            // A full page of a full pull: there may be more, and the client
-            // is told where to ask from. It used to be told nothing, and a
-            // collection past the page was never wholly received by anyone.
-            let more = match records.last() {
-                Some(last) if last_sync.is_none() && records.len() as i64 >= page => {
-                    pool::warn_capped("A sync pull", collection, page);
-                    Some(PullCursor { at: last.server_received_at.clone(), id: last.id.clone() })
+            if message.is_some() {
+                return message;
+            }
+
+            // The collection is read out: its last message. A full page of a
+            // full pull may not be all of it, and the client is told where
+            // to ask from; it used to be told nothing, and a collection past
+            // the page was never wholly received by anyone.
+            let more = match &pull.position {
+                Some((at, id)) if full && pull.read >= pull.page => {
+                    pool::warn_capped("A sync pull", &collection, pull.page);
+                    Some(PullCursor { at: at.clone(), id: id.clone() })
                 }
                 _ => None,
             };
-
-            let mut json_records: Vec<serde_json::Value> = records
-                .into_iter()
-                .map(|r| {
-                    let mut record = serde_json::json!({
-                        "id": r.id,
-                        "collection": r.collection,
-                        "data": r.data,
-                        "createdAt": r.created_at,
-                        "updatedAt": r.updated_at,
-                        // Server-assigned receipt timestamp for sync cursor pagination.
-                        // Clients should use this (not updatedAt) as the lastSync cursor
-                        // to avoid missing offline edits with past timestamps.
-                        "serverReceivedAt": r.server_received_at,
-                    });
-                    // Include deleted flag for incremental sync so clients
-                    // can remove locally cached records deleted on other devices.
-                    if r.deleted {
-                        record["deleted"] = serde_json::json!(true);
-                    }
-                    record
-                })
-                .collect();
-
-            // Send in chunks to prevent oversized WebSocket frames and RAM spikes.
-            // Each chunk is its own SyncState message so neither the server nor the
-            // client needs to buffer all records in a single JSON array.
-            if json_records.is_empty() {
-                // Send empty SyncState so the client knows the collection was queried
-                messages.push(ServerMessage::SyncState {
-                    collection: collection.clone(),
-                    records: Vec::new(),
-                    more: None,
-                });
+            let last = if !pull.chunk.is_empty() {
+                Some(ServerMessage::SyncState { collection, records: std::mem::take(&mut pull.chunk), more })
+            } else if !pull.sent {
+                // Sent empty, so the client knows the collection was queried.
+                Some(ServerMessage::SyncState { collection, records: Vec::new(), more: None })
             } else {
-                let mut chunk = Vec::new();
-                let mut chunk_bytes = 0usize;
-                for record in json_records.drain(..) {
-                    let size = serde_json::to_vec(&record).map(|b| b.len() + 1).unwrap_or(0);
-                    if !chunk.is_empty()
-                        && (chunk.len() >= SYNC_PULL_CHUNK_SIZE || chunk_bytes + size > SYNC_PULL_CHUNK_BYTES)
-                    {
-                        messages.push(ServerMessage::SyncState {
-                            collection: collection.clone(),
-                            records: std::mem::take(&mut chunk),
-                            more: None,
-                        });
-                        chunk_bytes = 0;
-                    }
-                    chunk_bytes += size;
-                    chunk.push(record);
-                }
-                if !chunk.is_empty() {
-                    messages.push(ServerMessage::SyncState { collection: collection.clone(), records: chunk, more });
-                }
+                None
+            };
+            pull.next_collection();
+            if last.is_some() {
+                return last;
             }
         }
-
-        messages
     }
 
     /// Check, store, acknowledge and broadcast a push, then run its
@@ -797,6 +888,25 @@ impl SyncManager {
 
     /// The after-sync hooks for ops that are stored, acknowledged and
     /// broadcast. Outside the DB lock; batch mode (one call) before per-op.
+    /// A push as a connection makes it: stored and answered under its sync
+    /// permit, which is let go before the after-hooks run. The permit bounds
+    /// the blocking work of storing; the hooks run in the script workers,
+    /// within their own budget, and held it all the while: a hook that took
+    /// a while on a large push kept the next push waiting, and as many slow
+    /// pushes as there are permits answered every client "server busy".
+    pub fn push_and_hook(
+        &self,
+        ops: Vec<SyncOp>,
+        client_id: &str,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        answer: impl FnOnce(Vec<ServerMessage>),
+    ) {
+        let (responses, accepted) = self.apply_sync_push(ops, client_id);
+        drop(permit);
+        answer(responses);
+        self.run_after_sync(&accepted);
+    }
+
     pub fn run_after_sync(&self, accepted_ops: &[SyncOp]) {
         if accepted_ops.is_empty() {
             return;
@@ -1126,7 +1236,20 @@ impl SyncManager {
                         // merge, and its creation time kept.
                         "update" => match existing {
                             Some(record) if !record.deleted => {
+                                // A record is held to what one op may carry, as
+                                // the op was: merged updates of new keys grew
+                                // one without end. One already past it, from
+                                // before, may still be made smaller.
+                                let before = record.data.to_string().len();
                                 let data = merged(record.data, op.data.clone().unwrap_or(serde_json::json!({})));
+                                let after = data.to_string().len();
+                                if after > MAX_OP_DATA_BYTES && after > before {
+                                    batch_rejected.push((op.id.clone(), format!(
+                                        "Record too large after this update ({} bytes, max {})",
+                                        after, MAX_OP_DATA_BYTES
+                                    )));
+                                    continue;
+                                }
                                 db.upsert_record(xdb::Record { data, updated_at: op.timestamp.clone(), ..record }).map(|_| None)
                             }
                             _ => Err(xdb::DbError::NotFound(op.record_id.clone())),
@@ -1182,8 +1305,11 @@ impl SyncManager {
                     // The pusher had applied its overtaken edits to its own
                     // copy, and would go on showing them: it is sent each
                     // record as it stands, a delta like any other, and only
-                    // it. (A client keeps a record it deleted itself deleted
-                    // whatever an update delta says; that is the client's.)
+                    // it. It goes after the acknowledgement above on purpose:
+                    // a client keeps a record it deleted hidden only while
+                    // that delete is unanswered, so a skipped delete's record
+                    // comes back on the device that pushed it
+                    // (`XDBServerSync.unansweredDeletes` in @softn/core).
                     if !batch_current.is_empty() {
                         responses.push(ServerMessage::SyncDelta { ops: batch_current });
                     }
@@ -1448,8 +1574,21 @@ impl SyncManager {
         let Some(rt) = self.runtime.as_ref() else {
             return vec!["No runtime".into()];
         };
-        match rt.call_each("onAfterSync", ops.iter().map(Self::op_to_json).collect(), None) {
-            Ok(answers) => answers.into_iter().filter_map(Result::err).collect(),
+        // Within the budget: a push of a thousand ops ran a thousand hooks,
+        // however long each took. The ops are stored either way; the hooks
+        // not started are said in the log.
+        let budget = std::time::Duration::from_millis(self.after_hook_budget_ms.load(std::sync::atomic::Ordering::Relaxed));
+        let started = std::time::Instant::now();
+        match rt.call_each("onAfterSync", ops.iter().map(Self::op_to_json).collect(), Some(started + budget)) {
+            Ok(answers) => {
+                if answers.len() < ops.len() {
+                    tracing::warn!(
+                        "onAfterSync ran for {} of the {} op(s) of a push in {}ms; the rest were not run",
+                        answers.len(), ops.len(), started.elapsed().as_millis()
+                    );
+                }
+                answers.into_iter().filter_map(Result::err).collect()
+            }
             Err(error) => vec![error],
         }
     }
@@ -1769,6 +1908,87 @@ mod tests {
         assert_eq!(db.write().get_record("n1").unwrap().data["title"], "fourth");
     }
 
+    /// An update is merged into the record it names, and a record may be no
+    /// larger than one op may carry: each op was held to that, and a record
+    /// was not, so a few updates of new keys grew one record without end,
+    /// until every op on it, and every pull of it, was a copy of all of it.
+    /// The op that would take a record past the limit is refused with the
+    /// reason; one that keeps it within the limit, or makes a record that is
+    /// already past it (from before this) smaller, applies.
+    #[test]
+    fn an_update_cannot_grow_a_record_past_what_one_op_may_carry() {
+        let (sync, db) = manager(None);
+        let big = "x".repeat(400 * 1024);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"k0": big})), 60)], "a");
+        let grown = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"k1": big})), 50)], "a");
+        assert_eq!(rejected(&grown), vec!["u1"], "{grown:?}");
+        let reason = grown.iter().find_map(|m| match m { ServerMessage::SyncReject { reason, .. } => Some(reason.clone()), _ => None }).unwrap();
+        assert!(reason.contains("too large") && reason.contains(&MAX_OP_DATA_BYTES.to_string()), "{reason}");
+        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"k0": big}));
+        let within = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"k1": "small"})), 40)], "a");
+        assert_eq!(acked(&within), vec!["u2"], "{within:?}");
+
+        // A record already past the limit: written before records were held to it.
+        let huge = "y".repeat(MAX_OP_DATA_BYTES + 1024);
+        db.write().upsert_record(xdb::Record {
+            id: "n2".into(), collection: "notes".into(), data: serde_json::json!({"k0": huge, "k1": "z"}),
+            created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
+        }).unwrap();
+        let more = sync.handle_sync_push(vec![stamped(op("u3", "notes", "update", "n2", serde_json::json!({"k2": "more"})), 30)], "a");
+        assert_eq!(rejected(&more), vec!["u3"], "{more:?}");
+        let smaller = sync.handle_sync_push(vec![stamped(op("u4", "notes", "update", "n2", serde_json::json!({"k0": "short"})), 20)], "a");
+        assert_eq!(acked(&smaller), vec!["u4"], "{smaller:?}");
+        assert_eq!(db.write().get_record("n2").unwrap().data, serde_json::json!({"k0": "short", "k1": "z"}));
+    }
+
+    /// The per-op after-sync hooks of a push stop being started once their
+    /// budget is spent, as the before-hooks do: a push of a thousand ops to a
+    /// hook that takes a little while each ran them all, however long that
+    /// was. And they hold no sync permit: the push is stored and answered
+    /// under one, and it is let go before the hooks run, so a slow hook
+    /// cannot keep it from the next push.
+    #[test]
+    fn the_after_sync_hooks_have_a_deadline_and_hold_no_permit() {
+        const SLOW: &str = "function onAfterSync(op) { var a = []; for (var i = 0; i < 100000; i++) a.push(i); var n = 0; for (var k = 0; k < 20; k++) n = n + JSON.stringify(a).length; return n; }";
+        let ops = |prefix: &str, count: usize| -> Vec<SyncOp> {
+            (0..count).map(|i| op(&format!("{prefix}{i}"), "notes", "create", &format!("{prefix}r{i}"), serde_json::json!({"n": i}))).collect()
+        };
+        // With one worker and with several: the hooks of a push are one run
+        // that idle workers take a stretch at a time.
+        for workers in [1, 4] {
+            let (sync, _db) = manager_with(Some(SLOW), workers);
+            // What one hook takes on this machine.
+            let started = std::time::Instant::now();
+            sync.run_after_sync(&sync.apply_sync_push(ops("one", 1), "a").1);
+            let one = started.elapsed();
+
+            sync.after_hook_budget_ms.store(200, std::sync::atomic::Ordering::Relaxed);
+            let accepted = sync.apply_sync_push(ops("many", 60), "a").1;
+            assert_eq!(accepted.len(), 60);
+            let started = std::time::Instant::now();
+            sync.run_after_sync(&accepted);
+            let many = started.elapsed();
+            assert!(many < std::time::Duration::from_millis(200) + one * 4 + std::time::Duration::from_millis(500),
+                "{workers} worker(s): 60 hooks took {many:?}, one {one:?}: the budget did not stop them");
+        }
+
+        let (sync, _db) = manager(Some(SLOW));
+        sync.after_hook_budget_ms.store(200, std::sync::atomic::Ordering::Relaxed);
+
+        // The permit is back as soon as the push is answered.
+        let total = sync.sync_permits.available_permits();
+        let permit = sync.sync_permits.clone().try_acquire_owned().unwrap();
+        let (answered_tx, answered_rx) = std::sync::mpsc::channel();
+        let pusher = Arc::clone(&sync);
+        let pushing = std::thread::spawn(move || {
+            pusher.push_and_hook(ops("later", 20), "a", permit, |responses| { let _ = answered_tx.send(responses); });
+        });
+        let responses = answered_rx.recv().unwrap();
+        assert_eq!(acked(&responses).len(), 20);
+        assert_eq!(sync.sync_permits.available_permits(), total, "the hooks are holding the permit");
+        pushing.join().unwrap();
+    }
+
     /// A delete is weighed the same way: one made before a newer edit does
     /// not remove it; one made after does, and keeps its time. An update for
     /// a deleted record is refused, as it was.
@@ -2078,6 +2298,54 @@ mod tests {
         }
         assert_eq!(total, 20);
         assert!(messages.len() > 1);
+    }
+
+    /// A pull is read a message at a time, each when the one before has
+    /// gone: it holds one message's records, where it used to read every
+    /// collection it named, up to ten thousand records each, into memory
+    /// before the first was sent. What is sent is what was sent before, in
+    /// the same messages: by collection, chunked by count and by bytes, a
+    /// collection with nothing in it still answered, and an incremental pull
+    /// with the deleted records as well.
+    #[test]
+    fn a_pull_is_read_one_message_at_a_time() {
+        let (sync, db) = manager(None);
+        let put = |id: String, collection: &str, received: usize, deleted: bool| {
+            db.write().upsert_record(xdb::Record {
+                id, collection: collection.into(), data: serde_json::json!({"n": received}),
+                created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted,
+            }).unwrap();
+        };
+        for i in 0..1200 { put(format!("a{i:04}"), "alpha", i, false); }
+        for i in 0..3 { put(format!("b{i}"), "beta", i, i == 1); }
+        let names: Vec<String> = ["alpha", "beta", "gamma"].iter().map(|s| s.to_string()).collect();
+        let records = |message: &ServerMessage| match message {
+            ServerMessage::SyncState { collection, records, .. } => (collection.clone(), records.len()),
+            other => panic!("{other:?}"),
+        };
+
+        let mut pull = sync.start_pull(&names, None, None, None).unwrap();
+        let mut steps = Vec::new();
+        while let Some(message) = sync.pull_step(&mut pull) {
+            assert!(pull.chunk.len() <= SYNC_PULL_CHUNK_SIZE, "a step kept {} records", pull.chunk.len());
+            steps.push(message);
+        }
+        assert_eq!(steps.iter().map(records).collect::<Vec<_>>(), vec![
+            ("alpha".to_string(), 500), ("alpha".to_string(), 500), ("alpha".to_string(), 200),
+            ("beta".to_string(), 2), ("gamma".to_string(), 0),
+        ]);
+        let all = serde_json::to_string(&sync.handle_sync_pull(&names, None, None, None)).unwrap();
+        assert_eq!(serde_json::to_string(&steps).unwrap(), all, "the pull a step at a time is the pull");
+
+        // Incremental: what changed since a point, the deleted included, in order.
+        let since = "0000";
+        let mut pull = sync.start_pull(&names[1..2], Some(since), None, None).unwrap();
+        let first = sync.pull_step(&mut pull).unwrap();
+        assert!(sync.pull_step(&mut pull).is_none());
+        let ServerMessage::SyncState { records, more, .. } = first else { panic!() };
+        assert!(more.is_none());
+        let ids: Vec<(String, bool)> = records.iter().map(|r| (r["id"].as_str().unwrap().to_string(), r.get("deleted").is_some())).collect();
+        assert_eq!(ids, vec![("b0".to_string(), false), ("b1".to_string(), true), ("b2".to_string(), false)]);
     }
 
     /// Naming one collection many times in one pull used to read it that many

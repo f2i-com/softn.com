@@ -553,8 +553,23 @@ client's pushes are still hooked in order. The answer used to wait for the
 after-hooks, and a push whose hooks took long was told "timed out" and sent
 again while the first attempt went on to commit. The per-op `onBeforeSync`
 stops taking ops of one push after five seconds; the rest are answered
-`sync_retry` and the client sends them again. Prefer `onBeforeSyncBatch`,
-which is one call for the whole push.
+`sync_retry` and the client sends them again. The per-op `onAfterSync` stops
+being started after five seconds as well; the ops are stored either way, and
+the log says for how many of them it ran. Prefer `onBeforeSyncBatch` and
+`onAfterSyncBatch`, which are one call for the whole push. The push's sync
+permit is let go once its ops are stored, so its after-hooks do not keep the
+next push waiting.
+
+An update is merged into the record it names, and the merged record is held
+to what one op may carry (512 KB of data): an update that would take a record
+past it is refused (`sync_reject`, "Record too large after this update"). A
+few updates of new keys used to grow one record without end. A record already
+past the limit can still be made smaller.
+
+A pull is read a message at a time, each once the one before has gone, so the
+server holds one message of it and not every collection it names; the
+messages are the ones it always was. A pull under way waits for a sync permit
+between messages rather than stopping part-way.
 
 A push is one transaction and one saved CRDT document per collection it
 touches. The document is as large as the collection, and it used to be

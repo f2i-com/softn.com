@@ -192,76 +192,94 @@ pub fn read_record(conn: &rusqlite::Connection, id: &str) -> Result<Record, DbEr
     .map_err(|_| DbError::NotFound(id.to_string()))
 }
 
-/// Query records in a collection received after `since` (incremental sync).
-/// Includes soft-deleted records so clients can remove them locally.
-///
-/// Uses `server_received_at` (server-assigned on write) instead of `updated_at`
-/// (client-provided) for the pagination cursor. This prevents "lost updates"
-/// when clients push offline edits with past timestamps: a record created offline
-/// on Monday and pushed on Wednesday gets `server_received_at = Wednesday`, so
-/// other clients with `lastSync = Tuesday` correctly pick it up.
-///
-/// Uses a compound cursor (server_received_at, id) to handle timestamp ties: if a
-/// bulk operation updates >10k records in the same millisecond, a strictly
-/// `server_received_at > ?` cursor would permanently miss records sharing the last
-/// timestamp. The compound cursor ensures deterministic pagination.
-pub fn read_collection_since(
+/// Each record of `rows` to `take`, as SQLite reads it, until `take` says stop.
+fn take_rows<F>(rows: rusqlite::MappedRows<'_, F>, take: &mut dyn FnMut(SyncRecord) -> bool) -> Result<(), DbError>
+where
+    F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<SyncRecord>,
+{
+    for record in rows {
+        if !take(record?) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Where a pull reads a collection from.
+pub enum SyncFrom<'a> {
+    /// Incremental: what was received after `since` (and, at that same
+    /// time, after `last_id`), the soft-deleted records included, so a
+    /// client can remove them.
+    ///
+    /// Uses `server_received_at` (server-assigned on write) instead of `updated_at`
+    /// (client-provided) for the pagination cursor. This prevents "lost updates"
+    /// when clients push offline edits with past timestamps: a record created offline
+    /// on Monday and pushed on Wednesday gets `server_received_at = Wednesday`, so
+    /// other clients with `lastSync = Tuesday` correctly pick it up.
+    ///
+    /// Uses a compound cursor (server_received_at, id) to handle timestamp ties: if a
+    /// bulk operation updates >10k records in the same millisecond, a strictly
+    /// `server_received_at > ?` cursor would permanently miss records sharing the last
+    /// timestamp. The compound cursor ensures deterministic pagination.
+    Since { since: &'a str, last_id: Option<&'a str> },
+    /// Full: the non-deleted records after `after`, or from the start. See
+    /// [`read_collection_page`].
+    Page { after: Option<(&'a str, &'a str)> },
+}
+
+/// The records a pull reads, at most `limit` of them, handed to `take` one
+/// at a time as SQLite reads them, until it answers false or there are no
+/// more, in the order (server_received_at, id) the cursors follow; what
+/// [`read_collection_page`] answers whole. A caller that stops early holds no
+/// more of them than it kept, and goes on later from the last one it took,
+/// as a cursor.
+pub fn visit_sync_records(
     conn: &rusqlite::Connection,
     collection: &str,
-    since: &str,
-    last_id: Option<&str>,
-) -> Result<Vec<SyncRecord>, DbError> {
-    // Compound cursor: (server_received_at > since) OR (server_received_at = since AND id > last_id)
-    // When last_id is None (first pull), fall back to the simpler server_received_at > since.
-    if let Some(lid) = last_id {
-        let mut stmt = conn.prepare(
-            "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
-             FROM records WHERE collection = ?1 \
-             AND (server_received_at > ?2 OR (server_received_at = ?2 AND id > ?3)) \
-             ORDER BY server_received_at ASC, id ASC LIMIT ?4",
-        )?;
-        let records = stmt.query_map(params![collection, since, lid, MAX_COLLECTION_ROWS], |row| {
-                let raw_data = row.get::<_, String>(2)?;
-                Ok(SyncRecord {
-                    id: row.get(0)?,
-                    collection: row.get(1)?,
-                    data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
-                        tracing::warn!("Invalid JSON in record data: {}", e);
-                        serde_json::Value::Null
-                    }),
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    deleted: row.get::<_, i32>(5)? != 0,
-                    server_received_at: row.get::<_, Option<String>>(6)?
-                        .unwrap_or_default(),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(records)
-    } else {
-        let mut stmt = conn.prepare(
-            "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
-             FROM records WHERE collection = ?1 AND server_received_at > ?2 \
-             ORDER BY server_received_at ASC, id ASC LIMIT ?3",
-        )?;
-        let records = stmt.query_map(params![collection, since, MAX_COLLECTION_ROWS], |row| {
-                let raw_data = row.get::<_, String>(2)?;
-                Ok(SyncRecord {
-                    id: row.get(0)?,
-                    collection: row.get(1)?,
-                    data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
-                        tracing::warn!("Invalid JSON in record data: {}", e);
-                        serde_json::Value::Null
-                    }),
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    deleted: row.get::<_, i32>(5)? != 0,
-                    server_received_at: row.get::<_, Option<String>>(6)?
-                        .unwrap_or_default(),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(records)
+    from: SyncFrom<'_>,
+    limit: i64,
+    take: &mut dyn FnMut(SyncRecord) -> bool,
+) -> Result<(), DbError> {
+    const COLUMNS: &str = "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at FROM records";
+    match from {
+        // Compound cursor: (server_received_at > since) OR (server_received_at = since AND id > last_id)
+        // When last_id is None (first pull), fall back to the simpler server_received_at > since.
+        SyncFrom::Since { since, last_id: Some(last_id) } => {
+            let mut stmt = conn.prepare(&format!(
+                "{COLUMNS} WHERE collection = ?1 \
+                 AND (server_received_at > ?2 OR (server_received_at = ?2 AND id > ?3)) \
+                 ORDER BY server_received_at ASC, id ASC LIMIT ?4"
+            ))?;
+            let rows = stmt.query_map(params![collection, since, last_id, limit], sync_record)?;
+            take_rows(rows, take)
+        }
+        SyncFrom::Since { since, last_id: None } => {
+            let mut stmt = conn.prepare(&format!(
+                "{COLUMNS} WHERE collection = ?1 AND server_received_at > ?2 \
+                 ORDER BY server_received_at ASC, id ASC LIMIT ?3"
+            ))?;
+            let rows = stmt.query_map(params![collection, since, limit], sync_record)?;
+            take_rows(rows, take)
+        }
+        SyncFrom::Page { after } => {
+            const ORDER: &str = "ORDER BY COALESCE(server_received_at, '') ASC, id ASC";
+            match after {
+                None => {
+                    let mut stmt = conn.prepare(&format!("{COLUMNS} WHERE collection = ?1 AND deleted = 0 {ORDER} LIMIT ?2"))?;
+                    let rows = stmt.query_map(params![collection, limit], sync_record)?;
+                    take_rows(rows, take)
+                }
+                Some((at, id)) => {
+                    let mut stmt = conn.prepare(&format!(
+                        "{COLUMNS} WHERE collection = ?1 AND deleted = 0 \
+                         AND (COALESCE(server_received_at, '') > ?2 OR (COALESCE(server_received_at, '') = ?2 AND id > ?3)) \
+                         {ORDER} LIMIT ?4"
+                    ))?;
+                    let rows = stmt.query_map(params![collection, at, id, limit], sync_record)?;
+                    take_rows(rows, take)
+                }
+            }
+        }
     }
 }
 
@@ -307,22 +325,11 @@ pub fn read_collection_page(
     after: Option<(&str, &str)>,
     limit: i64,
 ) -> Result<Vec<SyncRecord>, DbError> {
-    const COLUMNS: &str = "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at FROM records";
-    const ORDER: &str = "ORDER BY COALESCE(server_received_at, '') ASC, id ASC";
-    let records = match after {
-        None => conn
-            .prepare(&format!("{COLUMNS} WHERE collection = ?1 AND deleted = 0 {ORDER} LIMIT ?2"))?
-            .query_map(params![collection, limit], sync_record)?
-            .collect::<Result<Vec<_>, _>>()?,
-        Some((at, id)) => conn
-            .prepare(&format!(
-                "{COLUMNS} WHERE collection = ?1 AND deleted = 0 \
-                 AND (COALESCE(server_received_at, '') > ?2 OR (COALESCE(server_received_at, '') = ?2 AND id > ?3)) \
-                 {ORDER} LIMIT ?4"
-            ))?
-            .query_map(params![collection, at, id, limit], sync_record)?
-            .collect::<Result<Vec<_>, _>>()?,
-    };
+    let mut records = Vec::new();
+    visit_sync_records(conn, collection, SyncFrom::Page { after }, limit, &mut |record| {
+        records.push(record);
+        true
+    })?;
     Ok(records)
 }
 
