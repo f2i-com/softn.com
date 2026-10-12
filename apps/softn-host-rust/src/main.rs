@@ -1,3 +1,4 @@
+mod alloc;
 mod app;
 mod bridges;
 mod bundle;
@@ -13,6 +14,10 @@ mod ws;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+// Large blocks reach the script engine's collector (src/alloc.rs).
+#[global_allocator]
+static GLOBAL: alloc::ReportingAlloc = alloc::ReportingAlloc;
 
 #[derive(Parser)]
 #[command(name = "softn-server", about = "SoftN application server")]

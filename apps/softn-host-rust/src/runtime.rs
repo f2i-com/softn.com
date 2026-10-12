@@ -1612,6 +1612,28 @@ mod isolation_tests {
         assert!(refused.contains("setTimeout is not available in server logic"), "{refused}");
     }
 
+    /// What a handler builds and drops while it runs is collected while it
+    /// runs. An array index-stored to a megabyte grows in place, which makes
+    /// no object the engine counts, so until this binary's allocator reported
+    /// its large blocks (src/alloc.rs) no collection ran in this loop and all
+    /// 1,200 megabytes were held at once, until the call ended. With the
+    /// reports the engine collects on that growth and the peak stays in the
+    /// tens of megabytes; the bound leaves room for what the tests running
+    /// beside this one hold, since the figure is the process's.
+    #[test]
+    fn arrays_a_handler_drops_are_collected_while_it_runs() {
+        let runtime = one_worker(r#"
+            function grow(req) {
+                var s = 0;
+                for (var i = 0; i < 1200; i++) { var a = []; a[131071] = 1; s += a.length; }
+                return {status: 200, body: {s: s}};
+            }
+        "#);
+        let (answer, grew) = crate::alloc::peak::growth(|| runtime.call("grow", vec![serde_json::json!({})]).unwrap());
+        assert_eq!(answer["body"]["s"], 157_286_400);
+        assert!(grew < 400 << 20, "1,200 dropped megabyte arrays left {} MiB outstanding at the peak", grew >> 20);
+    }
+
     /// `-0` in a body is `-0` in the handler. The PHP host hands the body to
     /// its runner as the client's own text, so it keeps the sign too (it
     /// used to decode the body and write `0`); this holds the two together.
