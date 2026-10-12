@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import zlib from 'node:zlib';
-import { precompressTree } from './precompress-assets.mjs';
+import { precompressTree, precompressTreeInParallel } from './precompress-assets.mjs';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-compress-test-'));
@@ -125,4 +125,52 @@ test('only twins strictly smaller than 95 percent are written', t => {
   assert.equal(stats.brotli, 2000);
   assert.equal(stats.gzip, 1899);
   assert.equal(stats.written, 1);
+});
+
+/** Every twin under root, by its path relative to root, as the digest of its bytes. */
+function twinsUnder(root) {
+  const out = {};
+  const visit = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (/\.(br|gz)$/.test(entry.name)) out[path.relative(root, full).split(path.sep).join('/')] = createHash('sha256').update(fs.readFileSync(full)).digest('hex');
+    }
+  };
+  visit(root);
+  return out;
+}
+
+test('the parallel pass writes the twins the in-process pass writes, byte for byte, with the same counts', async t => {
+  const { root, write } = fixture(t);
+  const script = Buffer.from('export const answer = 42;\n'.repeat(3000));
+  const page = Buffer.from('<p>softn</p>\n'.repeat(4000));
+  write('web/assets/app.js', script);
+  write('builder/assets/app.js', script);
+  write('studio/engine.wasm', Buffer.concat([randomBytes(2048), Buffer.alloc(60000, 7)]));
+  write('index.html', page);
+  write('small.css', Buffer.from('a{}'));
+  write('noise.wasm', randomBytes(8192));
+  write('api/config.json', page);
+  write('data/state.json', page);
+
+  const inProcess = precompressTree(root);
+  const expected = twinsUnder(root);
+  assert.deepEqual(Object.keys(expected).sort(), [
+    'builder/assets/app.js.br', 'builder/assets/app.js.gz', 'index.html.br', 'index.html.gz',
+    'studio/engine.wasm.br', 'studio/engine.wasm.gz', 'web/assets/app.js.br', 'web/assets/app.js.gz',
+  ]);
+  for (const name of Object.keys(expected)) fs.rmSync(path.join(root, name));
+
+  const parallel = await precompressTreeInParallel(root, { workers: 3 });
+  assert.deepEqual(parallel, inProcess);
+  assert.deepEqual(twinsUnder(root), expected);
+  assert.equal(parallel.reused, 1, 'the second copy of app.js is not compressed again');
+
+  // One worker, and a tree with nothing to compress, behave the same.
+  assert.deepEqual(await precompressTreeInParallel(root, { workers: 1 }), inProcess);
+  assert.deepEqual(twinsUnder(root), expected);
+  const empty = fixture(t);
+  empty.write('tiny.js', Buffer.from('1'));
+  assert.deepEqual(await precompressTreeInParallel(empty.root), { scanned: 0, written: 0, raw: 0, gzip: 0, brotli: 0, reused: 0 });
 });

@@ -36,7 +36,7 @@ function siteCheckout(t,files={}){
   git('init','-q');
   git('commit','-q','--allow-empty','-m','fixture');
   const head=git('rev-parse','HEAD');
-  const buildInfo=(softn)=>Buffer.from(JSON.stringify({builtAt:'2026-01-01T00:00:00Z',softn,zipp:{version:'0.0.15'}}));
+  const buildInfo=(softn,more={})=>Buffer.from(JSON.stringify({builtAt:'2026-01-01T00:00:00Z',softn,zipp:{version:'0.0.15'},...more}));
   const all={
     'index.html':Buffer.from('<!doctype html><title>Test</title>'),
     '.htaccess':Buffer.from('Options -Indexes\n'),
@@ -53,7 +53,7 @@ function siteCheckout(t,files={}){
   const run=(script,args)=>spawnSync(process.execPath,[path.join(scripts,script),...args],{cwd:root,encoding:'utf8'});
   return {
     root,dist,out,head,files:all,git,
-    built:(softn)=>fs.writeFileSync(path.join(dist,'BUILD-INFO.json'),buildInfo(softn)),
+    built:(softn,more)=>fs.writeFileSync(path.join(dist,'BUILD-INFO.json'),buildInfo(softn,more)),
     packSite:(...args)=>run('package-site.mjs',['--tag','v0.0.0-test','--out',out,...args]),
     packDocs:(...args)=>run('package-docs.mjs',['--out',out,...args]),
     archives:()=>fs.existsSync(out)?fs.readdirSync(out).filter(name=>name.endsWith('.zip')):[],
@@ -117,6 +117,23 @@ test('the site is not packaged from a dist built from another commit than HEAD',
   const unnamed=site.packSite();
   assert.equal(unnamed.status,1);
   assert.match(unnamed.stderr,/BUILD-INFO\.json names no SoftN revision/);
+});
+
+/**
+ * A dist built for the browser journeys alone (build-site --no-precompress)
+ * has no .br/.gz twins, which the deployment rules serve first; the site and
+ * its documentation are not packaged from one.
+ */
+test('a dist built without its precompressed twins is not packaged',t=>{
+  const site=siteCheckout(t,{'docs/index.html':Buffer.from('<!doctype html><title>Docs</title>')});
+  site.built({revision:site.head,dirty:false},{precompressed:false});
+  for(const refused of [site.packSite(),site.packDocs()]){
+    assert.equal(refused.status,1,refused.stdout);
+    assert.match(refused.stderr,/built with --no-precompress, for tests/);
+  }
+  assert.deepEqual(site.archives(),[]);
+  site.built({revision:site.head,dirty:false},{precompressed:true});
+  assert.equal(site.packSite().status,0);
 });
 
 /**

@@ -1,11 +1,14 @@
 name: Build SoftN
 
 # The full build, dispatched by hand: the shared verification (verify.yml),
-# then the web runtime and every hosting archive (tested under Apache/PHP), and
-# the desktop loader and Builder on Linux, Windows and macOS. Pushes to main and
+# the web runtime and every hosting archive (tested under Apache/PHP), and the
+# desktop loader and Builder on Linux, Windows and macOS. Pushes to main and
 # pull requests are verified by ci.yml, which calls the same verify.yml; this
 # adds the packaging and the six-runner desktop matrix, which are too slow to
-# run on every push.
+# run on every push. The builds start beside the verification rather than
+# after it: nothing here is published (the artifacts are kept with the run for
+# a week), and the run fails whichever of them fails, so waiting only made a
+# good commit's build take longer.
 on:
   workflow_dispatch:
 
@@ -21,7 +24,6 @@ jobs:
 
   build-web:
     name: Build Web Runtime
-    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,7 +91,6 @@ jobs:
 
   build-tauri:
     name: Build ${{ matrix.app }} (${{ matrix.platform }})
-    needs: check
     strategy:
       fail-fast: false
       matrix:

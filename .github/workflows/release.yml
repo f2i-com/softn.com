@@ -34,12 +34,20 @@ name: Release
 # the workflow from that tag ("Use workflow from"), whose copy of this file
 # still names the Node version itself.
 #
-# Nothing is packaged until the tagged commit has passed the same
+# Nothing is published until the tagged commit has passed the same
 # verification a push gets (verify.yml: install, audit, build, typecheck,
 # lint, every test suite), run against the tag itself rather than whatever
-# main last passed with. Then the packaged archive is unpacked and served
-# the way a host would serve it — PHP in front of the API, the SPA routes,
-# the isolation headers — and asked the questions a visitor's browser asks.
+# main last passed with, and the browser journeys. The packaged archive is
+# unpacked and served the way a host would serve it — PHP in front of the
+# API, the SPA routes, the isolation headers — and asked the questions a
+# visitor's browser asks.
+#
+# The verification, the browser journeys and the packaging run side by side
+# once the gate has frozen the ZIPP release; only the last job, `publish`,
+# waits for all three, and it alone may write to the release. It attaches the
+# archives the packaging job built, checked and kept with the run, after
+# checking each against its digest once more. In a row the three took half an
+# hour; side by side a release waits for the slowest of them.
 on:
   push:
     tags:
@@ -153,8 +161,8 @@ jobs:
   # packaged archive. Nothing is attached until it passes.
   e2e:
     name: Browser gate on the tagged commit
-    needs: [gate, verify]
-    if: needs.gate.outputs.skip != 'true' && needs.verify.result == 'success'
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-latest
     env:
       ZIPP_RELEASE: ${{ needs.gate.outputs.zipp-release }}
@@ -172,10 +180,12 @@ jobs:
         run: npm ci
       - name: Install the ZIPP release
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
+      # build:site builds the packages the apps need itself. The journeys are
+      # served by the topology server, which never sends a .br/.gz twin, so
+      # this build makes none (they were most of its time); the website job
+      # below builds the site that ships, twins and all.
       - name: Build the site with the example bundles
-        run: |
-          npm run build:packages
-          SOFTN_WITH_DEMOS=1 npm run build:site
+        run: SOFTN_WITH_DEMOS=1 SOFTN_NO_PRECOMPRESS=1 npm run build:site
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Run the Chromium journeys
@@ -192,14 +202,13 @@ jobs:
             e2e/playwright-report
           if-no-files-found: ignore
 
+  # Builds, checks and keeps every archive with the run, beside the gates;
+  # publishing them is the `publish` job's, once the gates have passed.
   website:
     name: Package website and single-app runtime
-    needs: [gate, verify, e2e]
-    # Runs after the gates pass, or straight away when the gates were skipped;
-    # never after a failed gate job (a ZIPP refusal leaves `skip` set).
-    if: always() && !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.skip == 'true' || (needs.verify.result == 'success' && needs.e2e.result == 'success'))
-    permissions:
-      contents: write
+    needs: gate
+    # Never after a failed gate job (a ZIPP refusal leaves `skip` set).
+    if: needs.gate.result == 'success'
     runs-on: ubuntu-latest
     env:
       ZIPP_RELEASE: ${{ needs.gate.outputs.zipp-release }}
@@ -444,6 +453,7 @@ jobs:
             release/softn-website-*.zip
             release/softn-website-*.sha256
             release/RELEASE-GUIDE.md
+            release/RELEASE-NOTES.md
           if-no-files-found: error
 
       - name: Keep the single-app hosting ZIP with the workflow run
@@ -472,6 +482,44 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
+  # The only job that writes to the release, and only once the tagged commit
+  # has passed verify and the browser journeys (or the gates were skipped on
+  # purpose) and the website job has built and checked every archive. What it
+  # attaches are the files that job kept with the run, each checked against
+  # its digest again after the hand-over.
+  publish:
+    name: Publish the release
+    needs: [gate, verify, e2e, website]
+    if: always() && !cancelled() && needs.gate.result == 'success' && needs.website.result == 'success' && (needs.gate.outputs.skip == 'true' || (needs.verify.result == 'success' && needs.e2e.result == 'success'))
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Take the website archive, the guide and the notes
+        uses: actions/download-artifact@v4
+        with:
+          name: website-${{ env.RELEASE_TAG }}
+          path: release
+      - name: Take the single-app hosting archives
+        uses: actions/download-artifact@v4
+        with:
+          name: single-app-${{ env.RELEASE_TAG }}
+          path: release
+      - name: Take the FormLogic runtime archive
+        uses: actions/download-artifact@v4
+        with:
+          name: formlogic-runtime-${{ env.RELEASE_TAG }}
+          path: release
+      - name: Check every archive against its digest
+        run: |
+          set -euo pipefail
+          test -f release/RELEASE-NOTES.md && test -f release/RELEASE-GUIDE.md
+          (cd release && sha256sum -c ./*.sha256 --strict)
+          test "$(ls release/*.zip | wc -l)" -eq "$(ls release/*.sha256 | wc -l)"
+          echo "to attach: $(ls release | tr '\n' ' ')"
       - name: Attach all hosting archives to the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

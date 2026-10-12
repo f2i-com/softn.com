@@ -174,20 +174,37 @@ test('release.yml resolves ZIPP once in the gate and every job builds against th
     const text = job(release, id);
     assert.ok(text.includes('ZIPP_RELEASE: ${{ needs.gate.outputs.zipp-release }}') && text.includes('ZIPP_SUMS_SHA256: ${{ needs.gate.outputs.zipp-sums-sha256 }}'), `${id} env`);
   }
-  inOrder(job(release, 'e2e'), 'e2e', 'run: npm ci', INSTALL, 'npm run build:packages');
+  inOrder(job(release, 'e2e'), 'e2e', 'run: npm ci', INSTALL, 'npm run build:site');
   const website = job(release, 'website');
-  assert.ok(website.includes("needs.gate.result == 'success'"), 'a failed gate stops the release even when the tests are skipped');
-  inOrder(website, 'website', 'run: npm ci', INSTALL, 'release-explainers.mjs --tag', 'run: npm run licenses:check', 'node packages/@softn/core/scripts/fetch-zipp-release.mjs --check --online', 'npm run package:formlogic-runtime', 'zipp/RELEASE-SHA256SUMS', 'name: Record the ZIPP release in the release notes', '>> release/RELEASE-NOTES.md', 'gh release create');
+  assert.ok(website.includes("needs.gate.result == 'success'"), 'a failed gate stops the packaging');
+  inOrder(website, 'website', 'run: npm ci', INSTALL, 'release-explainers.mjs --tag', 'run: npm run licenses:check', 'node packages/@softn/core/scripts/fetch-zipp-release.mjs --check --online', 'npm run package:formlogic-runtime', 'zipp/RELEASE-SHA256SUMS', 'name: Record the ZIPP release in the release notes', '>> release/RELEASE-NOTES.md', 'release/RELEASE-NOTES.md\n          if-no-files-found: error');
   assert.ok(website.includes('$ZIPP_SUMS_SHA256') && website.includes('zipp/SOURCE.json') && website.includes('zipp/zipp_wasm.d.ts'));
   assert.ok(website.includes('ZIPP_OLDER_ALLOWED: ${{ needs.gate.outputs.zipp-older-allowed }}') && website.includes('ZIPP_LATEST: ${{ needs.gate.outputs.zipp-latest }}'), 'the notes say when the release is not ZIPP\'s latest');
+  assert.ok(!website.includes('gh release') && !website.includes('contents: write'), 'the packaging job cannot publish');
+
+  // Only the last job writes to the release: after the gate, the
+  // verification, the browser journeys and the packaging, and only with what
+  // the packaging kept, checked against its digests again.
+  const publish = job(release, 'publish');
+  assert.ok(publish.includes('needs: [gate, verify, e2e, website]'));
+  assert.ok(publish.includes("needs.gate.result == 'success'") && publish.includes("needs.website.result == 'success'"), 'a failed gate or packaging stops the release even when the tests are skipped');
+  assert.ok(publish.includes("needs.gate.outputs.skip == 'true' || (needs.verify.result == 'success' && needs.e2e.result == 'success')"), 'the tests pass, or were skipped on purpose');
+  assert.ok(publish.includes('contents: write'));
+  inOrder(publish, 'publish', 'actions/download-artifact@', 'sha256sum -c ./*.sha256 --strict', 'gh release create', 'gh release upload');
+  assert.ok(!publish.includes('run: npm') && !publish.includes('actions/checkout@'), 'it builds nothing');
 });
 
 test('verify.yml and build.yml install the declared (or the passed) release before building', () => {
   const verifyYml = workflow('verify.yml');
   for (const input of ['zipp-release', 'zipp-sums-sha256']) assert.ok(new RegExp(`\\n {6}${input}:\\n(?: {8}.*\\n)*? {8}default: ''\\n`).test(verifyYml), `${input} input`);
-  const verify = job(verifyYml, 'verify');
-  assert.ok(verify.includes('ZIPP_RELEASE: ${{ inputs.zipp-release }}') && verify.includes('ZIPP_SUMS_SHA256: ${{ inputs.zipp-sums-sha256 }}'));
-  inOrder(verify, 'verify', 'run: npm ci', INSTALL, 'npm run build:packages', 'npm run typecheck', 'npm test');
+  // The build and the static checks, and the test shards beside them: each installs the release first.
+  const checks = job(verifyYml, 'checks');
+  const shards = job(verifyYml, 'test');
+  for (const [id, text] of [['checks', checks], ['test', shards]]) {
+    assert.ok(text.includes('ZIPP_RELEASE: ${{ inputs.zipp-release }}') && text.includes('ZIPP_SUMS_SHA256: ${{ inputs.zipp-sums-sha256 }}'), `${id} env`);
+  }
+  inOrder(checks, 'checks', 'run: npm ci', INSTALL, 'npm run build:packages', 'npm run typecheck', 'npm run lint');
+  inOrder(shards, 'test', 'run: npm ci', INSTALL, 'npm run build:packages', 'run: node scripts/test-shards.mjs --shard ${{ matrix.shard }}/4\n');
   const build = workflow('build.yml');
   inOrder(job(build, 'build-web'), 'build-web', 'run: npm ci', INSTALL, 'npm run build:packages', 'npm run package:formlogic-runtime');
   inOrder(job(build, 'build-tauri'), 'build-tauri', 'run: npm ci', INSTALL, 'npm run build:packages');

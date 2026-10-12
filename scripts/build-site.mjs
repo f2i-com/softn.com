@@ -33,7 +33,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { precompressTree } from './precompress-assets.mjs';
+import { precompressTreeInParallel } from './precompress-assets.mjs';
 import { dropMachineMaps } from './lib/build-paths.mjs';
 import { buildSite as buildDocs } from '../docs/scripts/build-docs.mjs';
 
@@ -54,6 +54,12 @@ const demosDirArg = (() => {
   return i >= 0 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : process.env.SOFTN_DEMOS_DIR ? path.resolve(process.env.SOFTN_DEMOS_DIR) : null;
 })();
 const withDemos = demosDirArg !== null || process.argv.includes('--with-demos') || process.env.SOFTN_WITH_DEMOS === '1';
+// `--no-precompress` (or SOFTN_NO_PRECOMPRESS=1) leaves out the .br/.gz twins,
+// for a build that is only served to tests: the browser journeys run against
+// the topology server, which never sends a twin, and the twins are most of a
+// site build's time. BUILD-INFO.json says so, and the packagers refuse such a
+// dist (lib/build-info.mjs): what is deployed always has them.
+const precompress = !process.argv.includes('--no-precompress') && process.env.SOFTN_NO_PRECOMPRESS !== '1';
 
 const APPS = [
   { workspace: '@softn/web', dir: 'apps/softn-web', base: '/web/', into: 'web' },
@@ -742,6 +748,7 @@ function writeBuildInfo() {
         // How many example bundles ship in this build; 0 is the default
         // release shape, and the smoke test reads it to know what to expect.
         examples: { bundled: bundleCount },
+        precompressed: precompress,
         zipp,
       },
       null,
@@ -929,8 +936,8 @@ function writeDeepLinkFallbacks() {
  * segment, and any twin that fails to beat 95% of the original is discarded
  * rather than shipped as dead weight the server has to stat.
  */
-function precompressAssets() {
-  const stats = precompressTree(outDir);
+async function precompressAssets() {
+  const stats = await precompressTreeInParallel(outDir);
   const mb = (n) => (n / 1024 / 1024).toFixed(2) + 'MB';
   console.log(
     `\nPrecompressed ${stats.scanned} files (${stats.written} twins written; ${stats.reused} identical files reused)\n` +
@@ -963,7 +970,8 @@ writeBuildInfo();
 // import; the apps' maps, relative to the build, stay for reading error
 // reports (lib/build-paths.mjs, and package-site.mjs refuses what is left).
 for (const map of dropMachineMaps(outDir)) console.log(`Left out ${map}: it names paths on this machine`);
-precompressAssets();
+if (precompress) await precompressAssets();
+else console.log('\nNo .br/.gz twins (--no-precompress): this dist is for tests, and the packagers refuse it.');
 
 console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
 console.log('  dist/           landing page');
@@ -977,6 +985,6 @@ console.log('  dist/play/      the single-app shell; /play/<slug> is an app\'s p
 console.log('  dist/api/       the directory API (PHP + folder JSON); dist/data/ its state');
 console.log('  dist/.htaccess, nginx.conf.example, DEPLOY.md');
 console.log('  dist/BUILD-INFO.json');
-console.log('  *.br / *.gz     precompressed twins for brotli_static / gzip_static');
+if (precompress) console.log('  *.br / *.gz     precompressed twins for brotli_static / gzip_static');
 console.log('  dist/LICENSE, NOTICE, THIRD-PARTY-NOTICES.txt, THIRD-PARTY-INVENTORY.json');
 for (const app of APPS) console.log(`  dist/${app.into}/`.padEnd(18) + app.workspace);

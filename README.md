@@ -1038,15 +1038,18 @@ cargo test --manifest-path apps/softn-host-rust/Cargo.toml
 
 Every push to `main` and every pull request runs the [CI workflow](.github/workflows/ci.yml):
 install, audit, build, typecheck, lint, every test suite and the Rust hosts, the steps
-[verify.yml](.github/workflows/verify.yml) holds. A commit whose message carries `[skip ci]` is
-not checked by GitHub, so run the same checks locally before pushing one. The
-[Build SoftN workflow](.github/workflows/build.yml) is started by hand for the hosting archives
-and the desktop matrix, and a version tag runs [the release](.github/workflows/release.yml), which
-verifies the tagged commit and runs the browser gate before anything is packaged.
+[verify.yml](.github/workflows/verify.yml) holds, in jobs that run side by side (the suites in four
+shards, which `node scripts/test-shards.mjs --plan 4` lists). A commit whose message carries
+`[skip ci]` is not checked by GitHub, so run the same checks locally before pushing one, or start
+the CI workflow by hand. The [Build SoftN workflow](.github/workflows/build.yml) is started by hand
+for the hosting archives and the desktop matrix, and a version tag runs
+[the release](.github/workflows/release.yml), which verifies the tagged commit, runs the browser
+gate and packages the archives side by side, and publishes only once all three have passed.
 
 ```bash
 npm test                      # the script tests, then every workspace (demo bundles and the ZIPP engine are fetched first)
 npm test -w @softn/core       # one of them
+npm run test:shard -- 2/4     # what CI's second test shard runs (the suites above and core on the host-js engine)
 npm run lint && npm run typecheck
 npm run e2e:install           # Chromium for Playwright, once
 npm run e2e                   # the browser gate, against a built site (see e2e/README.md)

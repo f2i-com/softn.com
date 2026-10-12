@@ -8,11 +8,13 @@ name: CI
 #
 # A commit whose message carries `[skip ci]` (or `[ci skip]`, `[skip actions]`)
 # is not run: GitHub skips push and pull_request workflows for it. Run the
-# checks locally for such a commit, or dispatch build.yml.
+# checks locally for such a commit, or dispatch this workflow (or build.yml,
+# which adds the packaging and the desktop builds) for the branch.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # A newer push to a pull request's branch makes the running check moot, so it
 # is cancelled. Pushes to main are not: every commit on main keeps its own

@@ -19,7 +19,8 @@ export function headRevision(root) {
 /**
  * Why a `dist/` whose BUILD-INFO.json says `info` is not to be packaged at
  * `head`, or null. A tree that was dirty when it was built is refused unless
- * `allowDirty`, as package-site has always refused it.
+ * `allowDirty`, as package-site has always refused it, and so is a build made
+ * without its precompressed twins.
  */
 export function buildInfoProblem(info, head, { allowDirty = false } = {}) {
   const revision = info?.softn?.revision;
@@ -31,6 +32,10 @@ export function buildInfoProblem(info, head, { allowDirty = false } = {}) {
   }
   if (info.softn.dirty && !allowDirty) {
     return 'BUILD-INFO.json says the tree was dirty when dist/ was built. A release is built from a clean checkout; pass --allow-dirty for a local trial.';
+  }
+  // A test build: no .br/.gz twins, which the deployment rules prefer.
+  if (info.precompressed === false) {
+    return 'BUILD-INFO.json says dist/ was built with --no-precompress, for tests: it has no .br/.gz twins. Build it again without that (npm run build:site).';
   }
   return null;
 }
