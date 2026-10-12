@@ -24,7 +24,7 @@ import { parseBundle, startsWithByteOrderMark, type BundleManifest } from './bun
 import { parseSource } from './sourceParser';
 import { describeMigrations, migrateElements } from './propMigrations';
 import { validateBundle as validateBundleIntegrity, resolveEntry, FILE_GROUPS, type FileGroup } from './bundleValidator';
-import { emptyDeclaration, readPermissionJson, type PermissionDeclaration } from './permissions';
+import { readBundleDeclaration, type PermissionDeclaration } from './permissions';
 import { identityOf, parseXdb, type RecordIdentity, type XdbRecordEnvelope } from './xdbFormat';
 import type {
   CollectionDef,
@@ -243,7 +243,12 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     }
   }
 
-  // Load XDB files
+  // Load XDB files. One the Builder cannot read (it does not parse, or it
+  // names a collection another has already given) is kept as it came, with
+  // the entries it does not model, and goes back into every export listed
+  // where it was (bundleExporter.ts, unreadXdbPaths). It was left out with a
+  // toast, and every record in it was gone from the export.
+  const unreadXdb = new Map<string, Uint8Array>();
   debug('[bundleLoader] XDB files in manifest:', declaredPaths(manifest, 'xdb'));
   for (const xdbPath of declaredPaths(manifest, 'xdb')) {
     const found = resolveEntry(files, xdbPath, 'xdb');
@@ -264,7 +269,8 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
         warnings.push(`XDB file "${xdbPath}": ${parsed.skipped} record(s) without a usable id or data were skipped, as the runtime skips them.`);
       }
       if (xdbPaths.has(collectionName)) {
-        warnings.push(`XDB file "${xdbPath}" repeats collection "${collectionName}"; the first one is kept.`);
+        unreadXdb.set(found.path, found.bytes);
+        warnings.push(`XDB file "${xdbPath}" repeats collection "${collectionName}": the first is the one edited here, and this one is kept as it came and goes back into the export unchanged.`);
         continue;
       }
       xdbPaths.set(collectionName, found.path);
@@ -327,7 +333,8 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
         });
       }
     } catch (e) {
-      warnings.push(`Failed to parse XDB file: ${xdbPath} - ${e instanceof Error ? e.message : 'Unknown error'}`);
+      unreadXdb.set(found.path, found.bytes);
+      warnings.push(`XDB file "${xdbPath}" could not be read (${e instanceof Error ? e.message : 'unknown error'}): it is kept as it came and goes back into the export unchanged.`);
     }
   }
 
@@ -356,14 +363,15 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   }
 
   const permissionEntry = files.get('permission.json');
-  const permissions = permissionEntry ? readPermissionJson(decoder.decode(permissionEntry)) : emptyDeclaration();
+  // As the runtime reads it: the file, else the manifest's older `permissions` block.
+  const permissions = readBundleDeclaration(permissionEntry ? decoder.decode(permissionEntry) : undefined, rawManifest);
   consumed.add('permission.json');
   consumed.add('manifest.json');
 
   // Everything else passes through as it is: server files, files of groups
   // the Builder does not know, files no group names. Each has already been
   // through the bounded reader's path and checksum checks. Nothing is run.
-  const extraEntries = new Map<string, Uint8Array>();
+  const extraEntries = new Map<string, Uint8Array>(unreadXdb);
   for (const [path, bytes] of files) {
     if (consumed.has(path)) continue;
     if (path.endsWith('/')) continue;

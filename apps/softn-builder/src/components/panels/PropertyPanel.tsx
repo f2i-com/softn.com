@@ -267,8 +267,14 @@ function useHandlerHelp(): HandlerHelp {
   const activeFileId = useFilesStore((state) => state.activeFileId);
   const uiFiles = useFilesStore((state) => state.uiFiles);
   const logicFiles = useFilesStore((state) => state.logicFiles);
+  // The page the selected element is on. With a logic file or an asset open
+  // the panel still holds the last page (hooks/useActiveFileOnCanvas.ts), and
+  // the logic was read from the file that was open, which is no page: the
+  // entry's logic was offered, and a handler made from here went there.
+  const canvasPageId = useCanvasStore((state) => state.pageId);
+  const pageId = activeFileId && uiFiles.has(activeFileId) ? activeFileId : canvasPageId ?? activeFileId;
   return useMemo(() => {
-    const file = dockLogicFile(activeFileId, uiFiles, logicFiles, entryFileId(uiFiles, retainedSource));
+    const file = dockLogicFile(pageId, uiFiles, logicFiles, entryFileId(uiFiles, retainedSource));
     if (!file) return { logicPath: null, logicId: null, finished: false, language: 'javascript', functions: [], callable: new Set<string>() };
     const language = logicLanguageOf(file.path);
     // JavaScript logic files are composed into one scope, so a helper's
@@ -285,7 +291,7 @@ function useHandlerHelp(): HandlerHelp {
       functions: logicFunctions(file.content, language),
       callable: callableNames(scope, language),
     };
-  }, [activeFileId, uiFiles, logicFiles, retainedSource]);
+  }, [pageId, uiFiles, logicFiles, retainedSource]);
 }
 
 interface HandlerFieldProps {

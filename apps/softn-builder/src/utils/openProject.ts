@@ -46,6 +46,7 @@ import { describeMigrations, migrateElements } from './propMigrations';
 import { applyInlineLogicMove, planInlineLogicMove, takenPaths } from './inlineLogic';
 import { entryFileId } from './logicFiles';
 import { readThemeMode } from './themeMode';
+import { emptyDeclaration, withManifestPermissions } from './permissions';
 import { keepSavedPoint } from './savedPoint';
 import { gatherCollections, gatherRecords } from './buildProjectBundle';
 import { xdbText, type KeptXdb } from './bundleExporter';
@@ -474,7 +475,9 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
       icon: project.icon || null,
       // A record from before the theme was kept has none: see utils/themeMode.ts.
       themeMode: readThemeMode(project.themeMode),
-      permissions: project.permissions,
+      // What the runtime grants an export of it: a session saved before the manifest's older
+      // `permissions` block was read showed nothing on for an app that block gives the network.
+      permissions: withManifestPermissions({ ...emptyDeclaration(), ...(project.permissions ?? {}) }, source.manifest),
       // A session written before the setting existed has it only in the
       // manifest it retained, if it came from a bundle.
       pythonPackages: Array.isArray(project.pythonPackages) ? project.pythonPackages : readPythonPackages(source.manifest).packages,

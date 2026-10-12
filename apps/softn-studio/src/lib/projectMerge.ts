@@ -134,11 +134,62 @@ function aliasConflicts(value: Map<string, PersistedFile>, theirs: ReadonlyMap<s
   return out;
 }
 
-/** Chat messages in the order they were said; this tab's order breaks ties. */
+const earlier = (a: ChatMessage, b: ChatMessage): boolean => a.timestamp < b.timestamp || (!(a.timestamp > b.timestamp) && a.id < b.id);
+
+/**
+ * The messages in `keep`, in one order: each list's own order is kept (a
+ * message after another in a tab's chat stays after it), and where no list
+ * says which of two comes first, the one said earlier comes first, then the
+ * lower id. The same lists give the same order in whichever order they are
+ * given, so two tabs store one chat alike.
+ *
+ * The time alone was the order once. A message said after the clock was put
+ * back sorted among the oldest, where the cap to 200 cut it; and two tabs'
+ * messages of the same moment were stored in the order of whichever tab
+ * saved. Where the lists contradict each other, the earliest of what is left
+ * is taken, so every message in `keep` is placed.
+ */
+export function orderChat(lists: ReadonlyArray<readonly ChatMessage[]>, keep: ReadonlyMap<string, ChatMessage>): ChatMessage[] {
+  const next = new Map<string, Set<string>>();
+  const waiting = new Map<string, number>();
+  for (const id of keep.keys()) {
+    next.set(id, new Set());
+    waiting.set(id, 0);
+  }
+  for (const list of lists) {
+    let previous: string | null = null;
+    for (const message of list) {
+      if (!keep.has(message.id) || message.id === previous) continue;
+      const after: Set<string> | null = previous === null ? null : next.get(previous)!;
+      if (after && !after.has(message.id)) {
+        after.add(message.id);
+        waiting.set(message.id, waiting.get(message.id)! + 1);
+      }
+      previous = message.id;
+    }
+  }
+  const left = new Set(keep.keys());
+  const out: ChatMessage[] = [];
+  while (left.size > 0) {
+    let pick: ChatMessage | null = null;
+    for (const id of left) {
+      const message = keep.get(id)!;
+      if (waiting.get(id)! <= 0 && (!pick || earlier(message, pick))) pick = message;
+    }
+    if (!pick) for (const id of left) {
+      const message = keep.get(id)!;
+      if (!pick || earlier(message, pick)) pick = message;
+    }
+    out.push(pick!);
+    left.delete(pick!.id);
+    for (const id of next.get(pick!.id)!) waiting.set(id, waiting.get(id)! - 1);
+  }
+  return out;
+}
+
+/** Chat messages of a merge in one order (see orderChat), the oldest by that order cut past 200. */
 function orderMessages(value: Map<string, ChatMessage>, mine: readonly ChatMessage[], theirs: readonly ChatMessage[]): ChatMessage[] {
-  const order = new Map<string, number>();
-  for (const message of [...mine, ...theirs]) if (!order.has(message.id)) order.set(message.id, order.size);
-  const list = [...value.values()].sort((a, b) => a.timestamp - b.timestamp || (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  const list = orderChat([mine, theirs], value);
   return list.length > MAX_MESSAGES ? list.slice(-MAX_MESSAGES) : list;
 }
 

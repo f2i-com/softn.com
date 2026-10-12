@@ -37,6 +37,7 @@ import { isThemeMode } from './themeMode';
 import { debug } from './debug';
 import { buildPermissionJson, type PermissionDeclaration } from './permissions';
 import { envelopeFor, serializeXdb, type XdbRecordEnvelope } from './xdbFormat';
+import { resolveEntry } from './bundleValidator';
 
 export const BUNDLE_FORMAT_VERSION = '1.0';
 
@@ -194,6 +195,45 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function stripSlash(path: string): string {
   return path.startsWith('/') ? path.slice(1) : path;
+}
+
+/**
+ * The .xdb files the retained manifest lists that the Builder could not read
+ * when the bundle was opened (one that did not parse, or that repeated a
+ * collection): the loader keeps each among the entries it does not model, as
+ * it came (bundleLoader.ts). Their archive paths, in the manifest's order.
+ */
+export function unreadXdbPaths(source: RetainedExportSource | undefined): string[] {
+  const paths: string[] = [];
+  for (const path of declaredXdb(source)) {
+    const found = source ? resolveEntry(source.extraEntries, path, 'xdb') : undefined;
+    if (found && !paths.includes(found.path)) paths.push(found.path);
+  }
+  return paths;
+}
+
+/** The .xdb paths the retained manifest lists, as written. */
+function declaredXdb(source: RetainedExportSource | undefined): string[] {
+  const files = source?.manifest && isObject(source.manifest.files) ? source.manifest.files : {};
+  return Array.isArray(files.xdb) ? files.xdb.filter((path): path is string => typeof path === 'string') : [];
+}
+
+/**
+ * Archive paths of .xdb files in the order the retained manifest lists them,
+ * and those it does not list after them, in the order given. Kept files and
+ * written ones are listed together, so a file kept as it came keeps its
+ * place, and an untouched export writes the manifest back as it came.
+ */
+function inDeclaredOrder(paths: string[], source: RetainedExportSource | undefined): string[] {
+  const declared = declaredXdb(source);
+  const place = (path: string) => {
+    const found = declared.findIndex((name) => resolveEntry(new Map([[path, new Uint8Array(0)]]), name, 'xdb') !== undefined);
+    return found < 0 ? declared.length : found;
+  };
+  return paths
+    .map((path, given) => ({ path, given, place: place(path) }))
+    .sort((a, b) => a.place - b.place || a.given - b.given)
+    .map((entry) => entry.path);
 }
 
 /** Where a collection's .xdb goes: where it was, or `xdb/<name>.xdb`. */
@@ -362,13 +402,22 @@ function addSharedEntries(
 
   // Generate XDB entries, one serializer for both export paths.
   const xdb: string[] = [];
+  const unread = unreadXdbPaths(options.source);
   for (const col of options.collections) {
     const path = xdbPathFor(col.name, options.source);
+    // Written there, the collection would take the place of a file kept as it came, and what is
+    // in that file would be gone from the app without a word: the export is refused instead.
+    if (unread.includes(path)) {
+      throw new Error(`${path} could not be read when the project was opened, and is kept as it came; the collection "${col.name}" would be written over it. Give the collection another name.`);
+    }
     const text = xdbText(col, options.records?.get(col.name));
     const kept = options.source?.xdbFiles?.get(col.name);
     files[path] = kept && kept.written === text ? kept.bytes : strToU8(text);
     xdb.push(path);
   }
+  // Listed where they were among the collections the Builder writes, and written below with the
+  // other entries kept as they came. A project with none lists its collections as it always has.
+  const listed = unread.length > 0 ? inDeclaredOrder([...xdb, ...unread], options.source) : xdb;
 
   // What the Builder does not model goes back as it came, unless the Builder
   // now has a file of its own at that path.
@@ -377,7 +426,7 @@ function addSharedEntries(
     files[path] = bytes;
   }
 
-  return { assets, xdb, iconPath };
+  return { assets, xdb: listed, iconPath };
 }
 
 function zip(files: Record<string, Uint8Array>, options: SharedOptions): Uint8Array {

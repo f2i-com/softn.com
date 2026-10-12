@@ -56,8 +56,11 @@ const STUDIO_DB_VERSION = 1;
 export const PROJECTS_STORE = 'projects';
 export const PROJECT_SCHEMA_VERSION = 1;
 
-/** `conflict`: storage holds a newer copy of the project than the one this tab last saw, written by another tab. */
-export type SaveFailureReason = 'quota' | 'blocked' | 'unavailable' | 'error' | 'conflict';
+/**
+ * `conflict`: storage holds a newer copy of the project than the one this tab last saw, written by another tab.
+ * `deleted`: storage holds no copy of a project this tab read or wrote: it was deleted in another tab.
+ */
+export type SaveFailureReason = 'quota' | 'blocked' | 'unavailable' | 'error' | 'conflict' | 'deleted';
 export type SaveResult = { ok: true } | { ok: false; reason: SaveFailureReason; message: string };
 
 export type PersistedWorkspace = {
@@ -852,6 +855,18 @@ const CHANGED_IN_ANOTHER_TAB: SaveResult = {
 };
 
 /**
+ * A save of a project this tab had read or written, which storage no longer
+ * holds: it was deleted from the list in another tab (or the browser cleared
+ * its storage). The save used to put it back, whole, and the deletion was
+ * undone with no word to anyone; whether to keep it is the person's to say.
+ */
+export const DELETED_ELSEWHERE: SaveResult = {
+  ok: false,
+  reason: 'deleted',
+  message: 'No longer in this browser’s storage: deleted in another tab, or cleared by the browser. Keep it to save it here again, or close it.',
+};
+
+/**
  * What to write in place of a record when the stored copy is newer than the
  * one the writer last saw: the record to put, or why nothing is put. Called
  * inside the save's transaction, so it must not wait for anything.
@@ -872,8 +887,10 @@ export type ReconcileSave = (stored: ProjectRecord) => ProjectRecord | SaveResul
  * and what it answers is written instead (the tab's merge, projectMerge.ts);
  * without it, or when the stored copy does not read whole, nothing is
  * written. The look and the write share one transaction, so nothing can be
- * stored between them. Without `lastSeenRevision` the write is unconditional
- * (a project's first save, the legacy migration).
+ * stored between them. Given `lastSeenRevision`, no stored copy at all is a
+ * project deleted since (DELETED_ELSEWHERE), and nothing is written either.
+ * Without `lastSeenRevision` the write is unconditional (a project's first
+ * save, the legacy migration, a deleted project the person chose to keep).
  */
 export async function saveProjectRecord(record: ProjectRecord, lastSeenRevision?: number, reconcile?: ReconcileSave): Promise<SaveResult> {
   let db: IDBDatabase;
@@ -888,6 +905,7 @@ export async function saveProjectRecord(record: ProjectRecord, lastSeenRevision?
     let write = record;
     if (lastSeenRevision !== undefined) {
       const stored: unknown = await request(store.get(record.projectId));
+      if (stored === undefined) return DELETED_ELSEWHERE;
       if (isRecord(stored) && typeof stored.revision === 'number' && stored.revision > lastSeenRevision) {
         // A part left out of the reading would be merged as the other tab having deleted it.
         const read = reconcile ? readStoredRecord(stored, record.projectId) : null;
@@ -1019,6 +1037,24 @@ export async function readProjectRecordAnswer(projectId: string): Promise<{ answ
     return { answered: true, read: readStoredRecord(raw, projectId) };
   } catch {
     return { answered: true, read: null };
+  } finally {
+    db.close();
+  }
+}
+
+/** Whether storage holds anything under a project id, readable or not; null when it did not answer. */
+export async function hasProjectRecord(projectId: string): Promise<boolean | null> {
+  let db: IDBDatabase;
+  try {
+    db = await openStudioDb();
+  } catch {
+    return null;
+  }
+  try {
+    const tx = db.transaction(PROJECTS_STORE, 'readonly');
+    return (await request(tx.objectStore(PROJECTS_STORE).get(projectId))) !== undefined;
+  } catch {
+    return null;
   } finally {
     db.close();
   }

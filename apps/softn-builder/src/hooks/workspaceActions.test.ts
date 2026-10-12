@@ -165,3 +165,28 @@ it('leaves a key pressed with AltGr to the field it is typed into', () => {
   expect(actions.open).not.toHaveBeenCalled();
   expect(actions.create).not.toHaveBeenCalled();
 });
+
+// A browser's autofill, and some input methods, send a `keydown` that is a
+// plain Event with no `key` at all. The handler read `event.key.toLowerCase()`
+// and threw, on every such event, from a listener that sees every key the
+// page gets.
+it('lets a keydown with no key pass, and still hears the keys after it', () => {
+  const actions = shortcutHarness();
+  const thrown: unknown[] = [];
+  const onError = (event: ErrorEvent) => { thrown.push(event.error); event.preventDefault(); };
+  window.addEventListener('error', onError);
+  try {
+    const field = host.querySelector('textarea')!;
+    for (const extra of [{}, { ctrlKey: true }, { metaKey: true, shiftKey: true }, { altKey: true }]) {
+      const event = new Event('keydown', { bubbles: true, cancelable: true });
+      Object.assign(event, extra);
+      field.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(thrown).toEqual([]);
+    press('s', { ctrlKey: true }, field);
+    expect(actions.save).toHaveBeenCalledOnce();
+  } finally {
+    window.removeEventListener('error', onError);
+  }
+});

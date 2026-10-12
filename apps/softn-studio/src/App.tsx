@@ -61,6 +61,7 @@ import {
   reopenUnansweredProject,
   restoreSession,
   startProjectAutosave,
+  subscribeProjectClosed,
   type AutosaveController,
 } from './lib/projectSession';
 
@@ -182,6 +183,12 @@ const App: React.FC = () => {
     setView('editor');
     void refreshRecent();
   }, [checkpointBeforeReplace, refreshRecent]);
+
+  // A project deleted in another tab and closed here from the save bar: back to the list, which no longer has it.
+  useEffect(() => subscribeProjectClosed(() => {
+    setView('dashboard');
+    void refreshRecent();
+  }), [refreshRecent]);
 
   const handleBackToDashboard = useCallback(() => {
     // Home closes the editor on a file being edited by hand: a draft not saved is asked about.

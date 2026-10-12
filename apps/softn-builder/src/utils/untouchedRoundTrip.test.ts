@@ -28,7 +28,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { strToU8, zipSync } from 'fflate';
-import { parseXDBFile, readBundleEntries } from '@softn/core';
+import { extractPermissions, inspectDeclaration, parseXDBFile, readBundleEntries, type AppPermissions } from '@softn/core';
 import { loadBundle } from './bundleLoader';
 import { buildProjectBundle } from './buildProjectBundle';
 import { captureSession, commitProjectSnapshot, prepareProjectSnapshot, prepareSessionSnapshot } from './openProject';
@@ -285,6 +285,137 @@ describe('a permission.json that cannot be read', () => {
     expect(json((await exported()).get('permission.json'))).toEqual({ permissions: { camera: { enabled: true } } });
     useProjectStore.getState().setPermissions({ ...useProjectStore.getState().permissions, capabilities: [] });
     expect(text((await exported()).get('permission.json'))).toBe(UNREADABLE[0]);
+  });
+});
+
+describe('an older manifest permissions block, with no permission.json', () => {
+  // A bundle published before permission.json existed says what it needs in
+  // its manifest (`permissions: { network, filesystem }`), and every runtime
+  // grants it from there when the bundle has no permission.json of its own
+  // (core, bundle/manifest.ts, extractPermissions). The Builder read only
+  // permission.json, so its panel showed nothing on for an app the runtime
+  // gives the network and files; and the first box ticked there wrote a
+  // permission.json that took the network and files away with no word.
+  const LEGACY = { ...STUDIO_MANIFEST, permissions: { network: true, filesystem: true, clipboard: true } };
+  const asRuntime = (out: Map<string, Uint8Array>) => {
+    const textFiles = new Map<string, string>();
+    const permission = out.get('permission.json');
+    if (permission) textFiles.set('permission.json', text(permission));
+    return inspectDeclaration(extractPermissions(textFiles, json(out.get('manifest.json')) as { permissions?: AppPermissions })).requested;
+  };
+
+  it('is shown as what the runtime grants, and leaves an untouched export as it came', async () => {
+    await open(studioBundle({ manifest: LEGACY, permission: null }));
+    expect(useProjectStore.getState().permissions.capabilities).toEqual(['net', 'files']);
+    const out = await exported();
+    expect(out.has('permission.json')).toBe(false);
+    expect(json(out.get('manifest.json')).permissions).toEqual(LEGACY.permissions);
+    expect(asRuntime(out)).toEqual(['net', 'files']);
+  });
+
+  it('is shown the same through a saved session', async () => {
+    await open(studioBundle({ manifest: LEGACY, permission: null }));
+    commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(captureSession('design'))));
+    expect(useProjectStore.getState().permissions.capabilities).toEqual(['net', 'files']);
+    expect((await exported()).has('permission.json')).toBe(false);
+  });
+
+  it('is shown from the retained manifest in a session saved before the block was read', async () => {
+    await open(studioBundle({ manifest: LEGACY, permission: null }));
+    // As such a session holds it: nothing declared, no file, and nothing said of the block.
+    const session = captureSession('design') as unknown as { project: { permissions: Record<string, unknown> } };
+    session.project.permissions = { capabilities: [], allowedHosts: [], allowHttp: false, storagePolicies: {} };
+    commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(session)));
+    expect(useProjectStore.getState().permissions.capabilities).toEqual(['net', 'files']);
+    const out = await exported();
+    expect(out.has('permission.json')).toBe(false);
+    expect(asRuntime(out)).toEqual(['net', 'files']);
+  });
+
+  it('keeps what it granted when something is added, and takes it away only when it is unticked', async () => {
+    await open(studioBundle({ manifest: LEGACY, permission: null }));
+    const project = useProjectStore.getState();
+    project.setPermissions({ ...project.permissions, capabilities: ['net', 'camera', 'files'] });
+    let out = await exported();
+    expect(json(out.get('permission.json'))).toEqual({ permissions: { net: { enabled: true }, camera: { enabled: true }, files: { enabled: true } } });
+    expect(asRuntime(out)).toEqual(['net', 'camera', 'files']);
+    // Everything unticked: a file that declares nothing, which the runtime reads in place of the block.
+    useProjectStore.getState().setPermissions({ ...useProjectStore.getState().permissions, capabilities: [] });
+    out = await exported();
+    expect(json(out.get('permission.json'))).toEqual({ permissions: {} });
+    expect(asRuntime(out)).toEqual([]);
+  });
+
+  it('is read in place of an empty permission.json, as the runtime reads it', async () => {
+    await open(studioBundle({ manifest: LEGACY, permission: '' }));
+    expect(useProjectStore.getState().permissions.capabilities).toEqual(['net', 'files']);
+    const out = await exported();
+    expect(text(out.get('permission.json'))).toBe('');
+    expect(asRuntime(out)).toEqual(['net', 'files']);
+  });
+
+  it('is not read where the bundle has a permission.json that says something', async () => {
+    await open(studioBundle({ manifest: LEGACY, permission: JSON.stringify({ permissions: { camera: { enabled: true } } }) }));
+    expect(useProjectStore.getState().permissions.capabilities).toEqual(['camera']);
+  });
+});
+
+describe('a collection file the Builder cannot read', () => {
+  // A .xdb that does not parse, or that names a collection another .xdb has
+  // already given, was left out of the project with a toast, and out of the
+  // export with it: the manifest no longer listed it and the archive no
+  // longer had it. Whatever records it held were gone from the app. It is
+  // kept as it came now, and goes back into every export, listed where it was.
+  const BROKEN = '{ "collection": "notes", "records": [ { "id": "n1", "data": { "text": "kept" } }, ] }';
+  const SECOND_BOOKS = JSON.stringify({ collection: 'books', records: [{ id: 'b9', title: 'Persuasion' }] }, null, 2);
+  function withXdb(extra: Record<string, string>): Uint8Array {
+    const manifest = { ...STUDIO_MANIFEST, files: { ...STUDIO_MANIFEST.files, xdb: ['xdb/books.xdb', ...Object.keys(extra)] } };
+    const entries = readBundleEntries(studioBundle({ manifest }));
+    const files: Record<string, Uint8Array> = Object.fromEntries(entries);
+    for (const [path, content] of Object.entries(extra)) files[path] = strToU8(content);
+    return zipSync(files);
+  }
+  const listed = (out: Map<string, Uint8Array>) => (json(out.get('manifest.json')).files as { xdb: string[] }).xdb;
+
+  it('goes out of an untouched export as it came, and listed', async () => {
+    const loaded = await loadBundle(withXdb({ 'xdb/notes.xdb': BROKEN }));
+    expect(loaded.warnings.join('\n')).toMatch(/xdb\/notes\.xdb.*kept as it came/);
+    await open(withXdb({ 'xdb/notes.xdb': BROKEN }));
+    const out = await exported();
+    expect(text(out.get('xdb/notes.xdb'))).toBe(BROKEN);
+    expect(listed(out)).toEqual(['xdb/books.xdb', 'xdb/notes.xdb']);
+  });
+
+  it('keeps its place in the manifest, which an untouched export writes back as it came', async () => {
+    const manifest = { ...STUDIO_MANIFEST, files: { ...STUDIO_MANIFEST.files, xdb: ['xdb/notes.xdb', 'xdb/books.xdb'] } };
+    const files: Record<string, Uint8Array> = Object.fromEntries(readBundleEntries(studioBundle({ manifest })));
+    files['xdb/notes.xdb'] = strToU8(BROKEN);
+    await open(zipSync(files));
+    const out = await exported();
+    expect(listed(out)).toEqual(['xdb/notes.xdb', 'xdb/books.xdb']);
+    expect(text(out.get('manifest.json'))).toBe(text(files['manifest.json']));
+  });
+
+  it('is kept when it repeats a collection, after the one the Builder edits', async () => {
+    await open(withXdb({ 'xdb/books-more.xdb': SECOND_BOOKS }));
+    const out = await exported();
+    expect(text(out.get('xdb/books-more.xdb'))).toBe(SECOND_BOOKS);
+    expect(listed(out)).toEqual(['xdb/books.xdb', 'xdb/books-more.xdb']);
+  });
+
+  it('is kept through a saved session', async () => {
+    await open(withXdb({ 'xdb/notes.xdb': BROKEN }));
+    commitProjectSnapshot(prepareSessionSnapshot(JSON.stringify(captureSession('design'))));
+    const out = await exported();
+    expect(text(out.get('xdb/notes.xdb'))).toBe(BROKEN);
+    expect(listed(out)).toContain('xdb/notes.xdb');
+  });
+
+  it('is not written over by a collection made here at its path: the export is refused and says why', async () => {
+    await open(withXdb({ 'xdb/notes.xdb': BROKEN }));
+    const made = useSchemaStore.getState().addEntity({ x: 0, y: 0 });
+    expect(useSchemaStore.getState().updateEntity(made, { name: 'notes' })).toBeNull();
+    await expect(buildProjectBundle()).rejects.toThrow(/xdb\/notes\.xdb.*could not be read/);
   });
 });
 

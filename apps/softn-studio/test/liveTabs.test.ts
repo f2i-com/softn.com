@@ -203,3 +203,38 @@ describe('a tab in the middle of an agent run, told of another tab’s save', ()
     agent.discardAgentRuns();
   });
 });
+
+describe('a tab whose project another tab deletes', () => {
+  // Deleted from the list in tab B while open in tab A. Tab A went on saying "Saved", and its
+  // next change wrote the whole project back: the deletion was undone with no word to anyone.
+  it('is told at once, writes nothing, and keeps the project only when the person says so', async () => {
+    vfsA.getState().updateFile('ui/main.ui', '<Text>Main, from tab A</Text>');
+    expect(await tabA!.flush()).toEqual({ ok: true });
+    expect(await B.session.deleteProject(projectId)).toEqual({ ok: true });
+    await until('tab A to be told', () => sessionA.getSaveStatus().state === 'failed');
+    expect(sessionA.getSaveStatus()).toMatchObject({ reason: 'deleted', message: expect.stringMatching(/^Deleted in another tab\./) });
+    // A change in tab A is not saved over the deletion.
+    vfsA.getState().updateFile('ui/about.ui', '<Text>About, from tab A</Text>');
+    expect(await tabA!.flush()).toMatchObject({ ok: false, reason: 'deleted' });
+    expect(sessionA.getSaveStatus()).toMatchObject({ reason: 'deleted', message: expect.stringMatching(/^Deleted in another tab\./) });
+    await quiet();
+    expect(await loadProjectRecord(projectId)).toBeNull();
+    expect(inA('ui/main.ui')).toBe('<Text>Main, from tab A</Text>');
+
+    expect(await sessionA.keepDeletedProject()).toEqual({ ok: true });
+    expect(sessionA.getSaveStatus().state).toBe('saved');
+    expect(await stored('ui/main.ui')).toBe('<Text>Main, from tab A</Text>');
+    expect(await stored('ui/about.ui')).toBe('<Text>About, from tab A</Text>');
+  });
+
+  it('says nothing to a tab with another project open', async () => {
+    const other = sessionA.beginNewProjectSession();
+    wsA.getState().setProjectName('Other');
+    vfsA.getState().createFile('ui/main.ui', '<Text>Other</Text>');
+    expect(await tabA!.flush()).toEqual({ ok: true });
+    expect(await B.session.deleteProject(projectId)).toEqual({ ok: true });
+    await quiet();
+    expect(wsA.getState().projectId).toBe(other);
+    expect(sessionA.getSaveStatus().state).toBe('saved');
+  });
+});

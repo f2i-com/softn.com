@@ -275,3 +275,17 @@ describe('the Export button of the dialog', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('The disk is full.');
   });
 });
+
+describe('what the app may use, for an app with only an older manifest block', () => {
+  it('says the boxes ticked are what that block grants, and only then', async () => {
+    const { readBundleDeclaration } = await import('../../utils/permissions');
+    const project = useProjectStore.getState();
+    project.setPermissions(readBundleDeclaration(undefined, { permissions: { network: true } }));
+    render(true, () => {});
+    const net = [...container.querySelectorAll('label')].find((label) => label.textContent?.startsWith('Network'))?.querySelector('input');
+    expect(net?.checked).toBe(true);
+    expect(container.querySelector('[data-permission-source="manifest"]')?.textContent).toMatch(/older permissions block in its manifest/);
+    act(() => useProjectStore.getState().setPermissions(readBundleDeclaration(JSON.stringify({ permissions: { net: { enabled: true } } }), { permissions: { network: true } })));
+    expect(container.querySelector('[data-permission-source="manifest"]')).toBeNull();
+  });
+});

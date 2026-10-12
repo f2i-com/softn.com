@@ -21,7 +21,7 @@
  * changed in it.
  */
 
-import { CAPABILITIES, inspectDeclaration, type Capability, type StoragePolicy } from '@softn/core';
+import { CAPABILITIES, extractPermissions, inspectDeclaration, type AppPermissions, type Capability, type StoragePolicy } from '@softn/core';
 
 export interface PermissionDeclaration {
   /** Capabilities the app asks for, in schema order. */
@@ -40,6 +40,15 @@ export interface PermissionDeclaration {
   file?: boolean;
   /** The file as it was read, which is written back with only what is declared here changed in it. */
   source?: string;
+  /**
+   * The project has no permission.json (or an empty one), and its manifest
+   * has the older `permissions` block, which the runtime reads in its place
+   * (core, extractPermissions): what that block grants, in the form
+   * `modelled` gives. While the declaration is still that, no permission.json
+   * is written, and the block goes on granting it; once it is changed, one is,
+   * whatever it declares, so that what the panel shows is what is granted.
+   */
+  legacy?: string;
 }
 
 export function emptyDeclaration(): PermissionDeclaration {
@@ -59,7 +68,10 @@ export function emptyDeclaration(): PermissionDeclaration {
  * declares what the file it replaces declared.
  */
 export function buildPermissionJson(decl: PermissionDeclaration): string | null {
-  if (decl.source !== undefined) {
+  if (decl.legacy !== undefined) {
+    // Unchanged, the manifest's block says it: the project goes as it came, with no file or its empty one.
+    if (modelled(decl) === decl.legacy) return decl.file ? decl.source ?? '' : null;
+  } else if (decl.source !== undefined) {
     const kept = keptPermissionJson(decl.source, decl);
     if (kept !== null) return kept;
   }
@@ -78,7 +90,8 @@ export function buildPermissionJson(decl: PermissionDeclaration): string | null 
     }
     permissions[name] = entry;
   }
-  if (Object.keys(permissions).length === 0 && !decl.file) return null;
+  // With nothing declared, and no file, the runtime would read the manifest's block again.
+  if (Object.keys(permissions).length === 0 && !decl.file && decl.legacy === undefined) return null;
   return JSON.stringify({ permissions }, null, 2);
 }
 
@@ -143,6 +156,34 @@ function keptPermissionJson(source: string, decl: PermissionDeclaration): string
     permissions[name] = entry;
   }
   return JSON.stringify({ ...parsed, permissions }, null, 2);
+}
+
+/**
+ * The declaration a bundle carries, read as every runtime reads it (core,
+ * extractPermissions): its permission.json, or, where it has none or an
+ * empty one, what its manifest's older `permissions` block grants. Only the
+ * file was read, so a bundle published before permission.json existed was
+ * shown here with nothing on, while the runtime gave it the network and
+ * files; and the first box ticked wrote a file that took them away.
+ */
+export function readBundleDeclaration(permissionJson: string | undefined, manifest: unknown): PermissionDeclaration {
+  const read = permissionJson !== undefined ? readPermissionJson(permissionJson) : emptyDeclaration();
+  return permissionJson ? read : withManifestPermissions(read, manifest);
+}
+
+/**
+ * `decl` with what the manifest's older `permissions` block grants, where an
+ * export of it would leave the runtime reading that block: nothing declared
+ * here, and no permission.json or an empty one. A session saved before this
+ * was read shows the same, from the manifest it retained.
+ */
+export function withManifestPermissions(decl: PermissionDeclaration, manifest: unknown): PermissionDeclaration {
+  if (decl.legacy !== undefined || decl.capabilities.length > 0 || (decl.file && decl.source !== '')) return decl;
+  const config = extractPermissions(new Map(), isRecord(manifest) ? (manifest as { permissions?: AppPermissions | null }) : null);
+  const granted = config ? inspectDeclaration(config).requested : [];
+  if (granted.length === 0) return decl;
+  const next: PermissionDeclaration = { ...decl, capabilities: granted };
+  return { ...next, legacy: modelled(next) };
 }
 
 /** A declaration read back from a bundle's permission.json; unknown or malformed parts are dropped from it, and kept in the file. */

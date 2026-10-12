@@ -13,7 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { installFakeIndexedDB } from '@softn/test-utils/fake-indexeddb';
-import { beginNewProjectSession, currentRevision, getSaveStatus, keepThisTabsVersion, startProjectAutosave, type AutosaveController } from '../src/lib/projectSession';
+import { beginNewProjectSession, closeDeletedProject, currentRevision, getSaveStatus, keepDeletedProject, keepThisTabsVersion, startProjectAutosave, type AutosaveController } from '../src/lib/projectSession';
 import { deleteProjectRecord, loadProjectRecord, loadRecentProjects, removeRecentProject, saveProjectRecord, type PersistedFile, type ProjectRecord } from '../src/lib/persistence';
 import { useAIStore, useEditStore, useVFSStore, useWorkspaceStore } from '../src/stores';
 import { beginHandEdit, saveHandEdit } from '../src/lib/handEdit';
@@ -229,6 +229,26 @@ describe('two tabs on one project', () => {
     expect(useAIStore.getState().tokensUsed).toBe(800);
   });
 
+  // The other tab's message, said after its clock was put back, was put among the oldest when it
+  // was brought in here, and the chat's cap to 200 cut it from this tab; this tab's next save then
+  // took it out of storage, as a message this tab had deleted.
+  it('keeps a message the other tab said after its clock was put back, with the chat at 200', async () => {
+    const id = await savedProject();
+    const full = Array.from({ length: 200 }, (_, i) => ({ id: `m${i}`, role: 'user' as const, content: `m${i}`, timestamp: 1_000_000 + i * 1000 }));
+    useAIStore.setState({ messages: full });
+    expect(await autosave!.flush()).toEqual({ ok: true });
+    await otherTabSaves(id, (record) => ({
+      ...record,
+      session: { ...record.session, messages: [...record.session.messages, { id: 'late', role: 'user', content: 'Said late', timestamp: 5_000 }] },
+    }));
+    useVFSStore.getState().updateFile('ui/main.ui', '<Text>Main, from this tab</Text>');
+    expect(await autosave!.flush()).toEqual({ ok: true });
+    expect(useAIStore.getState().messages.map((m) => m.id).slice(-2)).toEqual(['m199', 'late']);
+    useVFSStore.getState().updateFile('ui/about.ui', '<Text>About, from this tab</Text>');
+    expect(await autosave!.flush()).toEqual({ ok: true });
+    expect((await loadProjectRecord(id))?.session.messages.map((m) => m.id).slice(-2)).toEqual(['m199', 'late']);
+  });
+
   it('does not hold one file twice when both tabs created it with different capitals', async () => {
     const id = await savedProject();
     await otherTabSaves(id, withFile('ui/Notes.ui', '<Text>From the other tab</Text>'));
@@ -267,10 +287,12 @@ describe('two tabs on one project', () => {
     expect(loadRecentProjects().find((entry) => entry.id === id)?.name).toBe('Field notes');
   });
 
-  // Deleted from the list in another tab while it is open here. This tab is not told, and what
-  // it holds is the only copy there is: its next save writes the project again, whole, with
-  // this tab's version of anything a conflict had kept out of storage.
-  it('saves the project again, whole, after another tab deleted it', async () => {
+  // Deleted from the list in another tab while it is open here. Its next save used to write the
+  // project again, whole, with nothing said: the deletion was undone in silence. The save is
+  // refused now and the bar says why; nothing this tab holds is lost, and the person chooses:
+  // keep it (saved again, whole, with this tab's version of anything a conflict had kept out
+  // of storage) or close it.
+  it('does not save the project again after another tab deleted it until the person keeps it', async () => {
     const id = await savedProject();
     await otherTabSaves(id, withFile('ui/main.ui', '<Text>Main, from the other tab</Text>'));
     useVFSStore.getState().updateFile('ui/main.ui', '<Text>Main, from this tab</Text>');
@@ -281,7 +303,16 @@ describe('two tabs on one project', () => {
     removeRecentProject(id);
     expect(await loadProjectRecord(id)).toBeNull();
     useVFSStore.getState().updateFile('ui/about.ui', '<Text>About, from this tab</Text>');
-    expect(await autosave!.flush()).toEqual({ ok: true });
+    expect(await autosave!.flush()).toMatchObject({ ok: false, reason: 'deleted' });
+    expect(getSaveStatus()).toMatchObject({ state: 'failed', reason: 'deleted' });
+    expect((getSaveStatus() as { message: string }).message).toMatch(/deleted in another tab/);
+    expect(await loadProjectRecord(id)).toBeNull();
+    expect(loadRecentProjects().some((entry) => entry.id === id)).toBe(false);
+    // Nothing is taken from the tab: it still holds every change.
+    expect(here('ui/main.ui')).toBe('<Text>Main, from this tab</Text>');
+    expect(here('ui/about.ui')).toBe('<Text>About, from this tab</Text>');
+
+    expect(await keepDeletedProject()).toEqual({ ok: true });
     expect(getSaveStatus().state).toBe('saved');
     const stored = (await loadProjectRecord(id))!;
     expect(Object.fromEntries(stored.files.map((f) => [f.path, f.content]))).toEqual({
@@ -290,6 +321,19 @@ describe('two tabs on one project', () => {
     });
     expect(stored.workspace.projectName).toBe('Notes');
     expect(loadRecentProjects().find((entry) => entry.id === id)?.name).toBe('Notes');
+  });
+
+  it('closes the project after another tab deleted it, when the person chooses that', async () => {
+    const id = await savedProject();
+    expect(await deleteProjectRecord(id)).toEqual({ ok: true });
+    useVFSStore.getState().updateFile('ui/main.ui', '<Text>Main, from this tab</Text>');
+    expect(await autosave!.flush()).toMatchObject({ ok: false, reason: 'deleted' });
+    closeDeletedProject();
+    expect(useWorkspaceStore.getState().projectId).not.toBe(id);
+    expect(useVFSStore.getState().files.size).toBe(0);
+    expect(getSaveStatus().state).toBe('idle');
+    await autosave!.flush();
+    expect(await loadProjectRecord(id)).toBeNull();
   });
 
   // A merged save brings the other tab's parts into the stores when it lands. The stores can hold

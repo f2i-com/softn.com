@@ -228,4 +228,65 @@ describe('values that read alike as text', () => {
     expect(seen).toEqual([[ADA, GRACE]]);
     expect(chosen(container)).toEqual(['true', 'true']);
   });
+  it('Select shows one option chosen when 1 and "1" are both options', () => {
+    for (const [value, expected] of [[1, ['true', 'false']], ['1', ['false', 'true']]] as const) {
+      const { container, unmount } = mount(<Select options={[1, '1'] as never} value={value as never} />);
+      click(trigger(container));
+      expect(chosen(container), String(typeof value)).toEqual(expected);
+      unmount();
+    }
+  });
+
+  it('Select shows one option chosen when the same value is given twice', () => {
+    const { container } = mount(<Select options={['a', 'a', 'b'] as never} value="a" />);
+    click(trigger(container));
+    expect(chosen(container)).toEqual(['true', 'false', 'false']);
+  });
+
+  it('a multiple Select adds "1" to 1 when both are options, and takes out only the one picked again', () => {
+    const seen: unknown[] = [];
+    const { container } = mount(<Select multiple options={[1, '1', 2] as never} defaultValue={[1] as never} onChange={(value) => seen.push(value)} />);
+    click(trigger(container));
+    expect(chosen(container)).toEqual(['true', 'false', 'false']);
+    click(Array.from(container.querySelectorAll('[role="option"]'))[1]);
+    expect(seen).toEqual([[1, '1']]);
+    expect(chosen(container)).toEqual(['true', 'true', 'false']);
+    click(Array.from(container.querySelectorAll('[role="option"]'))[1]);
+    expect(seen[1]).toEqual([1]);
+    expect(chosen(container)).toEqual(['true', 'false', 'false']);
+  });
+
+  it('a multiple Select still takes out a number held as text when its option is picked again', () => {
+    const seen: unknown[] = [];
+    const { container } = mount(<Select multiple options={[1, 2] as never} value={['2'] as never} onChange={(value) => seen.push(value)} />);
+    click(trigger(container));
+    expect(chosen(container)).toEqual(['false', 'true']);
+    click(Array.from(container.querySelectorAll('[role="option"]'))[1]);
+    expect(seen).toEqual([[]]);
+  });
+
+  const segments = (container: HTMLElement) => Array.from(container.querySelectorAll('[role="radio"]')).map((b) => b.getAttribute('aria-checked'));
+
+  it('SegmentedControl checks the record that is the value, not the first record', () => {
+    const { container } = mount(<SegmentedControl options={RECORDS as never} value={GRACE as never} />);
+    expect(segments(container)).toEqual(['false', 'true']);
+  });
+
+  it('SegmentedControl hands back the record picked, and tells a second record from the first', () => {
+    const seen: unknown[] = [];
+    const { container } = mount(<SegmentedControl options={RECORDS as never} defaultValue={ADA as never} onChange={(value) => seen.push(value)} />);
+    expect(segments(container)).toEqual(['true', 'false']);
+    click(Array.from(container.querySelectorAll('[role="radio"]'))[1]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(GRACE);
+    expect(segments(container)).toEqual(['false', 'true']);
+  });
+
+  it('SegmentedControl tells 1 from "1", and still matches 2 to "2"', () => {
+    const { container, unmount } = mount(<SegmentedControl options={[1, '1'] as never} value="1" />);
+    expect(segments(container)).toEqual(['false', 'true']);
+    unmount();
+    const other = mount(<SegmentedControl options={[1, 2] as never} value="2" />);
+    expect(segments(other.container)).toEqual(['false', 'true']);
+  });
 });

@@ -140,3 +140,45 @@ it('reports each piece of a download as it arrives', async () => {
   expect((await reading).length).toBe(bundle.length);
   expect(arrived.length).toBeGreaterThanOrEqual(4);
 });
+
+/**
+ * A body that sends one byte every `gap` milliseconds for as long as it is
+ * read: never stalled for a minute, and never done.
+ */
+function drip(gap: number, signal?: AbortSignal): ReadableStream<Uint8Array> {
+  let sent = 0;
+  let finished = false;
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      signal?.addEventListener('abort', () => {
+        if (finished) return;
+        finished = true;
+        controller.error(signal.reason);
+      }, { once: true });
+    },
+    pull(controller) {
+      return new Promise<void>((resolve) => {
+        setTimeout(() => {
+          if (finished) return;
+          controller.enqueue(bundle.subarray(sent, sent + 1));
+          sent++;
+          resolve();
+        }, gap);
+      });
+    },
+  });
+}
+
+// One byte every 59 seconds kept the minute from ever running out, and the
+// page said "loading" for as long as the 32 MB cap allowed: years. The whole
+// download now has a ceiling as well, long enough for a real slow connection.
+it('stops a download that never stalls and never finishes, at the ceiling, and says so', async () => {
+  serve((signal) => drip(59_000, signal));
+  root = createRoot(element);
+  await act(async () => root!.render(<SingleApp source={{ configUrl: base }} />));
+  await run(29 * 60_000);
+  expect(element.querySelector('[role="alert"]')).toBeNull();
+  await run(2 * 60_000);
+  expect(element.querySelector('h1')?.textContent).toBe('Unable to open this application');
+  expect(element.querySelector('details p')?.textContent).toMatch(/30 minutes/);
+});

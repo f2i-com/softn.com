@@ -126,6 +126,18 @@ function sameChoice(a: unknown, b: unknown): boolean {
   return a === b || (readsAsText(a) && readsAsText(b) && String(a) === String(b));
 }
 
+/**
+ * The option a value chooses, by its place: the one that is the value, else
+ * the first that reads the same, else -1. One place, as Radio does it: with
+ * `[1, "1"]` both read as 1 and both were shown chosen, and in a multiple
+ * select picking "1" took 1 out; a value given twice showed two chosen.
+ */
+function chosenIndex(options: readonly SelectOption[], value: unknown): number {
+  if (value === undefined) return -1;
+  const exact = options.findIndex((option) => option.value === value);
+  return exact >= 0 ? exact : options.findIndex((option) => sameChoice(option.value, value));
+}
+
 /** An option's label or value as text to search, whatever it was given as. */
 function searchText(text: unknown): string {
   return text === undefined || text === null ? '' : String(text).toLowerCase();
@@ -242,17 +254,29 @@ export function Select({
 
   const flatFilteredOptions = useMemo(() => flattenOptions(filteredOptions), [filteredOptions]);
 
+  // The options the value chooses, as the objects they are (one for each value; see chosenIndex).
+  // The list below is drawn from the same objects, filtered or not.
+  const chosenOptions = useMemo(() => {
+    const values: unknown[] = multiple ? (Array.isArray(value) ? value : []) : [value];
+    const chosen = new Set<SelectOption>();
+    for (const v of values) {
+      const index = chosenIndex(allOptions, v);
+      if (index >= 0) chosen.add(allOptions[index]);
+    }
+    return chosen;
+  }, [value, multiple, allOptions]);
+
   // Get selected option labels
   const selectedLabels = useMemo(() => {
     if (multiple) {
       const values = Array.isArray(value) ? value : [];
-      return values.map((v) => allOptions.find((o) => sameChoice(o.value, v))?.label ?? v).join(', ');
+      return values.map((v) => allOptions[chosenIndex(allOptions, v)]?.label ?? v).join(', ');
     }
     // A value the options do not (yet) list shows as itself, as each value of
     // a multi-select already did — not as the placeholder beside a clear
     // button that clears something invisible.
     if ((typeof value !== 'string' && typeof value !== 'number') || value === '') return '';
-    return String(allOptions.find((o) => sameChoice(o.value, value))?.label ?? value);
+    return String(allOptions[chosenIndex(allOptions, value)]?.label ?? value);
   }, [value, allOptions, multiple]);
 
   /** The next enabled option from `from` in direction `step`, or -1. */
@@ -268,14 +292,10 @@ export function Select({
 
   /** Open the list with the selected option (or the first enabled one) highlighted. */
   const openList = useCallback(() => {
-    const selected = flatFilteredOptions.findIndex(
-      (o) =>
-        !o.disabled &&
-        (Array.isArray(value) ? value.some((v) => sameChoice(v, o.value)) : sameChoice(o.value, value))
-    );
+    const selected = flatFilteredOptions.findIndex((o) => !o.disabled && chosenOptions.has(o));
     setHighlightedIndex(selected >= 0 ? selected : findEnabled(0, 1));
     setIsOpen(true);
-  }, [flatFilteredOptions, value, findEnabled]);
+  }, [flatFilteredOptions, chosenOptions, findEnabled]);
 
   /** Close the list; with `refocus`, put focus back on the trigger it opened from. */
   const closeList = useCallback((refocus: boolean) => {
@@ -286,13 +306,15 @@ export function Select({
 
   // Handle value change
   const handleSelect = useCallback(
-    (optionValue: string) => {
+    (option: SelectOption) => {
+      const optionValue = option.value;
       if (multiple) {
         const currentValues = Array.isArray(value) ? value : [];
         let newValues: string[];
 
-        if (currentValues.some((v) => sameChoice(v, optionValue))) {
-          newValues = currentValues.filter((v) => !sameChoice(v, optionValue));
+        if (chosenOptions.has(option)) {
+          // Out goes what chooses this option, and nothing that chooses another.
+          newValues = currentValues.filter((v) => allOptions[chosenIndex(allOptions, v)] !== option);
         } else {
           if (maxSelections && currentValues.length >= maxSelections) {
             return;
@@ -312,7 +334,7 @@ export function Select({
         closeList(true);
       }
     },
-    [value, multiple, maxSelections, controlledValue, onChange, closeList]
+    [value, multiple, maxSelections, controlledValue, onChange, closeList, chosenOptions, allOptions]
   );
 
   // Handle clear
@@ -339,7 +361,7 @@ export function Select({
       const inSearch = target === inputRef.current;
       const selectHighlighted = () => {
         const option = flatFilteredOptions[highlightedIndex];
-        if (option && !option.disabled) handleSelect(option.value);
+        if (option && !option.disabled) handleSelect(option);
       };
 
       switch (e.key) {
@@ -624,17 +646,9 @@ export function Select({
     pointerEvents: 'none',
   };
 
-  // Check if value is selected (for multi-select)
-  const isValueSelected = (optionValue: string): boolean => {
-    if (multiple) {
-      return Array.isArray(value) && value.some((v) => sameChoice(v, optionValue));
-    }
-    return sameChoice(value, optionValue);
-  };
-
   const renderOption = (option: SelectOption, index: number) => {
     const isHighlighted = index === highlightedIndex;
-    const isSelected = isValueSelected(option.value);
+    const isSelected = chosenOptions.has(option);
     const isDisabled = option.disabled ?? false;
     return (
       <div
@@ -646,7 +660,7 @@ export function Select({
         aria-disabled={isDisabled || undefined}
         data-highlighted={isHighlighted}
         style={optionStyle(isHighlighted, isSelected, isDisabled)}
-        onClick={() => !isDisabled && handleSelect(option.value)}
+        onClick={() => !isDisabled && handleSelect(option)}
         onMouseEnter={() => setHighlightedIndex(index)}
       >
         {multiple && (

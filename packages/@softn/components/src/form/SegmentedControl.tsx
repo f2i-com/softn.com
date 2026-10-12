@@ -63,9 +63,27 @@ function normalise(options: SegmentedControlProps['options']): SegmentedOption[]
   return out;
 }
 
-/** State and a select's option agree when they read the same: 2 and "2". */
+/** Text, a number or a yes/no: a value that says what it is when read as text. */
+function readsAsText(value: unknown): boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint';
+}
+
+/**
+ * State and an option agree when they are the same value, or read the same
+ * as text: 2 and "2". Only text, numbers and yes/no are read that way, as
+ * Radio and Select read them: every record reads "[object Object]", so each
+ * record matched the first, and the first was shown chosen whichever it was.
+ */
 function same(a: unknown, b: unknown): boolean {
-  return a !== undefined && a !== null && b !== undefined && b !== null && String(a) === String(b);
+  if (a === undefined || a === null || b === undefined || b === null) return false;
+  return a === b || (readsAsText(a) && readsAsText(b) && String(a) === String(b));
+}
+
+/** The option a value chooses, by its place: the one that is the value, else the first that reads the same, else -1. */
+function chosenIndex(items: readonly SegmentedOption[], value: unknown): number {
+  if (value === undefined || value === null) return -1;
+  const exact = items.findIndex((item) => item.value === value);
+  return exact >= 0 ? exact : items.findIndex((item) => same(item.value, value));
 }
 
 export function SegmentedControl({
@@ -94,7 +112,7 @@ export function SegmentedControl({
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
 
   const current = controlled ? value : internal;
-  const selectedIndex = items.findIndex((item) => same(item.value, current));
+  const selectedIndex = chosenIndex(items, current);
 
   const choose = (index: number) => {
     const item = items[index];

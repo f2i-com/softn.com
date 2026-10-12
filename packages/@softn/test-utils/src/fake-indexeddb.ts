@@ -5,6 +5,13 @@
  * is pending — or abort on demand, so a claim whose transaction never
  * commits can be shown not to count as a delivery.
  *
+ * Transactions are scheduled as a browser schedules them: one starts only
+ * once every transaction made before it on any of its stores has finished,
+ * unless both are read-only. Until it starts, its requests wait. Each request
+ * used to run on its own, so two read-write transactions on one store
+ * interleaved (both read, then both wrote), which no browser does, and a test
+ * could pass here that a browser would fail.
+ *
  * Not a general IndexedDB; only what the tests need.
  */
 
@@ -99,21 +106,56 @@ class FakeTransaction {
   error: DOMException | null = null;
   private pending = 0;
   private finished = false;
+  /** Whether it may run its requests yet (see FakeIndexedDB.schedule). */
+  started = false;
+  /** Requests made before it started, in order. */
+  private waiting: Array<() => void> = [];
+  private requests = 0;
   constructor(
     private readonly db: FakeDatabase,
     private readonly stores: Map<string, FakeObjectStore>,
-  ) {}
+    readonly mode: 'readonly' | 'readwrite',
+    readonly scope: readonly string[],
+  ) {
+    // A transaction given no request in the task that made it commits when that task ends, as
+    // in a browser; it would otherwise hold back every transaction made after it.
+    setTimeout(() => {
+      if (this.requests === 0) this.whenStarted(() => this.complete());
+    }, 0);
+  }
+
+  /** Run `step` now if it has started, else when it does. */
+  private whenStarted(step: () => void): void {
+    if (this.started) step();
+    else this.waiting.push(step);
+  }
+
+  /** Told by the host that it may run: what was asked of it meanwhile runs, in order. */
+  start(): void {
+    this.started = true;
+    for (const step of this.waiting.splice(0)) step();
+  }
+
+  private complete(): void {
+    if (this.finished) return;
+    this.finished = true;
+    this.db.host.finished(this);
+    this.oncomplete?.({ target: this });
+  }
   objectStore(name: string): FakeObjectStore {
     const store = this.stores.get(name);
     if (!store) throw new DOMException(`No store ${name}`, 'NotFoundError');
-    store.tx = this;
-    return store;
+    // A handle of this transaction's own over the store's rows: the store was handed out
+    // itself, with the transaction that last asked for it written on it, so a request made
+    // through one transaction's handle could be run by another transaction.
+    return Object.create(store, { tx: { value: this } }) as FakeObjectStore;
   }
-  /** Queue one request; it settles on a microtask, the transaction after the loop turns. */
+  /** Queue one request; once the transaction has started it settles on a microtask, the transaction after the loop turns. */
   run<T>(op: () => T, req: FakeRequest<T> = new FakeRequest<T>()): FakeRequest<T> {
     if (this.finished) throw new DOMException('Transaction finished', 'TransactionInactiveError');
     this.pending += 1;
-    queueMicrotask(() => {
+    this.requests += 1;
+    this.whenStarted(() => queueMicrotask(() => {
       if (this.finished) return;
       const abort = this.db.host.abortNextTransaction;
       if (abort) {
@@ -123,6 +165,7 @@ class FakeTransaction {
         req.onerror?.({ target: req });
         this.finished = true;
         this.error = req.error;
+        this.db.host.finished(this);
         this.onabort?.({ target: this });
         return;
       }
@@ -137,12 +180,9 @@ class FakeTransaction {
       }
       this.pending -= 1;
       setTimeout(() => {
-        if (!this.finished && this.pending === 0) {
-          this.finished = true;
-          this.oncomplete?.({ target: this });
-        }
+        if (!this.finished && this.pending === 0) this.complete();
       }, 0);
-    });
+    }));
     return req;
   }
 }
@@ -160,10 +200,12 @@ class FakeDatabase {
     this.stores.set(name, store);
     return store;
   }
-  transaction(name: string | string[], _mode?: string): FakeTransaction {
+  transaction(name: string | string[], mode?: string): FakeTransaction {
     const names = Array.isArray(name) ? name : [name];
     for (const n of names) if (!this.stores.has(n)) throw new DOMException(`No store ${n}`, 'NotFoundError');
-    return new FakeTransaction(this, this.stores);
+    const tx = new FakeTransaction(this, this.stores, mode === 'readwrite' ? 'readwrite' : 'readonly', names);
+    this.host.schedule(tx, this.stores);
+    return tx;
   }
   close(): void {
     /* nothing held open */
@@ -172,6 +214,37 @@ class FakeDatabase {
 
 export class FakeIndexedDB {
   private databases = new Map<string, { version: number; stores: Map<string, FakeObjectStore> }>();
+  /** Transactions not finished yet, in the order they were made, with the database (its stores) each is on. */
+  private live: Array<{ tx: FakeTransaction; stores: Map<string, FakeObjectStore> }> = [];
+
+  /** A transaction was made: it starts now if nothing made before it is in its way. */
+  schedule(tx: FakeTransaction, stores: Map<string, FakeObjectStore>): void {
+    this.live.push({ tx, stores });
+    this.startWhatCan();
+  }
+
+  /** A transaction committed or aborted: what was waiting for it may start. */
+  finished(tx: FakeTransaction): void {
+    this.live = this.live.filter((entry) => entry.tx !== tx);
+    this.startWhatCan();
+  }
+
+  /**
+   * Start each waiting transaction that no earlier unfinished one on the same
+   * database shares a store with, unless both of them only read.
+   */
+  private startWhatCan(): void {
+    this.live.forEach((entry, index) => {
+      if (entry.tx.started) return;
+      const blocked = this.live.slice(0, index).some(
+        (earlier) =>
+          earlier.stores === entry.stores &&
+          earlier.tx.scope.some((name) => entry.tx.scope.includes(name)) &&
+          (earlier.tx.mode === 'readwrite' || entry.tx.mode === 'readwrite'),
+      );
+      if (!blocked) entry.tx.start();
+    });
+  }
   /** The next transaction's first request errors and the transaction aborts. */
   abortNextTransaction = false;
   /** Opening any database fails. */
@@ -209,6 +282,7 @@ export class FakeIndexedDB {
 
   reset(): void {
     this.databases.clear();
+    this.live = [];
     this.abortNextTransaction = false;
     this.failOpen = false;
   }

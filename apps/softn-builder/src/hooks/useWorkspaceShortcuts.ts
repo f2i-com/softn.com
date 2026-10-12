@@ -48,6 +48,10 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
     // chord, whose second key may be Ctrl and a digit (fold to that level).
     let chordStarted = false;
     const keyDown = (event: KeyboardEvent) => {
+      // A browser's autofill and some input methods send a `keydown` with no
+      // `key` (a plain Event): it is no key of any shortcut, and reading it as
+      // text threw from this listener, which hears every key the page gets.
+      if (typeof event.key !== 'string') return;
       const current = actionsRef.current;
       let inChord = false;
       if (!MODIFIER_KEYS.has(event.key)) {

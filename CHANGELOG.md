@@ -53,6 +53,9 @@ section here. Write the section before tagging. Headings are the tag
 - Directory: bundles are read exactly as the runtime reads them, so it refuses what the runtime refuses and lists what the runtime will run (including an older manifest's permissions and a byte order mark in front of a JSON file). PHP's zlib extension is now required.
 - Site: Your apps shows a key only when asked; unpublishing forgets the key; the update page can retry; the star rating works from the keyboard.
 - Bundle inspector (the site's pre-publish check, Studio and Builder): agrees with the directory on a byte order mark in front of a JSON file, reads an older manifest's permissions as the runtime grants them, and reports an entry name that is not UTF-8.
+- Studio: an agent run whose changes the browser will not store is told so, and its finish ends the run as stopped with the reason, never as finished; a project deleted in one tab is no longer written back by another tab, which says "Deleted in another tab" and offers Keep it or Close it; chat messages from two tabs keep each tab's order.
+- Builder: a keypress with no key no longer throws; Create handler with a logic file open writes into the page's own logic; an app with only an older manifest `permissions` block shows what the runtime grants it; a .xdb the Builder cannot read is kept unchanged in the export instead of being dropped.
+- Components: Select and SegmentedControl tell `1` from `"1"` and record values apart. Single-file hosts: an app download has a 30-minute overall limit as well as the one-minute stall limit.
 
 ## v0.0.19
 

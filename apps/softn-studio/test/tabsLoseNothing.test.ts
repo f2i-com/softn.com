@@ -200,7 +200,7 @@ async function scenario(seed: number): Promise<void> {
     } else {
       const status = tab.session.getSaveStatus();
       if (status.state !== 'failed' || !status.parts) continue;
-      const conflicted = await tab.session.saveAndFindConflicts();
+      const conflicted = (await tab.session.saveForRun()).conflicts;
       const before = (await loadProjectRecord(projectId))!;
       await tab.session.keepThisTabsVersion();
       const after = (await loadProjectRecord(projectId))!;
@@ -240,7 +240,7 @@ async function scenario(seed: number): Promise<void> {
   const conflicts: string[][] = [];
   for (const [t, tab] of open.entries()) {
     const status = tab.session.getSaveStatus();
-    const fileConflicts = await tab.session.saveAndFindConflicts();
+    const fileConflicts = (await tab.session.saveForRun()).conflicts;
     conflicts.push(fileConflicts);
     const words = status.state === 'failed' ? `${status.reason}: ${status.parts ?? status.message}` : status.state;
     if (status.state !== 'saved' && !(status.state === 'failed' && status.reason === 'conflict')) problems.push(`tab ${t} ends ${words}`);

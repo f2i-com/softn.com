@@ -198,3 +198,36 @@ describe('where writing the function could not be right', () => {
     expect(offer()).not.toBeNull();
   });
 });
+
+describe('with a logic file open in the middle', () => {
+  // With a logic file open, the canvas, the Hierarchy and the Properties still
+  // hold the last page (hooks/useActiveFileOnCanvas.ts). The panel read the
+  // logic to write into from the file that was open, which is no page, and
+  // fell back to the entry's: the function went into logic/main.logic while
+  // the page on the canvas runs logic/other.logic, so its handler still
+  // named nothing.
+  it('writes the function into the logic of the page on the canvas', () => {
+    useFilesStore.getState().reset('javascript');
+    const files = useFilesStore.getState();
+    const otherPage = files.createFile('ui', 'other.ui', 'ui');
+    const otherLogic = files.createFile('logic', 'other.logic', 'logic');
+    useFilesStore.getState().updateUIFileLogicSrc(otherPage, '../logic/other.logic');
+    const mainLogic = [...useFilesStore.getState().logicFiles.values()].find((file) => file.path.endsWith('main.logic'))!;
+    const parsed = parseSource('<App><Button>Go</Button></App>');
+    buttonId = [...parsed.elements.values()].find((element) => element.componentType === 'Button')!.id;
+    // The other page is on the canvas, and then a logic file is opened.
+    useCanvasStore.getState().loadState(parsed.elements, parsed.rootId, [], [], otherPage);
+    useFilesStore.getState().openFile(otherLogic);
+    useCanvasStore.getState().selectElement(buttonId);
+    useHistoryStore.getState().clear();
+    root = createRoot(host);
+    act(() => root!.render(React.createElement(PropertyPanel)));
+
+    const mainBefore = mainLogic.content;
+    handler('addTask()');
+    expect(warning()).toBe('No function named addTask in logic/other.logic.');
+    act(() => offer()!.click());
+    expect(useFilesStore.getState().logicFiles.get(otherLogic)!.content).toContain('function addTask() {\n}');
+    expect(useFilesStore.getState().logicFiles.get(mainLogic.id)!.content).toBe(mainBefore);
+  });
+});

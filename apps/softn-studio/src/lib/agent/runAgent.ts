@@ -36,7 +36,7 @@ import { addUsage, cacheWeights, effectiveTokens, runEffective, type CacheWeight
 import { holdPageForRun, releasePageForRun, runInAnotherTab, wasInBackground } from './keepAlive';
 import { buildAgentSystemPrompt, buildProjectContext } from './prompt';
 import { takePreviewFaults } from '../previewFaults';
-import { saveAndFindConflicts } from '../projectSession';
+import { saveForRun } from '../projectSession';
 import {
   canStream,
   encodeText,
@@ -159,6 +159,8 @@ interface RunController {
   personAnsweredFailingCheck: boolean;
   /** Files this run wrote whose save met another tab's change, and the model has been told so. */
   toldConflicts: Set<string>;
+  /** The model has been told its work could not be saved, and has not been told since that it is. */
+  toldUnsaved: boolean;
   lastToolError: string | null;
   sameToolErrors: number;
   truncations: number;
@@ -493,6 +495,7 @@ export async function startAgentRun(options: StartOptions = {}): Promise<void> {
     finishRefusals: 0,
     personAnsweredFailingCheck: false,
     toldConflicts: new Set(),
+    toldUnsaved: false,
     lastToolError: null,
     sameToolErrors: 0,
     truncations: 0,
@@ -1329,9 +1332,31 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
   // A write is saved now, and a finish waits for the save: a file this run wrote that another
   // tab changed too is not written over (lib/projectMerge.ts), storage keeps the other tab's
   // version, and the run used to end saying it had made a change that was in this tab alone.
+  // A save that did not go through at all (storage full or blocked, the project deleted in
+  // another tab) was not looked at either, and the run ended "Finished" over a project that
+  // was in this tab's memory only: the model is told, and a finish over it ends the run below.
+  let unsavedAtFinish: string | null = null;
   if (pending.wrote || pending.finishSummary !== undefined) {
-    const conflicts = await saveAndFindConflicts();
+    const saved = await saveForRun();
     if (!ctl.alive || ctl.pending !== pending) return true;
+    const lastWrite = () => [...pending.results].reverse().find((r) => WRITE_TOOLS.has(r.name) && !r.isError) ?? pending.results.at(-1);
+    if (saved.failed) {
+      if (!ctl.toldUnsaved) {
+        ctl.toldUnsaved = true;
+        const note = lastWrite();
+        if (note) note.content += `\n\n${unsavedNote(saved.failed.message)}`;
+      }
+      if (pending.finishSummary !== undefined) {
+        unsavedAtFinish = saved.failed.message;
+        const finish = pending.results.find((r) => r.name === 'finish');
+        if (finish) finish.content = `The run ended without being saved: ${saved.failed.message} The person has been told.`;
+      }
+    } else if (ctl.toldUnsaved) {
+      ctl.toldUnsaved = false;
+      const note = lastWrite();
+      if (note) note.content += '\n\nThe project is saved now, with everything written so far: your summary need not say otherwise.';
+    }
+    const conflicts = saved.conflicts;
     const written = pathsWritten(ctl);
     const untold = conflicts.filter((path) => written.has(path) && !ctl.toldConflicts.has(path));
     if (untold.length > 0) {
@@ -1345,8 +1370,8 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
         finish.isError = true;
         updateEntry(ctl, finish.id, { status: 'error', result: finish.content });
       } else {
-        const lastWrite = [...pending.results].reverse().find((r) => WRITE_TOOLS.has(r.name) && !r.isError) ?? pending.results.at(-1);
-        if (lastWrite) lastWrite.content += `\n\n${note}`;
+        const write = lastWrite();
+        if (write) write.content += `\n\n${note}`;
       }
     }
   }
@@ -1361,6 +1386,12 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
   }
   if (failedRepeatedly) {
     end(ctl, 'failed', `The same check error came back ${REPEAT_LIMIT} times after the agent's fixes: ${failedRepeatedly}. The run stopped rather than keep trying the same thing. Continue to let it try again, or say how to fix it.`);
+    return true;
+  }
+  // Not "Finished": what the run did is in this tab only. The summary is kept with the run, and
+  // said in the reason, which is what a stopped run shows.
+  if (summary !== undefined && unsavedAtFinish !== null) {
+    end(ctl, 'failed', `The agent finished, but the project is not saved: ${unsavedAtFinish} What the run changed is in this tab only. The agent's summary: ${summary}`, summary);
     return true;
   }
   if (summary !== undefined) {
@@ -1378,6 +1409,11 @@ function pathsWritten(ctl: RunController): Set<string> {
   for (const entry of vfs.journal) if (ids.has(entry.id)) for (const change of entry.changes) paths.add(change.path);
   for (const event of vfs.history) if (event.transactionId !== undefined && ids.has(event.transactionId)) paths.add(event.path);
   return paths;
+}
+
+/** What the model is told when the project could not be saved at all. */
+function unsavedNote(message: string): string {
+  return `The project could not be saved: ${message} Everything written so far is in this tab only; the person has been told. Do not write files again to get past this. Carry on with the request, and say in your summary that the work is not saved.`;
 }
 
 /** What the model is told of files it wrote that another tab changed too. */

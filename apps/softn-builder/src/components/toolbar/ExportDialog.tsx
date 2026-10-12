@@ -617,6 +617,13 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
                   Written to permission.json. The runtime grants only what is declared here, after the person running the app agrees; a call to
                   anything else fails.
                 </div>
+                {permissions.legacy !== undefined && (
+                  <div style={styles.sectionNote} data-permission-source="manifest">
+                    This app has no permission.json: what is ticked is what the older permissions block in its manifest grants, which the
+                    runtime reads in its place. Leave it as it is and the app is exported as it came; change it and a permission.json is
+                    written, which the runtime then reads instead.
+                  </div>
+                )}
                 {CAPABILITIES.map((cap) => {
                   const on = permissions.capabilities.includes(cap);
                   return (

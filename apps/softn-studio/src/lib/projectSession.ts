@@ -5,6 +5,7 @@ import { fetchSameOriginBundle } from '@softn/editor-shared/remoteOpen';
 import {
   clearLegacySnapshots,
   deleteProjectRecord,
+  hasProjectRecord,
   loadActiveProjectId,
   normalizeMode,
   loadGlobalSettings,
@@ -29,8 +30,9 @@ import {
 } from './persistence';
 import { boundJournal, persistJournal, readPersistedJournal } from './undoJournal';
 import { noteRunFromAnotherTab } from './agent/keepAlive';
-import { PROJECT_FIELDS, baseAfterMerge, describeParts, hasConflicts, hasParts, mergeProjectRecords, type MergeOutcome, type MergeParts } from './projectMerge';
+import { PROJECT_FIELDS, baseAfterMerge, describeParts, hasConflicts, hasParts, mergeProjectRecords, orderChat, type MergeOutcome, type MergeParts } from './projectMerge';
 import { DEFAULT_MAX_OUTPUT_TOKENS, PREVIOUS_DEFAULT_MAX_OUTPUT_TOKENS } from './aiProvider';
+import type { ChatMessage } from '../types/studio';
 
 /**
  * The life of a project in this tab: which project the stores hold, whether
@@ -399,6 +401,7 @@ function bringIn(collected: ProjectRecord, merge: MergeOutcome): MergeParts {
     const wroteMessages = new Map(collected.session.messages.map((m) => [m.id, m]));
     const mergedMessages = new Map(merged.session.messages.map((m) => [m.id, m]));
     let messages = ai.messages;
+    const added: ChatMessage[] = [];
     for (const id of merge.taken.messages) {
       const index = messages.findIndex((m) => m.id === id);
       if ((index < 0 ? undefined : messages[index]) !== wroteMessages.get(id)) continue;
@@ -412,11 +415,15 @@ function bringIn(collected: ProjectRecord, merge: MergeOutcome): MergeParts {
       messages = [...messages];
       if (!message) messages.splice(index, 1);
       else if (index >= 0) messages[index] = message;
-      else {
-        const at = messages.findIndex((m) => m.timestamp > message.timestamp);
-        messages.splice(at < 0 ? messages.length : at, 0, message);
-      }
+      else added.push(message);
       applied.messages.push(id);
+    }
+    // A message new here goes where the merged record has it, among this tab's own (orderChat).
+    // It was put by its time alone, so one said after a clock was put back went among the
+    // oldest, where the cap below cut it, and this tab's next save took it out of storage.
+    if (added.length > 0) {
+      const keep = new Map([...messages, ...added].map((m) => [m.id, m]));
+      messages = orderChat([messages, merged.session.messages], keep);
     }
     const spent = (key: 'iterationsUsed' | 'tokensUsed' | 'filesChanged') => Math.max(0, ai[key] + merged.session[key] - collected.session[key]);
     useAIStore.setState({
@@ -517,6 +524,9 @@ export interface AutosaveOptions {
 
 const NOTHING_TO_SAVE: SaveResult = { ok: true };
 
+/** The project another tab said it deleted, while this tab has it open (see performDeletionCheck). */
+let toldDeleted: string | null = null;
+
 /** Where a tab says it has saved a project, for the other tabs of this origin. */
 const SAVES_CHANNEL = 'softn-studio-project-saves';
 
@@ -526,9 +536,17 @@ interface SavedNotice {
   revision: number;
 }
 
-function readNotice(data: unknown): SavedNotice | null {
-  const notice = data as Partial<SavedNotice> | null;
-  return notice && typeof notice.projectId === 'string' && typeof notice.revision === 'number' ? { projectId: notice.projectId, revision: notice.revision } : null;
+/** What a tab says when it has deleted a project from the list. */
+interface DeletedNotice {
+  projectId: string;
+  deleted: true;
+}
+
+function readNotice(data: unknown): SavedNotice | DeletedNotice | null {
+  const notice = data as Partial<SavedNotice & { deleted: unknown }> | null;
+  if (!notice || typeof notice.projectId !== 'string') return null;
+  if (notice.deleted === true) return { projectId: notice.projectId, deleted: true };
+  return typeof notice.revision === 'number' ? { projectId: notice.projectId, revision: notice.revision } : null;
 }
 
 /** The channel of the live autosave, while there is one. */
@@ -542,6 +560,29 @@ function announceSaved(projectId: string, revision: number): void {
     // A closed channel: the other tabs take the save in at their own next save, as before.
   }
 }
+
+/**
+ * Tell the other tabs that `projectId` was deleted here: one that has it open
+ * says so at once (see {@link startProjectAutosave}). On the live channel when
+ * there is one, else on a channel opened for the one notice.
+ */
+function announceDeleted(projectId: string): void {
+  const notice: DeletedNotice = { projectId, deleted: true };
+  try {
+    if (liveChannel) {
+      liveChannel.postMessage(notice);
+    } else if (typeof BroadcastChannel !== 'undefined') {
+      const channel = new BroadcastChannel(SAVES_CHANNEL);
+      channel.postMessage(notice);
+      channel.close();
+    }
+  } catch {
+    // Not told: a tab that has it open learns of it at its next save, which storage refuses.
+  }
+}
+
+/** Said in a tab that has the project open when another tab deletes it. */
+export const DELETED_IN_ANOTHER_TAB = 'Deleted in another tab. Keep it to save it here again, or close it.';
 
 /**
  * A line for the log that is not a change to save. Said on taking in
@@ -720,7 +761,9 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
       // Changes arrived while the write was in flight: they are the next save.
       if (revision !== written.revision) schedule();
     } else {
-      setSaveStatus({ state: 'failed', revision: rev, at: now(), reason: result.reason, message: result.message });
+      // Refused because storage no longer has the project: in the words of the other tab's notice when there was one.
+      const message = result.reason === 'deleted' && toldDeleted === record.projectId ? DELETED_IN_ANOTHER_TAB : result.message;
+      setSaveStatus({ state: 'failed', revision: rev, at: now(), reason: result.reason, message });
     }
     return result;
   }
@@ -763,6 +806,38 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
   }
 
   /**
+   * Another tab deleted this project from the list. It is said in the bar at
+   * once, with what can be done: keep it (saved again) or close it. Nothing
+   * is written, and the saves that follow are refused while storage has no
+   * copy (persistence.ts, DELETED_ELSEWHERE): the deletion is not undone
+   * unless the person says so, and nothing this tab holds is lost unless the
+   * person says so. Said only of a project storage has had from this tab, and
+   * only when storage indeed no longer holds it.
+   */
+  async function performDeletionCheck(projectId: string): Promise<SaveResult> {
+    const held = () => !stopped && holdsProject(projectId) && lastSaved !== null && lastSaved.projectId === projectId;
+    if (!held()) return NOTHING_TO_SAVE;
+    const there = await hasProjectRecord(projectId);
+    if (!held() || there !== false) return NOTHING_TO_SAVE;
+    toldDeleted = projectId;
+    setSaveStatus({ state: 'failed', revision, at: now(), reason: 'deleted', message: DELETED_IN_ANOTHER_TAB });
+    return NOTHING_TO_SAVE;
+  }
+
+  /** "Keep it", after another tab deleted the project: written again, whole, as a first save is. */
+  function keepDeleted(): Promise<SaveResult> {
+    const step = (): SaveResult | Promise<SaveResult> => {
+      if (stopped || !hasProjectContent() || saveStatus.state !== 'failed' || saveStatus.reason !== 'deleted') return NOTHING_TO_SAVE;
+      lastSaved = null;
+      resetSynced(null);
+      toldDeleted = null;
+      return performSave();
+    };
+    chain = chain.then(step, step);
+    return chain;
+  }
+
+  /**
    * "Keep this tab's version", in its turn. The choice changes what this tab is taken to have
    * had from storage, and a save on its way put that back as the save had found it when it
    * landed: pressed during a save, the button did nothing.
@@ -777,6 +852,11 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
     channel.onmessage = (event: MessageEvent) => {
       const notice = readNotice(event.data);
       if (!notice || stopped || notice.projectId !== useWorkspaceStore.getState().projectId) return;
+      if ('deleted' in notice) {
+        const check = () => performDeletionCheck(notice.projectId);
+        chain = chain.then(check, check);
+        return;
+      }
       // Already here: this tab wrote that revision or one after it, or took it in.
       if (lastSaved !== null && lastSaved.projectId === notice.projectId && notice.revision <= lastSaved.revision) return;
       pickUp();
@@ -815,6 +895,7 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
   const controller: RunningAutosave = {
     flush: () => run(),
     keep,
+    keepDeleted,
     stop: () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);
@@ -870,19 +951,38 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
 /** The autosave that is running, for what has to save now from outside it. */
 interface RunningAutosave extends AutosaveController {
   keep(reported: ReportedConflicts): Promise<SaveResult>;
+  keepDeleted(): Promise<SaveResult>;
 }
 let running: RunningAutosave | null = null;
 
+/** What a save made for an agent run came to (see {@link saveForRun}). */
+export interface RunSave {
+  /**
+   * Why nothing was saved: storage full, refused or not answering, or the
+   * project deleted in another tab. Null when the save went through, and
+   * where nothing autosaves (a hosted editor).
+   */
+  failed: { reason: SaveFailureReason; message: string } | null;
+  /**
+   * The files a save could not write because another tab changed them too:
+   * storage kept the other tab's version, and this tab's is in memory only.
+   * Empty when nothing conflicts.
+   */
+  conflicts: string[];
+}
+
 /**
- * Save now, where this tab autosaves the project, and answer the files the
- * save could not write because another tab changed them too: storage kept
- * the other tab's version, and this tab's is in memory only. For an agent
- * run, whose summary is to say what it changed (lib/agent/runAgent.ts).
- * Empty where nothing autosaves (a hosted editor) and when nothing conflicts.
+ * Save now, where this tab autosaves the project, and answer what came of
+ * it. For an agent run, whose summary is to say what it changed, and which
+ * is not to end as finished over work that is in this tab's memory only
+ * (lib/agent/runAgent.ts). The save's result used to be dropped here, so a
+ * run whose every save failed (storage full, storage blocked) ended
+ * "Finished" with nothing stored.
  */
-export async function saveAndFindConflicts(): Promise<string[]> {
-  if (running) await running.flush();
-  return lastConflicts?.parts.files ?? [];
+export async function saveForRun(): Promise<RunSave> {
+  if (!running) return { failed: null, conflicts: [] };
+  const result = await running.flush();
+  return { failed: result.ok ? null : { reason: result.reason, message: result.message }, conflicts: lastConflicts?.parts.files ?? [] };
 }
 
 /**
@@ -899,6 +999,39 @@ export function keepThisTabsVersion(): Promise<SaveResult> {
   // Pressed twice, the choice is still made once, of the version that was reported.
   lastConflicts = null;
   return running.keep(reported);
+}
+
+/**
+ * After another tab deleted the project open here (the bar says so): the
+ * person chose to keep it. It is saved again, whole, under its own id, and
+ * goes back on the list.
+ */
+export function keepDeletedProject(): Promise<SaveResult> {
+  if (!running) return Promise.resolve(NOTHING_TO_SAVE);
+  return running.keepDeleted();
+}
+
+const closedListeners = new Set<() => void>();
+
+/** Told when {@link closeDeletedProject} has closed the project: the editor goes back to the list. */
+export function subscribeProjectClosed(listener: () => void): () => void {
+  closedListeners.add(listener);
+  return () => {
+    closedListeners.delete(listener);
+  };
+}
+
+/**
+ * After another tab deleted the project open here: the person chose to let it
+ * go. The stores are cleared, as when the open project is deleted in this tab,
+ * and nothing is written. The caller has already asked about a draft and
+ * stopped a run (lib/replaceProject.ts, beginReplacingProject).
+ */
+export function closeDeletedProject(): void {
+  if (saveStatus.state !== 'failed' || saveStatus.reason !== 'deleted') return;
+  claimWorkspace();
+  beginNewProjectSession();
+  for (const listener of closedListeners) listener();
 }
 
 /**
@@ -985,7 +1118,8 @@ export async function renameSavedProject(projectId: string, name: string): Promi
   // storage; refusing said the project had changed "in another tab after it was opened here",
   // of a project that is not open here.
   const result = await saveProjectRecord(renamed, read.record.revision, (stored) => (renamed = rename(stored)));
-  if (!result.ok) return { ok: false, message: result.message };
+  // Deleted in another tab between the reading and the write: not put back by a rename.
+  if (!result.ok) return { ok: false, message: result.reason === 'deleted' ? 'That project was deleted in another tab.' : result.message };
   renameRecentProject(projectId, checked.name);
   announceSaved(projectId, renamed.revision);
   return { ok: true };
@@ -1138,11 +1272,13 @@ export async function openProjectById(projectId: string, checkpoint?: () => Prom
 /**
  * Delete one project's record and its recent entry. If it is the project in
  * the stores, the stores are cleared too, so autosave does not put it back.
- * The provider settings are not in scope and are not touched.
+ * A tab that has it open is told, and keeps it or closes it as the person
+ * there chooses. The provider settings are not in scope and are not touched.
  */
 export async function deleteProject(projectId: string): Promise<OpenOutcome> {
   const deleted = await deleteProjectRecord(projectId);
   if (!deleted.ok) return { ok: false, message: deleted.message };
+  announceDeleted(projectId);
   removeRecentProject(projectId);
   if (loadActiveProjectId() === projectId) saveActiveProjectId(null);
   if (useWorkspaceStore.getState().projectId === projectId) {
