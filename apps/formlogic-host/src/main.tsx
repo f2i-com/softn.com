@@ -4,7 +4,7 @@ import { SoftNWithXDB, composeBundleSource, configureZippWasmSource, zippLanguag
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { declaredThemeMode } from './appTheme';
-import { installAppStorage } from './storage';
+import { installAppStorage, STORAGE_PROTOCOL } from './storage';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import { acceptEngine, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
 import { NATIVE_FETCH_BRIDGE, createNativeNetFetch, nativeFetchRoute } from './nativeFetch';
@@ -36,6 +36,8 @@ const root = createRoot(document.getElementById('root')!);
 root.render(<p style={{ padding: 24, fontFamily: 'system-ui' }}>Opening app…</p>);
 let started = false;
 let port: MessagePort | undefined;
+let appStorage: ReturnType<typeof installAppStorage> | undefined;
+let terminated = false;
 // Four calls at a time to the parent, which is the parent's own limit,
 // thirty-two waiting behind them, twenty seconds each for an answer. A slot
 // is the parent's until it answers (see backendQueue.ts). The parent
@@ -45,9 +47,18 @@ const calls = createBackendQueue({
   maxInFlight: 4, maxQueued: 32, timeoutMs: 20000,
 });
 function backendCall(action: string, input: Record<string, unknown>): Promise<unknown> {
-  if (!port) return Promise.resolve({ error: 'The app is not connected to its backend yet.' });
+  if (!port || terminated) return Promise.resolve({ error: 'The app is not connected to its backend yet.' });
   return calls.call(action, input);
 }
+function terminate(): void {
+  if (terminated) return;
+  terminated = true;
+  appStorage?.dispose();
+  calls.dispose(BACKEND_UNREADABLE);
+  port?.close();
+  root.unmount();
+}
+window.addEventListener('pagehide', terminate, { once: true });
 const LOAD_FAILED = 'This app could not be loaded. Check the interface and logic files.';
 /** One line the app author can act on; never the stack, never more than a sentence. */
 function reasonOf(error: unknown): string {
@@ -68,13 +79,16 @@ class Boundary extends Component<{ children: React.ReactNode }, { failed: boolea
   }
 }
 window.addEventListener('message', async event => {
-  if (started || event.source !== parent || event.data?.type !== 'formlogic:init' || !event.ports[0]) return;
+  if (started || terminated || event.source !== parent || event.data?.type !== 'formlogic:init' || !event.ports[0]) return;
   started = true;
   port = event.ports[0];
-  port.onmessage = event => { calls.settle(event.data?.id, event.data?.result); };
+  port.onmessage = event => {
+    if (event.data?.type === 'formlogic:dispose') { terminate(); return; }
+    calls.settle(event.data?.id, event.data?.result);
+  };
   // A result the port could not deserialise names no id: nothing in flight
   // can be told apart, so all of it answers now rather than at its deadline.
-  port.onmessageerror = () => { calls.failInFlight(BACKEND_UNREADABLE); };
+  port.onmessageerror = terminate;
   try {
     // `engine` is an addition: absent means the engine this document has always
     // run, so a FormLogic that predates the choice is unaffected. One it does
@@ -97,6 +111,7 @@ window.addEventListener('message', async event => {
       // rather than at the top so the adapter is in a chunk of its own that
       // `index.html` never loads.
       const { installHostJsEngine } = await import('./hostEngine');
+      if (terminated) return;
       installHostJsEngine();
     } else {
       configureZippWasmSource(acceptZippBytes(event.data.zippWasm));
@@ -108,12 +123,13 @@ window.addEventListener('message', async event => {
       // refused as firmly as the reverse.
       requireEngineLanguages(engine, await zippLanguages());
     }
+    if (terminated) return;
     const manifest = JSON.parse(files.get('manifest.json') || '{}');
     // Set for a native app whose logic the `<logic>` bridge below cannot be
     // written in; undefined otherwise, which is every app that runs today.
     let netFetchHandler: ReturnType<typeof createNativeNetFetch> | undefined;
     if (event.data.native === true) {
-      installAppStorage(event.data.storage || {}, input => backendCall("nativeStorage", input));
+      appStorage = installAppStorage(event.data.storage || {}, (input, lifecycle) => calls.call('nativeStorage', input, lifecycle), { acknowledged: event.data.storageProtocol === STORAGE_PROTOCOL });
       // Keep stored app source untouched. Its declared API origin is routed by
       // the trusted parent to this app's native backend, without direct egress.
       if (nativeFetchRoute(languages) === 'host-handler') {
@@ -142,6 +158,7 @@ window.addEventListener('message', async event => {
         onError={error => reportError(reasonOf(error))} />
     </ThemeProvider></Boundary>);
   } catch (error) {
+    if (terminated) return;
     const reason = reasonOf(error);
     root.render(<p role="alert" style={{ padding: 24 }}>{LOAD_FAILED}{reason ? ` (${reason})` : ''}</p>);
     reportError(reason);
@@ -155,4 +172,4 @@ window.addEventListener('message', async event => {
 // variant's digest for `zipp-web`, `true` where it wants none. A parent that
 // reads only `zipp` and sends no `engine` sees what it always did, which on
 // this document's other entry is a refusal by name.
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities) }, '*');
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities) }, '*');

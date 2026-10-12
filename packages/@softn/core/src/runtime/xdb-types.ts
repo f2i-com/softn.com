@@ -43,7 +43,47 @@ export interface XDBStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
+  /** Hosted storage advertises its actual parent acknowledgment capability. */
+  acknowledgedPersistence?: AcknowledgedStoragePersistence;
 }
+
+export type StorageWriteState = 'pending' | 'confirmed' | 'failed' | 'unknown';
+
+/** One immutable operation identity; a late reply can update state, not re-resolve completion. */
+export interface StorageWriteReceipt {
+  readonly generation: string;
+  readonly sequence: number;
+  readonly completion: Promise<void>;
+  readonly state: StorageWriteState;
+}
+
+export interface StoragePersistenceStatus {
+  protocol: 0 | 1;
+  pendingWrites: number;
+  failedWrites: number;
+  unknownWrites: number;
+  disposed: boolean;
+}
+
+interface StoragePersistenceObserver {
+  getStatus(): StoragePersistenceStatus;
+  subscribe(listener: (status: StoragePersistenceStatus) => void): () => void;
+  /** Settlement of the finite set pending at this call; does not assert success. */
+  whenIdle(): Promise<void>;
+}
+
+export type AcknowledgedStoragePersistence =
+  | (StoragePersistenceObserver & { readonly protocol: 0 })
+  | (StoragePersistenceObserver & {
+      readonly protocol: 1;
+      /** Admission preflight precedes optimistic cache mutation. */
+      setItem(key: string, value: string): StorageWriteReceipt;
+      removeItem(key: string): StorageWriteReceipt;
+      /** Preflight and admit one parent-map commit before changing any cache key. */
+      replaceBatch(replacements: readonly { key: string; value: string }[]): StorageWriteReceipt;
+      /** Success for a captured finite set; sticky failed/unknown work rejects it. */
+      captureBarrier(): Promise<void>;
+    });
 
 /** What `create` may be told beyond the data. */
 export interface XDBCreateOptions {
@@ -79,6 +119,8 @@ export type XDBStorageIssueKind =
   | 'quota'
   | 'hydration-failed'
   | 'migration-incomplete'
+  | 'write-unknown'
+  | 'persistence-unsupported'
   /** A native (SQLite) write the synchronous API had already answered for was refused; the in-memory record and the database disagree. */
   | 'write-failed';
 
@@ -97,8 +139,10 @@ export interface XDBStorageStatus {
   persistent: boolean;
   /** Whether every collection was read from the backend successfully. */
   hydrated: boolean;
-  /** Native operations dispatched but not yet acknowledged by SQLite. */
+  /** Native operations plus shared hosted-storage writes not yet settled. Unknown writes are reported separately. */
   pendingWrites: number;
+  /** Hosted adapter state, including writes made directly by the app's Storage API. */
+  persistence?: StoragePersistenceStatus;
   issues: XDBStorageIssue[];
 }
 

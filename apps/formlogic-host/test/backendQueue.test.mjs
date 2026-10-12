@@ -150,3 +150,98 @@ test('a port that throws answers the caller at once', async () => {
   assert.deepEqual(await queue.call('x', {}), { error: 'cannot clone' });
   assert.equal(queue.inFlight, 0);
 });
+
+test('optional absolute deadline includes waiting and retains a timed-out sent slot for a correlated late reply', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const posted = [], late = [];
+  const queue = createBackendQueue({ post: message => posted.push(message), maxInFlight: 1 });
+  const first = queue.call('ordinary', {});
+  let dispatched = false;
+  const write = queue.call('nativeStorage', {}, { deadlineAt: 21000, onDispatch: () => { dispatched = true; }, onLateReply: reply => late.push(reply) });
+  t.mock.timers.tick(19999);
+  queue.settle(posted[0].id, 'ordinary-ok');
+  assert.equal(await first, 'ordinary-ok');
+  assert.equal(dispatched, true);
+  t.mock.timers.tick(1);
+  assert.deepEqual(await write, { error: BACKEND_TIMEOUT, outcome: 'unknown' });
+  assert.equal(queue.inFlight, 1);
+  assert.equal(queue.settle('2', { result: { saved: true } }), false);
+  assert.equal(queue.settle(999, { result: { saved: true } }), false);
+  assert.equal(late.length, 0);
+  assert.equal(queue.settle(posted[1].id, { result: { saved: true } }), false);
+  assert.deepEqual(late, [{ result: { saved: true } }]);
+  assert.equal(queue.inFlight, 0);
+  assert.equal(queue.settle(posted[1].id, 'duplicate'), false);
+  assert.equal(late.length, 1);
+});
+
+test('optional expired and cancelled unsent calls never reach the parent', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const posted = [];
+  const queue = createBackendQueue({ post: message => posted.push(message), maxInFlight: 1 });
+  queue.call('ordinary', {});
+  const expired = queue.call('expires', {}, { deadlineAt: 1010 });
+  const controller = new AbortController();
+  const cancelled = queue.call('cancelled', {}, { deadlineAt: 21000, signal: controller.signal });
+  controller.abort();
+  assert.deepEqual(await cancelled, { error: BACKEND_TIMEOUT, outcome: 'unsent' });
+  t.mock.timers.tick(10);
+  assert.deepEqual(await expired, { error: BACKEND_TIMEOUT, outcome: 'unsent' });
+  queue.settle(posted[0].id, 'done');
+  assert.deepEqual(posted.map(message => message.action), ['ordinary']);
+  assert.equal(queue.waiting, 0);
+  assert.deepEqual(await queue.call('already-expired', {}, { deadlineAt: 1000 }), { error: BACKEND_TIMEOUT, outcome: 'unsent' });
+});
+
+test('terminal disposal cancels waiting calls without flushing them or accepting later work', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const posted = [];
+  const queue = createBackendQueue({ post: message => posted.push(message), maxInFlight: 1 });
+  const sent = queue.call('sent', {}, { deadlineAt: 21000 });
+  const waiting = queue.call('waiting', {}, { deadlineAt: 21000 });
+  const ordinary = queue.call('ordinary', {});
+  queue.dispose('closed');
+  assert.deepEqual(await sent, { error: 'closed', outcome: 'unknown' });
+  assert.deepEqual(await waiting, { error: 'closed', outcome: 'unsent' });
+  assert.deepEqual(await ordinary, { error: 'closed' });
+  t.mock.timers.tick(40000);
+  assert.equal(posted.length, 1);
+  assert.equal(queue.inFlight, 0);
+  assert.equal(queue.waiting, 0);
+  assert.deepEqual(await queue.call('after', {}), { error: BACKEND_UNREADABLE });
+  assert.equal(queue.settle(posted[0].id, 'late'), false);
+});
+
+test('optional failed post is definitively unsent and cancellation of a sent call retains its slot', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const failed = createBackendQueue({ post: () => { throw new Error('closed'); } });
+  assert.deepEqual(await failed.call('write', {}, { deadlineAt: 21000 }), { error: 'closed', outcome: 'unsent' });
+  const posted = [], late = [];
+  const controller = new AbortController();
+  const queue = createBackendQueue({ post: message => posted.push(message), maxInFlight: 1 });
+  const sent = queue.call('write', {}, { deadlineAt: 21000, signal: controller.signal, onLateReply: reply => late.push(reply) });
+  controller.abort();
+  assert.deepEqual(await sent, { error: BACKEND_TIMEOUT, outcome: 'unknown' });
+  assert.equal(queue.inFlight, 1);
+  queue.settle(posted[0].id, 'saved');
+  assert.deepEqual(late, ['saved']);
+  assert.equal(queue.inFlight, 0);
+});
+
+test('reply observer exceptions cannot strand a caller or the waiting line', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const posted = [];
+  const queue = createBackendQueue({ post: message => posted.push(message), maxInFlight: 1 });
+  const first = queue.call('first', {}, { deadlineAt: 1010, onReply() { throw new Error('observer failed'); } });
+  const second = queue.call('second', {}, { deadlineAt: 1010, onLateReply() { throw new Error('late observer failed'); } });
+  queue.settle(posted[0].id, 'saved');
+  assert.equal(await first, 'saved');
+  assert.equal(posted.length, 2);
+  t.mock.timers.tick(10);
+  assert.deepEqual(await second, { error: BACKEND_TIMEOUT, outcome: 'unknown' });
+  const third = queue.call('third', {});
+  assert.equal(queue.settle(posted[1].id, 'late'), false);
+  assert.equal(posted.length, 3);
+  queue.settle(posted[2].id, 'done');
+  assert.equal(await third, 'done');
+});

@@ -28,6 +28,8 @@ import type {
   XDBNetworkSettings,
   XDBExportData,
   XDBImportResult,
+  AcknowledgedStoragePersistence,
+  StorageWriteReceipt,
 } from './xdb-types';
 import { debug } from './debug';
 
@@ -97,6 +99,14 @@ export class XDBService {
   private statusListeners: Set<(status: XDBStorageStatus) => void> = new Set();
   /** Native operations in flight (audit SN-01): the truthful "unsaved work" count. */
   private pendingNative: Set<Promise<unknown>> = new Set();
+  private pendingStorage = new Set<Promise<void>>();
+  private storagePersistence?: AcknowledgedStoragePersistence;
+  private storageUnsubscribe: (() => void) | null = null;
+  private storageCancellations = new Set<() => void>();
+  private unknownStorageReceipts = new Map<StorageWriteReceipt, string[]>();
+  private resolveStorageOwnerReleased!: () => void;
+  private storageOwnerReleased = new Promise<void>(resolve => { this.resolveStorageOwnerReleased = resolve; });
+  private destroyed = false;
   private unloadGuard: ((event: BeforeUnloadEvent) => void) | null = null;
 
   /**
@@ -139,6 +149,11 @@ export class XDBService {
     this.listeners = new Map();
     this.globalListeners = new Set();
     this.useTauri = options.backend !== 'storage' && isTauri();
+    if (!this.useTauri) {
+      this.storagePersistence = this.storage.acknowledgedPersistence;
+      this.storageUnsubscribe = this.storagePersistence?.subscribe(() => this.hostedStorageChanged()) ?? null;
+      this.hostedStorageChanged();
+    }
 
     this.isReady = new Promise(resolve => {
       this._resolveReady = resolve;
@@ -289,16 +304,85 @@ export class XDBService {
     return this.getStorageStatus();
   }
 
-  /** Native operations dispatched from this service that SQLite has not acknowledged yet. */
+  /** Native or hosted writes from this service that have not settled yet. */
   hasPendingWrites(): boolean {
-    return this.pendingNative.size > 0;
+    return this.pendingNative.size > 0 || this.pendingStorage.size > 0 || !this.destroyed && (this.storagePersistence?.getStatus().pendingWrites ?? 0) > 0;
   }
 
-  /** Resolves once every in-flight native operation has settled (success or failure). */
+  /** Hosted settlement captures a finite set; native draining keeps its existing semantics. Neither asserts success. */
   async whenIdle(): Promise<void> {
-    while (this.pendingNative.size > 0) {
-      await Promise.allSettled([...this.pendingNative]);
+    const hostedIdle = this.storagePersistence && !this.destroyed
+      ? Promise.race([this.storagePersistence.whenIdle(), this.storageOwnerReleased]) : null;
+    const hostedWrites = [...this.pendingStorage];
+    const nativeIdle = async () => {
+      while (this.pendingNative.size > 0) await Promise.allSettled([...this.pendingNative]);
+    };
+    await Promise.allSettled([nativeIdle(), ...hostedWrites, ...(hostedIdle ? [hostedIdle] : [])]);
+  }
+
+  /** Track exactly this write, independently of later writes or event-listener reentrancy. */
+  private hostedWrite(receipt: StorageWriteReceipt, collections: string[]): Promise<void> {
+    let cancel!: () => void;
+    const completion = new Promise<void>((resolve, reject) => {
+      cancel = () => reject(new XDBStorageError('write-unknown', 'The storage owner was released before this write was acknowledged. Reopen the app to read the parent snapshot.'));
+      receipt.completion.then(resolve, reject);
+    });
+    this.pendingStorage.add(completion);
+    this.storageCancellations.add(cancel);
+    this.notifyStatus();
+    const settle = (failed: boolean, error?: unknown) => {
+      this.pendingStorage.delete(completion);
+      this.storageCancellations.delete(cancel);
+      if (this.destroyed) return;
+      if (failed) {
+        const unknown = receipt.state === 'unknown' || !!error && typeof error === 'object' && 'state' in error && error.state === 'unknown';
+        if (unknown) this.unknownStorageReceipts.set(receipt, collections);
+        for (const collection of collections) {
+          this.noteIssue({ kind: unknown ? 'write-unknown' : 'write-failed', collection, message: unknown
+            ? `Saving "${collection}" has an unknown outcome. Reopen the app to read the parent snapshot before retrying.`
+            : `A change to "${collection}" was not acknowledged by the parent storage. Export unsaved work before closing the app.` });
+        }
+      }
+      this.hostedStorageChanged();
+    };
+    // Attach rejection handling even for the synchronous API's intentionally ignored result.
+    completion.then(() => settle(false), error => settle(true, error));
+    return completion;
+  }
+
+  private hostedStorageChanged(): void {
+    if (this.destroyed || !this.storagePersistence) return;
+    for (const [receipt, collections] of this.unknownStorageReceipts) {
+      if (receipt.state === 'unknown') continue;
+      this.unknownStorageReceipts.delete(receipt);
+      for (const collection of collections) {
+        if (![...this.unknownStorageReceipts.values()].some(names => names.includes(collection))) {
+          this.issues = this.issues.filter(issue => !(issue.kind === 'write-unknown' && issue.collection === collection));
+        }
+        if (receipt.state === 'failed') this.noteIssue({ kind: 'write-failed', collection, message: `The parent later refused a change to "${collection}". Export unsaved work before closing the app.` });
+      }
     }
+    const status = this.storagePersistence.getStatus();
+    const summary: Array<{ kind: XDBStorageIssue['kind']; present: boolean; message: string }> = [
+      { kind: 'persistence-unsupported', present: status.protocol === 0, message: 'This hosted parent does not support acknowledged saving. Cached changes cannot be reported as saved.' },
+      { kind: 'write-failed', present: status.failedWrites > 0 || status.disposed, message: 'Some hosted changes were not saved, or the storage connection was closed. Export unsaved work before closing the app.' },
+      { kind: 'write-unknown', present: status.unknownWrites > 0, message: 'A hosted save has an unknown outcome. Reopen the app to read the parent snapshot before retrying.' },
+    ];
+    for (const entry of summary) {
+      const existing = this.issues.some(issue => issue.kind === entry.kind && issue.collection === undefined);
+      if (entry.present && !existing) this.issues.push({ kind: entry.kind, message: entry.message, at: new Date().toISOString() });
+      else if (!entry.present && existing) this.issues = this.issues.filter(issue => !(issue.kind === entry.kind && issue.collection === undefined));
+    }
+    if (this.storageState === 'ready' && this.issues.length > 0) this.storageState = 'degraded';
+    else if (this.storageState === 'degraded' && this.issues.length === 0 && this.corrupt.size === 0) this.storageState = 'ready';
+    this.notifyStatus();
+  }
+
+  private unsupportedPersistence(collection?: string): Promise<void> {
+    this.noteIssue({ kind: 'persistence-unsupported', collection, message: 'This hosted parent cannot acknowledge saving. The visible change is cached only.' });
+    const rejected = Promise.reject<void>(new XDBStorageError('persistence-unsupported', 'This hosted parent does not support acknowledged saving.', collection));
+    rejected.catch(() => {});
+    return rejected;
   }
 
   /** Dispatch a native command and track it until SQLite answers (audit SN-01). */
@@ -318,7 +402,10 @@ export class XDBService {
    */
   private updateUnloadGuard(): void {
     if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
-    const needed = this.pendingNative.size > 0 || this.storageState === 'memory-only';
+    if (this.destroyed) return;
+    const status = this.storagePersistence?.getStatus();
+    const needed = this.hasPendingWrites() || this.storageState === 'memory-only'
+      || !!status && (status.pendingWrites > 0 || status.failedWrites > 0 || status.unknownWrites > 0 || status.protocol === 0 || status.disposed);
     if (needed && !this.unloadGuard) {
       this.unloadGuard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
       window.addEventListener('beforeunload', this.unloadGuard);
@@ -333,11 +420,13 @@ export class XDBService {
   // --------------------------------------------------------------------------
 
   getStorageStatus(): XDBStorageStatus {
+    const persistence = this.storagePersistence?.getStatus();
     return {
       state: this.storageState,
-      persistent: this.persistent,
+      persistent: this.persistent && (!persistence || !this.destroyed && persistence.protocol === 1 && !persistence.disposed),
       hydrated: this.hydrated,
-      pendingWrites: this.pendingNative.size,
+      pendingWrites: this.pendingNative.size + Math.max(this.pendingStorage.size, this.destroyed ? 0 : persistence?.pendingWrites ?? 0),
+      ...(persistence ? { persistence } : {}),
       issues: [...this.issues],
     };
   }
@@ -443,6 +532,7 @@ export class XDBService {
    * hydrated (a replace/clear there would drop records it never saw).
    */
   private assertWritable(collection: string, destructive: boolean): void {
+    if (this.destroyed && this.storagePersistence) throw new XDBStorageError('write-failed', 'This storage owner has been released.', collection);
     const corrupt = this.corrupt.get(collection);
     if (corrupt && !this.acknowledged.has(collection)) {
       throw new XDBStorageError('corrupt', `Collection "${collection}" is damaged in storage. Recover it (export the original, restore a backup, or acknowledge discarding it) before writing.`, collection);
@@ -456,7 +546,9 @@ export class XDBService {
     if (this.corrupt.has(collection)) return;
     let quarantineKey: string | null = `${this.collectionKey(collection)}.corrupt.${Date.now().toString(36)}`;
     try {
-      this.storage.setItem(quarantineKey, raw);
+      if (this.destroyed && this.storagePersistence) throw new Error('The hosted storage owner was released.');
+      if (this.storagePersistence?.protocol === 1) this.hostedWrite(this.storagePersistence.setItem(quarantineKey, raw), [collection]);
+      else this.storage.setItem(quarantineKey, raw);
     } catch {
       quarantineKey = null;
     }
@@ -475,6 +567,14 @@ export class XDBService {
    * Release event listeners when the service's owner is finished with it.
    */
   destroy(): void {
+    this.destroyed = true;
+    this.resolveStorageOwnerReleased();
+    this.storageUnsubscribe?.();
+    this.storageUnsubscribe = null;
+    for (const cancel of this.storageCancellations) cancel();
+    this.storageCancellations.clear();
+    this.pendingStorage.clear();
+    this.unknownStorageReceipts.clear();
     for (const unlisten of this.tauriUnlisteners) {
       unlisten();
     }
@@ -563,7 +663,7 @@ export class XDBService {
     return parsed as XDBRecord[];
   }
 
-  private setCollectionData(collection: string, records: XDBRecord[]): void {
+  private setCollectionData(collection: string, records: XDBRecord[]): Promise<void> | undefined {
     this.assertWritable(collection, false);
     if (this.useTauri) {
       const coll = new Map<string, XDBRecord>();
@@ -574,8 +674,14 @@ export class XDBService {
     }
 
     const key = this.collectionKey(collection);
+    let persisted: Promise<void> | undefined;
     try {
-      this.storage.setItem(key, JSON.stringify(records));
+      const value = JSON.stringify(records);
+      if (this.storagePersistence?.protocol === 1) persisted = this.hostedWrite(this.storagePersistence.setItem(key, value), [collection]);
+      else {
+        this.storage.setItem(key, value);
+        if (this.storagePersistence) persisted = this.unsupportedPersistence(collection);
+      }
       this.acknowledged.delete(collection);
     } catch (err) {
       // localStorage.setItem is atomic: the previous value is intact. Say so
@@ -585,6 +691,7 @@ export class XDBService {
       throw new XDBStorageError('quota', `Could not save "${collection}": ${message}`, collection);
     }
     this.knownCollections.add(collection);
+    return persisted;
   }
 
   // --------------------------------------------------------------------------
@@ -777,7 +884,10 @@ export class XDBService {
       return optimisticRecord;
     }
 
-    // localStorage fallback
+    return this.createStorage(collection, data, options).result;
+  }
+
+  private createStorage(collection: string, data: Record<string, unknown>, options: XDBCreateOptions = {}): { result: XDBRecord; persisted?: Promise<void> } {
     const records = this.getAllCollectionData(collection);
     const now = new Date().toISOString();
 
@@ -791,12 +901,12 @@ export class XDBService {
     };
 
     records.push(record);
-    this.setCollectionData(collection, records);
+    const persisted = this.setCollectionData(collection, records);
 
     this.emit({ type: 'create', collection, record });
     this.notifyMutation('create', collection, record.id, data);
 
-    return record;
+    return { result: record, persisted };
   }
 
   /**
@@ -813,8 +923,9 @@ export class XDBService {
       return record;
     }
 
-    // localStorage fallback
-    return this.create(collection, data);
+    const { result, persisted } = this.createStorage(collection, data);
+    await persisted;
+    return result;
   }
 
   /**
@@ -1053,7 +1164,10 @@ export class XDBService {
       return null;
     }
 
-    // localStorage fallback
+    return this.updateStorage(id, data).result;
+  }
+
+  private updateStorage(id: string, data: Partial<Record<string, unknown>>): { result: XDBRecord | null; persisted?: Promise<void> } {
     const allKeys = this.getAllCollectionKeys();
 
     for (const collection of allKeys) {
@@ -1073,16 +1187,16 @@ export class XDBService {
         };
 
         records[index] = updatedRecord;
-        this.setCollectionData(collection, records);
+        const persisted = this.setCollectionData(collection, records);
 
         this.emit({ type: 'update', collection, record: updatedRecord });
         this.notifyMutation('update', collection, id, updatedRecord.data);
 
-        return updatedRecord;
+        return { result: updatedRecord, persisted };
       }
     }
 
-    return null;
+    return { result: null };
   }
 
   /**
@@ -1104,7 +1218,9 @@ export class XDBService {
       }
     }
 
-    return this.update(id, data);
+    const { result, persisted } = this.updateStorage(id, data);
+    await persisted;
+    return result;
   }
 
   /**
@@ -1232,7 +1348,10 @@ export class XDBService {
       return true; // Optimistic
     }
 
-    // localStorage fallback
+    return this.deleteStorage(id).result;
+  }
+
+  private deleteStorage(id: string): { result: boolean; persisted?: Promise<void> } {
     const allKeys = this.getAllCollectionKeys();
 
     for (const collection of allKeys) {
@@ -1244,16 +1363,16 @@ export class XDBService {
         record.deleted = true;
         record.updated_at = new Date().toISOString();
 
-        this.setCollectionData(collection, records);
+        const persisted = this.setCollectionData(collection, records);
 
         this.emit({ type: 'delete', collection, record });
         this.notifyMutation('delete', collection, id);
 
-        return true;
+        return { result: true, persisted };
       }
     }
 
-    return false;
+    return { result: false };
   }
 
   /**
@@ -1280,7 +1399,9 @@ export class XDBService {
       }
     }
 
-    return this.delete(id);
+    const { result, persisted } = this.deleteStorage(id);
+    await persisted;
+    return result;
   }
 
   /**
@@ -1568,7 +1689,11 @@ export class XDBService {
         .catch((err) => this.nativeWriteFailed('clear a collection', collection, err));
       return;
     }
-    this.storage.removeItem(this.collectionKey(collection));
+    if (this.storagePersistence?.protocol === 1) this.hostedWrite(this.storagePersistence.removeItem(this.collectionKey(collection)), [collection]);
+    else {
+      this.storage.removeItem(this.collectionKey(collection));
+      if (this.storagePersistence) this.unsupportedPersistence(collection);
+    }
     this.emit({ type: 'refresh', collection, records: [] });
   }
 
@@ -1840,6 +1965,8 @@ export class XDBService {
     const imported = plans.reduce((n, plan) => n + plan.accepted, 0);
 
     if (!this.useTauri) {
+      if (this.destroyed && this.storagePersistence) throw new XDBStorageError('write-failed', 'This storage owner has been released.');
+      if (this.storagePersistence?.protocol === 0) throw new XDBStorageError('persistence-unsupported', 'This hosted parent does not support acknowledged batch saving; nothing was changed.');
       // Phase 1: read and prepare everything. Nothing is written yet, so a
       // failure here (an unreadable key, a corrupt previous value) leaves
       // every collection exactly as it was.
@@ -1857,6 +1984,27 @@ export class XDBService {
             plan.collection
           );
         }
+      }
+      if (this.storagePersistence?.protocol === 1) {
+        // The adapter validates the whole wire input and candidate parent map
+        // before touching any key. Never split a refused import or compensate
+        // an asynchronous failure by overwriting subsequent edits.
+        const replacements = prepared.map(plan => ({ key: this.collectionKey(plan.collection), value: JSON.stringify(plan.records) }));
+        importedCollections.push(...prepared.map(plan => plan.collection));
+        const persistedCollections = [...importedCollections];
+        const completion = replacements.length === 0
+          ? Promise.resolve()
+          : this.hostedWrite(this.storagePersistence.replaceBatch(replacements), persistedCollections);
+        for (const plan of prepared) {
+          this.knownCollections.add(plan.collection);
+          this.acknowledged.delete(plan.collection);
+          this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
+        }
+        const persisted = completion.then(() => ({ backend: 'storage' as const, collections: [...persistedCollections], imported, tombstoned: 0 }));
+        // Synchronous import/restore may ignore durable completion safely;
+        // async callers still receive the original rejecting promise.
+        persisted.catch(() => {});
+        return { imported, collections: importedCollections, persisted };
       }
       // Phase 2: write, with the earlier collections restored on a later failure.
       const written: Array<{ collection: string; previous: string | null }> = [];

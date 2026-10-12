@@ -17,9 +17,9 @@
  * caught up, storage writes among them. The slot is freed when the parent
  * answers that id, or when the port fails. A call still waiting for a slot
  * when its deadline comes, the slots all held, answers then and leaves the
- * line. The two clocks are separate: a call that gets its slot just before
- * that deadline is given the whole of the next one for its answer, so a
- * caller hears back within two deadlines of calling, not one.
+ * line. Ordinary calls keep separate waiting and sent clocks: a call given
+ * a slot just before its waiting deadline gets the full sent deadline.
+ * Storage calls opt into one absolute admission deadline through lifecycle.
  */
 export interface BackendCallMessage {
   type: 'call';
@@ -41,7 +41,7 @@ export interface BackendQueueOptions {
 
 export interface BackendQueue {
   /** Resolves with the parent's result, or `{error}` when refused, timed out or unreadable. Never rejects. */
-  call(action: string, input: Record<string, unknown>): Promise<unknown>;
+  call(action: string, input: Record<string, unknown>, lifecycle?: BackendCallLifecycle): Promise<unknown>;
   /**
    * A `{id, result}` message from the port. Frees that call's slot; returns
    * false when no caller waits on that id (none was sent, or its caller was
@@ -50,9 +50,21 @@ export interface BackendQueue {
   settle(id: unknown, result: unknown): boolean;
   /** Every slot is freed and every caller still waiting on one answers `{error: reason}`; returns how many did. */
   failInFlight(reason: string): number;
+  /** Terminal port/frame disposal. Waiting calls are cancelled, never dispatched. */
+  dispose(reason: string): void;
   /** Calls the parent holds: sent and not answered by it, including any whose caller has had its deadline. */
   readonly inFlight: number;
   readonly waiting: number;
+}
+
+/** Optional storage lifecycle; ordinary calls retain their existing timing and replies. */
+export interface BackendCallLifecycle {
+  deadlineAt: number;
+  signal?: AbortSignal;
+  onDispatch?: () => void;
+  /** Observe the matched reply before a later terminal event can dispose its caller. */
+  onReply?: (result: unknown) => void;
+  onLateReply?: (result: unknown) => void;
 }
 
 export const BACKEND_BUSY = 'The backend is busy: too many requests are waiting. Try again in a moment.';
@@ -63,9 +75,9 @@ export const BACKEND_INVALID = 'Invalid backend request.';
 /** An action's name as the parent takes it (HostedAppFrame), and as the script runtime checks it before it calls. */
 const ACTION = /^[a-z][a-zA-Z0-9_-]{0,63}$/;
 
-interface Waiting { action: string; input: Record<string, unknown>; resolve: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }
+interface Waiting { action: string; input: Record<string, unknown>; resolve: (value: unknown) => void; timer: ReturnType<typeof setTimeout>; lifecycle?: BackendCallLifecycle; detach?: () => void }
 /** A call the parent holds. `resolve` is gone once its caller has been answered at the deadline. */
-interface Sent { resolve?: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }
+interface Sent { resolve?: (value: unknown) => void; timer: ReturnType<typeof setTimeout>; lifecycle?: BackendCallLifecycle; detach?: () => void }
 
 export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
   const maxInFlight = options.maxInFlight ?? 4;
@@ -74,51 +86,88 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
   let sequence = 0;
   const sent = new Map<number, Sent>();
   const waiting: Waiting[] = [];
+  let disposed = false;
+  const refused = (reason: string, lifecycle?: BackendCallLifecycle, sent = false) => lifecycle
+    ? { error: reason, outcome: sent ? 'unknown' : 'unsent' } : { error: reason };
+  const observe = (callback: ((result: unknown) => void) | undefined, result: unknown) => {
+    try { callback?.(result); } catch { /* Observers cannot strand callers or slots. */ }
+  };
 
   function dispatch(): void {
-    while (sent.size < maxInFlight && waiting.length > 0) {
+    while (!disposed && sent.size < maxInFlight && waiting.length > 0) {
       const next = waiting.shift() as Waiting;
       clearTimeout(next.timer);
+      if (next.lifecycle && (next.lifecycle.signal?.aborted || next.lifecycle.deadlineAt <= Date.now())) {
+        next.detach?.();
+        next.resolve(refused(BACKEND_TIMEOUT, next.lifecycle));
+        continue;
+      }
       const id = ++sequence;
       const timer = setTimeout(() => {
         const item = sent.get(id);
         if (!item?.resolve) return;
         // The caller is answered; the slot stays the parent's until it answers.
-        item.resolve({ error: BACKEND_TIMEOUT });
+        item.resolve(refused(BACKEND_TIMEOUT, item.lifecycle, true));
         item.resolve = undefined;
-      }, timeoutMs);
-      sent.set(id, { resolve: next.resolve, timer });
+      }, next.lifecycle ? Math.max(0, next.lifecycle.deadlineAt - Date.now()) : timeoutMs);
+      // Move cancellation from the waiting entry to this sent slot. A sent
+      // cancellation answers unknown, but cannot release the parent's slot.
+      next.detach?.();
+      const item: Sent = { resolve: next.resolve, timer, lifecycle: next.lifecycle };
+      const abort = () => {
+        if (!item.resolve) return;
+        clearTimeout(item.timer);
+        item.resolve(refused(BACKEND_TIMEOUT, item.lifecycle, true));
+        item.resolve = undefined;
+      };
+      next.lifecycle?.signal?.addEventListener('abort', abort, { once: true });
+      item.detach = () => next.lifecycle?.signal?.removeEventListener('abort', abort);
+      sent.set(id, item);
       try {
+        next.lifecycle?.onDispatch?.();
         options.post({ type: 'call', id, action: next.action, input: next.input });
       } catch (error) {
         // A port that will not take the message (closed, or an input it
         // cannot clone) answers the caller now rather than at the deadline.
         clearTimeout(timer);
         sent.delete(id);
-        next.resolve({ error: error instanceof Error && error.message ? error.message : BACKEND_UNREADABLE });
+        item.detach?.();
+        next.resolve(refused(error instanceof Error && error.message ? error.message : BACKEND_UNREADABLE, next.lifecycle));
       }
     }
   }
 
   return {
-    call(action, input) {
-      // The one message the parent leaves unanswered is a call it cannot read
-      // as one: an action that is not text of the shape it takes. Unanswered,
-      // it would hold its slot for good, and four of them every slot.
-      if (typeof action !== 'string' || !ACTION.test(action)) return Promise.resolve({ error: BACKEND_INVALID });
-      if (waiting.length >= maxQueued) return Promise.resolve({ error: BACKEND_BUSY });
+    call(action, input, lifecycle) {
+      // Refuse malformed actions before they can occupy a parent-owned slot.
+      if (typeof action !== 'string' || !ACTION.test(action)) return Promise.resolve(refused(BACKEND_INVALID, lifecycle));
+      if (disposed) return Promise.resolve(refused(BACKEND_UNREADABLE, lifecycle));
+      if (lifecycle && (lifecycle.signal?.aborted || lifecycle.deadlineAt <= Date.now())) return Promise.resolve(refused(BACKEND_TIMEOUT, lifecycle));
+      if (waiting.length >= maxQueued) return Promise.resolve(refused(BACKEND_BUSY, lifecycle));
       return new Promise(resolve => {
         const entry: Waiting = {
           action,
           input,
           resolve,
+          lifecycle,
           timer: setTimeout(() => {
             const index = waiting.indexOf(entry);
             if (index < 0) return;
             waiting.splice(index, 1);
-            resolve({ error: BACKEND_TIMEOUT });
-          }, timeoutMs),
+            entry.detach?.();
+            resolve(refused(BACKEND_TIMEOUT, lifecycle));
+          }, lifecycle ? Math.max(0, lifecycle.deadlineAt - Date.now()) : timeoutMs),
         };
+        const abort = () => {
+          const index = waiting.indexOf(entry);
+          if (index < 0) return;
+          waiting.splice(index, 1);
+          clearTimeout(entry.timer);
+          entry.detach?.();
+          resolve(refused(BACKEND_TIMEOUT, lifecycle));
+        };
+        lifecycle?.signal?.addEventListener('abort', abort, { once: true });
+        entry.detach = () => lifecycle?.signal?.removeEventListener('abort', abort);
         waiting.push(entry);
         dispatch();
       });
@@ -128,8 +177,11 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
       const item = sent.get(id);
       if (!item) return false;
       clearTimeout(item.timer);
+      item.detach?.();
       sent.delete(id);
+      if (item.resolve) observe(item.lifecycle?.onReply, result);
       item.resolve?.(result);
+      if (!item.resolve) observe(item.lifecycle?.onLateReply, result);
       dispatch();
       return item.resolve !== undefined;
     },
@@ -139,12 +191,25 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
       let answered = 0;
       for (const item of failed) {
         clearTimeout(item.timer);
+        item.detach?.();
         if (!item.resolve) continue;
-        item.resolve({ error: reason });
+        item.resolve(refused(reason, item.lifecycle, true));
         answered++;
       }
       dispatch();
       return answered;
+    },
+    dispose(reason) {
+      disposed = true;
+      for (const item of waiting.splice(0)) {
+        clearTimeout(item.timer); item.detach?.();
+        item.resolve(refused(reason, item.lifecycle));
+      }
+      for (const item of sent.values()) {
+        clearTimeout(item.timer); item.detach?.();
+        item.resolve?.(refused(reason, item.lifecycle, true));
+      }
+      sent.clear();
     },
     get inFlight() { return sent.size; },
     get waiting() { return waiting.length; },
