@@ -47,9 +47,15 @@ export function useModalFocus(isOpen: boolean, onClose: () => void, initialSelec
         const last = focusable[focusable.length - 1];
         if (!first) { event.preventDefault(); dialog.focus(); return; }
         const active = document.activeElement;
-        if (event.shiftKey && (active === first || !dialog.contains(active))) {
+        // Focus can also sit inside the dialog on something that is not a
+        // tab stop: the box itself after a click on its empty area, or a
+        // heading it opened on. From there the browser moves to the page
+        // behind when no control lies that way.
+        const before = (item: HTMLElement) => !!active && (item.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+        const outside = !dialog.contains(active);
+        if (event.shiftKey && (active === first || outside || !focusable.some(before))) {
           event.preventDefault(); last.focus();
-        } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+        } else if (!event.shiftKey && (active === last || outside || focusable.every(before))) {
           event.preventDefault(); first.focus();
         }
       }

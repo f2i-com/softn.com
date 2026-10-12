@@ -65,3 +65,32 @@ describe('modal deletion keys', () => {
     expect(bubbled).toHaveBeenCalledOnce();
   });
 });
+
+describe('modal Tab order', () => {
+  function tab(target: HTMLElement, shiftKey: boolean) {
+    target.focus();
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+    act(() => target.dispatchEvent(event));
+    return event;
+  }
+  const dialog = () => host.querySelector<HTMLElement>('[role="dialog"]')!;
+
+  it('wraps Shift+Tab from the dialog box itself to its last control, not the page behind', () => {
+    // Clicking the dialog's empty area focuses the box (tabIndex -1).
+    const event = tab(dialog(), true);
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement?.id).toBe('collection');
+  });
+
+  it('wraps Tab from something focused after the last control to the first', () => {
+    const event = tab(host.querySelector<HTMLElement>('#notice')!, false);
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement?.id).toBe('cancel');
+  });
+
+  it('leaves the browser to move between controls inside the dialog', () => {
+    expect(tab(host.querySelector<HTMLElement>('#notice')!, true).defaultPrevented).toBe(false);
+    expect(tab(dialog(), false).defaultPrevented).toBe(false);
+    expect(tab(host.querySelector<HTMLElement>('#name')!, false).defaultPrevented).toBe(false);
+  });
+});

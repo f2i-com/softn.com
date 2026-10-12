@@ -72,7 +72,11 @@ shell keeps four calls in flight and up to thirty-two waiting behind them
 (`src/backendQueue.ts`), sending each as a slot frees, with a twenty-second
 deadline from the moment a call is sent. A thirty-third waiting call, a
 deadline and a reply the port could not deserialise (`messageerror`) each
-resolve to `{error}` with a sentence that says which. The shell is a public
+resolve to `{error}` with a sentence that says which. A deadline answers the
+app but does not free the slot: the parent holds four calls at a time with no
+deadline of its own and refuses a fifth, so a slot is freed only when the
+parent answers that call, or the port fails. A call still waiting for a slot
+twenty seconds after it was made answers that it timed out. The shell is a public
 URL: anyone may embed it and drive it with their own `formlogic:init`, and
 gets only their own files running in an opaque frame against a port they
 supplied; no FormLogic state is reachable from it.

@@ -2,8 +2,15 @@
 export const isHostedEditor = () => typeof window !== 'undefined' && window.parent !== window && new URLSearchParams(window.location.search).get('formlogicEditor') === '1';
 let currentPort: MessagePort | null = null;
 const hostRequests = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
-const pendingSaves = new Map<string, { resolve(value: HostedSaveResult): void; timer: ReturnType<typeof setTimeout> }>();
-/** How long FormLogic gets to confirm that it took the draft (audit SN-04). */
+const pendingSaves = new Map<string, { resolve(value: HostedSaveResult): void; timer: ReturnType<typeof setTimeout> | null }>();
+/**
+ * How long FormLogic gets to take a save up (audit SN-04): to ask for the
+ * project, which is how it starts one. From then on its answer is waited for
+ * however long it takes. It allows itself 45 seconds for the project and no
+ * limit for applying it (the owner may be reviewing the changes), so a
+ * deadline over the whole save reported "not saved" for a slow save that went
+ * on to succeed. The session ending still settles a save as not saved.
+ */
 const SAVE_ACK_TIMEOUT_MS = 60000;
 
 /**
@@ -21,7 +28,8 @@ export interface HostedSaveResult { ok: boolean; state: 'draft' | 'error'; error
  *    teardown or a parent reload) → NOT handled; the caller must keep the
  *    unsaved edits and tell the user, never fall back to an unrelated export;
  *  - handled → a request id plus a promise that settles only when FormLogic
- *    acknowledges (or the acknowledgement times out).
+ *    acknowledges (or does not take the save up in time, or the session
+ *    ends).
  */
 export type HostedSaveOutcome =
   | { handled: false; reason: 'not-hosted' | 'disconnected' }
@@ -182,13 +190,16 @@ export const HOSTED_AI_TIMEOUT_MS = 630_000;
 
 function sendAIRequest(payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   if (!currentPort) return Promise.reject(new Error('FormLogic is not connected.'));
+  // Cancelled before it was asked: the host is told nothing. A cancel for an
+  // id it never saw still clears its "the AI is editing" mark, which another
+  // request may be holding.
+  if (signal?.aborted) return Promise.reject(new DOMException('AI request cancelled.', 'AbortError'));
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
     const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); hostRequests.delete(id); };
     const abort = () => { currentPort?.postMessage({ kind: 'ai-cancel', id }); finish(); reject(new DOMException('AI request cancelled.', 'AbortError')); };
     const timer = setTimeout(() => { currentPort?.postMessage({ kind: 'ai-cancel', id }); finish(); reject(new Error('AI request timed out.')); }, HOSTED_AI_TIMEOUT_MS);
     hostRequests.set(id, { resolve: value => { finish(); resolve(value); }, reject: error => { finish(); reject(error); } });
-    if (signal?.aborted) { abort(); return; }
     signal?.addEventListener('abort', abort, { once: true });
     currentPort!.postMessage({ kind: 'ai-request', id, ...payload });
   });
@@ -257,8 +268,13 @@ export function requestHostedSave(): HostedSaveOutcome {
 export function pendingHostedSaves(): number { return pendingSaves.size; }
 
 function settlePendingSaves(result: HostedSaveResult): void {
-  for (const waiting of pendingSaves.values()) { clearTimeout(waiting.timer); waiting.resolve(result); }
+  for (const waiting of pendingSaves.values()) { if (waiting.timer) clearTimeout(waiting.timer); waiting.resolve(result); }
   pendingSaves.clear();
+}
+
+/** FormLogic asked for the project: the saves waiting on it are taken up, and wait for its answer. */
+function takeUpPendingSaves(): void {
+  for (const waiting of pendingSaves.values()) { if (waiting.timer) clearTimeout(waiting.timer); waiting.timer = null; }
 }
 
 /** What the host asked for with the project, beyond the project itself. */
@@ -292,13 +308,16 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
       if (data.kind === 'save-result') {
         const waiting = pendingSaves.get(data.id);
         if (!waiting) return;
-        clearTimeout(waiting.timer); pendingSaves.delete(data.id);
+        if (waiting.timer) clearTimeout(waiting.timer);
+        pendingSaves.delete(data.id);
         waiting.resolve(data.ok === true
           ? { ok: true, state: 'draft' }
           : { ok: false, state: 'error', error: typeof data.error === 'string' && data.error ? data.error : 'FormLogic could not take the draft.' });
         return;
       }
       const reply = (value: unknown) => { if (!disposed) port?.postMessage({ id: data.id, ok: true, value }); };
+      // How FormLogic starts a save; it answers the save itself when done.
+      if (data.method === 'export') takeUpPendingSaves();
       if (busy) { port?.postMessage({ id: data.id, ok: false, error: 'The editor is busy. Try again shortly.' }); return; }
       busy = true;
       try {

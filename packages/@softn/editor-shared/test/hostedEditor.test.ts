@@ -195,4 +195,19 @@ describe('hosted AI: a host that speaks aiTools 1', () => {
     expect(session.requests[1].id).toBe(session.requests[0].id);
     session.dispose();
   });
+
+  it('sends nothing for a request cancelled before it was asked: no cancel for a request the host never saw', async () => {
+    // FormLogic clears its "the AI is still editing" mark on any ai-cancel,
+    // so a stray one while another request runs would clear it early.
+    hostedLocation();
+    const mod = await loadModule();
+    const session = host(mod, { aiTools: 1, answer: () => null });
+    await flush();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(mod.requestHostedAIReply({ messages: [{ role: 'user', content: 'Hi' }], tools: TOOLS }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    await flush();
+    expect(session.requests).toEqual([]);
+    session.dispose();
+  });
 });

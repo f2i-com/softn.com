@@ -37,16 +37,79 @@ test('the queue refuses only when the waiting line is full, with a message that 
   assert.deepEqual(await queue.call('fourth', {}), { error: BACKEND_BUSY });
 });
 
-test('a sent call times out on its own clock and frees its slot', async () => {
+test('a sent call answers at its deadline, and keeps its slot until the parent answers it', async () => {
+  // The parent still holds a call the shell has stopped waiting for: it has
+  // no deadline of its own, and refuses a fifth call while it holds four.
+  // Freed at the deadline, the slot went to a call the parent then refused.
   const posted = [];
   const queue = createBackendQueue({ post: m => posted.push(m), maxInFlight: 1, maxQueued: 4, timeoutMs: 15 });
   const late = queue.call('slow', {});
   const next = queue.call('next', {});
   assert.deepEqual(await late, { error: BACKEND_TIMEOUT });
-  assert.equal(posted.length, 2, 'the waiting call was sent when the slot freed');
+  assert.equal(posted.length, 1, 'nothing more is sent while the parent holds the slow call');
+  assert.equal(queue.inFlight, 1);
+  assert.equal(queue.settle(posted[0].id, 'too late'), false, 'a stale answer is not handed to anyone');
+  assert.equal(posted.length, 2, 'its answer frees the slot, and the waiting call goes out');
   queue.settle(posted[1].id, 'done');
   assert.equal(await next, 'done');
-  assert.equal(queue.settle(posted[0].id, 'too late'), false, 'a stale answer is ignored');
+});
+
+test('a call that cannot be sent before the deadline, every slot still held, answers that it timed out', async () => {
+  const posted = [];
+  const queue = createBackendQueue({ post: m => posted.push(m), maxInFlight: 1, maxQueued: 4, timeoutMs: 15 });
+  queue.call('slow', {});
+  const waited = queue.call('waiting', {});
+  assert.deepEqual(await waited, { error: BACKEND_TIMEOUT });
+  assert.equal(queue.waiting, 0, 'it left the line');
+  queue.settle(posted[0].id, 'late');
+  assert.deepEqual(posted.map(m => m.action), ['slow'], 'and is not sent afterwards');
+});
+
+test('a port that fails frees the slots of calls that had timed out', async () => {
+  const posted = [];
+  const queue = createBackendQueue({ post: m => posted.push(m), maxInFlight: 1, maxQueued: 4, timeoutMs: 15 });
+  assert.deepEqual(await queue.call('slow', {}), { error: BACKEND_TIMEOUT });
+  const next = queue.call('next', {});
+  assert.equal(queue.failInFlight(BACKEND_UNREADABLE), 0, 'no caller was still waiting on the slow call');
+  assert.equal(queue.inFlight, 1, 'the next call took the freed slot');
+  queue.settle(posted[1].id, 'ok');
+  assert.equal(await next, 'ok');
+});
+
+test('the frame never has more calls outstanding at the parent than the parent allows', async () => {
+  // FormLogic's HostedAppFrame: four at a time, the rest refused with
+  // "Please wait for the current request.", and no deadline on its side.
+  let held = 0;
+  let refused = 0;
+  const parent = [];
+  // `queue` is read when the parent answers, after it exists.
+  const post = m => {
+    if (held >= 4) {
+      refused++;
+      setTimeout(() => queue.settle(m.id, { error: 'Please wait for the current request.' }), 0);
+      return;
+    }
+    held++;
+    parent.push(m);
+  };
+  const queue = createBackendQueue({ post, maxInFlight: 4, maxQueued: 32, timeoutMs: 15 });
+  const slow = [1, 2, 3, 4].map(() => queue.call('slow', {}));
+  assert.deepEqual(await Promise.all(slow), Array(4).fill({ error: BACKEND_TIMEOUT }));
+  const after = [1, 2].map(n => queue.call(`after-${n}`, {}));
+  await tick();
+  assert.equal(refused, 0);
+  // The parent answers the slow calls; the waiting ones go out and are answered.
+  for (const m of parent.splice(0)) {
+    held--;
+    queue.settle(m.id, { result: m.action });
+  }
+  await tick();
+  for (const m of parent.splice(0)) {
+    held--;
+    queue.settle(m.id, { result: m.action });
+  }
+  assert.deepEqual(await Promise.all(after), [{ result: 'after-1' }, { result: 'after-2' }]);
+  assert.equal(refused, 0, 'nothing was refused by the parent');
 });
 
 test('an unreadable reply fails what is in flight, not what is waiting', async () => {

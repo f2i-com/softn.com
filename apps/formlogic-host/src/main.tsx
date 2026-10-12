@@ -36,8 +36,10 @@ const root = createRoot(document.getElementById('root')!);
 root.render(<p style={{ padding: 24, fontFamily: 'system-ui' }}>Opening app…</p>);
 let started = false;
 let port: MessagePort | undefined;
-// Four calls at a time to the parent, thirty-two waiting behind them, twenty
-// seconds each once sent. The parent validates every call on its side.
+// Four calls at a time to the parent, which is the parent's own limit,
+// thirty-two waiting behind them, twenty seconds each for an answer. A slot
+// is the parent's until it answers (see backendQueue.ts). The parent
+// validates every call on its side.
 const calls = createBackendQueue({
   post: message => port!.postMessage(message),
   maxInFlight: 4, maxQueued: 32, timeoutMs: 20000,

@@ -8,6 +8,16 @@
  * own deadline. The wire protocol is unchanged: `{type:'call', id, action,
  * input}` out, `{id, result}` back, and a result the port could not clone
  * (`messageerror`) fails what is in flight instead of waiting out the clock.
+ *
+ * A deadline answers the caller, not the slot. The parent (FormLogic's
+ * HostedAppFrame) holds four calls at a time with no deadline of its own and
+ * refuses a fifth, so a call it has not answered still takes one of its
+ * four: freed at the deadline, the slot went to the next call, which the
+ * parent refused, and so did every call after a slow one until the parent
+ * caught up, storage writes among them. The slot is freed when the parent
+ * answers that id, or when the port fails. A call still waiting for a slot
+ * when its deadline comes, the slots all held, answers then and leaves the
+ * line, so no caller waits longer than the deadline for an answer.
  */
 export interface BackendCallMessage {
   type: 'call';
@@ -23,17 +33,22 @@ export interface BackendQueueOptions {
   maxInFlight?: number;
   /** Calls that may wait for a slot before the queue refuses new ones. */
   maxQueued?: number;
-  /** Deadline for an answer, counted from the moment the call is sent. */
+  /** Deadline for an answer, counted from the moment the call is sent, and for a slot while it waits. */
   timeoutMs?: number;
 }
 
 export interface BackendQueue {
   /** Resolves with the parent's result, or `{error}` when refused, timed out or unreadable. Never rejects. */
   call(action: string, input: Record<string, unknown>): Promise<unknown>;
-  /** A `{id, result}` message from the port; returns false when nothing waits on that id. */
+  /**
+   * A `{id, result}` message from the port. Frees that call's slot; returns
+   * false when no caller waits on that id (none was sent, or its caller was
+   * answered at the deadline).
+   */
   settle(id: unknown, result: unknown): boolean;
-  /** Every call in flight answers `{error: reason}`; what waits in the queue is sent next. */
+  /** Every slot is freed and every caller still waiting on one answers `{error: reason}`; returns how many did. */
   failInFlight(reason: string): number;
+  /** Calls the parent holds: sent and not answered by it, including any whose caller has had its deadline. */
   readonly inFlight: number;
   readonly waiting: number;
 }
@@ -42,8 +57,9 @@ export const BACKEND_BUSY = 'The backend is busy: too many requests are waiting.
 export const BACKEND_TIMEOUT = 'The backend request timed out.';
 export const BACKEND_UNREADABLE = 'The backend reply could not be read.';
 
-interface Waiting { action: string; input: Record<string, unknown>; resolve: (value: unknown) => void }
-interface Sent { resolve: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }
+interface Waiting { action: string; input: Record<string, unknown>; resolve: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }
+/** A call the parent holds. `resolve` is gone once its caller has been answered at the deadline. */
+interface Sent { resolve?: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }
 
 export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
   const maxInFlight = options.maxInFlight ?? 4;
@@ -56,11 +72,14 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
   function dispatch(): void {
     while (sent.size < maxInFlight && waiting.length > 0) {
       const next = waiting.shift() as Waiting;
+      clearTimeout(next.timer);
       const id = ++sequence;
       const timer = setTimeout(() => {
-        if (!sent.delete(id)) return;
-        next.resolve({ error: BACKEND_TIMEOUT });
-        dispatch();
+        const item = sent.get(id);
+        if (!item?.resolve) return;
+        // The caller is answered; the slot stays the parent's until it answers.
+        item.resolve({ error: BACKEND_TIMEOUT });
+        item.resolve = undefined;
       }, timeoutMs);
       sent.set(id, { resolve: next.resolve, timer });
       try {
@@ -79,7 +98,18 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
     call(action, input) {
       if (waiting.length >= maxQueued) return Promise.resolve({ error: BACKEND_BUSY });
       return new Promise(resolve => {
-        waiting.push({ action, input, resolve });
+        const entry: Waiting = {
+          action,
+          input,
+          resolve,
+          timer: setTimeout(() => {
+            const index = waiting.indexOf(entry);
+            if (index < 0) return;
+            waiting.splice(index, 1);
+            resolve({ error: BACKEND_TIMEOUT });
+          }, timeoutMs),
+        };
+        waiting.push(entry);
         dispatch();
       });
     },
@@ -89,19 +119,22 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
       if (!item) return false;
       clearTimeout(item.timer);
       sent.delete(id);
-      item.resolve(result);
+      item.resolve?.(result);
       dispatch();
-      return true;
+      return item.resolve !== undefined;
     },
     failInFlight(reason) {
-      const failed = [...sent.entries()];
+      const failed = [...sent.values()];
       sent.clear();
-      for (const [, item] of failed) {
+      let answered = 0;
+      for (const item of failed) {
         clearTimeout(item.timer);
+        if (!item.resolve) continue;
         item.resolve({ error: reason });
+        answered++;
       }
       dispatch();
-      return failed.length;
+      return answered;
     },
     get inFlight() { return sent.size; },
     get waiting() { return waiting.length; },
