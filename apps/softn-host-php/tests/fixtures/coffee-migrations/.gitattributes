@@ -1,0 +1,2 @@
+# Immutable migration fixtures and their whole-file ledger hashes.
+*.sql text eol=lf

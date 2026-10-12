@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {pathToFileURL} from 'node:url';
 import {resolve,join} from 'node:path';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 const root=resolve(process.env.SOFTN_PHP_TEST_BACKEND||'');
 const skip=process.env.SOFTN_PHP_TEST_BACKEND?false:'Set SOFTN_PHP_TEST_BACKEND to an extracted backend directory';
 // Without the backend fixture these tests are SKIPPED, visibly, not thrown
@@ -52,6 +54,31 @@ test('migrations cannot escape database or mutate private host tables',()=>{
     applyMigration(db,'CREATE TABLE items(id INTEGER PRIMARY KEY,name TEXT); CREATE INDEX items_name ON items(name);');
     for(const sql of ["ATTACH DATABASE '/tmp/escape.sqlite' AS other",'PRAGMA writable_schema=ON','BEGIN','DROP TABLE _private','CREATE TABLE _stolen(value TEXT)',"INSERT INTO _private VALUES('changed')",'CREATE INDEX stolen ON _private(value)','ALTER TABLE items RENAME TO _items']){assert.throws(()=>applyMigration(db,sql));}
   } finally {db.close();}
+});
+
+test('assembled helper matches source and permits STRICT nullable TEXT while guest PRAGMA remains denied',()=>{
+  const hash=file=>createHash('sha256').update(readFileSync(file)).digest('hex');
+  assert.equal(hash(join(root,'migrations.mjs')),hash(new URL('../runtime/migrations.mjs',import.meta.url)),'assembled helper is the candidate source, not an older frozen runtime');
+  const db=new DatabaseSync(':memory:');
+  try {
+    db.exec("CREATE TABLE items(id INTEGER PRIMARY KEY,note TEXT CHECK(length(note)<20)) STRICT; INSERT INTO items VALUES(1,'kept'); CREATE TABLE _private(secret TEXT); INSERT INTO _private VALUES('kept');");
+    applyMigration(db,'CREATE TABLE scopes(id TEXT PRIMARY KEY) STRICT; ALTER TABLE items ADD scope_id TEXT REFERENCES scopes(id);');
+    assert.equal(db.prepare('SELECT scope_id FROM items').get().scope_id,null);
+    db.exec('BEGIN IMMEDIATE');
+    try{assert.throws(()=>applyMigration(db,'ALTER TABLE items ADD rolled_back TEXT; PRAGMA main.quick_check(items);'));}
+    finally{db.exec('ROLLBACK');}
+    assert.equal(db.prepare('PRAGMA table_info(items)').all().some(row=>row.name==='rolled_back'),false);
+    assert.equal(db.prepare('SELECT secret FROM _private').get().secret,'kept');
+    const forbidden=createWasmHost(db,{key,cryptoDomains,capabilities:['sql'],source:`function handle(){softn.sql.query("SELECT * FROM pragma_quick_check('items','main')",[]);return {status:200,body:{leaked:true}};}`});
+    const rejected=forbidden.invoke({body:{}},{handler:'handle',transaction:'read'});
+    // Host permission failures are fatal to the request, rather than a guest
+    // success with a swallowed exception. Preserve that existing boundary.
+    assert.equal(rejected.status,500);
+    assert.equal(rejected.body.code,'host_error');
+    const allowed=createWasmHost(db,{key,cryptoDomains,capabilities:['sql'],source:'function handle(){return {status:200,body:softn.sql.first("SELECT note FROM items",[])}}'});
+    assert.deepEqual(allowed.invoke({body:{}},{handler:'handle',transaction:'read'}),{status:200,body:{note:'kept'}});
+    assert.equal(db.prepare('SELECT secret FROM _private').get().secret,'kept');
+  } finally{db.close();}
 });
 test('time host supports non-Australian zones and rejects ambiguous dates',()=>{
   assert.equal(parseZoned('2026-07-01','12:00','America/New_York'),Date.parse('2026-07-01T16:00:00Z')/1000);

@@ -683,6 +683,49 @@ test('a migration may add, rename and drop columns, and may not rename a table i
   } finally {db.close();}
 });
 
+test('scoped STRICT ADD runs through the real runner with whole-file ledger, rollback, retry and removal protection',t=>{
+  const app=manifest([{method:'GET',path:'/api/ping',handler:'ping'}]);
+  const file=n=>'server/migrations/'+n+'.sql';
+  const b=backend({...app,server:{...app.server,database:{kind:'private-sqlite',migrations:[file('002'),file('001')]}}});
+  t.after(b.close);
+  const source={
+    '001':"CREATE TABLE items(id INTEGER PRIMARY KEY,note TEXT CHECK(length(note)<=10)) STRICT; INSERT INTO items VALUES(1,'kept');",
+    '002':'CREATE TABLE scopes(id TEXT PRIMARY KEY) STRICT; ALTER TABLE main.items ADD COLUMN scope_id TEXT REFERENCES scopes(id);',
+    '003':"CREATE TABLE before_failure(value TEXT) STRICT; INSERT INTO before_failure VALUES('before'); UPDATE items SET note='changed';",
+    '004':'ALTER TABLE items ADD rolled_back TEXT; PRAGMA main.quick_check(items);',
+  };
+  const write=(name,sql)=>writeFileSync(join(b.root,'app',file(name)),sql);
+  for(const [name,sql] of Object.entries(source))write(name,sql);
+  const deploy=names=>writeFileSync(join(b.root,'app/manifest.json'),JSON.stringify({...app,server:{...app.server,database:{kind:'private-sqlite',migrations:names.map(file)}}}));
+  const read=fn=>{const db=new DatabaseSync(join(b.root,'private/data/application.sqlite'));try{return fn(db);}finally{db.close();}};
+  const snapshot=()=>read(db=>({
+    schema:db.prepare('SELECT type,name,sql FROM sqlite_schema ORDER BY name').all().map(row=>({...row})),
+    ledger:db.prepare('SELECT * FROM _migrations ORDER BY name').all().map(row=>({...row})),
+    items:db.prepare('SELECT * FROM items').all().map(row=>({...row})),
+  }));
+  const start=()=>b.invoke({method:'GET',path:'/api/meta'});
+  assert.equal(start().status,200);
+  const first=snapshot();
+  assert.deepEqual(first.items,[{id:1,note:'kept',scope_id:null}]);
+  assert.deepEqual(first.ledger.map(({name,sha256})=>({name,sha256})),['001','002'].map(name=>({name:file(name),sha256:createHash('sha256').update(source[name]).digest('hex')})));
+  assert.equal(start().status,200);assert.deepEqual(snapshot(),first,'unchanged files skipped, including original applied_at');
+  deploy(['004','002','003','001']);
+  const failure=start();assert.equal(failure.status,503);assert.equal(failure.body.diagnostic,'database_migrations');
+  assert.deepEqual(snapshot(),first,'all pending files and the successful ADD rolled back together');
+  source['004']="ALTER TABLE items ADD final_label TEXT; INSERT INTO before_failure VALUES('after');";
+  write('004',source['004']);assert.equal(start().status,200);
+  const upgraded=snapshot();
+  assert.deepEqual(upgraded.ledger.map(({name,sha256})=>({name,sha256})),['001','002','003','004'].map(name=>({name:file(name),sha256:createHash('sha256').update(source[name]).digest('hex')})));
+  assert.deepEqual(upgraded.items,[{id:1,note:'changed',scope_id:null,final_label:null}]);
+  read(db=>{assert.equal(db.prepare('PRAGMA quick_check').get().quick_check,'ok');assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);assert.deepEqual(db.prepare('SELECT value FROM before_failure').all().map(r=>r.value),['before','after']);});
+  write('002',source['002']+' -- changed comment');
+  assert.equal(start().body.diagnostic,'database_migrations');assert.deepEqual(snapshot(),upgraded,'whole-file hash mismatch rejected');
+  write('002',source['002']);assert.equal(start().status,200);
+  write('005','CREATE TABLE removal_probe(value TEXT) STRICT;');deploy(['001','003','004','005']);
+  assert.equal(start().body.diagnostic,'database_migrations');assert.deepEqual(snapshot(),upgraded,'removed applied file rolls back newly pending table/ledger');
+  deploy(['001','002','003','004']);assert.equal(start().status,200);
+});
+
 test('a deployed app\'s migrations alter its tables, and its handlers run the Rust host\'s SQL, through the runner',t=>{
   const app=manifest([{method:'GET',path:'/api/things',handler:'things',transaction:'read'}]);
   const migrations=['server/migrations/001.sql','server/migrations/002.sql'];
