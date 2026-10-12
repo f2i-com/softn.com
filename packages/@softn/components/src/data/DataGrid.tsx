@@ -6,7 +6,7 @@
 
 import * as React from 'react';
 import { presentRows } from '../utils/rows';
-import { sortRows } from '../utils/sort';
+import { sortOrder } from '../utils/sort';
 
 /**
  * A row, when nothing more specific is known about it. The grid is usually fed
@@ -204,11 +204,17 @@ export function DataGrid<T = Row>({
   const getCellValue = cellValue;
 
   // The rows in the order they are drawn: sorted by the grid itself when the
-  // page gave no `onSort`, as the page gave them otherwise.
-  const data = React.useMemo(() => {
+  // page gave no `onSort`, as the page gave them otherwise. `order` is each
+  // drawn row's place in the page's list (null when drawn as given). The
+  // sort is the grid's and the list is the page's, so a row with no key field
+  // is keyed by its place there, and a column's `render` is handed it: keyed
+  // by its place on screen, a selection stayed where it was while the rows
+  // moved under it, and an edit told the page another record's key.
+  const order = React.useMemo(() => {
     const by = sortsItself ? columns.find((column) => column.key === sortKey && column.sortable) : undefined;
-    return by ? sortRows(rows, (row) => cellValue(row, by), sortDirection) : rows;
+    return by ? sortOrder(rows, (row) => cellValue(row, by), sortDirection) : null;
   }, [rows, columns, sortsItself, sortKey, sortDirection]);
+  const data = React.useMemo(() => (order ? order.map((index) => rows[index]) : rows), [rows, order]);
 
   // Virtual scrolling calculations. A row height of zero or less (or not a
   // number) would divide by zero; it is read as the default.
@@ -261,8 +267,9 @@ export function DataGrid<T = Row>({
     }
   };
 
-  const allSelected = data.length > 0 && data.every((row, i) => selectedKeys.has(getRowKey(row, i)));
-  const someSelected = !allSelected && data.some((row, i) => selectedKeys.has(getRowKey(row, i)));
+  // Over the rows as the page gave them, where a row's index is its own.
+  const allSelected = rows.length > 0 && rows.every((row, i) => selectedKeys.has(getRowKey(row, i)));
+  const someSelected = !allSelected && rows.some((row, i) => selectedKeys.has(getRowKey(row, i)));
   React.useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected;
   }, [someSelected]);
@@ -392,7 +399,7 @@ export function DataGrid<T = Row>({
               aria-label="Select all rows"
               checked={allSelected}
               onChange={() => {
-                setSelection(allSelected ? new Set() : new Set(data.map((row, i) => getRowKey(row, i))));
+                setSelection(allSelected ? new Set() : new Set(rows.map((row, i) => getRowKey(row, i))));
               }}
             />
           </div>
@@ -502,8 +509,10 @@ export function DataGrid<T = Row>({
         <div role="rowgroup" style={{ position: 'relative', height: virtualized ? totalHeight : 'auto' }}>
           <div style={{ position: 'absolute', top: offsetY, left: 0, right: 0 }}>
             {visibleData.map((row, idx) => {
+              // Where the row is drawn, and where it is in the page's list.
               const actualIndex = startIndex + idx;
-              const rowKey = getRowKey(row, actualIndex);
+              const givenIndex = order ? order[actualIndex] : actualIndex;
+              const rowKey = getRowKey(row, givenIndex);
               const isSelected = selectedKeys.has(rowKey);
 
               return (
@@ -577,7 +586,7 @@ export function DataGrid<T = Row>({
                               onCancel: () => setEditingCell(null),
                             })
                           : column.render
-                            ? column.render(value, row, actualIndex)
+                            ? column.render(value, row, givenIndex)
                             : String(value ?? '')}
                       </div>
                     );

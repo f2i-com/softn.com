@@ -68,10 +68,21 @@ body {
   background: color-mix(in srgb, currentColor 14%, transparent);
   border: 1px solid color-mix(in srgb, currentColor 32%, transparent);
 }
+/* Its focus ring likewise: the shell's pale blue is for its dark page, and
+   on a light app's ground it could hardly be told from the white. */
+.loading button:focus-visible {
+  outline-color: currentColor;
+}
 /* The permission bar is the shared one from @softn/runtime-shell, which
    carries its own styles; it sits in .application-chrome and is measured
    with it. */
-button {
+/* The shell's own buttons only. A bare `button` reached the app's as well:
+   a <button> in a page was drawn dark here and as the browser draws it in
+   every other host, and a component's button with no padding of its own took
+   this one's. `:where` keeps the rule at the weight the bare one had, so the
+   rules above and below still win over it. */
+:where(.loading, .application-chrome) button,
+button:where(.chrome-peek) {
   font: inherit;
   cursor: pointer;
   padding: 10px 16px;
@@ -80,7 +91,8 @@ button {
   border: 1px solid #ffffff50;
   border-radius: 8px;
 }
-button:focus-visible {
+:where(.loading, .application-chrome) button:focus-visible,
+button:where(.chrome-peek):focus-visible {
   outline: 3px solid #acb8ff;
   outline-offset: 3px;
 }

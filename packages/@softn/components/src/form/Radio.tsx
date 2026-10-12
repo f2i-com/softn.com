@@ -61,14 +61,33 @@ function normaliseOptions(options: unknown): RadioOption[] {
     );
 }
 
+/** Text, a number or a yes/no: a value that says what it is when read as text. */
+function readsAsText(value: unknown): boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint';
+}
+
 /**
- * Whether the chosen value is this option's. Compared as text: a radio hands
- * back what it was chosen as text, so an option whose value is a number (a
- * record's id) was shown unchecked as soon as it was picked, and a number in
- * state never matched options written as `[1, 2, 3]`, which are read as text.
+ * Whether the chosen value is this option's: the same value, or one that
+ * reads the same as text. A radio hands back what it was chosen as text, so
+ * an option whose value is a number (a record's id) was shown unchecked as
+ * soon as it was picked, and a number in state never matched options written
+ * as `[1, 2, 3]`, which are read as text. Only text, numbers and yes/no are
+ * read that way: every record reads "[object Object]", so read as text each
+ * one was every other.
  */
 function sameChoice(a: unknown, b: unknown): boolean {
-  return a !== undefined && a !== null && b !== undefined && b !== null && String(a) === String(b);
+  if (a === undefined || b === undefined) return false;
+  return a === b || (readsAsText(a) && readsAsText(b) && String(a) === String(b));
+}
+
+/**
+ * The option a value chooses, by its place: the one that is the value, else
+ * the first that reads the same, else -1. One place, so `[1, "1"]` or a
+ * value given twice checks one radio and not two.
+ */
+function chosenIndex(items: RadioOption[], value: unknown): number {
+  const exact = items.findIndex((option) => option.value === value);
+  return exact >= 0 ? exact : items.findIndex((option) => sameChoice(option.value, value));
 }
 
 const sizeValues: Record<string, { radio: string; text: string; gap: string }> = {
@@ -123,16 +142,18 @@ export function Radio({
     }
   }, [value]);
 
+  const selectedIndex = chosenIndex(items, selectedValue);
+
   // The chosen option's own value, as SegmentedControl and Select hand back:
   // the input only carries it as text, so a numbered option (a record's id)
-  // was stored as "12" where the options held 12.
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const chosen = items.find((option) => String(option.value) === e.target.value);
-    const newValue = chosen ? chosen.value : e.target.value;
+  // was stored as "12" where the options held 12. It is the option of the
+  // radio that was picked, not one looked up by that text: options that read
+  // alike (records, or 1 beside "1") all handed back the first of them.
+  const handleChange = (option: RadioOption, e: React.ChangeEvent<HTMLInputElement>) => {
     if (!isControlled) {
-      setInternalValue(newValue);
+      setInternalValue(option.value);
     }
-    onChange?.(newValue, e);
+    onChange?.(option.value, e);
   };
 
   const containerStyle: React.CSSProperties = {
@@ -201,11 +222,11 @@ export function Radio({
         aria-disabled={disabled || undefined}
         style={optionsContainerStyle}
       >
-        {items.map((option) => {
+        {items.map((option, index) => {
           const isDisabled = disabled || option.disabled;
           return (
             <label
-              key={String(option.value)}
+              key={`${index}-${String(option.value)}`}
               style={{
                 ...optionStyle,
                 opacity: isDisabled ? 0.6 : 1,
@@ -216,9 +237,9 @@ export function Radio({
                 type="radio"
                 name={groupName}
                 value={String(option.value)}
-                checked={sameChoice(selectedValue, option.value)}
+                checked={index === selectedIndex}
                 disabled={isDisabled}
-                onChange={handleChange}
+                onChange={(e) => handleChange(option, e)}
                 style={radioStyle}
               />
               <span style={optionLabelStyle}>{option.label}</span>

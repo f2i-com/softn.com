@@ -181,6 +181,50 @@ describe('RichTextEditor input boundary', () => {
     expect(emitted).not.toMatch(/onclick|script|alert\(2\)/i);
     expect(editor.innerHTML).toBe(emitted);
   });
+
+  it('drops the name of an image, which would stand in for a method of the page’s document', () => {
+    // `<img name="createElement">` is what `document.createElement` answers
+    // while the image is on the page, and React draws with that method: one
+    // record holding it blanked the whole page the next time anything was
+    // drawn ("ownerDocument.createElement is not a function", in Chromium).
+    const onChange = vi.fn();
+    const { container } = mount(
+      <RichTextEditor
+        value={'<p>Notes</p><img name="createElement" id="pic" alt="x" src="a.png"><a name="top" href="#top">top</a>'}
+        onChange={onChange}
+        showToolbar={false}
+      />
+    );
+    const editor = container.querySelector<HTMLElement>('[role="textbox"]')!;
+    const image = editor.querySelector('img')!;
+    expect(image.hasAttribute('name')).toBe(false);
+    expect([image.getAttribute('id'), image.getAttribute('alt'), image.getAttribute('src')]).toEqual(['pic', 'x', 'a.png']);
+    // An anchor's name is a place in the text to link to, and no property of the document.
+    expect(editor.querySelector('a')!.getAttribute('name')).toBe('top');
+    expect(typeof document.createElement).toBe('function');
+
+    // Put in as a paste puts it.
+    editor.innerHTML = '<p>More</p><img name="querySelector" alt="y">';
+    act(() => {
+      editor.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    });
+    expect(editor.querySelector('img')!.hasAttribute('name')).toBe(false);
+    expect(onChange.mock.lastCall?.[0]).toBe('<p>More</p><img alt="y">');
+  });
+
+  it('is empty for a value that is not text, where a null field showed the word "null"', () => {
+    // A record's empty field is null. Read as markup that is the text
+    // "null": it was shown in the editor, and the first keystroke saved it.
+    for (const value of [null, {}, ['<b>x</b>'], true, Number.NaN]) {
+      const { container, unmount } = mount(<RichTextEditor value={value as never} showToolbar={false} />);
+      const editor = container.querySelector<HTMLElement>('[role="textbox"]')!;
+      expect(editor.innerHTML, String(value)).toBe('');
+      expect(container.textContent).toContain('Start writing...');
+      unmount();
+    }
+    const { container } = mount(<RichTextEditor value={42 as never} defaultValue={null as never} showToolbar={false} />);
+    expect(container.querySelector('[role="textbox"]')!.textContent).toBe('42');
+  });
 });
 
 describe('keyboard access to smart collections', () => {

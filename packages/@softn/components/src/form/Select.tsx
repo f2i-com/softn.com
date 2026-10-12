@@ -105,15 +105,25 @@ function normaliseOption(option: SelectOption | SelectOptionGroup | string | num
   return { value: option as string, label: String(option) };
 }
 
+/** Text, a number or a yes/no: a value that says what it is when read as text. */
+function readsAsText(value: unknown): boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint';
+}
+
 /**
- * Whether a value and an option's value are the same choice. They are
- * compared as text: an option's value is often a record's numeric id while
- * the state holds it as text, or the other way round (`options={[1, 2]}` is
- * read as "1" and "2"). Compared strictly, the chosen option was not shown
- * and the field showed its placeholder over a value it held.
+ * Whether a value and an option's value are the same choice: the same value,
+ * or one that reads the same as text. An option's value is often a record's
+ * numeric id while the state holds it as text, or the other way round
+ * (`options={[1, 2]}` is read as "1" and "2"). Compared strictly, the chosen
+ * option was not shown and the field showed its placeholder over a value it
+ * held. Only text, numbers and yes/no are read as text: every record reads
+ * "[object Object]", so read that way each one was every other, the list
+ * showed them all chosen, and picking a second in a multiple select took the
+ * first out.
  */
 function sameChoice(a: unknown, b: unknown): boolean {
-  return a !== undefined && a !== null && b !== undefined && b !== null && String(a) === String(b);
+  if (a === undefined || b === undefined) return false;
+  return a === b || (readsAsText(a) && readsAsText(b) && String(a) === String(b));
 }
 
 /** An option's label or value as text to search, whatever it was given as. */
@@ -628,7 +638,8 @@ export function Select({
     const isDisabled = option.disabled ?? false;
     return (
       <div
-        key={option.value}
+        // With its place: values that read alike (records) would share a key.
+        key={`${index}-${String(option.value)}`}
         id={optionId(index)}
         role="option"
         aria-selected={isSelected}

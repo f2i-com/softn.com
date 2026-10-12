@@ -17,7 +17,9 @@
  * caught up, storage writes among them. The slot is freed when the parent
  * answers that id, or when the port fails. A call still waiting for a slot
  * when its deadline comes, the slots all held, answers then and leaves the
- * line, so no caller waits longer than the deadline for an answer.
+ * line. The two clocks are separate: a call that gets its slot just before
+ * that deadline is given the whole of the next one for its answer, so a
+ * caller hears back within two deadlines of calling, not one.
  */
 export interface BackendCallMessage {
   type: 'call';
@@ -56,6 +58,10 @@ export interface BackendQueue {
 export const BACKEND_BUSY = 'The backend is busy: too many requests are waiting. Try again in a moment.';
 export const BACKEND_TIMEOUT = 'The backend request timed out.';
 export const BACKEND_UNREADABLE = 'The backend reply could not be read.';
+export const BACKEND_INVALID = 'Invalid backend request.';
+
+/** An action's name as the parent takes it (HostedAppFrame), and as the script runtime checks it before it calls. */
+const ACTION = /^[a-z][a-zA-Z0-9_-]{0,63}$/;
 
 interface Waiting { action: string; input: Record<string, unknown>; resolve: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }
 /** A call the parent holds. `resolve` is gone once its caller has been answered at the deadline. */
@@ -96,6 +102,10 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
 
   return {
     call(action, input) {
+      // The one message the parent leaves unanswered is a call it cannot read
+      // as one: an action that is not text of the shape it takes. Unanswered,
+      // it would hold its slot for good, and four of them every slot.
+      if (typeof action !== 'string' || !ACTION.test(action)) return Promise.resolve({ error: BACKEND_INVALID });
       if (waiting.length >= maxQueued) return Promise.resolve({ error: BACKEND_BUSY });
       return new Promise(resolve => {
         const entry: Waiting = {

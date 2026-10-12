@@ -156,3 +156,76 @@ describe('the value a choice hands back', () => {
     expect(seen).toEqual([7]);
   });
 });
+
+/**
+ * Reading values as text is for telling 2 from "2", not for values that only
+ * look alike as text. Every record reads "[object Object]", so with records
+ * for values Radio handed back the first option's whichever was picked, and
+ * Select showed every option chosen and, in a multiple one, took the first
+ * record out when a second was picked. Two options that do read alike (1 and
+ * "1", or the same value twice) are still two options: the one picked is the
+ * one handed back, and one of them is shown chosen.
+ */
+describe('values that read alike as text', () => {
+  const ADA = { id: 1 };
+  const GRACE = { id: 2 };
+  const RECORDS = [
+    { value: ADA, label: 'Ada' },
+    { value: GRACE, label: 'Grace' },
+  ];
+  const chosen = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('[role="option"]')).map((option) => option.getAttribute('aria-selected'));
+
+  it('Radio hands back the record of the option that was picked', () => {
+    const seen: unknown[] = [];
+    const { container } = mount(<Radio name="n" options={RECORDS as never} onChange={(value) => seen.push(value)} />);
+    check(radios(container)[1]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(GRACE);
+    expect(radios(container).map((r) => r.checked)).toEqual([false, true]);
+  });
+
+  it('Radio checks the record that is the value, not every record', () => {
+    const { container } = mount(<Radio name="n" options={RECORDS as never} value={ADA as never} />);
+    expect(radios(container).map((r) => r.checked)).toEqual([true, false]);
+  });
+
+  it('Radio tells 1 from "1" when both are options', () => {
+    const seen: unknown[] = [];
+    const { container } = mount(<Radio name="n" options={[1, '1'] as never} onChange={(value) => seen.push(value)} />);
+    check(radios(container)[1]);
+    expect(seen).toEqual(['1']);
+    expect(radios(container).map((r) => r.checked)).toEqual([false, true]);
+    check(radios(container)[0]);
+    expect(seen).toEqual(['1', 1]);
+    expect(radios(container).map((r) => r.checked)).toEqual([true, false]);
+  });
+
+  it('Radio checks one option when the same value is given twice', () => {
+    const { container } = mount(<Radio name="n" options={['a', 'a', 'b'] as never} value="a" />);
+    expect(radios(container).map((r) => r.checked)).toEqual([true, false, false]);
+  });
+
+  it('Radio still checks an option whose value is null when the value is null', () => {
+    const options = [{ value: null, label: 'Nobody' }, { value: 7, label: 'Ada' }];
+    const { container } = mount(<Radio name="n" options={options as never} value={null as never} />);
+    expect(radios(container).map((r) => r.checked)).toEqual([true, false]);
+  });
+
+  it('Select shows the record that is the value chosen, not every record', () => {
+    const { container } = mount(<Select options={RECORDS as never} value={ADA as never} />);
+    click(trigger(container));
+    expect(chosen(container)).toEqual(['true', 'false']);
+  });
+
+  it('a multiple Select adds a second record to the first', () => {
+    const seen: unknown[] = [];
+    const { container } = mount(
+      <Select multiple options={RECORDS as never} defaultValue={[ADA] as never} onChange={(value) => seen.push(value)} />
+    );
+    click(trigger(container));
+    click(Array.from(container.querySelectorAll('[role="option"]'))[1]);
+    expect(seen).toEqual([[ADA, GRACE]]);
+    expect(chosen(container)).toEqual(['true', 'true']);
+  });
+});

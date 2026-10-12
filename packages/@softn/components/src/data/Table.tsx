@@ -7,7 +7,7 @@
 import React from 'react';
 import { choice } from '../utils/choice';
 import { presentRows, recordRows } from '../utils/rows';
-import { sortRows } from '../utils/sort';
+import { sortOrder } from '../utils/sort';
 
 export interface Column<T> {
   /** Column key (maps to data property) */
@@ -39,16 +39,20 @@ export interface Column<T> {
 function TableRow<T extends Record<string, unknown>>({
   row,
   index,
+  position,
   columns,
   onRowClick,
   getRowStyle,
   getBodyCellStyle,
 }: {
   row: T;
+  /** The row's place in the list the page gave: what the page is told. */
   index: number;
+  /** The row's place on screen, which differs once the table has sorted: what stripes go by. */
+  position: number;
   columns: Column<T>[];
   onRowClick?: (row: T, index: number) => void;
-  getRowStyle: (index: number, isHovered: boolean) => React.CSSProperties;
+  getRowStyle: (position: number, isHovered: boolean) => React.CSSProperties;
   getBodyCellStyle: (column: Column<T>) => React.CSSProperties;
 }): React.ReactElement {
   const [isHovered, setIsHovered] = React.useState(false);
@@ -62,7 +66,7 @@ function TableRow<T extends Record<string, unknown>>({
 
   return (
     <tr
-      style={getRowStyle(index, isHovered)}
+      style={getRowStyle(position, isHovered)}
       onClick={() => onRowClick?.(row, index)}
       onKeyDown={onRowClick ? handleRowKeyDown : undefined}
       onMouseEnter={() => setIsHovered(true)}
@@ -180,9 +184,15 @@ export function Table<T extends Record<string, unknown>>({
   const sortsItself = !onSort;
   const activeColumn = sortsItself ? ownSort.column : sortColumn;
   const activeDirection = (sortsItself ? ownSort.direction : sortDirection) === 'desc' ? 'desc' : 'asc';
-  const data = React.useMemo(() => {
+  // The rows' places in the page's list, in the order they are drawn; null
+  // when they are drawn as given. The sort is the table's and the list is the
+  // page's, so a row keeps the index it has there: a click is told it, a
+  // column's `render` is handed it, and a row with no key field is keyed by
+  // it. They were given the row's place on screen, and a page that wrote
+  // `rows[index]` in its handler opened or removed another record.
+  const order = React.useMemo(() => {
     const by = sortsItself ? columns.find((column) => column.key === activeColumn && column.sortable) : undefined;
-    return by ? sortRows(given, (row) => row[by.key], activeDirection) : given;
+    return by ? sortOrder(given, (row) => row[by.key], activeDirection) : null;
   }, [given, columns, sortsItself, activeColumn, activeDirection]);
 
   const getRowKey = (row: T, index: number): string => {
@@ -327,24 +337,29 @@ export function Table<T extends Record<string, unknown>>({
           </tr>
         </thead>
         <tbody role="rowgroup">
-          {data.length === 0 ? (
+          {given.length === 0 ? (
             <tr role="row">
               <td colSpan={columns.length} style={emptyStyle} role="cell">
                 {emptyContent}
               </td>
             </tr>
           ) : (
-            data.map((row, index) => (
-              <TableRow
-                key={getRowKey(row, index)}
-                row={row}
-                index={index}
-                columns={columns}
-                onRowClick={onRowClick}
-                getRowStyle={getRowStyle}
-                getBodyCellStyle={getBodyCellStyle}
-              />
-            ))
+            given.map((_row, position) => {
+              const index = order ? order[position] : position;
+              const row = given[index];
+              return (
+                <TableRow
+                  key={getRowKey(row, index)}
+                  row={row}
+                  index={index}
+                  position={position}
+                  columns={columns}
+                  onRowClick={onRowClick}
+                  getRowStyle={getRowStyle}
+                  getBodyCellStyle={getBodyCellStyle}
+                />
+              );
+            })
           )}
         </tbody>
       </table>

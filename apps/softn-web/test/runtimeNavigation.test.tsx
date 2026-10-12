@@ -205,6 +205,31 @@ describe('runtime entry and navigation ownership', () => {
     expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(1);
   });
 
+  it('shows the app whose card was pressed last, when its first press is still loading', async () => {
+    // Alpha, then Beta, then Alpha again before either has opened. The
+    // second press on Alpha opens nothing more, but it is the person's latest
+    // navigation: dropped whole, it left Beta in front of the app they asked
+    // for last.
+    cache.apps = [
+      { id: 'a', name: 'Alpha', version: '1.0.0', bundleData: bundle('Alpha'), cachedAt: 1, lastOpened: 2 },
+      { id: 'b', name: 'Beta', version: '1.0.0', bundleData: bundle('Beta'), cachedAt: 1, lastOpened: 1 },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => emptyDirectory()));
+    await mount('/');
+    const alpha = container.querySelector<HTMLElement>('[aria-label="Open Alpha"]')!;
+    const beta = container.querySelector<HTMLElement>('[aria-label="Open Beta"]')!;
+    act(() => {
+      alpha.click();
+      beta.click();
+      alpha.click();
+    });
+    await settle();
+    expect(document.title).toBe('Alpha');
+    expect(window.location.pathname).toBe('/app/Alpha');
+    await click('.softn-frame-home');
+    expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(2);
+  });
+
   it('gives the next app its own address after Back lands on one that is no longer open', async () => {
     cache.apps = [
       { id: 'a', name: 'Alpha', version: '1.0.0', bundleData: bundle('Alpha'), cachedAt: 1, lastOpened: 2 },

@@ -8,10 +8,13 @@
  * order it gives them.
  */
 
+import { act } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { ComponentRegistry, parse, renderDocument, type SoftNComponent, type SoftNRenderContext } from '@softn/core';
 import { mount, click } from './dom';
 import { builtinComponents } from '../src/registry';
+import { DataGrid } from '../src/data/DataGrid';
+import { Table } from '../src/data/Table';
 import { compareCells, sortRows } from '../src/utils/sort';
 
 const registry = new ComponentRegistry();
@@ -98,6 +101,142 @@ describe.each([
     click(header(container, 'Name'));
     expect(sorted).toHaveBeenCalledWith('name', 'asc');
     expect(firstColumn(container)).toEqual(['bob', 'Ada', 'Émile', 'carl']);
+    unmount();
+  });
+});
+
+/**
+ * Sorted by the component, the rows are drawn in an order the page never
+ * sees. What the component tells the page about a row has to be in the page's
+ * terms: an index into the list it gave, and for a grid row with no key
+ * field, a key that is that index. Told the row's place on screen instead, a
+ * page that wrote `rows[index]` opened, edited or removed another record.
+ */
+describe('a row sorted by the component is still the page’s row', () => {
+  const ROWS = [{ name: 'bob' }, { name: 'Ada' }, { name: 'carl' }];
+  const gridRows = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll<HTMLElement>('[role="row"][aria-rowindex]:not([aria-rowindex="1"])'));
+  const selectedNames = (container: HTMLElement) =>
+    gridRows(container).filter((row) => row.getAttribute('aria-selected') === 'true').map((row) => (row.textContent ?? '').trim());
+
+  it('a Table tells a row click the row’s place in the list it was given', () => {
+    const picked = vi.fn();
+    const { container, unmount } = mount(
+      <Table data={ROWS} columns={[{ key: 'name', header: 'Name', sortable: true }]} onRowClick={picked} />
+    );
+    click(header(container, 'Name'));
+    expect(firstColumn(container)).toEqual(['Ada', 'bob', 'carl']);
+    click(container.querySelector('tbody tr'));
+    expect(picked).toHaveBeenLastCalledWith(ROWS[1], 1);
+    click(header(container, 'Name'));
+    expect(firstColumn(container)).toEqual(['carl', 'bob', 'Ada']);
+    click(container.querySelector('tbody tr'));
+    expect(picked).toHaveBeenLastCalledWith(ROWS[2], 2);
+    unmount();
+  });
+
+  it('a Table hands a column’s render that place too', () => {
+    const { container, unmount } = mount(
+      <Table
+        data={ROWS}
+        columns={[
+          { key: 'name', header: 'Name', sortable: true },
+          { key: 'at', header: 'At', render: (_value, row, index) => `${row.name} is rows[${index}]` },
+        ]}
+      />
+    );
+    click(header(container, 'Name'));
+    expect(Array.from(container.querySelectorAll('tbody tr td:last-child')).map((cell) => cell.textContent)).toEqual([
+      'Ada is rows[1]',
+      'bob is rows[0]',
+      'carl is rows[2]',
+    ]);
+    unmount();
+  });
+
+  it('a DataGrid whose rows have no key field keeps a selection on the row it was made on', () => {
+    const selections: Array<Set<string | number>> = [];
+    const { container, unmount } = mount(
+      <DataGrid
+        virtualized={false}
+        data={ROWS}
+        columns={[{ key: 'name', header: 'Name', sortable: true }]}
+        selectionMode="single"
+        onSelectionChange={(keys) => selections.push(keys)}
+      />
+    );
+    click(gridRows(container)[0]);
+    expect(selectedNames(container)).toEqual(['bob']);
+    click(header(container, 'Name'));
+    expect(firstColumn(container)).toEqual(['Ada', 'bob', 'carl']);
+    expect(selectedNames(container)).toEqual(['bob']);
+    // The key the page is told is the row's place in the page's list.
+    click(gridRows(container)[0]);
+    expect(Array.from(selections[selections.length - 1])).toEqual([1]);
+    unmount();
+  });
+
+  it('a DataGrid edit names the row that was edited', () => {
+    const edited = vi.fn();
+    const { container, unmount } = mount(
+      <DataGrid
+        virtualized={false}
+        data={ROWS}
+        columns={[
+          {
+            key: 'name',
+            header: 'Name',
+            sortable: true,
+            editable: true,
+            editor: ({ onSave }) => (
+              <button type="button" data-save onClick={() => onSave('changed')}>
+                save
+              </button>
+            ),
+          },
+        ]}
+        onCellEdit={edited}
+      />
+    );
+    click(header(container, 'Name'));
+    const cell = gridRows(container)[0].querySelector('[role="cell"]')!;
+    expect(cell.textContent).toBe('Ada');
+    act(() => {
+      cell.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+    click(container.querySelector('[data-save]'));
+    expect(edited).toHaveBeenCalledWith(1, 'name', 'changed');
+    unmount();
+  });
+
+  it('follows the sort the page names when the page changes it, over a header pressed before', () => {
+    const columns = [
+      { key: 'name', header: 'Name', sortable: true },
+      { key: 'n', header: 'N', sortable: true },
+    ];
+    const rows = [
+      { name: 'bob', n: 1 },
+      { name: 'Ada', n: 3 },
+      { name: 'carl', n: 2 },
+    ];
+    const table = mount(<Table data={rows} columns={columns} sortColumn="n" />);
+    expect(firstColumn(table.container)).toEqual(['bob', 'carl', 'Ada']);
+    click(header(table.container, 'Name'));
+    expect(firstColumn(table.container)).toEqual(['Ada', 'bob', 'carl']);
+    // The same props again leave the person's own sort alone.
+    table.rerender(<Table data={rows} columns={columns} sortColumn="n" />);
+    expect(firstColumn(table.container)).toEqual(['Ada', 'bob', 'carl']);
+    table.rerender(<Table data={rows} columns={columns} sortColumn="n" sortDirection="desc" />);
+    expect(firstColumn(table.container)).toEqual(['Ada', 'carl', 'bob']);
+    table.unmount();
+  });
+
+  it('does not sort the page’s own list', () => {
+    const rows = [{ name: 'bob' }, { name: 'Ada' }];
+    const { container, unmount } = mount(<Table data={rows} columns={[{ key: 'name', header: 'Name', sortable: true }]} />);
+    click(header(container, 'Name'));
+    expect(firstColumn(container)).toEqual(['Ada', 'bob']);
+    expect(rows.map((row) => row.name)).toEqual(['bob', 'Ada']);
     unmount();
   });
 });

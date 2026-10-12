@@ -21,6 +21,19 @@ describe('describeFailure', () => {
     expect(view.detail).toContain('end-of-central-directory');
   });
 
+  it('says an archive of a kind the reader does not open is one, not that something went wrong', () => {
+    // Neither message says "corrupt" or "ZIP:" in the words the damaged-file
+    // rule looked for, so a password-protected or ZIP64 archive fell through
+    // to the catch-all with nothing to do about it.
+    for (const message of ['Encrypted bundles are not supported', 'ZIP64 bundles are not supported']) {
+      const view = describeFailure(new Error(message));
+      expect(view.title, message).toBe('This kind of archive can’t be opened');
+      expect(view.hint, message).toMatch(/Export the app again from Studio or Builder/);
+      expect(view.detail, message).toBe(message);
+      expect(view.offerAnotherFile, message).toBe(true);
+    }
+  });
+
   it('points an undeclared Python package at its author', () => {
     const view = describeFailure(
       new Error('logic/main.py imports torch, which an app asks for in manifest.json: "config": { "python": { "packages": ["torch"] } }'),

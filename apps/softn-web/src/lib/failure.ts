@@ -45,6 +45,14 @@ const RULES: Rule[] = [
     anotherFile: true,
   },
   {
+    // A sound archive of a kind the reader refuses: nothing is damaged, and
+    // downloading it again gives the same file.
+    test: /^(?:Encrypted|ZIP64) bundles are not supported/,
+    title: 'This kind of archive can’t be opened',
+    hint: 'A .softn file is a plain ZIP: not password-protected, and not in the ZIP64 format very large archives use. Export the app again from Studio or Builder, or ask whoever shared it for a new copy.',
+    anotherFile: true,
+  },
+  {
     test: /imports \S+, which an app asks for in manifest\.json/,
     title: 'This app uses a Python package it doesn’t declare',
     hint: 'Its author needs to list the package under config.python.packages in manifest.json and export the app again.',

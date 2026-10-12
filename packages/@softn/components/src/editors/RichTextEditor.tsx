@@ -6,7 +6,7 @@
  */
 
 import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react';
-import { markupUrlJudge, sanitizeRichText, useEgressConfig } from '@softn/core';
+import { markupUrlJudge, sanitizeRichText, useEgressConfig, type MarkupUrlJudge } from '@softn/core';
 
 export interface RichTextEditorProps {
   /** Current HTML value */
@@ -68,16 +68,68 @@ const TOGGLE_COMMANDS = new Set(['bold', 'italic', 'underline', 'strikeThrough',
 /** Schemes a link may have: a web, mail or phone address, nothing a click would run. */
 const LINK_SCHEMES = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 
+/** Whether a browser can read the text as an address at all. */
+function isAddress(text: string): boolean {
+  try {
+    new URL(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The address typed into the link field, as the link's href, or null when it
- * is not one a link may have. Without a scheme it is a web address.
+ * is not one a link may have. Without a scheme it is a web address, and so is
+ * a name with a port: "example.com:8080/docs" and "localhost:3000" read as a
+ * scheme and are not one, and were refused. What a browser cannot read as an
+ * address once it has its `https://` (a control character in it, a port that
+ * is no number) is refused too, where it became a link nothing could follow.
  */
 function linkAddress(typed: string): string | null {
   const text = typed.trim();
   if (!text) return null;
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text);
-  if (!scheme) return /\s/.test(text) ? null : `https://${text}`;
-  return LINK_SCHEMES.has(scheme[1].toLowerCase() + ':') ? text : null;
+  let address: string;
+  if (scheme && LINK_SCHEMES.has(scheme[1].toLowerCase() + ':')) address = text;
+  else if (scheme && !/^\d{1,5}(?:[/?#]|$)/.test(text.slice(scheme[0].length))) return null;
+  else if (/\s/.test(text)) return null;
+  else address = `https://${text}`;
+  return isAddress(address) ? address : null;
+}
+
+/**
+ * The markup a `value` holds. A record's empty field is null, and null read
+ * as markup is the word "null": the editor showed it, and the first keystroke
+ * saved it into the record. What is not text is no markup; a number is its
+ * digits.
+ */
+function markupOf(value: unknown): string {
+  if (typeof value === 'string') return value;
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+}
+
+/**
+ * The markup as the editor may hold it: the sanitizer's, less the `name` of
+ * an image.
+ *
+ * An image's name is a property of the page's `document`, ahead of the
+ * document's own: `<img name="createElement">` is what
+ * `document.createElement` answers while the image is on the page. React
+ * draws with that method, so one record holding such an image blanked the
+ * whole page the next time anything on it was drawn, and in a runtime that
+ * keeps several apps in one document, every one of them. The rest of the
+ * image stays, and so does an anchor's name, which is a place to link to.
+ */
+function editorMarkup(markup: string, judge?: MarkupUrlJudge): string {
+  const safe = sanitizeRichText(markup, judge);
+  // Nothing named, which is nearly always: no second reading of the markup.
+  if (!/\sname\s*=/i.test(safe) || typeof DOMParser === 'undefined') return safe;
+  const body = new DOMParser().parseFromString(`<body>${safe}</body>`, 'text/html').body;
+  const named = body.querySelectorAll('img[name]');
+  if (named.length === 0) return safe;
+  for (const image of Array.from(named)) image.removeAttribute('name');
+  return body.innerHTML;
 }
 
 function queryState(command: string): boolean {
@@ -104,7 +156,7 @@ export function RichTextEditor({
 }: RichTextEditorProps): React.ReactElement {
   const editorRef = useRef<HTMLDivElement>(null);
   const editorId = React.useId();
-  const initialContentRef = useRef(value ?? defaultValue);
+  const initialContentRef = useRef(markupOf(value ?? defaultValue));
   const [isEmpty, setIsEmpty] = useState(true);
   const [focused, setFocused] = useState(false);
   const [pressed, setPressed] = useState<Record<string, boolean>>({});
@@ -158,7 +210,7 @@ export function RichTextEditor({
     const editor = editorRef.current;
     if (!editor) return;
 
-    editor.innerHTML = sanitizeRichText(initialContentRef.current, judge);
+    editor.innerHTML = editorMarkup(initialContentRef.current, judge);
     setIsEmpty(!(editor.textContent ?? '').trim());
     // Once, at mount: the value effect below handles every later change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -169,7 +221,7 @@ export function RichTextEditor({
   useEffect(() => {
     if (value !== undefined && editorRef.current) {
       const currentHtml = editorRef.current.innerHTML;
-      const safe = sanitizeRichText(value, judge);
+      const safe = editorMarkup(markupOf(value), judge);
       // Compare against the sanitized form, or a value that only differs in the
       // parts sanitization strips would rewrite the DOM on every render and
       // move the caret to the start each time.
@@ -182,7 +234,7 @@ export function RichTextEditor({
 
   const handleInput = useCallback(() => {
     if (editorRef.current) {
-      const html = sanitizeRichText(editorRef.current.innerHTML, judge);
+      const html = editorMarkup(editorRef.current.innerHTML, judge);
       // Pasted HTML is not guaranteed to be inert. Only rewrite the DOM when
       // sanitization actually removed something so ordinary typing keeps its
       // selection and caret position.
@@ -194,38 +246,6 @@ export function RichTextEditor({
       onChange?.(html);
     }
   }, [onChange, judge]);
-
-  const execCommand = useCallback(
-    (command: string, value?: string) => {
-      if (disabled || readOnly) return;
-
-      if (command === 'createLink') {
-        const selection = document.getSelection?.();
-        const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-        linkRange.current = range && editorRef.current?.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
-        setLinkText('');
-        setLinkError(null);
-        setLinking(true);
-        return;
-      }
-
-      editorRef.current?.focus();
-
-      if (command === 'formatBlock' && value) {
-        document.execCommand(command, false, `<${value}>`);
-      } else {
-        document.execCommand(command, false, value);
-      }
-
-      handleInput();
-      refreshPressed();
-    },
-    [disabled, readOnly, handleInput, refreshPressed]
-  );
-
-  useEffect(() => {
-    if (linking) linkFieldRef.current?.focus();
-  }, [linking]);
 
   /** Focus back in the editor, on the selection it had when the link field opened. */
   const restoreSelection = useCallback(() => {
@@ -246,7 +266,60 @@ export function RichTextEditor({
     restoreSelection();
   }, [restoreSelection]);
 
+  const execCommand = useCallback(
+    (command: string, value?: string) => {
+      if (disabled || readOnly) return;
+
+      if (command === 'createLink') {
+        // Pressed while its field is open, it closes it, as `aria-expanded`
+        // says it will. It used to open the field again: the selection it
+        // then read was the field's own, the one in the editor was dropped,
+        // and the link went to the end of the text.
+        if (linking) {
+          closeLink();
+          return;
+        }
+        const selection = document.getSelection?.();
+        const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+        linkRange.current = range && editorRef.current?.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
+        setLinkText('');
+        setLinkError(null);
+        setLinking(true);
+        return;
+      }
+
+      editorRef.current?.focus();
+
+      if (command === 'formatBlock' && value) {
+        document.execCommand(command, false, `<${value}>`);
+      } else {
+        document.execCommand(command, false, value);
+      }
+
+      handleInput();
+      refreshPressed();
+    },
+    [disabled, readOnly, linking, closeLink, handleInput, refreshPressed]
+  );
+
+  useEffect(() => {
+    if (linking) linkFieldRef.current?.focus();
+  }, [linking]);
+
+  // The field belongs to an editor that can be written in. One made read-only
+  // or disabled while it was open kept it, and its Enter still put a link in
+  // text that was no longer the person's to change.
+  const locked = disabled || readOnly;
+  useEffect(() => {
+    if (locked) {
+      setLinking(false);
+      setLinkError(null);
+      linkRange.current = null;
+    }
+  }, [locked]);
+
   const applyLink = useCallback(() => {
+    if (locked) return;
     const href = linkAddress(linkText);
     if (!href) {
       setLinkError('Enter a web, mail or phone address: https://…, mailto:… or tel:…');
@@ -280,7 +353,7 @@ export function RichTextEditor({
     linkRange.current = null;
     handleInput();
     refreshPressed();
-  }, [linkText, restoreSelection, handleInput, refreshPressed]);
+  }, [locked, linkText, restoreSelection, handleInput, refreshPressed]);
 
   const handleLinkKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -458,7 +531,7 @@ export function RichTextEditor({
                 title={button.label}
                 aria-label={button.label}
                 aria-pressed={TOGGLE_COMMANDS.has(button.command) ? !!pressed[button.command] : undefined}
-                aria-expanded={button.command === 'createLink' ? linking : undefined}
+                aria-expanded={button.command === 'createLink' ? linking && !locked : undefined}
                 tabIndex={index === toolbarIndex ? 0 : -1}
                 onFocus={() => setToolbarIndex(index)}
                 style={
@@ -488,12 +561,19 @@ export function RichTextEditor({
           ))}
         </div>
       )}
-      {linking && (
+      {linking && !locked && (
         <div role="group" aria-label="Add a link" style={linkRowStyle}>
+          {/* A text field with the address keyboard, not `type="url"`: the
+              browser checks that type itself and does not take "example.com",
+              which this field does, so the form around the editor would not
+              submit while it was open. */}
           <input
             ref={linkFieldRef}
-            type="url"
+            type="text"
             inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             aria-label="Link address"
             aria-invalid={linkError ? true : undefined}
             aria-describedby={linkError ? `${editorId}-link-error` : undefined}

@@ -402,6 +402,19 @@ describe('DatePicker as a form field', () => {
     expect(onChange).toHaveBeenCalledWith(null, '');
     expect(container.querySelector('input')!.value).toBe('2024-05-01');
   });
+
+  it('keeps its right padding once its date is cleared', () => {
+    // With a date the field makes room for the clear button; cleared, that
+    // room was taken off by removing `padding-right`, which in a browser
+    // takes the right side of the size's `padding` with it: 2px where the
+    // other side has 12 (measured in Chromium).
+    const { container } = mount(<DatePicker defaultValue="2024-05-01" />);
+    const field = container.querySelector('input')!;
+    expect(field.style.paddingRight).toBe('2rem');
+    click(container.querySelector('button[aria-label="Clear date"]'));
+    expect(field.value).toBe('');
+    expect(field.style.paddingRight).toBe('0.75rem');
+  });
 });
 
 // --- ColorPicker ------------------------------------------------------------------

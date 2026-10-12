@@ -2,7 +2,7 @@
 // (Node 24 runs the TypeScript module directly; it uses only erasable syntax.)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createBackendQueue, BACKEND_BUSY, BACKEND_TIMEOUT, BACKEND_UNREADABLE } from '../src/backendQueue.ts';
+import { createBackendQueue, BACKEND_BUSY, BACKEND_INVALID, BACKEND_TIMEOUT, BACKEND_UNREADABLE } from '../src/backendQueue.ts';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -35,6 +35,25 @@ test('the queue refuses only when the waiting line is full, with a message that 
   queue.call('third', {});
   assert.equal(queue.waiting, 2);
   assert.deepEqual(await queue.call('fourth', {}), { error: BACKEND_BUSY });
+});
+
+test('a call the parent would not answer is refused at once and takes no slot', async () => {
+  // FormLogic's HostedAppFrame returns without a word from a message whose
+  // action is not text of the shape it takes. A slot is the parent's until it
+  // answers, so four of those would hold all four for good, and every call
+  // after them, the app's storage writes included, would time out.
+  const posted = [];
+  const queue = createBackendQueue({ post: m => posted.push(m), maxInFlight: 1, maxQueued: 4, timeoutMs: 15 });
+  for (const action of [['save'], 7, null, undefined, {}, '', 'Save', '1st', 'save.all', 'a'.repeat(65)]) {
+    assert.deepEqual(await queue.call(action, {}), { error: BACKEND_INVALID }, JSON.stringify(action));
+  }
+  assert.equal(posted.length, 0, 'none was sent');
+  assert.equal(queue.inFlight, 0);
+  assert.equal(queue.waiting, 0);
+  const good = queue.call('saveAll_2-b', {});
+  assert.equal(posted.length, 1);
+  queue.settle(posted[0].id, 'done');
+  assert.equal(await good, 'done');
 });
 
 test('a sent call answers at its deadline, and keeps its slot until the parent answers it', async () => {

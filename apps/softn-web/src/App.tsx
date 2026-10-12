@@ -422,8 +422,8 @@ function App(): React.ReactElement {
   openTabsRef.current = openTabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
-  /** Cached apps whose open from Home is still loading, by record id. */
-  const openingCachedRef = useRef(new Set<string>());
+  /** Cached apps whose open from Home is still loading, by record id, each with the navigation its latest press claimed. */
+  const openingCachedRef = useRef(new Map<string, { isForeground: () => boolean }>());
   // Selection belongs to the last user navigation, including requests still
   // reading the cache before they have a placeholder or a real tab.
   const navigationRevisionRef = useRef(0);
@@ -1220,9 +1220,15 @@ function App(): React.ReactElement {
     (app: CachedApp) => {
       // A tab is found below only once its load has finished, so a second
       // press while the first is loading (a double click, Enter held down)
-      // opened the app again: two copies over one database. The first press
-      // stands, and keeps the navigation it claimed.
-      if (openingCachedRef.current.has(app.id)) return;
+      // opened the app again: two copies over one database. The first load
+      // stands. The press is still the person's latest navigation, so the
+      // load it joins takes it: Alpha, Beta, then Alpha again used to leave
+      // Beta in front, because the second press on Alpha claimed nothing.
+      const opening = openingCachedRef.current.get(app.id);
+      if (opening) {
+        opening.isForeground = claimNavigation();
+        return;
+      }
       const isForeground = claimNavigation();
       // By identity, not by label. Two cached apps can legitimately share a
       // name — that is precisely what content-addressed identity allows, and
@@ -1235,8 +1241,9 @@ function App(): React.ReactElement {
         setActiveTabId(existingTab.id);
         return;
       }
-      openingCachedRef.current.add(app.id);
-      void processBundleData(app.bundleData, `${app.name}.softn`, app.id, undefined, app.directorySlug, undefined, isForeground).finally(
+      const load = { isForeground };
+      openingCachedRef.current.set(app.id, load);
+      void processBundleData(app.bundleData, `${app.name}.softn`, app.id, undefined, app.directorySlug, undefined, () => load.isForeground()).finally(
         () => openingCachedRef.current.delete(app.id)
       );
     },
