@@ -453,7 +453,7 @@ function inferFieldType(
  */
 export async function selectBundleFile(): Promise<Uint8Array | null> {
   const { isDesktop, selectDesktopBundle } = await import('./desktop');
-  if (isDesktop()) return selectDesktopBundle(MAX_ZIP_INPUT_BYTES);
+  if (isDesktop()) return selectDesktopBundle();
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -489,7 +489,7 @@ export async function selectBundleFile(): Promise<Uint8Array | null> {
  */
 export async function openBundleFile(): Promise<LoadedBundle | null> {
   const { isDesktop, selectDesktopBundleFile } = await import('./desktop');
-  const selected = isDesktop() ? await selectDesktopBundleFile(MAX_ZIP_INPUT_BYTES) : null;
+  const selected = isDesktop() ? await selectDesktopBundleFile() : null;
   const data = isDesktop() ? selected?.bytes : await selectBundleFile();
   if (!data) return null;
 

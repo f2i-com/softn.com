@@ -1,82 +1,142 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { isDesktop, openCompanionUrl, saveDesktopFile, selectDesktopBundle } from './desktop';
-import { saveBundleToFile } from './bundleExporter';
+import {
+  forgetDesktopFile, isDesktop, openCompanionUrl, saveDesktopFile, selectDesktopBundle, takeOpenedDesktopFile,
+} from './desktop';
+import { exportBundleToFile, saveBundleToFile } from './bundleExporter';
 import { selectBundleFile } from './bundleLoader';
 import { prepareHandoff } from './handoff';
 import { openBundleFile } from './bundleLoader';
 import { strToU8, zipSync } from 'fflate';
 
-const native = vi.hoisted(() => ({
-  isTauri: vi.fn(() => true), invoke: vi.fn(), open: vi.fn(), save: vi.fn(),
-  stat: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(),
-}));
+const native = vi.hoisted(() => ({ isTauri: vi.fn(() => true), invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: native.isTauri, invoke: native.invoke }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: native.open, save: native.save }));
-vi.mock('@tauri-apps/plugin-fs', () => ({ stat: native.stat, readFile: native.readFile, writeFile: native.writeFile }));
 
-beforeEach(() => { vi.clearAllMocks(); native.isTauri.mockReturnValue(true); });
+beforeEach(() => { vi.clearAllMocks(); native.invoke.mockReset(); native.isTauri.mockReturnValue(true); });
 afterEach(() => vi.restoreAllMocks());
 
+type Reply = (args: unknown, options?: { headers: Record<string, string> }) => unknown;
+/** Rust's side of the commands, as each test needs it. */
+function rust(replies: Record<string, Reply>): void {
+  native.invoke.mockImplementation(async (cmd: string, args?: unknown, options?: { headers: Record<string, string> }) => {
+    const reply = replies[cmd];
+    if (!reply) throw new Error(`unexpected command ${cmd}`);
+    return reply(args, options);
+  });
+}
+
+/** open_project's reply: the handle as JSON after its length in four bytes, then the file. */
+function opened(handle: { id: string; name: string; path: string }, bytes: Uint8Array): ArrayBuffer {
+  const head = new TextEncoder().encode(JSON.stringify(handle));
+  const reply = new Uint8Array(4 + head.length + bytes.length);
+  new DataView(reply.buffer).setUint32(0, head.length, true);
+  reply.set(head, 4);
+  reply.set(bytes, 4 + head.length);
+  return reply.buffer;
+}
+
+const commands = () => native.invoke.mock.calls.map(([cmd]) => cmd as string);
+
 describe('Builder desktop files', () => {
-  it('uses the native open picker and reads only the chosen file', async () => {
+  it('opens through Rust, which shows the dialog, and names no path', async () => {
     const bytes = new Uint8Array([1, 2, 3]);
-    native.open.mockResolvedValue('C:\\Apps\\Fieldnotes.softn');
-    native.stat.mockResolvedValue({ size: 3 });
-    native.readFile.mockResolvedValue(bytes);
+    rust({ open_project: () => opened({ id: '1', name: 'Fieldnotes.softn', path: 'C:\\Apps\\Fieldnotes.softn' }, bytes) });
     const browserPicker = vi.spyOn(HTMLInputElement.prototype, 'click');
     expect(isDesktop()).toBe(true);
     expect(await selectBundleFile()).toEqual(bytes);
-    expect(native.open).toHaveBeenCalledWith(expect.objectContaining({ multiple: false, directory: false }));
-    expect(native.readFile).toHaveBeenCalledWith('C:\\Apps\\Fieldnotes.softn');
+    expect(native.invoke).toHaveBeenCalledWith('open_project', undefined, undefined);
     expect(browserPicker).not.toHaveBeenCalled();
   });
 
-  it('treats native picker cancellation as a cancellation and checks size before allocating', async () => {
-    native.open.mockResolvedValue(null);
-    expect(await selectDesktopBundle(10)).toBeNull();
-    expect(native.readFile).not.toHaveBeenCalled();
-    native.open.mockResolvedValue('/apps/large.softn');
-    native.stat.mockResolvedValue({ size: 11 });
-    await expect(selectDesktopBundle(10)).rejects.toThrow('maximum file size');
-    expect(native.readFile).not.toHaveBeenCalled();
+  it('treats a closed dialog as a cancellation and reports what Rust refused', async () => {
+    rust({ open_project: () => new ArrayBuffer(0) });
+    expect(await selectDesktopBundle()).toBeNull();
+    rust({ open_project: () => { throw 'This bundle is too large. The maximum file size is 200 MB.'; } });
+    await expect(selectDesktopBundle()).rejects.toThrow('maximum file size');
   });
 
-  it('saves through the native dialog, then reuses that exact path on Save', async () => {
-    const bytes = new Uint8Array([4, 5, 6]);
-    native.save.mockResolvedValue('C:\\Apps\\Notes.softn');
-    native.writeFile.mockResolvedValue(undefined);
-    const handle = await saveBundleToFile(bytes, 'Notes');
-    expect(handle).toEqual({ kind: 'desktop-file', name: 'Notes.softn', path: 'C:\\Apps\\Notes.softn' });
-    expect(native.save).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: 'Notes.softn' }));
+  it('saves through Rust\'s dialog, then writes that same file by its id on Save', async () => {
+    const written = { id: '4', name: 'Notes.softn', path: 'C:\\Apps\\Notes.softn' };
+    rust({ save_file_as: () => written, save_project: () => written });
+    const handle = await saveBundleToFile(new Uint8Array([4, 5, 6]), 'Notes');
+    expect(handle).toEqual({ kind: 'desktop-file', ...written });
+    expect(native.invoke).toHaveBeenCalledWith('save_file_as', new Uint8Array([4, 5, 6]),
+      { headers: { 'softn-save-kind': 'project', 'softn-save-name': 'Notes.softn' } });
     await saveBundleToFile(new Uint8Array([7, 8]), 'Renamed app', handle);
-    expect(native.save).toHaveBeenCalledTimes(1);
-    expect(native.writeFile).toHaveBeenLastCalledWith('C:\\Apps\\Notes.softn', new Uint8Array([7, 8]));
+    expect(commands()).toEqual(['save_file_as', 'save_project']);
+    expect(native.invoke).toHaveBeenLastCalledWith('save_project', new Uint8Array([7, 8]), { headers: { 'softn-file': '4' } });
+  });
+
+  it('names a file only by the id Rust gave it, and asks where when it is no longer the project\'s', async () => {
+    // A handle with another file's path in it writes nothing there: Rust knows the path by the id.
+    const forged = { kind: 'desktop-file' as const, id: '1', name: 'Earlier.softn', path: 'C:\\Apps\\Earlier.softn' };
+    rust({ save_project: () => null, save_file_as: () => ({ id: '7', name: 'Picked.softn', path: 'C:\\Apps\\Picked.softn' }) });
+    expect(await saveDesktopFile(new Uint8Array([1]), 'Notes.softn', forged)).toMatchObject({ id: '7', name: 'Picked.softn' });
+    expect(JSON.stringify(native.invoke.mock.calls)).not.toContain('Earlier');
+    expect(commands()).toEqual(['save_project', 'save_file_as']);
   });
 
   it('never reports a cancelled or failed native save as a successful download', async () => {
-    native.save.mockResolvedValue(null);
+    rust({ save_file_as: () => null });
     await expect(saveDesktopFile(new Uint8Array([1]), 'Notes.softn')).rejects.toMatchObject({ name: 'AbortError' });
-    expect(native.writeFile).not.toHaveBeenCalled();
-    native.save.mockResolvedValue('/apps/Notes.softn');
-    native.writeFile.mockRejectedValue(new Error('Disk full'));
+    rust({ save_file_as: () => { throw 'Could not write Notes.softn: Disk full'; } });
     await expect(saveBundleToFile(new Uint8Array([1]), 'Notes')).rejects.toThrow('Disk full');
   });
 
-  it('retains the opened file for Save without asking for another destination', async () => {
+  it('says what each save dialog is for, and carries any name', async () => {
+    rust({ save_file_as: () => ({ id: '2', name: 'x', path: 'x' }) });
+    await exportBundleToFile(new Uint8Array([1]), 'Café.softn');
+    await saveDesktopFile(new Uint8Array([2]), 'session.json', undefined, 'recovery');
+    expect(native.invoke.mock.calls.map(([, , options]) => options)).toEqual([
+      { headers: { 'softn-save-kind': 'export', 'softn-save-name': 'Caf%C3%A9.softn' } },
+      { headers: { 'softn-save-kind': 'recovery', 'softn-save-name': 'session.json' } },
+    ]);
+  });
+
+  it('retains the opened file for Save once the Builder takes it up', async () => {
     const bytes = zipSync({
       'manifest.json': strToU8(JSON.stringify({ name: 'Notes', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: [], xdb: [], assets: [] } })),
       'ui/main.ui': strToU8('<App><Text>Notes</Text></App>'),
     });
-    native.open.mockResolvedValue('C:\\Apps\\Existing.softn');
-    native.stat.mockResolvedValue({ size: bytes.length });
-    native.readFile.mockResolvedValue(bytes);
-    native.writeFile.mockResolvedValue(undefined);
+    const handle = { id: '3', name: 'Existing.softn', path: 'C:\\Apps\\Existing.softn' };
+    rust({ open_project: () => opened(handle, bytes), use_opened_project: () => null, save_project: () => handle });
     const bundle = await openBundleFile();
-    expect(bundle?.sourceHandle?.name).toBe('Existing.softn');
+    expect(bundle?.sourceHandle).toEqual({ kind: 'desktop-file', ...handle });
+    await takeOpenedDesktopFile(bundle!.sourceHandle!);
+    expect(native.invoke).toHaveBeenLastCalledWith('use_opened_project', { id: '3' }, undefined);
     await saveBundleToFile(bytes, 'Notes', bundle?.sourceHandle);
-    expect(native.save).not.toHaveBeenCalled();
-    expect(native.writeFile).toHaveBeenCalledWith('C:\\Apps\\Existing.softn', bytes);
+    expect(commands()).toEqual(['open_project', 'use_opened_project', 'save_project']);
+  });
+
+  it('lets go of the file before the next save is asked for, and does nothing in a browser', async () => {
+    let letGo: () => void = () => {};
+    rust({
+      forget_project_file: () => new Promise<void>((resolve) => { letGo = resolve; }),
+      save_file_as: () => ({ id: '5', name: 'New.softn', path: 'C:\\Apps\\New.softn' }),
+    });
+    forgetDesktopFile();
+    const saving = saveDesktopFile(new Uint8Array([1]), 'New.softn');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(commands()).toEqual(['forget_project_file']);
+    letGo();
+    await saving;
+    expect(commands()).toEqual(['forget_project_file', 'save_file_as']);
+
+    native.invoke.mockClear();
+    native.isTauri.mockReturnValue(false);
+    forgetDesktopFile();
+    expect(native.invoke).not.toHaveBeenCalled();
+  });
+
+  it('gives the page no file system or dialog permission of its own', async () => {
+    // The preview draws a bundle into this window, so whatever the page may
+    // call, a stranger's app may call: the fs plugin wrote every file a
+    // dialog had handed out this session, including ones saved earlier.
+    const [{ readFileSync }, { resolve }] = await Promise.all([import('node:fs'), import('node:path')]);
+    const file = resolve(import.meta.dirname, '../../src-tauri/capabilities/default.json');
+    const capability = JSON.parse(readFileSync(file, 'utf8')) as { permissions: unknown[] };
+    const names = capability.permissions.map((entry) => (typeof entry === 'string' ? entry : (entry as { identifier: string }).identifier));
+    expect(names.filter((name) => name.startsWith('fs:') || name.startsWith('dialog:'))).toEqual([]);
   });
 
   it('explains file transfer from desktop without creating a browser handoff', async () => {

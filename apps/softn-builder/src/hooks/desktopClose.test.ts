@@ -6,9 +6,8 @@ import { useUnsavedChanges } from './useUnsavedChanges';
 import { useProjectStore } from '../stores/projectStore';
 
 const desktop = vi.hoisted(() => ({ listen: vi.fn(), ask: vi.fn(), destroy: vi.fn(), stop: vi.fn() }));
-vi.mock('../utils/desktop', () => ({ isDesktop: () => true }));
+vi.mock('../utils/desktop', () => ({ isDesktop: () => true, askDiscardUnsaved: desktop.ask }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ onCloseRequested: desktop.listen, destroy: desktop.destroy }) }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ ask: desktop.ask }));
 
 let root: Root;
 let close: (event: { preventDefault: () => void }) => Promise<void>;

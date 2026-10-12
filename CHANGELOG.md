@@ -48,6 +48,7 @@ section here. Write the section before tagging. Headings are the tag
 - Site: an app whose slug is a word like `constructor` no longer shows every visitor as holding its edit key; View source no longer hangs on a long file with unclosed quotes; long unbroken names and words wrap instead of widening the page on a phone; the Share menu stays on screen at 320 px and says when a copy was refused; a bundle dropped beside the update page's zone is taken.
 - Release scripts: archives carry UTC timestamps, so they are the same bytes in every time zone; the third-party notices list three packages Builder's web build ships; stale cache files no longer go into the backend archives.
 - Desktop and Android app: which app's saved data a page may use is decided by the native side from the file you opened, so an app can no longer read or change another installed app's data; opening a new version of an installed app with that app's data is asked in a native dialog; the page has no file system access on Android. Existing installations are carried over once, on the first start of this version.
+- Desktop Builder: a bundle open in the Builder can no longer write files saved earlier or open dialogs of its own; files are opened and saved by the app, which can write only the file chosen for the project now open, and a saved file's previous contents are kept as `<name>.bak`.
 
 ## v0.0.19
 

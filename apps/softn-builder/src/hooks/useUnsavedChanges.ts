@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useProjectStore } from '../stores/projectStore';
-import { isDesktop } from '../utils/desktop';
+import { askDiscardUnsaved, isDesktop } from '../utils/desktop';
 import { toast } from '../stores/notificationStore';
 
 /** Read the live store at navigation time, including edits made in another panel. */
@@ -16,8 +16,8 @@ export function useUnsavedChanges(): void {
     let unlisten: (() => void) | undefined;
     let asking = false;
     if (isDesktop()) {
-      void Promise.all([import('@tauri-apps/api/window'), import('@tauri-apps/plugin-dialog')])
-        .then(async ([{ getCurrentWindow }, { ask }]) => {
+      void import('@tauri-apps/api/window')
+        .then(async ({ getCurrentWindow }) => {
           if (disposed) return;
           const appWindow = getCurrentWindow();
           const stop = await appWindow.onCloseRequested(async (event) => {
@@ -27,8 +27,8 @@ export function useUnsavedChanges(): void {
             if (asking) return;
             asking = true;
             try {
-              const discard = await ask('Close Builder and discard unsaved changes? Save your app first to keep them.',
-                { title: 'Unsaved changes', kind: 'warning', okLabel: 'Discard and close', cancelLabel: 'Keep editing' });
+              // Asked by Rust in fixed words (src-tauri/src/files.rs): the page has no dialog permission.
+              const discard = await askDiscardUnsaved();
               const current = useProjectStore.getState();
               // The answer is for the revision shown when the dialog opened.
               if (discard && !disposed && current.projectId === projectId && current.revision === revision) {

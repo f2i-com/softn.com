@@ -17,10 +17,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
-tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+# The tests check that the fs plugin's file writes stay closed to the page.
+tauri-plugin-fs = "2"
 
 # GTK 3 requires glib 0.18; this vendor backports RUSTSEC-2024-0429.
 [patch.crates-io]

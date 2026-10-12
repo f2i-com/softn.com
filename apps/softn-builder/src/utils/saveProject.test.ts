@@ -277,7 +277,7 @@ describe('Export, which writes the same bundle Save does', () => {
   // the two buttons wrote the same bytes the same way and only one of them
   // was believed. Export goes through the rule Save goes through.
 
-  const desktopFile = (path: string) => ({ kind: 'desktop-file' as const, path, name: path.split(/[\\/]/).pop()! });
+  const desktopFile = (path: string) => ({ kind: 'desktop-file' as const, id: '1', path, name: path.split(/[\\/]/).pop()! });
   const browserFile = (name: string) => ({ kind: 'file', name }) as unknown as FileSystemFileHandle;
 
   it('is the save of a project that has no file of its own: clean, with its recovery record, at the revision written', async () => {

@@ -744,7 +744,7 @@ export async function exportQuarantinedSession(): Promise<boolean> {
   const payload = assets === null ? record.payload : joinStoredSession(record.payload, assets).raw;
   const { isDesktop, saveDesktopFile } = await import('./desktop');
   if (isDesktop()) {
-    await saveDesktopFile(new TextEncoder().encode(payload), name);
+    await saveDesktopFile(new TextEncoder().encode(payload), name, undefined, 'recovery');
     return true;
   }
   const blob = new Blob([payload], { type: 'application/json' });

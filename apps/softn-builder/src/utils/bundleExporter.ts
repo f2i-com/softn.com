@@ -561,7 +561,7 @@ export async function exportBundleToFile(
   fileName: string,
 ): Promise<import('./desktop').BundleFileHandle | null> {
   const { isDesktop, saveDesktopFile } = await import('./desktop');
-  if (isDesktop()) return saveDesktopFile(bundleData, fileName);
+  if (isDesktop()) return saveDesktopFile(bundleData, fileName, undefined, 'export');
   const blob = new Blob([new Uint8Array(bundleData)], { type: 'application/zip' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

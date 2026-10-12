@@ -34,7 +34,7 @@ import {
 } from './utils/openProject';
 import { saveProject, saveToHost } from './utils/saveProject';
 import { STUDIO_URL, RUNTIME_URL, PRODUCT_URLS } from './utils/siteUrls';
-import { isDesktop, openCompanionUrl, type BundleFileHandle } from './utils/desktop';
+import { forgetDesktopFile, isDesktop, openCompanionUrl, takeOpenedDesktopFile, type BundleFileHandle } from './utils/desktop';
 import { ToastContainer } from './components/feedback/ToastContainer';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
@@ -353,6 +353,7 @@ function App() {
   const elementCount = useCanvasStore((state) => state.elements.size);
   const handleCreateNewProject = useCallback((config: NewProjectConfig) => {
     fileHandleRef.current = null;
+    forgetDesktopFile();
     remoteOpenRef.current?.abort();
     startNewProject(config);
     setView('design');
@@ -400,6 +401,9 @@ function App() {
       if (useProjectStore.getState().isDirty) {
         if (!window.confirm('Open a new project? Unsaved changes will be lost.')) return;
       }
+      // On the desktop the file it came from becomes the one Save writes,
+      // and the one before it cannot be written, before its code can run.
+      if (bundle.sourceHandle) await takeOpenedDesktopFile(bundle.sourceHandle);
       applySnapshot(snapshot);
       fileHandleRef.current = bundle.sourceHandle ?? null;
     } catch (e) {
