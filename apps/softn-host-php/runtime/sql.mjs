@@ -13,6 +13,8 @@ import {constants as C} from 'node:sqlite';
  * table of more than 200 columns, and a CHECK or DEFAULT deeper than 100 or
  * a schema statement longer than 256 KiB (which SQLite parses again on
  * every open) would each leave the data, or the whole database, unreadable.
+ * The opcode count is lifted while a migration runs (migrations.mjs): a
+ * seed INSERT this host has always applied compiles to more.
  * None of these bounds memory or time: SQLite here takes PRAGMA
  * hard_heap_limit without enforcing it and node:sqlite has no progress
  * handler, so a long statement is stopped only by the runner's deadline.

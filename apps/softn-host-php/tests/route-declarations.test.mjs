@@ -16,7 +16,7 @@ import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readd
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {spawnSync} from 'node:child_process';
+import {spawnSync,spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 
@@ -461,8 +461,8 @@ test('a migration the deadline stops is named in the log, and after three stops 
   t.after(b.close);
   const slow='CREATE TABLE slow(n INTEGER); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 4000000000) INSERT INTO slow SELECT count(*) FROM c;';
   writeFileSync(join(b.root,'app/server/migrations/002.sql'),slow);
-  const ask=()=>spawnSync(process.execPath,['--disable-proto=throw',join(b.root,'runner.mjs')],{
-    input:JSON.stringify({path:'/api/ping',method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}),encoding:'utf8',timeout:30000,
+  const ask=(path='/api/ping')=>spawnSync(process.execPath,['--disable-proto=throw',join(b.root,'runner.mjs')],{
+    input:JSON.stringify({path,method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}),encoding:'utf8',timeout:30000,
     env:{...process.env,SOFTN_BACKEND_ROOT:b.root,NODE_NO_WARNINGS:'1',SOFTN_RUNNER_DEADLINE_MS:'1500'}});
   for(const attempt of [1,2,3]) {
     const r=ask();
@@ -470,16 +470,60 @@ test('a migration the deadline stops is named in the log, and after three stops 
     assert.ok(r.stderr.includes(`softn: startup stage database_migrations: migration 002.sql was stopped at the 1.5 s deadline (${attempt} of 3)`),r.stderr);
   }
   // The fourth request is told at once, and the log says how to try again.
+  // Its label is its own: `database_migrations` is a migration that failed
+  // or does not match the ledger, and whoever asked /api/meta why the site
+  // was down was sent to look for one of those.
   const refused=ask();
   assert.equal(refused.status,0,refused.stderr);
-  assert.deepEqual(JSON.parse(refused.stdout),{status:503,body:{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:'database_migrations'}});
-  assert.match(refused.stderr,/softn: startup stage database_migrations: Migration 002\.sql was stopped at the deadline 3 times/);
+  assert.deepEqual(JSON.parse(refused.stdout),{status:503,body:{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:'migration_stopped'}});
+  assert.match(refused.stderr,/softn: startup stage migration_stopped: Migration 002\.sql was stopped at the deadline 3 times and is not started again until it changes or migration-stopped\.json is removed from the private data folder/);
+  assert.equal(JSON.parse(ask('/api/meta').stdout).body.diagnostic,'migration_stopped','the health answer says so too');
   // Changed, it is tried again, and once it has run nothing of the stops is left.
   writeFileSync(join(b.root,'app/server/migrations/002.sql'),'CREATE TABLE slow(n INTEGER);');
   const fixed=ask();
   assert.equal(fixed.status,0,fixed.stderr);
   assert.deepEqual(JSON.parse(fixed.stdout),{status:200,body:{ok:true,path:'/api/ping'}});
   assert.ok(!existsSync(join(b.root,'private/data/migration-stopped.json')));
+});
+
+test('only a migration the runner\'s own deadline stopped is counted: not one ended from outside, nor a request that waited for the lock',async t=>{
+  // Three stops and the app answers 503 until someone acts, so nothing but
+  // a migration that ran until the deadline may count as one. A runner that
+  // PHP ends (its own deadline, a failed read) or that the machine ends
+  // dies without a word, and one that spends its life waiting for the write
+  // lock another request's migration holds never started a migration.
+  const m=manifest([{method:'GET',path:'/api/ping',handler:'ping'}]);
+  m.server.database.migrations.push('server/migrations/002.sql');
+  const b=backend(m);
+  t.after(b.close);
+  writeFileSync(join(b.root,'app/server/migrations/002.sql'),'CREATE TABLE slow(n INTEGER); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 4000000000) INSERT INTO slow SELECT count(*) FROM c;');
+  const note=join(b.root,'private/data/migration-stopped.json');
+  const start=deadline=>{
+    const child=spawn(process.execPath,['--disable-proto=throw',join(b.root,'runner.mjs')],{stdio:['pipe','pipe','pipe'],
+      env:{...process.env,SOFTN_BACKEND_ROOT:b.root,NODE_NO_WARNINGS:'1',SOFTN_RUNNER_DEADLINE_MS:String(deadline)}});
+    let said='';child.stderr.on('data',chunk=>said+=chunk);child.stdout.resume();
+    child.stdin.end(JSON.stringify({path:'/api/ping',method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}));
+    return {child,ended:new Promise(resolve=>child.on('close',code=>resolve({code,said})))};
+  };
+  const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  // Ended from outside while its migration runs, as http.php ends a runner.
+  const ended=start(20000);
+  await wait(4000);
+  ended.child.kill('SIGKILL');
+  assert.doesNotMatch((await ended.ended).said,/was stopped at the/);
+  assert.ok(!existsSync(note),'a runner ended from outside left a note');
+  // One request's migration holds the write lock until its deadline; another
+  // arrives, waits for the lock and reaches its own, shorter, deadline first.
+  const holder=start(12000);
+  await wait(4000);
+  const waiter=await start(1500).ended;
+  assert.notEqual(waiter.code,0);
+  assert.doesNotMatch(waiter.said,/was stopped at the/,'a request that only waited was counted as a stop');
+  assert.ok(!existsSync(note),'a request that only waited for the lock left a note');
+  // The one whose migration did run until the deadline is the one stop.
+  const held=await holder.ended;
+  assert.match(held.said,/migration 002\.sql was stopped at the 12 s deadline \(1 of 3\)/);
+  assert.equal(JSON.parse(readFileSync(note,'utf8')).stops,1);
 });
 
 test('text that is not ASCII reaches the handler whole, however the runner is fed',t=>{

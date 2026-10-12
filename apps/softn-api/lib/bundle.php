@@ -35,8 +35,12 @@ final class Bundle
      */
     public const CAPABILITY_SCHEMA_VERSION = 2;
     public const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'];
-    /** A storage collection name, or `*` for every collection not named. */
-    private const COLLECTION_NAME = '/^(?:\*|[a-z][a-z0-9_]{0,31})$/';
+    /**
+     * A storage collection name, or `*` for every collection not named. `D`
+     * because `$` alone also matches before a final line break: "scores\n"
+     * was a name, listed beside the collection it only looked like.
+     */
+    private const COLLECTION_NAME = '/^(?:\*|[a-z][a-z0-9_]{0,31})$/D';
 
     /**
      * @return array{

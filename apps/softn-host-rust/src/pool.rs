@@ -240,46 +240,99 @@ pub fn visit_sync_records(
     limit: i64,
     take: &mut dyn FnMut(SyncRecord) -> bool,
 ) -> Result<(), DbError> {
-    const COLUMNS: &str = "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at FROM records";
     match from {
-        // Compound cursor: (server_received_at > since) OR (server_received_at = since AND id > last_id)
-        // When last_id is None (first pull), fall back to the simpler server_received_at > since.
         SyncFrom::Since { since, last_id: Some(last_id) } => {
-            let mut stmt = conn.prepare(&format!(
-                "{COLUMNS} WHERE collection = ?1 \
-                 AND (server_received_at > ?2 OR (server_received_at = ?2 AND id > ?3)) \
-                 ORDER BY server_received_at ASC, id ASC LIMIT ?4"
-            ))?;
+            let mut stmt = conn.prepare(&sync_sql(SyncRead::SinceAfter))?;
             let rows = stmt.query_map(params![collection, since, last_id, limit], sync_record)?;
             take_rows(rows, take)
         }
         SyncFrom::Since { since, last_id: None } => {
-            let mut stmt = conn.prepare(&format!(
-                "{COLUMNS} WHERE collection = ?1 AND server_received_at > ?2 \
-                 ORDER BY server_received_at ASC, id ASC LIMIT ?3"
-            ))?;
+            let mut stmt = conn.prepare(&sync_sql(SyncRead::Since))?;
             let rows = stmt.query_map(params![collection, since, limit], sync_record)?;
             take_rows(rows, take)
         }
-        SyncFrom::Page { after } => {
-            const ORDER: &str = "ORDER BY COALESCE(server_received_at, '') ASC, id ASC";
-            match after {
-                None => {
-                    let mut stmt = conn.prepare(&format!("{COLUMNS} WHERE collection = ?1 AND deleted = 0 {ORDER} LIMIT ?2"))?;
-                    let rows = stmt.query_map(params![collection, limit], sync_record)?;
-                    take_rows(rows, take)
-                }
-                Some((at, id)) => {
-                    let mut stmt = conn.prepare(&format!(
-                        "{COLUMNS} WHERE collection = ?1 AND deleted = 0 \
-                         AND (COALESCE(server_received_at, '') > ?2 OR (COALESCE(server_received_at, '') = ?2 AND id > ?3)) \
-                         {ORDER} LIMIT ?4"
-                    ))?;
-                    let rows = stmt.query_map(params![collection, at, id, limit], sync_record)?;
-                    take_rows(rows, take)
-                }
-            }
+        SyncFrom::Page { after: Some((at, id)) } if !at.is_empty() => {
+            let mut stmt = conn.prepare(&sync_sql(SyncRead::ReceivedAfter))?;
+            let rows = stmt.query_map(params![collection, at, id, limit], sync_record)?;
+            take_rows(rows, take)
         }
+        // From the start, or from among the records with no receipt time,
+        // which come first: the rest of those, then the others from their
+        // start.
+        SyncFrom::Page { after } => {
+            let after_id = after.map(|(_, id)| id);
+            let mut left = limit;
+            let mut going = true;
+            {
+                let mut stmt = conn.prepare(&sync_sql(SyncRead::Unreceived))?;
+                let rows = stmt.query_map(params![collection, after_id, limit], sync_record)?;
+                take_rows(rows, &mut |record| {
+                    left -= 1;
+                    going = take(record);
+                    going
+                })?;
+            }
+            if !going || left <= 0 {
+                return Ok(());
+            }
+            let mut stmt = conn.prepare(&sync_sql(SyncRead::Received))?;
+            let rows = stmt.query_map(params![collection, left], sync_record)?;
+            take_rows(rows, take)
+        }
+    }
+}
+
+/// The statements [`visit_sync_records`] reads with.
+#[derive(Clone, Copy, Debug)]
+enum SyncRead {
+    /// Incremental, from a time.
+    Since,
+    /// Incremental, from a record.
+    SinceAfter,
+    /// Full: the records with no receipt time, after an id when one is given.
+    Unreceived,
+    /// Full: the records with a receipt time, from the first.
+    Received,
+    /// Full: the records after one that has a receipt time.
+    ReceivedAfter,
+}
+
+/// The statement for `read`: the collection is `?1`, the cursor's parts
+/// follow it and the limit is last.
+///
+/// Each goes to its place by `idx_records_sync_received` (collection,
+/// server_received_at, id) and reads on in that order, so a step costs what
+/// it reads. A pull runs one of these for every message it sends, where it
+/// used to run one for a whole page, and the full pull's ordered by
+/// `COALESCE(server_received_at, '')`: no index holds that, so each step
+/// read every record and sorted them to find its five hundred. The order is
+/// the same one, said in a way the index can serve: the records with no
+/// receipt time (null, or empty) first, by id, then the rest by
+/// (server_received_at, id). `+deleted` keeps the planner off the index on
+/// `deleted`, which names most of the table.
+fn sync_sql(read: SyncRead) -> String {
+    const COLUMNS: &str = "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at FROM records";
+    const ORDER: &str = "ORDER BY server_received_at ASC, id ASC";
+    match read {
+        SyncRead::Since => format!("{COLUMNS} WHERE collection = ?1 AND server_received_at > ?2 {ORDER} LIMIT ?3"),
+        // Compound cursor: after `since`, or at `since` and after `last_id`.
+        SyncRead::SinceAfter => format!(
+            "{COLUMNS} WHERE collection = ?1 AND (server_received_at, id) > (?2, ?3) {ORDER} LIMIT ?4"
+        ),
+        // Null and empty, each found in the index and read in id order,
+        // merged: said as one `OR`, the planner read the whole collection.
+        SyncRead::Unreceived => format!(
+            "{COLUMNS} WHERE collection = ?1 AND +deleted = 0 AND server_received_at IS NULL AND (?2 IS NULL OR id > ?2) \
+             UNION ALL \
+             {COLUMNS} WHERE collection = ?1 AND +deleted = 0 AND server_received_at = '' AND (?2 IS NULL OR id > ?2) \
+             ORDER BY id ASC LIMIT ?3"
+        ),
+        SyncRead::Received => format!(
+            "{COLUMNS} WHERE collection = ?1 AND +deleted = 0 AND server_received_at > '' {ORDER} LIMIT ?2"
+        ),
+        SyncRead::ReceivedAfter => format!(
+            "{COLUMNS} WHERE collection = ?1 AND +deleted = 0 AND (server_received_at, id) > (?2, ?3) {ORDER} LIMIT ?4"
+        ),
     }
 }
 
@@ -496,6 +549,44 @@ mod filter_tests {
         let filter = json!({"owner": "ann"});
         let found: Vec<String> = read_collection_where(&conn, "things", filter.as_object().unwrap(), 2).unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(found, vec!["r4", "r5"]);
+    }
+
+    /// A pull is read a message at a time, and each step's query goes on
+    /// from the last record the step before read. A step has to reach that
+    /// place by the index. The full pull's did not: it ordered by
+    /// `COALESCE(server_received_at, '')`, which no index holds, so every
+    /// step read the whole collection and sorted it to find its five hundred
+    /// records, twenty times a page where a page had been one query.
+    #[test]
+    fn a_pull_step_reaches_its_place_by_the_index() {
+        let dir = std::env::temp_dir().join(format!("softn-pool-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xdb.sqlite");
+        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
+        let conn = db.read().unwrap();
+        for read in [SyncRead::Since, SyncRead::SinceAfter, SyncRead::Unreceived, SyncRead::Received, SyncRead::ReceivedAfter] {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {}", sync_sql(read))).unwrap();
+            let unbound = vec![rusqlite::types::Null; stmt.parameter_count()];
+            let plan = stmt
+                .query_map(rusqlite::params_from_iter(unbound), |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join(" | ");
+            assert!(!plan.contains("SCAN"), "{read:?} reads the whole table: {plan}");
+            assert!(
+                plan.contains("idx_records_sync_received (collection=? AND "),
+                "{read:?} does not go to its place in the index: {plan}"
+            );
+            // The records with no receipt time are sorted by id, and they
+            // are the few a host from before receipt times left behind. No
+            // other read sorts anything.
+            if !matches!(read, SyncRead::Unreceived) {
+                assert!(!plan.contains("TEMP B-TREE"), "{read:?} sorts what it reads: {plan}");
+            }
+        }
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Pages line up through records that have no receipt time.

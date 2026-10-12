@@ -143,8 +143,14 @@ try {
       const old=db.prepare('SELECT sha256 FROM _migrations WHERE name=?').get(name);
       if(old){if(old.sha256!==hash)throw new Error('Migration mismatch');continue;}
       const fileName=basename(name);
-      if(stopped?.name===name&&stopped.sha256===hash&&stopped.stops>=MIGRATION_ATTEMPTS)
+      // Answered under a label of its own. As `database_migrations` it read
+      // as a migration that failed or does not match the ledger, and the
+      // one place that said otherwise was the log: the app stays down until
+      // somebody acts, so /api/meta and setup.php have to say what on.
+      if(stopped?.name===name&&stopped.sha256===hash&&stopped.stops>=MIGRATION_ATTEMPTS) {
+        startupStage='migration_stopped';
         throw new Error(`Migration ${fileName} was stopped at the deadline ${stopped.stops} times and is not started again until it changes or migration-stopped.json is removed from the private data folder`);
+      }
       parentPort?.postMessage({migration:{name,file:fileName,sha256:hash,marker:stoppedNote,attempts:MIGRATION_ATTEMPTS}});
       applyMigration(db,sql);db.prepare('INSERT INTO _migrations VALUES(?,?,?)').run(name,hash,Math.floor(Date.now()/1000));
       parentPort?.postMessage({migration:null});

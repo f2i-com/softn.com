@@ -146,7 +146,11 @@ function softn_setup_checks(string $root): array {
     $answer=$meta===null?null:json_decode($meta['out'],true);
     // The runner's own line names the stage and gives the reason (wasm-host.mjs logFailure); Node's own says why it would not start.
     $said=$meta===null||$meta['said']===[]?'':' It said: '.implode(' | ',$meta['said']);
-    if(!is_array($answer))$problems[]='The backend runner did not answer. Check that bin/node and runner.mjs are intact.'.$said;
+    // A runner its deadline ended while a migration ran says which one
+    // (runner.mjs); "check bin/node" sent the operator the wrong way.
+    if(!is_array($answer))$problems[]=(str_contains($said,' was stopped at the ')
+        ?'A database migration did not finish before the runner\'s deadline and was rolled back; after three such stops it is not started again (see README-RUNTIME.md, Startup diagnostics, migration_stopped).'
+        :'The backend runner did not answer. Check that bin/node and runner.mjs are intact.').$said;
     elseif(($answer['status']??0)!==200)$problems[]='The application does not start: '.($answer['body']['diagnostic']??$answer['body']['code']??'unknown').' (see README-RUNTIME.md, Startup diagnostics).'.$said;
     else echo 'Application '.($answer['body']['appId']??'?').' '.($answer['body']['version']??'').' answers /api/meta.'.(isset($answer['body']['unservedRoutes'])?' Routes this host does not serve: '.count($answer['body']['unservedRoutes']).'.':'')."\n";
     return $problems;

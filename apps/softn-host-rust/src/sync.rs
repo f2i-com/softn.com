@@ -1161,8 +1161,9 @@ impl SyncManager {
                 let mut batch_accepted = Vec::new();
                 let mut batch_rejected = Vec::new();
                 let mut batch_replayed = Vec::new();
-                // The records overtaken edits were for, each with the first
-                // such op: their pusher is sent them as they stand.
+                // The records overtaken edits were for, and the deleted ones
+                // updates were refused for, each with the first such op:
+                // their pusher is sent them as they stand.
                 let mut batch_overtaken: Vec<(String, String)> = Vec::new();
 
                 for mut op in validated_ops {
@@ -1203,14 +1204,19 @@ impl SyncManager {
                     // undid the newer edit. It is acknowledged, so the client
                     // stops sending it, and nothing is written, broadcast or
                     // handed to the after-sync hooks. An update for a deleted
-                    // record is refused below, as it always was.
+                    // record is refused below, as it always was, whenever it
+                    // was made; its pusher is sent the record as well, or it
+                    // would go on showing one that is deleted everywhere else
+                    // (a full pull sends no deleted records).
                     if let Some(record) = &existing {
                         let weighed = op.operation == "delete" || (op.operation == "update" && !record.deleted);
-                        if weighed && overtaken(&op.timestamp, &record.updated_at) {
+                        let was_overtaken = weighed && overtaken(&op.timestamp, &record.updated_at);
+                        let deleted_already = op.operation == "update" && record.deleted;
+                        if (was_overtaken || deleted_already) && !batch_overtaken.iter().any(|(id, _)| *id == record.id) {
+                            batch_overtaken.push((record.id.clone(), op.id.clone()));
+                        }
+                        if was_overtaken {
                             batch_replayed.push(op.id.clone());
-                            if !batch_overtaken.iter().any(|(id, _)| *id == record.id) {
-                                batch_overtaken.push((record.id.clone(), op.id.clone()));
-                            }
                             continue;
                         }
                     }
@@ -1324,22 +1330,29 @@ impl SyncManager {
                     });
                 }
             }
+            // Broadcast to the other clients while the writer lock is still
+            // held, so that pushes are sent on in the order they were stored.
+            // It was done once the lock had been let go, after the ops were
+            // copied: a push stored second could be sent first, and a client,
+            // which applies what it is sent as it comes, was left with the
+            // older of two edits to one record. Sending waits for nobody.
+            if !accepted_ops.is_empty() {
+                let delta = ServerMessage::SyncDelta {
+                    ops: accepted_ops.clone(),
+                };
+                let _ = self
+                    .broadcast_tx
+                    .send((client_id.to_string(), delta));
+            }
             drop(db);
         }
 
-        // Acknowledge accepted ops to the pushing client, then broadcast to
-        // others. Phase 3, the after-hooks, is the caller's to run once this
-        // answer is on its way (run_after_sync).
+        // Acknowledge accepted ops to the pushing client. Phase 3, the
+        // after-hooks, is the caller's to run once this answer is on its way
+        // (run_after_sync).
         if !accepted_ops.is_empty() {
             let ack_ids: Vec<String> = accepted_ops.iter().map(|op| op.id.clone()).collect();
             responses.push(ServerMessage::SyncAck { op_ids: ack_ids });
-
-            let delta = ServerMessage::SyncDelta {
-                ops: accepted_ops.clone(),
-            };
-            let _ = self
-                .broadcast_tx
-                .send((client_id.to_string(), delta));
             *stored = accepted_ops;
         }
 
@@ -2012,6 +2025,87 @@ mod tests {
         assert_eq!(rejected(&late), vec!["u3"], "{late:?}");
     }
 
+    /// Several clients edit one record at once, each edit weighed against
+    /// the record and written under the one writer lock: whatever order the
+    /// pushes arrive in, with one script worker checking them or four, the
+    /// record ends as the newest edit made it and every op is acknowledged.
+    #[test]
+    fn of_edits_pushed_at_once_the_newest_is_the_record() {
+        for workers in [1, 4] {
+            let (sync, db) = manager_with(Some("function onBeforeSync(op) { return true; }"), workers);
+            let began = chrono::Utc::now() - chrono::Duration::seconds(120);
+            let at = move |n: i64| (began + chrono::Duration::milliseconds(n)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let mut create = op("c1", "notes", "create", "n1", serde_json::json!({"v": -1}));
+            create.timestamp = at(0);
+            sync.handle_sync_push(vec![create], "seed");
+            const CLIENTS: i64 = 6;
+            const EDITS: i64 = 150;
+            let pushing: Vec<_> = (0..CLIENTS).map(|client| {
+                let sync = Arc::clone(&sync);
+                std::thread::spawn(move || {
+                    let mut answered = 0;
+                    for i in 0..EDITS {
+                        // Half the clients push their edits newest first, as
+                        // a device that was offline may.
+                        let turn = if client % 2 == 0 { i } else { EDITS - 1 - i };
+                        let n = 1 + turn * CLIENTS + client;
+                        let mut edit = op(&format!("u{n}"), "notes", "update", "n1", serde_json::json!({"v": n}));
+                        edit.timestamp = at(n);
+                        // An op the host could not check this time (every
+                        // worker taken) is sent again, as a client does.
+                        for attempt in 0.. {
+                            let answer = sync.handle_sync_push(vec![edit.clone()], &format!("client-{client}"));
+                            assert!(rejected(&answer).is_empty(), "{answer:?}");
+                            if acked(&answer).len() == 1 {
+                                answered += 1;
+                                break;
+                            }
+                            assert!(attempt < 2000 && matches!(answer.as_slice(), [ServerMessage::SyncRetry { .. }]), "{answer:?}");
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                    }
+                    answered
+                })
+            }).collect();
+            let answered: usize = pushing.into_iter().map(|thread| thread.join().unwrap()).sum();
+            assert_eq!(answered as i64, CLIENTS * EDITS, "{workers} worker(s)");
+            let newest = CLIENTS * EDITS;
+            let record = db.write().get_record("n1").unwrap();
+            assert_eq!(record.data, serde_json::json!({"v": newest}), "{workers} worker(s)");
+            assert_eq!(record.updated_at, at(newest), "{workers} worker(s)");
+        }
+    }
+
+    /// An update for a record that has been deleted is refused, whenever it
+    /// was made. The device that pushed it had the record, edited, on its
+    /// screen: a full pull sends no deleted records and a refusal changes
+    /// nothing there, so it went on showing a record every other device had
+    /// seen deleted. Its pusher is sent the record as it stands, deleted,
+    /// as the pusher of an overtaken edit is, and nobody else is sent anything.
+    #[test]
+    fn the_pusher_of_an_update_to_a_deleted_record_is_told_it_is_deleted() {
+        let (sync, db) = manager(None);
+        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
+        sync.handle_sync_push(vec![stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 20)], "b");
+        let mut others = sync.broadcast_tx.subscribe();
+        // Made before the delete (offline) and made after it: refused alike.
+        for (id, minutes) in [("u-before", 30), ("u-after", 5)] {
+            let answer = sync.handle_sync_push(vec![stamped(op(id, "notes", "update", "n1", serde_json::json!({"title":"edited"})), minutes)], "a");
+            assert_eq!(rejected(&answer), vec![id], "{answer:?}");
+            assert!(acked(&answer).is_empty(), "{answer:?}");
+            let current = told(&answer);
+            assert_eq!(current.len(), 1, "{answer:?}");
+            assert_eq!((current[0].operation.as_str(), current[0].collection.as_str(), current[0].record_id.as_str()), ("delete", "notes", "n1"));
+            assert_eq!(current[0].data, None);
+        }
+        assert!(db.write().get_record("n1").unwrap().deleted);
+        assert!(others.try_recv().is_err(), "another client was sent something");
+        // An update for a record that was never there has nothing to be told.
+        let missing = sync.handle_sync_push(vec![op("u-missing", "notes", "update", "nobody", serde_json::json!({"title":"x"}))], "a");
+        assert_eq!(rejected(&missing), vec!["u-missing"]);
+        assert!(told(&missing).is_empty(), "{missing:?}");
+    }
+
     #[test]
     fn a_create_sent_again_does_not_bring_back_a_deleted_record() {
         let (sync, db) = manager(None);
@@ -2346,6 +2440,195 @@ mod tests {
         assert!(more.is_none());
         let ids: Vec<(String, bool)> = records.iter().map(|r| (r["id"].as_str().unwrap().to_string(), r.get("deleted").is_some())).collect();
         assert_eq!(ids, vec![("b0".to_string(), false), ("b1".to_string(), true), ("b2".to_string(), false)]);
+    }
+
+    /// Other clients are sent a push's ops in the order the pushes were
+    /// stored. They were sent once the writer lock had been let go, after
+    /// the acknowledgement was made and the ops copied, so a push stored
+    /// second could be sent first, and the larger the first push the longer
+    /// its copying took. A client applies what it is sent as it comes: of
+    /// two edits to one record it was left showing the older, while the
+    /// server, and the client that made the newer, had the newer.
+    ///
+    /// Several clients push at once here, one of them in large pushes. Every
+    /// op creates a record, so the table's row numbers are the order the
+    /// pushes were stored in, and the records must be sent on in that order.
+    #[test]
+    fn pushes_reach_other_clients_in_the_order_they_were_stored() {
+        let (sync, _db) = manager(None);
+        let mut deltas = sync.subscribe();
+        let listener = std::thread::spawn(move || {
+            let mut sent = Vec::new();
+            loop {
+                match deltas.blocking_recv() {
+                    Ok((_, ServerMessage::SyncDelta { ops })) => {
+                        for op in ops {
+                            if op.record_id == "end" {
+                                return sent;
+                            }
+                            sent.push(op.record_id);
+                        }
+                    }
+                    // What a slow listener missed is left out; what it has is still in order.
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return sent,
+                }
+            }
+        });
+
+        let mut pushing = Vec::new();
+        {
+            // One client pushes six hundred records at a time.
+            let sync = Arc::clone(&sync);
+            pushing.push(std::thread::spawn(move || {
+                let tags: Vec<String> = (0..60).map(|n| format!("tag {n}")).collect();
+                for round in 0..12 {
+                    let ops: Vec<SyncOp> = (0..600)
+                        .map(|i| op(&format!("b{round}-{i}"), "bulk", "create", &format!("bulk-{round}-{i}"), serde_json::json!({"tags": tags})))
+                        .collect();
+                    assert_eq!(acked(&sync.handle_sync_push(ops, "bulk")).len(), 600);
+                }
+            }));
+        }
+        for client in 0..3 {
+            // The others push one record after another.
+            let sync = Arc::clone(&sync);
+            pushing.push(std::thread::spawn(move || {
+                for i in 0..300 {
+                    let create = op(&format!("c{client}-{i}"), "notes", "create", &format!("note-{client}-{i}"), serde_json::json!({"n": i}));
+                    assert_eq!(acked(&sync.handle_sync_push(vec![create], &format!("client-{client}"))).len(), 1);
+                }
+            }));
+        }
+        for thread in pushing {
+            thread.join().unwrap();
+        }
+        sync.handle_sync_push(vec![op("end", "notes", "create", "end", serde_json::json!({}))], "seed");
+        let sent = listener.join().unwrap();
+
+        let direct = rusqlite::Connection::open(&sync.db_path).unwrap();
+        let stored: std::collections::HashMap<String, i64> = direct
+            .prepare("SELECT id, rowid FROM records").unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert!(sent.len() > 1000, "only {} of the records were sent on", sent.len());
+        let rows: Vec<i64> = sent.iter().map(|id| stored[id]).collect();
+        let late = rows.windows(2).filter(|pair| pair[1] < pair[0]).count();
+        assert_eq!(late, 0, "{late} time(s) a push was sent on after one stored later");
+    }
+
+    /// The ids a full pull of `notes` sends, page after page as a client
+    /// asks for them, in the order they are sent.
+    fn pulled_in_pages(sync: &SyncManager) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut cursor: Option<PullCursor> = None;
+        for _ in 0..1000 {
+            let messages = sync.handle_sync_pull(&["notes".to_string()], None, None, cursor.as_ref().map(|c| (c.at.as_str(), c.id.as_str())));
+            cursor = None;
+            for message in messages {
+                let ServerMessage::SyncState { records, more, .. } = message else { panic!("{message:?}") };
+                ids.extend(records.iter().map(|r| r["id"].as_str().unwrap().to_string()));
+                cursor = more;
+            }
+            if cursor.is_none() {
+                return ids;
+            }
+        }
+        panic!("the pull went on asking for more after {} records", ids.len());
+    }
+
+    /// Each step of a pull goes on from the last record the step before
+    /// read, and each page from the last record of the page before. Through
+    /// records received in the same millisecond (a bulk statement stamps
+    /// every row it touches alike), through records with no receipt time
+    /// (null, or empty, from a host before there were receipt times), and
+    /// with the ends of messages and of pages falling among both, every
+    /// record is sent once, in the order `COALESCE(server_received_at, '')`,
+    /// id: the order the pull was read in when it was one query.
+    #[test]
+    fn a_pull_in_steps_and_pages_sends_every_record_once_in_the_one_order() {
+        let (sync, db) = manager(None);
+        for i in 0..1300 {
+            db.write().upsert_record(xdb::Record {
+                id: format!("n{i:04}"), collection: "notes".into(), data: serde_json::json!({"n": i}),
+                created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
+            }).unwrap();
+        }
+        let direct = rusqlite::Connection::open(&sync.db_path).unwrap();
+        // 650 records in one millisecond and 450 in the next, 50 as they were
+        // received, and 150 with no receipt time: null and empty by turns.
+        direct.execute_batch(
+            "UPDATE records SET server_received_at = '2026-01-01T00:00:00.000Z' WHERE id < 'n0650';
+             UPDATE records SET server_received_at = '2026-01-01T00:00:00.001Z' WHERE id >= 'n0650' AND id < 'n1100';
+             UPDATE records SET server_received_at = NULL WHERE id >= 'n1150';
+             UPDATE records SET server_received_at = '' WHERE id >= 'n1150' AND substr(id, 5, 1) IN ('1', '3', '5', '7', '9');",
+        ).unwrap();
+        let wanted: Vec<String> = direct
+            .prepare("SELECT id FROM records WHERE collection = 'notes' AND deleted = 0 ORDER BY COALESCE(server_received_at, '') ASC, id ASC").unwrap()
+            .query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(wanted.len(), 1300);
+        assert!(wanted[0] == "n1150" && wanted[149] == "n1299" && wanted[150] == "n0000", "{:?}", &wanted[..3]);
+
+        // A page the size of the collection, pages that end among the
+        // records with no receipt time, among the ties, and on a message's end.
+        for page in [10_000, 700, 500, 100, 7] {
+            sync.pull_page.store(page, std::sync::atomic::Ordering::Relaxed);
+            let sent = pulled_in_pages(&sync);
+            assert_eq!(sent.len(), wanted.len(), "pages of {page}");
+            assert!(sent == wanted, "pages of {page}: sent in another order, or one twice");
+        }
+
+        // An incremental pull, from a record among the ties: the rest, the
+        // records with no receipt time left out as they always were.
+        let since = sync.handle_sync_pull(&["notes".to_string()], Some("2026-01-01T00:00:00.000Z"), Some("n0100"), None);
+        let ids: Vec<String> = since.iter().flat_map(|m| match m {
+            ServerMessage::SyncState { records, .. } => records.iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        }).collect();
+        assert_eq!(ids, wanted[251..].to_vec());
+    }
+
+    /// Records are written while a pull is between two of its steps. One not
+    /// yet read that is changed is sent once, as changed (it has moved to
+    /// the end, where it is read); one already sent that is changed is sent
+    /// again, as changed; one not yet read that is deleted is not sent; and
+    /// the pull ends.
+    #[test]
+    fn records_written_between_the_steps_of_a_pull_are_neither_lost_nor_sent_for_ever() {
+        let (sync, _db) = manager(None);
+        let creates: Vec<SyncOp> = (0..1200)
+            .map(|i| op(&format!("c{i}"), "notes", "create", &format!("n{i:04}"), serde_json::json!({"n": i})))
+            .collect();
+        for batch in creates.chunks(400) {
+            assert_eq!(acked(&sync.handle_sync_push(batch.to_vec(), "a")).len(), 400);
+        }
+        let mut pull = sync.start_pull(&["notes".to_string()], None, None, None).unwrap();
+        let mut sent: Vec<(String, serde_json::Value)> = Vec::new();
+        let take = |message: ServerMessage, sent: &mut Vec<(String, serde_json::Value)>| {
+            let ServerMessage::SyncState { records, .. } = message else { panic!("{message:?}") };
+            sent.extend(records.iter().map(|r| (r["id"].as_str().unwrap().to_string(), r["data"].clone())));
+        };
+        take(sync.pull_step(&mut pull).unwrap(), &mut sent);
+        assert_eq!(sent.len(), 500);
+        let pushed = sync.handle_sync_push(vec![
+            op("u-unread", "notes", "update", "n0800", serde_json::json!({"edited": true})),
+            op("u-sent", "notes", "update", "n0010", serde_json::json!({"edited": true})),
+            op("d-unread", "notes", "delete", "n0900", serde_json::json!({})),
+        ], "b");
+        assert_eq!(acked(&pushed).len(), 3, "{pushed:?}");
+        let mut steps = 1;
+        while let Some(message) = sync.pull_step(&mut pull) {
+            take(message, &mut sent);
+            steps += 1;
+            assert!(steps < 50, "the pull did not end");
+        }
+        let of = |id: &str| -> Vec<&serde_json::Value> { sent.iter().filter(|(sent_id, _)| sent_id == id).map(|(_, data)| data).collect() };
+        assert_eq!(of("n0800"), vec![&serde_json::json!({"n": 800, "edited": true})]);
+        assert_eq!(of("n0010"), vec![&serde_json::json!({"n": 10}), &serde_json::json!({"n": 10, "edited": true})]);
+        assert!(of("n0900").is_empty());
+        for i in (0..1200).filter(|i| ![800, 10, 900].contains(i)) {
+            assert_eq!(of(&format!("n{i:04}")).len(), 1, "n{i:04}");
+        }
     }
 
     /// Naming one collection many times in one pull used to read it that many

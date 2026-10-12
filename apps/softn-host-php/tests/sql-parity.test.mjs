@@ -123,6 +123,29 @@ test('a migration may be 1,000,000 bytes and no more, which the Rust host takes 
   } finally {db.close();}
 });
 
+test('a migration may seed twenty thousand rows in one INSERT, as it always could on this host',()=>{
+  // The request connection's 100,000 opcodes (SQL_LIMITS) are a limit on one
+  // compiled statement, and a migration runs on that connection. A seed
+  // table written as one INSERT is a few opcodes a row: twenty thousand
+  // rows of two columns, 400 KB of the 1,000,000 bytes a migration may be,
+  // were refused with SQLite's "out of memory", and an app whose first
+  // migration is such a list no longer started on a fresh install.
+  const rows=Array.from({length:20_000},(_,i)=>`(${i},'place ${i}')`).join(',');
+  const cases=n=>'SELECT CASE 0 '+Array.from({length:n},(_,i)=>`WHEN ${i} THEN ${i}`).join(' ')+' END';
+  const db=database();
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    applyMigration(db,`CREATE TABLE places(id INTEGER PRIMARY KEY, name TEXT);\nINSERT INTO places VALUES ${rows};`);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM places').get().n,20_000);
+    // And the limit is the request's again once the migration is done, also
+    // after one that failed.
+    assert.throws(()=>db.prepare(cases(70_000)),/out of memory/);
+    assert.throws(()=>applyMigration(db,'INSERT INTO no_such_table VALUES (1);'));
+    assert.throws(()=>db.prepare(cases(70_000)),/out of memory/);
+    db.exec('ROLLBACK');
+  } finally {db.close();}
+});
+
 test('a migration that renames into the host namespace is caught after the fact, and its transaction is the caller\'s to roll back',()=>{
   const db=database();
   try {

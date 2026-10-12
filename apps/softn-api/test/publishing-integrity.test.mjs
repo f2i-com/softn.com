@@ -127,6 +127,19 @@ test('a version that switches storage off does not lift the freeze on its polici
   assert.equal((await anonymous(old.app.slug)).status, 403);
 });
 
+test('a collection name ends where it ends: a line break after it is not a name', skip, async () => {
+  // The pattern ended in `$`, which PHP also matches before a final line
+  // break, so "scores\n" was taken as a name. The app page then listed a
+  // policy for a collection that reads as "scores" while the collection the
+  // app really writes, "scores", fell under `*`: what a visitor was told
+  // about who may read it was not what applied.
+  const s = await server();
+  await assert.rejects(
+    s.publish('Line Break', { permissions: storage({ ['scores\n']: 'private', '*': 'public' }) }),
+    /publish Line Break: 400 /
+  );
+});
+
 test('a publish whose picture is refused publishes nothing', skip, async () => {
   const s = await server();
   const listed = async () => (await s.api('GET', '/api/apps?perPage=48')).json.apps.map((a) => a.slug);

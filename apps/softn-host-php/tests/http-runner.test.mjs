@@ -25,7 +25,7 @@
  */
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readdirSync,symlinkSync,realpathSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,readFileSync,rmSync,existsSync,readdirSync,symlinkSync,realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -157,6 +157,41 @@ test('a page that makes five calls at once is answered five times by four worker
   const answers=await Promise.all(Array.from({length:5},()=>d.asking('GET','/api/ping')));
   assert.deepEqual(answers.map(a=>a.status),[200,200,200,200,200],answers.map(a=>a.text).join(' '));
   for(const a of answers){assert.equal(a.text,'{"ok":true}');assert.equal(a.log,'');}
+});
+
+test('a migration the deadline stopped is said where the operator looks: /api/meta, the log and setup.php',t=>{
+  // After three stops no request starts the migration again, so the app is
+  // down until somebody changes the file or removes the note. The answer was
+  // `database_migrations`, the label of a migration that failed or does not
+  // match the ledger, and setup.php said to check bin/node when its own
+  // check was the request the deadline ended.
+  const d=deployment(t,{ownNode:true});
+  const slow='CREATE TABLE slow(n INTEGER); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 4000000000) INSERT INTO slow SELECT count(*) FROM c;';
+  mkdirSync(join(d.backend,'app/server/migrations'));
+  writeFileSync(join(d.backend,'app/server/migrations/001.sql'),slow);
+  writeFileSync(join(d.backend,'app/manifest.json'),JSON.stringify({id:'http-runner',version:'1.0.0',main:'ui/main.ui',server:{entry:'server/main.logic',requires:{apiVersion:1,capabilities:['sql']},
+    database:{kind:'private-sqlite',migrations:['server/migrations/001.sql']},routes:ROUTES}}));
+  const setup=()=>spawnSync('php',[join(d.backend,'setup.php')],{encoding:'utf8',timeout:60000});
+  // setup's own check is a request: its runner is ended at the twenty seconds.
+  const first=setup();
+  assert.equal(first.status,1,first.stdout+first.stderr);
+  assert.match(first.stderr,/WARNING: A database migration did not finish before the runner's deadline and was rolled back; after three such stops it is not started again \(see README-RUNTIME\.md, Startup diagnostics, migration_stopped\)\. It said: softn: startup stage database_migrations: migration 001\.sql was stopped at the 20 s deadline \(1 of 3\)/);
+  assert.doesNotMatch(first.stderr,/bin\/node and runner\.mjs are intact/);
+  // The third stop, written as the runner writes it.
+  const note=join(d.backend,'private/data/migration-stopped.json');
+  assert.equal(JSON.parse(readFileSync(note,'utf8')).stops,1);
+  writeFileSync(note,JSON.stringify({...JSON.parse(readFileSync(note,'utf8')),stops:3}));
+  const meta=d.ask('GET','/api/meta');
+  assert.equal(meta.status,503);
+  assert.deepEqual(JSON.parse(meta.text),{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:'migration_stopped'});
+  assert.match(meta.log,/softn-host GET \/api\/meta: softn: startup stage migration_stopped: Migration 001\.sql was stopped at the deadline 3 times and is not started again until it changes or migration-stopped\.json is removed from the private data folder/);
+  const told=setup();
+  assert.equal(told.status,1,told.stdout+told.stderr);
+  assert.match(told.stderr,/WARNING: The application does not start: migration_stopped \(see README-RUNTIME\.md, Startup diagnostics\)\. It said: softn: startup stage migration_stopped: Migration 001\.sql was stopped at the deadline 3 times/);
+  // Changed, it runs, and the app answers.
+  writeFileSync(join(d.backend,'app/server/migrations/001.sql'),'CREATE TABLE slow(n INTEGER);');
+  assert.equal(d.ask('GET','/api/ping').status,200);
+  assert.ok(!existsSync(note));
 });
 
 test('setup.php starts the runner as a request does and says why an app does not start',t=>{

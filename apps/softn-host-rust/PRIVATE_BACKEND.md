@@ -570,6 +570,22 @@ A pull is read a message at a time, each once the one before has gone, so the
 server holds one message of it and not every collection it names; the
 messages are the ones it always was. A pull under way waits for a sync permit
 between messages rather than stopping part-way.
+Each message is read by the index on (collection,
+server_received_at, id), from the record the one before ended on. The full
+pull's query ordered by `COALESCE(server_received_at, '')`, which no index
+holds, so every message read and sorted the collection to find its five
+hundred records: twenty times a page, where a page had been one query.
+
+Other clients are sent a push's ops in the order the pushes were stored: the
+broadcast is made before the store's writer lock is let go. It was made
+after, once the ops had been copied, so of two pushes stored one after the
+other the second could be sent first, and a client, which applies what it is
+sent as it comes, was left showing the older of two edits to one record.
+
+An update for a record that has been deleted is refused (`sync_reject`), as
+it always was, and its pusher is also sent the record as it stands, a
+`delete` in a `sync_delta`. A full pull sends no deleted records, so that
+device went on showing a record that was deleted everywhere else.
 
 A push is one transaction and one saved CRDT document per collection it
 touches. The document is as large as the collection, and it used to be
