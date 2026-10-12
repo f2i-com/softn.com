@@ -107,7 +107,20 @@ final class Bundle
                     $bytes = $zip->getFromName($iconPath);
                     if (is_string($bytes)) {
                         $mime = Images::sniff($bytes);
-                        if ($mime === null && preg_match('/\.svg$/i', $iconPath) && self::safeSvg($bytes)) $mime = 'image/svg+xml';
+                        // The icon is the card's picture when there is no
+                        // thumbnail, so it is held to the thumbnail's budget:
+                        // a few hundred bytes of PNG can claim ten gigapixels
+                        // to every browser that lists the app. One past it is
+                        // left out, as an icon that is not an image is.
+                        if ($mime !== null) {
+                            try {
+                                Images::checkBudget(@getimagesizefromstring($bytes));
+                            } catch (ApiError) {
+                                $mime = null;
+                            }
+                        } elseif (preg_match('/\.svg$/i', $iconPath) && self::safeSvg($bytes)) {
+                            $mime = 'image/svg+xml';
+                        }
                         if ($mime !== null) $icon = [$bytes, $mime];
                     }
                 }

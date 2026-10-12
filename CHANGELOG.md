@@ -13,6 +13,7 @@ section here. Write the section before tagging. Headings are the tag
 - Web runtime: Home no longer goes blank for an app whose description is not text; a double click opens an app once; the next app no longer runs under a closed app's address after Back; the consent dialog in a hidden app no longer takes Escape. Desktop app: an upgrade that fails to open is rolled back through the recovery screen, its dialogs keep focus inside and close on Escape, and an icon that is not text no longer stops an app opening.
 - A single app's loading screen, on `/play/` and on the privately served page, is drawn in the side its project declares, so a light app on a dark deployment no longer flashes dark first; the private page's browser and install colours follow that side too, unless the operator set them.
 - FormLogic embedding: an app whose backend call times out keeps that call's slot until FormLogic answers, so one slow action no longer gets the app's next calls refused; Builder and Studio inside FormLogic show a slow save as saved once FormLogic confirms it, where they said "not saved" after 60 s.
+- Directory: a bundle icon that claims a picture larger than a thumbnail may be (8192 px a side, 16 megapixels) is dropped for the placeholder, as an oversized thumbnail is refused.
 
 ## v0.0.19
 

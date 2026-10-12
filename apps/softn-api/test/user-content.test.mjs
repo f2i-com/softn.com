@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { startServer, runPhp, skip } from './helpers/harness.mjs';
+import { startServer, runPhp, skip, PNG_1x1, pngDeclaring } from './helpers/harness.mjs';
 
 let s = null;
 
@@ -126,6 +126,30 @@ test('a scripted SVG icon is never served; every icon, thumbnail and bundle is s
   const again = await s.api('GET', `/api/apps/${app.slug}/icon`);
   assert.doesNotMatch(again.text, /script/i, 'a stored icon that fails today is answered with the placeholder');
   assertSandboxed(again, 'the placeholder');
+});
+
+test("a bundle's icon is held to the picture budget a thumbnail is held to", skip, async () => {
+  // The icon is the card's picture when there is no thumbnail, shown by
+  // every browser that lists the app, so a header claiming ten gigapixels is
+  // no more a picture here than it is as an upload (admission.test.mjs). A
+  // picture the directory will not show is left out, as an icon that is not
+  // an image is, and the app is published with the placeholder.
+  for (const [label, bytes] of [
+    ['ten gigapixels', pngDeclaring(100000, 100000)],
+    ['past the side budget', pngDeclaring(9000, 10)],
+    ['no size at all', Buffer.from('\x89PNG\r\n\x1a\nnot a header', 'latin1')],
+  ]) {
+    const { app } = await s.publish(`Icon ${label}`, { icon: { path: 'icon.png', bytes } });
+    for (const route of ['icon', 'thumbnail']) {
+      const res = await s.api('GET', `/api/apps/${app.slug}/${route}`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-type'), 'image/svg+xml', `the ${route} is the placeholder (${label})`);
+    }
+    assert.ok(!fs.existsSync(path.join(s.dataDir, 'apps', app.slug, 'icon.png')), `no icon is stored (${label})`);
+  }
+  const { app } = await s.publish('Icon within budget', { icon: { path: 'icon.png', bytes: PNG_1x1 } });
+  const icon = await s.api('GET', `/api/apps/${app.slug}/icon`);
+  assert.equal(icon.headers.get('content-type'), 'image/png');
 });
 
 test("an app's name and description reach the share and play pages literally", skip, async () => {
