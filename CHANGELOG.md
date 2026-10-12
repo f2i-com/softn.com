@@ -8,9 +8,7 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
-- Desktop Builder: it asks before it discards or deletes. Its questions were the browser's `window.confirm`, which in the desktop app returned at once and was read as a yes, so Open and New over unsaved work, the session restore, deleting a file, a folder or a collection and re-identifying records went ahead without asking (v0.0.19 showed the question after the action had been taken). They are now the Builder's own dialog, in the browser and on the desktop alike: Escape, a click outside and Cancel are no, and where going on loses something the focus starts on Cancel.
-
-## v0.0.21
+## v0.0.20
 
 - Upgrading from v0.0.19: some apps behave differently on purpose, each change described in its entry below. `:bind` on a number field writes a number; a DatePicker holds `"YYYY-MM-DD"` text, and Radio and Select hold the chosen option's own value; a handler with a block body runs its statements; an app connects to its sync server only when its `permission.json` declares `sync`, and a capability is granted only by `"enabled": true`; top-level `softn.*` calls and `window` listeners in an app with no `_init` start at load; timers in server logic throw an error that says they cannot run; a handler written in markup gets a plain event record, never the live DOM event; and Python programs on ZIPP v0.0.23 charge different step counts. A directory needs PHP's zlib extension, and anyone who may have run a stranger's app on v0.0.19 or earlier in the browser that holds their edit keys should replace those keys (Replace key, on the update page and in Your apps).
 - An app embedded in FormLogic is drawn in the side its project declares, as it is everywhere else it runs. The frame FormLogic embeds handed the theme provider only FormLogic's own light or dark, so a project made dark was dark in the web runtime and light inside a light FormLogic. It now hands over the manifest's `config.theme.mode` as well: `"light"` or `"dark"` wins over FormLogic's theme, a page's own `<App theme>` still wins over both, and `"system"`, or no mode, follows FormLogic as before. Nothing changes for an app that declares no side, and FormLogic takes this with the release that carries it.
@@ -69,10 +67,7 @@ section here. Write the section before tagging. Headings are the tag
 - Rust backend host: what a handler builds and drops while it runs is collected while it runs. An array filled to a megabyte and dropped at the next iteration of a loop was held until the call ended (1,200 of them were all resident at once); the host's allocator now reports large blocks to ZIPP, as ZIPP 0.0.23 asks of a host, and the engine collects on that growth.
 - Tooling: CI runs its checks side by side (the test suites in four shards, `npm run test:shard -- 2/4` runs one locally) and a release verifies, runs the browser gate and packages at the same time, publishing only once all three pass; the site build compresses its `.br`/`.gz` twins on worker threads, byte for byte the same files, and `build-site --no-precompress` makes a test build without them that the packagers refuse to ship.
 - The demos come from softn-Examples v1.0.2, in which the Notes demo declares sync, so it still connects to its sync server under the runtime's new rule.
-
-## v0.0.20
-
-- Tagged and never released. Its release run refused to package the site: built on Linux, the service workers' source maps (`studio/sw.js.map`, `web/sw.js.map`) still named the checkout they were built in, which the packager refuses. Everything the tag holds is in v0.0.21, with that fixed.
+- Desktop Builder: it asks before it discards or deletes. Its questions were the browser's `window.confirm`, which in the desktop app returned at once and was read as a yes, so Open and New over unsaved work, the session restore, deleting a file, a folder or a collection and re-identifying records went ahead without asking (v0.0.19 showed the question after the action had been taken). They are now the Builder's own dialog, in the browser and on the desktop alike: Escape, a click outside and Cancel are no, and where going on loses something the focus starts on Cancel.
 
 ## v0.0.19
 
