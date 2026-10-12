@@ -74,8 +74,17 @@ export function buildMachinePaths(dir, names, checkout) {
  * Remove every source map under `dir` whose sources are paths on the build
  * machine, with its compressed twins, and the `sourceMappingURL` comment
  * that names it in the file it maps. The paths removed, relative to `dir`.
+ *
+ * With `checkout`, a map that holds the checkout's path anywhere goes too: the
+ * rule the packagers apply (`buildMachinePaths`). On Linux workbox names the
+ * worker's temporary file relatively (`../../../../tmp/<hash>/sw.js`), so
+ * the sources alone did not give the service workers' maps away, while the
+ * sources they carry still import from the checkout by its full path; the
+ * Windows builds this was first tried on had absolute sources, and the first
+ * release built on Linux was refused for those two maps.
  */
-export function dropMachineMaps(dir) {
+export function dropMachineMaps(dir, checkout = null) {
+  const spellings = checkout && checkout.length >= 8 ? pathSpellings(checkout) : [];
   const removed = [];
   const walk = (folder) => {
     for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
@@ -85,13 +94,15 @@ export function dropMachineMaps(dir) {
         continue;
       }
       if (!entry.isFile() || !entry.name.endsWith('.map')) continue;
+      const text = fs.readFileSync(file, 'utf8');
       let map = null;
       try {
-        map = JSON.parse(fs.readFileSync(file, 'utf8'));
+        map = JSON.parse(text);
       } catch {
         continue;
       }
-      if (!machinePathIn(map)) continue;
+      const lower = spellings.length ? text.toLowerCase() : '';
+      if (!machinePathIn(map) && !spellings.some((spelling) => lower.includes(spelling))) continue;
       for (const twin of [file, `${file}.br`, `${file}.gz`]) fs.rmSync(twin, { force: true });
       const mapped = file.slice(0, -'.map'.length);
       if (fs.existsSync(mapped)) {

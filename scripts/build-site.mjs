@@ -969,7 +969,7 @@ writeBuildInfo();
 // file workbox bundled each worker from and the checkout's own path in every
 // import; the apps' maps, relative to the build, stay for reading error
 // reports (lib/build-paths.mjs, and package-site.mjs refuses what is left).
-for (const map of dropMachineMaps(outDir)) console.log(`Left out ${map}: it names paths on this machine`);
+for (const map of dropMachineMaps(outDir, root)) console.log(`Left out ${map}: it names paths on this machine`);
 if (precompress) await precompressAssets();
 else console.log('\nNo .br/.gz twins (--no-precompress): this dist is for tests, and the packagers refuse it.');
 
