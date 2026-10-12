@@ -7,7 +7,7 @@
 import React from 'react';
 import { act } from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mount, click } from './dom';
+import { mount as mountInDocument, click, type Mounted } from './dom';
 import { LineChart } from '../src/charts/LineChart';
 import { AreaChart } from '../src/charts/AreaChart';
 import { BarChart } from '../src/charts/BarChart';
@@ -48,6 +48,29 @@ function preferReducedMotion(): void {
 afterEach(() => {
   window.matchMedia = originalMatchMedia;
   vi.restoreAllMocks();
+});
+
+// What a test mounts is unmounted when it ends. A Typewriter left mounted kept
+// typing on its timer after the last test, and once the file's environment was
+// gone its next tick failed the whole run ("window is not defined"), on a
+// runner fast enough to finish the file first.
+const mountedInTest: Mounted[] = [];
+function mount(element: React.ReactElement): Mounted {
+  const inner = mountInDocument(element);
+  let unmounted = false;
+  const once: Mounted = {
+    ...inner,
+    unmount: () => {
+      if (unmounted) return;
+      unmounted = true;
+      inner.unmount();
+    },
+  };
+  mountedInTest.push(once);
+  return once;
+}
+afterEach(() => {
+  for (const mounted of mountedInTest.splice(0)) mounted.unmount();
 });
 
 function key(el: Element, type: 'keydown' | 'keyup', k: string, init: KeyboardEventInit = {}): void {
