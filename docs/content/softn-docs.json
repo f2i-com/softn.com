@@ -2143,7 +2143,7 @@
         "title": "App logic in JavaScript or Python | SoftN Docs",
         "description": "SoftN app logic with ZIPP: JavaScript .logic or Python .py files, one language per app, the shared state and handler contract, the WebAssembly engine and host bridges."
       },
-      "updatedAt": "2026-10-11",
+      "updatedAt": "2026-10-12",
       "sourceIds": [
         "softn-languages",
         "softn-core-source",
@@ -2213,6 +2213,11 @@
                   "`softn.on(\"keydown\", handler)`"
                 ],
                 [
+                  "Timers",
+                  "`setTimeout`, `setInterval` and their `clear…`",
+                  "Not available; use `<Loop>`"
+                ],
+                [
                   "Computed values",
                   "`$:` declarations",
                   "Call a function instead"
@@ -2232,6 +2237,10 @@
             {
               "type": "paragraph",
               "text": "A function the page calls is followed the same way. `<Text>{label()}</Text>` is drawn again when any state `label` reads changes, directly or through the functions it calls, whether or not the page names that state. A function that only an event runs (`@click`, `@tick`, an `on…` prop) is not followed, so a game’s `tick` can work on large state without the page being told of every change."
+            },
+            {
+              "type": "paragraph",
+              "text": "In JavaScript logic, `setTimeout`, `setInterval`, `clearTimeout` and `clearInterval` work as in a browser, for a delay, a debounce or a countdown. A callback runs the way a click handler does, so what it writes is drawn, and every timer is cleared when the app stops. Set one from a logic function: markup cannot call them. A game clock is better as `<Loop interval={100} running={running} @tick={() => step()} />`, which also pauses and resumes. `requestAnimationFrame` is not available."
             }
           ]
         },
@@ -2297,7 +2306,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The PHP and Rust hosts run server-side `.logic` as JavaScript. Python is for client logic: a `.py` file under `server/` would never run, and Studio’s validator says so."
+              "text": "The PHP and Rust hosts run server-side `.logic` as JavaScript. Python is for client logic: a `.py` file under `server/` would never run, and Studio’s validator says so. There are no timers in server logic: a request ends when its handler returns, so `setTimeout` and the others throw an error that says so."
             }
           ]
         },
