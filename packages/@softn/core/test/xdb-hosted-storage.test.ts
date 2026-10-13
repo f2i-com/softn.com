@@ -271,7 +271,7 @@ describe('XDB acknowledged hosted persistence', () => {
     const data = backup({ notes: [row('new')] });
     const pending = method === 'importFromJSON' ? xdb.importFromJSON(JSON.stringify(data), { merge: false }).persisted
       : method === 'restoreAsync' ? xdb.restoreAsync(data) : xdb.importAsync(data, { merge: false });
-    const settled = watched(pending);
+    const settled = watched<unknown>(pending);
     await flush();
     expect(settled()).toBe(false);
     host.operations[0].confirm();
