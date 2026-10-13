@@ -1,6 +1,6 @@
 # Runtime candidate qualification
 
-Status recorded on **2026-10-13**: the scoped source, offline and packaged-helper checks below passed. The later disposable local fixture **failed during startup before application tests**. This is a source/candidate evidence record, not successful live integration, release or deployment qualification.
+Status recorded on **2026-10-13**: **full qualification is on hold**. Scoped source, offline and packaged-helper checks passed, but the expanded local gates found a candidate-specific TypeScript error and incomplete or failed suites. The disposable local fixture **failed during startup before application tests**. This record establishes neither successful live integration nor release/deployment readiness.
 
 ## Exact candidate pair
 
@@ -37,6 +37,63 @@ These are recorded producer and independent-review results on the identified byt
 
 Independent review found no blocking defect in the scoped SoftN acknowledgment/XDB, migration or composition changes. Source identity was checked separately after the failed fixture: both product heads were clean and all 47 changed-file hashes across the pair still matched the pre-fixture inventory. This does not make the failed live attempt a pass.
 
+## Expanded local repository gates
+
+These fresh checks used the same product source through documentation-only commit `071c3a1afc08cbeb0d8b71aa8094220da2b9db2b`. The command inventory follows `.github/workflows/verify.yml`; the local platform was Windows with Node 24.19.0, npm 11.17.0 and PHP 8.4.15. It does **not** cover every Ubuntu/POSIX branch in that workflow. Commands had explicit time limits. No source fixes, hosted CI, model loads, production integrations or new Coffee fixture were used.
+
+| Gate | Actual result |
+| --- | --- |
+| Clean `npm ci` | **PASS**, 18.473 seconds, 730 packages added / 750 audited / zero vulnerabilities, in a separate exact-LF checkout of `75d2ab09`; all 2,009 tracked Git blobs and lockfiles unchanged. The suites below used the existing dependency tree, so this is separate install-prerequisite evidence. |
+| Pinned engine and demos | Engine `--ensure` passed. The initial demo check failed because 23 pinned bundles were absent; fetching and verifying all 23 then passed. These are public application bundles, not loaded models. |
+| `npm audit --audit-level=high` | Initial sandbox DNS failure; normal-network retry **PASS**, zero advisories across 876 dependencies including development tooling. |
+| `npm run build:packages` | **PASS**, 28.607 seconds. |
+| `npm run build:apps` | Initial sandbox `realpath` EPERM on `zipWorker.ts`; unchanged-source normal-permission retry **PASS**, 41.457 seconds. |
+| `npm run typecheck` | **FAIL**, exit 2, 18.285 seconds: `packages/@softn/core/test/xdb-hosted-storage.test.ts:274` reports TS2345. A union of `Promise<XDBPersistResult>` and `Promise<XDBDurableImportResult>` is passed where the former is required; the latter lacks `backend` and `tombstoned`. This newly added test is a candidate-specific gate defect; runtime impact is not established by this diagnostic. |
+| `npm run lint` | **PASS**, 29.932 seconds, zero warnings. |
+| Rust host | `cargo test --manifest-path apps/softn-host-rust/Cargo.toml --locked --offline`: **159 passed**, zero failed/ignored/filtered, 183.234 seconds. |
+| Rust desktop loader | `cargo check --manifest-path apps/softn-loader/src-tauri/Cargo.toml --locked --offline`: initial C1083 on an existing 263-character include path; **PASS**, 167.000 seconds, after shortening only owned cache/target/temp paths. Source and lockfiles unchanged; Linux configuration was not run. |
+
+All 22 JavaScript test units are accounted for below. Counts are per unit and are not additive across alternate engines or retries. The original shard 2, 3 and 4 commands **failed** and remain failed evidence; passing complete-unit retries do not turn those executions into passes. Shard 1 was split into its declared units to withhold the API fixture.
+
+| Unit | Passed / failed / skipped | Disposition |
+| --- | --- | --- |
+| `scripts/**/*.test.mjs` | 112 / 0 / 1 | Full unit passed; both actual Chromium cases and built Builder/Studio/web isolation checks ran. Skip requires `SOFTN_CHECK_RELEASE_DIR` with full release archives, which `verify.yml` does not provide. |
+| `@softn/runtime-shell` | 16 / 0 / 0 | Passed. |
+| `@softn/vite-plugin` | 6 / 0 / 0 | Passed. |
+| `@softn/api` | Not run | Main API fixture generates an admin key and uses an unreserved random port; held outside the authorized scope. |
+| `packages/@softn/core/scripts/*.test.mjs` | 50 / 0 / 0 | Passed. |
+| `@softn/editor-shared` | 48 / 0 / 0 | Passed. |
+| `@softn/builder` | 1,632 / 0 / 0 | Passed. |
+| `@softn/single-private` | 54 / 0 / 38 | **Failed suite:** two files failed, one at import with EPERM and one in PHP server setup. Zero failed test bodies does not mean a pass. See scope correction below. |
+| `@softn/site` | 166 / 0 / 0 | Passed. |
+| `docs/tests/*.test.mjs` | 25 / 0 / 0 | Full normal-permission retry passed after initial 23 passes and two failures: junction EPERM and loopback EACCES. |
+| `apps/formlogic-host/test/*.test.mjs` | 58 / 0 / 0 | Passed. |
+| `@softn/brand` | 9 / 0 / 0 | Passed. |
+| `@softn/single-shell` | 95 / 0 / 0 | Full normal-permission retry passed after initial 79 passes and four import EPERM file failures. |
+| `@softn/host-php` | 75 / 33 / 23 | **Failed.** Narrow photo diagnostic described below does not pass this full unit. |
+| `@softn/loader` | 86 / 0 / 0 | JavaScript suite passed; Rust scope is separate. |
+| `@softn/studio` | 885 / 1 / 0 | **Failed.** Generated-knowledge mismatch independently attributed to unchanged baseline CRLF inputs; no full-suite retry. |
+| `@softn/bundle-format` | 37 / 0 / 0 | Passed. |
+| `@softn/components` | 1,746 / 0 / 0 | Passed. |
+| `@softn/core` | 1,884 / 0 / 0 | Passed on the declared ZIPP engine. |
+| `@softn/single` | 10 / 0 / 0 | Full retry passed after successful application build; initial five build-graph skips were due to the missing built manifest. |
+| `@softn/web` | 237 / 0 / 0 | Full retry passed; initial 196 passes / seven skips and five import EPERM file failures retained. |
+| `test:host-js` | 1,840 / 0 / 4 | Passed with declared alternate-engine exclusions: four Python-logic cases skipped, plus five ZIPP-only test files excluded by configuration. |
+
+The PHP failures comprise **28 assertions affected by WAMP Xdebug stderr**, two CGI assertions receiving `private_permissions`, and three unresolved slot-wait assertions. The five photo cases passed a credential-free CLI-only diagnostic with `XDEBUG_MODE=off`; other cases were not rerun. The photo/request tests and relevant PHP runtime files match the baseline. The route-declarations file has an added migration test elsewhere. Unchanged source alone does not establish a baseline runtime pass, and the permission/wait failures remain unresolved. The PHP skips are seven explicitly unsupported Windows HTTP-runner cases, one POSIX ownership case, and 15 cases requiring `SOFTN_PHP_TEST_BACKEND`; the workflow itself does not provision that optional backend fixture.
+
+The Studio mismatch is not caused by this engineering document. Its generator inputs and generated Git blobs match the baseline; an independent exact-LF checkout reproduced all three generated files byte for byte. The shared checkout's CRLF input bytes also alter embedded source hashes. No generated knowledge was committed to hide the failure.
+
+One test side effect rewrote `docs/generated/landing.json` from CRLF to LF: `scripts/dev-docs.test.mjs` invokes the documentation plugin, whose generator defaults to writing integration files. Normalized content remained equal to the committed blob. Generated bytes and diff were preserved, then only that file was restored to its exact pre-test bytes. All 2,010 tracked physical hashes matched the pre-gate inventory and the tree was clean before this documentation update. Ignored builds and caches are not release artifacts.
+
+### Private-server test scope correction
+
+The initial inspection missed `apps/softn-single-private/test/php-server.test.ts` inside the full shard. Its setup was **attempted and failed**, despite the prohibition on a new credential fixture. This was a scope miss, not an approved live qualification attempt. The hook starts test-owned PHP on loopback and may initialize viewer authentication state; whether a secret or cookie was actually generated is **unknown**. No secret values were read or exported.
+
+The setup hook timed out after 10 seconds; all 38 bodies under it, including secret-claim and visitor scenarios, were skipped. The containing shard's owned Windows Job ran for 158.357 seconds and cleanup verified the original process exited and zero Job members remained. A later metadata-only check found all test-owned `softn-serve-*` roots absent. This bounds the processes, not a cookie's validity: the default cookie TTL is 43,200 seconds, and exact secret creation/removal instants were not retained. The absence check was within 391 seconds of shard start. No API/private/server retry or replacement Coffee lifetime followed.
+
+Fresh paired FormLogic evidence is recorded in its [qualification status](https://github.com/f2i-com/formlogic.com/blob/78b0a0ac560513c0de069d794d5fccffba584243/docs/QUALIFICATION_STATUS.md): the full frontend passed 3,471 cases with 227 optional parity skips, and npm/Composer audits passed. Broad backend coverage still has one missing-launcher failure and lacks authorized MySQL integration. Those results do not close SoftN's typecheck or the paired live gates.
+
 ## Actual local fixture outcome
 
 The v5 Windows Job containment probe **passed** single-owner closure, inherited orphan closure and two same-handle reuse rounds, including verified console-child exits. This qualifies the bounded **test harness containment**, not the product runtime end to end.
@@ -50,7 +107,8 @@ The original startup cause is **unknown**. The surviving process-identity captur
 ## Remaining qualification
 
 - Exercise the exact FormLogic/SoftN pair on a separately authorized disposable host: actual Coffee import/upgrade, HTTP authentication/cookies/JWT/CSRF, rendered phone/OTP/chat, member and same-user transitions, real cross-tab events, stale callbacks, offline startup, legacy-map exclusion, reset faults, application-mode login persistence and full process/browser restart.
-- Complete or explicitly disposition applicable full backend unit-plus-database tests, Composer audit and the full frontend suite at the final FormLogic revision. The unchanged-backend PHPStan gate already passed. Broad callback races, full-store/replay behavior and final paired-artifact provenance remain outside the scoped evidence above.
+- Correct the candidate-specific TS2345 in a separately authorized source change and rerun the complete typecheck. Complete or explicitly disposition API/private/PHP and Linux/POSIX gates after inspecting every test file type and obtaining authorization for any required credential fixture. The current record does not waive the repository's local checks for `[skip ci]` commits.
+- Complete the paired backend launcher/database gaps. FormLogic's fresh full frontend and dependency audits passed within their recorded skips; unchanged-backend PHPStan also passed. Broad callback races, full-store/replay behavior and final paired-artifact provenance remain outside the scoped evidence above.
 - Physical IME, PWA behavior, real SMS/phone ownership, production TLS/hosting/integrations and full release/all-in-one packaging remain unqualified. Mock or simulated integrations do not establish provider success or identity assurance. Earlier live results do not transfer to these candidates.
 
 Source/candidate publication requires an explicit decision accepting these live-qualification limits. This record authorizes no push, tag, release, deployment or running-installation replacement. Preserve the paired compatibility and rollback limits when making that decision.
