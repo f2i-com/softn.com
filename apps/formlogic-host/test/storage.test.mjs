@@ -48,7 +48,7 @@ function fixture(t, snapshot = {}, options = {}) {
   };
   const posted = [];
   const queue = createBackendQueue({ post: message => posted.push(message), maxInFlight: options.maxInFlight ?? 4 });
-  const adapter = installAppStorage(snapshot, (input, lifecycle) => queue.call('nativeStorage', input, lifecycle), { acknowledged: options.acknowledged !== false });
+  const adapter = installAppStorage(snapshot, (input, lifecycle) => queue.call('nativeStorage', input, lifecycle), { acknowledged: options.acknowledged !== false, deadlineMs: options.deadlineMs });
   t.after(() => { adapter?.dispose(); queue.dispose?.('test closed'); globalThis.window = previousWindow; globalThis.document = previousDocument; });
   return { ...adapter, posted, queue, listeners, elements, api: adapter.acknowledgedPersistence };
 }
@@ -313,14 +313,54 @@ test('serialized candidate map accepts its exact limit and refuses one unit abov
   f.queue.settle(f.posted[0].id, acknowledged); await receipt.completion;
 });
 
+// A parent that does not negotiate protocol 1 keeps the storage it always had
+// (FORMLOGIC_RUNTIME_REPAIR.md: "Legacy parents retain optimistic synchronous
+// storage"). Every answer it gave used to count as a failure here: a save it
+// made showed "An app save failed", closing the page always asked first, and
+// protocol 1's caps and deadline refused or dropped its writes.
 test('old parent capability retains synchronous cache-first writes without advertising durable methods', async t => {
   const f = fixture(t, {}, { acknowledged: false });
   assert.equal(f.api.protocol, 0);
   assert.equal(f.api.setItem, undefined);
   assert.equal(f.storage.setItem('session', 'current-visit'), undefined);
   assert.equal(f.storage.getItem('session'), 'current-visit');
-  f.queue.settle(f.posted[0].id, acknowledged); await f.api.whenIdle();
+  assert.equal(f.posted[0].action, 'nativeStorage');
+  assert.deepEqual(f.posted[0].input, { operation: 'set', key: 'session', value: 'current-visit' });
+  assert.equal(f.elements.has('app-storage-error'), false, 'nothing is shown while it saves');
+  const event = { preventDefault() { this.prevented = true; } };
+  f.listeners.get('beforeunload')?.(event);
+  assert.equal(event.prevented, undefined, 'closing the page does not ask');
+  // An old parent answers a save without protocol 1's `saved` flag.
+  f.queue.settle(f.posted[0].id, { result: {} }); await f.api.whenIdle();
+  assert.equal(f.api.getStatus().failedWrites, 0);
+  assert.equal(f.elements.has('app-storage-error'), false);
+  assert.deepEqual(f.confirmedSnapshot(), { session: 'current-visit' });
+});
+
+test('an old parent\'s error reply shows the failed-save alert, and the writes after it still go', async t => {
+  const f = fixture(t, {}, { acknowledged: false });
+  f.storage.setItem('first', 'one');
+  f.queue.settle(f.posted[0].id, { error: 'The backend request timed out.' }); await f.api.whenIdle();
   assert.equal(f.api.getStatus().failedWrites, 1);
-  assert.deepEqual(f.confirmedSnapshot(), {});
+  assert.equal(f.api.getStatus().unknownWrites, 0);
   assert.match(f.elements.get('app-storage-error').textContent, /save failed/);
+  f.storage.setItem('second', 'two');
+  assert.equal(f.posted.length, 2);
+  f.queue.settle(f.posted[1].id, { result: {} }); await f.api.whenIdle();
+  assert.deepEqual(f.confirmedSnapshot(), { second: 'two' });
+});
+
+test('an old parent takes a burst past protocol 1\'s caps and deadline, one write at a time and in order', async t => {
+  const f = fixture(t, {}, { acknowledged: false, deadlineMs: 1 });
+  for (let index = 0; index < STORAGE_LIMITS.outstanding + 8; index++) f.storage.setItem(`key-${index}`, 'x'.repeat(index));
+  f.storage.removeItem('k'.repeat(STORAGE_LIMITS.key + 1));
+  assert.equal(f.posted.length, 1);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  for (let index = 0; f.posted.length > index; index++) {
+    f.queue.settle(f.posted[index].id, { result: {} }); await microtasks();
+  }
+  assert.equal(f.posted.length, STORAGE_LIMITS.outstanding + 9, 'every write went, none expired');
+  assert.deepEqual(f.posted.slice(0, 3).map(item => item.input.key), ['key-0', 'key-1', 'key-2']);
+  assert.equal(f.api.getStatus().failedWrites, 0);
+  assert.equal(f.api.getStatus().pendingWrites, 0);
 });

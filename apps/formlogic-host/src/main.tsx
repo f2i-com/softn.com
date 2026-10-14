@@ -58,7 +58,9 @@ function terminate(): void {
   port?.close();
   root.unmount();
 }
-window.addEventListener('pagehide', terminate, { once: true });
+// A page kept in the back/forward cache comes back as it was, port and all;
+// only one that is going for good ends (a terminated frame takes no new init).
+window.addEventListener('pagehide', event => { if (!event.persisted) terminate(); });
 const LOAD_FAILED = 'This app could not be loaded. Check the interface and logic files.';
 /** One line the app author can act on; never the stack, never more than a sentence. */
 function reasonOf(error: unknown): string {
@@ -88,7 +90,10 @@ window.addEventListener('message', async event => {
   };
   // A result the port could not deserialise names no id: nothing in flight
   // can be told apart, so all of it answers now rather than at its deadline.
-  port.onmessageerror = terminate;
+  // The app goes on: an acknowledged (protocol 1) storage write sent before it
+  // is marked unknown, which holds later ones back, so nothing is claimed
+  // saved that may not be.
+  port.onmessageerror = () => { calls.failInFlight(BACKEND_UNREADABLE); };
   try {
     // `engine` is an addition: absent means the engine this document has always
     // run, so a FormLogic that predates the choice is unaffected. One it does
