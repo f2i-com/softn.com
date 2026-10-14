@@ -168,9 +168,12 @@ describe('a timer in logic', () => {
         let start = Date.now()
         setTimeout(function () { order = order + 'd' }, 1)
         while (Date.now() - start < 15) {}
-        setTimeout(function () { order = order + '!' }, 60)
+        setTimeout(function () { order = order + '!' }, 500)
       `)
     );
+    // '!' is still in the future when the load returns, unless the load
+    // itself takes longer than its delay: 60 ms did on a machine busy with
+    // the other suites, and '!' was in the state the page starts with.
     if (zipp) expect(loaded.state.order).toBe('abdc');
     Object.assign(state, loaded.state);
     await until(() => state.order === 'abdc!');
