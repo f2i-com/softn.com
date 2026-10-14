@@ -1706,7 +1706,7 @@ mod tests {
     }
 
     fn manager_with(script: Option<&str>, workers: usize) -> (Arc<SyncManager>, ServerDb) {
-        let dir = std::env::temp_dir().join(format!("softn-sync-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dirs::temp_path("softn-sync", "");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("xdb.sqlite");
         let shared = xdb::create_shared_db(path.clone()).unwrap();
@@ -1752,7 +1752,7 @@ mod tests {
             sync.issue_ticket(None, std::net::IpAddr::V4(ip.into())).unwrap();
         }
         assert_eq!(sync.issue_ticket(None, "198.51.100.1".parse().unwrap()), Err(TicketError::Busy));
-        let dir = std::env::temp_dir().join(format!("softn-sync-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dirs::temp_path("softn-sync", "");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("xdb.sqlite");
         let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
@@ -1779,7 +1779,7 @@ mod tests {
     /// held to `maxSyncConnectionsPerVisitor`, and its places come back.
     #[test]
     fn one_visitor_cannot_take_every_connection() {
-        let dir = std::env::temp_dir().join(format!("softn-sync-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dirs::temp_path("softn-sync", "");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("xdb.sqlite");
         let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
@@ -2430,7 +2430,7 @@ mod tests {
     /// The acknowledgement and the broadcast do not wait for the after-hooks.
     #[test]
     fn a_push_is_answered_and_broadcast_before_its_after_hooks_run() {
-        let dir = std::env::temp_dir().join(format!("softn-sync-after-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dirs::temp_path("softn-sync-after", "");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("xdb.sqlite");
         let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
@@ -2527,7 +2527,7 @@ mod tests {
         assert_eq!(done, vec!["u1", "u2"], "{mixed:?}");
         assert_eq!(rejected(&mixed), vec!["u-missing"]);
         let state = db_together.write().get_full_state("notes").unwrap();
-        let dir = std::env::temp_dir().join(format!("softn-sync-peer-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dirs::temp_path("softn-sync-peer", "");
         std::fs::create_dir_all(&dir).unwrap();
         let peer = xdb::create_shared_db(dir.join("peer.sqlite")).unwrap();
         let peer_db = ServerDb::new(peer, &dir.join("peer.sqlite"), 2).unwrap();

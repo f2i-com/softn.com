@@ -255,7 +255,7 @@ mod tests {
     use super::*;
     #[test]
     fn missing_handlers_and_startup_faults_prevent_readiness() {
-        let root = std::env::temp_dir().join(format!("softn-readiness-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-readiness", "");
         let bundle = root.join("bundle");
         std::fs::create_dir_all(bundle.join("server")).unwrap();
         let script = bundle.join("server/main.logic");

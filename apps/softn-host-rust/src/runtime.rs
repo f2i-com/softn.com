@@ -1832,7 +1832,7 @@ mod private_sql_tests {
 
     #[test]
     fn real_vm_commits_rejections_and_rolls_back_faults_and_invalid_responses() {
-        let path = std::env::temp_dir().join(format!("softn-vm-sql-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = crate::test_dirs::temp_path("softn-vm-sql", ".sqlite");
         open_connection(&path).unwrap().execute_batch("CREATE TABLE attempts(id INTEGER PRIMARY KEY, count INTEGER);").unwrap();
         let worker_path = path.clone();
         let runtime = ServerRuntime::new(move || BridgeSet {

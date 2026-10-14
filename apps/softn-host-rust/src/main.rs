@@ -9,6 +9,8 @@ mod private_backend;
 mod runtime;
 mod sync;
 mod tenant;
+#[cfg(test)]
+mod test_dirs;
 mod util;
 mod ws;
 

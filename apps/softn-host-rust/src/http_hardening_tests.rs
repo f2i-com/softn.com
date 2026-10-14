@@ -16,7 +16,7 @@ fn legacy_app_running(server: serde_json::Value, script: &str) -> Arc<AppContext
 
 /// And with routes of the test's own.
 fn legacy_app_serving(server: serde_json::Value, routes: serde_json::Value, script: &str) -> Arc<AppContext> {
-    let root = std::env::temp_dir().join(format!("softn-hardening-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_dirs::temp_path("softn-hardening", "");
     let bundle = root.join("bundle");
     std::fs::create_dir_all(bundle.join("server")).unwrap();
     let manifest = serde_json::json!({"id":"com.example.hardening","name":"Hardening","version":"1",
@@ -338,7 +338,7 @@ async fn listed_names_and_trusted_proxies_are_served() {
 
 #[tokio::test]
 async fn each_tenant_is_held_to_its_own_names() {
-    let root = std::env::temp_dir().join(format!("softn-tenant-hosts-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_dirs::temp_path("softn-tenant-hosts", "");
     for (dir, id, origin) in [("a", "alpha", "https://alpha.example"), ("b", "beta", "https://beta.example")] {
         let bundle = root.join("bundles").join(dir);
         std::fs::create_dir_all(&bundle).unwrap();
@@ -677,7 +677,7 @@ async fn behind_a_trusted_proxy_each_forwarded_client_is_a_visitor() {
 /// A multi-tenant host holds each tenant to the same three rules.
 #[tokio::test]
 async fn a_tenant_gets_the_body_deadline_the_early_refusal_and_the_visitor_cap() {
-    let root = std::env::temp_dir().join(format!("softn-tenant-limits-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_dirs::temp_path("softn-tenant-limits", "");
     let bundle = root.join("bundles").join("limits");
     std::fs::create_dir_all(bundle.join("server")).unwrap();
     let manifest = serde_json::json!({"id":"limits","name":"Limits","version":"1",
@@ -715,7 +715,7 @@ async fn a_tenant_gets_the_body_deadline_the_early_refusal_and_the_visitor_cap()
 /// A legacy bundle (the document store is always granted) whose manifest has
 /// settings of its own, two of them named like the operator's flags.
 fn settings_app() -> Arc<AppContext> {
-    let root = std::env::temp_dir().join(format!("softn-settings-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_dirs::temp_path("softn-settings", "");
     let bundle = root.join("bundle");
     std::fs::create_dir_all(bundle.join("server")).unwrap();
     std::fs::create_dir_all(bundle.join("assets")).unwrap();
@@ -1036,7 +1036,7 @@ async fn a_scripts_filter_is_applied_by_the_store_and_again_by_the_script() {
 /// The store itself: only what matches comes back, without the script's help.
 #[test]
 fn the_native_store_reads_a_filtered_collection() {
-    let dir = std::env::temp_dir().join(format!("softn-filtered-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_dirs::temp_path("softn-filtered", "");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("xdb.sqlite");
     let db = crate::pool::ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();

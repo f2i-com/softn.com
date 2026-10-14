@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn tenant_ids_that_differ_only_in_case_are_one_tenant() {
-        let root = std::env::temp_dir().join(format!("softn-tenants-case-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-tenants-case", "");
         bundle(&root.join("bundles").join("upper"), "Shop");
         bundle(&root.join("bundles").join("lower"), "shop");
         let manager = TenantManager::load(&root.join("bundles"), Some(&root.join("data")), Some(1), false).unwrap();
@@ -550,7 +550,7 @@ mod tests {
     /// dots, with no twin, is a tenant as it always was.
     #[test]
     fn tenant_ids_that_differ_only_in_trailing_dots_are_one_tenant() {
-        let root = std::env::temp_dir().join(format!("softn-tenants-dot-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-tenants-dot", "");
         let bundles = root.join("bundles");
         bundle(&bundles.join("a"), "shop");
         bundle(&bundles.join("b"), "shop.");
@@ -583,7 +583,7 @@ mod tests {
     /// anything of that tenant's is opened: no data directory, no database.
     #[test]
     fn a_refused_tenant_id_touches_no_data() {
-        let root = std::env::temp_dir().join(format!("softn-tenants-refused-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-tenants-refused", "");
         let reserved = RESERVED_TENANT_IDS[0];
         bundle(&root.join("bundles").join("ok"), "shop");
         bundle(&root.join("bundles").join("taken"), reserved);
@@ -599,7 +599,7 @@ mod tests {
     /// directory is not created either.
     #[test]
     fn a_duplicate_tenant_is_refused_before_its_data_is_opened() {
-        let root = std::env::temp_dir().join(format!("softn-tenants-dup-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-tenants-dup", "");
         bundle(&root.join("bundles").join("upper"), "Shop");
         bundle(&root.join("bundles").join("lower"), "shop");
         let data = root.join("data");
@@ -611,7 +611,7 @@ mod tests {
 
     #[test]
     fn an_archive_and_its_unpacked_copy_are_one_tenant() {
-        let root = std::env::temp_dir().join(format!("softn-tenants-zip-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-tenants-zip", "");
         let bundles = root.join("bundles");
         std::fs::create_dir_all(&bundles).unwrap();
         let mut zip = zip::ZipWriter::new(std::fs::File::create(bundles.join("game.softn")).unwrap());
@@ -636,7 +636,7 @@ mod tests {
     /// before, however the two are named, and it is the same one each start.
     #[test]
     fn of_two_bundles_claiming_an_id_the_one_that_served_its_data_before_is_the_tenant() {
-        let root = std::env::temp_dir().join(format!("softn-tenants-owner-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-tenants-owner", "");
         let bundles = root.join("bundles");
         let data = root.join("data");
         let version = |bundles: &Path| {
@@ -669,7 +669,7 @@ mod tests {
     /// moved, with no rival, is the tenant it always was.
     #[test]
     fn a_renamed_bundle_is_still_its_tenant() {
-        let root = std::env::temp_dir().join(format!("softn-tenants-rename-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-tenants-rename", "");
         let data = root.join("data");
         versioned(&root.join("bundles").join("shop-1.0"), "shop", "1.0");
         TenantManager::load(&root.join("bundles"), Some(&data), Some(1), false).unwrap();
@@ -686,7 +686,7 @@ mod tests {
     /// With nothing on record the first by name is the tenant, every time.
     #[test]
     fn with_no_record_the_same_bundle_wins_every_start() {
-        let root = std::env::temp_dir().join(format!("softn-tenants-first-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-tenants-first", "");
         versioned(&root.join("bundles").join("b"), "shop", "b");
         versioned(&root.join("bundles").join("a"), "shop", "a");
         versioned(&root.join("bundles").join("c"), "shop", "c");

@@ -262,7 +262,7 @@ mod tests {
     use super::*;
     #[test]
     fn operator_registration_and_grants_fail_closed() {
-        let root = std::env::temp_dir().join(format!("softn-grants-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-grants", "");
         let bundle = root.join("bundle");
         let data = root.join("data");
         let sibling = root.join("sibling");
@@ -306,7 +306,7 @@ mod tests {
     /// history would load on one host and not the other.
     #[test]
     fn migrations_may_alter_tables_and_use_date_functions() {
-        let root = std::env::temp_dir().join(format!("softn-migrations-alter-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-migrations-alter", "");
         std::fs::create_dir_all(root.join("server")).unwrap();
         std::fs::write(root.join("server/001.sql"), "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, created INTEGER DEFAULT (unixepoch()));").unwrap();
         std::fs::write(root.join("server/002.sql"), "ALTER TABLE users ADD COLUMN email TEXT; ALTER TABLE users RENAME COLUMN name TO display_name; UPDATE users SET email = lower(display_name) || '@' || strftime('%Y', 'now');").unwrap();
@@ -330,7 +330,7 @@ mod tests {
     /// not by an index name, and no host index can be dropped.
     #[test]
     fn migrations_may_drop_columns_but_not_claim_the_host_namespace() {
-        let root = std::env::temp_dir().join(format!("softn-migrations-drop-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-migrations-drop", "");
         std::fs::create_dir_all(root.join("server")).unwrap();
         std::fs::write(root.join("server/001.sql"), "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, note TEXT);").unwrap();
         std::fs::write(root.join("server/002.sql"), "ALTER TABLE users DROP COLUMN note;").unwrap();
@@ -371,7 +371,7 @@ mod tests {
     /// deployed on that host and stopped this one at start.
     #[test]
     fn a_migration_may_be_as_large_as_the_php_host_takes() {
-        let root = std::env::temp_dir().join(format!("softn-migrations-large-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-migrations-large", "");
         std::fs::create_dir_all(root.join("server")).unwrap();
         let path = root.join("application.sqlite");
         let server = |file: &str| -> ServerBlock {
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn migrations_are_atomic_checksummed_and_cannot_escape() {
-        let root = std::env::temp_dir().join(format!("softn-migrations-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-migrations", "");
         std::fs::create_dir_all(root.join("server")).unwrap();
         let path = root.join("application.sqlite");
         let migration = root.join("server/001_initial.sql");

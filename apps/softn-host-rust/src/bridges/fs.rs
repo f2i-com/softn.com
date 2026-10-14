@@ -201,8 +201,7 @@ mod tests {
     use crate::bridges::FsBridge;
 
     fn sandbox(tag: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir().join(format!("softn-fs-{}-{}-{}", tag, std::process::id(), nanos));
+        let dir = crate::test_dirs::temp_path(&format!("softn-fs-{tag}"), "");
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

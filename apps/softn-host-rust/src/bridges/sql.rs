@@ -497,7 +497,7 @@ mod tests {
     use super::*;
     fn fixture() -> (PathBuf, NativeSql) {
         let path =
-            std::env::temp_dir().join(format!("softn-private-{}.sqlite", uuid::Uuid::new_v4()));
+            crate::test_dirs::temp_path("softn-private", ".sqlite");
         let conn = open_connection(&path).unwrap();
         conn.execute_batch("CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT); CREATE TABLE _migrations(name TEXT);").unwrap();
         drop(conn);

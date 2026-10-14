@@ -559,7 +559,7 @@ mod filter_tests {
     /// records, twenty times a page where a page had been one query.
     #[test]
     fn a_pull_step_reaches_its_place_by_the_index() {
-        let dir = std::env::temp_dir().join(format!("softn-pool-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dirs::temp_path("softn-pool", "");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("xdb.sqlite");
         let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();

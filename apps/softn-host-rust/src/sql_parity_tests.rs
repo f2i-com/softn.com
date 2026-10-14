@@ -21,7 +21,7 @@ use std::{
 const PARITY: &str = include_str!("../../softn-host-php/tests/sql-parity.json");
 
 fn fresh(schema: &str) -> (PathBuf, PathBuf) {
-    let root = std::env::temp_dir().join(format!("softn-sql-parity-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_dirs::temp_path("softn-sql-parity", "");
     std::fs::create_dir_all(root.join("server")).unwrap();
     let path = root.join("application.sqlite");
     open_connection(&path).unwrap().execute_batch(schema).unwrap();

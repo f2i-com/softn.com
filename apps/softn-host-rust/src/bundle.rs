@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn an_archive_is_extracted_by_what_its_entries_hold() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("softn-bundle-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dirs::temp_path("softn-bundle", "");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("app.softn");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn validates_critical_server_fields_and_redacts_private_declarations() {
-        let root = std::env::temp_dir().join(format!("softn-manifest-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-manifest", "");
         std::fs::create_dir_all(&root).unwrap();
         let mut value = serde_json::json!({"id":"com.example.private", "name":"Private app", "version":"1",
             "server":{"requires":{"apiVersion":1,"capabilities":["sql"]},
@@ -703,7 +703,7 @@ mod tests {
     /// route fields, and SQL routes that leave `transaction` to the method.
     #[test]
     fn php_host_route_declarations_load() {
-        let root = std::env::temp_dir().join(format!("softn-parity-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-parity", "");
         std::fs::create_dir_all(&root).unwrap();
         let mut value = serde_json::json!({"id":"com.example.parity","name":"Parity","version":"1",
             "server":{"requires":{"apiVersion":1,"capabilities":["sql","photos"]},
@@ -762,7 +762,7 @@ mod tests {
 
     #[test]
     fn server_config_types_are_checked_and_both_token_spellings_count() {
-        let root = std::env::temp_dir().join(format!("softn-config-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-config", "");
         std::fs::create_dir_all(&root).unwrap();
         let load = |server: serde_json::Value| {
             let manifest = serde_json::json!({"id":"com.example.config","name":"Config","version":"1","config":{"server":server}});

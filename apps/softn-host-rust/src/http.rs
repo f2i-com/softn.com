@@ -2238,7 +2238,7 @@ mod sync_upgrade_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn app(server: serde_json::Value) -> Arc<AppContext> {
-        let root = std::env::temp_dir().join(format!("softn-sync-auth-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-sync-auth", "");
         let bundle = root.join("bundle");
         std::fs::create_dir_all(&bundle).unwrap();
         let manifest = serde_json::json!({"id":"com.example.sync","name":"SyncAuth","version":"1","config":{"server":server}});
@@ -2350,7 +2350,7 @@ mod sync_upgrade_tests {
 
     #[tokio::test]
     async fn a_tenant_socket_is_held_to_its_own_origins() {
-        let root = std::env::temp_dir().join(format!("softn-sync-tenants-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dirs::temp_path("softn-sync-tenants", "");
         let bundle = root.join("bundles").join("tenant");
         std::fs::create_dir_all(&bundle).unwrap();
         let manifest = serde_json::json!({"id":"synctenant","name":"SyncTenant","version":"1",

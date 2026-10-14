@@ -168,7 +168,7 @@ mod tests {
     /// so is this.
     #[test]
     fn hard_delete_is_held_to_its_collection() {
-        let dir = std::env::temp_dir().join(format!("softn-db-bridge-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dirs::temp_path("softn-db-bridge", "");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("xdb.sqlite");
         let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
