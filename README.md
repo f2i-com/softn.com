@@ -464,8 +464,8 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
 release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
 unchanged from that ZIPP release's official `zipp-wasm-<version>-web-python-base.zip` bundle:
-JavaScript and experimental Python in one module, 6.33 MB, without torch. Torch is ZIPP's separate
-package (`zipp-wasm-<version>-web-torch.zip`: `zipp_torch.wasm`, 2.05 MB, and its loader), installed
+JavaScript and experimental Python in one module, 6.15 MB, without torch. Torch is ZIPP's separate
+package (`zipp-wasm-<version>-web-torch.zip`: `zipp_torch.wasm`, 2.16 MB, and its loader), installed
 beside the engine and loaded by the runtime only for an app whose manifest declares torch, once per
 page. The install's `SOURCE.json` records the
 release, its source commit, toolchain, the SHA-256 of the bundle and of the release's `SHA256SUMS`,
