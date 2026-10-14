@@ -454,8 +454,8 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 - True sandboxing: the script reaches nothing the engine preamble does not hand it
 - Host modules: `db`, `localStorage`, `window`, `navigator`, `host`, plus the `softn.*` async APIs
 - Browser events reach a handler as plain data, the same shape everywhere: a key event carries
-  `key`, `code`, the modifiers and `repeat`; a pointer event carries `clientX/Y`, `button`,
-  `buttons` and the target's rectangle (`targetLeft/Top/Width/Height`), so a script can place
+  `key`, `code`, the modifiers, `repeat` and `isComposing`; a pointer event carries `clientX/Y`,
+  `button`, `buttons` and the target's rectangle (`targetLeft/Top/Width/Height`), so a script can place
   the pointer within a canvas scaled to fit its box; both say `targetTag` and `targetEditable`
 - `softn.input.captureKeys(["ArrowUp", " ", "F1"])` names the keys a script wants whole: the
   browser's default for them (scrolling, a page search) is cancelled before the handler runs,

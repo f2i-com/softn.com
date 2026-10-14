@@ -26,7 +26,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "using-these-docs",
     "title": "How to use these guides",
-    "text": "The guides explain the workflow and the concepts, with small examples. They are not an exhaustive reference for every component property: follow the source links at the end of each page for the underlying files, and check the host you deploy to before relying on an optional capability.\n\nThis edition was checked against the SoftN repository source on 25 September 2026, for SoftN 0.0.15 with the ZIPP v0.0.21 engine. Each page shows the date it was last updated."
+    "text": "The guides explain the workflow and the concepts, with small examples. They are not an exhaustive reference for every component property: follow the source links at the end of each page for the underlying files, and check the host you deploy to before relying on an optional capability.\n\nThis edition was checked against the SoftN repository source on 25 September 2026 (SoftN 0.0.15, ZIPP v0.0.21). Pages changed since then show their own date, and the engine they describe is ZIPP v0.0.24, the engine of SoftN 0.0.21."
    }
   ]
  },
@@ -734,7 +734,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "limits",
     "title": "What to expect",
-    "text": "- Eager CPU tensors only. `torch.compile`’s GPU path is not connected in SoftN’s Python runtime, so do not use it.\n- torch here is ZIPP’s own subset of the PyTorch API, not PyTorch itself. The TORCH_COMPATIBILITY.md file in ZIPP’s release bundles lists what it covers.\n- The first declaring app on a page also downloads the torch package, about 2 MB (about 380 KB compressed), once; the runtime adds it before the app compiles, and every later torch app on the page reuses it. Apps that do not declare torch never download it. If the package cannot be loaded, the app is refused by name with the reason, rather than failing at its first import.\n- Python’s own limits apply: no `async`, main thread only, and state must be JSON data."
+    "text": "- Eager CPU tensors only. `torch.compile`’s GPU path is not connected in SoftN’s Python runtime, so do not use it.\n- torch here is ZIPP’s own subset of the PyTorch API, not PyTorch itself. The TORCH_COMPATIBILITY.md file in ZIPP’s release bundles lists what it covers.\n- The first declaring app on a page also downloads the torch package, about 2.2 MB (about 400 KB compressed), once; the runtime adds it before the app compiles, and every later torch app on the page reuses it. Apps that do not declare torch never download it. If the package cannot be loaded, the app is refused by name with the reason, rather than failing at its first import.\n- Python’s own limits apply: no `async`, main thread only, and state must be JSON data."
    },
    {
     "id": "example",
