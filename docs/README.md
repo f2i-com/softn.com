@@ -77,6 +77,7 @@ when you revise a guide against newer source, update that block, the page's
 | `engineering/SINGLE_APP_RUNTIME.md`, `SINGLE_APP_PRIVATE.md` | Hosting one app on its own, static or PHP-served (copied into those archives as `DEPLOYMENT.md`) |
 | `engineering/DESKTOP_APPS.md` | The Tauri desktop apps and the shared bundle workflow |
 | `engineering/FORMLOGIC_INTEGRATION.md` | The FormLogic starter adapter |
+| `FORMLOGIC_RUNTIME_REPAIR.md`, `engineering/QUALIFICATION_STATUS.md` | v0.0.21's FormLogic runtime repair (acknowledged storage, STRICT-table migrations on the PHP host, composition events), and the record of its candidate's qualification |
 | `engineering/LOCAL_SPEECH.md`, `SCENE3D_*.md`, `ZIPP_LANGUAGES.md`, `zipp-memory-lifecycle.md`, `PERFORMANCE_MEASUREMENT.md` | Subsystem notes |
 | `engineering/hosting-the-poker-authority.md` | Running the optional table authority the poker example uses |
 | `engineering/dependency-maintenance.md` | Keeping the dependency graph current |

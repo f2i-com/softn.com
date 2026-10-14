@@ -1,5 +1,7 @@
 # Runtime candidate qualification
 
+> **Superseded on 2026-10-14; kept as the record of 2026-10-13.** The candidate below (runtime source `75d2ab09`, ZIPP 0.0.23) was not released as it stands. Its work shipped in SoftN v0.0.21 (`073339d`, ZIPP v0.0.24) with changes this record does not cover. `afb03bc` gave a FormLogic without acknowledged storage back the storage it had: the candidate counted every save there as failed, applied protocol 1's caps and deadline to it, always asked before the page closed, and ended the app on an unreadable reply. `bf340e1` fetches the torch package revalidated, and `b34f229` moved the engine to ZIPP v0.0.24. v0.0.21 passed SoftN's CI and release gates on Linux and a local Windows gate: every workspace suite, the Rust host's 159 tests and the 29 browser journeys. The live paired-host qualification under "Remaining qualification" has still not been run. The identities, hashes, counts and statuses below describe the candidate only; [the repair as shipped](../FORMLOGIC_RUNTIME_REPAIR.md) describes v0.0.21.
+
 Status recorded on **2026-10-13**: **full qualification remains on hold**. The candidate-specific TypeScript error is corrected and the complete typecheck now passes; the remaining failed or unexecuted suites and live gates are unchanged. Scoped source, offline and packaged-helper checks passed. The disposable local fixture **failed during startup before application tests**. This record establishes neither successful live integration nor release/deployment readiness.
 
 ## Exact candidate pair

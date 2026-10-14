@@ -81,6 +81,31 @@ URL: anyone may embed it and drive it with their own `formlogic:init`, and
 gets only their own files running in an opaque frame against a port they
 supplied; no FormLogic state is reachable from it.
 
+## App storage
+
+A native app's (`init` with `native: true`) `localStorage` is a synchronous copy of the
+snapshot `init` carries in `storage` (`src/storage.ts`). Each change goes to the parent as a
+`nativeStorage` call, one at a time and in order. How a save counts depends on the parent:
+
+- `ready` announces `storageProtocol: 1`. A parent that sends `storageProtocol: 1` in `init`
+  gets acknowledged storage: a save counts only when the reply is `{result: {saved: true}}`
+  with no `error`, read from the reply's own data fields. Each save has one deadline, twenty
+  seconds from when the app made it, waiting included. A save sent and not answered by then
+  has an unknown outcome, and later saves throw `InvalidStateError` until the parent answers it
+  or the app is opened again. At most 32 saves wait at once, and one save as sent is at most
+  32,768 characters. While saves are pending the frame says so and closing the page asks first.
+  XDB's `createAsync`, `updateAsync` and `deleteAsync` resolve when their own save is
+  confirmed, and an import goes as one `batch` the parent must commit whole.
+- A parent that does not (protocol 0) gets the storage it always had: a reply without `error`
+  is a save, one with `error` shows the failed-save alert, and nothing is refused, held back or
+  expired on the way. XDB cannot report a save there as made: its async writes update the
+  records and then reject with `persistence-unsupported`, imports and restores are refused,
+  its status is `degraded`, and closing the page asks first.
+
+`{type: 'formlogic:dispose'}` on the port, or the page going away for good (a `pagehide` that
+does not keep it in the back/forward cache), ends the app: waiting saves and calls are
+cancelled, an acknowledged save already sent is marked unknown, and the app is unmounted.
+
 A load failure is reported to the parent as `{type:'error', reason}` and
 shown in the frame with the same one-line reason. `reason` is an addition;
 a parent that reads only `type` sees what it always did.

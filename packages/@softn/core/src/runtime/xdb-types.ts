@@ -108,7 +108,9 @@ export interface XDBServiceOptions {
 //   loading      native hydration in progress
 //   ready        every collection hydrated / storage readable
 //   degraded     at least one collection is corrupt, failed to hydrate or a
-//                write hit a quota error; other collections keep working
+//                write hit a quota error, or a hosted save failed, has an
+//                unknown outcome or cannot be confirmed (a FormLogic parent
+//                without acknowledged storage); other collections keep working
 //   memory-only  browser storage is inaccessible; nothing survives a reload
 //   failed       native hydration failed as a whole (retryable)
 
@@ -119,9 +121,11 @@ export type XDBStorageIssueKind =
   | 'quota'
   | 'hydration-failed'
   | 'migration-incomplete'
+  /** A hosted save was sent and not answered: whether the parent made it is unknown until it answers or the app is opened again. */
   | 'write-unknown'
+  /** The hosted parent cannot acknowledge saves (no storage protocol 1): records are cached, and no save can be reported as made. */
   | 'persistence-unsupported'
-  /** A native (SQLite) write the synchronous API had already answered for was refused; the in-memory record and the database disagree. */
+  /** A write the synchronous API had already answered for was refused, by the native database (SQLite) or by the hosted parent; the in-memory record and the stored one disagree. */
   | 'write-failed';
 
 export interface XDBStorageIssue {
@@ -135,7 +139,7 @@ export interface XDBStorageIssue {
 
 export interface XDBStorageStatus {
   state: XDBStorageState;
-  /** Whether writes reach durable storage (false for memory-only operation). */
+  /** Whether writes reach durable storage: false for memory-only operation, and in a hosted frame unless the parent acknowledges saves. */
   persistent: boolean;
   /** Whether every collection was read from the backend successfully. */
   hydrated: boolean;
