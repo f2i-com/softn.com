@@ -9,6 +9,7 @@ section here. Write the section before tagging. Headings are the tag
 ## Unreleased
 
 - The engine is ZIPP v0.0.24 (it was v0.0.23), in the browser and in the Rust backend host. The module every app downloads is 6.15 MB where it was 6.33 MB (1.52 MB with Brotli, from 1.57 MB); the torch package, fetched only by apps that declare torch, is 2.16 MB where it was 2.05 MB. ZIPP 0.0.24 fixes the eight issues reported against 0.0.23 and more wrong results found against Node, CPython and PyTorch. Logic can see some of them: a `console.log` (or `info`, `warn`, `error`, `debug`) the logic replaces is called; `performance` is a global with `now()` and `timeOrigin`; object spread defines the properties it copies instead of running setters; a typed array's elements are its own properties; `hasOwnProperty`, `propertyIsEnumerable` and `isPrototypeOf` run a Proxy's traps and an object's own replacement; and `typeof name` inside `with` looks at the `with` object. In Python, a zero-argument `super()` works in comprehensions and in methods whose `self` a closure captures. In torch, optimizer steps update the parameters in place, and `randn`, `normal_` and `uniform_` give PyTorch's numbers. Popping from a large array no longer takes time proportional to its length.
+- Python apps that use torch: the torch package is fetched revalidated, so for the hour after a deployment that changes it a returning visitor's browser no longer hands its cached copy to the new engine, which refuses it and fails the app.
 
 ## v0.0.20
 

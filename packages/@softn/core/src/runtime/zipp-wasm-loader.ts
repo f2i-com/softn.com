@@ -174,7 +174,13 @@ async function torchPackageSource(): Promise<Uint8Array | WebAssembly.Module> {
   const url = zippTorchWasmUrl();
   let response: Response;
   try {
-    response = await fetch(url);
+    // Revalidated, not taken from the HTTP cache unasked: the file keeps its
+    // name across releases and is served with an hour's max-age, and the
+    // engine refuses a package built for another wire protocol or ABI (ZIPP
+    // 0.0.24's is protocol 3), so a copy cached before a deployment could
+    // fail every torch app until it expired. Unchanged, the server answers
+    // 304; offline, the service worker's copy answers as before.
+    response = await fetch(url, { cache: 'no-cache' });
   } catch (error) {
     throw new Error(`${url.pathname} could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
   }

@@ -87,6 +87,9 @@ describe('the torch package, on demand', () => {
     );
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(String(fetch.mock.calls[0][0])).toBe(zippTorchWasmUrl().href);
+    // Revalidated: a copy cached before a deployment may be a package this
+    // engine refuses.
+    expect(fetch.mock.calls[0][1]).toMatchObject({ cache: 'no-cache' });
     expect(addTorch).not.toHaveBeenCalled();
     expect(await zippPythonPackages()).not.toContain('torch');
   });
