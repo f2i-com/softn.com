@@ -380,8 +380,16 @@ host; triggers, views, virtual tables and arbitrary PRAGMAs are not supported.
 Missing handlers and failed `onStart()` also prevent readiness.
 
 A migration file may be 1,000,000 bytes, as on the PHP host (it was 262,144
-here). Two things about migrations differ between the hosts, and a bundle
+here). Three things about migrations differ between the hosts, and a bundle
 meant for both should stay inside each:
+
+- Adding a column to a STRICT table, or a column with a CHECK, makes SQLite
+  check the table with an internal `quick_check`, which this host refuses as
+  a PRAGMA, so the migration fails. The PHP host lets that check through for
+  exactly `ALTER TABLE t ADD [COLUMN] c TEXT`, optionally `REFERENCES` one
+  column of another app table (`apps/softn-host-php/runtime/migrations.mjs`;
+  the `rust` notes in `tests/sql-parity.json`). Do not add a column to a
+  STRICT table in a migration.
 
 - This host knows a migration by its file name, the PHP host by its path in
   the manifest. Here every migration must be a `.sql` file with a name no
