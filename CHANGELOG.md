@@ -8,6 +8,9 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+## v0.0.22
+
+- Upgrading from v0.0.21: the engine is ZIPP v0.0.25; besides it, only documentation changed. A few things logic can see change with it, each in the entry below: `Object.keys(globalThis)` and `for-in` over it list a script's own globals after the global object's other properties; a promise's `resolve` and `reject` have `call`, `apply` and `bind`; and `Object.freeze(globalThis)` freezes a script's globals too. A FormLogic that installs this release rebuilds its server sandbox from ZIPP v0.0.25.
 - The engine is ZIPP v0.0.25 (it was v0.0.24), in the browser and in the Rust backend host. The module every app downloads is 6.19 MB where it was 6.15 MB (1.54 MB with Brotli, from 1.52 MB). ZIPP 0.0.25 fixes the ten issues reported against 0.0.24 and more found since. Code made by `new Function` or `eval` is now freed with the state that ran it, where it was kept for good. A VM that reached its heap ceiling can allocate again once its references are dropped. The browser engine holds 16,384 globals created at run time, where a script with more than 1,024 failed with "too many global bindings". `WeakMap#delete` no longer makes the next lookup slow. Logic can see some changes: `Object.keys(globalThis)` and `for-in` over it list a script's own globals after the global object's other properties; a promise's `resolve` and `reject` are ordinary functions with `call`, `apply` and `bind`; writes to the global object reach a Proxy on its prototype chain as they should; and `Object.freeze(globalThis)` freezes a script's globals too.
 
 ## v0.0.21
