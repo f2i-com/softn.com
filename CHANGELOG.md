@@ -8,7 +8,11 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+## v0.0.24
+
+- Upgrading from v0.0.23: the engine is ZIPP v0.0.27, a fix release; besides it, one fix to the Rust backend host's sync (the last entry). What logic can see of the engine is in the entry below: regular expressions that 0.0.26 refused or that crashed it now compile, very large functions compile, and subclassing `%TypedArray%` directly throws. A FormLogic that installs this release rebuilds its server sandbox from ZIPP v0.0.27; the archive's ZIPP trees have the same layout as v0.0.23's.
 - The engine is ZIPP v0.0.27 (it was v0.0.26), in the browser and in the Rust backend host: a fix release, and logic can see what it fixes. A regular expression of deeply nested quantified groups such as `(?:(?:a|)+|)+` compiles in milliseconds, where on 0.0.26 a deep one crashed the browser engine until the page was reloaded (matching one can still run out of the regex budget, a RangeError). A regular expression may have any number of alternatives, where the browser engine refused more than 64 with a SyntaxError. A function of tens of thousands of statements compiles, where one of about 33,000 failed for needing more than 32,768 registers. Subclassing `%TypedArray%` directly throws the TypeError the language requires. Server logic on the Rust backend host runs faster: the host gives every call an abort flag, and the flag no longer sends every instruction down the slow metering path (ZIPP measured a loop about seven times slower with one). The module every app downloads is still 6.41 MB, 7.8 KB larger (1.59 MB with Brotli).
+- Rust backend host sync: an edit stamped in the same millisecond as a write the server made itself (a hook's `db.update`), after it, applies instead of being sent back as overtaken. Clients stamp edits to the millisecond and the server stamped its own writes to the nanosecond, so the edit lost on digits it could not write; the two are now compared to the millisecond.
 
 ## v0.0.23
 
