@@ -18,7 +18,7 @@ and the digest of its bindings) and, for an engine, its wasm-bindgen bindings
 in a `zipp.glue` section. The install keeps the published file byte for byte
 as `zipp_wasm_bg.wasm` and writes that section out as `zipp_wasm.js`, so the
 runtime imports the engine's glue as it always has; the bindings travel in the
-module as well, about 60 KB raw (13 KB with Brotli) an app downloads twice.
+module as well, about 60 KB raw (14 KB with Brotli) an app downloads twice.
 The engine's TypeScript declarations and its `LICENSE-APACHE` come from the
 release's embed kit; nothing else of the kit (its `zipp.mjs` loader and
 sandbox, the host SDK, the GPU adapter) is used. Releases before 0.0.26,
@@ -253,18 +253,19 @@ must be the recorded one.
 
 | | raw | gzip -9 | Brotli-11 |
 | --- | ---: | ---: | ---: |
-| `javascript-python` engine (torch built in; not taken) | 8,445,061 | 2,608,618 | 1,965,674 |
-| `javascript-python-base` engine (every app) | 6,406,177 | 2,134,232 | 1,588,993 |
-| `zipp_torch.wasm` (apps that declare torch) | 2,162,843 | 496,294 | 403,240 |
+| `javascript-python` engine (torch built in; not taken) | 8,452,811 | 2,610,879 | 1,967,242 |
+| `javascript-python-base` engine (every app) | 6,413,933 | 2,136,381 | 1,591,522 |
+| `zipp_torch.wasm` (apps that declare torch) | 2,162,843 | 496,323 | 403,260 |
 
-These are ZIPP v0.0.26's files as published, each module with its `zipp.meta`
-record and each engine with its bindings; 0.0.25's engine was 6,187,748 bytes
-raw and 1,535,660 with Brotli, and its torch package 2,156,660 and 401,562.
-Of the engine's growth, 59,635 bytes raw (13,190 with Brotli) are the record
-and bindings it now carries; the rest is the engine's own code. An app that
-does not declare torch downloads 2.04 MB less (377 KB less with Brotli) than
-it would with the complete engine; one that does downloads about 124 KB more
-in all (27 KB with Brotli).
+These are ZIPP v0.0.27's files as published, each module with its `zipp.meta`
+record and each engine with its bindings, of which the engine's are 59,635
+bytes raw (13,877 with Brotli). 0.0.26's engine was 6,406,177 bytes raw and
+1,588,993 with Brotli, and its torch package the same size raw (403,240 with
+Brotli); 0.0.25's, the last published as zip bundles and without its
+bindings inside, 6,187,748 and 1,535,660. An app that does not declare torch
+downloads 2.04 MB less (376 KB less with Brotli) than it would with the
+complete engine; one that does downloads about 124 KB more in all (28 KB
+with Brotli).
 
 ## The JavaScript-only web variant
 
@@ -290,7 +291,7 @@ as the engine; its `zipp.meta` record says `javascript`, `["javascript"]` and
 the SAME commit as the engine, and names the bindings it carries; its stack is
 1 MiB; the module asks the host for nothing the engine's glue does not provide
 and exports nothing the engine does not (so the engine's glue binds it — Softn
-ships one glue, `392a691b…`, and records the module's own `95df5b8f…` in
+ships one glue, `20204be9…`, and records the module's own `0dddc20c…` in
 `glueSha256` for provenance only; the web module imports one hook fewer, the
 torch kernel, which instantiation leaves unread); and,
 really loaded under that glue, `zippProfile().languages` is exactly
