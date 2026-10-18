@@ -250,14 +250,17 @@ const MAX_FUTURE_DRIFT_SECS: i64 = 5 * 60; // 5 minutes
 /// change, stamped `record_time`: the edit was overtaken, and does not apply.
 /// Compared as times, not as text: a client writes `…Z` to the millisecond,
 /// and a record written by xdb's own update carries the server's clock as
-/// `+00:00` to the nanosecond. A time that does not parse decides nothing,
-/// and the op applies as it did before edits were weighed.
+/// `+00:00` to the nanosecond. So they are compared to the millisecond, the
+/// finest a client can stamp: an edit made in the same millisecond as a
+/// server write, after it, is not overtaken by digits it could not have
+/// written. A time that does not parse decides nothing, and the op applies
+/// as it did before edits were weighed.
 fn overtaken(op_time: &str, record_time: &str) -> bool {
     match (
         chrono::DateTime::parse_from_rfc3339(op_time),
         chrono::DateTime::parse_from_rfc3339(record_time),
     ) {
-        (Ok(op), Ok(record)) => op < record,
+        (Ok(op), Ok(record)) => op.timestamp_millis() < record.timestamp_millis(),
         _ => false,
     }
 }
@@ -2055,6 +2058,22 @@ mod tests {
         assert_eq!(acked(&in_server_time), vec!["u2"]);
         assert!(told(&in_server_time).is_empty(), "{in_server_time:?}");
         assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"edited", "seen": true}));
+    }
+
+    /// A client stamps to the millisecond and a server write to the
+    /// nanosecond: an edit stamped in the millisecond of the write is not
+    /// overtaken by it, one stamped a millisecond before is, and text that is
+    /// not a time decides nothing. (The test above met the first case on a
+    /// fast runner, when its edit landed in the same millisecond as the
+    /// write.)
+    #[test]
+    fn edits_and_server_writes_are_weighed_to_the_millisecond() {
+        let write = "2026-10-18T12:47:55.322109412+00:00";
+        assert!(!overtaken("2026-10-18T12:47:55.322Z", write), "the same millisecond, after the write");
+        assert!(overtaken("2026-10-18T12:47:55.321Z", write), "the millisecond before");
+        assert!(!overtaken("2026-10-18T12:47:55.323Z", write));
+        assert!(overtaken("2026-10-18T12:37:55.322Z", write), "ten minutes behind");
+        assert!(!overtaken("not a time", write) && !overtaken("2026-10-18T12:47:55.322Z", "not a time"));
     }
 
     /// The client sends an op again until it is acknowledged. An update whose
