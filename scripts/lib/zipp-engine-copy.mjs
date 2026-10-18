@@ -86,6 +86,73 @@ export function wasmExportNames(bytes) {
   });
 }
 
+/**
+ * The payloads of every custom section called `name` in a WebAssembly binary,
+ * in order, or null for anything that is not one. A custom section (id 0) may
+ * appear any number of times, anywhere; ZIPP's release modules carry their
+ * `zipp.meta` record and `zipp.glue` bindings this way.
+ */
+export function wasmCustomSections(bytes, name) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (b.length < 8 || b[0] !== 0x00 || b[1] !== 0x61 || b[2] !== 0x73 || b[3] !== 0x6d) return null;
+  let offset = 8;
+  const leb = () => {
+    let value = 0;
+    for (let shift = 0; ; shift += 7) {
+      if (offset >= b.length || shift > 28) throw new RangeError('malformed LEB128');
+      const byte = b[offset++];
+      value += (byte & 0x7f) * 2 ** shift;
+      if (!(byte & 0x80)) return value;
+    }
+  };
+  const decoder = new TextDecoder();
+  const found = [];
+  try {
+    while (offset < b.length) {
+      const section = b[offset++];
+      const end = leb() + offset;
+      if (end > b.length) return null;
+      if (section === 0) {
+        const length = leb();
+        if (offset + length > end) return null;
+        if (decoder.decode(b.subarray(offset, offset + length)) === name) found.push(b.subarray(offset + length, end));
+      }
+      offset = end;
+    }
+    return found;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The stack a WebAssembly module built by rustc was linked with, in bytes: the
+ * initial value of its first defined global, which is Rust's stack pointer.
+ * The wasm32 targets lay the stack out first and the pointer starts at its
+ * top, so that value is the stack's size (`-z stack-size`). Null when the
+ * first global is not a mutable i32 set by one constant, or for anything that
+ * is not a module.
+ */
+export function wasmStackBytes(bytes) {
+  const value = wasmSection(bytes, 6, ({ leb, byte }) => {
+    if (leb() < 1) return null;
+    const [type, mutable, op] = [byte(), byte(), byte()];
+    if (type !== 0x7f || mutable !== 1 || op !== 0x41) return null;
+    // i32.const's operand is a signed LEB128: a last byte with bit 6 set is negative, never a stack.
+    let result = 0;
+    for (let shift = 0; ; shift += 7) {
+      const next = byte();
+      result += (next & 0x7f) * 2 ** shift;
+      if (!(next & 0x80)) {
+        if (next & 0x40 || shift > 28) return null;
+        break;
+      }
+    }
+    return byte() === 0x0b ? result : null;
+  });
+  return typeof value === 'number' ? value : null;
+}
+
 /** A limits record (a table's or memory's), read and discarded. */
 function skipLimits({ leb, byte }) {
   const flags = byte();

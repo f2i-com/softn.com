@@ -133,12 +133,16 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     assert.deepEqual(JSON.parse(bytes('native-runtime/wasm/SOURCE.json').toString('utf8')), source);
     assert.ok(bytes('native-runtime/ZIPP-THIRD-PARTY-LICENSES.txt').equals(fs.readFileSync(path.join(wasmZipp, source.notices.file))));
 
-    // zipp/: exactly the install, byte for byte — the eleven files an install
-    // has always been, so a reader that knows nothing of variants sees what it
-    // always saw; its glue is the native runtime's.
+    // zipp/: exactly the install, byte for byte — the seven files a release
+    // install has been since ZIPP 0.0.26 published plain modules (the module,
+    // its bindings, the kit's declarations and licence, ZIPP's SHA256SUMS, the
+    // notices, SOURCE.json), with nothing of the variant's or the package's in
+    // it; its glue is the native runtime's.
     const installed = fs.readdirSync(wasmZipp).sort();
     assert.deepEqual(installed, [...INSTALLED_FILES].sort(), 'the install is exactly the primary set');
-    assert.equal(installed.length, 11);
+    assert.equal(installed.length, 7);
+    assert.equal(source.bundleSha256, source.sha256, 'the module is the published file itself');
+    assert.equal(source.kit.bundle, `zipp-${source.version}-wasm-embed-kit.zip`, 'the declarations and licence came from the release\'s kit');
     assert.deepEqual([...entries.keys()].filter((n) => n.startsWith('zipp/')).map((n) => n.slice('zipp/'.length)).sort(), installed);
     for (const n of installed) assert.equal(sha256(bytes(`zipp/${n}`)), sha256(fs.readFileSync(path.join(wasmZipp, n))), `zipp/${n}`);
     assert.ok(bytes('zipp/zipp_wasm.js').equals(bytes('native-runtime/wasm/zipp_wasm.mjs')));
@@ -176,7 +180,7 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     const torch = source.packages.torch;
     assert.deepEqual(Object.keys(torch).sort(), ['bundle', 'bundleSha256', 'commit', 'engineAbi', 'loaderSha256', 'pairsWith', 'sha256', 'variant']);
     assert.deepEqual(release.zipp.packages.torch, torch, 'softn-release.json carries the package record');
-    assert.equal(torch.pairsWith, source.bundle.replace(/\.zip$/, ''), 'paired with exactly the engine bundle in zipp/');
+    assert.equal(torch.pairsWith, source.bundle, 'paired with exactly the engine module in zipp/');
     assert.equal(torch.commit, source.revision);
     const packageSource = JSON.parse(bytes('zipp-torch/SOURCE.json').toString('utf8'));
     for (const [k, v] of Object.entries(torch)) assert.deepEqual(packageSource[k], v, `zipp-torch/SOURCE.json ${k}`);

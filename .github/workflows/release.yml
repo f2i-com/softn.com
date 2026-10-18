@@ -1,8 +1,8 @@
 name: Release
 
 # A release is built from an existing version tag. The zipp WASM engine used
-# by `.logic` is not committed: each job installs a ZIPP web-python-base release
-# into packages/@softn/core/wasm-zipp/ and verifies it against that release's
+# by `.logic` is not committed: each job installs a ZIPP release's
+# javascript-python-base engine into packages/@softn/core/wasm-zipp/ and verifies it against that release's
 # SHA256SUMS (packages/@softn/core/scripts/fetch-zipp-release.mjs). Which
 # release is decided once, in the gate, for the whole run: the zipp-vm tag the
 # tagged apps/softn-host-rust/Cargo.toml declares, which has to be ZIPP's
@@ -437,7 +437,7 @@ jobs:
           ZIPP_OLDER_ALLOWED: ${{ needs.gate.outputs.zipp-older-allowed }}
         run: |
           set -euo pipefail
-          line="> Built with ZIPP $ZIPP_RELEASE (its web-python-base engine and web-torch package; the release SHA256SUMS has sha256 $ZIPP_SUMS_SHA256)."
+          line="> Built with ZIPP $ZIPP_RELEASE (its javascript-python-base engine, javascript engine and torch package; the release SHA256SUMS has sha256 $ZIPP_SUMS_SHA256)."
           if [[ "$ZIPP_OLDER_ALLOWED" == "true" ]]; then
             line="$line Not ZIPP's latest release, $ZIPP_LATEST: shipped with allow-older-zipp."
           fi

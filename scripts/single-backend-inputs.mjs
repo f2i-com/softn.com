@@ -37,8 +37,9 @@ export async function prepareZippNotices(wasmDir, notices) {
   if(existsSync(join(wasmDir,'LICENSE-APACHE'))) {
     license=readFileSync(join(wasmDir,'LICENSE-APACHE'));
   } else {
-    if(!source.release||!source.bundle||!source.bundleSha256)throw Error('Local ZIPP build is missing LICENSE-APACHE; rebuild the local engine.');
-    const upstream=await download(source.repository+'/releases/download/'+source.release+'/'+source.bundle,join(cache,source.bundle),source.bundleSha256);
+    // A release's licence is in its embed kit (fetch-zipp-release.mjs records it under `kit`).
+    if(!source.release||!source.kit?.bundle||!source.kit?.bundleSha256)throw Error('Local ZIPP build is missing LICENSE-APACHE; rebuild the local engine.');
+    const upstream=await download(source.repository+'/releases/download/'+source.release+'/'+source.kit.bundle,join(cache,source.kit.bundle),source.kit.bundleSha256);
     const files=unzipSync(upstream),name=Object.keys(files).find(n=>n.endsWith('/LICENSE-APACHE'));
     if(!name)throw Error('Upstream WASM license missing');
     license=files[name];

@@ -18,7 +18,7 @@ import { root } from './release-packages.mjs';
 
 const LATEST = `${REPOSITORY}/releases/latest/download/SHA256SUMS`;
 const tagged = (tag) => `${REPOSITORY}/releases/download/${tag}/SHA256SUMS`;
-const sumsFor = (version, digit) => Buffer.from(`${digit.repeat(64)}  zipp-wasm-${version}-web.zip\n${digit.repeat(64)}  zipp-wasm-${version}-web-python-base.zip\n${digit.repeat(64)}  zipp-wasm-${version}-web-torch.zip\n`);
+const sumsFor = (version, digit) => Buffer.from(['javascript.wasm', 'javascript-python-base.wasm', 'torch-package.wasm', 'wasm-embed-kit.zip'].map((file) => `${digit.repeat(64)}  zipp-${version}-${file}\n`).join(''));
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zipp-release-gate-'));
@@ -32,9 +32,9 @@ function cargoToml(dir, tag) {
   return file;
 }
 
-/** GitHub as it would answer, with v0.0.18 and v0.0.19 published and `latest` naming one of them. */
+/** GitHub as it would answer, with v0.0.26 and v0.0.27 published and `latest` naming one of them. */
 function github(latest) {
-  const published = new Map([[tagged('v0.0.18'), sumsFor('0.0.18', '1')], [tagged('v0.0.19'), sumsFor('0.0.19', '2')]]);
+  const published = new Map([[tagged('v0.0.26'), sumsFor('0.0.26', '1')], [tagged('v0.0.27'), sumsFor('0.0.27', '2')]]);
   published.set(LATEST, published.get(tagged(latest)));
   const calls = [];
   const fetch = async (url) => (calls.push(url), published.has(url) ? new Response(published.get(url)) : new Response('', { status: 404 }));
@@ -42,47 +42,56 @@ function github(latest) {
 }
 
 test('the declared release is the latest: its tag and SHA256SUMS digest are the outputs', async (t) => {
-  const gh = github('v0.0.18');
-  const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.18'), fetch: gh.fetch });
-  assert.deepEqual(outputs, { 'zipp-release': 'v0.0.18', 'zipp-sums-sha256': sha256(sumsFor('0.0.18', '1')), 'zipp-latest': 'v0.0.18', 'zipp-older-allowed': 'false' });
-  assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.18')], 'the latest redirect, then the tag\'s own SHA256SUMS; no API call');
-  assert.equal(outputLines(outputs), `zipp-release=v0.0.18\nzipp-sums-sha256=${sha256(sumsFor('0.0.18', '1'))}\nzipp-latest=v0.0.18\nzipp-older-allowed=false\n`);
-  assert.match(summaryLine(outputs), /^ZIPP release: v0\.0\.18, the latest release; SHA256SUMS sha256 [0-9a-f]{64}\n$/);
+  const gh = github('v0.0.26');
+  const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.26'), fetch: gh.fetch });
+  assert.deepEqual(outputs, { 'zipp-release': 'v0.0.26', 'zipp-sums-sha256': sha256(sumsFor('0.0.26', '1')), 'zipp-latest': 'v0.0.26', 'zipp-older-allowed': 'false' });
+  assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.26')], 'the latest redirect, then the tag\'s own SHA256SUMS; no API call');
+  assert.equal(outputLines(outputs), `zipp-release=v0.0.26\nzipp-sums-sha256=${sha256(sumsFor('0.0.26', '1'))}\nzipp-latest=v0.0.26\nzipp-older-allowed=false\n`);
+  assert.match(summaryLine(outputs), /^ZIPP release: v0\.0\.26, the latest release; SHA256SUMS sha256 [0-9a-f]{64}\n$/);
 });
 
 test('a newer ZIPP release fails the gate with what to do', async (t) => {
   await assert.rejects(
-    zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.18'), fetch: github('v0.0.19').fetch }),
-    (error) => error instanceof ZippReleaseError && error.message === 'ZIPP v0.0.19 is published; bump apps/softn-host-rust/Cargo.toml zipp-vm tag and Cargo.lock, or release with allow-older-zipp',
+    zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.26'), fetch: github('v0.0.27').fetch }),
+    (error) => error instanceof ZippReleaseError && error.message === 'ZIPP v0.0.27 is published; bump apps/softn-host-rust/Cargo.toml zipp-vm tag and Cargo.lock, or release with allow-older-zipp',
   );
 });
 
 test('allow-older-zipp ships the declared release, with that release\'s own SHA256SUMS digest', async (t) => {
-  const gh = github('v0.0.19');
-  const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.18'), allowOlder: true, fetch: gh.fetch });
-  assert.deepEqual(outputs, { 'zipp-release': 'v0.0.18', 'zipp-sums-sha256': sha256(sumsFor('0.0.18', '1')), 'zipp-latest': 'v0.0.19', 'zipp-older-allowed': 'true' });
+  const gh = github('v0.0.27');
+  const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.26'), allowOlder: true, fetch: gh.fetch });
+  assert.deepEqual(outputs, { 'zipp-release': 'v0.0.26', 'zipp-sums-sha256': sha256(sumsFor('0.0.26', '1')), 'zipp-latest': 'v0.0.27', 'zipp-older-allowed': 'true' });
   assert.notEqual(outputs['zipp-sums-sha256'], sha256(gh.published.get(LATEST)), 'not the latest release\'s digest');
-  assert.match(summaryLine(outputs), /, not the latest release v0\.0\.19 \(allow-older-zipp\);/);
+  assert.match(summaryLine(outputs), /, not the latest release v0\.0\.27 \(allow-older-zipp\);/);
 });
 
 test('a declared release that is newer than the latest (a pre-release) is refused the same way, and allowed the same way', async (t) => {
   await assert.rejects(
-    zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.19'), fetch: github('v0.0.18').fetch }),
-    (error) => error instanceof ZippReleaseError && error.message === 'apps/softn-host-rust/Cargo.toml declares ZIPP v0.0.19, but ZIPP\'s latest release is v0.0.18; release once v0.0.19 is the latest, or release with allow-older-zipp',
+    zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.27'), fetch: github('v0.0.26').fetch }),
+    (error) => error instanceof ZippReleaseError && error.message === 'apps/softn-host-rust/Cargo.toml declares ZIPP v0.0.27, but ZIPP\'s latest release is v0.0.26; release once v0.0.27 is the latest, or release with allow-older-zipp',
   );
-  const gh = github('v0.0.18');
-  const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.19'), allowOlder: true, fetch: gh.fetch });
-  assert.deepEqual(outputs, { 'zipp-release': 'v0.0.19', 'zipp-sums-sha256': sha256(sumsFor('0.0.19', '2')), 'zipp-latest': 'v0.0.18', 'zipp-older-allowed': 'true' });
-  assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.18'), tagged('v0.0.19')], 'the declared tag\'s own SHA256SUMS');
-  // Allowed only when it is published with its web-python-base, web and web-torch bundles.
-  await assert.rejects(zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.20'), allowOlder: true, fetch: github('v0.0.18').fetch }), /releases\/download\/v0\.0\.20\/SHA256SUMS answered 404/);
+  const gh = github('v0.0.26');
+  const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.27'), allowOlder: true, fetch: gh.fetch });
+  assert.deepEqual(outputs, { 'zipp-release': 'v0.0.27', 'zipp-sums-sha256': sha256(sumsFor('0.0.27', '2')), 'zipp-latest': 'v0.0.26', 'zipp-older-allowed': 'true' });
+  assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.26'), tagged('v0.0.27')], 'the declared tag\'s own SHA256SUMS');
+  // Allowed only when it is published with the files an install takes: three modules and the kit.
+  await assert.rejects(zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.28'), allowOlder: true, fetch: github('v0.0.26').fetch }), /releases\/download\/v0\.0\.28\/SHA256SUMS answered 404/);
+});
+
+test('allow-older-zipp cannot ship a release from before 0.0.26, which published zip bundles, and GitHub is not asked for it', async (t) => {
+  const gh = github('v0.0.26');
+  await assert.rejects(
+    zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.25'), allowOlder: true, fetch: gh.fetch }),
+    (error) => error instanceof ZippReleaseError && /^ZIPP v0\.0\.25 was published as zip bundles, which this script no longer reads; Softn installs v0\.0\.26 or later/.test(error.message),
+  );
+  assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.26')], 'only the latest release is read');
 });
 
 test('a Cargo.toml without a zipp-vm release tag is refused before GitHub is asked', async (t) => {
   const dir = tempDir(t);
   const file = path.join(dir, 'Cargo.toml');
   fs.writeFileSync(file, '[dependencies]\nzipp-vm = { path = "../../../zipp.org/crates/zipp-vm" }\n');
-  const gh = github('v0.0.18');
+  const gh = github('v0.0.26');
   await assert.rejects(zippReleaseGate({ cargoToml: file, fetch: gh.fetch }), /declares no zipp-vm release tag/);
   assert.deepEqual(gh.calls, []);
 });
@@ -98,7 +107,7 @@ test('the gate runs with no node_modules and writes GITHUB_OUTPUT and the step s
     fs.copyFileSync(path.join(root, rel), path.join(tree, rel));
   }
   fs.mkdirSync(path.join(tree, 'apps/softn-host-rust'), { recursive: true });
-  fs.renameSync(cargoToml(tree, 'v0.0.18'), path.join(tree, 'apps/softn-host-rust/Cargo.toml'));
+  fs.renameSync(cargoToml(tree, 'v0.0.26'), path.join(tree, 'apps/softn-host-rust/Cargo.toml'));
   const responses = path.join(tree, 'responses.json');
   const serve = (map) => fs.writeFileSync(responses, JSON.stringify(Object.fromEntries(Object.entries(map).map(([url, bytes]) => [url, bytes.toString('base64')]))));
   const stub = path.join(tree, 'stub-fetch.mjs');
@@ -113,22 +122,22 @@ test('the gate runs with no node_modules and writes GITHUB_OUTPUT and the step s
       env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, STUB_RESPONSES: responses, GITHUB_OUTPUT: output, ...env },
     });
 
-  serve({ [LATEST]: sumsFor('0.0.18', '1'), [tagged('v0.0.18')]: sumsFor('0.0.18', '1') });
+  serve({ [LATEST]: sumsFor('0.0.26', '1'), [tagged('v0.0.26')]: sumsFor('0.0.26', '1') });
   const run = gate({ GITHUB_STEP_SUMMARY: summary });
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
-  assert.equal(fs.readFileSync(output, 'utf8'), `zipp-release=v0.0.18\nzipp-sums-sha256=${sha256(sumsFor('0.0.18', '1'))}\nzipp-latest=v0.0.18\nzipp-older-allowed=false\n`);
-  assert.match(fs.readFileSync(summary, 'utf8'), /^ZIPP release: v0\.0\.18/);
+  assert.equal(fs.readFileSync(output, 'utf8'), `zipp-release=v0.0.26\nzipp-sums-sha256=${sha256(sumsFor('0.0.26', '1'))}\nzipp-latest=v0.0.26\nzipp-older-allowed=false\n`);
+  assert.match(fs.readFileSync(summary, 'utf8'), /^ZIPP release: v0\.0\.26/);
 
   // A newer latest: the job fails and writes no outputs, unless allow-older-zipp.
-  serve({ [LATEST]: sumsFor('0.0.19', '2'), [tagged('v0.0.19')]: sumsFor('0.0.19', '2'), [tagged('v0.0.18')]: sumsFor('0.0.18', '1') });
+  serve({ [LATEST]: sumsFor('0.0.27', '2'), [tagged('v0.0.27')]: sumsFor('0.0.27', '2'), [tagged('v0.0.26')]: sumsFor('0.0.26', '1') });
   fs.rmSync(output);
   const refused = gate();
   assert.equal(refused.status, 1, refused.stdout);
-  assert.match(refused.stderr, /ZIPP v0\.0\.19 is published/);
+  assert.match(refused.stderr, /ZIPP v0\.0\.27 is published/);
   assert.ok(!fs.existsSync(output));
   const allowed = gate({ ALLOW_OLDER_ZIPP: 'true' });
   assert.equal(allowed.status, 0, allowed.stderr);
-  assert.match(fs.readFileSync(output, 'utf8'), /^zipp-release=v0\.0\.18\n.*zipp-latest=v0\.0\.19\nzipp-older-allowed=true\n$/s);
+  assert.match(fs.readFileSync(output, 'utf8'), /^zipp-release=v0\.0\.26\n.*zipp-latest=v0\.0\.27\nzipp-older-allowed=true\n$/s);
 });
 
 // ---------------------------------------------------------------------------

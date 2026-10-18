@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { KNOWN_ENGINE_COPIES, KNOWN_TORCH_COPIES, VARIANT_ENGINE_COPIES, ZIPP_ENGINE_EXPORTS, ZIPP_TORCH_EXPORTS, archiveEngineProblems, isZippEngineWasm, isZippTorchPackageWasm, wasmExportNames, wasmImportNames } from './zipp-engine-copy.mjs';
+import { KNOWN_ENGINE_COPIES, KNOWN_TORCH_COPIES, VARIANT_ENGINE_COPIES, ZIPP_ENGINE_EXPORTS, ZIPP_TORCH_EXPORTS, archiveEngineProblems, isZippEngineWasm, isZippTorchPackageWasm, wasmCustomSections, wasmExportNames, wasmImportNames, wasmStackBytes } from './zipp-engine-copy.mjs';
 
 /** A valid module exporting one function under each name: (type () -> ()), one body, one export per name. */
 function moduleExporting(names) {
@@ -150,6 +150,74 @@ test('the imports of a module are read as the compiler reads them, and anything 
   assert.deepEqual(wasmImportNames(moduleExporting(['a'])), [], 'a module without an import section');
   assert.equal(wasmImportNames(Buffer.from('not wasm')), null);
   assert.equal(wasmImportNames(module.subarray(0, 24)), null, 'a truncated module is not read past its end');
+});
+
+/** `bytes` with custom sections appended, each [name, payload]; custom sections may go anywhere and repeat. */
+function withCustom(bytes, sections) {
+  const u32 = (n) => {
+    const out = [];
+    do {
+      let byte = n & 0x7f;
+      n >>>= 7;
+      if (n) byte |= 0x80;
+      out.push(byte);
+    } while (n);
+    return out;
+  };
+  return Buffer.concat([bytes, ...sections.map(([name, payload]) => {
+    const body = [...u32(Buffer.byteLength(name)), ...Buffer.from(name), ...Buffer.from(payload)];
+    return Buffer.from([0, ...u32(body.length), ...body]);
+  })]);
+}
+
+test('custom sections are read by name, every one of them, in order, and nothing is read from what is not a module', () => {
+  const module = withCustom(moduleExporting(['run']), [['zipp.meta', '{"format":1}'], ['other', 'x'], ['zipp.glue', 'export {};'], ['zipp.meta', '{}']]);
+  assert.ok(WebAssembly.validate(module), 'the fixture is a real module');
+  const text = (sections) => sections.map((s) => Buffer.from(s).toString('utf8'));
+  assert.deepEqual(text(wasmCustomSections(module, 'zipp.meta')), ['{"format":1}', '{}']);
+  assert.deepEqual(text(wasmCustomSections(module, 'zipp.glue')), ['export {};']);
+  assert.deepEqual(text(wasmCustomSections(module, 'zipp.glue')), text(WebAssembly.Module.customSections(new WebAssembly.Module(module), 'zipp.glue')), 'what the compiler reads');
+  assert.deepEqual(wasmCustomSections(module, 'name'), [], 'none of that name');
+  assert.equal(wasmCustomSections(Buffer.from('not wasm'), 'zipp.meta'), null);
+  assert.equal(wasmCustomSections(module.subarray(0, module.length - 3), 'zipp.meta'), null, 'a truncated module is not read past its end');
+});
+
+test('a module\'s stack is the initial value of its first global, a mutable i32, and nothing else is taken for one', () => {
+  const sleb = (n) => {
+    const out = [];
+    for (;;) {
+      const byte = n & 0x7f;
+      n >>= 7;
+      if ((n === 0 && !(byte & 0x40)) || (n === -1 && byte & 0x40)) return [...out, byte];
+      out.push(byte | 0x80);
+    }
+  };
+  const withGlobals = (globals) => Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 6, ...(() => {
+    const body = [globals.length, ...globals.flat()];
+    return [body.length, ...body];
+  })()]);
+  const i32 = (mutable, value) => [0x7f, mutable, 0x41, ...sleb(value), 0x0b];
+  for (const stack of [1048576, 16777216, 65536]) {
+    const module = withGlobals([i32(1, stack), i32(0, 18200720)]);
+    assert.ok(WebAssembly.validate(module), 'the fixture is a real module');
+    assert.equal(wasmStackBytes(module), stack);
+  }
+  assert.equal(wasmStackBytes(withGlobals([i32(0, 1048576)])), null, 'an immutable first global is no stack pointer');
+  assert.equal(wasmStackBytes(withGlobals([i32(1, -16)])), null, 'nor a negative one');
+  assert.equal(wasmStackBytes(withGlobals([[0x7e, 1, 0x42, 0x10, 0x0b]])), null, 'nor an i64');
+  assert.equal(wasmStackBytes(withGlobals([])), null, 'nor no global');
+  assert.equal(wasmStackBytes(moduleExporting(['run'])), null, 'nor a module without a global section');
+  assert.equal(wasmStackBytes(Buffer.from('not wasm')), null);
+});
+
+test('the installed engine and its web variant carry their records and bindings, and the stacks they were built with', { skip: !fs.existsSync(new URL('../../packages/@softn/core/wasm-zipp-web/zipp_wasm_bg.wasm', import.meta.url)) && 'no engine installed' }, () => {
+  const read = (rel) => fs.readFileSync(new URL(`../../packages/@softn/core/${rel}`, import.meta.url));
+  const [engine, web] = [read('wasm-zipp/zipp_wasm_bg.wasm'), read('wasm-zipp-web/zipp_wasm_bg.wasm')];
+  const source = JSON.parse(read('wasm-zipp/SOURCE.json'));
+  assert.equal(wasmStackBytes(engine), source.stackBytes);
+  assert.equal(wasmStackBytes(web), source.variants.web.stackBytes);
+  assert.ok(Buffer.from(wasmCustomSections(engine, 'zipp.glue')[0]).equals(read('wasm-zipp/zipp_wasm.js')), 'the installed glue is the module\'s own');
+  assert.equal(JSON.parse(Buffer.from(wasmCustomSections(web, 'zipp.meta')[0]).toString('utf8')).variant, 'javascript');
 });
 
 test('a variant of the engine may carry its own digest at its one place, and nowhere else', () => {

@@ -27,21 +27,25 @@
  *                      engine, licences and provenance.json, as
  *                      formlogic/scripts/prepare-native-runtime.mjs writes them.
  *   zipp/              packages/@softn/core/wasm-zipp/ byte for byte: the
- *                      verified ZIPP web-python-base release install FormLogic
- *                      takes its browser engine from (fetch-zipp-release.mjs):
- *                      JavaScript and Python, torch not built in.
+ *                      verified ZIPP release install FormLogic takes its
+ *                      browser engine from (fetch-zipp-release.mjs): the
+ *                      release's javascript-python-base module as published,
+ *                      JavaScript and Python with torch not built in, its
+ *                      bindings (zipp_wasm.js, the module's own zipp.glue
+ *                      section), the embed kit's declarations and licence, and
+ *                      ZIPP's SHA256SUMS as RELEASE-SHA256SUMS.
  *   zipp-web/          packages/@softn/core/wasm-zipp-web/ byte for byte: the
- *                      same release's JavaScript-only web build, verified as
+ *                      same release's JavaScript-only module, verified as
  *                      a variant of zipp/ (same commit, same imports, exports a
  *                      subset, runs under zipp/'s glue), for a FormLogic that
  *                      offers the `zipp-web` engine. A tree of its own at the
  *                      top level, so zipp/ is exactly the install it always was.
  *   zipp-torch/        packages/@softn/core/wasm-zipp-torch/ byte for byte: the
  *                      same release's torch package for that engine
- *                      (zipp_torch.wasm, ZIPP's zipp_torch.js loader, its
- *                      BUILD-INFO.txt and SHA256SUMS, generated declarations,
- *                      SOURCE.json), verified at install by adding it to the
- *                      engine and running torch; zipp/SOURCE.json names it
+ *                      (zipp_torch.wasm as published, the zipp_torch.js loader
+ *                      and declarations the fetcher generates, SOURCE.json),
+ *                      verified at install by adding it to the engine and
+ *                      running torch; zipp/SOURCE.json names it
  *                      under packages.torch. The hosted runtime and the
  *                      editors carry the same bytes in assets/core-runtime/,
  *                      where the runtime fetches it for an app that declares

@@ -35,8 +35,8 @@ test('release installs package their provenance and the notices the install reco
   const {wasm,notices}=fixture(t);
   const sha=b=>createHash('sha256').update(b).digest('hex');
   const wasmSha=sha(readFileSync(join(wasm,'zipp_wasm_bg.wasm')));
-  // fetch-zipp-release.mjs's record: LICENSE-APACHE is in the install, so no bundle is downloaded.
-  const source={repository:'https://github.com/f2i-com/zipp.org',release:'v0.0.18',version:'0.0.18',revision:'f'.repeat(40),build:'release',bundle:'zipp-wasm-0.0.18-web-python.zip',bundleSha256:'0'.repeat(64),sumsSha256:'1'.repeat(64),variant:'javascript-python',languages:['javascript','python'],stackBytes:16777216,license:'Apache-2.0',artifact:'zipp_wasm_bg.wasm',sha256:wasmSha,glueSha256:'2'.repeat(64),notices:{file:'THIRD_PARTY_LICENSES.txt',source:'softn-curated',sha256:sha('curated-notices')}};
+  // fetch-zipp-release.mjs's record: LICENSE-APACHE is in the install, so the release's kit is not downloaded.
+  const source={repository:'https://github.com/f2i-com/zipp.org',release:'v0.0.26',version:'0.0.26',revision:'f'.repeat(40),build:'release',bundle:'zipp-0.0.26-javascript-python-base.wasm',bundleSha256:wasmSha,sumsSha256:'1'.repeat(64),variant:'javascript-python-base',languages:['javascript','python'],stackBytes:16777216,license:'Apache-2.0',artifact:'zipp_wasm_bg.wasm',sha256:wasmSha,glueSha256:'2'.repeat(64),kit:{bundle:'zipp-0.0.26-wasm-embed-kit.zip',bundleSha256:'0'.repeat(64),files:{}},notices:{file:'THIRD_PARTY_LICENSES.txt',source:'softn-curated',sha256:sha('curated-notices')}};
   writeFileSync(join(wasm,'SOURCE.json'),JSON.stringify(source,null,2));
   writeFileSync(join(wasm,'LICENSE-APACHE'),'release-license');
   writeFileSync(join(wasm,'THIRD_PARTY_LICENSES.txt'),'curated-notices');
