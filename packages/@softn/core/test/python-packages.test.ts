@@ -86,7 +86,7 @@ describe('config.python.packages', () => {
   });
 
   it('is provided by the engine the repository vendors, with the package installed beside it added', async () => {
-    // web-python-base: no torch built in.
+    // javascript-python-base: no torch built in.
     expect(await zippPythonPackages()).not.toContain('torch');
     configureZippTorchSource(readFileSync('wasm-zipp-torch/zipp_torch.wasm'));
     await ensureZippTorch();

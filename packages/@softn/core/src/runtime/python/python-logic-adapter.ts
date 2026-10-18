@@ -212,7 +212,7 @@ export class PythonLogicAdapter implements LogicEngine {
   async initializePythonProject(project: PythonProject): Promise<Map<string, SymbolInfo>> {
     await ensureZippWasm();
     // A declared package the engine does not carry is added now, before a
-    // line compiles: the engine Softn ships (ZIPP's web-python-base) has no
+    // line compiles: the engine Softn ships (ZIPP's javascript-python-base) has no
     // torch built in, and ZIPP publishes it as a package the runtime loads
     // once per page, only for apps that declare it. One that still cannot be
     // provided is refused by name here. Otherwise the app's first

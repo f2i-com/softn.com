@@ -90,8 +90,8 @@ export async function zippLanguages(): Promise<string[]> {
 
 /**
  * The Python packages the loaded engine can provide: those built into it
- * (ZIPP's complete `web-python` build carries torch; the `web-python-base`
- * build Softn ships carries none) and those added to it since it loaded
+ * (ZIPP's complete `javascript-python` build carries torch; the
+ * `javascript-python-base` build Softn ships carries none) and those added to it since it loaded
  * ({@link ensureZippTorch}).
  *
  * Read from the engine, like {@link zippLanguages}, because the same glue

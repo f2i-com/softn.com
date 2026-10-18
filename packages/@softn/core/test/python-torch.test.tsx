@@ -1,7 +1,7 @@
 /**
  * A Python app that trains a model with torch, on the engine it will run on.
  *
- * The engine Softn ships is ZIPP's `web-python-base`, which has no torch
+ * The engine Softn ships is ZIPP's `javascript-python-base`, which has no torch
  * built in; ZIPP publishes torch as a package (`zipp_torch.wasm`), and the
  * runtime adds it — once per page — when an app declares it. A Softn app then
  * reaches it the way it reaches any module: `import torch` in a `.py` file.

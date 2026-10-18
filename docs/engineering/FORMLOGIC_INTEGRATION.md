@@ -45,17 +45,17 @@ it), `app-editors/` (Builder and Studio built as hosted editors, with the
 editor bridge protocol in `manifest.json`), `native-runtime/`
 (`apps/softn-host-php/runtime/*` byte for byte, the ZIPP engine, licences,
 `provenance.json`), `zipp/` (`packages/@softn/core/wasm-zipp/` byte for byte:
-ZIPP's web-python-base release files with the bundle's `SHA256SUMS`, ZIPP's release
-`SHA256SUMS` as `RELEASE-SHA256SUMS`, the notices and `SOURCE.json`), `zipp-web/`
-(`packages/@softn/core/wasm-zipp-web/` byte for byte: the same ZIPP release's
-JavaScript-only build — its module, `BUILD-INFO.txt`, `PROFILE.json`, its
-bundle's `SHA256SUMS` and its own `SOURCE.json` — verified as a variant of
-`zipp/`: same commit, same imports, no export `zipp/` lacks, so it runs under
-`zipp/`'s glue; `zipp/SOURCE.json` names it under `variants.web`), `zipp-torch/`
-(`packages/@softn/core/wasm-zipp-torch/` byte for byte: the same release's
-torch package — `zipp_torch.wasm`, ZIPP's `zipp_torch.js` loader, its
-`BUILD-INFO.txt` pairing it with exactly the `zipp/` bundle, its `SHA256SUMS`
-and `SOURCE.json` — which `zipp/SOURCE.json` records under `packages.torch`;
+ZIPP's javascript-python-base engine module as published, its bindings as
+`zipp_wasm.js`, the embed kit's declarations and `LICENSE-APACHE`, ZIPP's
+release `SHA256SUMS` as `RELEASE-SHA256SUMS`, the notices and `SOURCE.json`),
+`zipp-web/` (`packages/@softn/core/wasm-zipp-web/` byte for byte: the same ZIPP
+release's JavaScript-only module and its own `SOURCE.json` — verified as a
+variant of `zipp/`: same commit, same imports, no export `zipp/` lacks, so it
+runs under `zipp/`'s glue; `zipp/SOURCE.json` names it under `variants.web`),
+`zipp-torch/` (`packages/@softn/core/wasm-zipp-torch/` byte for byte: the same
+release's torch package — `zipp_torch.wasm` as published, the `zipp_torch.js`
+loader and declarations SoftN generates, and `SOURCE.json` — which
+`zipp/SOURCE.json` records under `packages.torch`;
 the runtime loads it only for an app that declares
 `config.python.packages: ["torch"]`), `adapter/`
 (`packages/@softn/core/src/integrations/formlogic.ts` with its provenance) and
@@ -113,7 +113,14 @@ uses a downloaded copy, and `SOFTN_REPO` still builds from a working tree
 for development. A release whose engine copies disagree or whose protocols
 differ fails there, before any FormLogic test or package step, with a message
 naming what to update. (A FormLogic that still vendors its own engine refuses
-any release built with a different one; pin `SOFTN_RELEASE` there.) `npm run package:formlogic-runtime -- --tag vX.Y.Z` builds the
+any release built with a different one; pin `SOFTN_RELEASE` there.) From the
+first SoftN release on ZIPP 0.0.26, the three ZIPP trees hold the module-format
+install described in `ZIPP_LANGUAGES.md`: no `BUILD-INFO.txt`, `PROFILE.json`,
+bundle `SHA256SUMS` or ZIPP-published `zipp_torch.js`, each `bundle` naming a
+`.wasm` file whose `bundleSha256` is its own digest, and a `kit` record in
+`zipp/SOURCE.json`. A FormLogic whose checks still expect the zip-bundle files
+refuses such a release until its checks follow; pin `SOFTN_RELEASE` to an
+earlier release meanwhile. `npm run package:formlogic-runtime -- --tag vX.Y.Z` builds the
 archive locally (`--allow-dirty` for a trial from an uncommitted tree).
 
 ## The editor bridge's AI requests

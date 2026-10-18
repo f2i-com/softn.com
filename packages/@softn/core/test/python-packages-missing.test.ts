@@ -2,7 +2,7 @@
  * A declared Python package the loaded engine cannot provide is refused by
  * name before the project compiles.
  *
- * The engine the repository vendors (ZIPP's `web-python-base`) has no torch
+ * The engine the repository vendors (ZIPP's `javascript-python-base`) has no torch
  * built in, and the runtime adds ZIPP's torch package on demand
  * (`python-torch.test.tsx`). The engine that cannot provide it — one whose
  * package would not load, offline or refused by the engine, or a host's other

@@ -1,15 +1,28 @@
 # JavaScript and Python in the ZIPP runtime
 
-Softn ships ZIPP's official `web-python-base` release build, the variant
-compiled with `--features python-base`: JavaScript and Python in one binary,
-without torch. Torch is ZIPP's `web-torch` package, which the runtime adds
-only for an app that declares it (below). Neither is committed:
-`npm run fetch:zipp` (and the build and test hooks) installs the release the
-`zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` names into
-`packages/@softn/core/wasm-zipp/`, with the torch package beside it in
-`wasm-zipp-torch/`, and verifies both against the release's `SHA256SUMS`. The
-install's `SOURCE.json` records the release, its source commit, build tools,
-languages, stack size and checksums, and the package under `packages.torch`.
+Softn ships ZIPP's official `javascript-python-base` engine (the build ZIPP
+called `web-python-base` before 0.0.26), the variant compiled with
+`--features python-base`: JavaScript and Python in one binary, without torch.
+Torch is ZIPP's torch package, which the runtime adds only for an app that
+declares it (below). Neither is committed: `npm run fetch:zipp` (and the build
+and test hooks) installs the release the `zipp-vm` tag in
+`apps/softn-host-rust/Cargo.toml` names into `packages/@softn/core/wasm-zipp/`,
+with the torch package beside it in `wasm-zipp-torch/`, and verifies both
+against the release's `SHA256SUMS`. The install's `SOURCE.json` records the
+release, its source commit, languages, stack size and checksums, and the
+package under `packages.torch`.
+
+Since 0.0.26 ZIPP publishes each WebAssembly module as one plain `.wasm` file
+carrying a `zipp.meta` record (its format, variant, version, commit, languages
+and the digest of its bindings) and, for an engine, its wasm-bindgen bindings
+in a `zipp.glue` section. The install keeps the published file byte for byte
+as `zipp_wasm_bg.wasm` and writes that section out as `zipp_wasm.js`, so the
+runtime imports the engine's glue as it always has; the bindings travel in the
+module as well, about 60 KB raw (13 KB with Brotli) an app downloads twice.
+The engine's TypeScript declarations and its `LICENSE-APACHE` come from the
+release's embed kit; nothing else of the kit (its `zipp.mjs` loader and
+sandbox, the host SDK, the GPU adapter) is used. Releases before 0.0.26,
+published as zip bundles, are refused.
 
 ## Existing apps
 
@@ -162,13 +175,14 @@ def train(steps):
   package the runtime does not offer (`torch` is the only one). The same
   checks run in the Builder's and Studio's previews and in Studio's
   validator, because they all compose through `composeBundleSource`.
-- **Loaded on demand.** The engine Softn ships is ZIPP's `web-python-base`
-  (6.19 MB raw), which has no torch built in. When a Python app that
+- **Loaded on demand.** The engine Softn ships is ZIPP's `javascript-python-base`
+  (6.41 MB raw), which has no torch built in. When a Python app that
   declares torch starts on an engine that does not provide it
   (`pythonPackages()`: not `torchBuiltIn`, not `installed`),
   `PythonLogicAdapter.initializePythonProject` first adds ZIPP's torch
   package: `ensureZippTorch()` in `core/src/runtime/zipp-wasm-loader.ts`
-  dynamic-imports ZIPP's loader (`zipp_torch.js`, its own small chunk) and
+  dynamic-imports the torch loader (`zipp_torch.js`, which the installer
+  generates; its own small chunk) and
   calls `addTorch({ addPythonPackage }, bytes)` with `zipp_torch.wasm`
   (2.16 MB raw), fetched from `./core-runtime/zipp_torch.wasm` beside core's
   chunk — `dist/core-runtime/` in core's build, `assets/core-runtime/` in
@@ -198,39 +212,40 @@ def train(steps):
 - **Not wired yet:** `torch.compile`'s GPU path returns a pending result that
   a host backend executes; Softn's Python runtime does not connect that
   backend, so use eager tensors. ZIPP's `docs/TORCH_COMPATIBILITY.md` (in its
-  release bundles) lists what the torch subset covers.
+  release's embed kit) lists what the torch subset covers.
 - `torch.py` is a reserved module name: an app file of that name would shadow
   the package.
 
 ## The torch package
 
-The release's `web-torch` bundle is installed beside the engine, into
-`packages/@softn/core/wasm-zipp-torch/`: `zipp_torch.wasm` (the package
-archive and its tensor kernels, a module that imports nothing), ZIPP's
-`zipp_torch.js` loader, `BUILD-INFO.txt`, the bundle's `SHA256SUMS`, a
-`SOURCE.json` of its own, and `zipp_torch.d.ts` — the loader's TypeScript
-declarations, which ZIPP does not ship: `fetch-zipp-release.mjs` generates
-them (`TORCH_DECLARATIONS`), records their digest and holds the file to that
-exact text. `fetch-zipp-release.mjs` refuses the whole install unless every
-part holds: the zip is listed in the SAME top-level `SHA256SUMS` as the
-engine's and every file matches the bundle's own; `BUILD-INFO.txt` says
-`variant=torch`, `pairs-with=` exactly the installed engine bundle
-(`zipp-wasm-<version>-web-python-base`; the engine's ABI check would refuse a
-package built against another engine in every browser) and the engine's
-commit; the module imports nothing and exports what the loader reads; and, at
-INSTALL (`verifyPackage`), the engine is loaded under its glue, ZIPP's loader
-adds the package with `addTorchSync`, `pythonPackages()` must then list torch
-as installed, and a small `import torch` project must run and answer. The
-engine itself must report `torchBuiltIn: false` and nothing installed.
-`--check` re-verifies the digests, the recorded fields, `BUILD-INFO.txt` and
-the module's shape offline and loads nothing. `wasm-zipp/SOURCE.json` gains an
-additive `packages.torch` record (`bundle`, `bundleSha256`, `sha256`,
-`loaderSha256`, `variant`, `pairsWith`, `commit`, `engineAbi`).
+The release's `zipp-<version>-torch-package.wasm` is installed beside the
+engine, into `packages/@softn/core/wasm-zipp-torch/`, byte for byte as
+`zipp_torch.wasm` (the package archive and its tensor kernels, a module that
+imports nothing), with a `SOURCE.json` of its own. ZIPP published a loader for
+it, `zipp_torch.js`, up to 0.0.25; since 0.0.26 the same steps are inside the
+embed kit's `zipp.mjs`, which Softn does not use, so `fetch-zipp-release.mjs`
+generates the loader (`TORCH_LOADER`) and its TypeScript declarations
+(`TORCH_DECLARATIONS`), records their digests and holds both files to that
+exact text. It refuses the whole install unless every part holds: the module
+is listed in the SAME top-level `SHA256SUMS` as the engine; its `zipp.meta`
+record says `torch-package`, the release, `["python"]` and the engine's commit,
+and names no bindings; the module imports nothing and exports what the loader
+reads; and, at INSTALL (`verifyPackage`), the engine is loaded under its glue,
+the generated loader adds the package with `addTorchSync`, `pythonPackages()`
+must then list torch as installed, and a small `import torch` project must run
+and answer (the engine's ABI check would refuse a package built against
+another engine). The engine itself must report `torchBuiltIn: false` and
+nothing installed. `--check` re-verifies the digests, the recorded fields, the
+module's record and its shape offline and loads nothing.
+`wasm-zipp/SOURCE.json` gains an additive `packages.torch` record (`bundle`,
+`bundleSha256`, `sha256`, `loaderSha256`, `variant`, `pairsWith`, `commit`,
+`engineAbi`), where `pairsWith` names the engine module the package was added
+to at install.
 
 `tsup` copies `zipp_torch.wasm` into core's `dist/` and its
 `dist/core-runtime/` mirror, and bundles the loader as a chunk of its own
 (`zipp_torch-<hash>.js`); an app's `coreWorkerAssetPlugin` copies it to
-`assets/core-runtime/zipp_torch.wasm`. The PWAs precache the engine (6.19 MB,
+`assets/core-runtime/zipp_torch.wasm`. The PWAs precache the engine (6.41 MB,
 under their 8 MiB caps) and not the package: `assets/core-runtime/` is in
 every PWA's `globIgnores`. The FormLogic runtime archive carries the install
 as `zipp-torch/`, and every copy of the package in it, found by its exports,
@@ -238,56 +253,58 @@ must be the recorded one.
 
 | | raw | gzip -9 | Brotli-11 |
 | --- | ---: | ---: | ---: |
-| `web-python` engine (torch built in; not taken) | 8,220,591 | 2,550,594 | 1,910,130 |
-| `web-python-base` engine (every app) | 6,187,748 | 2,078,132 | 1,535,660 |
-| `zipp_torch.wasm` (apps that declare torch) | 2,156,660 | 497,048 | 401,562 |
+| `javascript-python` engine (torch built in; not taken) | 8,445,061 | 2,608,618 | 1,965,674 |
+| `javascript-python-base` engine (every app) | 6,406,177 | 2,134,232 | 1,588,993 |
+| `zipp_torch.wasm` (apps that declare torch) | 2,162,843 | 496,294 | 403,240 |
 
-These are ZIPP v0.0.25's builds; 0.0.24's engine was 6,148,141 bytes raw and
-1,523,924 with Brotli, and its torch package the same size raw (401,430 with
-Brotli). An app that does not declare torch downloads 2.03 MB less (374 KB
-less with Brotli) than it would with the complete engine; one that does
-downloads about 124 KB more in all (27 KB with Brotli).
+These are ZIPP v0.0.26's files as published, each module with its `zipp.meta`
+record and each engine with its bindings; 0.0.25's engine was 6,187,748 bytes
+raw and 1,535,660 with Brotli, and its torch package 2,156,660 and 401,562.
+Of the engine's growth, 59,635 bytes raw (13,190 with Brotli) are the record
+and bindings it now carries; the rest is the engine's own code. An app that
+does not declare torch downloads 2.04 MB less (377 KB less with Brotli) than
+it would with the complete engine; one that does downloads about 124 KB more
+in all (27 KB with Brotli).
 
 ## The JavaScript-only web variant
 
-ZIPP publishes five wasm bundles per release since 0.0.22 (four in 0.0.21):
-`web-python` (JavaScript and Python with torch built in, 8.22 MB raw),
-`web-python-base` (the same without torch, identical glue, 6.19 MB),
-`web-torch` (torch as a package for the base engine: `zipp_torch.wasm`,
-2.16 MB, and its `zipp_torch.js` loader), `web`, the same VM compiled without
-Python, about 28% smaller than `web-python-base`, with a 1 MiB stack in place
-of 16 MiB, and, new in 0.0.22, `web-lite` (ZIPP Lite: the JavaScript core
-without `Intl` and `Temporal`).
-Softn's engine is `web-python-base` and its torch package is `web-torch`
-(above); it does not take `web-python` or `web-lite`. The `web` build is
-installed BESIDE it, into `packages/@softn/core/wasm-zipp-web/`, as a verified
+ZIPP publishes five WebAssembly modules per release (as zip bundles before
+0.0.26, under names starting `web`): `javascript-python` (JavaScript and Python
+with torch built in, 8.45 MB raw), `javascript-python-base` (the same without
+torch, identical glue, 6.41 MB), `torch-package` (torch as a package for the
+base engine, 2.16 MB), `javascript`, the same VM compiled without Python,
+about 27% smaller than `javascript-python-base`, with a 1 MiB stack in place
+of 16 MiB, and `javascript-lite` (ZIPP Lite: the JavaScript core without
+`Intl` and `Temporal`).
+Softn's engine is `javascript-python-base` and its torch package is
+`torch-package` (above); it does not take `javascript-python` or
+`javascript-lite`. The `javascript` module is installed BESIDE it, into `packages/@softn/core/wasm-zipp-web/`, as a verified
 variant — not as an engine Softn's own apps, editors or PWAs ever load, but so
 the FormLogic runtime archive can carry it as a top-level `zipp-web/` tree for a
 FormLogic that lets an app's owner choose the smaller `zipp-web` engine.
 
 What makes it a variant rather than a second engine is provenance, and
-`fetch-zipp-release.mjs` refuses the whole install unless every part holds: the
-`zipp-wasm-<version>-web.zip` is listed in the SAME top-level `SHA256SUMS` as
-the engine's bundle and every file matches the bundle's own `SHA256SUMS`;
-`BUILD-INFO.txt` says `variant=javascript`, `languages=["javascript"]`,
-`stack-bytes=1048576` and the SAME commit as the engine; the module asks the
-host for nothing the engine's glue does not provide and exports nothing the
-engine does not (so the engine's glue binds it — Softn ships one glue,
-`d807276b…`, and records the web bundle's own `6dff136d…` in `glueSha256` for
-provenance only; since 0.0.21 the web module imports one hook fewer, the torch
-kernel, which instantiation leaves unread); and,
+`fetch-zipp-release.mjs` refuses the whole install unless every part holds:
+`zipp-<version>-javascript.wasm` is listed in the SAME top-level `SHA256SUMS`
+as the engine; its `zipp.meta` record says `javascript`, `["javascript"]` and
+the SAME commit as the engine, and names the bindings it carries; its stack is
+1 MiB; the module asks the host for nothing the engine's glue does not provide
+and exports nothing the engine does not (so the engine's glue binds it — Softn
+ships one glue, `392a691b…`, and records the module's own `95df5b8f…` in
+`glueSha256` for provenance only; the web module imports one hook fewer, the
+torch kernel, which instantiation leaves unread); and,
 really loaded under that glue, `zippProfile().languages` is exactly
 `["javascript"]` while `initSource(code, "python")` and `pythonHas` throw.
 That last probe — loading the variant under the primary glue — runs at
 INSTALL, in `verifyVariant`. `--check` (offline) does not load anything: it
-re-verifies the installed sibling's digests against both `SHA256SUMS`, the
-`SOURCE.json`, `BUILD-INFO.txt` and `PROFILE.json` fields, and that the
-module's imports and exports are a subset of the primary's. An install that
-checks is one whose bytes are the ones the probe ran against, not one the
-probe has been run against again.
+re-verifies the installed module's digest against `SHA256SUMS`, the
+`SOURCE.json` fields, the module's record and stack, and that its imports and
+exports are a subset of the primary's. An install that checks is one whose
+bytes are the ones the probe ran against, not one the probe has been run
+against again.
 
-Only `zipp_wasm_bg.wasm`, `BUILD-INFO.txt`, `PROFILE.json` and the bundle's
-`SHA256SUMS` are installed, with a `SOURCE.json` of the variant's own;
+Only the module, `zipp_wasm_bg.wasm`, is installed, with a `SOURCE.json` of
+the variant's own;
 `wasm-zipp/SOURCE.json` gains an additive `variants.web` record
 (`bundle`, `bundleSha256`, `sha256`, `glueSha256`, `variant`, `languages`,
 `stackBytes`, `commit`) and every key it had before is unchanged. `tsup` copies
@@ -327,7 +344,7 @@ npm run test -w @softn/core -- test/zipp-languages.test.ts test/zipp-lifecycle.t
 ```
 
 FormLogic takes this engine from the Softn release: `softn-formlogic-runtime-<tag>.zip`
-carries the install unchanged under `zipp/`, with both `SHA256SUMS` files, the
+carries the install unchanged under `zipp/`, with ZIPP's `SHA256SUMS`, the
 web variant's install under `zipp-web/`, the torch package's under `zipp-torch/`,
 and every other copy of the engine in the archive is checked to be the engine's
 bytes — the one copy under `zipp-web/` the variant's — and every copy of the
