@@ -1413,3 +1413,26 @@ test('a seeded folder the catalogue skips is left alone by the seeder', skip, as
   }
   assert.equal((await api('GET', '/api/apps/notes')).status, 200, 'the repaired folder is listed again');
 });
+
+test('a seeded folder left with no bundle the catalogue can read is left alone by the seeder', skip, async () => {
+  // Its app.json is fine and its bundle is not: the catalogue passes the
+  // folder over without counting it skipped, and the seeder published the
+  // demo again as notes-2 and retired that copy, on every request.
+  const file = path.join(root, 'data/apps/notes/v1.softn');
+  const apps = path.join(root, 'data/apps');
+  const original = fs.readFileSync(file);
+  fs.writeFileSync(file, 'PK\u0003\u0004 a bundle cut off mid-copy');
+  try {
+    const before = fs.statSync(apps).mtimeMs;
+    for (let i = 0; i < 2; i++) {
+      const list = (await api('GET', '/api/apps?perPage=48')).json;
+      assert.ok(!list.apps.some((a) => a.slug === 'notes'), 'the folder with no readable bundle is not listed');
+      assert.ok(!list.apps.some((a) => a.slug === 'notes-2'), 'and not seeded again beside itself');
+    }
+    assert.equal(fs.statSync(apps).mtimeMs, before, 'nothing was created or retired under data/apps');
+    assert.ok(!fs.existsSync(path.join(apps, 'notes-2')));
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+  assert.equal((await api('GET', '/api/apps/notes')).status, 200, 'the repaired folder is listed again');
+});

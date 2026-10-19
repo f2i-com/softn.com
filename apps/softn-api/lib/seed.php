@@ -163,6 +163,13 @@ final class Seed
                 if (!is_file($file)) continue;
                 $id = is_string($entry['id'] ?? null) ? $entry['id'] : Apps::slugify((string) ($entry['name'] ?? $entry['file']));
                 if (isset($skipped[$id])) continue;
+                // The same for a folder the catalogue passed over without
+                // skipping it: one whose bundles are all unreadable (cut off,
+                // or removed by hand), which is not listed and still holds the
+                // name. The path is put together here rather than asked of
+                // Catalog::path, which throws for a link and would take the
+                // listing down with it.
+                if (!isset($existingMap[$id]) && Catalog::validSlug($id) && is_dir("$dir/apps/$id")) continue;
                 $currentMeta = [
                     'slug' => $id,
                     'name' => is_string($entry['name'] ?? null) ? $entry['name'] : null,
