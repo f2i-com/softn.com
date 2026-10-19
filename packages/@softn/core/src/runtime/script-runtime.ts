@@ -36,6 +36,7 @@ import {
   SHELL_TAKE,
   holdsShellNode,
   isShellName,
+  namesDeclaredBy,
   shellGlobalLookupSource,
   shellPrelude,
   usesDocument,
@@ -1008,10 +1009,14 @@ export class SoftNScriptRuntime {
       // what is written above it as a browser's code does.
       let shellCode = '';
       let shellLookup = '';
-      if (this.documentShell && useHostBridges && usesDocument(resolvedCode)) {
-        shellCode = shellPrelude(this.documentShell.seedJson());
+      // Code that declares a `document` of its own is not given another; a
+      // name of the shell's it declares itself (`class Comment`) stays its own.
+      const ownNames = this.documentShell && usesDocument(resolvedCode) ? namesDeclaredBy(resolvedCode) : new Set<string>();
+      if (this.documentShell && useHostBridges && usesDocument(resolvedCode) && !ownNames.has('document')) {
+        shellCode = shellPrelude(this.documentShell.seedJson(), ownNames);
         shellLookup = shellGlobalLookupSource(declaredFunctionNames(resolvedCode));
         this.documentShellOn = true;
+        this.ownShellNames = ownNames;
       } else if (this.documentShell && !useHostBridges && usesDocument(resolvedCode)) {
         console.warn('[SoftN] This page\u2019s code uses the document, which is given to code on the main thread only; in a worker, document is not defined.');
       }
@@ -1092,8 +1097,9 @@ export class SoftNScriptRuntime {
       if (BRIDGE_VARS.has(name)) continue;
 
       // The document's own names, when the page is given one, are not the
-      // page's state or its functions.
-      if (this.documentShellOn && isShellName(name)) continue;
+      // page's state or its functions, unless the page declared the name
+      // itself.
+      if (this.documentShellOn && isShellName(name) && !this.ownShellNames.has(name)) continue;
 
       // Generated `$:` bodies are engine plumbing, not script API.
       if (name.startsWith(COMPUTED_PREFIX)) continue;
@@ -1667,6 +1673,8 @@ export class SoftNScriptRuntime {
   /** The document the page's code is given, when it uses one; see ScriptRuntimeOptions.documentShell. */
   private readonly documentShell: DocumentShell | null;
   private documentShellOn = false;
+  /** Names of the shell's the page's code declares itself, and keeps. */
+  private ownShellNames: ReadonlySet<string> = new Set();
 
   /** What the person did to the page (typed, ticked, focused), into the document before the code runs. */
   private syncDocumentIn(): void {

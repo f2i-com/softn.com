@@ -1713,11 +1713,27 @@ function __softnDocReady() { __softnShell.ready(); }
 `;
 
 /**
- * The globals the page's code reads, declared after the shell is set up
- * with its seed: what a browser gives a page by these names.
+ * The names of SHELL_GLOBAL_NAMES the page's code declares itself: a `class
+ * Comment` of its own, or `let Event`. Those are left to it, since declaring
+ * them again would keep the whole script from compiling. Read roughly, as a
+ * name after a declaring word.
  */
-export function shellPrelude(seedJson: string): string {
-  const names = [...SHELL_GLOBAL_NAMES].filter((name) => name !== '__softnShell' && name !== 'document');
+export function namesDeclaredBy(code: string): Set<string> {
+  const declared = new Set<string>();
+  for (const name of SHELL_GLOBAL_NAMES) {
+    const escaped = name.replace(/\$/g, '\\$');
+    if (new RegExp('\\b(?:let|const|var|class|function)\\s+' + escaped + '\\b').test(code)) declared.add(name);
+  }
+  return declared;
+}
+
+/**
+ * The globals the page's code reads, declared after the shell is set up
+ * with its seed: what a browser gives a page by these names, but for any the
+ * code declares itself (`own`).
+ */
+export function shellPrelude(seedJson: string, own: ReadonlySet<string> = new Set()): string {
+  const names = [...SHELL_GLOBAL_NAMES].filter((name) => name !== '__softnShell' && name !== 'document' && !own.has(name));
   return (
     DOCUMENT_SHELL_SOURCE +
     '\n__softnShell.init(' + seedJson + ');\n' +

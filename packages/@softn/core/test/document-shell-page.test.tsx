@@ -165,6 +165,20 @@ describe('a page whose code is written for a browser', () => {
     expect((window as unknown as { stolen?: number }).stolen).toBeUndefined();
   });
 
+  it('keeps the names a page declares itself', async () => {
+    await mount(
+      `<p id="shown">{label}</p>
+<script>
+  class Comment { constructor(text) { this.text = text; } }
+  let Event = 'launch';
+  let label = new Comment('hello').text + ' ' + Event;
+  document.getElementById('shown').classList.add('ready');
+</script>`,
+      () => $('#shown')?.className === 'ready'
+    );
+    expect($('#shown')!.textContent).toBe('hello launch');
+  });
+
   it('leaves a page whose code does not use the document as it was', async () => {
     await mount(`<p id="shown">{n}</p><script>let n = 3</script>`, () => $('#shown')?.textContent === '3');
     expect($('#shown')!.hasAttribute('data-softn-node')).toBe(false);

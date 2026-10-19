@@ -1849,7 +1849,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "A page can be written the way an HTML page is written, and mix in SoftN’s components and syntax wherever it likes. Lower-case tags are HTML elements, `<div>`, `<span>`, `<a>`, `<table>`, `<form>` and the rest; capitalised tags are SoftN components, `<Button>`, `<Stack>`, `<DataTable>`. The file can be called `index.html` and its code `main.js`: a page and its logic are found by what names them, `manifest.json`’s `main`, an `<import from>` or a `<script src>`, not by their file names, so `.ui` and `.logic` keep working beside them. Studio and the Builder still create `.ui` and `.logic` files, and list and export those; an app written this way runs in the browser runtime and in a standalone deployment."
+              "text": "A page can be written the way an HTML page is written, and mix in SoftN’s components and syntax wherever it likes. Lower-case tags are HTML elements, `<div>`, `<span>`, `<a>`, `<table>`, `<form>` and the rest; capitalised tags are SoftN components, `<Button>`, `<Stack>`, `<DataTable>`. The file can be called `index.html` and its code `main.js`: a page and its logic are found by what names them, `manifest.json`’s `main`, an `<import from>` or a `<script src>`, not by their file names, so `.ui` and `.logic` keep working beside them. Studio makes a new project this way (`index.html`, `pages/*.html`, `main.js`); the Builder’s own new projects are still `.ui` and `.logic`, and it opens and saves either. An app written this way runs in the browser runtime, in a standalone deployment and as a page of your own site."
             },
             {
               "type": "code",
@@ -1879,6 +1879,34 @@
               "tone": "note",
               "title": "Where a page is not HTML",
               "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. Every element but a void one needs its closing tag: `<p>` and `<li>` do not close themselves. A tag closes with its name as it was written, `<div>…</div>`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files. A `.js` file is SoftN logic: its top-level variables are the page’s state and its functions what the page calls, so `export` before a declaration is read as the declaration, and `import { total } from \"./cart.js\"` places that file’s code, whose names every file sees. An import that renames, a default or namespace import and a package import are not read; and there is no `document` to query: the page shows the state, and a handler changes the state."
+            }
+          ]
+        },
+        {
+          "id": "browser-code",
+          "title": "Code written for a browser",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A page’s code can work on the page the way code in a browser does. Code that names `document` is given one: the page’s own HTML, there from the code’s first line, so an element written above the script is found by `document.getElementById` as it is in a browser. What the code changes is drawn, and what the person does to the page (a click, a key, what they type) reaches the code’s listeners. The code runs in SoftN’s sandbox as all logic does, and what it writes is drawn through the same checks as markup: `innerHTML` cannot bring in a `<script>`, an `<iframe>`, an `onerror` or a `javascript:` address."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<h1 id=\"title\">Tasks</h1>\n<form id=\"add\"><input id=\"task\"> <button>Add</button></form>\n<ul id=\"list\"></ul>\n<p>{done} done</p>\n<script>\n  let done = 0;\n  const list = document.getElementById('list');\n  document.getElementById('add').addEventListener('submit', (e) => {\n    e.preventDefault();\n    const input = document.getElementById('task');\n    const li = document.createElement('li');\n    li.textContent = input.value;\n    li.addEventListener('click', () => { li.classList.add('done'); done++; });\n    list.appendChild(li);\n    input.value = '';\n  });\n</script>",
+              "caption": "Browser code and SoftN together: the list is built by the code, and `{done}` follows the `done` it counts."
+            },
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "`document`: `getElementById`, `querySelector` and `querySelectorAll` (tags, ids, classes, attributes, `>`, `+`, `~`, `:not()`, `:nth-child()`, `:first-child`, `:checked` and more), `createElement`, `createTextNode`, `createDocumentFragment`, `body`, `title`, `readyState`, and `DOMContentLoaded` once the page is drawn; `window.addEventListener(\"load\", …)` runs then too.",
+                "Elements: `appendChild`, `append`, `prepend`, `insertBefore`, `remove`, `replaceWith`, `before`, `after`, `cloneNode`, `textContent`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `getAttribute` and `setAttribute`, `classList`, `style` (`el.style.color = \"red\"`), `dataset`, `children`, `parentElement`, `closest`, `matches`, `focus()` and `click()`.",
+                "Events: `addEventListener` and `removeEventListener` with capture, bubbling and `once`, `preventDefault`, `stopPropagation`, `event.target`, `key`, `clientX` and the rest, `el.onclick = …`, and `onclick=\"remove(3, this)\"` in HTML the code writes (a call of one of its functions, with numbers, strings, `this` or `event`).",
+                "Forms: a field’s `value` and `checked` are what the person typed or ticked; setting them changes the field; `new FormData(form)` reads a form; a `<form>` with no `action` stays on the page.",
+                "What SoftN draws (a component, a `{value}`, `#if` and `#each`) the code can find, move and remove, but not change inside.",
+                "Layout is not known: `offsetWidth`, `getBoundingClientRect()` and the like are zero. There is no `fetch` (use `softn.net.fetch`), and Python logic and code run in a worker are not given the document."
+              ]
             }
           ]
         },
