@@ -27,6 +27,7 @@ import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { LogicTimers, TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { placeSyntaxError } from './logic-syntax';
 import { moduleSyntaxAsScript } from './module-syntax';
+import { sanitizeArgs } from './vm-args';
 import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
@@ -1300,8 +1301,15 @@ export class SoftNScriptRuntime {
     options?: { droppable?: boolean }
   ): (...args: unknown[]) => Promise<unknown> {
     const droppable = options?.droppable ?? false;
-    return (...args: unknown[]): Promise<unknown> =>
-      this.enterVM(name, droppable, () => this.vmEngine!.callFunction(name, args));
+    return (...args: unknown[]): Promise<unknown> => {
+      // What the script is given is read now, while the event is the one it
+      // was: after the wait for the engine React has cleared the event's
+      // `currentTarget`, and `@click={save}` was given no `target` and no
+      // `currentTarget` on the main thread where the worker gave both. The
+      // engine reads these records as they are.
+      const crossing = sanitizeArgs(args);
+      return this.enterVM(name, droppable, () => this.vmEngine!.callFunction(name, crossing));
+    };
   }
 
   /**

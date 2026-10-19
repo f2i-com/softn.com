@@ -187,6 +187,17 @@ function movedPath(path: string, from: string, to: string): string {
 const LOGIC_SRC_ATTRIBUTE = /(<logic\b[^>]*?\bsrc\s*=\s*)(["'])([^"']*)\2/gi;
 
 /**
+ * Every `<script src="…">` and `<link href="…">` in a source: a page written
+ * as HTML names its code and its stylesheets so, from where the page is, as
+ * `<logic src>` names its code.
+ */
+const SCRIPT_SRC_ATTRIBUTE = /(<script\b[^>]*?\bsrc\s*=\s*)(["'])([^"']*)\2/gi;
+const LINK_HREF_ATTRIBUTE = /(<link\b[^>]*?\bhref\s*=\s*)(["'])([^"']*)\2/gi;
+
+/** An address on another site, or of no file: `https:`, `//cdn…`, `data:`, `#top`. */
+const ELSEWHERE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i;
+
+/**
  * Every `<import … from="…">` in a source, with either quote, and with or
  * without the `=`: the parser and the composer read `from "./x.ui"` as the
  * same import (core, UI_IMPORT_PATTERN), and a rename has to follow both.
@@ -227,7 +238,10 @@ function relinkLogicReferences(
   // The value to write in place of `src`, or null when `src` still resolves.
   const relinked = (src: string, oldFilePath: string, newFilePath: string): string | null => {
     const target = move(resolveImportPath(oldFilePath, src));
-    return resolveImportPath(newFilePath, src) === target ? null : relativeImportPath(newFilePath, target);
+    if (resolveImportPath(newFilePath, src) === target) return null;
+    // Spelled as the author spelled it: `main.js` becomes `app.js`, not `./app.js`.
+    const path = relativeImportPath(newFilePath, target);
+    return src.startsWith('./') || !path.startsWith('./') ? path : path.slice(2);
   };
 
   for (const [id, file] of after) {
@@ -259,10 +273,15 @@ function relinkLogicReferences(
     // write the stale path back out.
     if (file.originalSource) {
       const repoint = (tag: string, head: string, quote: string, src: string) => {
+        if (src.trim() === '' || ELSEWHERE.test(src.trim())) return tag;
         const replacement = relinked(src, oldFilePath, file.path);
         return replacement === null ? tag : `${head}${quote}${replacement}${quote}`;
       };
-      const source = file.originalSource.replace(LOGIC_SRC_ATTRIBUTE, repoint).replace(IMPORT_FROM_ATTRIBUTE, repoint);
+      const source = file.originalSource
+        .replace(LOGIC_SRC_ATTRIBUTE, repoint)
+        .replace(SCRIPT_SRC_ATTRIBUTE, repoint)
+        .replace(LINK_HREF_ATTRIBUTE, repoint)
+        .replace(IMPORT_FROM_ATTRIBUTE, repoint);
       if (source !== file.originalSource) {
         next.originalSource = source;
         changed = true;
@@ -345,7 +364,7 @@ function deletionRefusedReason(
       return `${nodes.get(fileId)?.path ?? 'This file'} is the app's entry file; the app cannot start without it.`;
     }
     if (entryLogic && fileId === entryLogic.id) {
-      return `${entryLogic.path} is the logic the entry file links with <logic src>. Link another logic file first.`;
+      return `${entryLogic.path} is the logic the entry file links (its <script src> or <logic src>). Link another logic file first.`;
     }
     return null;
   };

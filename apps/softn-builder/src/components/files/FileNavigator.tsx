@@ -2,7 +2,7 @@
  * FileNavigator - Tree view for project files and folders
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { useFilesStore } from '../../stores/filesStore';
 import { askConfirm } from '../../utils/confirm';
 import { useProjectStore } from '../../stores/projectStore';
@@ -442,6 +442,18 @@ function FileNode({
   );
 }
 
+/**
+ * The files at the project's root, by name: a project written as a site keeps
+ * its main page and its code there (`index.html`, `main.js`). Only folders are
+ * roots in the store, so these were in the project and in no list.
+ */
+function rootFilesOf(nodes: Map<string, ProjectFileNode>): string[] {
+  return [...nodes.values()]
+    .filter((node) => node.type === 'file' && !node.parentId)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((node) => node.id);
+}
+
 export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
   const {
     nodes,
@@ -474,6 +486,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
       logicFiles: state.logicFiles,
     }))
   );
+  const rootFileIds = useMemo(() => rootFilesOf(nodes), [nodes]);
   const retainedSource = useProjectStore((state) => state.source);
 
   // A logic file named without an extension takes the project's language,
@@ -976,7 +989,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
         </div>
       )}
       <div style={styles.tree} key={`tree-${rootFolders.length}-${nodes.size}`} role="tree" aria-label="Project files">
-        {rootFolders.map((folderId) => {
+        {[...rootFolders, ...rootFileIds].map((folderId) => {
           const folder = nodes.get(folderId);
           if (!folder) return null;
           return (

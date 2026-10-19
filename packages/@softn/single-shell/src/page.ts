@@ -37,6 +37,12 @@ export interface PageSource {
   text?: string;
   /** The addresses of the scripts that load the runtime: on the page, but no part of the app. */
   runtimeScripts?: readonly string[];
+  /**
+   * The address of the document the app is drawn in, which the browser reads
+   * a picture's path against: the page's own, unless another page runs it
+   * (`data-page`). The page's own when not said.
+   */
+  documentUrl?: string;
 }
 
 /** How much of a site a page may pull in: enough for any app, little enough that a loop of imports ends. */
@@ -89,15 +95,31 @@ function collectionsOf(text: string): string[] {
 }
 
 /**
- * Bundle paths for the site's files, from the page's folder: a resolver the
- * runtime can hand `asset()`, which answers the path itself, so the browser
- * reads the file from the site, relative to the page, as it reads an `<img>`.
- * A path that climbs out of the folder is nothing.
+ * The path that leads from the folder of the document at `from` to `to`, on
+ * the same site: `app/images/logo.png` from `/site/index.html` to
+ * `/site/app/images/logo.png`, and the path itself where the two are in one
+ * folder.
  */
-function siteFiles(): AssetResolver {
+export function pathFrom(from: URL, to: URL): string {
+  if (from.origin !== to.origin) return to.href;
+  const folder = from.pathname.split('/').slice(0, -1);
+  const target = to.pathname.split('/');
+  let shared = 0;
+  while (shared < folder.length && shared < target.length - 1 && folder[shared] === target[shared]) shared++;
+  return '../'.repeat(folder.length - shared) + target.slice(shared).join('/');
+}
+
+/**
+ * Bundle paths for the site's files, from the page's folder: a resolver the
+ * runtime can hand `asset()`, which answers where the file is from the
+ * document the app is drawn in, so the browser reads it from the site, as it
+ * reads an `<img>`. Where another page runs this one (`data-page`) that is
+ * not the page's own folder. A path that climbs out of the folder is nothing.
+ */
+function siteFiles(base: URL, document: URL): AssetResolver {
   const resolve = ((path: string): string => {
     if (typeof path !== 'string' || path === '' || path.includes('..') || /^[a-z][a-z0-9+.-]*:|^\//i.test(path)) return '';
-    return path.replace(/^\.\//, '');
+    return pathFrom(document, new URL(path.replace(/^\.\//, ''), base));
   }) as AssetResolver;
   resolve.pathOf = (url: string) => (/^[a-z][a-z0-9+.-]*:|^\//i.test(url) ? undefined : url);
   resolve.dispose = () => {};
@@ -131,6 +153,11 @@ export async function loadPageApplication(
     progress?.();
     if (response.status === 404) return null;
     if (!response.ok) throw Error(`${path} could not be read (HTTP ${response.status})`);
+    // A host that answers every path it does not have with its index page
+    // (an app host's fallback: Netlify's, Vercel's, many nginx sites') says
+    // so in the page's type. A manifest, a seed or a script answered with a
+    // page is a file the site does not have.
+    if (!/\.html?$/i.test(path) && /text\/html/i.test(response.headers.get('content-type') ?? '')) return null;
     const text = await response.text();
     if (text.length > MAX_FILE_BYTES) throw Error(`${path} is larger than this page may load`);
     total += text.length;
@@ -246,5 +273,8 @@ export async function loadPageApplication(
     theme: 'light',
     layout: 'page',
   };
-  return { config, ...app, assets: siteFiles() };
+  // Each page of the site starts the app at its own address, so its links are
+  // the browser's: one shown in place would have the address of another.
+  const documentUrl = new URL(source.documentUrl ?? pageUrl);
+  return { config, ...app, assets: siteFiles(base, documentUrl), followsLinks: false };
 }

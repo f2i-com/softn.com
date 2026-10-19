@@ -266,6 +266,13 @@ export interface SoftNRendererProps {
   onPageChange?: (page: string) => void;
 
   /**
+   * A link to another page of the app was clicked, `<a href="about.html">`:
+   * true when the host shows that page itself, and the browser is not sent
+   * there. See SoftNRenderContext.followLink.
+   */
+  onLink?: (href: string) => boolean;
+
+  /**
    * Import resolver for .logic file imports.
    * Called with resolved/absolute paths, returns source code or null.
    */
@@ -620,6 +627,7 @@ export function SoftNRenderer({
   onLoad,
   onError,
   onPageChange,
+  onLink,
   importResolver,
   logicBasePath,
   preIncludedLogicPaths,
@@ -1661,6 +1669,12 @@ export function SoftNRenderer({
   // 1. Start with componentState (includes state updated by script functions)
   // 2. Only use initialState as DEFAULTS for keys that don't exist in componentState
   // This ensures script-initiated state changes are preserved, while initialState provides defaults
+  // The host's answer for a link, read when the link is clicked: a host that
+  // passes a fresh function each render does not redraw the page for it.
+  const onLinkRef = useRef(onLink);
+  onLinkRef.current = onLink;
+  const followLink = useCallback((href: string) => onLinkRef.current?.(href) === true, []);
+
   const context = useMemo<SoftNRenderContext>(() => {
     // Merge state: componentState is the source of truth, initialState only provides defaults
     const mergedState = { ...state.componentState };
@@ -1692,9 +1706,11 @@ export function SoftNRenderer({
       // What the markup may fetch, judged by the bundle's own declaration. A
       // host that supplied no config is not enforcing; see egress-policy.ts.
       egress: runtimePermissionConfig ?? null,
+      followLink,
       renderCache,
     };
   }, [
+    followLink,
     state.componentState,
     setComponentState,
     shareComponentState,

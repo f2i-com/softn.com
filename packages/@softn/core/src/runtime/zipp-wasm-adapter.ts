@@ -204,8 +204,23 @@ function declaredFunctionNames(code: string): Set<string> {
   const assigned =
     /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/g;
   for (const match of code.matchAll(assigned)) names.add(match[1]);
+  // The text is read whole, comments and strings included, so "the function
+  // for each row" in a comment names `for`. A name that is not declared is
+  // harmless here (its case answers undefined), but a reserved word is not a
+  // name at all: `typeof for` would be a syntax error in the entry, and the
+  // app's whole script would fail to compile with it.
+  for (const name of names) if (RESERVED_WORDS.has(name)) names.delete(name);
   return names;
 }
+
+/** JavaScript's reserved words, which `typeof <word>` cannot be written with. */
+const RESERVED_WORDS: ReadonlySet<string> = new Set([
+  'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do',
+  'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'implements', 'import',
+  'in', 'instanceof', 'interface', 'let', 'new', 'null', 'package', 'private', 'protected', 'public',
+  'return', 'static', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while',
+  'with', 'yield',
+]);
 
 /** {@link EVENT_ENTRY} for `names`; `asyncNames` are entered through {@link ASYNC_ENTRY}. */
 function eventEntrySource(names: ReadonlySet<string>, asyncNames: ReadonlySet<string>): string {
@@ -581,7 +596,9 @@ export class ZippWasmAdapter {
     // The async functions the host may call, entered through a function of
     // this adapter's that says when one rejects (see ASYNC_ENTRY).
     this.asyncFunctions = new Set(
-      [...code.matchAll(/\basync\s+function\s+([A-Za-z_$][\w$]*)/g)].map((match) => match[1])
+      [...code.matchAll(/\basync\s+function\s+([A-Za-z_$][\w$]*)/g)]
+        .map((match) => match[1])
+        .filter((name) => !RESERVED_WORDS.has(name))
     );
     if (this.asyncFunctions.size > 0) code += asyncEntrySource(this.asyncFunctions);
     this.eventFunctions = declaredFunctionNames(code);

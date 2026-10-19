@@ -274,7 +274,9 @@ const LINK_TAG = /<link\b([^>]*?)\/?>/;
 /** The app's stylesheets a page links with `<link rel="stylesheet" href>`, as written, in order. */
 export function pageStylesheetHrefs(source: string): string[] {
   const hrefs: string[] = [];
+  const comments = htmlCommentSpans(source);
   for (const match of source.matchAll(new RegExp(LINK_TAG.source, 'g'))) {
+    if (within(comments, match.index)) continue;
     const href = stylesheetHref(match[1]);
     if (href !== null) hrefs.push(href);
   }
@@ -346,13 +348,60 @@ export function logicTagReference(
   if (language === 'other') return { kind: 'ignored' };
   const src = attributes.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i)?.[2] ?? null;
   if (src && script && isRemoteReference(src)) return { kind: 'ignored' };
+  // The runtime's own loader, which a page of a site names to run as the app
+  // (apps/softn-single/public/softn.js): it is no part of the app's code.
+  if (src && script && RUNTIME_LOADER.test(src.trim().split(/[?#]/)[0])) return { kind: 'ignored' };
   return { kind: 'code', src, language };
+}
+
+/** The name of the runtime's loader script, which no app's code may take. */
+const RUNTIME_LOADER = /(?:^|\/)softn\.js$/i;
+
+/**
+ * Where a page's HTML comments are, from `<!--` to just past `-->`. A tag
+ * written in one is commented out: a `<script>` there is not run and its file
+ * not wanted, nor a stylesheet `<link>` there placed.
+ */
+function htmlCommentSpans(source: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (let at = source.indexOf('<!--'); at !== -1; at = source.indexOf('<!--', at)) {
+    const end = source.indexOf('-->', at + 4);
+    const past = end === -1 ? source.length : end + 3;
+    spans.push([at, past]);
+    at = past;
+  }
+  return spans;
+}
+
+/** Whether `at` is inside one of `spans`. */
+function within(spans: ReadonlyArray<[number, number]>, at: number): boolean {
+  return spans.some(([start, past]) => at >= start && at < past);
+}
+
+/**
+ * A stylesheet's relative `url(…)`s from the bundle's root rather than from
+ * its own folder, for its rules to be placed in a page: `url(fonts/a.woff2)`
+ * in `css/site.css` is `css/fonts/a.woff2`, which the renderer finds in the
+ * bundle (showBundleFilesInStyles). Read from the page it was placed in, the
+ * same text named `fonts/a.woff2`, which is not there.
+ */
+function stylesheetFromRoot(rules: string, stylesheetPath: string): string {
+  return rules.replace(/url\(\s*(["']?)([^"')\s]+)\1\s*\)/gi, (whole, quote: string, target: string) => {
+    if (/^[a-z][a-z0-9+.-]*:|^\/|^#/i.test(target)) return whole;
+    try {
+      return `url(${quote}${resolveBundlePath(stylesheetPath, target)}${quote})`;
+    } catch {
+      return whole;
+    }
+  });
 }
 
 /** The files of code a page names, `<script src>` and `<logic src>`, as written, in order. */
 export function pageLogicSources(source: string): string[] {
   const sources: string[] = [];
+  const comments = htmlCommentSpans(source);
   for (const match of source.matchAll(new RegExp(LOGIC_TAG_PATTERN.source, 'gi'))) {
+    if (within(comments, match.index)) continue;
     const reference = logicTagReference(match[1], match[2]);
     if (reference.kind === 'code' && reference.src) sources.push(reference.src);
   }
@@ -405,7 +454,9 @@ export function composeBundleSource(
     // See logicTagReference: what is left alone stays in the page, for the
     // parser.
     const logicTag = new RegExp(LOGIC_TAG_PATTERN.source, 'gi');
-    return source.replace(logicTag, (fullTag, tag: string, attributes: string, inlineCode?: string) => {
+    const comments = htmlCommentSpans(source);
+    return source.replace(logicTag, (fullTag, tag: string, attributes: string, inlineCode: string | undefined, at: number) => {
+      if (within(comments, at)) return fullTag;
       const reference = logicTagReference(tag, attributes);
       if (reference.kind === 'ignored') return fullTag;
       const { src, language } = reference;
@@ -472,8 +523,9 @@ export function composeBundleSource(
    * left in the page, which does not load it; so is one the bundle does not
    * carry, said here. Lower case only: `<Link>` is a component.
    */
-  const inlineStylesheets = (source: string, pagePath: string): string =>
-    source.replace(new RegExp(LINK_TAG.source, 'g'), (fullTag, attributes: string) => {
+  const inlineStylesheets = (source: string, pagePath: string, comments = htmlCommentSpans(source)): string =>
+    source.replace(new RegExp(LINK_TAG.source, 'g'), (fullTag, attributes: string, at: number) => {
+      if (within(comments, at)) return fullTag;
       const href = stylesheetHref(attributes);
       if (href === null) return fullTag;
       const stylesheetPath = resolveBundlePath(pagePath, href);
@@ -482,7 +534,7 @@ export function composeBundleSource(
         console.warn(`[SoftN] ${pagePath}: the stylesheet ${stylesheetPath} is not in the bundle.`);
         return fullTag;
       }
-      return `<style>\n${rules}\n</style>`;
+      return `<style>\n${stylesheetFromRoot(rules, stylesheetPath)}\n</style>`;
     });
 
   const inlineImports = (

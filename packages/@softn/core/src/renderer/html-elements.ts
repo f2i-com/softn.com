@@ -111,14 +111,16 @@ const TEXT_ENTRY_TYPES: ReadonlySet<string> = new Set([
  * A field given a starting value in its markup, `<input value="Ada">` or
  * `<input type="checkbox" checked>`, starts with it and can be changed, as
  * in HTML. React takes `value` and `checked` for the field's whole state,
- * so a field with nothing to change them was frozen on what was written and
- * every keystroke was undone. A field the page keeps in step itself (with
- * `:bind`, a binding of `value` or `checked`, or a handler for its changes)
- * or one marked `readonly` is left as it is.
+ * so such a field was frozen on what was written and every keystroke was
+ * undone, a handler for its changes or not: `<input value=""
+ * oninput="filter(event.target.value)">` could not be typed in. A value
+ * written in the page never changes, so it is only ever a start. A field the
+ * page keeps in step itself, with `:bind` or an expression for its value, or
+ * one marked `readonly`, is left as it is.
  */
 export function keepFieldEditable(tag: string, node: ElementNode, props: SoftNProps): void {
   if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return;
-  if (props.onChange !== undefined || props.onInput !== undefined || props.readOnly) return;
+  if (props.readOnly) return;
   if (node.bindings.some((binding) => ['bind', 'value', 'checked'].includes(binding.name))) return;
   const written = (name: string): boolean =>
     name in props && node.props.some((prop) => prop.name === name && prop.value.type !== 'expression');
@@ -221,6 +223,39 @@ export function showBundleFilesInStyles(css: string, resolve: ((path: string) =>
     }
     return typeof url === 'string' && url !== '' ? `url("${url}")` : whole;
   });
+}
+
+/**
+ * `<a href="about.html">`: a link to another page of the app goes to that
+ * page in the app, when the host says it can (`followLink`), rather than
+ * sending the browser to an address the host page has no such file at. A
+ * link the person opens elsewhere (a new tab, a modified or middle click,
+ * `target`, `download`), a fragment, or an address with a scheme is the
+ * browser's, as is one a handler on the link has already cancelled.
+ */
+export function followPageLinks(props: SoftNProps, follow: ((href: string) => boolean) | undefined): void {
+  if (!follow) return;
+  const href = props.href;
+  if (typeof href !== 'string' || href.trim() === '' || href.startsWith('#')) return;
+  if (/^[a-z][a-z0-9+.-]*:|^\/\//i.test(href.trim())) return;
+  if ((typeof props.target === 'string' && props.target !== '' && props.target !== '_self') || 'download' in props) return;
+  const given = props.onClick;
+  props.onClick = (event: unknown, ...rest: unknown[]) => {
+    const result = typeof given === 'function' ? (given as (...args: unknown[]) => unknown)(event, ...rest) : undefined;
+    const click = event as {
+      defaultPrevented?: boolean;
+      button?: number;
+      metaKey?: boolean;
+      ctrlKey?: boolean;
+      shiftKey?: boolean;
+      altKey?: boolean;
+      preventDefault?: () => void;
+    } | null;
+    if (!click || click.defaultPrevented || (click.button ?? 0) !== 0) return result;
+    if (click.metaKey || click.ctrlKey || click.shiftKey || click.altKey) return result;
+    if (follow(href)) click.preventDefault?.();
+    return result;
+  };
 }
 
 /**

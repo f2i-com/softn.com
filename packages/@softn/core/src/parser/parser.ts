@@ -392,7 +392,12 @@ export class Parser {
       } else if (isComponentDeclaration(element)) {
         doc.component = element;
       } else if (isScriptBlock(element)) {
-        doc.script = element;
+        // An HTML page writes several, in its head and at the end of its
+        // body, and means all of them, in order; the last used to replace
+        // the others where a page was parsed without the composer.
+        doc.script = doc.script
+          ? { type: 'ScriptBlock', code: [doc.script.code, element.code].filter((code) => code !== '').join('\n'), loc: doc.script.loc }
+          : element;
       } else if (isLogicBlock(element)) {
         doc.logic = element;
       } else if (isDataBlock(element)) {

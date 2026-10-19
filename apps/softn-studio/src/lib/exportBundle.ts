@@ -1,7 +1,7 @@
 import { zipSync } from 'fflate';
 import type { ValidationError, VFSFile } from '../types/studio';
 import { isPrivatePath, normalizeProjectPath, resolveProjectPath } from './paths';
-import { isLogicPath, isPagePath } from './sourceKinds';
+import { isPagePath, linkedScripts } from './sourceKinds';
 import { MAIN_PAGE_PATH } from './studioProject';
 
 /**
@@ -142,12 +142,38 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
     }
     return [...ordered, ...remaining.values()];
   };
-  const ui = group('ui', isPagePath);
+  /** The paths the manifest lists under `name`, as canonical paths. */
+  const listed = (name: string): Set<string> =>
+    new Set(
+      (Array.isArray(declared[name]) ? declared[name] : []).flatMap((member) => {
+        const verdict = typeof member === 'string' ? resolveProjectPath(member) : null;
+        return verdict?.ok ? [verdict.path] : [];
+      })
+    );
+  // A file the manifest files under assets is one: an HTML help page or a
+  // script the app serves, wherever it is kept.
+  const listedAssets = listed('assets');
+  const ui = group('ui', (p) => isPagePath(p) && !listedAssets.has(p));
   // A `.py` file is logic exactly as a `.logic` file is: its name is what
   // says it is Python. Matching `.logic` alone filed a Python app's modules
   // under assets, so the runtime never offered them to the composer as
   // helpers and a module the entry imports by name was not there.
-  const logic = group('logic', (p) => isLogicPath(p) && !p.startsWith('server/'));
+  // A `.js` file is logic when a page links it or logic imports it, or the
+  // manifest already lists it: every `.js` outside assets/ used to be filed
+  // there, and the runtime ran a library or a service worker as the app's
+  // code, or refused a Python app for mixing languages over it.
+  const decoder = new TextDecoder();
+  const texts = new Map<string, string>();
+  for (const [path, bytes] of collected.entries) if (isPagePath(path) || /\.js$/i.test(path)) texts.set(path, decoder.decode(bytes));
+  const linked = linkedScripts(texts);
+  const listedLogic = listed('logic');
+  const logic = group(
+    'logic',
+    (p) =>
+      !p.startsWith('server/') &&
+      (linked.has(p) ||
+        (!listedAssets.has(p) && (/\.(logic|py)$/i.test(p) || (/\.js$/i.test(p) && listedLogic.has(p)))))
+  );
   // Server logic stays `.logic`: the PHP and Rust hosts run it as JavaScript
   // only, so a `server/*.py` is not server logic any host can run (the
   // validator says so rather than exporting it as if it were).

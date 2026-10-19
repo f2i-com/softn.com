@@ -6,6 +6,7 @@ import {
   clearPreviewXDBCollections,
   composePreviewProject,
   previewDataKey,
+  previewLinkTarget,
   replacePreviewXDBCollections,
   shouldReseedPreviewData,
   stripTemplateComments,
@@ -324,5 +325,27 @@ describe('Studio preview data reset policy', () => {
     const a = previewDataKey(new Map([['data/tasks.xdb', xdb], ['ui/main.ui', ui]]));
     const b = previewDataKey(new Map([['ui/main.ui', ui], ['data/tasks.xdb', xdb]]));
     expect(a).toBe(b);
+  });
+});
+
+describe('a link in the preview', () => {
+  const files = project([
+    { path: 'index.html', content: '<a href="pages/about.html">About</a>' },
+    { path: 'pages/about.html', content: '<a href="../index.html">Home</a>' },
+    { path: 'assets/guide.html', content: '<p>Guide</p>' },
+    { path: 'main.js', content: 'let n = 1' },
+  ]);
+
+  it('goes to the page of the project it names, from the page it is on', () => {
+    expect(previewLinkTarget(files, 'index.html', 'pages/about.html')).toBe('pages/about.html');
+    expect(previewLinkTarget(files, 'index.html', './pages/about.html#team')).toBe('pages/about.html');
+    expect(previewLinkTarget(files, 'pages/about.html', '../index.html')).toBe('index.html');
+    expect(previewLinkTarget(files, 'pages/about.html', '/index.html')).toBe('index.html');
+  });
+
+  it('goes nowhere for a file that is not a page, or one the project has not', () => {
+    for (const href of ['main.js', 'assets/guide.html', 'missing.html', '../../outside.html', '']) {
+      expect(previewLinkTarget(files, 'index.html', href)).toBeNull();
+    }
   });
 });

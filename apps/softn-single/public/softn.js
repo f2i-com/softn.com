@@ -31,6 +31,12 @@
     // text, and runs none of its scripts and fetches none of its files.
     document.write('<plaintext hidden>');
   } else {
+    if (!named) {
+      console.warn(
+        'SoftN: softn.js is not the first script in the page\'s <head>, or is async, deferred or a module, ' +
+          'so the browser has drawn the page and run its scripts itself. Name it first in <head>, as a plain script.'
+      );
+    }
     var hide = document.createElement('style');
     hide.textContent = 'html[data-softn-page-loading] body { visibility: hidden; }';
     document.head.appendChild(hide);

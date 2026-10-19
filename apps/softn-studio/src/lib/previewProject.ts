@@ -199,6 +199,25 @@ export function declaredThemeMode(manifest: Record<string, unknown> | null): unk
   return theme && typeof theme === 'object' && !Array.isArray(theme) ? (theme as Record<string, unknown>).mode : undefined;
 }
 
+/**
+ * The page of the project a link in the preview goes to, `<a href="about.html">`
+ * on the page at `from`: its path, or null when the link names no page the
+ * project has. The preview is drawn in Studio's own page, so a link the
+ * browser followed took Studio away to an address of its own; the canvas
+ * shows the page instead, as the Files panel does, and keeps Studio where it
+ * is for any other link on this site (core passes only those).
+ */
+export function previewLinkTarget(files: Map<string, VFSFile>, from: string, href: string): string | null {
+  const written = href.trim().split(/[?#]/)[0];
+  if (written === '') return null;
+  try {
+    const path = written.startsWith('/') ? resolveBundlePath('index', written.slice(1)) : resolveBundlePath(from, written);
+    return isPagePath(path) && files.has(path) ? path : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The manifest's logic group as the export writes it: the helpers the runtime loads, in its order. */
 function manifestLogicPaths(files: Map<string, VFSFile>): string[] {
   const manifest = normalizeManifestForBundle(files);

@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { composeBundleSource, pageLogicSources } from '../src/bundle/source-composer';
+import { composeBundleSource, pageLogicSources, pageStylesheetHrefs } from '../src/bundle/source-composer';
 import { parse } from '../src/parser';
 import type { ElementNode, SoftNDocument, TemplateNode } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
@@ -243,6 +243,23 @@ describe('a field given a starting value', () => {
     expect(box.checked).toBe(false);
   });
 
+  it('can be typed in when a handler reads it, as an HTML page’s search field is', () => {
+    const search = vi.fn();
+    const page = mount('<input id="q" value="" oninput="search(event.target.value)"><input id="t" type="checkbox" checked onchange="search(event.target.checked)">', {
+      functions: { search },
+    });
+    const field = page.querySelector<HTMLInputElement>('#q')!;
+    const box = page.querySelector<HTMLInputElement>('#t')!;
+    act(() => {
+      field.value = 'dune';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      box.click();
+    });
+    expect(field.value).toBe('dune');
+    expect(box.checked).toBe(false);
+    expect(search.mock.calls).toEqual([['dune'], [false]]);
+  });
+
   it('is left to the page when the page keeps it in step', () => {
     const doc = parse('<input :bind={name}>');
     expect(doc.diagnostics ?? []).toEqual([]);
@@ -278,6 +295,75 @@ describe('a file of the app’s, named as an HTML page names one', () => {
     ).toBe(
       '.a { background: url("blob:logo") } .b { background: url("blob:logo") } .c { background: url(missing.png) } .d { fill: url(#g) }'
     );
+  });
+});
+
+describe('several <script> blocks', () => {
+  it('are one script, in the order the page has them', () => {
+    const doc = parse('<html><head><script>function a() { return 1 }</script></head><body><p>x</p><script>let b = a()</script></body></html>');
+    expect(doc.script?.code).toContain('function a()');
+    expect(doc.script?.code).toContain('let b = a()');
+    expect(doc.script!.code.indexOf('function a()')).toBeLessThan(doc.script!.code.indexOf('let b'));
+  });
+});
+
+describe('a link to another page of the app', () => {
+  const page =
+    '<a id="page" href="about.html">About</a><a id="new" href="about.html" target="_blank">New tab</a>' +
+    '<a id="site" href="https://example.com/about.html">Site</a><a id="frag" href="#top">Top</a>' +
+    '<a id="mail" href="mailto:a@example.com">Mail</a><a id="kept" href="about.html" onclick="note(); return false">Kept</a>';
+  /**
+   * Click `element` and say whether the page cancelled the click. The click
+   * is then cancelled here whatever the page did: a link the browser would
+   * follow is a navigation, which jsdom does not do and complains of.
+   */
+  const click = (element: Element, init: MouseEventInit = {}): { defaultPrevented: boolean } => {
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, ...init });
+    let prevented = false;
+    const after = (seen: Event) => {
+      prevented = seen.defaultPrevented;
+      seen.preventDefault();
+    };
+    document.addEventListener('click', after, { once: true });
+    act(() => {
+      element.dispatchEvent(event);
+    });
+    document.removeEventListener('click', after);
+    return { defaultPrevented: prevented };
+  };
+
+  it('is the host’s to follow when the host can, and the browser’s otherwise', () => {
+    const followed: string[] = [];
+    const note = vi.fn();
+    const mounted = mount(page, {
+      functions: { note },
+      followLink: (href: string) => {
+        followed.push(href);
+        return true;
+      },
+    });
+    expect(click(mounted.querySelector('#page')!).defaultPrevented).toBe(true);
+    // A new tab, a modified or middle click, another site, a fragment, mail: the browser's.
+    expect(click(mounted.querySelector('#new')!).defaultPrevented).toBe(false);
+    expect(click(mounted.querySelector('#page')!, { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(click(mounted.querySelector('#page')!, { button: 1 }).defaultPrevented).toBe(false);
+    expect(click(mounted.querySelector('#site')!).defaultPrevented).toBe(false);
+    expect(click(mounted.querySelector('#frag')!).defaultPrevented).toBe(false);
+    expect(click(mounted.querySelector('#mail')!).defaultPrevented).toBe(false);
+    // A handler that cancels the link keeps it.
+    expect(click(mounted.querySelector('#kept')!).defaultPrevented).toBe(true);
+    expect(note).toHaveBeenCalledTimes(1);
+    expect(followed).toEqual(['about.html']);
+  });
+
+  it('is the browser’s when the host does not take it, or there is no host to ask', () => {
+    const declined = mount('<a id="page" href="about.html">About</a>', { followLink: () => false });
+    expect(click(declined.querySelector('#page')!).defaultPrevented).toBe(false);
+    act(() => root!.unmount());
+    root = null;
+    container?.remove();
+    const alone = mount('<a id="page" href="about.html">About</a>');
+    expect(click(alone.querySelector('#page')!).defaultPrevented).toBe(false);
   });
 });
 
@@ -456,6 +542,26 @@ describe('a bundle written as HTML files', () => {
           '<script type="text/python" src="main.py"></script>'
       )
     ).toEqual(['main.js', '../logic/helpers.logic', 'main.py']);
+  });
+
+  it('takes nothing from a commented-out tag, and nothing from the runtime’s own loader', () => {
+    const page =
+      '<script src="softn/softn.js"></script><!-- <script src="old.js"></script> <script>debugInit()</script> -->' +
+      '<!-- <link rel="stylesheet" href="old.css"> --><script src="main.js"></script><p>{count}</p>';
+    expect(pageLogicSources(page)).toEqual(['main.js']);
+    expect(pageStylesheetHrefs(page)).toEqual([]);
+    const doc = parsed({ 'index.html': page, 'main.js': 'let count = 1' });
+    expect(doc.logic?.code).toBe('let count = 1');
+  });
+
+  it('places a stylesheet’s files from its own folder, as its rules name them', () => {
+    const composed = compose({
+      'index.html': '<link rel="stylesheet" href="css/site.css"><p>x</p>',
+      'css/site.css': '@font-face { src: url(fonts/inter.woff2) } .a { background: url("../images/a.png") } .b { fill: url(#g) }',
+    }).source;
+    expect(composed).toContain('url(css/fonts/inter.woff2)');
+    expect(composed).toContain('url("images/a.png")');
+    expect(composed).toContain('url(#g)');
   });
 
   it('places the rules of a stylesheet the page links to', () => {

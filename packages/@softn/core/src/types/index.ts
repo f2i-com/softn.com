@@ -123,6 +123,14 @@ export interface SoftNRenderContext {
    */
   egress?: import('../runtime/egress-policy').EgressConfig | null;
 
+  /**
+   * Follow a link to another page of the app, `<a href="about.html">`, in
+   * place: true when the host has taken the link, and the browser does not
+   * follow it. A host that runs a bundle answers for the bundle's pages; with
+   * none, every link is the browser's, as it always was.
+   */
+  followLink?: (href: string) => boolean;
+
   // Current iteration context (for #each)
   each?: {
     item: unknown;

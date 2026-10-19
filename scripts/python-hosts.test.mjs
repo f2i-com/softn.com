@@ -21,7 +21,8 @@ import { root } from './release-packages.mjs';
 const HOSTS = [
   { file: 'apps/softn-web/src/App.tsx', forwards: /python=\{tab\.python\}/ },
   { file: 'apps/softn-web/src/components/AppRunner.tsx', forwards: /python=\{python\}/ },
-  { file: 'packages/@softn/single-shell/src/SingleApp.tsx', forwards: /python=\{app\.python\}/ },
+  // The page shown: the app's own, or the one a link to another page composed.
+  { file: 'packages/@softn/single-shell/src/SingleApp.tsx', forwards: /python=\{shown\.python\}/ },
   { file: 'apps/softn-loader/src/App.tsx', forwards: /python=\{python\}/ },
   // FormLogic's host spreads the whole composition into the renderer.
   { file: 'apps/formlogic-host/src/main.tsx', forwards: /<SoftNWithXDB \{\.\.\.composed\}/ },

@@ -173,6 +173,44 @@ describe('the manifest and a server group', () => {
  * modules were filed under assets and the runtime never loaded the helper the
  * entry imports by name.
  */
+describe('the export and the .js files a project carries', () => {
+  const html = (files: Array<{ path: string; content: string }>, listed: Record<string, unknown> = {}) =>
+    toVfs([{ path: 'manifest.json', content: manifestWith(listed, { main: 'index.html' }) }, ...files]);
+
+  it('files as logic the scripts its pages link and what they import, and nothing else', () => {
+    const vfs = html([
+      { path: 'index.html', content: '<script src="softn/softn.js"></script><script src="main.js"></script><p>{n}</p>' },
+      { path: 'pages/about.html', content: '<script src="../lib/about.js"></script><p>About</p>' },
+      { path: 'main.js', content: 'import { twice } from "./lib/helpers.js"\nlet n = twice(1)' },
+      { path: 'lib/helpers.js', content: 'export function twice(n) { return n * 2 }' },
+      { path: 'lib/about.js', content: 'let about = 1' },
+      { path: 'softn/softn.js', content: '(function () {})()' },
+      { path: 'vendor/chart.min.js', content: 'window.Chart = 1' },
+      { path: 'sw.js', content: 'self.addEventListener("fetch", () => {})' },
+    ]);
+    const manifest = JSON.parse(normalizeManifestForBundle(vfs)!) as { files: Record<string, string[]> };
+    expect([...manifest.files.logic].sort()).toEqual(['lib/about.js', 'lib/helpers.js', 'main.js']);
+    expect([...manifest.files.assets].sort()).toEqual(['softn/softn.js', 'sw.js', 'vendor/chart.min.js']);
+  });
+
+  it('keeps what the manifest files under assets there, and a Python app Python', () => {
+    const vfs = html(
+      [
+        { path: 'index.html', content: '<script src="main.py"></script><p>{n}</p>' },
+        { path: 'main.py', content: 'n = 1\n' },
+        { path: 'vendor/chart.js', content: 'window.Chart = 1' },
+        { path: 'help/guide.html', content: '<p>Read me</p>' },
+      ],
+      { assets: ['vendor/chart.js', 'help/guide.html'] }
+    );
+    const manifest = JSON.parse(normalizeManifestForBundle(vfs)!) as { files: Record<string, string[]> };
+    expect(manifest.files.logic).toEqual(['main.py']);
+    expect(manifest.files.ui).toEqual(['index.html']);
+    expect([...manifest.files.assets].sort()).toEqual(['help/guide.html', 'vendor/chart.js']);
+    expect(validateProject(vfs, null).filter((e) => /mixes Python and JavaScript/.test(e.message))).toEqual([]);
+  });
+});
+
 describe('the export and Python logic', () => {
   it('files the Python example under logic, helpers first as declared, and not under assets', () => {
     const vfs = toVfs(READING_LIST_PYTHON.files);

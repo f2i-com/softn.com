@@ -121,3 +121,46 @@ describe('a project written as HTML', () => {
     expect(index).not.toContain('<logic');
   });
 });
+
+describe('a project written as HTML, its files renamed or moved', () => {
+  const idOf = (path: string) => [...useFilesStore.getState().nodes.values()].find((node) => node.path === path)!.id;
+  const exported = async (path: string) => decode(readBundleEntries(await buildProjectBundle()).get(path));
+
+  it('follows its code to a new name in <script src>', async () => {
+    commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(zipSync(entries()))));
+    useFilesStore.getState().renameFile(idOf('main.js'), 'app.js');
+    const index = await exported('index.html');
+    expect(index).toContain('<script src="app.js"></script>');
+    expect(await exported('app.js')).toBe(MAIN_JS);
+  });
+
+  it('follows its code into a renamed folder, and leaves an address on another site alone', async () => {
+    const files = entries();
+    files['index.html'] = strToU8(
+      INDEX.replace('<script src="main.js"></script>', '<script src="js/main.js"></script><script src="https://cdn.example.com/x.js"></script>')
+    );
+    files['js/main.js'] = files['main.js'];
+    delete files['main.js'];
+    const manifest = JSON.parse(decode(files['manifest.json'])!);
+    manifest.files.logic = ['js/main.js'];
+    files['manifest.json'] = strToU8(JSON.stringify(manifest));
+    commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(zipSync(files))));
+    useFilesStore.getState().renameFolder(idOf('js'), 'scripts');
+    const index = await exported('index.html');
+    expect(index).toContain('<script src="scripts/main.js"></script>');
+    expect(index).toContain('<script src="https://cdn.example.com/x.js"></script>');
+  });
+
+  it('follows its code and stylesheet from a page moved into a folder', async () => {
+    const files = entries();
+    files['index.html'] = strToU8(INDEX.replace('<script src="main.js"></script>', '<link rel="stylesheet" href="styles.css"><script src="main.js"></script>'));
+    files['styles.css'] = strToU8('p { color: teal }');
+    commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(zipSync(files))));
+    useFilesStore.getState().createFolder('', 'site');
+    useFilesStore.getState().moveFile(idOf('index.html'), 'site');
+    const index = await exported('site/index.html');
+    expect(index).toContain('<script src="../main.js"></script>');
+    expect(index).toContain('<link rel="stylesheet" href="../styles.css">');
+    expect(index).toContain('from="../pages/home.html"');
+  });
+});

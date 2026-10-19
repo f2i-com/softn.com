@@ -7,7 +7,7 @@ vi.mock('@softn/runtime-shell/bundleProcessor', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   loadXDBData: vi.fn(async () => {}),
 }));
-import { loadPageApplication, withoutRuntimeScripts } from '../src/page';
+import { loadPageApplication, pathFrom, withoutRuntimeScripts } from '../src/page';
 
 const SITE = 'https://example.test/notes/';
 const RUNTIME = [`${SITE}softn/softn.js`];
@@ -129,6 +129,30 @@ describe('a page of a site', () => {
     expect(app.assets('./images/logo.png')).toBe('images/logo.png');
     expect(app.assets('../secret.png')).toBe('');
     expect(app.assets('https://example.com/a.png')).toBe('');
+  });
+
+  it('answers asset() from the document it is drawn in, when another page runs it', async () => {
+    serve({ ...FILES, 'app/index.html': '<p>{1}</p>' });
+    const app = await loadPageApplication(
+      { pageUrl: `${SITE}app/index.html`, documentUrl: `${SITE}index.html`, runtimeScripts: RUNTIME },
+      new AbortController().signal
+    );
+    expect(app.assets('images/logo.png')).toBe('app/images/logo.png');
+    expect(pathFrom(new URL(`${SITE}a/b/page.html`), new URL(`${SITE}c/x.png`))).toBe('../../c/x.png');
+    expect(pathFrom(new URL(`${SITE}page.html`), new URL('https://elsewhere.test/x.png'))).toBe('https://elsewhere.test/x.png');
+  });
+
+  it('takes a page a host answers for a file it does not have as no file', async () => {
+    const asked = serve(FILES);
+    const stub = globalThis.fetch;
+    // An app host's fallback: every path it lacks answered with its index page.
+    vi.stubGlobal('fetch', async (input: URL | string) => {
+      const answer = await (stub as typeof fetch)(input);
+      return answer.status === 404 ? new Response(PAGE, { headers: { 'content-type': 'text/html; charset=utf-8' } }) : answer;
+    });
+    const app = await loadPageApplication({ pageUrl: `${SITE}index.html`, runtimeScripts: RUNTIME }, new AbortController().signal);
+    expect(JSON.parse(app.textFiles.get('manifest.json')!).name).toBe('Field notes');
+    expect(asked).toContain('/notes/manifest.json');
   });
 
   it('is read from its folder’s address, as a server answers that with its default page', async () => {

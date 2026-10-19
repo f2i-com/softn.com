@@ -205,7 +205,7 @@ describe('the entry file of an opened app', () => {
   });
 
   it('protects the logic it links until it links another', () => {
-    expect(() => store().deleteFile(logicId)).toThrow(/links with <logic src>/);
+    expect(() => store().deleteFile(logicId)).toThrow(/the logic the entry file links/);
     store().updateUIFileSource(entryId, '<logic src="../logic/spare.logic" />\n<App></App>\n');
     expect(() => store().deleteFile(logicId)).not.toThrow();
     expect(store().logicFiles.has(logicId)).toBe(false);

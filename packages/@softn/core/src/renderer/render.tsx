@@ -51,6 +51,7 @@ import {
 import { parseStatePath } from '../runtime/state-path';
 import { markupValue } from './host-values';
 import {
+  followPageLinks,
   keepFieldEditable,
   keepFormOnPage,
   showBundleFiles,
@@ -1775,8 +1776,10 @@ function renderElement(
     showBundleFiles(node, props, context.functions?.asset);
     sanitizeUrlProps(props, node.tag, egressPolicy);
     if (svgElement) sanitizeSvgReferences(props, node.tag, egressPolicy);
-    // After the URL check, which drops an action it refuses.
+    // After the URL check, which drops an action it refuses, and a link
+    // it refuses.
     if (FinalComponent === 'form') keepFormOnPage(props);
+    if (FinalComponent === 'a') followPageLinks(props, context.followLink);
     dropTopLayerProps(props);
     dropDocumentName(props, FinalComponent);
   } else {

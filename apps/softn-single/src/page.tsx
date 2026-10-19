@@ -21,7 +21,8 @@ declare global {
 }
 
 async function boot(): Promise<void> {
-  const page = window.__softnPage ?? { pageUrl: location.href, runtimeScripts: [] };
+  // The app is drawn in this document, whichever page it was written in.
+  const page = { ...(window.__softnPage ?? { pageUrl: location.href, runtimeScripts: [] }), documentUrl: location.href };
   const [{ createRoot }, { registerRuntimeComponents }, shell] = await Promise.all([
     import('react-dom/client'),
     import('@softn/components/lazy'),

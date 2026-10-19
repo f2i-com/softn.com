@@ -1,5 +1,11 @@
-import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
-import { SoftNWithXDB, inspectDeclaration, type PermissionConfig, type PythonProject } from '@softn/core';
+import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  SoftNWithXDB,
+  inspectDeclaration,
+  type ComposedBundleSource,
+  type PermissionConfig,
+  type PythonProject,
+} from '@softn/core';
 // The theme entry, not the root barrel: the barrel is the eager path, and
 // keeping Scene3D out of this shell would then rest on the bundler
 // tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
@@ -15,6 +21,7 @@ import { watchForStall } from './stall';
 import type { DirectoryConfig, SingleConfig } from './config';
 import { installFavicon } from './favicon';
 import { loadHost, type HostBackendCall } from './host';
+import { bundlePageAt, composePage, mainPage, pageTitle } from './pages';
 // The slim bar the runtime draws over every app, for the pages a directory
 // serves through this shell; drawn from the shared tokens, which come along.
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
@@ -56,6 +63,12 @@ export interface RunnableApplication {
   /** The app's Python project, when its logic is Python. */
   python?: PythonProject;
   assets: AssetResolver;
+  /**
+   * Whether a link to another page of the bundle shows that page in the app
+   * (the default). A page of a site run in page mode leaves its links to the
+   * browser: each page of the site starts the app itself, at its own address.
+   */
+  followsLinks?: boolean;
 }
 export function Loading({ text = 'Loading…' }: { text?: string }) {
   return (
@@ -214,6 +227,58 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   }
   // Where focus goes back to after Allow; see PermissionBar's appRootRef.
   const content = useRef<HTMLDivElement>(null);
+
+  // Another page of the bundle, shown in place of the main one after a link
+  // to it (`<a href="about.html">`): the app composed with that page as its
+  // main page, run afresh as a browser runs a page it goes to, with the
+  // app's records as they were. The way back is the browser's: each page
+  // shown is an entry in its history.
+  const main = useMemo(() => mainPage(app.textFiles), [app]);
+  const [page, setPage] = useState<{ path: string; composed: ComposedBundleSource } | null>(null);
+  const show = useCallback(
+    (path: string | null): boolean => {
+      if (path === null || path === main) {
+        setPage(null);
+        document.title = app.config.title;
+        return true;
+      }
+      let composed: ComposedBundleSource;
+      try {
+        composed = composePage(app.textFiles, path);
+      } catch (error) {
+        console.warn(`[SoftN] ${path} cannot be shown:`, error instanceof Error ? error.message : error);
+        return false;
+      }
+      setPage({ path, composed });
+      document.title = pageTitle(app.textFiles, path) ?? app.config.title;
+      return true;
+    },
+    [app, main]
+  );
+  const followLink = useCallback(
+    (href: string): boolean => {
+      if (app.followsLinks === false || main === null) return false;
+      const from = page?.path ?? main;
+      const path = bundlePageAt(app.textFiles, from, href);
+      if (path === null) return false;
+      if (path === from) return true;
+      if (!show(path)) return false;
+      history.pushState({ softnPage: path }, '');
+      content.current?.scrollTo?.(0, 0);
+      return true;
+    },
+    [app, main, page, show]
+  );
+  useEffect(() => {
+    if (app.followsLinks === false) return;
+    const back = (event: PopStateEvent) => {
+      const path = (event.state as { softnPage?: unknown } | null)?.softnPage;
+      show(typeof path === 'string' ? path : null);
+    };
+    window.addEventListener('popstate', back);
+    return () => window.removeEventListener('popstate', back);
+  }, [app, show]);
+  const shown = page?.composed ?? app;
   return (
     // The project's declared side over the deployment's `theme`, which stays
     // the default; the rule that weighs them is the provider's. The box named
@@ -279,15 +344,17 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
         <div className="application-content" ref={content} tabIndex={-1} data-softn-theme-box={THEME_BOX}>
           <Boundary>
             <SoftNWithXDB
-              source={app.source}
+              key={page?.path ?? ''}
+              source={shown.source}
+              onLink={followLink}
               backendCall={backendCall}
               appId={app.appId}
               functions={functions}
               importResolver={imports}
               assetResolver={app.assets}
-              logicBasePath={app.logicBasePath}
-              preIncludedLogicPaths={app.preIncludedLogicPaths}
-              python={app.python}
+              logicBasePath={shown.logicBasePath}
+              preIncludedLogicPaths={shown.preIncludedLogicPaths}
+              python={shown.python}
               executionPreference={app.execution}
               permissionConfig={permissions}
               storageEndpoint={app.config.directory?.storage}

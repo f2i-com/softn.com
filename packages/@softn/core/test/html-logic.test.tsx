@@ -141,6 +141,15 @@ function plain(record) { return typeof record.preventDefault }
     engine.dispose();
   });
 
+  it('is given to logic whose comments read like declarations', async () => {
+    // "function for (each) row" in a comment once named `for`, and the entry
+    // written for it, `typeof for`, kept the whole script from compiling.
+    const engine = await ZippWasmAdapter.create();
+    await engine.initializeScript('// wrap the function for (each) row, and the function if (any) is async\n' + SCRIPT);
+    expect(engine.callFunction('send', [event])).toEqual(['Dune', -1, -1]);
+    engine.dispose();
+  });
+
   it('can be cancelled in the page’s own JavaScript too', async () => {
     const engine = await HostJsAdapter.create();
     await engine.initializeScript(SCRIPT);

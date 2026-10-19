@@ -8,7 +8,7 @@ import { createPreviewAssetResolver } from '../../lib/previewAssets';
 import { declaredCapabilities } from '../../lib/declaredCapabilities';
 import { CodeFile, FileEditor } from './FileEditor';
 import { useEditStore } from '../../stores/editStore';
-import { confirmLeaveDraft } from '../../lib/handEdit';
+import { confirmLeaveDraft, confirmShowing } from '../../lib/handEdit';
 import { askAgentToFix } from '../../lib/agentOrchestrator';
 import { listenToConsoleErrors, notePreviewFault, readAppFault, readAppLog } from '../../lib/previewFaults';
 import { MediaView, mediaKindFor } from './MediaView';
@@ -21,6 +21,7 @@ import {
   declaredThemeMode,
   replacePreviewXDBCollections,
   stripTemplateComments,
+  previewLinkTarget,
 } from '../../lib/previewProject';
 
 /**
@@ -225,6 +226,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     activeFilePath,
     projectId,
     projectName,
+    setActiveFilePath,
   } = useWorkspaceStore();
   const liveFiles = useVFSStore((s) => s.files);
   const agentWriting = useAIStore((s) => s.agentState === 'building');
@@ -292,6 +294,16 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     const nextPath = resolveActivePreviewPath(files, activeVFSFile, activeFilePath);
     if (nextPath !== activeVFSFile) setActiveVFSFile(nextPath);
   }, [files, activeFilePath, activeVFSFile]);
+
+  // A link in the app to another of its pages shows that page here; see previewLinkTarget.
+  const followPreviewLink = useCallback(
+    (href: string): boolean => {
+      const path = activeVFSFile ? previewLinkTarget(files, activeVFSFile, href) : null;
+      if (path !== null && path !== activeVFSFile && confirmShowing(path)) setActiveFilePath(path);
+      return true;
+    },
+    [files, activeVFSFile, setActiveFilePath]
+  );
 
   // Get preview content for the active VFS file
   const previewFileContent = activeVFSFile
@@ -742,6 +754,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
               appId={previewAppId}
               scriptExecutionMode="main"
               resumeSavedSyncRoom={false}
+              onLink={followPreviewLink}
             />
           </ThemeProviderComponent>
           </div>
@@ -765,6 +778,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
             appId={previewAppId}
             scriptExecutionMode="main"
             resumeSavedSyncRoom={false}
+            onLink={followPreviewLink}
           />
           </div>
         </>
