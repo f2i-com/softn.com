@@ -16,6 +16,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
+  "include": ["src", "../../scripts/pwa-client.d.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
