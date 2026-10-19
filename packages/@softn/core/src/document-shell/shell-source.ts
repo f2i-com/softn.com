@@ -847,6 +847,12 @@ var __softnShell = (function (win) {
       var closes = CLOSES[tag];
       if (closes && closes[rec(top()).tag]) stack.pop();
       if (BLOCKS[tag] && rec(top()).tag === 'p') stack.pop();
+      // A row written straight into a table is in a <tbody> the browser adds.
+      if (tag === 'tr' && rec(top()).tag === 'table') {
+        var tbody = makeElement('tbody');
+        append(tbody);
+        stack.push(tbody);
+      }
       var el = makeElement(tag);
       for (var k = 0; k < attrs.length; k++) setAttr(el, attrs[k][0], attrs[k][1]);
       append(el);

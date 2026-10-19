@@ -268,6 +268,17 @@ describe('the document, as a browser keeps it', () => {
     expect(doc.call('read')).toEqual([1, 2]);
   });
 
+  it('puts a table\u2019s rows in the <tbody> a browser adds', async () => {
+    const doc = await page(`
+      function read() {
+        const list = document.getElementById('list');
+        list.innerHTML = '<table><tr><td>a</td></tr><tr><td>b</td></tr></table><table><thead><tr><td>h</td></tr></thead></table>';
+        const tables = list.querySelectorAll('table');
+        return [tables[0].querySelectorAll('tbody > tr').length, tables[1].querySelectorAll('tbody').length, tables[1].querySelectorAll('thead > tr').length];
+      }`);
+    expect(doc.call('read')).toEqual([2, 0, 1]);
+  });
+
   it('makes URLSearchParams from another, or from a form', async () => {
     const doc = await page(`
       function read() {
