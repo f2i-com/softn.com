@@ -7,7 +7,7 @@
  * in one engine's adapter and not the other's.
  */
 
-import { extractEventProps } from './event-props';
+import { eventForScript } from './event-props';
 
 /**
  * True for values that are safe to hand to the VM: plain objects
@@ -40,13 +40,11 @@ export function sanitizeArgs(args: unknown[]): unknown[] {
     if (t === 'function') return null;
     if (t !== 'object') return obj;
     const o = obj as object;
-    // A browser event, bare or inside React's wrapper, crosses as the same
-    // plain shape the window bridge sends, rather than as nothing.
-    if (typeof Event !== 'undefined') {
-      if (o instanceof Event) return extractEventProps(o);
-      const native = (o as { nativeEvent?: unknown }).nativeEvent;
-      if (native instanceof Event) return extractEventProps(native);
-    }
+    // A browser event, bare or inside React's wrapper, or the markup's
+    // stand-in for one, crosses as the same plain record, rather than as
+    // nothing: see handlerEventForScript.
+    const event = eventForScript(o);
+    if (event) return event;
     if (!isPlainObject(o)) return null;
     // Break cycles but allow valid DAGs (shared references).
     if (seen.has(o)) return null;

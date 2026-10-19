@@ -63,6 +63,7 @@ let n = 0
 let seen = ''
 function add() { n = n + 1 }
 function note(ev) { seen = ev === null ? 'null' : Object.keys(ev).sort().join(',') }
+function noteTarget(ev) { seen = Object.keys(ev.target).sort().join(',') + '/' + ev.target.tagName + '/' + typeof ev.target.focus }
 </logic>`;
 
 async function mount(body: string) {
@@ -185,14 +186,19 @@ describe('what a handler written in markup is given instead', () => {
     expect(shown()).toBe('n=0|click:12:true|');
   });
 
-  it('a script handed the event gets what it always got', async () => {
+  it('a script handed the event gets its data, and the element it happened on as data', async () => {
     await mount(`<button id="b" @click={(e) => note(e)}>x</button>`);
     await fire('b', new MouseEvent('click', { bubbles: true, clientX: 3 }));
     const keys = (shown() ?? '').split('|')[2].split(',');
-    expect(keys).toContain('type');
-    expect(keys).toContain('clientX');
-    // Nothing of the element or the methods crosses into a script.
-    for (const key of ['target', 'currentTarget', 'preventDefault', 'stopPropagation', 'view', 'nativeEvent']) expect(keys).not.toContain(key);
+    for (const key of ['type', 'clientX', 'target', 'currentTarget', 'defaultPrevented']) expect(keys).toContain(key);
+    // No method and no piece of the browser crosses into a script.
+    for (const key of ['preventDefault', 'stopPropagation', 'view', 'nativeEvent']) expect(keys).not.toContain(key);
+  });
+
+  it('the element crosses as what a form’s handler reads, and nothing it can do', async () => {
+    await mount(`<button id="b" name="go" @click={(e) => noteTarget(e)}>x</button>`);
+    await fire('b', new MouseEvent('click', { bubbles: true }));
+    expect((shown() ?? '').split('|')[2]).toBe('dataset,id,name,tagName,type,value/BUTTON/undefined');
   });
 
   it('plain data from a component, untouched', async () => {

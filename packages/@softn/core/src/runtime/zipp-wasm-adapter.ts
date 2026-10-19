@@ -25,6 +25,7 @@ import { flushEngineOutput } from './engine-output';
 import type { DBNamespace } from './script-runtime';
 import type { LogicEngine } from './vm-adapter';
 import { sanitizeArgs } from './vm-args';
+import { EVENT_METHODS_FUNCTION, EVENT_METHODS_SOURCE, holdsEvent } from './event-props';
 
 // ============================================================================
 // WASM initialization
@@ -183,6 +184,49 @@ function asyncEntrySource(names: ReadonlySet<string>): string {
 `;
 }
 
+/**
+ * The function a function of the script is entered through when the host
+ * hands it an event: it gives the event's record its methods (see
+ * `EVENT_METHODS_SOURCE`), then calls the function as the host would have,
+ * through {@link ASYNC_ENTRY} when it is async.
+ */
+const EVENT_ENTRY = '__zippSoftnEvent';
+
+/**
+ * The names a script declares functions under at its top level, or may:
+ * `function save()`, and `const save = () => …` or `= function`. A name
+ * that is nested somewhere instead is undefined at the top and fails as the
+ * host's direct call of it would.
+ */
+function declaredFunctionNames(code: string): Set<string> {
+  const names = new Set<string>();
+  for (const match of code.matchAll(/\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g)) names.add(match[1]);
+  const assigned =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/g;
+  for (const match of code.matchAll(assigned)) names.add(match[1]);
+  return names;
+}
+
+/** {@link EVENT_ENTRY} for `names`; `asyncNames` are entered through {@link ASYNC_ENTRY}. */
+function eventEntrySource(names: ReadonlySet<string>, asyncNames: ReadonlySet<string>): string {
+  const cases = [...names]
+    .map((name) => `case ${JSON.stringify(name)}: fn = typeof ${name} === "function" ? ${name} : undefined; break;`)
+    .join('\n    ');
+  const entered = [...names].filter((name) => asyncNames.has(name)).map((name) => JSON.stringify(name));
+  return `${EVENT_METHODS_SOURCE}
+;function ${EVENT_ENTRY}(name, args) {
+  ${EVENT_METHODS_FUNCTION}(args);
+  ${entered.length > 0 ? `if ([${entered.join(', ')}].indexOf(name) !== -1) return ${ASYNC_ENTRY}(name, args);` : ''}
+  var fn;
+  switch (name) {
+    ${cases}
+  }
+  if (typeof fn !== "function") throw new TypeError(name + " is not a function");
+  return fn(...args);
+}
+`;
+}
+
 // ============================================================================
 // ZippWasmAdapter
 // ============================================================================
@@ -203,6 +247,8 @@ export class ZippWasmAdapter {
   private pendingSyncCapabilities = new Set<string>();
   /** The script's async functions, entered through {@link ASYNC_ENTRY}. */
   private asyncFunctions: ReadonlySet<string> = new Set();
+  /** The script's functions, entered through {@link EVENT_ENTRY} when handed an event. */
+  private eventFunctions: ReadonlySet<string> = new Set();
 
   private constructor(wasm: Engine) {
     this.wasm = wasm;
@@ -538,6 +584,8 @@ export class ZippWasmAdapter {
       [...code.matchAll(/\basync\s+function\s+([A-Za-z_$][\w$]*)/g)].map((match) => match[1])
     );
     if (this.asyncFunctions.size > 0) code += asyncEntrySource(this.asyncFunctions);
+    this.eventFunctions = declaredFunctionNames(code);
+    if (this.eventFunctions.size > 0) code += eventEntrySource(this.eventFunctions, this.asyncFunctions);
 
     // Grant exactly what registration wired, in the one call the engine allows.
     // This is the last statement before compilation on purpose: the allowlist is
@@ -572,7 +620,7 @@ export class ZippWasmAdapter {
 
     this.symbolMap = new Map();
     for (const [name, info] of Object.entries(symbolMapObj)) {
-      if (name === ASYNC_ENTRY) continue;
+      if (name === ASYNC_ENTRY || name === EVENT_ENTRY || name === EVENT_METHODS_FUNCTION) continue;
       this.symbolMap.set(name, { index: info.index, scope: info.scope as SymbolScope });
     }
 
@@ -679,12 +727,18 @@ export class ZippWasmAdapter {
   }
 
   callFunction(name: string, args: unknown[]): unknown {
-    if (!this.asyncFunctions.has(name)) return this.callDirect(name, args);
+    const crossing = sanitizeArgs(args);
+    // Handed an event, a function is entered through EVENT_ENTRY, which gives
+    // the event's record the methods browser code calls on it.
+    if (this.eventFunctions.has(name) && holdsEvent(crossing)) {
+      return this.callDirect(EVENT_ENTRY, [name, crossing], true);
+    }
+    if (!this.asyncFunctions.has(name)) return this.callDirect(name, crossing, true);
     // An async function answers a promise, which reaches the host as null:
     // whether it went on to reject only the guest can see. So it is entered
     // through ASYNC_ENTRY, which says so as the runtime's other failures are
     // said, naming the function. The function itself runs as before.
-    return this.callDirect(ASYNC_ENTRY, [name, args]);
+    return this.callDirect(ASYNC_ENTRY, [name, crossing], true);
   }
 
   /** Same as {@link callFunction}, for a value the caller needs now; no promise is awaited. */
@@ -692,10 +746,11 @@ export class ZippWasmAdapter {
     return this.callDirect(name, args);
   }
 
-  private callDirect(name: string, args: unknown[]): unknown {
+  /** Call `name`; `sanitized` says `args` have been through sanitizeArgs already. */
+  private callDirect(name: string, args: unknown[], sanitized = false): unknown {
     this.renewBudget();
     try {
-      return this.wasm.callFunction(name, sanitizeArgs(args));
+      return this.wasm.callFunction(name, sanitized ? args : sanitizeArgs(args));
     } catch (e) {
       // A call that blew its budget takes the engine with it, and every call
       // after that answers "engine is disposed". Remember it so the runtime

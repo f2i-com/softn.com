@@ -26,6 +26,7 @@ import { readZipText } from './zip-text';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { LogicTimers, TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { placeSyntaxError } from './logic-syntax';
+import { moduleSyntaxAsScript } from './module-syntax';
 import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
@@ -909,8 +910,9 @@ export class SoftNScriptRuntime {
       symbolMap = await engine.initializePythonProject(this.pythonProject);
       if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
     } else {
-      // 3. Resolve imports (inline imported .logic files before passing to WASM)
-      let resolvedCode = script.code;
+      // 3. Resolve imports (inline imported .logic files before passing to WASM),
+      // after reading what was written as a module as the script it is.
+      let resolvedCode = moduleSyntaxAsScript(script.code);
       if (this.importResolver) {
         // The entry file is already in `script.code`, so it counts as included
         // for dedupe as well as being the root of the cycle-detection chain.
@@ -2260,7 +2262,7 @@ export class SoftNScriptRuntime {
           const source = await this.importResolver(resolvedPath);
           if (source != null) {
             // Recursively resolve imports in the imported code
-            const resolved = await this.resolveImports(source, expanding, resolvedPath);
+            const resolved = await this.resolveImports(moduleSyntaxAsScript(source), expanding, resolvedPath);
             parts.push(resolved);
           } else {
             parts.push(`/* import not found: ${importPath} */`);

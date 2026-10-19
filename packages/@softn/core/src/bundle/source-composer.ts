@@ -19,6 +19,7 @@
 
 import { PYTHON_PACKAGES, readPythonPackages } from './inspect';
 import { isRemoteReference, scriptLanguage } from '../parser/html';
+import { moduleSyntaxAsScript } from '../runtime/module-syntax';
 import {
   declareCollections,
   declareStyles,
@@ -205,9 +206,12 @@ export function resolveBundlePath(basePath: string, relativePath: string): strin
  *
  * The runtime treats a path without ./ or ../ as bundle-root relative. Once
  * rewritten, fragments from different folders can safely share one compiled
- * logic block without borrowing the entry file's directory.
+ * logic block without borrowing the entry file's directory. A file written
+ * as a module (`export function`, `import { a } from "./b.js"`) is read as
+ * the script it is first, so its imports are placed like any other.
  */
 export function rewriteBundleLogicImports(source: string, basePath: string): string {
+  source = moduleSyntaxAsScript(source);
   const importLine = /^([ \t]*import[ \t]+)(["'])([^"'\r\n]+)\2([ \t]*;?[ \t]*)(\r?)$/gm;
   return source.replace(
     importLine,

@@ -52,6 +52,7 @@ import { parseStatePath } from '../runtime/state-path';
 import { markupValue } from './host-values';
 import {
   keepFieldEditable,
+  keepFormOnPage,
   loadsFromOutside,
   textareaText,
   renameToReactAttributes,
@@ -1771,6 +1772,8 @@ function renderElement(
   if (typeof FinalComponent === 'string') {
     sanitizeUrlProps(props, node.tag, egressPolicy);
     if (svgElement) sanitizeSvgReferences(props, node.tag, egressPolicy);
+    // After the URL check, which drops an action it refuses.
+    if (FinalComponent === 'form') keepFormOnPage(props);
     dropTopLayerProps(props);
     dropDocumentName(props, FinalComponent);
   } else {

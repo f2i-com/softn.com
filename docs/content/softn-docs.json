@@ -1865,7 +1865,8 @@
                 "`<script src=\"main.js\"></script>` is `<logic src=\"main.js\" />`, and `<script>…</script>` is a `<logic>` block. `<script src=\"main.py\">` links Python, which, as in a `<logic>` tag, lives in its own file. A `<script>` whose `type` is not code, such as `application/ld+json`, is passed over.",
                 "`<link rel=\"stylesheet\" href=\"styles.css\">` places the rules of a stylesheet the app carries, as if they were written in a `<style>` block. `<style>` and `<script>` blocks may stand anywhere in the page, as HTML allows.",
                 "`<br>`, `<img …>`, `<input …>`, `<hr>`, `<meta>`, `<link>` and the other void elements end with their tags; `/>` is not needed, and a `</br>` is passed over.",
-                "`onclick=\"add()\"` and the other `on…` attributes of an HTML element run their code when the event fires, as `@click=\"add()\"` does, with the event as `event`: `event.target.value`, `event.target.checked` and `event.key` read, for `oninput` and `onchange` too, and `event.preventDefault()` works in the attribute itself. A logic function it is passed to, `onsubmit=\"send(event)\"`, is given the event’s data, without `preventDefault`: cancel in the attribute, `onsubmit=\"send(); return false\"`, or with `@submit.prevent`. A closing `return false` cancels the browser’s default, as `.prevent` does. There is no `this`, and `if`, `let` and loops belong in a logic function.",
+                "`onclick=\"add()\"` and the other `on…` attributes of an HTML element run their code when the event fires, as `@click=\"add()\"` does, with the event as `event`: `event.target.value`, `event.target.checked` and `event.key` read, for `oninput` and `onchange` too, and `event.preventDefault()` cancels the browser’s default, as does a closing `return false`. Passed to a logic function, `onsubmit=\"send(event)\"`, the event is the same data, `e.target.value` and all; `e.preventDefault()` can be called there and does nothing, because the code runs apart from the page: cancel in the attribute or with `.prevent` when it matters. There is no `this`, and `if`, `let` and loops belong in a logic function.",
+                "A `<form>` with no `action` keeps its page when it is submitted: its handler runs, and the browser does not reload the page, which would take the app and what the person typed with it. A form with an `action` goes there, and `method=\"dialog\"` closes its dialog.",
                 "An `<svg>` draws its shapes: `<path>`, `<circle>`, `<g>`, gradients, clip paths and filters. A reference to something in the page, `fill=\"url(#gradient)\"` or `<use href=\"#icon\">`, works; one to another site is loaded only as the app’s network permission allows.",
                 "`<input value=\"Ada\">` and `<input type=\"checkbox\" checked>` start with what they are given and can be changed. A `<textarea>` starts with the text written in it, and a `<pre>` keeps the spacing written in it.",
                 "`for`, `readonly`, `tabindex`, `maxlength`, `colspan` and HTML’s other attribute names are read as HTML reads them. Custom element names such as `<my-card>` are read as one tag."
@@ -1875,7 +1876,7 @@
               "type": "callout",
               "tone": "note",
               "title": "Where a page is not HTML",
-              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. Every element but a void one needs its closing tag: `<p>` and `<li>` do not close themselves. A tag closes with its name as it was written, `<div>…</div>`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files. A `.js` file is SoftN logic, not a module: its top-level `let` variables are the page’s state and its functions what the page calls, `import \"./x.js\"` places another file’s code, and `export` is a syntax error."
+              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. Every element but a void one needs its closing tag: `<p>` and `<li>` do not close themselves. A tag closes with its name as it was written, `<div>…</div>`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files. A `.js` file is SoftN logic: its top-level variables are the page’s state and its functions what the page calls, so `export` before a declaration is read as the declaration, and `import { total } from \"./cart.js\"` places that file’s code, whose names every file sees. An import that renames, a default or namespace import and a package import are not read; and there is no `document` to query: the page shows the state, and a handler changes the state."
             }
           ]
         },
@@ -2003,7 +2004,7 @@
             },
             {
               "type": "paragraph",
-              "text": "A handler bound by name receives an argument: for most events, a plain-data summary of the browser event, and for `@change` and `@input`, the new value. It is never the live DOM event, so there is no `preventDefault` or `event.target`; a modifier does that job. An arrow that names a parameter, `@keydown={(e) => e.key === \"Enter\" && add()}`, is given the same summary, with `e.preventDefault()` and `e.stopPropagation()` added, and `e.target` and `e.currentTarget` as records of what the element holds (`value`, `checked`, `dataset`, its size); that is not the live event either, and it leads to no element, document or window. Write an arrow, `@click={() => save()}`, to call a function without it; Python apps need that form for functions with no parameters."
+              "text": "A handler bound by name receives an argument: for most events, a plain-data summary of the browser event, and for `@change` and `@input`, the new value. It is never the live DOM event: its `target` and `currentTarget` are data, what the element holds (`value`, `checked`, `name`, `dataset`), and `preventDefault()` can be called and does nothing, because the logic runs apart from the page; a modifier cancels a default. An arrow that names a parameter, `@keydown={(e) => e.key === \"Enter\" && add()}`, is given the same summary, with `e.preventDefault()` and `e.stopPropagation()` that act on the event, and `e.target` and `e.currentTarget` as records of what the element holds (`value`, `checked`, `dataset`, its size); that is not the live event either, and it leads to no element, document or window. Write an arrow, `@click={() => save()}`, to call a function without it; Python apps need that form for functions with no parameters."
             },
             {
               "type": "code",
@@ -2385,7 +2386,7 @@
         "title": "State, events and app lifecycle | SoftN Docs",
         "description": "SoftN state and events: handlers and the plain-data event they receive, two-way binding, keyboard and pointer input in JavaScript and Python, and state versus saved records."
       },
-      "updatedAt": "2026-10-09",
+      "updatedAt": "2026-10-19",
       "sourceIds": [
         "softn-core-source",
         "softn-languages"
@@ -2411,7 +2412,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "A handler bound by name, such as `@click={save}`, is called with whatever the component passes. For a browser event that is a plain-data summary: the type, pointer position and buttons, modifier keys and the target’s tag. It is never the live DOM event, so `event.preventDefault()` and `event.target` are not available. To cancel a default or act on one key, add a modifier to the event in the template: `@submit.prevent={save}`, `@keydown.enter={add}`."
+              "text": "A handler bound by name, such as `@click={save}`, is called with whatever the component passes. For a browser event that is a plain-data summary: the type, pointer position and buttons, modifier keys, and `target` and `currentTarget` with what those elements hold (`value`, `checked`, `name`, `dataset`). It is never the live DOM event: `event.preventDefault()` can be called and does nothing, because the logic runs apart from the page. To cancel a default or act on one key, add a modifier to the event in the template: `@submit.prevent={save}`, `@keydown.enter={add}`. A `<form>` with no `action` never leaves its page."
             },
             {
               "type": "paragraph",
@@ -5247,7 +5248,7 @@
         "title": "Troubleshooting SoftN apps | SoftN Docs",
         "description": "Troubleshoot SoftN apps: loading, state updates, Python refusals and handlers, records, permissions, audio, offline use, responsive layouts and backend connections."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-19",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -5353,7 +5354,7 @@
             },
             {
               "type": "paragraph",
-              "text": "A handler receives plain data, never the live DOM event. Use bound state, or the data the component passes, instead of `event.target`."
+              "text": "A handler receives plain data, never the live DOM event: `event.target.value` is the value the field held, and `event.preventDefault()` does nothing in logic. Cancel a default with a modifier, `@submit.prevent`, and keep what a field holds in bound state."
             }
           ]
         },

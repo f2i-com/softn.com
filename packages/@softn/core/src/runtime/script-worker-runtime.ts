@@ -1,5 +1,5 @@
 import type { AppPermissions } from '../bundle/types';
-import { extractEventProps } from './event-props';
+import { eventForScript, extractEventProps } from './event-props';
 import { clearCapturedKeys, shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
 import { isWorkerPlaceholderId } from './script-worker-bridges';
@@ -138,18 +138,11 @@ function sanitizeForPostMessage(a: unknown): unknown {
   if (a == null || typeof a !== 'object') return a;
   if (typeof a === 'function') return undefined;
 
-  // Native DOM Event (PointerEvent, MouseEvent, KeyboardEvent, etc.)
-  if (typeof Event !== 'undefined' && a instanceof Event) {
-    return extractEventProps(a);
-  }
-
-  // React SyntheticEvent — wraps a native DOM Event in a plain object with
-  // nativeEvent property. Not instanceof Event, but still not cloneable
-  // because it holds references to DOM nodes (target, currentTarget).
-  const obj = a as Record<string, unknown>;
-  if ('nativeEvent' in obj && typeof Event !== 'undefined' && obj.nativeEvent instanceof Event) {
-    return extractEventProps(obj.nativeEvent as Event);
-  }
+  // A native DOM event, React's wrapper around one (not cloneable: it holds
+  // the DOM nodes it happened on), or the markup's stand-in for one: the
+  // plain record the main thread's engine is given too (vm-args.ts).
+  const event = eventForScript(a);
+  if (event) return event;
 
   // DOM Node
   if (typeof Node !== 'undefined' && a instanceof Node) return {};

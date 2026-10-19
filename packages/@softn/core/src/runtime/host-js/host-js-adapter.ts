@@ -61,6 +61,7 @@
 
 import * as acorn from 'acorn';
 import { sanitizeArgs } from '../vm-args';
+import { giveEventMethods } from '../event-props';
 // Type-only, all of it: a value import from here would pull the ZIPP adapter
 // into this entry, which is the one thing this entry must not contain.
 import type { LogicEngine, LogicEngineFactory, SymbolInfo, SymbolScope } from '../vm-adapter';
@@ -811,7 +812,7 @@ export class HostJsAdapter implements LogicEngine {
     const symbol = this.symbolMap.get(name);
     const fn = symbol ? this.slots[symbol.index].get() : undefined;
     if (typeof fn !== 'function') throw new Error(`host-js: no such function '${name}'`);
-    const result = (fn as (...args: unknown[]) => unknown)(...sanitizeArgs(args));
+    const result = (fn as (...args: unknown[]) => unknown)(...giveEventMethods(sanitizeArgs(args)));
     // An async function's promise crosses as nothing, as ZIPP's does, and a
     // rejection after that is said the way ZIPP's adapter says it, naming
     // the function, rather than as an uncaught rejection that names none.

@@ -23,7 +23,7 @@
  * component's callback, or inside something a component handed over.
  */
 
-import { extractEventProps } from '../runtime/event-props';
+import { extractEventProps, giveScriptView, handlerEventForScript } from '../runtime/event-props';
 
 /** The record standing in for an event or an element, so the same one gives the same record. */
 const standIns = new WeakMap<object, object>();
@@ -114,9 +114,10 @@ function hiddenGetter(record: object, name: string, get: () => unknown): void {
 }
 
 /**
- * The record for an event: what a script gets, so `handle(e)` hands a logic
- * function exactly what it was handed before, plus the handler's own things,
- * not enumerable, so they stay out of what crosses into a script.
+ * The record for an event: what a script gets, plus the handler's own
+ * things, not enumerable. Handed on, `handle(e)`, it crosses into a script
+ * as the event itself would (`handlerEventForScript`): the elements as data,
+ * none of the handler's own things.
  */
 function eventRecord(event: EventLike, native: Event): Record<string, unknown> {
   const record = extractEventProps(native);
@@ -150,6 +151,9 @@ function eventRecord(event: EventLike, native: Event): Record<string, unknown> {
   const pasted = (native as { clipboardData?: unknown }).clipboardData ?? null;
   if (carried !== null) hidden(record, 'dataTransfer', transferRecord(carried as DataTransfer));
   if (pasted !== null) hidden(record, 'clipboardData', transferRecord(pasted as DataTransfer));
+  // Handed on to a logic function, it is what that function would have been
+  // given for the event itself.
+  giveScriptView(record, () => handlerEventForScript(native, from, on));
   return record;
 }
 

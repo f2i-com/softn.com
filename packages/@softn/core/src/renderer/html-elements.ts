@@ -138,6 +138,26 @@ export function keepFieldEditable(tag: string, node: ElementNode, props: SoftNPr
 }
 
 /**
+ * A `<form>` with nowhere to send what it holds keeps its page. A form with
+ * no `action` is submitted to the page's own address, which reloads the host
+ * page and with it the app, its state and what the person typed. So the way
+ * an HTML page most often handles a form, `onsubmit="save(event)"` with
+ * `event.preventDefault()` in the code, took the app away: the code runs
+ * apart from the page and cannot cancel what the browser does. A form that
+ * names an `action` still goes there, and `method="dialog"` still closes
+ * its dialog.
+ */
+export function keepFormOnPage(props: SoftNProps): void {
+  if (typeof props.action === 'string' && props.action.trim() !== '') return;
+  if (typeof props.method === 'string' && props.method.trim().toLowerCase() === 'dialog') return;
+  const given = props.onSubmit;
+  props.onSubmit = (event: unknown, ...rest: unknown[]) => {
+    (event as { preventDefault?: () => void } | null | undefined)?.preventDefault?.();
+    return typeof given === 'function' ? (given as (...args: unknown[]) => unknown)(event, ...rest) : undefined;
+  };
+}
+
+/**
  * The text a `<textarea>` holds, written between its tags: words and `{…}`
  * values, joined. Undefined when it holds anything else. React takes a
  * textarea's text as its value only, and drew the content it was given as

@@ -97,8 +97,10 @@ describe('prevent', () => {
     expect(calls).toEqual([['saved']]);
   });
 
+  // A form with an `action`: one without keeps its page whatever its handler
+  // says (html-logic.test.tsx).
   it('is what the same event does not do without it', () => {
-    const { calls, find } = mount('<form @submit={() => note("saved")}><button>Go</button></form>');
+    const { calls, find } = mount('<form action="/save" @submit={() => note("saved")}><button>Go</button></form>');
     const event = fire(find('form'), new Event('submit', { bubbles: true, cancelable: true }));
     expect(event.defaultPrevented).toBe(false);
     expect(calls).toEqual([['saved']]);
