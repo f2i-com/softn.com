@@ -79,6 +79,18 @@ describe('an app’s share of the browser’s storage', () => {
     expect(() => budget.admit('softn:a:new', 'n'.repeat(200))).not.toThrow();
   });
 
+  it('lets an app that already holds more than its budget write less, never more', () => {
+    localStorage.setItem('xdb:old:notes', 'n'.repeat(3_500_000));
+    const budget = new StorageBudget(localStorage, 'xdb:old:', 3 * 1024 * 1024);
+    // A smaller rewrite of the same collection, and a new key in exchange for less.
+    expect(() => budget.admit('xdb:old:notes', 'n'.repeat(3_000_000))).not.toThrow();
+    expect(() => budget.admit('xdb:old:notes', 'n'.repeat(3_600_000))).toThrow();
+    expect(() => budget.admit('xdb:old:other', 'x')).toThrow();
+    localStorage.removeItem('xdb:old:notes');
+    budget.removed('xdb:old:notes');
+    expect(() => budget.admit('xdb:old:other', 'x')).not.toThrow();
+  });
+
   it('holds an app’s records to theirs', async () => {
     const xdb = new XDBService(undefined, 'xdb:records-app', 'records-app', { backend: 'storage' });
     await xdb.isReady;

@@ -124,6 +124,16 @@ export class TransformersManager {
     if (this.transformers) return this.transformers;
     try {
       this.transformers = await import('@huggingface/transformers') as unknown as TransformersModule;
+      // The engine's own files from this site, as the speech worker has them
+      // (scripts/build-speech-worker.mjs), not from the CDN transformers.js
+      // points at by default: a script from another origin is imported by
+      // way of a blob: address, which the page's script policy refuses
+      // (scripts/script-policy.mjs), and it was a request to a third party
+      // the person never chose.
+      const wasm = this.transformers.env?.backends?.onnx?.wasm;
+      if (wasm && typeof location !== 'undefined') {
+        wasm.wasmPaths = new URL('./core-runtime/runtime/speech/ort/', import.meta.url).href;
+      }
       return this.transformers;
     } catch {
       throw new Error(

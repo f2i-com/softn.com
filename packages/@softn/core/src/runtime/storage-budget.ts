@@ -47,7 +47,10 @@ export class StorageBudget {
   admit(key: string, value: string): void {
     const before = this.counted().get(key) ?? 0;
     const after = this.total - before + key.length + value.length;
-    if (after <= this.limit) return;
+    // Within the budget; or, for an app that holds more than it from before
+    // there was one, a write that holds no more than now: a smaller rewrite,
+    // the one way out, is never refused.
+    if (after <= this.limit || after <= this.total) return;
     throw new DOMException(
       `This app may keep ${Math.round(this.limit / (1024 * 1024))} MB in the browser's storage, and this write would take it past that.`,
       'QuotaExceededError'
