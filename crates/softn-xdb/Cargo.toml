@@ -1,0 +1,74 @@
+[package]
+# The package is named for SoftN, the library is still `xdb`: the loader and
+# the Rust host write `use xdb::...`, and the Tauri command names, the `.xdb`
+# bundle files and the runtime's `getXDB` that existing bundles and FormLogic
+# rely on are unchanged. It came from xdb.org at
+# f76727fe5e6293ad0271e4f4d665c13779c19f39 and lives only here now; it is not
+# published, so the dependents take it by path.
+name = "softn-xdb"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/f2i-com/softn.com"
+publish = false
+description = "Local-first P2P database with CRDT sync for Tauri applications"
+keywords = ["database", "p2p", "crdt", "tauri", "local-first"]
+categories = ["database", "network-programming"]
+
+[lib]
+name = "xdb"
+
+[features]
+default = ["tauri-commands"]
+tauri-commands = ["dep:tauri"]
+
+# The version requirements and features are the ones xdb.org's workspace
+# declared, so Cargo.lock resolves to what was tested there.
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
+
+# CRDT
+yrs = "0.21"
+
+# P2P Networking
+libp2p = { version = "0.57", features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "gossipsub",
+    "mdns",
+    "identify",
+    "macros",
+] }
+futures = "0.3"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+tracing = "0.1"
+# Only the lan-probe binary installs a subscriber (RUST_LOG); the library never does.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Optional Tauri integration
+tauri = { version = "2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+# Read only when this crate is built on its own; as a dependency, the patches
+# of the package being built apply (the loader patches glib from the same
+# copy). GTK 3 (via Tauri on Linux) requires glib 0.18, and SoftN's vendored
+# copy backports the RUSTSEC-2024-0429 fix that upstream shipped only in 0.20
+# (vendor/README.md).
+[patch.crates-io]
+glib = { path = "../../vendor/glib" }
