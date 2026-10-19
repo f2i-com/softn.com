@@ -510,6 +510,97 @@ function pushedOps(socket: FakeSocket): Array<{ id: string; operation: string; r
 }
 
 /**
+ * An edit made here that the server has not answered yet.
+ *
+ * On reconnect the queued edit went out straight after the pull was asked
+ * for, and the host answers a pull before it reads the push sent after it:
+ * the pull brought the record as it was before the edit and it was written
+ * over the edit. The host never sends a pusher its own edit back, so this
+ * device kept the old value, and its next edit sent the old value to the
+ * server as well.
+ */
+describe('an edit made here that the server has not answered', () => {
+  const stamp = '2026-01-02T00:00:00Z';
+  const before = { id: 'n1', collection: 'notes', data: { title: 'old', body: 'b' }, createdAt: stamp, updatedAt: stamp };
+
+  it('is not undone by the pull of a reconnect, and the next edit sends it on', () => {
+    vi.useFakeTimers();
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'], reconnectDelay: 10 });
+    sync.connect();
+    const first = FakeSocket.made[0];
+    try {
+      first.open();
+      authOk(first);
+      first.receive({ type: 'sync_state', collection: 'notes', records: [before] });
+      first.drop();
+      xdb.updateInCollection('notes', 'n1', { title: 'new' });
+
+      vi.advanceTimersByTime(20);
+      const second = FakeSocket.made[1];
+      second.open();
+      authOk(second);
+      // The pull is answered with the record as it stood before the push.
+      second.receive({ type: 'sync_state', collection: 'notes', records: [before] });
+      expect(xdb.get('notes', 'n1')?.data).toEqual({ title: 'new', body: 'b' });
+      const sent = pushedOps(second);
+      expect(sent.map((op) => [op.operation, op.data])).toEqual([['update', { title: 'new', body: 'b' }]]);
+      second.receive({ type: 'sync_ack', opIds: sent.map((op) => op.id) });
+
+      xdb.updateInCollection('notes', 'n1', { body: 'b2' });
+      expect(pushedOps(second).at(-1)?.data).toEqual({ title: 'new', body: 'b2' });
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('is not undone by the first pull when it was made before the socket was up', () => {
+    xdb.writeRecord('notes', { id: 'n1', collection: 'notes', data: { title: 'old', body: 'b' }, created_at: stamp, updated_at: stamp, deleted: false });
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      xdb.updateInCollection('notes', 'n1', { title: 'new' });
+      socket.open();
+      authOk(socket);
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [before] });
+      expect(xdb.get('notes', 'n1')?.data).toEqual({ title: 'new', body: 'b' });
+      expect(pushedOps(socket).map((op) => op.data)).toEqual([{ title: 'new', body: 'b' }]);
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('gives way to what the server sends once it has answered the edit', () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      socket.open();
+      authOk(socket);
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [before] });
+      xdb.updateInCollection('notes', 'n1', { title: 'mine' });
+      const [edit] = pushedOps(socket);
+      // Overtaken by a newer edit: acknowledged, and answered with the record
+      // as it stands, under the edit's own id.
+      socket.receive({ type: 'sync_ack', opIds: [edit.id] });
+      socket.receive({
+        type: 'sync_delta',
+        ops: [{ id: edit.id, collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'theirs', body: 'b' }, timestamp: stamp, clientId: 'server' }],
+      });
+      expect(xdb.get('notes', 'n1')?.data).toEqual({ title: 'theirs', body: 'b' });
+      // And another device's edit after that is shown as it comes.
+      socket.receive({
+        type: 'sync_delta',
+        ops: [{ id: 'op_9_1', collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'later', body: 'b' }, timestamp: stamp, clientId: 'c9' }],
+      });
+      expect(xdb.get('notes', 'n1')?.data).toEqual({ title: 'later', body: 'b' });
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
+/**
  * A record removed for good here: `hardDelete`, and `db.prune` and
  * `db.clearCollection`, which remove records with it. It told the page and
  * nobody else, so the server kept the record and the next pull brought it

@@ -563,20 +563,31 @@ export class XDBServerSync {
   }
 
   /**
-   * The records this device has deleted and the server has not yet answered
-   * for, as `collection` and id. A record among them stays deleted whatever
-   * the server sends for it; once the server has answered, what it sends is
-   * the record (see `XDBService.upsertFromServer`). `answered` are ops the
-   * server is answering now with their records as they stand.
+   * The records this device has edited or deleted and the server has not yet
+   * answered for, by `collection` and id, each with whether it was deleted
+   * here. Until the server answers, the record stays as it is here whatever
+   * the server sends for it; once it has, what it sends is the record (see
+   * `XDBService.upsertFromServer`). `answered` are ops the server is
+   * answering now with their records as they stand.
+   *
+   * The host answers a pull before it reads a push sent after it, so a pull
+   * on reconnect came back with a record as it was before the edit queued
+   * offline, and wrote over it; the host never sends a pusher its own edit,
+   * so the old value stayed, and the next edit sent it back to the server. A
+   * create is not held: one sent again after its acknowledgement was lost is
+   * acknowledged with nothing more, and the pull is what puts it right.
    */
-  private unansweredDeletes(answered: ReadonlySet<string> = new Set()): Set<string> {
-    const deleting = new Set<string>();
+  private unansweredChanges(answered: ReadonlySet<string> = new Set()): Map<string, 'update' | 'delete'> {
+    const changed = new Map<string, 'update' | 'delete'>();
     for (const ops of [this.pendingOps, this.inflightOps]) {
       for (const op of ops.values()) {
-        if (op.operation === 'delete' && !answered.has(op.id)) deleting.add(`${op.collection}\u0000${op.recordId}`);
+        if (op.operation === 'create' || answered.has(op.id)) continue;
+        const key = `${op.collection}\u0000${op.recordId}`;
+        // Nothing is edited here after it is deleted, so a delete is the last word.
+        if (changed.get(key) !== 'delete') changed.set(key, op.operation);
       }
     }
-    return deleting;
+    return changed;
   }
 
   /** Replace local collection data with the server's authoritative state. */
@@ -584,8 +595,10 @@ export class XDBServerSync {
     // Apply each record from the server to the local XDB.
     // We use a batch approach: clear local data and re-insert.
     // For Phase 2, we use a simpler approach: upsert each record.
-    const deleting = this.unansweredDeletes();
+    const changed = this.unansweredChanges();
     for (const record of records) {
+      const here = changed.get(`${collection}\u0000${record.id}`);
+      if (here === 'update') continue;
       this.xdb.upsertFromServer(
         collection,
         {
@@ -595,7 +608,7 @@ export class XDBServerSync {
           createdAt: record.createdAt,
           updatedAt: record.updatedAt,
         },
-        deleting.has(`${collection}\u0000${record.id}`)
+        here === 'delete'
       );
     }
     // The page was full, so the collection goes on: ask for the rest. A
@@ -616,9 +629,14 @@ export class XDBServerSync {
     // before the record or after it: kept hidden until the acknowledgement,
     // a record sent first stayed hidden until the next full pull.
     const answered = new Set(ops.filter((op) => op.clientId === 'server').map((op) => op.id));
-    const deleting = this.unansweredDeletes(answered);
+    const changed = this.unansweredChanges(answered);
     for (const op of ops) {
-      const deletedHere = deleting.has(`${op.collection}\u0000${op.recordId}`);
+      const here = changed.get(`${op.collection}\u0000${op.recordId}`);
+      const deletedHere = here === 'delete';
+      // Another device's edit to a record edited here is left to the answer
+      // to this device's edit: the host weighs the two, and sends the record
+      // as it stands if the edit made here lost.
+      if (here === 'update' && op.operation !== 'delete') continue;
       switch (op.operation) {
         case 'create':
           if (op.data) {
