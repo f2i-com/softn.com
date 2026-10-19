@@ -106,6 +106,12 @@ export function useCollection(
       } else if (hasFiltersOrSort) {
         // Must re-fetch to reapply filters/sort/limit
         fetchRecords();
+      } else if ((event.type === 'create' || event.type === 'update') && event.record?.deleted) {
+        // A delete that came by sync: a peer's delete is written here as the
+        // record with `deleted` set, an update (or a create, for a record
+        // this device never had). Patched in, it stayed on the list.
+        const gone = event.record.id;
+        setRecords((prev) => prev.filter((r) => r.id !== gone));
       } else if (event.type === 'create' && event.record) {
         // Append new record directly
         setRecords((prev) => [...prev, event.record!]);

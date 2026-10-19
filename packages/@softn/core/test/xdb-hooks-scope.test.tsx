@@ -115,6 +115,28 @@ describe('useCollection', () => {
     );
     expect(labels(container)).toEqual(['explicit']);
   });
+
+  /**
+   * Sync writes a peer's delete as the record with `deleted` set: an update,
+   * or a create for a record this device never had. The list patched it in
+   * and went on showing it.
+   */
+  it('drops a record a peer deleted', async () => {
+    const xdb = getXDB('hooks-a');
+    xdb.writeRecord('items', record('kept', 'kept'));
+    xdb.writeRecord('items', record('gone', 'gone'));
+    await mount(
+      <AppScopeProvider value={scopeFor('hooks-a')}>
+        <Items />
+      </AppScopeProvider>
+    );
+    expect(labels(container)).toEqual(['kept', 'gone']);
+
+    await act(async () => xdb.writeRecord('items', { ...record('gone', 'gone'), deleted: true }));
+    expect(labels(container)).toEqual(['kept']);
+    await act(async () => xdb.writeRecord('items', { ...record('never-here', 'never here'), deleted: true }));
+    expect(labels(container)).toEqual(['kept']);
+  });
 });
 
 describe('useRecord', () => {
