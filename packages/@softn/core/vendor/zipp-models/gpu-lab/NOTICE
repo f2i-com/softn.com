@@ -1,0 +1,7 @@
+Zipp browser GPU Lab 0.1.0
+
+The GPU graph runtime and Python adapter are integrated into the Zipp repository.
+The compiled kernel module, wasm/kernels.wasm, is built from the zipp-kernels
+crate (../rust/zipp-kernels) under Apache-2.0.
+The diagnostic demo uses pre-exported graphs; the project playground executes
+Python inside the Zipp WASM engine and submits graphs through its JavaScript host.

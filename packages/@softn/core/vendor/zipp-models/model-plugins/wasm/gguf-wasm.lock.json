@@ -1,0 +1,28 @@
+{
+  "comment": "Written by scripts/fetch_gguf_wasm.sh. Checked by tests/gguf-module.test.mjs.",
+  "repository": "https://github.com/f2i-com/gguf-wasm",
+  "tag": "v0.0.5",
+  "commit": "7cb4b4c4ff9baad769c2adc13896360384d543bd",
+  "assets": {
+    "gguf-wasm-node-v0.0.5.tar.gz": "f42ec7fdac34e957f8ca52af0d21f1dc8e5bdd913d13a5eda9895b923fa9f077",
+    "gguf-wasm-web-v0.0.5.tar.gz": "9e36ecc74180509486f8ceb6cdaaf3389cc5b7746b2db02f0a6151b86e624520"
+  },
+  "files": {
+    "gguf/gguf_wasm.d.ts": "6b8f58719401ef437977723efd99d363acee7cbe77df3a134eda08a99ecd6801",
+    "gguf/gguf_wasm.js": "b32dd8e2f35b74f41f55b99e79f83f1b5cd4a3fef65d0ac53ff14125949cdd2e",
+    "gguf/gguf_wasm_bg.wasm": "d4e4f10228ceb4876bc86b5f662f8d665c29afefcf14a6293a19ab00a112badc",
+    "gguf/gguf_wasm_bg.wasm.d.ts": "e0e4b6d4d9e00f659f95ccb73f9cdcbfd400667860249adaa124c2f9eb6e2d97",
+    "gguf/index.mjs": "7b42049094ab656716f81b03bc7c69ed87afbde2039918070d96b39ee8c468d5",
+    "gguf/LICENSE-APACHE": "00bf49683632f765eb2c943fecb32d58c1e62a7102b3fa2f08b3875e56d7eb39",
+    "gguf/LICENSE-MIT": "7f98ad5f09a08c69affb7b26109ecad8004cba078de9b77c7ed42fafc8dd7776",
+    "gguf/README.md": "3bd83bbcd8a238cbcde7e6ef3e93bb11f24931a6909a7cc01f99269ff3f3977c",
+    "gguf-node/gguf_wasm.d.ts": "76c3659c5fe8f3db750d8516b326a515e927dcfb9f3f45c0100df6648054d343",
+    "gguf-node/gguf_wasm.js": "d48e123b7aaf04a194062a27841956d2ccb81c523f0912c8506f642c40139948",
+    "gguf-node/gguf_wasm_bg.wasm": "d4e4f10228ceb4876bc86b5f662f8d665c29afefcf14a6293a19ab00a112badc",
+    "gguf-node/gguf_wasm_bg.wasm.d.ts": "e0e4b6d4d9e00f659f95ccb73f9cdcbfd400667860249adaa124c2f9eb6e2d97",
+    "gguf-node/LICENSE-APACHE": "00bf49683632f765eb2c943fecb32d58c1e62a7102b3fa2f08b3875e56d7eb39",
+    "gguf-node/LICENSE-MIT": "7f98ad5f09a08c69affb7b26109ecad8004cba078de9b77c7ed42fafc8dd7776",
+    "gguf-node/package.json": "dbf8353f77358bc12169b7bb7301e1978d5b503e002ee927229a8993672818fc",
+    "gguf-node/README.md": "3bd83bbcd8a238cbcde7e6ef3e93bb11f24931a6909a7cc01f99269ff3f3977c"
+  }
+}

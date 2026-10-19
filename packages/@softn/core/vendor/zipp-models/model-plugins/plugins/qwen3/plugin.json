@@ -1,0 +1,18 @@
+{
+  "format": "zipp.python-model-plugin",
+  "version": 1,
+  "id": "org.zipp.qwen3",
+  "plugin_version": "0.1.0",
+  "entry": "architecture",
+  "capabilities": [
+    "graph-v2"
+  ],
+  "checkpoint_format": "gguf.qwen3-v1",
+  "tokenizer_formats": [
+    "qwen2-byte-bpe-v1"
+  ],
+  "sources": {
+    "architecture.py": "99643cd955d72b74df6976abb93683ede488a9a8055dc4a8804471dde88aa721",
+    "graph.py": "60a6f7452010194911e706f75f906575195e29e20cfe202ba7eb8f3757c277a0"
+  }
+}

@@ -7,7 +7,7 @@ function copyDirRecursive(src: string, dest: string) {
   if (!existsSync(dest)) mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(src, { withFileTypes: true })) {
     if (entry.name === 'core-runtime') continue;
-    // The mirror exists for the script and speech Workers. The host-JavaScript
+    // The mirror exists for the script and model Workers. The host-JavaScript
     // engine is main-thread-only and no worker can reach it, and a copy here
     // would end up in every app's assets/core-runtime/ — in the editors, which
     // stay on ZIPP, and in the ZIPP entry document, which must not contain it.
@@ -65,7 +65,10 @@ export default defineConfig({
     // PWA's precache, since most apps never import torch.
     cpSync('wasm-zipp-torch/zipp_torch.wasm', 'dist/zipp_torch.wasm');
     console.log('[tsup] Copied the zipp engine and its torch package to dist/');
-    execFileSync(process.execPath,['scripts/build-speech-worker.mjs'],{stdio:'inherit'});
+    // The local-model worker (softn.ai.model.*): ZIPP's model stack from
+    // vendor/zipp-models/, at dist/runtime/model-worker.js with its two
+    // modules in dist/runtime/models/, mirrored below like the script worker.
+    execFileSync(process.execPath,['scripts/build-model-worker.mjs'],{stdio:'inherit'});
     // Mirror dist/ into dist/core-runtime/ so static worker URL resolution (./core-runtime/runtime/script-worker.js) succeeds on disk
     copyDirRecursive('dist', 'dist/core-runtime');
     console.log('[tsup] Mirrored dist/ to dist/core-runtime/ for worker resolution');

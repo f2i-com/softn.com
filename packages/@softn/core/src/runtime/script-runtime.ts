@@ -70,14 +70,6 @@ import type {
   BundleFileProvider,
   AIPermissionConfig,
   GpuPermissionConfig,
-  ModelSource,
-  OnnxFeeds,
-  OnnxRunOptions,
-  PipelineTask,
-  PipelineOptions,
-  GenerateOptions,
-  DirectModelOptions,
-  ChatMessage,
 } from './ai-manager';
 import { debug } from './debug';
 export type { BundleFileProvider } from './ai-manager';
@@ -703,11 +695,8 @@ export class SoftNScriptRuntime {
   /** Permission config from permission.json (set via setPermissionConfig) */
   private permissionConfig: PermissionConfig | null = null;
 
-  /** Lazy-loaded ONNX manager (created on first softn.ai.onnx.* call) */
-  private onnxManager: import('./ai-onnx-manager').OnnxManager | null = null;
-  /** Lazy-loaded Transformers.js manager (created on first softn.ai.pipeline/generate/embed/classify call) */
-  private transformersManager: import('./ai-transformers-manager').TransformersManager | null =
-    null;
+  /** Local models on ZIPP, created on the first softn.ai.model.* call (models/model-host.ts). */
+  private modelHost: import('./models/model-host').ModelHost | null = null;
   /** Lazy-loaded GPU compute manager (created on first softn.ai.gpu.* call) */
   private gpuComputeManager: import('./ai-gpu-compute-manager').GpuComputeManager | null = null;
   /** Bundle file provider for loading models from .softn bundles */
@@ -2398,15 +2387,9 @@ export class SoftNScriptRuntime {
     for (const controller of this.netAbortControllers) controller.abort();
     this.netAbortControllers.clear();
 
-    // Release AI resources
-    if (this.onnxManager) {
-      this.onnxManager.releaseAll().catch(() => {});
-      this.onnxManager = null;
-    }
-    if (this.transformersManager) {
-      this.transformersManager.releaseAll().catch(() => {});
-      this.transformersManager = null;
-    }
+    // Release AI resources: each loaded model's Worker is terminated.
+    this.modelHost?.dispose();
+    this.modelHost = null;
     if (this.gpuComputeManager) {
       this.gpuComputeManager.releaseAll().catch(() => {});
       this.gpuComputeManager = null;
@@ -2836,27 +2819,27 @@ export class SoftNScriptRuntime {
       case 'ai.getCapabilities':
         return this.handleAIGetCapabilities();
       case 'ai.onnx.loadModel':
-        return this.handleAIOnnxLoadModel(call);
       case 'ai.onnx.run':
-        return this.handleAIOnnxRun(call);
       case 'ai.onnx.release':
-        return this.handleAIOnnxRelease(call);
       case 'ai.pipeline':
-        return this.handleAIPipeline(call);
       case 'ai.generate':
-        return this.handleAIGenerate(call);
       case 'ai.embed':
-        return this.handleAIEmbed(call);
       case 'ai.classify':
-        return this.handleAIClassify(call);
       case 'ai.run':
-        return this.handleAIRun(call);
+        // The ONNX and transformers.js engines behind these are gone, and
+        // with them about 80 MB of WebAssembly. Said by name, so an app
+        // written for them fails with a reason rather than a missing function.
+        this.checkPermission('ai');
+        throw new Error(`softn.${call.kind} was removed: local models now run on ZIPP, as GGUF chat models through softn.ai.model.load and softn.ai.model.generate`);
       case 'ai.releaseAll':
         return this.handleAIReleaseAll();
       case 'ai.model.load':
         return this.handleAIModelLoad(call);
       case 'ai.model.generate':
         return this.handleAIModelGenerate(call);
+      case 'ai.model.cancel':
+        this.checkPermission('ai');
+        return { cancelled: this.modelHost?.cancel(String(call.args[0] ?? '')) ?? false };
       case 'ai.model.release':
         return this.handleAIModelRelease(call);
       case 'ai.gpu.requestDevice':
@@ -3123,17 +3106,26 @@ export class SoftNScriptRuntime {
     }
   }
 
+  /**
+   * One of the app's own files as a Blob, for a model it ships: from the
+   * bundle provider a host supplied, else where the app's markup would find
+   * it (the `fetch('data.json')` rule above). Null when it has no such file.
+   */
+  private async readBundleBlob(path: string): Promise<Blob | null> {
+    const clean = path.replace(/^\.\//, '');
+    if (this.bundleFileProvider) {
+      const data = await this.bundleFileProvider.readFile(clean);
+      return data ? new Blob([data]) : null;
+    }
+    const url = this.assetResolver ? this.assetResolver(clean) : '';
+    if (!url || (!/^blob:/i.test(url) && /^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(url))) return null;
+    const resp = await fetch(url, { redirect: 'error' });
+    return resp.ok ? resp.blob() : null;
+  }
+
   private async handleLocalSpeech(call: PendingHostCall): Promise<unknown> {
-    let neural = call.kind === 'audio.loadSpeechModel';
-    if(call.kind === 'audio.speak' && call.args[0] && call.args[0].length <= 20000) {
-      try { neural = JSON.parse(call.args[0]).provider === 'kokoro'; } catch { /* Host returns a bounded payload error. */ }
-    }
-    if(neural) {
-      this.checkPermission('ai');
-      const config=this.permissionConfig?.permissions.ai;
-      if(config?.allowedSources && !config.allowedSources.includes('huggingface'))return {loaded:false,started:false,reason:'speech-model-source-not-permitted'};
-      if(typeof config?.maxModelSizeMB==='number' && config.maxModelSizeMB < 96)return {loaded:false,started:false,reason:'speech-model-size-not-permitted'};
-    }
+    // The device's own voices only: nothing is downloaded, so speech asks for
+    // no permission (local-speech.ts).
     if(!this.localSpeech)this.localSpeech=new LocalSpeechHost();
     return this.localSpeech.handle(call.kind,call.args);
   }
@@ -3884,38 +3876,17 @@ export class SoftNScriptRuntime {
 
   // ── AI host call handlers ──
 
-  private async getOnnxManager(): Promise<import('./ai-onnx-manager').OnnxManager> {
-    if (!this.onnxManager) {
-      const { OnnxManager } = await import('./ai-onnx-manager');
-      this.onnxManager = new OnnxManager();
-      if (this.bundleFileProvider) {
-        this.onnxManager.setBundleFileProvider(this.bundleFileProvider);
-      }
-      if (this.permissionConfig?.permissions.ai) {
-        // The net declaration rides along: a model URL is egress like any other.
-        this.onnxManager.setPermissionConfig(
-          this.permissionConfig.permissions.ai,
-          this.permissionConfig.permissions.net
-        );
-      }
+  private async getModelHost(): Promise<import('./models/model-host').ModelHost> {
+    if (!this.modelHost) {
+      const { ModelHost } = await import('./models/model-host');
+      // The net declaration rides along: a model URL is egress like any other.
+      this.modelHost = new ModelHost({
+        ai: this.permissionConfig?.permissions.ai,
+        net: this.permissionConfig?.permissions.net,
+        readBundleFile: (path) => this.readBundleBlob(path),
+      });
     }
-    return this.onnxManager;
-  }
-
-  private async getTransformersManager(): Promise<
-    import('./ai-transformers-manager').TransformersManager
-  > {
-    if (!this.transformersManager) {
-      const { TransformersManager } = await import('./ai-transformers-manager');
-      this.transformersManager = new TransformersManager();
-      if (this.permissionConfig?.permissions.ai) {
-        this.transformersManager.setPermissionConfig(
-          this.permissionConfig.permissions.ai,
-          this.permissionConfig.permissions.net
-        );
-      }
-    }
-    return this.transformersManager;
+    return this.modelHost;
   }
 
   private async handleAIGetCapabilities(): Promise<unknown> {
@@ -3929,116 +3900,36 @@ export class SoftNScriptRuntime {
     return detectCapabilities();
   }
 
-  private async handleAIOnnxLoadModel(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [sourceJson, optionsJson] = call.args;
-    const source: ModelSource = JSON.parse(sourceJson);
-    const options = optionsJson ? JSON.parse(optionsJson) : {};
-    const mgr = await this.getOnnxManager();
-    return mgr.loadModel(source, options);
-  }
-
-  private async handleAIOnnxRun(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [sessionId, feedsJson, optionsJson] = call.args;
-    const feeds: OnnxFeeds = JSON.parse(feedsJson);
-    const options: OnnxRunOptions = optionsJson ? JSON.parse(optionsJson) : {};
-    const mgr = await this.getOnnxManager();
-    return mgr.run(sessionId, feeds, options);
-  }
-
-  private async handleAIOnnxRelease(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [sessionId] = call.args;
-    const mgr = await this.getOnnxManager();
-    await mgr.release(sessionId);
-    return { released: true };
-  }
-
-  private async handleAIPipeline(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [task, model, optionsJson] = call.args;
-    const options: PipelineOptions = optionsJson ? JSON.parse(optionsJson) : {};
-    const mgr = await this.getTransformersManager();
-    return mgr.createPipeline(task as PipelineTask, model || undefined, options);
-  }
-
-  private async handleAIGenerate(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [pipelineId, prompt, optionsJson] = call.args;
-    const options: GenerateOptions = optionsJson ? JSON.parse(optionsJson) : {};
-    const mgr = await this.getTransformersManager();
-    return mgr.generate(pipelineId, prompt, options);
-  }
-
-  private async handleAIEmbed(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [pipelineId, textsJson] = call.args;
-    let texts: string | string[];
-    try {
-      texts = JSON.parse(textsJson);
-    } catch {
-      texts = textsJson;
-    }
-    const mgr = await this.getTransformersManager();
-    return mgr.embed(pipelineId, texts);
-  }
-
-  private async handleAIClassify(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [pipelineId, text] = call.args;
-    const mgr = await this.getTransformersManager();
-    return mgr.classify(pipelineId, text);
-  }
-
-  private async handleAIRun(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [pipelineId, inputJson, optionsJson] = call.args;
-    let input: unknown;
-    try {
-      input = JSON.parse(inputJson);
-    } catch {
-      input = inputJson;
-    }
-    const options = optionsJson ? JSON.parse(optionsJson) : undefined;
-    const mgr = await this.getTransformersManager();
-    return mgr.run(pipelineId, input, options);
-  }
-
   private async handleAIReleaseAll(): Promise<unknown> {
-    const promises: Promise<void | { released: boolean }>[] = [];
-    if (this.onnxManager) promises.push(this.onnxManager.releaseAll());
-    if (this.transformersManager) promises.push(this.transformersManager.releaseAll());
-    if (this.gpuComputeManager) promises.push(this.gpuComputeManager.releaseAll());
-    await Promise.all(promises);
+    this.modelHost?.releaseAll();
+    if (this.gpuComputeManager) await this.gpuComputeManager.releaseAll();
     return { released: true };
   }
 
   private async handleAIModelLoad(call: PendingHostCall): Promise<unknown> {
     this.checkPermission('ai');
-    const [modelId, optionsJson] = call.args;
-    const options: DirectModelOptions & { modelClass?: string } = optionsJson
-      ? JSON.parse(optionsJson)
-      : {};
-    const mgr = await this.getTransformersManager();
-    return mgr.loadModel(modelId, options);
+    const [spec, optionsJson] = call.args;
+    // A string names a Hugging Face repository or a URL; an object says which
+    // ({huggingface, file}, {url} or {bundle}).
+    const source = typeof spec === 'string' && spec.trimStart().startsWith('{') ? JSON.parse(spec) : spec;
+    const options = optionsJson ? JSON.parse(optionsJson) : {};
+    const host = await this.getModelHost();
+    return host.load(source, options && typeof options === 'object' ? options : {});
   }
 
   private async handleAIModelGenerate(call: PendingHostCall): Promise<unknown> {
     this.checkPermission('ai');
     const [modelHandle, messagesJson, optionsJson] = call.args;
-    const messages: ChatMessage[] = JSON.parse(messagesJson);
-    const options: GenerateOptions = optionsJson ? JSON.parse(optionsJson) : {};
-    const mgr = await this.getTransformersManager();
-    return mgr.generateFromModel(modelHandle, messages, options);
+    const messages = JSON.parse(messagesJson);
+    const options = optionsJson ? JSON.parse(optionsJson) : {};
+    const host = await this.getModelHost();
+    return host.generate(modelHandle, messages, options && typeof options === 'object' ? options : {});
   }
 
   private async handleAIModelRelease(call: PendingHostCall): Promise<unknown> {
     this.checkPermission('ai');
     const [modelHandle] = call.args;
-    const mgr = await this.getTransformersManager();
-    await mgr.releaseModel(modelHandle);
-    return { released: true };
+    return { released: this.modelHost?.release(String(modelHandle ?? '')) ?? false };
   }
 
   // ── GPU compute host call handlers ──

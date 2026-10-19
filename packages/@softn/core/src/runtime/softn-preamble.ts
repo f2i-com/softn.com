@@ -169,14 +169,21 @@ let softn = {
     releaseAll: function(callback) {
       host.call("ai.releaseAll", [], callback);
     },
+    // A local chat model, run by ZIPP: a GGUF checkpoint named by its Hugging
+    // Face repository ("owner/name", or "owner/name:Q4_K_M" for one of its
+    // files), or {huggingface, file}, {url} or {bundle}. generate takes chat
+    // messages and answers {text}; cancel stops a reply where it is.
     model: {
-      load: function(modelId, options, callback) {
+      load: function(model, options, callback) {
         if (typeof options === "function") { callback = options; options = {}; }
-        host.call("ai.model.load", [modelId, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+        host.call("ai.model.load", [typeof model === "object" && model !== null ? JSON.stringify(model) : String(model), typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
       },
       generate: function(modelHandle, messages, options, callback) {
         if (typeof options === "function") { callback = options; options = {}; }
         host.call("ai.model.generate", [modelHandle, typeof messages === "object" ? JSON.stringify(messages) : messages, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      },
+      cancel: function(modelHandle, callback) {
+        host.call("ai.model.cancel", [modelHandle], callback || function(){});
       },
       release: function(modelHandle, callback) {
         host.call("ai.model.release", [modelHandle], callback);

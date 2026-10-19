@@ -1,16 +1,19 @@
 /**
- * SoftN AI Manager — shared types and interfaces
+ * SoftN AI — the permission shapes and the capability report behind softn.ai.*.
  *
- * Used by OnnxManager and TransformersManager for the softn.ai.* bridge.
+ * Local language models run on ZIPP (models/model-host.ts); raw compute
+ * shaders on WebGPU (ai-gpu-compute-manager.ts).
  */
 
-/** GPU/runtime capabilities detected at runtime */
+/** What this device can run, as an app with `ai` may ask. */
 export interface AICapabilities {
   webgpu: boolean;
   webgl: boolean;
   wasm: boolean;
   gpuCompute: boolean;
   maxModelSizeMB: number;
+  /** What softn.ai.model.load reads, and the architectures it has ZIPP plugins for. */
+  models: { format: 'gguf'; architectures: string[]; quantizations: string[] };
 }
 
 /** GPU compute permission configuration (from permission.json) */
@@ -18,104 +21,6 @@ export interface GpuPermissionConfig {
   enabled?: boolean;
   maxBufferMemoryMB?: number;
   allowedShaderSources?: Array<'bundle' | 'inline'>;
-}
-
-/** Where to load a model from */
-export interface ModelSource {
-  /** File path within the .softn bundle */
-  bundle?: string;
-  /** HuggingFace model ID (e.g. "Xenova/distilgpt2") */
-  huggingface?: string;
-  /** Direct URL to an ONNX model file */
-  url?: string;
-}
-
-/** Options for loading an ONNX model */
-export interface OnnxLoadOptions {
-  /** Execution provider preference order (default: ['webgpu', 'webgl', 'wasm']) */
-  executionProviders?: string[];
-  /** Max model size in MB (enforced by permission system) */
-  maxSizeMB?: number;
-}
-
-/** Tensor descriptor for ONNX model input/output */
-export interface TensorDescriptor {
-  /** Tensor data (flat array of numbers or bigints) */
-  data: number[] | BigInt64Array | Float32Array;
-  /** Data type (e.g. "float32", "int64", "uint8") */
-  type: string;
-  /** Shape dimensions */
-  dims: number[];
-}
-
-/** ONNX inference feeds — map of input name to tensor */
-export type OnnxFeeds = Record<string, TensorDescriptor>;
-
-/** ONNX inference result — map of output name to tensor */
-export type OnnxResult = Record<string, TensorDescriptor>;
-
-/** ONNX run options */
-export interface OnnxRunOptions {
-  /** Output names to request (default: all) */
-  outputNames?: string[];
-}
-
-/** Supported Transformers.js pipeline tasks */
-export type PipelineTask =
-  | 'text-generation'
-  | 'text2text-generation'
-  | 'summarization'
-  | 'translation'
-  | 'fill-mask'
-  | 'question-answering'
-  | 'sentiment-analysis'
-  | 'text-classification'
-  | 'zero-shot-classification'
-  | 'token-classification'
-  | 'feature-extraction'
-  | 'automatic-speech-recognition'
-  | 'image-to-text'
-  | 'image-classification'
-  | 'object-detection'
-  | 'image-segmentation';
-
-/** Options for creating a Transformers.js pipeline */
-export interface PipelineOptions {
-  /** Device preference: 'webgpu', 'wasm', or 'auto' (default: 'auto') */
-  device?: 'webgpu' | 'wasm' | 'auto';
-  /** Data type: 'fp32', 'fp16', 'q8', 'q4' */
-  dtype?: string;
-  /** Revision/branch of the model (default: 'main') */
-  revision?: string;
-}
-
-/** Options for text generation */
-export interface GenerateOptions {
-  /** Direct-model chat-template reasoning switch; omitted preserves model defaults. */
-  enable_thinking?: boolean;
-  max_new_tokens?: number;
-  temperature?: number;
-  top_k?: number;
-  top_p?: number;
-  do_sample?: boolean;
-  repetition_penalty?: number;
-  presence_penalty?: number;
-}
-
-/** Options for loading a model directly via from_pretrained (not pipeline) */
-export interface DirectModelOptions {
-  /** Device preference: 'webgpu', 'wasm', or 'auto' (default: 'auto') */
-  device?: 'webgpu' | 'wasm' | 'auto';
-  /** Per-component dtype config, e.g. { embed_tokens: "q4", decoder_model_merged: "q4" } */
-  dtype?: string | Record<string, string>;
-  /** Revision/branch of the model (default: 'main') */
-  revision?: string;
-}
-
-/** Chat message for conversational models */
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string | Array<{ type: string; text?: string; image?: string }>;
 }
 
 /** Provider for reading files from a .softn bundle */
@@ -166,5 +71,8 @@ export async function detectCapabilities(): Promise<AICapabilities> {
     maxModelSizeMB = Math.floor(deviceMemGB * 1024 * 0.25);
   }
 
-  return { webgpu, webgl, wasm, gpuCompute: webgpu, maxModelSizeMB };
+  // The worker's plugins (models/model-worker.ts) and the block formats
+  // ZIPP's compute runtime keeps resident; others decode to float32.
+  const models = { format: 'gguf' as const, architectures: ['qwen3'], quantizations: ['Q4_K', 'Q6_K'] };
+  return { webgpu, webgl, wasm, gpuCompute: webgpu, maxModelSizeMB, models };
 }

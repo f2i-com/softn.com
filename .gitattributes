@@ -16,6 +16,11 @@ packages/@softn/core/demo-bundle/**/*.svg  text eol=lf
 # that engine identity the same whichever OS built the release.
 packages/@softn/core/zipp-notices/THIRD_PARTY_LICENSES.txt text eol=lf
 
+# ZIPP's model stack, vendored byte for byte (scripts/vendor-zipp-models.mjs).
+# SOURCE.json records each file's digest, and a plugin's own plugin.json hashes
+# its Python, so a line ending rewritten on checkout would refuse to install.
+packages/@softn/core/vendor/zipp-models/** -text
+
 # Packed binaries: never touched, and never diffed as text.
 *.wav      binary
 *.mp3      binary
