@@ -218,6 +218,30 @@ describe('a page whose code is written for a browser', () => {
     expect(links).toEqual(['about.html']);
   });
 
+  it('sees what SoftN drew inside an element, as an event\u2019s target and its ancestors', async () => {
+    await mount(
+      `<ul id="list">
+  #each (book in books) key={book.id}
+    <li data-id={book.id} class="book"><b>{book.title}</b></li>
+  #end
+</ul>
+<p id="picked">none</p>
+<script>
+  let books = [{ id: 'a1', title: 'Dune' }, { id: 'b2', title: 'Emma' }];
+  document.getElementById('list').addEventListener('click', (e) => {
+    const item = e.target.closest('li.book');
+    document.getElementById('picked').textContent = e.target.tagName + ' ' + item.dataset.id + ' ' + item.textContent;
+  });
+</script>`,
+      () => container.querySelectorAll('#list li').length === 2
+    );
+    await act(async () => {
+      container.querySelectorAll<HTMLElement>('#list li b')[1].click();
+    });
+    await settle();
+    expect($('#picked')!.textContent).toBe('B b2 Emma');
+  });
+
   it('leaves a page whose code does not use the document as it was', async () => {
     await mount(`<p id="shown">{n}</p><script>let n = 3</script>`, () => $('#shown')?.textContent === '3');
     expect($('#shown')!.hasAttribute('data-softn-node')).toBe(false);

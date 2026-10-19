@@ -121,7 +121,7 @@ export class DocumentShell implements DocumentShellView {
   private readonly pendingProps = new Map<number, Array<[string, unknown]>>();
   private readonly listened = new Set<string>();
   private pendingSync: unknown[] = [];
-  private dispatcher: ((id: number, type: string, props: Record<string, unknown>) => number) | null = null;
+  private dispatcher: ((id: number, type: string, props: Record<string, unknown>, path: SeenElement[]) => number) | null = null;
   private readyHook: (() => void) | null = null;
   private container: HTMLElement | null = null;
   private readonly unhook: Array<() => void> = [];
@@ -442,7 +442,10 @@ export class DocumentShell implements DocumentShellView {
   // ------------------------------------------------------------------ the browser's side
 
   /** The engine's ways in, given by the runtime once the code is found to use the document. */
-  attach(dispatch: (id: number, type: string, props: Record<string, unknown>) => number, ready: () => void): void {
+  attach(
+    dispatch: (id: number, type: string, props: Record<string, unknown>, path: SeenElement[]) => number,
+    ready: () => void
+  ): void {
     this.dispatcher = dispatch;
     this.readyHook = ready;
     this.active = true;
@@ -519,12 +522,29 @@ export class DocumentShell implements DocumentShellView {
         if (!(target && this.container.contains(target)) && !outside) return;
         id = BODY;
       }
-      const flags = this.dispatcher(id, type, eventData(event));
+      const flags = this.dispatcher(id, type, eventData(event), this.seenPath(target, id));
       if (flags & 1) event.preventDefault();
       if (flags & 2) event.stopPropagation();
     };
     doc.addEventListener(type, listener, capture);
     this.unhook.push(() => doc.removeEventListener(type, listener, capture));
+  }
+
+  /**
+   * The elements SoftN drew between `target` and the document's element with
+   * this id (or the app's edge, for the body), innermost first, as the page
+   * shows them: what `event.target` and its ancestors are when the event
+   * happened inside an island.
+   */
+  private seenPath(target: Node | null, id: number): SeenElement[] {
+    const path: SeenElement[] = [];
+    let node: Node | null = target && target.nodeType !== 1 ? target.parentNode : target;
+    const stop = id === BODY ? this.container : this.elementById(id);
+    while (node && node.nodeType === 1 && node !== stop && this.container?.contains(node) && path.length < MAX_SEEN) {
+      path.push(seenElement(node as Element));
+      node = node.parentNode;
+    }
+    return path;
   }
 
   /** The id of the shell's element `target` is in, or null. */
@@ -538,6 +558,34 @@ export class DocumentShell implements DocumentShellView {
     const id = Number(found.getAttribute(SHELL_NODE_ATTRIBUTE)!.slice(this.key.length + 1));
     return Number.isFinite(id) ? id : null;
   }
+}
+
+/** An element SoftN drew, as an event's target or one of its ancestors: tag, attributes, text, a field's state. */
+export interface SeenElement {
+  t: string;
+  a: Record<string, string>;
+  x: string;
+  v?: string;
+  k?: boolean;
+}
+
+/** How far up from an event's target an island's elements are seen. */
+const MAX_SEEN = 32;
+/** How much of an element's text, and of an attribute's value, is seen. */
+const MAX_SEEN_TEXT = 2000;
+
+function seenElement(element: Element): SeenElement {
+  const a: Record<string, string> = {};
+  for (let i = 0; i < element.attributes.length && i < 40; i++) {
+    const attribute = element.attributes[i];
+    if (attribute.name === SHELL_NODE_ATTRIBUTE || attribute.name === 'style') continue;
+    a[attribute.name] = attribute.value.slice(0, MAX_SEEN_TEXT);
+  }
+  const seen: SeenElement = { t: element.tagName.toLowerCase(), a, x: (element.textContent ?? '').slice(0, MAX_SEEN_TEXT) };
+  const field = element as HTMLInputElement;
+  if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT') seen.v = field.value;
+  if (element.tagName === 'INPUT' && (field.type === 'checkbox' || field.type === 'radio')) seen.k = field.checked;
+  return seen;
 }
 
 /** Event types that bubble; the rest are heard on their way down. */

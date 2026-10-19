@@ -1067,7 +1067,7 @@ export class SoftNScriptRuntime {
     // page's events can come in, and what the code did goes out to be drawn.
     if (this.documentShellOn) {
       this.documentShell!.attach(
-        (id, type, props) => this.dispatchDocumentEvent(id, type, props),
+        (id, type, props, path) => this.dispatchDocumentEvent(id, type, props, path),
         () => this.documentReady()
       );
       this.takeDocumentChanges();
@@ -1719,8 +1719,8 @@ export class SoftNScriptRuntime {
   }
 
   /** An event on an element of the document, dispatched there: 1 when cancelled, 2 when stopped. */
-  dispatchDocumentEvent(id: number, type: string, props: Record<string, unknown>): number {
-    const flags = this.enterForDocument(SHELL_EVENT, [id, type, props]);
+  dispatchDocumentEvent(id: number, type: string, props: Record<string, unknown>, path: unknown[] = []): number {
+    const flags = this.enterForDocument(SHELL_EVENT, [id, type, props, path]);
     return typeof flags === 'number' ? flags : 0;
   }
 

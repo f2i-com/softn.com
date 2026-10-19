@@ -314,6 +314,7 @@ var __softnShell = (function (win) {
 
   function textOf(r) {
     if (r.type === 3) return r.text;
+    if (r.seen) return r.text;
     if (r.type === 8 || r.island) return '';
     var out = '';
     for (var i = 0; i < r.kids.length; i++) out += textOf(rec(r.kids[i]));
@@ -1754,9 +1755,36 @@ var __softnShell = (function (win) {
 
   // An event that happened on the page, on the element with this id (or on
   // the document): 1 when it was cancelled, 2 when it went no further.
-  function event(id, type, props) {
+  // An element SoftN drew, inside the one of the document's an event
+  // happened in: the item of an #each, the button of a component. Seen as
+  // the page shows it (its tag, attributes, text, a field's value), to be
+  // read and matched, as event.target and its ancestors are when a list's
+  // clicks are handled on the list; never changed, and gone after the event.
+  function seenElement(seen, parent) {
+    var tag = String(seen.t || 'div').toLowerCase();
+    var Ctor = ELEMENT_CLASSES[tag] || HTMLElement;
+    var node = Object.create(Ctor.prototype);
+    var r = newRecord(1, 0);
+    r.tag = tag;
+    r.island = true;
+    r.seen = true;
+    r.text = String(seen.x || '');
+    for (var key in seen.a || {}) r.attrs.push([key, String(seen.a[key])]);
+    if (seen.v !== undefined) r.value = String(seen.v);
+    if (seen.k !== undefined) r.checked = !!seen.k;
+    r.parent = parent;
+    STATE.set(node, r);
+    node.__softnNode = 0;
+    return node;
+  }
+
+  function event(id, type, props, path) {
     var target = id === -1 ? doc : BY_ID[id];
     if (!target) return 0;
+    if (path && path.length) {
+      // Built from the outside in: each one's parent is the one around it.
+      for (var p = path.length - 1; p >= 0; p--) target = seenElement(path[p], target);
+    }
     var Kind = EVENT_KINDS[type] || Event;
     var e = new Kind(type, { bubbles: !NOT_BUBBLING[type], cancelable: true });
     for (var key in props || {}) {
@@ -1820,7 +1848,7 @@ var __softnShell = (function (win) {
 function __softnDocInit(seed) { __softnShell.init(seed); }
 function __softnDocTake() { return __softnShell.take(); }
 function __softnDocSync(changes) { __softnShell.sync(changes); }
-function __softnDocEvent(id, type, props) { return __softnShell.event(id, type, props); }
+function __softnDocEvent(id, type, props, path) { return __softnShell.event(id, type, props, path); }
 function __softnDocReady() { __softnShell.ready(); }
 `;
 
