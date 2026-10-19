@@ -710,7 +710,15 @@ export function SoftNRenderer({
     selectionStart?: number;
     selectionEnd?: number;
   } | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // The container as state too, for what has to follow it: it is drawn after
+  // the first render where the page is still loading, and drawn anew when
+  // `currentPage` changes, since it is keyed by it.
+  const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
+  const attachContainer = useCallback((element: HTMLDivElement | null) => {
+    containerRef.current = element;
+    setContainerElement(element);
+  }, []);
 
   // Capture scroll and focus before re-render
   const captureScrollAndFocus = useCallback(() => {
@@ -1767,21 +1775,51 @@ export function SoftNRenderer({
 
   // Which app the components below are in. One object per change of its
   // parts, for the same reason as the capability state above.
+  //
+  // A component that switches pages (NavItem's `page`) sets the state the
+  // app keeps its page in: `currentPage`, which the host's own routing reads
+  // (onPageChange), or `page`, as Studio's projects write it.
+  const pageKey =
+    typeof state.componentState.currentPage === 'string'
+      ? 'currentPage'
+      : typeof state.componentState.page === 'string'
+        ? 'page'
+        : null;
+  const currentPage = pageKey ? (state.componentState[pageKey] as string) : undefined;
+  const showPage = useCallback(
+    (name: string): boolean => {
+      if (!pageKey) return false;
+      setComponentState(pageKey, name);
+      return true;
+    },
+    [pageKey, setComponentState]
+  );
   const appScope = useMemo<AppScope>(
-    () => ({ appId, xdb: scopedXdb, active, assets: assetResolver, clipboard: runtimePermissions?.clipboard !== false }),
-    [appId, scopedXdb, active, assetResolver, runtimePermissions]
+    () => ({
+      appId,
+      xdb: scopedXdb,
+      active,
+      assets: assetResolver,
+      clipboard: runtimePermissions?.clipboard !== false,
+      followLink,
+      ...(pageKey ? { currentPage, showPage } : {}),
+    }),
+    [appId, scopedXdb, active, assetResolver, runtimePermissions, followLink, pageKey, currentPage, showPage]
   );
 
   // The page has been drawn from the document: the browser's events on it go
   // to the page's code, and the code is told the page is ready
   // (DOMContentLoaded, then load), as a browser tells it after reading it.
+  //
+  // It follows the container: one that is not drawn yet when the code turns
+  // out to use the document, or one drawn anew for another page, is where
+  // the events are. Ready is said once; saying it again does nothing.
   useEffect(() => {
-    const container = containerRef.current;
-    if (!documentShell || !container) return;
-    documentShell.connect(container);
+    if (!documentShell || !containerElement) return;
+    documentShell.connect(containerElement);
     documentShell.ready();
     return () => documentShell.disconnect();
-  }, [documentShell]);
+  }, [documentShell, containerElement]);
 
   // Get the default registry
   const registry = useMemo(() => getDefaultRegistry(), []);
@@ -1856,7 +1894,7 @@ export function SoftNRenderer({
       <AppScopeProvider value={appScope}>
       <CapabilityProvider value={capabilityState}>
       <div
-        ref={containerRef}
+        ref={attachContainer}
         key={`softn-container-${stateKey}`}
         data-softn-page={stateKey}
         style={{ height: '100%', minHeight: 0 }}

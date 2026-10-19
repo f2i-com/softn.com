@@ -1,0 +1,71 @@
+.shell {
+  display: flex;
+  min-height: 100vh;
+  font-family: system-ui, sans-serif;
+}
+.side {
+  width: 220px;
+  padding: 16px 12px;
+  border-right: 1px solid rgba(127, 127, 127, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.brand {
+  font-weight: 700;
+  margin: 0 0 12px 8px;
+}
+.side hr {
+  width: 100%;
+  border: none;
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
+}
+main {
+  flex: 1;
+  padding: 24px 32px;
+  max-width: 720px;
+}
+.big {
+  font-size: 48px;
+  font-weight: 700;
+  margin: 8px 0;
+}
+.hint {
+  opacity: 0.7;
+}
+form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+input:not([type]),
+input[type='text'] {
+  padding: 6px 10px;
+  min-width: 220px;
+}
+.tasks li {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.tasks li.done .text {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.tasks li.urgent .text {
+  font-weight: 700;
+}
+.tasks .who {
+  opacity: 0.6;
+}
+@media (max-width: 640px) {
+  .shell {
+    flex-direction: column;
+  }
+  .side {
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+  }
+}

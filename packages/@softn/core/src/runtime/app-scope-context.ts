@@ -41,6 +41,21 @@ export interface AppScope {
    * kept by, so it has to ask.
    */
   clipboard?: boolean;
+  /**
+   * Follow a link to another page of the app in place, as `<a
+   * href="about.html">` written in the page is followed
+   * (SoftNRenderContext.followLink): true when the host showed it, and the
+   * browser is not to go there. Absent where the host shows no pages itself.
+   */
+  followLink?: (href: string) => boolean;
+  /**
+   * The page the app shows, by the name its state holds it under: its
+   * `currentPage`, or the `page` Studio's projects keep. Absent when the app
+   * keeps no such state.
+   */
+  currentPage?: string;
+  /** Show the page of that name, by setting the state above: false when the app keeps none. */
+  showPage?: (name: string) => boolean;
 }
 
 /**

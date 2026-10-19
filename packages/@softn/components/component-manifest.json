@@ -6207,7 +6207,7 @@
             "type": {
               "kind": "string"
             },
-            "doc": "Page to navigate to"
+            "doc": "The page of the app to show, by the name its state holds it under"
           },
           {
             "name": "navigate",
@@ -6215,7 +6215,7 @@
             "type": {
               "kind": "string"
             },
-            "doc": "Navigation handler"
+            "doc": "An address to go to: another page of the app (`about.html`), a `#fragment`, or a web address"
           },
           {
             "name": "onClick",

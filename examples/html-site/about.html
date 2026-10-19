@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="softn/softn.js"></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>About</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <nav class="side">
+      <p class="brand">HTML in SoftN</p>
+      <NavItem icon="home" label="Back to the start" navigate="index.html" />
+      <NavItem icon="list" label="To-do list" navigate="tasks.html" />
+      <NavItem icon="file" label="About" navigate="about.html" active />
+    </nav>
+    <main>
+      <h1>About</h1>
+      <p>Three pages of one site. Opened as files of your own site (the address bar shows
+        <code>/index.html</code>), each page starts SoftN itself with
+        <code>&lt;script src="softn/softn.js"&gt;</code>, and a link goes to the next page as in any site.</p>
+      <p>Opened as a bundle in the standalone runtime (<a href="/app/">/app/</a>), the same files are one app:
+        a link to another page shows it in place, and the browser's Back button returns.</p>
+      <p><a href="index.html">Back to the start</a></p>
+    </main>
+  </div>
+</body>
+</html>

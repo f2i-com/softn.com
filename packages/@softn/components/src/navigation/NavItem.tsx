@@ -2,9 +2,17 @@
  * NavItem Component
  *
  * Navigation item for sidebars and menus.
+ *
+ * `page="about"` shows that page of the app: the item sets the state the
+ * app keeps its page in (`currentPage`, or `page` as Studio's projects keep
+ * it), and is drawn as the current item while it is showing. `navigate`
+ * goes to an address, as a link does: another page of the app
+ * (`navigate="about.html"`) is shown in the app where the host can, and the
+ * browser goes anywhere else. Both used to be attributes that nothing read.
  */
 
 import React from 'react';
+import { useAppScope } from '@softn/core';
 import { textOf } from '../utils/text';
 
 export interface NavItemProps {
@@ -14,9 +22,9 @@ export interface NavItemProps {
   children?: React.ReactNode;
   /** Icon name or element */
   icon?: React.ReactNode | string;
-  /** Page to navigate to */
+  /** The page of the app to show, by the name its state holds it under */
   page?: string;
-  /** Navigation handler */
+  /** An address to go to: another page of the app (`about.html`), a `#fragment`, or a web address */
   navigate?: string;
   /** Click handler */
   onClick?: () => void;
@@ -908,14 +916,30 @@ export function NavItem({
   page,
   navigate,
   onClick,
-  active = false,
+  active: activeProp,
   collapsed = false,
   variant = 'default',
   className,
   style,
 }: NavItemProps): React.ReactElement {
-  const handleClick = () => {
+  const scope = useAppScope();
+  const href = safeHref(navigate);
+  // Given no `active`, an item that shows a page is the current one while
+  // that page shows.
+  const active = activeProp ?? (page !== undefined && page !== '' && scope.currentPage === page);
+
+  const handleClick = (event: React.MouseEvent<HTMLElement>) => {
     onClick?.();
+    if (page !== undefined && page !== '') {
+      // A page of the app's own, by name; or, in an app that keeps no page
+      // state, the page of the bundle by that name, as a link names it.
+      if (scope.showPage?.(page) || scope.followLink?.(page)) return;
+    }
+    if (href === undefined || event.defaultPrevented) return;
+    // A new tab, another window, a download: the browser's, as for any link.
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (href.startsWith('#') || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(href)) return;
+    if (scope.followLink?.(href)) event.preventDefault();
   };
 
   const resolvedIcon = typeof icon === 'string' ? iconMap[icon] : icon;
@@ -1032,32 +1056,47 @@ export function NavItem({
           .softn-nav-item:hover:not(.active), .softn-nav-item:active { transform: none !important; }
         }
       `}</style>
-      <button
-        type="button"
-        className={`softn-nav-item softn-nav-item--${kind} ${active ? 'active' : ''} ${collapsed ? 'collapsed' : ''} ${className || ''}`}
-        style={buttonStyle}
-        onClick={handleClick}
-        data-page={page}
-        data-navigate={navigate}
-        data-label={collapsed && textLabel ? textLabel : undefined}
-        title={collapsed && textLabel ? textLabel : undefined}
-        // Collapsed, only the icon shows; the name has to come from somewhere.
-        aria-label={collapsed && textLabel ? textLabel : undefined}
-        aria-current={active ? 'page' : undefined}
-      >
-        {resolvedIcon && (
+      {React.createElement(
+        // An address is a link: it can be opened in a new tab, and says so.
+        href !== undefined ? 'a' : 'button',
+        {
+          ...(href !== undefined ? { href } : { type: 'button' }),
+          className: `softn-nav-item softn-nav-item--${kind} ${active ? 'active' : ''} ${collapsed ? 'collapsed' : ''} ${className || ''}`,
+          style: href !== undefined ? { ...buttonStyle, textDecoration: 'none', boxSizing: 'border-box' } : buttonStyle,
+          onClick: handleClick,
+          'data-label': collapsed && textLabel ? textLabel : undefined,
+          title: collapsed && textLabel ? textLabel : undefined,
+          // Collapsed, only the icon shows; the name has to come from somewhere.
+          'aria-label': collapsed && textLabel ? textLabel : undefined,
+          'aria-current': active ? 'page' : undefined,
+        },
+        resolvedIcon && (
           <span className="nav-icon" style={iconStyle} aria-hidden={textLabel ? true : undefined}>
             {resolvedIcon}
           </span>
-        )}
-        {!collapsed && (
+        ),
+        !collapsed && (
           <span className="nav-label" style={labelStyle}>
             {displayLabel}
           </span>
-        )}
-      </button>
+        )
+      )}
     </>
   );
 }
 
 export default NavItem;
+
+/**
+ * The address `navigate` may send the browser to: one of the app's own
+ * pages, a fragment, or a web or mail address. A `javascript:` or `data:`
+ * address is not one, and the item is then no link at all.
+ */
+function safeHref(navigate: string | undefined): string | undefined {
+  if (typeof navigate !== 'string') return undefined;
+  const href = navigate.trim();
+  if (href === '') return undefined;
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(href)?.[1]?.toLowerCase();
+  if (scheme === undefined) return href;
+  return scheme === 'http' || scheme === 'https' || scheme === 'mailto' || scheme === 'tel' ? href : undefined;
+}

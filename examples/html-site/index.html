@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="softn/softn.js"></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTML in SoftN</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="main.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <nav class="side">
+      <p class="brand">HTML in SoftN</p>
+      <NavItem icon="home" label="Overview" page="overview" />
+      <NavItem icon="star" label="Counter" page="counter" />
+      <NavItem icon="edit" label="Notes" page="notes" />
+      <hr>
+      <NavItem icon="list" label="To-do list" navigate="tasks.html" />
+      <NavItem icon="file" label="About" navigate="about.html" />
+    </nav>
+
+    <main>
+      #if (currentPage === 'overview')
+        <h1>Overview</h1>
+        <p>This page is plain HTML with SoftN components mixed in. The items on the left are
+          <code>&lt;NavItem&gt;</code> components:</p>
+        <ul>
+          <li><b>Overview</b>, <b>Counter</b> and <b>Notes</b> use <code>page="…"</code>: they set
+            <code>currentPage</code>, and the item for the page showing is highlighted.</li>
+          <li><b>To-do list</b> and <b>About</b> use <code>navigate="tasks.html"</code>: another page
+            of the site, as a link.</li>
+        </ul>
+        <p>The to-do list is written as a browser would run it: <code>document.getElementById</code>,
+          <code>addEventListener</code>, <code>createElement</code>, inside SoftN's sandbox.</p>
+      #end
+
+      #if (currentPage === 'counter')
+        <h1>Counter</h1>
+        <p class="big">{clicks}</p>
+        <Stack direction="horizontal" gap="sm">
+          <Button variant="primary" @click={() => clicks++}>Add one</Button>
+          <Button variant="ghost" @click={() => clicks = 0}>Reset</Button>
+        </Stack>
+        <p>Last changed on page <b>{currentPage}</b>; switch pages and come back: the count stays.</p>
+      #end
+
+      #if (currentPage === 'notes')
+        <h1>Notes</h1>
+        <form onsubmit="addNote(); return false">
+          <input :bind={draft} placeholder="A note">
+          <button type="submit">Add</button>
+        </form>
+        <ul>
+          #each (note in notes) key={note.id}
+            <li>{note.text}</li>
+          #end
+        </ul>
+      #end
+    </main>
+  </div>
+</body>
+</html>
