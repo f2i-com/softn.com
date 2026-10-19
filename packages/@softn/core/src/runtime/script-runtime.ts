@@ -2272,7 +2272,7 @@ export class SoftNScriptRuntime {
       clearTimeout(this.loadEntry);
       this.loadEntry = null;
     }
-    clearCapturedKeys();
+    clearCapturedKeys(this);
     this.syncCallCache.clear();
     this.externalFunctionNames = [];
     this.externalFunctionValues = [];
@@ -3608,7 +3608,7 @@ export class SoftNScriptRuntime {
    */
   private async handleInputCaptureKeys(call: PendingHostCall): Promise<unknown> {
     const keys = parseCapturedKeys(call.args[0]);
-    setCapturedKeys(keys);
+    setCapturedKeys(this, keys);
     return { captured: keys.length };
   }
 

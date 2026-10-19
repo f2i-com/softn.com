@@ -1,6 +1,6 @@
 import type { AppPermissions } from '../bundle/types';
 import { eventForScript, extractEventProps } from './event-props';
-import { clearCapturedKeys, shouldCaptureKey } from './key-capture';
+import { shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
 import { isWorkerPlaceholderId } from './script-worker-bridges';
 import { debug } from './debug';
@@ -652,7 +652,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.bridgedEventTypes.clear();
     for (const coalescer of this.coalescers) coalescer.dispose();
     this.coalescers = [];
-    clearCapturedKeys();
+    // The captured keys are the host executor's, and go with it.
     this.hostExecutor.cleanup();
     const error = new Error(reason);
     for (const [, p] of this.pending) p.reject(error);

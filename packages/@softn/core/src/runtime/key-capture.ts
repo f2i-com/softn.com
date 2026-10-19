@@ -12,25 +12,48 @@
  * The capture never reaches a text field, so typing in the app's own inputs
  * is untouched, and never applies to a key pressed with the system modifier
  * or to a Ctrl+letter chord, so the browser's own shortcuts keep working.
+ *
+ * Each app's keys are its own. A page can hold more than one app — Studio's
+ * preview beside another, or a reload whose old runtime is still being
+ * cleaned up — and with one list for the page, the second app's keys
+ * replaced the first's, and the first app to close released the other's.
+ * The keys kept from the browser are every app's together.
  */
 
-const captured = new Set<string>();
+/** The keys each app asked for, by the runtime that asked. */
+const captured = new Map<object, Set<string>>();
 
-/** Replace the captured set. Entries are `KeyboardEvent.key` or `.code` values. */
-export function setCapturedKeys(keys: Iterable<string>): void {
-  captured.clear();
+/**
+ * Replace the keys `owner` captures; an empty list releases them. Entries
+ * are `KeyboardEvent.key` or `.code` values.
+ */
+export function setCapturedKeys(owner: object, keys: Iterable<string>): void {
+  const names = new Set<string>();
   for (const key of keys) {
     const name = String(key);
-    if (name !== '') captured.add(name);
+    if (name !== '') names.add(name);
   }
+  if (names.size > 0) captured.set(owner, names);
+  else captured.delete(owner);
 }
 
-export function clearCapturedKeys(): void {
-  captured.clear();
+/** Release the keys `owner` captured, and only those. */
+export function clearCapturedKeys(owner: object): void {
+  captured.delete(owner);
 }
 
+/** How many different keys are captured, by every owner together. */
 export function capturedKeyCount(): number {
-  return captured.size;
+  const all = new Set<string>();
+  for (const names of captured.values()) for (const name of names) all.add(name);
+  return all.size;
+}
+
+function isCaptured(key: string, code: string): boolean {
+  for (const names of captured.values()) {
+    if (names.has(key) || names.has(code)) return true;
+  }
+  return false;
 }
 
 /** Whether the event's target takes typed text, which capture must leave alone. */
@@ -53,7 +76,7 @@ export function shouldCaptureKey(event: Event): boolean {
   if (event.type !== 'keydown' && event.type !== 'keyup') return false;
   if (event.metaKey) return false;
   if (event.ctrlKey && event.key.length === 1) return false;
-  if (!captured.has(event.key) && !captured.has(event.code)) return false;
+  if (!isCaptured(event.key, event.code)) return false;
   return !targetIsEditable(event.target);
 }
 

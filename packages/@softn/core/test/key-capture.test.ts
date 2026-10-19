@@ -13,6 +13,13 @@ import {
   shouldCaptureKey,
 } from '../src/runtime/key-capture';
 import { extractEventProps } from '../src/runtime/event-props';
+import {
+  createConsoleModule,
+  createMockNavModule,
+  createMockXDBModule,
+  createScriptRuntime,
+  type ScriptContext,
+} from '../src/runtime/script-runtime';
 import { sanitizeArgs } from '../src/runtime/vm-args';
 
 function keyOn(target: EventTarget, key: string, init: KeyboardEventInit = {}): KeyboardEvent {
@@ -21,23 +28,49 @@ function keyOn(target: EventTarget, key: string, init: KeyboardEventInit = {}): 
   return event;
 }
 
-afterEach(() => clearCapturedKeys());
+// The runtimes that asked, as far as these tests are concerned.
+const app = {};
+const other = {};
+
+afterEach(() => {
+  clearCapturedKeys(app);
+  clearCapturedKeys(other);
+});
 
 describe('key capture', () => {
   it('captures nothing until asked, then only the keys named', () => {
     expect(shouldCaptureKey(keyOn(document.body, 'ArrowUp'))).toBe(false);
-    setCapturedKeys(['ArrowUp', ' ', 'KeyF']);
+    setCapturedKeys(app, ['ArrowUp', ' ', 'KeyF']);
     expect(capturedKeyCount()).toBe(3);
     expect(shouldCaptureKey(keyOn(document.body, 'ArrowUp'))).toBe(true);
     expect(shouldCaptureKey(keyOn(document.body, ' '))).toBe(true);
     expect(shouldCaptureKey(keyOn(document.body, 'f', { code: 'KeyF' }))).toBe(true);
     expect(shouldCaptureKey(keyOn(document.body, 'ArrowDown'))).toBe(false);
-    clearCapturedKeys();
+    clearCapturedKeys(app);
     expect(shouldCaptureKey(keyOn(document.body, 'ArrowUp'))).toBe(false);
   });
 
+  it('keeps each owner’s keys apart, and captures every owner’s together', () => {
+    setCapturedKeys(app, ['ArrowUp', ' ']);
+    setCapturedKeys(other, [' ', 'Tab']);
+    expect(capturedKeyCount()).toBe(3);
+    // Asking again replaces only the asker's own list.
+    setCapturedKeys(other, ['Tab']);
+    expect(shouldCaptureKey(keyOn(document.body, ' '))).toBe(true);
+    expect(shouldCaptureKey(keyOn(document.body, 'Tab'))).toBe(true);
+    // Releasing one, by an empty list or by clearing, leaves the other's.
+    setCapturedKeys(app, []);
+    expect(shouldCaptureKey(keyOn(document.body, 'ArrowUp'))).toBe(false);
+    expect(shouldCaptureKey(keyOn(document.body, 'Tab'))).toBe(true);
+    setCapturedKeys(app, ['ArrowUp']);
+    clearCapturedKeys(other);
+    expect(shouldCaptureKey(keyOn(document.body, 'Tab'))).toBe(false);
+    expect(shouldCaptureKey(keyOn(document.body, 'ArrowUp'))).toBe(true);
+    expect(capturedKeyCount()).toBe(1);
+  });
+
   it('leaves text fields, the system modifier and Ctrl chords to the browser', () => {
-    setCapturedKeys(['ArrowUp', 'r', 'Backspace']);
+    setCapturedKeys(app, ['ArrowUp', 'r', 'Backspace']);
     const input = document.createElement('input');
     const area = document.createElement('textarea');
     const editable = document.createElement('div');
@@ -59,6 +92,58 @@ describe('key capture', () => {
     expect(parseCapturedKeys('[not json')).toEqual([]);
     expect(parseCapturedKeys(42)).toEqual([]);
     expect(parseCapturedKeys('')).toEqual([]);
+  });
+});
+
+describe('key capture with two apps on one page', () => {
+  // Studio's preview beside another app, or an app reloaded while the old
+  // runtime is still being cleaned up. The captured keys were one list for
+  // the page: the second app's list replaced the first's, and the first to
+  // close released the other's as well.
+  async function openApp(key: string) {
+    const state: Record<string, unknown> = {};
+    const context: ScriptContext = {
+      state,
+      setState: (path: string, value: unknown) => {
+        state[path] = value;
+      },
+      data: {},
+      xdb: createMockXDBModule(),
+      nav: createMockNavModule(),
+      console: createConsoleModule(),
+    };
+    const runtime = createScriptRuntime(context);
+    const code = `
+      let presses = 0
+      function grab() {
+        window.addEventListener("keydown", function (event) { presses = presses + 1 })
+        softn.input.captureKeys([${JSON.stringify(key)}])
+      }
+    `;
+    const loaded = await runtime.loadScript({ type: 'LogicBlock', code, loc: { line: 1, column: 0, start: 0, end: code.length } });
+    await loaded.functions.grab();
+    return runtime;
+  }
+
+  /** Whether a press of `key` on the page has its browser default cancelled. */
+  function kept(key: string): boolean {
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+
+  it('keeps each app’s keys until that app closes', async () => {
+    const first = await openApp('ArrowUp');
+    const second = await openApp('ArrowDown');
+    try {
+      expect([kept('ArrowUp'), kept('ArrowDown')]).toEqual([true, true]);
+      second.cleanup();
+      expect([kept('ArrowUp'), kept('ArrowDown')]).toEqual([true, false]);
+    } finally {
+      second.cleanup();
+      first.cleanup();
+    }
+    expect(kept('ArrowUp')).toBe(false);
   });
 });
 
