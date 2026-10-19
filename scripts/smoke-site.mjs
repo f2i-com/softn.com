@@ -229,8 +229,10 @@ if (firstSlug) {
       if (!m) return 'no runtime config in the page';
       const cfg = json(m[1]);
       if (!cfg || cfg.id !== firstSlug) return `config is for ${cfg?.id}, not ${firstSlug}`;
-      if (!/^\/api\/apps\/[^/]+\/bundle\.softn\?v=\d+$/.test(cfg.bundle ?? '')) return `bundle is ${cfg.bundle}`;
       if (!/^[a-f0-9]{64}$/.test(cfg.sha256 ?? '')) return 'no digest';
+      // Addressed by version and digest, so a cached copy is never other bytes.
+      const address = (cfg.bundle ?? '').match(/^\/api\/apps\/[^/]+\/bundle\.softn\?v=\d+&sha256=([a-f0-9]{64})$/);
+      if (!address || address[1] !== cfg.sha256) return `bundle is ${cfg.bundle}`;
       if (cfg.permissionMode !== 'prompt') return 'a fresh directory trusts nothing';
       return true;
     },
