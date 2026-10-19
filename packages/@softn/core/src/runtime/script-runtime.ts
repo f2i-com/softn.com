@@ -37,9 +37,8 @@ import {
   holdsShellNode,
   isShellName,
   namesDeclaredBy,
-  shellPrelude,
   usesDocument,
-} from '../document-shell/shell-source';
+} from '../document-shell/names';
 import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
@@ -192,6 +191,14 @@ export function collectObservedStateNames(doc: SoftNDocument): ReadonlySet<strin
   return names;
 }
 
+/**
+ * How a runtime gets the document a page's code is given: made, and its
+ * code loaded, only when the code turns out to use one. Most pages never do.
+ */
+export interface DocumentShellRequest {
+  create(): Promise<DocumentShell>;
+}
+
 export interface ScriptRuntimeOptions {
   mode?: ScriptRuntimeMode;
   /**
@@ -200,7 +207,7 @@ export interface ScriptRuntimeOptions {
    * a browser (document-shell/). Taken only by JavaScript on the main
    * thread; Python, and a script in a worker, are not given it.
    */
-  documentShell?: DocumentShell;
+  documentShell?: DocumentShellRequest;
   /**
    * Logic files the host already concatenated into `script.code` itself.
    *
@@ -726,7 +733,7 @@ export class SoftNScriptRuntime {
         : Object.getOwnPropertyNames(window).filter((k) => k.startsWith('__'))
     );
     this.runtimeMode = options?.mode || 'main';
-    this.documentShell = options?.documentShell ?? null;
+    this.documentShellRequest = options?.documentShell ?? null;
     this.observedStateNames = options?.observedStateNames ?? null;
     this.drawnNames = options?.drawnNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
@@ -1008,12 +1015,19 @@ export class SoftNScriptRuntime {
       let shellCode = '';
       // Code that declares a `document` of its own is not given another; a
       // name of the shell's it declares itself (`class Comment`) stays its own.
-      const ownNames = this.documentShell && usesDocument(resolvedCode) ? namesDeclaredBy(resolvedCode) : new Set<string>();
-      if (this.documentShell && useHostBridges && usesDocument(resolvedCode) && !ownNames.has('document')) {
-        shellCode = shellPrelude(this.documentShell.seedJson(), ownNames);
+      const asks = this.documentShellRequest !== null && usesDocument(resolvedCode);
+      const ownNames = asks ? namesDeclaredBy(resolvedCode) : new Set<string>();
+      if (asks && useHostBridges && !ownNames.has('document')) {
+        const [{ shellPrelude }, shell] = await Promise.all([
+          import('../document-shell/shell-source'),
+          this.documentShellRequest!.create(),
+        ]);
+        if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
+        this.documentShell = shell;
+        shellCode = shellPrelude(shell.seedJson(), ownNames);
         this.documentShellOn = true;
         this.ownShellNames = ownNames;
-      } else if (this.documentShell && !useHostBridges && usesDocument(resolvedCode)) {
+      } else if (asks && !useHostBridges) {
         console.warn('[SoftN] This page\u2019s code uses the document, which is given to code on the main thread only; in a worker, document is not defined.');
       }
 
@@ -1667,7 +1681,8 @@ export class SoftNScriptRuntime {
   }
 
   /** The document the page's code is given, when it uses one; see ScriptRuntimeOptions.documentShell. */
-  private readonly documentShell: DocumentShell | null;
+  private readonly documentShellRequest: DocumentShellRequest | null;
+  private documentShell: DocumentShell | null = null;
   private documentShellOn = false;
   /** Names of the shell's the page's code declares itself, and keeps. */
   private ownShellNames: ReadonlySet<string> = new Set();

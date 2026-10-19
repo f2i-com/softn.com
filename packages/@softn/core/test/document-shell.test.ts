@@ -5,7 +5,8 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { ZippWasmAdapter } from '../src/runtime/zipp-wasm-adapter';
-import { SHELL_EVENT, SHELL_READY, SHELL_SYNC, SHELL_TAKE, shellPrelude, usesDocument } from '../src/document-shell/shell-source';
+import { SHELL_EVENT, SHELL_READY, SHELL_SYNC, SHELL_TAKE, usesDocument } from '../src/document-shell/names';
+import { shellPrelude } from '../src/document-shell/shell-source';
 
 type Op = [string, ...unknown[]];
 

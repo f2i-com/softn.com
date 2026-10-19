@@ -16,7 +16,8 @@ import React, {
 import { parseCached } from '../parser';
 import { renderDocument } from '../renderer';
 import { shellOwnsTag } from '../renderer/render';
-import { DocumentShell } from '../document-shell/host';
+import type { DocumentShell } from '../document-shell/host';
+import type { DocumentShellRequest } from '../runtime/script-runtime';
 import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
 import { getDefaultRegistry } from '../renderer/registry';
 import { collectFirstScreenTags } from '../renderer/document-tags';
@@ -951,37 +952,46 @@ export function SoftNRenderer({
           scriptInitializedRef.current = true;
 
           // The page's HTML as the document its code is given, if the code
-          // turns out to use one: the runtime decides as it compiles, and the
-          // page is drawn from it only then.
-          const documentShell = new DocumentShell(
-            doc.template,
-            shellOwnsTag,
-            doc.title,
-            typeof window === 'undefined' ? undefined : window.location.href
-          );
-          documentShell.onTitle = (title) => onTitleChangeRef.current?.(title);
-          // `location.href = 'about.html'` is a link the code follows: shown
-          // in the app where the host shows the app's pages, and otherwise
-          // followed on the same site where the host follows links at all.
-          // Never to another site: the code cannot send the person there.
-          documentShell.onNavigate = (href) => {
-            if (onLinkRef.current?.(href) === true) return;
-            if (!onLinkRef.current || typeof window === 'undefined') {
-              console.warn(`[SoftN] The page's code asked to go to ${href}, and this host shows no other page.`);
-              return;
-            }
-            let target: URL;
-            try {
-              target = new URL(href, window.document.baseURI);
-            } catch {
-              console.warn(`[SoftN] The page's code asked to go to ${href}, which is not an address.`);
-              return;
-            }
-            if (target.origin !== window.location.origin) {
-              console.warn(`[SoftN] The page's code asked to go to ${target.href}, on another site; only a link the person clicks goes there.`);
-              return;
-            }
-            window.location.assign(target.href);
+          // turns out to use one: the runtime decides as it compiles, and only
+          // then is the document made and its code loaded (see
+          // DocumentShellRequest). The page is drawn from it from then on.
+          let documentShell: DocumentShell | null = null;
+          const shellRequest: DocumentShellRequest = {
+            create: async () => {
+              const { DocumentShell: Shell } = await import('../document-shell/host');
+              const made = new Shell(
+                doc.template,
+                shellOwnsTag,
+                doc.title,
+                typeof window === 'undefined' ? undefined : window.location.href
+              );
+              made.onTitle = (title) => onTitleChangeRef.current?.(title);
+              // `location.href = 'about.html'` is a link the code follows: shown
+              // in the app where the host shows the app's pages, and otherwise
+              // followed on the same site where the host follows links at all.
+              // Never to another site: the code cannot send the person there.
+              made.onNavigate = (href) => {
+                if (onLinkRef.current?.(href) === true) return;
+                if (!onLinkRef.current || typeof window === 'undefined') {
+                  console.warn(`[SoftN] The page's code asked to go to ${href}, and this host shows no other page.`);
+                  return;
+                }
+                let target: URL;
+                try {
+                  target = new URL(href, window.document.baseURI);
+                } catch {
+                  console.warn(`[SoftN] The page's code asked to go to ${href}, which is not an address.`);
+                  return;
+                }
+                if (target.origin !== window.location.origin) {
+                  console.warn(`[SoftN] The page's code asked to go to ${target.href}, on another site; only a link the person clicks goes there.`);
+                  return;
+                }
+                window.location.assign(target.href);
+              };
+              documentShell = made;
+              return made;
+            },
           };
 
           // Create the script context with a mutable state object
@@ -1185,7 +1195,7 @@ export function SoftNRenderer({
               logicBasePath,
               {
                 mode: 'main',
-                documentShell,
+                documentShell: shellRequest,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1271,7 +1281,7 @@ export function SoftNRenderer({
               logicBasePath,
               {
                 mode: 'main',
-                documentShell,
+                documentShell: shellRequest,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1308,7 +1318,7 @@ export function SoftNRenderer({
               logicBasePath,
               {
                 mode: 'main',
-                documentShell,
+                documentShell: shellRequest,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1361,7 +1371,8 @@ export function SoftNRenderer({
               }
 
               // A page whose code uses the document is drawn from it from now on.
-              if (documentShell.active) setDocumentShell(documentShell);
+              const madeShell = documentShell as DocumentShell | null;
+              if (madeShell?.active) setDocumentShell(madeShell);
 
               // Merge script state into componentState and set functions
               setState((prev) => {
