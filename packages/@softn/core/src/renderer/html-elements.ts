@@ -17,12 +17,22 @@ import { cssResourceReferences, SVG_ELEMENT_NAMES } from './sanitize-html';
  * nothing that runs code or loads from another site by itself. `svg` itself
  * is an HTML element of the renderer's, and `title` is the document's.
  */
-export const SVG_CHILD_ELEMENTS: ReadonlyMap<string, string> = new Map(
+const SVG_CHILD_ELEMENTS: ReadonlyMap<string, string> = new Map(
   SVG_ELEMENT_NAMES.filter((name) => name !== 'svg' && name !== 'title').map((name) => [
     name.toLowerCase(),
     name,
   ])
 );
+
+/**
+ * The SVG element a tag names, written as SVG spells it (`clipPath`) or in
+ * lower case (`clippath`), or undefined. A capitalised name is a component's
+ * even when it is a shape's too: `<Text>` is SoftN's, never SVG's `<text>`.
+ */
+export function svgChildElement(tag: string): string | undefined {
+  const name = SVG_CHILD_ELEMENTS.get(tag.toLowerCase());
+  return name !== undefined && (tag === name || tag === name.toLowerCase()) ? name : undefined;
+}
 
 /**
  * HTML's attribute names, to the names React gives them. React writes an

@@ -265,6 +265,49 @@ describe('a handler written as HTML writes one', () => {
     expect(click.defaultPrevented).toBe(true);
   });
 
+  it('is given the event for an input or a change too, as HTML gives it', () => {
+    const search = vi.fn();
+    const agree = vi.fn();
+    const page = mount(
+      '<input id="q" oninput="search(event.target.value)"><input id="c" type="checkbox" onchange="agree(event.target.checked)">' +
+        '<input id="v" @input={search}>',
+      { functions: { search, agree } }
+    );
+    act(() => {
+      const field = page.querySelector<HTMLInputElement>('#q')!;
+      field.value = 'dune';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      page.querySelector<HTMLInputElement>('#c')!.click();
+      // A handler in braces is still given the new value.
+      const braced = page.querySelector<HTMLInputElement>('#v')!;
+      braced.value = 'emma';
+      braced.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(search.mock.calls).toEqual([['dune'], ['emma']]);
+    expect(agree.mock.calls).toEqual([[true]]);
+  });
+
+  it('is placed at its attribute in the page, not in the text it was read from', () => {
+    const source = '<p>x</p>\n<button onclick="save(1)">Go</button>';
+    const doc = parse(source);
+    const event = (doc.template.find((node) => node.type === 'Element' && node.tag === 'button') as ElementNode).events[0];
+    const at = source.indexOf('onclick');
+    const places: number[] = [];
+    const visit = (node: unknown): void => {
+      if (Array.isArray(node)) node.forEach(visit);
+      else if (node && typeof node === 'object') {
+        for (const [key, value] of Object.entries(node)) {
+          if (key === 'loc') places.push((value as { start: number }).start);
+          else visit(value);
+        }
+      }
+    };
+    visit(event.handler);
+    expect(places.length).toBeGreaterThan(1);
+    expect(new Set(places)).toEqual(new Set([at]));
+    expect(event.loc.start).toBe(at);
+  });
+
   it('is a property like any other on a component, where on* is not HTML', () => {
     const doc = parse('<Card onSave="later" />');
     const card = doc.template[0] as ElementNode;
@@ -294,6 +337,12 @@ describe('an SVG icon', () => {
     expect(out).toContain('<clipPath id="c">');
     expect(out).toContain('<path d="M5 12h14"></path>');
     expect(out).toContain('fill="url(#g)"');
+  });
+
+  it('leaves a capitalised name to the components: <Text> is never SVG’s <text>', () => {
+    const out = html('<svg><Path d="M0 0"/></svg>');
+    expect(out).toContain('Unknown component: &lt;Path&gt;');
+    expect(out).not.toContain('<path');
   });
 
   it('loads nothing from outside the app that the app may not load', () => {

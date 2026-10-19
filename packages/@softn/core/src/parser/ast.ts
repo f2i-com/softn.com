@@ -217,6 +217,13 @@ export interface EventNode {
   name: string; // "click", "submit", etc.
   handler: Expression;
   modifiers?: string[];
+  /**
+   * Written as code in quotes, `oninput="search(event.target.value)"`, and
+   * read as an arrow taking `event`. That arrow is given the event for every
+   * event, as HTML gives it, where a handler written in braces is given the
+   * new value for `@change` and `@input`.
+   */
+  quoted?: true;
   loc: SourceLocation;
 }
 

@@ -216,6 +216,22 @@ function patternHasDefault(pattern: BindingPattern): boolean {
 }
 
 /**
+ * Give every node under `node` the place `loc`: for an expression read from
+ * text that is not the page's, whose places are in that text.
+ */
+function relocate(node: unknown, loc: SourceLocation): void {
+  if (Array.isArray(node)) {
+    for (const item of node) relocate(item, loc);
+    return;
+  }
+  if (node === null || typeof node !== 'object') return;
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'loc') (node as { loc: SourceLocation }).loc = { ...loc };
+    else relocate(value, loc);
+  }
+}
+
+/**
  * A page's `<style>` blocks as one stylesheet: the rules of each, in the
  * order the blocks are written, at the place the first one stands.
  */
@@ -1436,9 +1452,13 @@ export class Parser {
       });
       return null;
     }
-    return all.length > 0
-      ? { type: 'Event', name, handler, modifiers: all, loc }
-      : { type: 'Event', name, handler, loc };
+    // Its parts were read from the wrapper above, so their places are in
+    // that text; they are the attribute's place in the page.
+    relocate(handler, loc);
+    const event: EventNode = { type: 'Event', name, handler, loc };
+    if (all.length > 0) event.modifiers = all;
+    if (!reference) event.quoted = true;
+    return event;
   }
 
   /** The value of a quoted attribute — `name="x"` — or undefined if not written that way. */

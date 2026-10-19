@@ -51,11 +51,11 @@ import {
 import { parseStatePath } from '../runtime/state-path';
 import { markupValue } from './host-values';
 import {
-  SVG_CHILD_ELEMENTS,
   keepFieldEditable,
   loadsFromOutside,
   textareaText,
   renameToReactAttributes,
+  svgChildElement,
 } from './html-elements';
 
 /**
@@ -1323,10 +1323,10 @@ function renderElement(
     if (isHTMLElement(node.tag)) {
       // Use the lowercase HTML tag as the component
       Component = node.tag.toLowerCase() as keyof JSX.IntrinsicElements;
-    } else if (SVG_CHILD_ELEMENTS.has(node.tag.toLowerCase())) {
+    } else if (svgChildElement(node.tag)) {
       // A shape inside an `<svg>`, by the name SVG gives it. Only `svg` was
       // allowed, so an icon drew "Unknown component" for each of its paths.
-      Component = SVG_CHILD_ELEMENTS.get(node.tag.toLowerCase()) as keyof JSX.IntrinsicElements;
+      Component = svgChildElement(node.tag) as keyof JSX.IntrinsicElements;
     } else {
       if (isDevelopment) {
         console.warn(
@@ -1484,7 +1484,7 @@ function renderElement(
   const customElement = typeof FinalComponent === 'string' && FinalComponent.includes('-');
   const svgElement =
     typeof FinalComponent === 'string' &&
-    (FinalComponent === 'svg' || SVG_CHILD_ELEMENTS.has(FinalComponent.toLowerCase()));
+    (FinalComponent === 'svg' || svgChildElement(FinalComponent) !== undefined);
   if (!customElement && 'class' in props) {
     // What was drawn for a plain tag still is: a number was written as text.
     const plainTag = typeof FinalComponent === 'string';
@@ -1635,8 +1635,8 @@ function renderElement(
   // Event handlers - use unified callback context
   // For change/input events, auto-extract target.value so VM functions
   // receive the string value instead of a React SyntheticEvent object.
-  const wrapEventHandler = (name: string, fn: EventHandler) => {
-    if (name === 'change' || name === 'input') {
+  const wrapEventHandler = (name: string, fn: EventHandler, givenEvent = false) => {
+    if ((name === 'change' || name === 'input') && !givenEvent) {
       return (e: unknown) => fn(changedValue(e));
     }
     // Everything else gets its arguments forwarded.
@@ -1679,7 +1679,10 @@ function renderElement(
     } else if (handlerExpr.type === 'ArrowFunctionExpression') {
       // Arrow functions are already deferred - evaluate to get the function
       const handler = evaluateExpression(handlerExpr, handlerContext);
-      props[reactEventProp(event.name)] = typeof handler === 'function' ? wrapEventHandler(event.name, handler as EventHandler) : handler;
+      props[reactEventProp(event.name)] =
+        typeof handler === 'function'
+          ? wrapEventHandler(event.name, handler as EventHandler, event.quoted === true)
+          : handler;
     } else if (handlerExpr.type === 'Identifier' || handlerExpr.type === 'MemberExpression') {
       // Function reference - evaluate to get the function, wrap to ensure it's callable
       const handler = evaluateExpression(handlerExpr, handlerContext);

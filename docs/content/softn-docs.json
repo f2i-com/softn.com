@@ -1849,7 +1849,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "A page can be written the way an HTML page is written, and mix in SoftN’s components and syntax wherever it likes. Lower-case tags are HTML elements, `<div>`, `<span>`, `<a>`, `<table>`, `<form>` and the rest; capitalised tags are SoftN components, `<Button>`, `<Stack>`, `<DataTable>`. The file can be called `index.html` and its code `main.js`: a page and its logic are found by what names them, `manifest.json`’s `main`, an `<import from>` or a `<script src>`, not by their file names, so `.ui` and `.logic` keep working beside them."
+              "text": "A page can be written the way an HTML page is written, and mix in SoftN’s components and syntax wherever it likes. Lower-case tags are HTML elements, `<div>`, `<span>`, `<a>`, `<table>`, `<form>` and the rest; capitalised tags are SoftN components, `<Button>`, `<Stack>`, `<DataTable>`. The file can be called `index.html` and its code `main.js`: a page and its logic are found by what names them, `manifest.json`’s `main`, an `<import from>` or a `<script src>`, not by their file names, so `.ui` and `.logic` keep working beside them. Studio and the Builder still create `.ui` and `.logic` files, and list and export those; an app written this way runs in the browser runtime and in a standalone deployment."
             },
             {
               "type": "code",
@@ -1865,7 +1865,7 @@
                 "`<script src=\"main.js\"></script>` is `<logic src=\"main.js\" />`, and `<script>…</script>` is a `<logic>` block. `<script src=\"main.py\">` links Python, which, as in a `<logic>` tag, lives in its own file. A `<script>` whose `type` is not code, such as `application/ld+json`, is passed over.",
                 "`<link rel=\"stylesheet\" href=\"styles.css\">` places the rules of a stylesheet the app carries, as if they were written in a `<style>` block. `<style>` and `<script>` blocks may stand anywhere in the page, as HTML allows.",
                 "`<br>`, `<img …>`, `<input …>`, `<hr>`, `<meta>`, `<link>` and the other void elements end with their tags; `/>` is not needed, and a `</br>` is passed over.",
-                "`onclick=\"add()\"` and the other `on…` attributes of an HTML element run their code when the event fires, with the event as `event`, as `@click=\"add()\"` does; a `return false` at the end cancels the browser’s default, as `.prevent` does. `if`, `let` and loops belong in a logic function.",
+                "`onclick=\"add()\"` and the other `on…` attributes of an HTML element run their code when the event fires, as `@click=\"add()\"` does, with the event as `event`: `event.target.value`, `event.target.checked` and `event.key` read, for `oninput` and `onchange` too, and `event.preventDefault()` works in the attribute itself. A logic function it is passed to, `onsubmit=\"send(event)\"`, is given the event’s data, without `preventDefault`: cancel in the attribute, `onsubmit=\"send(); return false\"`, or with `@submit.prevent`. A closing `return false` cancels the browser’s default, as `.prevent` does. There is no `this`, and `if`, `let` and loops belong in a logic function.",
                 "An `<svg>` draws its shapes: `<path>`, `<circle>`, `<g>`, gradients, clip paths and filters. A reference to something in the page, `fill=\"url(#gradient)\"` or `<use href=\"#icon\">`, works; one to another site is loaded only as the app’s network permission allows.",
                 "`<input value=\"Ada\">` and `<input type=\"checkbox\" checked>` start with what they are given and can be changed. A `<textarea>` starts with the text written in it, and a `<pre>` keeps the spacing written in it.",
                 "`for`, `readonly`, `tabindex`, `maxlength`, `colspan` and HTML’s other attribute names are read as HTML reads them. Custom element names such as `<my-card>` are read as one tag."
@@ -1875,7 +1875,7 @@
               "type": "callout",
               "tone": "note",
               "title": "Where a page is not HTML",
-              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. Every element but a void one needs its closing tag: `<p>` and `<li>` do not close themselves. A tag closes with its name as it was written, `<div>…</div>`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files."
+              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. Every element but a void one needs its closing tag: `<p>` and `<li>` do not close themselves. A tag closes with its name as it was written, `<div>…</div>`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files. A `.js` file is SoftN logic, not a module: its top-level `let` variables are the page’s state and its functions what the page calls, `import \"./x.js\"` places another file’s code, and `export` is a syntax error."
             }
           ]
         },
