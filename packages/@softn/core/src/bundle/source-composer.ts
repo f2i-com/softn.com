@@ -266,6 +266,47 @@ export const UI_IMPORT_DECLARATION_PATTERN = new RegExp(
   String.raw`<import\s+(?:(\w+)\s+)?(?:\{([^}]+)\}\s*)?${IMPORT_FROM}\s*\/>`
 );
 
+/**
+ * A `<logic>` or `<script>` tag and its content, when it has any: group 1 the
+ * tag's name, group 2 its attributes, group 3 its content. Build a global
+ * pattern from `.source` to go through a page.
+ */
+export const LOGIC_TAG_PATTERN = /<(logic|script)\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/\1\s*>)/i;
+
+/**
+ * What a `<logic>` or `<script>` tag is to the composer: `code` when it holds
+ * or names the page's code, with the file it names as `src` (null for code
+ * written inline); or `ignored` when the page leaves it alone. `<script>` is
+ * `<logic>` as an HTML page spells it; a script that is not code (JSON, a
+ * template) or comes from another site is passed over (the parser says the
+ * second is not loaded).
+ *
+ * One rule, for the composer that places the code and for an editor that
+ * lists what a page links, so the two cannot disagree about a page.
+ */
+export function logicTagReference(
+  tag: string,
+  attributes: string
+): { kind: 'code'; src: string | null; language: 'javascript' | 'python' } | { kind: 'ignored' } {
+  const script = tag.toLowerCase() === 'script';
+  const type = attributes.match(/\btype\s*=\s*(["'])([^"']*)\1/i)?.[2];
+  const language = script ? scriptLanguage(type) : 'javascript';
+  if (language === 'other') return { kind: 'ignored' };
+  const src = attributes.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i)?.[2] ?? null;
+  if (src && script && isRemoteReference(src)) return { kind: 'ignored' };
+  return { kind: 'code', src, language };
+}
+
+/** The files of code a page names, `<script src>` and `<logic src>`, as written, in order. */
+export function pageLogicSources(source: string): string[] {
+  const sources: string[] = [];
+  for (const match of source.matchAll(new RegExp(LOGIC_TAG_PATTERN.source, 'gi'))) {
+    const reference = logicTagReference(match[1], match[2]);
+    if (reference.kind === 'code' && reference.src) sources.push(reference.src);
+  }
+  return sources;
+}
+
 /** What a use of an imported page carried that an include cannot take, as a sentence. */
 function describeIgnored(attributes: readonly string[], children: boolean): string {
   const written = attributes.length > 0 ? `attributes (${attributes.join(', ')})` : '';
@@ -309,19 +350,14 @@ export function composeBundleSource(
   };
 
   const collectLogic = (source: string, uiPath: string, main: boolean): string => {
-    // `<script>` is `<logic>` as an HTML page spells it: `<script
-    // src="main.js"></script>` names a file of the app's code, and
-    // `<script>…</script>` holds it. A script that is not code (JSON, a
-    // template) or comes from another site is left in the page, for the
-    // parser, which passes over the one and says the other is not loaded.
-    const logicTag = /<(logic|script)\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/\1\s*>)/gi;
+    // See logicTagReference: what is left alone stays in the page, for the
+    // parser.
+    const logicTag = new RegExp(LOGIC_TAG_PATTERN.source, 'gi');
     return source.replace(logicTag, (fullTag, tag: string, attributes: string, inlineCode?: string) => {
-      const script = tag.toLowerCase() === 'script';
+      const reference = logicTagReference(tag, attributes);
+      if (reference.kind === 'ignored') return fullTag;
+      const { src, language } = reference;
       const type = attributes.match(/\btype\s*=\s*(["'])([^"']*)\1/i)?.[2];
-      const language = script ? scriptLanguage(type) : 'javascript';
-      if (language === 'other') return fullTag;
-      const src = attributes.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i)?.[2];
-      if (src && script && isRemoteReference(src)) return fullTag;
       if (src) {
         sawExternalLogic = true;
         const externalPath = resolveBundlePath(uiPath, src);

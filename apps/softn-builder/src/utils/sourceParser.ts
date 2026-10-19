@@ -21,7 +21,7 @@ import type {
 } from '../types/builder';
 import { TEXT_NODE_TYPE } from '../types/builder';
 import { debug } from './debug';
-import { parse as parseSoftN } from '@softn/core';
+import { pageLogicSources, parse as parseSoftN } from '@softn/core';
 import type {
   TemplateNode as AstTemplateNode,
   Expression as AstExpression,
@@ -130,10 +130,13 @@ export function parseSource(source: string): ParseResult {
     logicSrc = logicSrcMatch[1];
   }
 
-  // Also check for <logic src="..." /> format
-  const logicTagSrcMatch = source.match(/<logic\s+src=["']([^"']+)["']\s*\/>/);
-  if (logicTagSrcMatch) {
-    logicSrc = logicTagSrcMatch[1];
+  // And the file a <logic src> or <script src> names, by the composer's own
+  // reading of those tags: a page written as HTML links its code with
+  // <script src="main.js"></script>, and the Builder took it for a page
+  // with no logic.
+  const [linkedLogic] = pageLogicSources(source);
+  if (linkedLogic) {
+    logicSrc = linkedLogic;
   }
 
   // Use the canonical SoftN parser first so all supported .ui syntax is detectable.

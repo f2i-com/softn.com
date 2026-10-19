@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { composeBundleSource } from '../src/bundle/source-composer';
+import { composeBundleSource, pageLogicSources } from '../src/bundle/source-composer';
 import { parse } from '../src/parser';
 import type { ElementNode, SoftNDocument, TemplateNode } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
@@ -446,6 +446,16 @@ describe('a bundle written as HTML files', () => {
     }).source;
     expect(source).toContain('<script src="https://cdn.example.com/x.js"></script>');
     expect(source).toContain('<script type="application/json">{}</script>');
+  });
+
+  it('lists what a page links by the composer’s own rule, for an editor to read', () => {
+    expect(
+      pageLogicSources(
+        '<script src="main.js"></script><logic src="../logic/helpers.logic" /><script>let inline = 1</script>' +
+          '<script src="https://cdn.example.com/x.js"></script><script type="application/json" src="data.json"></script>' +
+          '<script type="text/python" src="main.py"></script>'
+      )
+    ).toEqual(['main.js', '../logic/helpers.logic', 'main.py']);
   });
 
   it('places the rules of a stylesheet the page links to', () => {

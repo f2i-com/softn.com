@@ -17,7 +17,7 @@
  */
 
 import { debug } from './debug';
-import { MAX_ZIP_INPUT_BYTES, resolveBundlePath } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, pageLogicSources, resolveBundlePath } from '@softn/core';
 import { ensureFieldIds } from './schemaFields';
 import { readBuilderSchema } from './builderSchemaMetadata';
 import { parseBundle, startsWithByteOrderMark, type BundleManifest } from './bundleExporter';
@@ -86,8 +86,6 @@ function readIcon(bytes: Uint8Array, path: string): string | null {
   return `data:${mime};base64,${btoa(bin)}`;
 }
 
-/** Every `<logic src="…">` in a UI file, with either quote. */
-const LOGIC_SRC = /<logic\b[^>]*?\bsrc\s*=\s*(["'])([^"']+)\1/gi;
 
 let fileIdCounter = 0;
 
@@ -227,10 +225,11 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     FILE_GROUPS.filter((group) => group !== 'logic').flatMap((group) => declaredPaths(manifest, group))
   );
   for (const uiFile of uiFiles.values()) {
-    for (const match of (uiFile.originalSource ?? '').matchAll(LOGIC_SRC)) {
+    // Every `<logic src>` and `<script src>` it has, read as the composer reads them.
+    for (const src of pageLogicSources(uiFile.originalSource ?? '')) {
       let path: string;
       try {
-        path = resolveBundlePath(uiFile.path, match[2]);
+        path = resolveBundlePath(uiFile.path, src);
       } catch {
         continue; // An unsafe path; the composer refuses it when the app runs.
       }

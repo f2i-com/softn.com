@@ -1121,7 +1121,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
           });
           return { uiFiles: blockedFiles };
         }
-        const hadLogic = /<logic[\s>]/i.test(nextOriginalSource);
+        const hadLogic = /<(logic|script)[\s>]/i.test(nextOriginalSource);
         nextOriginalSource = writeBack(nextOriginalSource, originalDoc, elements, rootId);
         if (!hadLogic && file.logicSrc) {
           // A logic file linked since the source was written.
