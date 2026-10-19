@@ -1823,7 +1823,7 @@
         "title": "The SoftN UI language | SoftN Docs",
         "description": "SoftN .ui syntax: components, expression props, what an expression may contain, event handlers and modifiers, two-way binding, class: and style: directives, conditionals, loops, and one page placed inside another."
       },
-      "updatedAt": "2026-10-12",
+      "updatedAt": "2026-10-19",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -1840,6 +1840,42 @@
             {
               "type": "paragraph",
               "text": "A page links its logic with `<logic src=\"../logic/main.logic\" />`, a path relative to the `.ui` file; a Python app links a `.py` file the same way. JavaScript can also sit inline in a `<logic>` block; Python cannot."
+            }
+          ]
+        },
+        {
+          "id": "as-html",
+          "title": "Write it as an HTML page",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A page can be written the way an HTML page is written, and mix in SoftN’s components and syntax wherever it likes. Lower-case tags are HTML elements, `<div>`, `<span>`, `<a>`, `<table>`, `<form>` and the rest; capitalised tags are SoftN components, `<Button>`, `<Stack>`, `<DataTable>`. The file can be called `index.html` and its code `main.js`: a page and its logic are found by what names them, `manifest.json`’s `main`, an `<import from>` or a `<script src>`, not by their file names, so `.ui` and `.logic` keep working beside them."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>Reading list</title>\n  <link rel=\"stylesheet\" href=\"styles.css\">\n  <script src=\"main.js\"></script>\n</head>\n<body>\n  <h1>Books <small>({books.length})</small></h1>\n  <input type=\"text\" placeholder=\"Title\" :bind={title}>\n  <button onclick=\"add()\">Add</button>\n  <ul>\n    #each (book in books) key={book.id}\n      <li>{book.title} <a href=\"#\" onclick=\"remove(book.id); return false\">remove</a></li>\n    #end\n  </ul>\n  <Button variant=\"primary\" @click={save}>Save</Button>\n</body>\n</html>",
+              "caption": "index.html. `books`, `title`, `add`, `remove` and `save` are the state and functions of main.js."
+            },
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "`<!DOCTYPE html>`, `<html>`, `<head>` and `<body>` are read through: the page is what the body holds. The head’s `<title>` is the page’s title, and `<meta>` is passed over. A `<body>` with attributes keeps them, on a `<div>` around the page.",
+                "`<script src=\"main.js\"></script>` is `<logic src=\"main.js\" />`, and `<script>…</script>` is a `<logic>` block. `<script src=\"main.py\">` links Python, which, as in a `<logic>` tag, lives in its own file. A `<script>` whose `type` is not code, such as `application/ld+json`, is passed over.",
+                "`<link rel=\"stylesheet\" href=\"styles.css\">` places the rules of a stylesheet the app carries, as if they were written in a `<style>` block. `<style>` and `<script>` blocks may stand anywhere in the page, as HTML allows.",
+                "`<br>`, `<img …>`, `<input …>`, `<hr>`, `<meta>`, `<link>` and the other void elements end with their tags; `/>` is not needed, and a `</br>` is passed over.",
+                "`onclick=\"add()\"` and the other `on…` attributes of an HTML element run their code when the event fires, with the event as `event`, as `@click=\"add()\"` does; a `return false` at the end cancels the browser’s default, as `.prevent` does. `if`, `let` and loops belong in a logic function.",
+                "An `<svg>` draws its shapes: `<path>`, `<circle>`, `<g>`, gradients, clip paths and filters. A reference to something in the page, `fill=\"url(#gradient)\"` or `<use href=\"#icon\">`, works; one to another site is loaded only as the app’s network permission allows.",
+                "`<input value=\"Ada\">` and `<input type=\"checkbox\" checked>` start with what they are given and can be changed. A `<textarea>` starts with the text written in it, and a `<pre>` keeps the spacing written in it.",
+                "`for`, `readonly`, `tabindex`, `maxlength`, `colspan` and HTML’s other attribute names are read as HTML reads them. Custom element names such as `<my-card>` are read as one tag."
+              ]
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "Where a page is not HTML",
+              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. Every element but a void one needs its closing tag: `<p>` and `<li>` do not close themselves. A tag closes with its name as it was written, `<div>…</div>`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files."
             }
           ]
         },
