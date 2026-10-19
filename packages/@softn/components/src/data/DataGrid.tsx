@@ -74,6 +74,69 @@ function gridColumns<T>(given: unknown, data: T[]): DataGridColumn<T>[] {
   return keys.map((key) => ({ key, header: key }));
 }
 
+/** A field drawn in the grid: a column's filter, or a cell being edited. */
+const fieldStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '4px 8px',
+  border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
+  borderRadius: '4px',
+  background: 'var(--color-bg, transparent)',
+  color: 'var(--color-text, inherit)',
+};
+
+/**
+ * The editor of an editable column that names none of its own: a text field
+ * over the cell. `editable` without an `editor` opened nothing, and the cell,
+ * no longer offering to edit, lost its tab stop and the focus with it. Enter
+ * or leaving the field saves, Escape puts the cell back as it was (and is
+ * the field's, not a dialog's around the grid). A cell that held a number is
+ * saved as a number when what was typed reads as one.
+ */
+function TextCellEditor({
+  value,
+  label,
+  onSave,
+  onCancel,
+}: {
+  value: unknown;
+  label: string;
+  onSave: (value: unknown) => void;
+  onCancel: () => void;
+}) {
+  // Enter saves and the field goes; its blur on the way out is not a second save.
+  const done = React.useRef(false);
+  const save = (text: string) => {
+    if (done.current) return;
+    done.current = true;
+    const number = text.trim() === '' ? NaN : Number(text);
+    onSave(typeof value === 'number' && Number.isFinite(number) ? number : text);
+  };
+  return (
+    <input
+      type="text"
+      aria-label={label}
+      defaultValue={value === null || value === undefined ? '' : String(value)}
+      autoFocus
+      // The row selects on a click, and the cell opens on a double click:
+      // neither is meant by a click inside the field.
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          save(e.currentTarget.value);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          done.current = true;
+          onCancel();
+        }
+      }}
+      onBlur={(e) => save(e.currentTarget.value)}
+      style={{ ...fieldStyle, font: 'inherit', minWidth: 0 }}
+    />
+  );
+}
+
 /** What a row holds for a column: through its accessor when it has one, else by its key. */
 function cellValue<T>(row: T, column: DataGridColumn<T>): unknown {
   if (column.accessor) {
@@ -160,13 +223,40 @@ export function DataGrid<T = Row>({
   const sortsItself = !onSort;
   const sortKey = sortsItself ? ownSort.key : givenSortKey;
   const sortDirection: 'asc' | 'desc' = (sortsItself ? ownSort.direction : givenSortDirection) === 'desc' ? 'desc' : 'asc';
-  const filters = rawFilters !== null && typeof rawFilters === 'object' ? rawFilters : {};
+  // Without `filters` the grid keeps what was typed itself, as it does its
+  // selection. Bound to nothing, each filter field was drawn empty again
+  // after every keystroke, and `onFilterChange` only ever heard the last one.
+  const [ownFilters, setOwnFilters] = React.useState<Record<string, string | number>>({});
+  const filtersGiven = rawFilters !== null && typeof rawFilters === 'object';
+  const filters = filtersGiven ? rawFilters : ownFilters;
+  const setFilter = (columnKey: string, value: string) => {
+    const next = { ...filters, [columnKey]: value };
+    if (!filtersGiven) setOwnFilters(next);
+    onFilterChange?.(next);
+  };
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = React.useState(0);
   const [editingCell, setEditingCell] = React.useState<{
     rowKey: string | number;
     columnKey: string;
   } | null>(null);
+  // The cell an edit ended in, while focus was in it: it takes focus back
+  // once it is drawn again. The editor that had focus is gone by then, and
+  // focus went with it to the page's body, so an edit made from the keyboard
+  // ended nowhere.
+  const returnFocusTo = React.useRef<HTMLElement | null>(null);
+  const finishEdit = () => {
+    const active = typeof document === 'undefined' ? null : document.activeElement;
+    const cell = active instanceof HTMLElement ? active.closest<HTMLElement>('[role="cell"]') : null;
+    returnFocusTo.current = cell && containerRef.current?.contains(cell) ? cell : null;
+    setEditingCell(null);
+  };
+  React.useEffect(() => {
+    const cell = returnFocusTo.current;
+    if (editingCell || !cell) return;
+    returnFocusTo.current = null;
+    if (cell.isConnected) cell.focus();
+  }, [editingCell]);
   const [showFilters, setShowFilters] = React.useState(false);
   // Without `selectedKeys` the grid keeps its own selection, so a caller that
   // only listens through `onSelectionChange` still sees rows select.
@@ -282,7 +372,7 @@ export function DataGrid<T = Row>({
   const handleCellSave = (value: unknown) => {
     if (editingCell && onCellEdit) {
       onCellEdit(editingCell.rowKey, editingCell.columnKey, value);
-      setEditingCell(null);
+      finishEdit();
     }
   };
 
@@ -481,16 +571,8 @@ export function DataGrid<T = Row>({
                   aria-label={`Filter ${columnName(column)}`}
                   placeholder={`Filter ${columnName(column)}...`}
                   value={filters[column.key] ?? ''}
-                  onChange={(e) => onFilterChange({ ...filters, [column.key]: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '4px 8px',
-                    border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
-                    borderRadius: '4px',
-                    fontSize: '0.75rem',
-                    background: 'var(--color-bg, transparent)',
-                    color: 'var(--color-text, inherit)',
-                  }}
+                  onChange={(e) => setFilter(column.key, e.target.value)}
+                  style={{ ...fieldStyle, fontSize: '0.75rem' }}
                 />
               )}
             </div>
@@ -577,14 +659,23 @@ export function DataGrid<T = Row>({
                           }
                         }}
                       >
-                        {isEditing && column.editor
-                          ? column.editor({
-                              value,
-                              row,
-                              column,
-                              onSave: handleCellSave,
-                              onCancel: () => setEditingCell(null),
-                            })
+                        {isEditing
+                          ? column.editor
+                            ? column.editor({
+                                value,
+                                row,
+                                column,
+                                onSave: handleCellSave,
+                                onCancel: finishEdit,
+                              })
+                            : (
+                                <TextCellEditor
+                                  value={value}
+                                  label={`Edit ${columnName(column)}`}
+                                  onSave={handleCellSave}
+                                  onCancel={finishEdit}
+                                />
+                              )
                           : column.render
                             ? column.render(value, row, givenIndex)
                             : String(value ?? '')}

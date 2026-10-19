@@ -61,15 +61,21 @@ export function DPad({
     onReleaseRef.current?.(dir);
   }, []);
 
+  const releaseAll = React.useCallback(() => {
+    const held = [...pressed.current];
+    pressed.current.clear();
+    for (const dir of held) onReleaseRef.current?.(dir);
+  }, []);
+
   // Anything still held when the pad goes away is let go.
-  React.useEffect(
-    () => () => {
-      const held = [...pressed.current];
-      pressed.current.clear();
-      for (const dir of held) onReleaseRef.current?.(dir);
-    },
-    []
-  );
+  React.useEffect(() => releaseAll, [releaseAll]);
+
+  // And when it is hidden. `visible={false}` takes the buttons away under
+  // the pointer or the key that held them, so no pointerup, keyup or blur
+  // ever came for them, and the character held went on walking.
+  React.useEffect(() => {
+    if (!visible) releaseAll();
+  }, [visible, releaseAll]);
 
   if (!visible) return null;
   // `background` would fetch a `url()`; a colour prop gets colours only.

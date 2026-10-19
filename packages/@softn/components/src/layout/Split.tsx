@@ -60,21 +60,31 @@ export function Split({
   const startPosRef = useRef<number>(0);
   const startSizeRef = useRef<number>(0);
 
-  // Calculate initial size in pixels
+  // The first pane's size in pixels, from `initialSize`. A share is of the
+  // box the split was given, and a split first drawn in a hidden or collapsed
+  // Section has a box of nothing: it was sized at nothing, and stayed at its
+  // minimum when the Section opened. Until the box has a size the pane is
+  // drawn at the share as written, and it is measured once it has one; after
+  // that the size is the person's, and a resize does not take it back.
   useEffect(() => {
-    if (containerRef.current && size === null) {
-      const containerSize =
-        direction === 'horizontal'
-          ? containerRef.current.offsetWidth
-          : containerRef.current.offsetHeight;
-
-      if (typeof initialSize === 'string' && initialSize.endsWith('%')) {
-        const percentage = parseFloat(initialSize) / 100;
-        setSize(containerSize * percentage);
-      } else {
-        setSize(typeof initialSize === 'number' ? initialSize : parseInt(initialSize, 10));
-      }
+    const element = containerRef.current;
+    if (!element || size !== null) return;
+    if (!(typeof initialSize === 'string' && initialSize.endsWith('%'))) {
+      setSize(typeof initialSize === 'number' ? initialSize : parseInt(initialSize, 10));
+      return;
     }
+    const share = parseFloat(initialSize) / 100;
+    const measure = (): boolean => {
+      const total = direction === 'horizontal' ? element.offsetWidth : element.offsetHeight;
+      if (total > 0) setSize(total * share);
+      return total > 0;
+    };
+    if (measure() || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (measure()) observer.disconnect();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
   }, [initialSize, direction, size]);
 
   const containerSize = () =>

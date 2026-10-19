@@ -68,11 +68,19 @@ export function Tabs({
   const idPrefix = useId();
   const tabId = (key: string) => `${idPrefix}-tab-${key}`;
   const panelId = (key: string) => `${idPrefix}-panel-${key}`;
-  const [internalActiveKey, setInternalActiveKey] = useState(defaultActiveKey ?? tabs[0]?.key);
+  const [internalActiveKey, setInternalActiveKey] = useState(defaultActiveKey);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
-  const currentActiveKey = activeKey ?? internalActiveKey;
+  // Left to itself, the selected tab is the one chosen, else the default the
+  // page named, else the first that can be chosen, whenever that names no
+  // tab. The first tab was read once, at the first draw: tabs bound to data
+  // that arrived after it had no selected tab and no panel when they came.
+  // Nobody chose this one, so the page is not told of it.
+  const ownKey = tabs.some((t) => t.key === internalActiveKey)
+    ? internalActiveKey
+    : (tabs.find((t) => !t.disabled) ?? tabs[0])?.key;
+  const currentActiveKey = activeKey ?? ownKey;
   // The tab that holds the tab stop: the active one, or — when the active key
   // names no tab, or a disabled one — the first enabled tab. Without this,
   // no tab had tabIndex 0 and the whole tablist was unreachable by keyboard.

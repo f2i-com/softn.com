@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { textOf } from '../utils/text';
 
 export interface NavItemProps {
   /** Item label */
@@ -899,17 +900,6 @@ const iconMap: Record<string, React.ReactNode> = {
     </svg>
   ),
 };
-
-/** The text a node reads as: strings and numbers, and the text inside elements. */
-function textOf(node: React.ReactNode): string {
-  if (node === null || node === undefined || typeof node === 'boolean') return '';
-  if (typeof node === 'string' || typeof node === 'number') return String(node);
-  if (Array.isArray(node)) return node.map(textOf).join('');
-  if (React.isValidElement(node)) {
-    return textOf((node.props as { children?: React.ReactNode }).children);
-  }
-  return '';
-}
 
 export function NavItem({
   label,

@@ -9268,6 +9268,15 @@
             "doc": "Initial form data"
           },
           {
+            "name": "defaults",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "Record<string, unknown>"
+            },
+            "doc": "Values a new record starts with, for fields the form shows or not: `defaults={{ visits: 0, vip: false }}`. What `data` holds and a field's own `defaultValue` come first. Not applied when editing a record (`recordId`, or `mode=\"edit\"`)."
+          },
+          {
             "name": "onSubmit",
             "optional": true,
             "type": {

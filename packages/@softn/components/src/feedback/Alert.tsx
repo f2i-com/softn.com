@@ -7,6 +7,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { choice } from '../utils/choice';
+import { textOf } from '../utils/text';
 
 export interface AlertProps {
   /** Alert variant */
@@ -202,6 +203,18 @@ export function Alert({
   const [isVisible, setIsVisible] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
   const colors = choice(variantColors, variant, 'info');
+
+  // A dismissed alert comes back when what it says changes. One bound to the
+  // page's message (`{error}`) was dismissed once and stayed hidden over
+  // every message after it. What it says is read as its text: a message
+  // written as elements is new objects each time the page is drawn, and the
+  // same words again are not a new message.
+  const says = `${textOf(title)}\u0000${textOf(children)}`;
+  const [said, setSaid] = useState(says);
+  if (says !== said) {
+    setSaid(says);
+    setIsVisible(true);
+  }
 
   const handleDismiss = useCallback(() => {
     setIsVisible(false);

@@ -204,7 +204,10 @@ function AvatarFace({
   style,
   children,
 }: AvatarProps): React.ReactElement {
-  const [imgError, setImgError] = React.useState(false);
+  // The picture that failed to load, rather than whether one did: a failure
+  // was kept for good, so an avatar whose `src` changed (the next record, a
+  // new upload) went on showing initials over a picture that was there.
+  const [failedSrc, setFailedSrc] = React.useState<string>();
   const [isHovered, setIsHovered] = React.useState(false);
   const prefersReducedMotion = usePrefersReducedMotion();
 
@@ -214,7 +217,7 @@ function AvatarFace({
   // is bundle-supplied. Rejecting it here falls back to initials rather than
   // handing the scheme to the DOM.
   const imgSrc = src && isSafeUrl(src) ? src : undefined;
-  const showInitials = !imgSrc || imgError;
+  const showInitials = !imgSrc || failedSrc === imgSrc;
 
   const borderRadius = shape === 'circle' ? '50%' : shape === 'rounded' ? '0.5rem' : '0.25rem';
 
@@ -382,7 +385,7 @@ function AvatarFace({
               src={imgSrc}
               alt={alt ?? name ?? 'Avatar'}
               style={imgStyle}
-              onError={() => setImgError(true)}
+              onError={() => setFailedSrc(imgSrc)}
             />
           )}
         </div>

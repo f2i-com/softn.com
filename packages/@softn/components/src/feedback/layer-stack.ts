@@ -54,13 +54,49 @@ const TABBABLE = [
   '[tabindex]',
 ].join(', ');
 
-/** The elements Tab can reach inside `root`, in document order. */
+/** A radio that belongs to a named group, which Tab reaches as one stop. */
+function groupedRadio(el: Element | null): el is HTMLInputElement {
+  return el instanceof HTMLInputElement && el.type === 'radio' && el.name !== '';
+}
+
+/** Whether two radios are in one group: the same name in the same form. */
+function sameGroup(a: HTMLInputElement, b: HTMLInputElement): boolean {
+  return a.name === b.name && a.form === b.form;
+}
+
+/**
+ * The elements Tab can reach inside `root`, in document order.
+ *
+ * A group of radios is one stop, as the browser makes it: the checked one,
+ * or the first when none is. Each radio counted as a stop of its own, so Tab
+ * from the checked radio of a group that ended a Drawer was not Tab from the
+ * last stop: it was left to the browser, which went past the group and out
+ * of the dialog.
+ */
 export function tabbableWithin(root: HTMLElement): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter((el) => {
+  const reachable = Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter((el) => {
     if (el.tabIndex < 0) return false;
     if (el.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
     return true;
   });
+  const stops: HTMLInputElement[] = [];
+  for (const el of reachable) {
+    if (!groupedRadio(el)) continue;
+    const at = stops.findIndex((stop) => sameGroup(stop, el));
+    if (at < 0) stops.push(el);
+    else if (el.checked && !stops[at].checked) stops[at] = el;
+  }
+  return reachable.filter((el) => !groupedRadio(el) || stops.includes(el));
+}
+
+/**
+ * The stop Tab is moving from: for a radio, its group's stop. Focus can be on
+ * a radio that is not the stop (one unchecked, in a group none is checked
+ * in), and Tab from there leaves the group as Tab from the stop does.
+ */
+function stopOf(el: Element | null, tabbable: HTMLElement[]): Element | null {
+  if (!groupedRadio(el)) return el;
+  return tabbable.find((stop) => groupedRadio(stop) && sameGroup(stop, el)) ?? el;
 }
 
 export interface ModalLayerOptions {
@@ -127,8 +163,9 @@ export function useModalLayer(
       }
       const first = tabbable[0];
       const last = tabbable[tabbable.length - 1];
-      const current = document.activeElement;
-      const outside = !current || !container.contains(current);
+      const active = document.activeElement;
+      const outside = !active || !container.contains(active);
+      const current = outside ? active : stopOf(active, tabbable);
       if (e.shiftKey) {
         if (outside || current === first || current === container) {
           e.preventDefault();

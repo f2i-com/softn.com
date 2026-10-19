@@ -55,6 +55,13 @@ export interface SmartFormProps {
   fields?: string | Array<FieldConfig | string>;
   /** Initial form data */
   data?: Record<string, unknown>;
+  /**
+   * Values a new record starts with, for fields the form shows or not:
+   * `defaults={{ visits: 0, vip: false }}`. What `data` holds and a field's
+   * own `defaultValue` come first. Not applied when editing a record
+   * (`recordId`, or `mode="edit"`).
+   */
+  defaults?: Record<string, unknown>;
   /** Submit handler */
   onSubmit?: (data: Record<string, unknown>) => void | Promise<void>;
   /** Change handler */
@@ -239,6 +246,7 @@ const Spinner = () => (
 export function SmartForm({
   fields: fieldsProp,
   data: initialData,
+  defaults,
   onSubmit,
   onChange,
   onCancel,
@@ -271,6 +279,16 @@ export function SmartForm({
   const fields = useMemo(() => formFields(fieldsProp), [fieldsProp]);
 
   // Form state
+  //
+  // A record is seeded from `data`, then each field's `defaultValue`, then
+  // the form's `defaults` for what is still missing. Without `defaults` a
+  // form could only start a field it showed: `defaults={{ visits: 0 }}` was
+  // dropped, as a prop the form did not take, and new records were saved
+  // without the fields the page meant them to have. They are for a new
+  // record only: written into one being edited, they would put a value the
+  // person never saw over whatever the record lacked. Like `data`, they are
+  // read when the form is seeded, so written inline they are not a reason to
+  // seed it again.
   const seedForm = useCallback(
     (source: Record<string, unknown> | undefined): Record<string, unknown> => {
       const initial: Record<string, unknown> = { ...source };
@@ -279,9 +297,14 @@ export function SmartForm({
           initial[field.name] = field.defaultValue;
         }
       });
+      if (mode === 'create' && defaults !== null && typeof defaults === 'object' && !Array.isArray(defaults)) {
+        for (const [name, value] of Object.entries(defaults)) {
+          if (initial[name] === undefined && value !== undefined) initial[name] = value;
+        }
+      }
       return initial;
     },
-    [fields]
+    [fields, mode, defaults]
   );
 
   const [formData, setFormData] = useState<Record<string, unknown>>(() => seedForm(initialData));

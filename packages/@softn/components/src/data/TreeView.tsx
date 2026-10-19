@@ -255,12 +255,27 @@ export function TreeView({
     () => (Array.isArray(nodesProp) ? nodesProp.filter(Boolean) : []),
     [nodesProp]
   );
+  const allIds = React.useMemo(() => getAllNodeIds(nodes), [nodes]);
   const [internalExpandedIds, setInternalExpandedIds] = React.useState<Set<string>>(() => {
     if (defaultExpandAll) {
-      return new Set(getAllNodeIds(nodes));
+      return new Set(allIds);
     }
     return new Set();
   });
+
+  // The nodes the tree has met. With `defaultExpandAll`, a node met for the
+  // first time opens: the tree opened what it had at its first draw, and a
+  // tree bound to data that arrived after that had nothing then, so it stayed
+  // closed. A node met before is left as the person left it, so the same
+  // nodes fetched again do not reopen what they closed.
+  const [metIds, setMetIds] = React.useState(() => new Set(allIds));
+  const arrived = allIds.filter((id) => !metIds.has(id));
+  if (arrived.length > 0) {
+    setMetIds(new Set([...metIds, ...arrived]));
+    if (defaultExpandAll && !controlledExpandedIds) {
+      setInternalExpandedIds((prev) => new Set([...prev, ...arrived]));
+    }
+  }
 
   const expandedIds = controlledExpandedIds ?? internalExpandedIds;
 
