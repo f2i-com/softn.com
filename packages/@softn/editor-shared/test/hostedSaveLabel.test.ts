@@ -43,8 +43,9 @@ describe('hosted save label', () => {
     const s = session(mod);
     expect(mod.hostedSaveLabel()).toBeNull();
     s.open({ saveLabel: '  Save   changes ' });
-    await flush();
-    expect(mod.hostedSaveLabel()).toBe('Save changes');
+    // Until the message has crossed the channel: one tick was not always
+    // enough under a loaded run, and the label was read before it came.
+    await vi.waitFor(() => expect(mod.hostedSaveLabel()).toBe('Save changes'));
     expect(heard).toHaveBeenCalledTimes(1);
     s.dispose();
     expect(mod.hostedSaveLabel()).toBeNull();
