@@ -110,6 +110,18 @@ describe('a page of a site', () => {
     expect(app.declared.permissions).toMatchObject({ storage: { enabled: true } });
   });
 
+  it('takes a Python page’s modules from the manifest, which no page can name', async () => {
+    serve({
+      'index.html': '<script src="softn/softn.js"></script><script src="main.py"></script><p>{count} {doubled}</p>',
+      'main.py': 'from helpers import double\ncount = 1\ndoubled = double(count)\n',
+      'helpers.py': 'def double(n):\n    return n * 2\n',
+      'manifest.json': JSON.stringify({ name: 'Py', files: { logic: ['helpers.py', 'main.py', 'gone.py'] } }),
+    });
+    const app = await loadPageApplication({ pageUrl: `${SITE}index.html`, runtimeScripts: RUNTIME }, new AbortController().signal);
+    expect(JSON.parse(app.textFiles.get('manifest.json')!).files.logic).toEqual(['helpers.py', 'main.py']);
+    expect(app.python?.modules).toEqual(['helpers', 'main']);
+  });
+
   it('answers asset() with the path, for the browser to read from the site', async () => {
     serve(FILES);
     const app = await loadPageApplication({ pageUrl: `${SITE}index.html`, runtimeScripts: RUNTIME }, new AbortController().signal);

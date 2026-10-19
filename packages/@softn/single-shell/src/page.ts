@@ -197,13 +197,30 @@ export async function loadPageApplication(
     }
   }
   await fetchText('permission.json');
+
+  // The logic and seed files the manifest lists, which no page names: a
+  // Python app's modules (`import helpers` names a module, not a file, so a
+  // page cannot be followed to it) and the helpers a JavaScript app lists
+  // there. Listed first, in the manifest's order, as the composer runs them.
+  const listed = async (group: 'logic' | 'xdb', found: string[]): Promise<string[]> => {
+    const files = siteManifest.files as Record<string, unknown> | undefined;
+    const paths = files && typeof files === 'object' && Array.isArray(files[group]) ? (files[group] as unknown[]) : [];
+    const kept: string[] = [];
+    for (const written of paths) {
+      if (typeof written !== 'string') continue;
+      // The manifest's paths are from where it is: the page's folder.
+      const path = resolveFrom('manifest.json', written.replace(/^\//, ''));
+      if (path !== null && !kept.includes(path) && (await fetchText(path)) !== null) kept.push(path);
+    }
+    return [...kept, ...found.filter((path) => !kept.includes(path))];
+  };
   const title = titleOf(pageText) ?? (typeof siteManifest.name === 'string' ? siteManifest.name : undefined) ?? 'Application';
   const manifest = {
     ...siteManifest,
     name: typeof siteManifest.name === 'string' && siteManifest.name ? siteManifest.name : title,
     version: typeof siteManifest.version === 'string' && siteManifest.version ? siteManifest.version : '1.0.0',
     main: mainPath,
-    files: { ui: pages, logic, xdb, assets: [] },
+    files: { ui: pages, logic: await listed('logic', logic), xdb: await listed('xdb', xdb), assets: [] },
   };
   textFiles.set('manifest.json', JSON.stringify(manifest));
   mark('softn:bundle-fetch:end');
