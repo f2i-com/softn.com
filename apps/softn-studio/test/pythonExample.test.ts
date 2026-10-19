@@ -87,7 +87,7 @@ describe('the Python scaffold', () => {
       referenceImages: [],
     };
     const files = new Map(scaffoldProjectFiles(brief, generateBlueprintFromBrief(brief)).map((f) => [f.path, f.content]));
-    const composed = composeBundleSource(files, 'ui/main.ui', ['logic/main.py']);
+    const composed = composeBundleSource(files, 'index.html', ['main.py']);
     const context = makeContext();
     const runtime = createScriptRuntime(context, undefined, 'studio-python-scaffold', undefined, composed.logicBasePath, {
       mode: 'main',

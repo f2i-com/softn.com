@@ -45,7 +45,7 @@ const brief = (over: Partial<ProjectBrief> = {}): ProjectBrief => ({
 /** Every `#each` header in the project's pages. */
 const loops = (files: Map<string, VFSFile>) =>
   [...files].flatMap(([path, file]) =>
-    path.endsWith('.ui') && typeof file.content === 'string'
+    /\.(ui|html)$/.test(path) && typeof file.content === 'string'
       ? file.content.split('\n').filter((line) => /^\s*#each\b/.test(line)).map((line) => `${path}: ${line.trim()}`)
       : [],
   );

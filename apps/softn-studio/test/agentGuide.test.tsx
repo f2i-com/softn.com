@@ -58,10 +58,11 @@ const vfs = (entries: Record<string, string>) =>
 async function renderApp(files: Map<string, VFSFile>, appId: string): Promise<{ errors: string[]; text: () => string }> {
   // The runtime's own composer accepts it…
   const text = new Map([...files].map(([p, f]) => [p, f.content as string]));
-  const manifest = JSON.parse(text.get('manifest.json') ?? '{}') as { files?: { logic?: string[] } };
-  composeBundleSource(text, 'ui/main.ui', manifest.files?.logic ?? []);
+  const manifest = JSON.parse(text.get('manifest.json') ?? '{}') as { main?: string; files?: { logic?: string[] } };
+  const main = manifest.main ?? 'ui/main.ui';
+  composeBundleSource(text, main, manifest.files?.logic ?? []);
   // …and the preview composes it the same way.
-  const result = composePreviewProject(files, 'ui/main.ui');
+  const result = composePreviewProject(files, main);
   if (!result.ok) throw new Error(result.error);
   const { composition } = result;
   const errors: string[] = [];
@@ -99,7 +100,7 @@ function blocks(markdown: string, language: string): string[] {
 /** The example app's files, from its fenced blocks. */
 function exampleFiles(example: string, logicPath: string): Map<string, VFSFile> {
   const language = logicPath.endsWith('.py') ? 'python' : 'javascript';
-  return vfs({ 'ui/main.ui': blocks(example, 'xml')[0], [logicPath]: blocks(example, language)[0], 'manifest.json': blocks(example, 'json')[0] });
+  return vfs({ 'index.html': blocks(example, 'xml')[0], [logicPath]: blocks(example, language)[0], 'manifest.json': blocks(example, 'json')[0] });
 }
 
 const REGISTERED = new Set(COMPONENT_INDEX.filter((c) => c.registered).map((c) => c.name));
@@ -119,7 +120,7 @@ describe('the guide names only components that exist', () => {
 
 describe('the complete example apps', () => {
   it('JavaScript: composes, renders without errors, and works — type, add, filter, toggle, delete', async () => {
-    const files = exampleFiles(JAVASCRIPT_APP_EXAMPLE, 'logic/main.logic');
+    const files = exampleFiles(JAVASCRIPT_APP_EXAMPLE, 'main.js');
     const { errors, text } = await renderApp(files, 'StudioGuideJS');
     expect(errors).toEqual([]);
     expect(text()).toContain('Tasks');
@@ -158,7 +159,7 @@ describe('the complete example apps', () => {
   }, 30_000);
 
   it('Python: composes and renders without errors on the web-python engine', async () => {
-    const files = exampleFiles(PYTHON_APP_EXAMPLE, 'logic/main.py');
+    const files = exampleFiles(PYTHON_APP_EXAMPLE, 'main.py');
     const { errors, text } = await renderApp(files, 'StudioGuidePy');
     expect(errors).toEqual([]);
     expect(text()).toContain('No tasks');
@@ -181,13 +182,13 @@ describe('every markup snippet in the guide', () => {
     const example = python ? PYTHON_APP_EXAMPLE : JAVASCRIPT_APP_EXAMPLE;
     const snippets = blocks(guide, 'xml').filter((b) => !example.includes(b));
     expect(snippets.length).toBeGreaterThanOrEqual(2);
-    const logicPath = python ? 'logic/main.py' : 'logic/main.logic';
+    const logicPath = python ? 'main.py' : 'main.js';
     for (const [i, snippet] of snippets.entries()) {
-      const ui = snippet.includes('<logic') ? snippet : `<logic src="../${logicPath}" />\n${snippet}`;
+      const ui = /<(script|logic)\b/.test(snippet) ? snippet : `<script src="${logicPath}"></script>\n${snippet}`;
       const files = vfs({
-        'ui/main.ui': ui,
+        'index.html': ui,
         [logicPath]: python ? STAND_IN.python : STAND_IN.javascript,
-        'manifest.json': JSON.stringify({ name: 'Snippet', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: [logicPath] } }),
+        'manifest.json': JSON.stringify({ name: 'Snippet', version: '1.0.0', main: 'index.html', files: { ui: ['index.html'], logic: [logicPath] } }),
       });
       const { errors } = await renderApp(files, `StudioGuideSnippet${python ? 'Py' : 'Js'}${i}`);
       expect({ snippet: i, errors }).toEqual({ snippet: i, errors: [] });
@@ -260,7 +261,7 @@ describe('what the guide says of timers', () => {
   // in page logic then. The runtime runs all four now, in page logic only.
   it('says the four work in page logic, and where they do not', () => {
     const js = buildGuide({ python: false, torch: false, backend: true, style: 'clean' });
-    const logic = js.slice(js.indexOf('## .logic Syntax'), js.indexOf('## Capabilities'));
+    const logic = js.slice(js.indexOf('## Logic (.js)'), js.indexOf('## Capabilities'));
     for (const name of ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval']) expect(logic).toContain(`\`${name}\``);
     expect(logic).toMatch(/work in page logic/);
     expect(logic).toMatch(/`requestAnimationFrame` is not available/);

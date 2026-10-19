@@ -106,11 +106,11 @@ describe("the Python prompt's own example in the renderer", () => {
     const main = blocks.find((b) => b[1] === 'python')![2];
     const files = new Map<string, VFSFile>(
       [
-        ['ui/main.ui', ui],
-        ['logic/main.py', main],
+        ['index.html', ui],
+        ['main.py', main],
       ].map(([path, content]) => [path, { path, content, mimeType: 'text/plain', lastModified: 0, lastModifiedBy: 'user', version: 1 }]),
     );
-    const result = composePreviewProject(files, 'ui/main.ui');
+    const result = composePreviewProject(files, 'index.html');
     if (!result.ok) throw new Error(result.error);
     const { composition } = result;
 

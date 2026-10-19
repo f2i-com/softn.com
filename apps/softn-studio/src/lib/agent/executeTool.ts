@@ -22,6 +22,7 @@ import { formatCheckReport, type AgentEnvironment, type RunFunctionRequest } fro
 import { lineDiff, type LineDiff } from './diff';
 import { lookupComponents, readDocs } from './knowledge';
 import type { AgentToolCall, CheckReport, PlanItem } from './types';
+import { isLogicPath, isPagePath } from '../sourceKinds';
 
 export interface ToolContext {
   /** What the model has read in this run, and at which version: the "seen" rule. */
@@ -60,8 +61,8 @@ function str(input: Record<string, unknown>, key: string): string | undefined {
 }
 
 function kindOf(path: string): string {
-  if (/\.ui$/i.test(path)) return 'page';
-  if (/\.(logic|py)$/i.test(path)) return 'logic';
+  if (isPagePath(path)) return 'page';
+  if (isLogicPath(path)) return 'logic';
   if (/\.xdb$/i.test(path)) return 'data';
   if (path === 'manifest.json' || path === 'permission.json' || /\.json$/i.test(path)) return 'config';
   if (/\.(html?|css|js|ts|tsx|md|txt)$/i.test(path)) return 'text';

@@ -12,6 +12,7 @@ import { confirmLeaveDraft } from '../../lib/handEdit';
 import { askAgentToFix } from '../../lib/agentOrchestrator';
 import { listenToConsoleErrors, notePreviewFault, readAppFault, readAppLog } from '../../lib/previewFaults';
 import { MediaView, mediaKindFor } from './MediaView';
+import { isPagePath } from '../../lib/sourceKinds';
 import {
   buildPreviewXDBState,
   clearPreviewXDBCollections,
@@ -303,14 +304,16 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   const activeContent = activeVFSFile ? files.get(activeVFSFile)?.content ?? null : null;
 
   // Determine if the active file is HTML-renderable
-  const isHtmlFile = activeVFSFile ? /\.(html|htm)$/i.test(activeVFSFile) : false;
+  // A page written as HTML is a page, run as the app runs it; an .html the
+  // app keeps among its assets is shown as the file it is.
+  const isHtmlFile = activeVFSFile ? /\.(html|htm)$/i.test(activeVFSFile) && !isPagePath(activeVFSFile) : false;
   // Images, audio, video, fonts and PDFs are shown as themselves; so is any
   // other file kept as bytes, with its name, type and size.
   const showsAsMedia = Boolean(
     activeVFSFile && activeContent !== null && (mediaKindFor(activeVFSFile) || typeof activeContent !== 'string'),
   );
   const isManifestFile = activeVFSFile === 'manifest.json';
-  const isSoftNUIFile = activeVFSFile ? /\.ui$/i.test(activeVFSFile) : false;
+  const isSoftNUIFile = activeVFSFile ? isPagePath(activeVFSFile) : false;
   // A page is both something to look at and source: it gets Preview | Code.
   const canSwitchView = (isSoftNUIFile || isHtmlFile) && previewFileContent !== null;
   const showCode = canSwitchView && viewMode === 'code';

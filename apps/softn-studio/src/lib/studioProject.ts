@@ -9,6 +9,7 @@ import type {
 } from '../types/studio';
 import { PYTHON_PACKAGES, parseXDBFile, readPythonPackages } from '@softn/core';
 import { isPrivatePath } from './paths';
+import { isJavaScriptLogicPath } from './sourceKinds';
 
 /**
  * The Python packages a project asks the runtime for (today only `torch`).
@@ -90,7 +91,7 @@ export function projectLogicLanguage(
     if (isPrivatePath(path)) continue;
     const lower = path.toLowerCase();
     if (lower.endsWith('.py')) python = true;
-    else if (lower.endsWith('.logic')) javascript = true;
+    else if (isJavaScriptLogicPath(path)) javascript = true;
   }
   if (python !== javascript) return python ? 'python' : 'javascript';
   return brief?.logicLanguage ?? 'javascript';
@@ -227,7 +228,7 @@ export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
       status: 'complete',
       dependencies: ['task-blueprint'],
       retries: 0,
-      files: ['ui/main.ui', ...pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0])],
+      files: [MAIN_PAGE_PATH, ...pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0])],
     },
     {
       id: 'task-data',
@@ -293,7 +294,7 @@ function uiText(value: unknown): string {
 /**
  * Each page's slug, made unique when two names collapse to one.
  *
- * This is the one page-path rule. The scaffold writes `ui/pages/<slug>.ui`
+ * This is the one page-path rule. The scaffold writes `pages/<slug>.html`
  * with it; the pages panel and the validator find a page's file with it. They
  * used to have three copies that disagreed — the panel looked only in
  * `pages/` and `ui/`, so clicking a page of a project Studio had just created
@@ -314,12 +315,19 @@ export function pageSlugs(pages: readonly Pick<BlueprintPage, 'name'>[]): string
 
 /**
  * The files a page with this slug may live in, in the order they are looked
- * for: where the scaffold writes it first, then the shapes an imported or
- * hand-made project uses.
+ * for: where the scaffold writes it first, then where it wrote pages before
+ * it wrote them as HTML (`ui/pages/<slug>.ui`), then the shapes an imported
+ * or hand-made project uses.
  */
 export function pageFileCandidates(slug: string): string[] {
-  return [`ui/pages/${slug}.ui`, `ui/${slug}.ui`, `pages/${slug}.ui`, `pages/${slug}.html`, `pages/${slug}.htm`];
+  return [`pages/${slug}.html`, `ui/pages/${slug}.ui`, `ui/${slug}.ui`, `pages/${slug}.ui`, `pages/${slug}.htm`];
 }
+
+/**
+ * The app's main page in a new project: `index.html`, where a site's first
+ * page is. A project made before has `ui/main.ui`, and runs as it did.
+ */
+export const MAIN_PAGE_PATH = 'index.html';
 
 /** The file blueprint page `index` lives in, or null when the project has none of its candidates. */
 export function findPageFile(
@@ -371,12 +379,12 @@ export function appIconSvg(accent: string): string {
  * The app's shell: nav across the pages, and the page that is showing.
  *
  * What the user typed — the name, the description, the page labels — is not
- * written into the template at all. It is data in main.logic, and the
+ * written into the template at all. It is data in main.js, and the
  * template reads it; a name that closes a tag or opens an expression is then
  * only ever a string.
  */
 function buildMainUi(brief: ProjectBrief, blueprint: Blueprint, slugs: string[], logicPath: string): string {
-  const imports = slugs.map((slug) => `<import ${pageComponentName(slug)} from="./pages/${slug}.ui" />`).join('\n');
+  const imports = slugs.map((slug) => `<import ${pageComponentName(slug)} from="./pages/${slug}.html" />`).join('\n');
   // One page is shown as it is: no row of buttons with a single button in it, and no switch
   // with a single branch. (App takes no `title`; one was written here and did nothing.)
   const single = slugs.length === 1;
@@ -397,7 +405,7 @@ function buildMainUi(brief: ProjectBrief, blueprint: Blueprint, slugs: string[],
       </Stack>`;
   return `${imports}
 
-${buildDataBlock(blueprint)}<logic src="../${logicPath}" />
+${buildDataBlock(blueprint)}<script src="${logicPath}"></script>
 
 <App theme="${themeFor(brief.style)}">
   <Container size="lg">
@@ -543,17 +551,19 @@ function buildXdb(collection: BlueprintCollection): string {
  * plus Studio's own notes under builder/.
  *
  * It used to be HTML pages behind a manifest `entry` field — a shape nothing
- * else in SoftN read. The runtime and the directory read `main`, resolve
- * files by the manifest's groups, and run .ui; so that is what is written.
+ * else in SoftN read — and then `ui/main.ui` with `logic/main.logic`. A page
+ * can be written as an HTML page now, so it is HTML again, run by the
+ * runtime: `index.html` names its code with `<script src="main.js">`, imports
+ * `pages/<slug>.html`, and `main` in the manifest names it.
  *
- * The logic is `logic/main.logic` or, when the brief chose Python,
- * `logic/main.py`; the file's name is what tells the runtime which it is.
+ * The logic is `main.js` or, when the brief chose Python, `main.py`; the
+ * file's name is what tells the runtime which it is.
  */
 export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint): Array<{ path: string; content: string }> {
   const slugs = pageSlugs(blueprint.pages);
   const pagePaths = slugs.map((slug) => pageFileCandidates(slug)[0]);
   const python = brief.logicLanguage === 'python';
-  const logicPath = python ? 'logic/main.py' : 'logic/main.logic';
+  const logicPath = python ? 'main.py' : 'main.js';
   const packages = python ? (brief.pythonPackages ?? []).filter((name) => PYTHON_PACKAGES.includes(name)) : [];
   const xdbPaths = blueprint.collections.map((c) => `xdb/${collectionKey(c.name)}.xdb`);
   const requirements = [
@@ -576,11 +586,11 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
         name: brief.appName,
         version: '1.0.0',
         description: brief.description,
-        main: 'ui/main.ui',
+        main: MAIN_PAGE_PATH,
         icon: APP_ICON_PATH,
         target: brief.target,
         files: {
-          ui: ['ui/main.ui', ...pagePaths],
+          ui: [MAIN_PAGE_PATH, ...pagePaths],
           logic: [logicPath],
           xdb: xdbPaths,
           assets: [APP_ICON_PATH],
@@ -654,7 +664,7 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
       content: python ? buildMainPython(brief, blueprint, slugs) : buildMainLogic(brief, blueprint, slugs),
     },
     {
-      path: 'ui/main.ui',
+      path: MAIN_PAGE_PATH,
       content: buildMainUi(brief, blueprint, slugs, logicPath),
     },
   ];
@@ -699,6 +709,7 @@ export function getBundleEntryPath(files: Map<string, VFSFile>): string | null {
       : null;
   if (manifestEntry && files.has(manifestEntry)) return manifestEntry;
 
+  if (files.has(MAIN_PAGE_PATH)) return MAIN_PAGE_PATH;
   if (files.has('ui/main.ui')) return 'ui/main.ui';
   if (files.has('pages/home.html')) return 'pages/home.html';
 

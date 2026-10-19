@@ -287,7 +287,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <section className="st-hero" aria-labelledby="studio-home-title">
             <h1 id="studio-home-title" className="st-hero-title">Describe an app. Studio builds it.</h1>
             <p className="st-hero-lede">
-              Tell the AI what the app is for. Studio writes its <code>.ui</code> pages, logic and data,
+              Tell the AI what the app is for. Studio writes its pages, in HTML with SoftN components, its logic and its data,
               shows it running as it goes, and exports a <code>.softn</code> bundle you can run or publish.
             </p>
             <div className="st-hero-actions">

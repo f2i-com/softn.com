@@ -3,7 +3,7 @@
  * Clicking a blueprint page opens its file.
  *
  * The panel looked for `pages/<slug>` and `ui/<slug>.ui`, but the scaffold
- * writes `ui/pages/<slug>.ui`, so in every project Studio created the click
+ * writes `pages/<slug>.html` (`ui/pages/<slug>.ui` before), so in every project Studio created the click
  * selected the page and opened nothing. The panel now asks the same helper
  * the scaffold writes with.
  */
@@ -56,6 +56,6 @@ describe('the pages panel', () => {
 
     const ws = useWorkspaceStore.getState();
     expect(ws.activePageId).toBe(blueprint.pages[1].id);
-    expect(ws.activeFilePath).toBe('ui/pages/team-settings.ui');
+    expect(ws.activeFilePath).toBe('pages/team-settings.html');
   });
 });

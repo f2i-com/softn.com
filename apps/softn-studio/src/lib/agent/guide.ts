@@ -6,7 +6,7 @@
  * rather than written from memory, and the guide the single-shot prompt used
  * had real errors this one corrects: `:value` is one-way (only `:bind` writes
  * back), `#each (x in xs; let i)` is a parse error, `<data>` collections are not visible
- * to logic, `<import>` of a .ui file drops its props and children, `<style>`
+ * to logic, `<import>` of a page drops its props and children, `<style>`
  * is global, and `<App title>` does nothing.
  *
  * test/agentGuide.test.tsx keeps it honest: every component it names exists
@@ -15,8 +15,12 @@
  * on the real Python engine.
  *
  * A JavaScript project's guide says nothing about Python, and a Python
- * project's says nothing of .logic syntax: each is taught the one language it
- * writes (test/logicLanguage.test.tsx).
+ * project's says nothing of JavaScript logic: each is taught the one language
+ * it writes (test/logicLanguage.test.tsx).
+ *
+ * It teaches the layout Studio scaffolds, `index.html`, `pages/*.html` and
+ * `main.js` or `main.py`, and says that a project made before, `ui/*.ui` and
+ * `logic/*.logic`, works the same: the agent edits whichever it is given.
  */
 
 import { SOFTN_PY_STDLIB_IMPORTS } from '@softn/core';
@@ -29,12 +33,12 @@ const PYTHON_RESERVED = ['`softn`', 'any name starting `__softn`', ...SOFTN_PY_S
 
 export const PYTHON_LOGIC_SECTION = `## Python logic (.py)
 
-This project's logic is **Python**. The runtime decides a logic file's language from its name and nothing else: \`.py\` is Python, \`.logic\` is JavaScript.
+This project's logic is **Python**. The runtime decides a logic file's language from its name and nothing else: \`.py\` is Python, \`.js\` and \`.logic\` are JavaScript.
 
-- **Only .py files, referenced with \`<logic src>\`.** Put all logic in .py files (e.g. \`logic/main.py\`) and reference the entry from the .ui file with \`<logic src="../logic/main.py" />\`; the path is relative to the .ui file.
-- **No inline Python.** Never write logic inside a \`<logic>\` block. \`<logic lang="python">\` is refused, because Python's indentation is the program and markup indentation is not reliable; an inline block without it is JavaScript.
-- **One language per app.** Do not create \`.logic\` files or inline JavaScript logic. A bundle whose logic is partly each is refused.
-- **Each file is a module named after its file.** \`logic/helpers.py\` is \`helpers\`: reach it with \`import helpers\` or \`from helpers import double\`. List helper modules in manifest.json's \`files.logic\` before the entry. A module name is letters, digits and underscores, not starting with a digit, and no two .py files may share one, even in different folders. Reserved, and refused as file names: ${PYTHON_RESERVED}.
+- **Only .py files, referenced with \`<script src>\`.** Put all logic in .py files (e.g. \`main.py\`) and reference the entry from the page with \`<script src="main.py"></script>\`; the path is relative to the page. (\`<logic src="main.py" />\` is the same, in projects made before.)
+- **No inline Python.** Never write logic inside a \`<script>\` or \`<logic>\` block. \`<script type="text/python">\` and \`<logic lang="python">\` are refused, because Python's indentation is the program and markup indentation is not reliable; an inline block without them is JavaScript.
+- **One language per app.** Do not create \`.js\` or \`.logic\` files or inline JavaScript logic. A bundle whose logic is partly each is refused.
+- **Each file is a module named after its file.** \`helpers.py\` is \`helpers\`: reach it with \`import helpers\` or \`from helpers import double\`. List helper modules in manifest.json's \`files.logic\` before the entry. A module name is letters, digits and underscores, not starting with a digit, and no two .py files may share one, even in different folders. Reserved, and refused as file names: ${PYTHON_RESERVED}.
 - **Every top-level name is state.** A module-level \`count = 0\` is state the template reads as \`{count}\`. A name starting with \`_\` is private and not exposed (except \`_init\`). State must be JSON data — \`dict\`, \`list\`, \`str\`, \`int\`, \`float\`, \`bool\`, \`None\`; a class instance is not offered as state. Keep it shallow.
 - **Handlers use \`global\`.** A function that assigns a module-level name must declare it \`global\`, or Python makes a local and the state never changes.
 - **Functions are the app's API.** Every top-level \`def\` can be called from the template — \`@click={() => add_task()}\`, \`@click={() => remove(item.id)}\`, \`{remaining()}\`. \`_init()\`, if defined, runs once after the app loads. A function called inside \`{…}\` must only read state: changes it makes there do not reach the page.
@@ -86,12 +90,12 @@ manifest.json has a \`server\` block: the app has a backend that runs on its hos
 
 export const PYTHON_APP_EXAMPLE = `## Complete App Example (Python)
 
-Here is a minimal but complete todo app: the .ui file and its logic in \`logic/main.py\`.
+Here is a minimal but complete todo app: the page and its logic in \`main.py\`.
 
-\`ui/main.ui\`:
+\`index.html\`:
 
 \`\`\`xml
-<logic src="../logic/main.py" />
+<script src="main.py"></script>
 
 <App theme="dark">
   <Container size="sm">
@@ -121,7 +125,7 @@ Here is a minimal but complete todo app: the .ui file and its logic in \`logic/m
 </App>
 \`\`\`
 
-\`logic/main.py\`:
+\`main.py\`:
 
 \`\`\`python
 tasks = []
@@ -160,21 +164,22 @@ def remaining():
 \`manifest.json\`:
 
 \`\`\`json
-{ "name": "Tasks", "version": "1.0.0", "main": "ui/main.ui", "files": { "ui": ["ui/main.ui"], "logic": ["logic/main.py"] } }
+{ "name": "Tasks", "version": "1.0.0", "main": "index.html", "files": { "ui": ["index.html"], "logic": ["main.py"] } }
 \`\`\``;
 
 // ---------------------------------------------------------------------------
 // JavaScript material
 // ---------------------------------------------------------------------------
 
-const JAVASCRIPT_LOGIC_SECTION = `## .logic Syntax
+const JAVASCRIPT_LOGIC_SECTION = `## Logic (.js)
 
-.logic is JavaScript, run by a sandboxed engine. Reference it from a page with \`<logic src="../logic/main.logic" />\` (relative to the .ui file), or write a short \`<logic>…</logic>\` block inline.
+Logic is JavaScript in a \`.js\` file, run by a sandboxed engine. Reference it from a page with \`<script src="main.js"></script>\` (relative to the page), or write a short \`<script>…</script>\` block inline. (\`.logic\` files and \`<logic src>\` are the same, in projects made before.) It is one script, not modules: every file's top-level names are the page's.
 
 - **Every top-level variable is state** the template reads by name; **every top-level function** can be called from the template. Assign to change state: \`count = count + 1\`, \`tasks = tasks.concat([task])\`, \`tasks = tasks.filter((t) => t.id !== id)\`. Reassign rather than mutate in place, so the change is seen.
 - **\`_init()\`**, if defined, runs once after the app loads. \`$: total = items.length\` declares a computed value the template reads as \`{total}\`.
 - **A function called inside \`{…}\` must only read state** (\`{remaining()}\`): changes it makes there do not reach the page. Change state from event handlers.
-- **Share code between .logic files** with a whole-file \`import "./helpers.logic"\` written inside the logic, or by listing the helper in manifest.json's \`files.logic\`. (\`<import { f } from="…" />\` in markup does nothing.)
+- **Share code between files** with \`import "./helpers.js"\` or \`import { total } from "./helpers.js"\`, which places that file's code, or by listing the helper in manifest.json's \`files.logic\`. \`export\` before a declaration is allowed and changes nothing. An import that renames (\`{ a as b }\`), a default or namespace import, and a package import (\`from "lodash"\`) are not read. (\`<import { f } from="…" />\` in markup does nothing.)
+- **There is no \`document\`.** The page shows state, and a handler changes state: never \`document.getElementById\`, \`querySelector\`, \`innerHTML\` or \`addEventListener\` on an element.
 - **Globals:** \`softn.*\` (capabilities — see below), \`db\` (XDB records), \`localStorage\` (kept per app), \`navigator.clipboard\`, \`window.addEventListener\` for keyboard and pointer events, and \`console\`. There is no \`fetch\` (use \`softn.net.fetch(url, options, callback)\`), no \`eval\` and no \`new Function\`.
 - **Timers:** \`setTimeout\`, \`setInterval\`, \`clearTimeout\` and \`clearInterval\` work in page logic: the callback runs like a handler and what it writes is drawn. Use them for a delay, a debounce or a countdown, and start one from a logic function (\`@click={() => startCountdown()}\`): markup cannot call them. For a game clock prefer \`<Loop interval={100} running={running} @tick={() => step()} />\`. Timers do not work in backend (server) logic. \`requestAnimationFrame\` is not available.
 - **\`db\`** (XDB): \`db.query("tasks")\`, \`db.get("tasks", id)\`, \`db.create("tasks", { title: "x" })\`, \`db.update(id, { done: true })\`, \`db.delete(id)\`. Records come back as \`{ id, collection, data: { … }, created_at, updated_at }\`.
@@ -199,12 +204,12 @@ function remaining() {
 
 export const JAVASCRIPT_APP_EXAMPLE = `## Complete App Example (JavaScript)
 
-A minimal but complete todo app: the page, its logic in \`logic/main.logic\`, and the manifest.
+A minimal but complete todo app: the page, its logic in \`main.js\`, and the manifest.
 
-\`ui/main.ui\`:
+\`index.html\`:
 
 \`\`\`xml
-<logic src="../logic/main.logic" />
+<script src="main.js"></script>
 
 <App theme="dark">
   <Container size="sm">
@@ -236,7 +241,7 @@ A minimal but complete todo app: the page, its logic in \`logic/main.logic\`, an
 </App>
 \`\`\`
 
-\`logic/main.logic\`:
+\`main.js\`:
 
 \`\`\`javascript
 let tasks = []
@@ -274,7 +279,7 @@ function remaining() {
 \`manifest.json\`:
 
 \`\`\`json
-{ "name": "Tasks", "version": "1.0.0", "main": "ui/main.ui", "files": { "ui": ["ui/main.ui"], "logic": ["logic/main.logic"] } }
+{ "name": "Tasks", "version": "1.0.0", "main": "index.html", "files": { "ui": ["index.html"], "logic": ["main.js"] } }
 \`\`\``;
 
 // ---------------------------------------------------------------------------
@@ -282,26 +287,26 @@ function remaining() {
 // ---------------------------------------------------------------------------
 
 export function buildGuide({ python, torch, backend = false, style }: { python: boolean; torch: boolean; backend?: boolean; style: string }): string {
-  const logicExt = python ? '.py' : '.logic';
-  const entry = python ? 'logic/main.py' : 'logic/main.logic';
+  const logicExt = python ? '.py' : '.js';
+  const entry = python ? 'main.py' : 'main.js';
   return `# How to build a SoftN app
 
-A SoftN app is a bundle of text files: pages in the SoftN UI language (\`.ui\`), logic, data and a manifest. The runtime composes the main page with its logic and renders it with SoftN's components.
+A SoftN app is a bundle of text files: pages written as HTML with SoftN's components and syntax in them (\`.html\`), logic, data and a manifest. The runtime composes the main page with its logic and renders it with SoftN's components. A project made before has \`.ui\` pages and \`.logic\` files instead: they are the same language, and you edit whichever the project has, keeping its names.
 
 ## Files
-- **manifest.json** — required. \`name\` (non-empty), \`version\`, \`main\` (the entry .ui file, e.g. \`"main": "ui/main.ui"\`, which must exist), and \`files\` listing every .ui, ${logicExt}, .xdb and asset you create, by group: \`{ "ui": […], "logic": […], "xdb": […], "assets": […] }\`. A path listed that does not exist is refused. \`config.execution\` may be \`"main"\` or \`"worker"\`${python ? '; `config.python.packages` may be `["torch"]`' : ''}. \`icon\` names the app's icon, an image in the bundle (\`"icon": "assets/icon.svg"\`). Keep it when you rewrite the manifest; an .svg is text, so you can redraw it with write_file. Never write an \`entry\` field; the runtime does not read it.
+- **manifest.json** — required. \`name\` (non-empty), \`version\`, \`main\` (the entry page, e.g. \`"main": "index.html"\`, which must exist), and \`files\` listing every page, ${logicExt}, .xdb and asset you create, by group: \`{ "ui": […], "logic": […], "xdb": […], "assets": […] }\`. A path listed that does not exist is refused. \`config.execution\` may be \`"main"\` or \`"worker"\`${python ? '; `config.python.packages` may be `["torch"]`' : ''}. \`icon\` names the app's icon, an image in the bundle (\`"icon": "assets/icon.svg"\`). Keep it when you rewrite the manifest; an .svg is text, so you can redraw it with write_file. Never write an \`entry\` field; the runtime does not read it.
 - **permission.json** — what the app may use: \`{ "permissions": { "net": { "enabled": true, "allowed_hosts": ["api.example.com"] }, "storage": { "enabled": true } } }\`. \`enabled\` must be the boolean \`true\`. Capabilities: net, camera, mic, files, qr, ai, gpu, sync, storage, accel. Without the file, every capability is denied; declare exactly what the logic calls, in the same step you write the call.
-- **ui/*.ui** — pages. **${python ? 'logic/*.py' : 'logic/*.logic'}** — logic, referenced from a page with \`<logic src>\`. **xdb/*.xdb** — seed records. **assets/** — images, sounds, fonts (already in the project; you write text files only, which an .svg is).
-${python ? '- **.py** — Python: this project\'s logic language. Each file is a module, referenced from a .ui file with `<logic src="...">`. (A `.logic` file is JavaScript, and one app cannot mix the two.)' : '- **.logic** — JavaScript, run in a sandboxed VM. Imported by .ui files for shared logic.'}
-- Keep manifest.json true: \`"main"\` names the entry .ui file, and \`"files"\` lists every .ui, ${logicExt}, .xdb and asset you create, by group.
+- **index.html** — the main page; **pages/*.html** — the pages it imports (\`ui/*.ui\` in a project made before). **${entry}** — logic, referenced from a page with \`<script src>\`. **xdb/*.xdb** — seed records. **assets/** — images, sounds, fonts (already in the project; you write text files only, which an .svg is).
+${python ? '- **.py** — Python: this project\'s logic language. Each file is a module, referenced from a page with `<script src="...">`. (A `.js` or `.logic` file is JavaScript, and one app cannot mix the two.)' : '- **.js** — JavaScript, run in a sandboxed VM (`.logic` in a project made before). Imported by a page, or by other logic, for shared code.'}
+- Keep manifest.json true: \`"main"\` names the entry page, and \`"files"\` lists every page (under \`ui\`), ${logicExt}, .xdb and asset you create, by group.
 
-## A .ui page
-A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<logic src="../${entry}" />\`${python ? '' : ' (or an inline `<logic>…</logic>`)'}, \`<data>\` for XDB collections, and \`<style>\`. \`<App theme="light">\` takes \`light\`, \`dark\` or \`system\`.
+## A page
+A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<script src="${entry}"></script>\`${python ? '' : ' (or an inline `<script>…</script>`)'}, \`<data>\` for XDB collections, and \`<style>\` (or \`<link rel="stylesheet" href="styles.css">\` for a stylesheet of the app's). \`<App theme="light">\` takes \`light\`, \`dark\` or \`system\`.
 
 **Theme.** An app's theme is kept in two places. manifest.json's \`config.theme.mode\` is the project's: \`"light"\` or \`"dark"\` is honoured wherever the app runs, and wins over the visitor's device and the theme of the site it is opened on; \`"system"\` (or no mode) follows the visitor. \`<App theme="light">\` or \`<App theme="dark">\` pins the page to that side wherever it runs, and wins over the manifest; a page that pins neither is drawn on the side \`config.theme.mode\` declares. When you change the app's theme, change both. For an app that follows the visitor, write \`"system"\` in the manifest and no \`theme\` on \`<App>\`.
 
 \`\`\`xml
-<logic src="../${entry}" />
+<script src="${entry}"></script>
 
 <App theme="dark">
   <Stack direction="vertical" gap="md" padding="lg">
@@ -311,6 +316,15 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
   </Stack>
 </App>
 \`\`\`
+
+### HTML in a page
+A page is HTML with SoftN in it: lower-case tags are HTML elements (\`<div>\`, \`<p>\`, \`<a>\`, \`<table>\`, \`<form>\`, \`<input>\`, \`<svg>\` and its shapes), capitalised tags are SoftN components (\`<Button>\`, \`<Card>\`). Use components for controls and layout where one exists; plain HTML is for what none covers. In an HTML element:
+- \`<br>\`, \`<img …>\`, \`<input …>\` need no \`/>\`. \`for\`, \`readonly\`, \`tabindex\` and HTML's other attribute names work as written.
+- \`onclick="add()"\` and the other \`on…\` attributes run their code when the event fires, with the event as \`event\`; a closing \`return false\` cancels the default. No \`this\`, and no \`if\` or \`let\` (call a logic function).
+- A \`<form>\` with no \`action\` never leaves its page: \`<form onsubmit="save(event)">\` runs \`save\`, and the page stays.
+- \`<input value="Ada">\` starts with that value and can be edited; to read what is typed, \`:bind\` it.
+- \`<img src="assets/logo.png">\` shows the bundle's file; so does \`url(assets/paper.png)\` in a stylesheet.
+- Braces in text are expressions (write \`{"{"}\` for one), a line starting \`#if\` is SoftN's, and every element but a void one needs its closing tag. Scripts and stylesheets from other sites are not loaded.
 
 ### Props and expressions
 - \`label="Save"\` is a string; \`size={3}\`, \`disabled={count > 3}\`, \`items={[1, 2]}\`, \`style={{ padding: "1rem" }}\` are expressions; a bare \`disabled\` is \`true\`. \`style="color: red; padding: 8px"\` also works as CSS text.
@@ -372,17 +386,17 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 - Inline forms: \`<Box if={open}>…</Box>\`, \`<Card each={items} as="item">{item.title}</Card>\`.
 
 ### Reuse: an imported page
-\`<import TaskRow from="./task-row.ui" />\` then \`<TaskRow />\` places that file's markup where the tag is, **in this page's scope**. It is not a component:
+\`<import TaskRow from="./task-row.html" />\` then \`<TaskRow />\` places that file's markup where the tag is, **in this page's scope**. It is not a component:
 - It reads this page's state, calls this page's functions and sees a loop's variable, by the same names the page uses.
 - Attributes and children written on the tag are dropped (\`<TaskRow task={task} @done={…} />\` passes nothing): there are no props, no events and no \`$emit\`. check_app warns at each such use.
 - The file has no scope of its own. State that belongs to one use, such as which row is being edited, lives in the page's logic (\`editingId\`), never in the imported file.
-- An imported file's \`<logic>\` joins the page's one scope, its \`<data>\` is declared by the page, and its own \`<App>\` root is taken off.
+- An imported file's \`<script>\` joins the page's one scope, its \`<data>\` is declared by the page, and its own \`<App>\` root is taken off.
 
-\`ui/main.ui\`:
+\`index.html\`:
 
 \`\`\`softn
-<import TaskRow from="./task-row.ui" />
-<logic src="../${entry}" />
+<import TaskRow from="./task-row.html" />
+<script src="${entry}"></script>
 
 <App>
   <Stack direction="vertical" gap="sm" padding="lg">
@@ -393,7 +407,7 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 </App>
 \`\`\`
 
-\`ui/task-row.ui\`, which reads \`task\` from the loop it is placed in and \`editingId\`, \`draft\`, \`rename\` and \`save\` from the page's logic:
+\`task-row.html\`, which reads \`task\` from the loop it is placed in and \`editingId\`, \`draft\`, \`rename\` and \`save\` from the page's logic:
 
 \`\`\`softn
 <Card>
@@ -408,7 +422,7 @@ A page is a template rooted at \`<App>\`, plus optional blocks in any order: \`<
 \`\`\`
 
 ### Assets
-\`<Image src={asset("assets/logo.png")} alt="Logo" />\` — the path is from the bundle root, never \`../\`. A file in the bundle is always named through \`asset("…")\`, which may be given a path it works out (\`asset("assets/avatars/" + person.id + ".png")\`). A bare path (\`src="assets/logo.png"\`) loads nothing when the app runs, and the check reports it.
+\`<Image src={asset("assets/logo.png")} alt="Logo" />\` — the path is from the bundle root, never \`../\`. A component names a file in the bundle through \`asset("…")\`, which may be given a path it works out (\`asset("assets/avatars/" + person.id + ".png")\`); on a component a bare path (\`src="assets/logo.png"\`) loads nothing when the app runs, and the check reports it. On an HTML element, \`<img src="assets/logo.png">\` and \`<video poster="…">\` show the bundle's file as written.
 
 ## Data with XDB
 - A \`.xdb\` file seeds a collection: \`{ "collection": "tasks", "records": [{ "id": "1", "title": "Buy milk", "done": false }] }\`. Every record needs a **string** \`id\` (a record without one is dropped). List the file in manifest.json's \`files.xdb\`, or its records are not loaded.
@@ -423,16 +437,16 @@ ${PYTHON_TORCH_SECTION}` : PYTHON_TORCH_UNDECLARED}` : JAVASCRIPT_LOGIC_SECTION}
 \`softn.net.fetch\` (net), \`softn.camera.*\` (camera), \`softn.mic.*\` (mic), \`softn.files.*\` (files), \`softn.qr.*\` (qr), \`softn.ai.*\` (ai; \`softn.ai.gpu.*\` needs gpu), \`softn.storage.*\` (storage — server storage for a published app), \`db.startSync\` (sync). Each needs its capability in permission.json. \`softn.backend.call\`, \`softn.audio.*\` for bundle sounds and \`softn.input.captureKeys\` need none. The preview grants no capabilities, so these calls fail there; Run opens the app in the runtime.
 
 ## Common mistakes and the errors they cause
-- \`<logic src="../logic/app${logicExt}" />\` naming a file that is not there: "logic/app${logicExt} is referenced by ui/main.ui but is not in the bundle".
+- \`<script src="app${logicExt}"></script>\` naming a file that is not there: "app${logicExt} is referenced by index.html but is not in the bundle".
 - manifest.json \`main\` missing or wrong: "The manifest names no entry file (main)." / "The manifest's entry file is not in the bundle: …".
 - manifest.json \`files\` listing a path that does not exist: "manifest.files.ui lists …, but the bundle has no such file."
 - A capability called but not declared: "Network access not permitted. Add net.enabled to permission.json".
 - An unknown capability in permission.json: "permission.json names capabilities the runtime does not have: …".
 - Template syntax the parser cannot read: "Unexpected token … in expression: the rest of the expression up to its closing "}" is not supported here and was not read" — rewrite it as a call to a logic function.
 ${python ? `- JavaScript and Python in one app: "This app mixes Python and JavaScript logic. …".
-- Inline Python: "ui/main.ui has an inline <logic lang="python"> block: put Python in a .py file and reference it with <logic src="...">".
-- A bad module name: "logic/my-app.py cannot be a Python module: name it with letters, digits and underscores, starting with a letter".
-- \`import torch\` without the declaration: "logic/main.py imports torch, which an app asks for in manifest.json: …".` : `- \`:value={x}\` on an input and expecting typing to change \`x\`: it does not; use \`:bind\`.`}
+- Inline Python: "index.html has an inline <script type="text/python"> block: put Python in a .py file and reference it with <script src="...">".
+- A bad module name: "my-app.py cannot be a Python module: name it with letters, digits and underscores, starting with a letter".
+- \`import torch\` without the declaration: "main.py imports torch, which an app asks for in manifest.json: …".` : `- \`:value={x}\` on an input and expecting typing to change \`x\`: it does not; use \`:bind\`.`}
 - \`{item.title}\` on a record bound with \`<data>\` shows nothing: use \`{item.data.title}\`.
 
 ## Style

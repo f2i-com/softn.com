@@ -14,6 +14,7 @@ import type { VFSFile } from '../types/studio';
 import { normalizeManifestForBundle } from './exportBundle';
 import { isPrivatePath, normalizeProjectPath } from './paths';
 import { getBundleEntryPath } from './studioProject';
+import { isPagePath } from './sourceKinds';
 
 export interface PreviewXDBState {
   bundles: XDBBundleData[];
@@ -127,7 +128,7 @@ function dataBlocksOf(source: string): string[] {
  * and is given nothing: what it reads without declaring is empty.
  */
 function appAround(text: ReadonlyMap<string, string>, page: string, entry: string | null): string | null {
-  if (!entry || entry === page || !/\.ui$/i.test(entry)) return null;
+  if (!entry || entry === page || !isPagePath(entry)) return null;
   return importClosure(text, entry).includes(page) ? entry : null;
 }
 

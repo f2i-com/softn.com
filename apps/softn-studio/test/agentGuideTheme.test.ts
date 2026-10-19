@@ -47,7 +47,7 @@ describe('the guide, on an app’s theme', () => {
       const files = new Map(scaffoldProjectFiles(brief(style), generateBlueprintFromBrief(brief(style))).map((f) => [f.path, f.content]));
       const mode = (JSON.parse(files.get('manifest.json')!) as { config: { theme: { mode: string } } }).config.theme.mode;
       expect(['light', 'dark']).toContain(mode);
-      expect(files.get('ui/main.ui'), style).toContain(`<App theme="${mode}">`);
+      expect(files.get('index.html'), style).toContain(`<App theme="${mode}">`);
     }
   });
 });

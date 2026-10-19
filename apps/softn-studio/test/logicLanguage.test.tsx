@@ -3,11 +3,11 @@
  * A project's logic language, from the brief to the model.
  *
  * Studio wrote JavaScript only: the brief had no choice, the scaffold always
- * wrote `logic/main.logic`, and the prompt taught `.logic` alone, so a model
+ * wrote `logic/main.logic` (`main.js` now), and the prompt taught `.logic` alone, so a model
  * asked to work on an imported Python app answered in JavaScript and the
  * result was refused for mixing languages. Pinned here: the choice is made in
  * the wizard and kept with the project (and a brief saved before it existed
- * still loads, as JavaScript); a Python brief scaffolds `logic/main.py`; an
+ * still loads, as JavaScript); a Python brief scaffolds `main.py`; an
  * existing project's language is read from its files; and the prompt teaches
  * Python's rules for a Python project while a JavaScript project's prompt is
  * the one it always had.
@@ -55,34 +55,34 @@ beforeEach(() => {
 });
 
 describe('the scaffold in each language', () => {
-  it('writes logic/main.py for a Python brief: a bundle the validator passes and the preview composes as Python', () => {
+  it('writes main.py for a Python brief: a bundle the validator passes and the preview composes as Python', () => {
     const brief: ProjectBrief = { ...BRIEF, logicLanguage: 'python' };
     const files = scaffoldProjectFiles(brief, generateBlueprintFromBrief(brief));
     const paths = files.map((f) => f.path);
-    expect(paths).toContain('logic/main.py');
-    expect(paths).not.toContain('logic/main.logic');
+    expect(paths).toContain('main.py');
+    expect(paths).not.toContain('main.js');
 
     const manifest = JSON.parse(files.find((f) => f.path === 'manifest.json')!.content);
-    expect(manifest.files.logic).toEqual(['logic/main.py']);
-    expect(files.find((f) => f.path === 'ui/main.ui')!.content).toContain('<logic src="../logic/main.py" />');
+    expect(manifest.files.logic).toEqual(['main.py']);
+    expect(files.find((f) => f.path === 'index.html')!.content).toContain('<script src="main.py"></script>');
 
-    const python = files.find((f) => f.path === 'logic/main.py')!.content;
+    const python = files.find((f) => f.path === 'main.py')!.content;
     expect(python).toContain('def go(page_id):\n    # Assigning a module-level name needs `global`, or Python makes a local.\n    global page\n    page = page_id');
     // The brief's text is data, as a JSON string literal Python also reads.
     expect(python).toContain(`appName = ${JSON.stringify(BRIEF.appName)}`);
 
     const vfs = toVfs(files);
     expect(validateProject(vfs, null).filter((e) => e.level === 'error')).toEqual([]);
-    const preview = composePreviewProject(vfs, 'ui/main.ui');
+    const preview = composePreviewProject(vfs, 'index.html');
     expect(preview.ok && preview.composition.python?.modules).toEqual(['main']);
   });
 
-  it('writes logic/main.logic, as before, for a JavaScript brief and for one that predates the choice', () => {
+  it('writes main.js for a JavaScript brief and for one that predates the choice', () => {
     for (const brief of [{ ...BRIEF, logicLanguage: 'javascript' as const }, BRIEF]) {
       const files = scaffoldProjectFiles(brief, generateBlueprintFromBrief(brief));
-      expect(files.map((f) => f.path)).toContain('logic/main.logic');
-      expect(files.map((f) => f.path)).not.toContain('logic/main.py');
-      expect(files.find((f) => f.path === 'ui/main.ui')!.content).toContain('<logic src="../logic/main.logic" />');
+      expect(files.map((f) => f.path)).toContain('main.js');
+      expect(files.map((f) => f.path)).not.toContain('main.py');
+      expect(files.find((f) => f.path === 'index.html')!.content).toContain('<script src="main.js"></script>');
     }
   });
 });
@@ -122,12 +122,12 @@ describe('the prompt in each language', () => {
     useVFSStore.getState().batchCreateFiles(READING_LIST_PYTHON.files, 'user');
     const { system } = buildSystemPromptWithRecord();
     expect(system).toContain('## Python logic (.py)');
-    expect(system).toContain('<logic src="../logic/main.py" />');
+    expect(system).toContain('<script src="main.py"></script>');
     expect(system).toMatch(/No inline Python/);
     expect(system).toMatch(/One language per app/);
     expect(system).toMatch(/Handlers use `global`/);
     expect(system).toContain('Reserved, and refused as file names: `softn`, any name starting `__softn`, `json`, `math`');
-    expect(system).toContain('lists every .ui, .py, .xdb and asset');
+    expect(system).toContain('lists every page (under `ui`), .py, .xdb and asset');
     expect(system).not.toContain('## .logic Syntax');
     expect(system).not.toContain('<import { formatDate } from="./utils.logic" />');
     // Two things rendering the Python example found: a handler named bare is
@@ -148,9 +148,9 @@ describe('the prompt in each language', () => {
   it('is the JavaScript prompt, with no Python in it, for a JavaScript project', () => {
     useVFSStore.getState().batchCreateFiles(READING_LIST.files, 'user');
     const { system } = buildSystemPromptWithRecord();
-    expect(system).toContain('## .logic Syntax');
-    expect(system).toContain('- **.logic** — JavaScript, run in a sandboxed VM. Imported by .ui files for shared logic.');
-    expect(system).toContain('lists every .ui, .logic, .xdb and asset');
+    expect(system).toContain('## Logic (.js)');
+    expect(system).toContain('- **.js** — JavaScript, run in a sandboxed VM (`.logic` in a project made before).');
+    expect(system).toContain('lists every page (under `ui`), .js, .xdb and asset');
     expect(system).not.toMatch(/Python/);
   });
 });
@@ -188,7 +188,7 @@ describe('the brief wizard', () => {
     act(() => button('Next').click());
     act(() => button('Generate').click());
     expect(useWorkspaceStore.getState().brief?.logicLanguage).toBe('python');
-    expect(useVFSStore.getState().files.has('logic/main.py')).toBe(true);
-    expect(useVFSStore.getState().files.has('logic/main.logic')).toBe(false);
+    expect(useVFSStore.getState().files.has('main.py')).toBe(true);
+    expect(useVFSStore.getState().files.has('main.js')).toBe(false);
   });
 });

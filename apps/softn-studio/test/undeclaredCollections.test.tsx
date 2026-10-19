@@ -130,7 +130,7 @@ describe('the pages Studio writes itself', () => {
     const whole = await browserEnvironment.checkApp(files, { blueprint: null });
     expect(whole.errors).toEqual([]);
     expect(whole.rendered).toMatch(/Sample title/);
-    const home = await browserEnvironment.checkApp(files, { blueprint: null, page: 'ui/pages/home.ui' });
+    const home = await browserEnvironment.checkApp(files, { blueprint: null, page: 'pages/home.html' });
     expect(home.errors).toEqual([]);
     expect(home.rendered).toMatch(/Sample title/);
   }, 30_000);

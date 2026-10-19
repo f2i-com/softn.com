@@ -23,7 +23,7 @@ import { SoftNRenderer, configureZippWasmSource } from '@softn/core';
 import { EXAMPLES } from '../src/examples';
 import { buildGuide } from '../src/lib/agent/guide';
 import { buildPreviewXDBState, composePreviewProject } from '../src/lib/previewProject';
-import { generateBlueprintFromBrief, scaffoldProjectFiles } from '../src/lib/studioProject';
+import { generateBlueprintFromBrief, getBundleEntryPath, scaffoldProjectFiles } from '../src/lib/studioProject';
 import type { ProjectBrief, VFSFile } from '../src/types/studio';
 
 configureZippWasmSource(readFileSync(resolve(process.cwd(), '../../packages/@softn/core/wasm-zipp/zipp_wasm_bg.wasm')));
@@ -48,7 +48,7 @@ const vfs = (entries: Array<{ path: string; content: string }>) =>
 
 /** The first heading of the project's main page, rendered as the preview renders it. */
 async function mainHeading(files: Map<string, VFSFile>, appId: string): Promise<HTMLElement> {
-  const result = composePreviewProject(files, 'ui/main.ui');
+  const result = composePreviewProject(files, getBundleEntryPath(files)!);
   if (!result.ok) throw new Error(result.error);
   const { composition } = result;
   container = document.createElement('div');
@@ -138,13 +138,13 @@ describe('the pages Studio writes', () => {
   // to copy that its component reference does not list.
   it('gives App no title, a prop App does not have, in the scaffold of either language or in either example', () => {
     const python = scaffoldProjectFiles({ ...BRIEF, logicLanguage: 'python' }, generateBlueprintFromBrief(BRIEF));
-    const pages = [...scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)), ...python, ...EXAMPLES.flatMap((e) => e.files)].filter((f) => f.path.endsWith('.ui'));
+    const pages = [...scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)), ...python, ...EXAMPLES.flatMap((e) => e.files)].filter((f) => /\.(ui|html)$/.test(f.path));
     for (const page of pages) expect(page.content, page.path).not.toMatch(/<App\b[^>]*\stitle=/);
   });
 
   it('leaves no heading’s colour to a class rule, in the scaffold of either language or in either example', () => {
     const python = scaffoldProjectFiles({ ...BRIEF, logicLanguage: 'python' }, generateBlueprintFromBrief(BRIEF));
-    const pages = [...scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)), ...python, ...EXAMPLES.flatMap((e) => e.files)].filter((f) => f.path.endsWith('.ui'));
+    const pages = [...scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)), ...python, ...EXAMPLES.flatMap((e) => e.files)].filter((f) => /\.(ui|html)$/.test(f.path));
     expect(pages.length).toBeGreaterThan(4);
     for (const page of pages) {
       expect(page.content, page.path).not.toMatch(/<Heading[^>]*\sclass(Name)?=/);

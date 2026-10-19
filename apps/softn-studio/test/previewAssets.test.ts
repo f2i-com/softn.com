@@ -67,8 +67,23 @@ describe('a bundle file named by its bare path', () => {
     expect(bareAssetPaths('ui/main.ui', source, files)).toEqual([
       'ui/main.ui line 2: src="assets/logo.svg" names a file in the bundle by its bare path, which nothing loads when the app runs (it is asked of the site the app is served from). Write src={asset("assets/logo.svg")}: asset() is what resolves a bundle file.',
       expect.stringMatching(/^ui\/main\.ui line 3: src="\.\/assets\/avatars\/ada\.png" names a file .* Write src=\{asset\("assets\/avatars\/ada\.png"\)\}/),
-      expect.stringMatching(/^ui\/main\.ui line 4: poster="\.\.\/assets\/logo\.svg" names a file .* Write poster=\{asset\("assets\/logo\.svg"\)\}/),
       expect.stringMatching(/^ui\/main\.ui line 4: src="assets\/intro\.mp4" names a file /),
+    ]);
+  });
+
+  it('is not found on an HTML element in quotes, which the runtime shows from the bundle', () => {
+    const page = [
+      '<link rel="stylesheet" href="styles.css">',
+      '<img src="assets/logo.svg" alt="Logo">',
+      '<video poster="../assets/logo.svg"></video>',
+      '<a href="pages/about.html">About</a>',
+      '<Image src="assets/logo.svg" />',
+    ].join('\n');
+    const project = new Map(files)
+      .set('styles.css', file('styles.css', 'p {}'))
+      .set('pages/about.html', file('pages/about.html', '<p>About</p>'));
+    expect(bareAssetPaths('index.html', page, project)).toEqual([
+      expect.stringMatching(/^index\.html line 5: src="assets\/logo\.svg" names a file /),
     ]);
   });
 
@@ -111,7 +126,9 @@ describe('a bundle file named by its bare path', () => {
     for (const python of [false, true]) {
       const guide = buildGuide({ python, torch: false, style: 'clean' });
       expect(guide).toContain('<Image src={asset("assets/logo.png")} alt="Logo" />');
-      expect(guide).toMatch(/A bare path \(`src="assets\/logo\.png"`\) loads nothing when the app runs/);
+      expect(guide).toMatch(/on a component a bare path \(`src="assets\/logo\.png"`\) loads nothing when the app runs/);
+      // On an HTML element it shows the file, which the check no longer reports.
+      expect(guide).toContain('`<img src="assets/logo.png">` and `<video poster="…">` show the bundle\'s file as written');
     }
   });
 });

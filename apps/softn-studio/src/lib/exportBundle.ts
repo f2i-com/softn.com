@@ -1,6 +1,8 @@
 import { zipSync } from 'fflate';
 import type { ValidationError, VFSFile } from '../types/studio';
 import { isPrivatePath, normalizeProjectPath, resolveProjectPath } from './paths';
+import { isLogicPath, isPagePath } from './sourceKinds';
+import { MAIN_PAGE_PATH } from './studioProject';
 
 /**
  * The archive a project would become, before it becomes one.
@@ -74,8 +76,6 @@ function collectEntries(files: Map<string, VFSFile>): Collected {
 
 const MANAGED_GROUPS = new Set(['ui', 'logic', 'server', 'xdb', 'assets']);
 
-/** A logic file in either language the runtime runs: `.logic` is JavaScript, `.py` is Python. */
-const LOGIC_FILE = /\.(logic|py)$/i;
 
 /**
  * The manifest a bundle needs, from whatever the project has, with the
@@ -120,6 +120,7 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
   const out: Record<string, unknown> = { ...manifest };
   if (typeof out.main !== 'string' || !out.main) {
     if (typeof out.entry === 'string' && out.entry) out.main = out.entry;
+    else if (collected.entries.has(MAIN_PAGE_PATH)) out.main = MAIN_PAGE_PATH;
     else if (collected.entries.has('ui/main.ui')) out.main = 'ui/main.ui';
   }
   if (typeof out.version !== 'string' || !out.version.trim()) out.version = '1.0.0';
@@ -141,12 +142,12 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
     }
     return [...ordered, ...remaining.values()];
   };
-  const ui = group('ui', (p) => /\.ui$/i.test(p));
+  const ui = group('ui', isPagePath);
   // A `.py` file is logic exactly as a `.logic` file is: its name is what
   // says it is Python. Matching `.logic` alone filed a Python app's modules
   // under assets, so the runtime never offered them to the composer as
   // helpers and a module the entry imports by name was not there.
-  const logic = group('logic', (p) => LOGIC_FILE.test(p) && !p.startsWith('server/'));
+  const logic = group('logic', (p) => isLogicPath(p) && !p.startsWith('server/'));
   // Server logic stays `.logic`: the PHP and Rust hosts run it as JavaScript
   // only, so a `server/*.py` is not server logic any host can run (the
   // validator says so rather than exporting it as if it were).

@@ -61,7 +61,7 @@ describe('a bundle Studio exported, imported again', () => {
     expect(blueprint!.navigation.items).toEqual(['Home', 'Sites', 'About']);
     // Each is found where the Pages panel and the validator look for it.
     const files = useVFSStore.getState().files;
-    expect(blueprint!.pages.map((_, i) => findPageFile(files, blueprint!.pages, i))).toEqual(['ui/pages/home.ui', 'ui/pages/sites.ui', 'ui/pages/about.ui']);
+    expect(blueprint!.pages.map((_, i) => findPageFile(files, blueprint!.pages, i))).toEqual(['pages/home.html', 'pages/sites.html', 'pages/about.html']);
     expect(validateProject(files, blueprint).filter((e) => e.type === 'missing-page-file')).toEqual([]);
     expect(useAIStore.getState().messages[0].content).toMatch(/and mapped 3 page\(s\)/);
   });

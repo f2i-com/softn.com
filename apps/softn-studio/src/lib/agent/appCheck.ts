@@ -25,6 +25,7 @@ import { backendSqlProblems, migrationSqlProblems } from './sqlLint';
 import { appliedMigrationPaths, projectRelative } from './appliedMigrations';
 import { duringCheck, explainEngineStops, heardByPreview } from '../previewFaults';
 import { bareAssetPaths } from '../previewAssets';
+import { isLogicPath, isPagePath } from '../sourceKinds';
 import { explainUngrantedCalls } from '../declaredCapabilities';
 
 export interface RunFunctionRequest {
@@ -42,15 +43,15 @@ export interface AgentEnvironment {
   runFunction(files: Map<string, VFSFile>, request: RunFunctionRequest): Promise<{ ok: boolean; text: string }>;
 }
 
-/** The page a check renders: the one asked for, else the manifest's main, else the first .ui file. */
+/** The page a check renders: the one asked for, else the manifest's main, else the first page. */
 export function pageToCheck(files: Map<string, VFSFile>, page?: string): string | null {
   if (page) {
     const path = normalizeProjectPath(page.replace(/^\.\//, ''));
     return path && files.has(path) ? path : null;
   }
   const main = getBundleEntryPath(files);
-  if (main && /\.ui$/i.test(main)) return main;
-  return [...files.keys()].filter((p) => /\.ui$/i.test(p)).sort()[0] ?? null;
+  if (main && isPagePath(main)) return main;
+  return [...files.keys()].filter(isPagePath).sort()[0] ?? null;
 }
 
 const HEADLESS_APP_ID = 'studio-agent-check';
@@ -360,8 +361,8 @@ export function lintTemplates(files: Map<string, VFSFile>): { errors: string[]; 
   const warnings: string[] = [];
   for (const [path, file] of files) {
     if (typeof file.content !== 'string') continue;
-    if (/\.(ui|logic|py)$/i.test(path)) warnings.push(...emitUses(path, file.content));
-    if (!/\.ui$/i.test(path)) continue;
+    if (isPagePath(path) || isLogicPath(path)) warnings.push(...emitUses(path, file.content));
+    if (!isPagePath(path)) continue;
     // Blank out other languages, keeping line numbers.
     const template = file.content.replace(/<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, (block) => block.replace(/[^\n]/g, ' '));
     const lineOf = (index: number) => template.slice(0, index).split('\n').length;
@@ -754,7 +755,7 @@ const checks: AgentEnvironment = {
     const target = pageToCheck(files, page);
     if (!target) {
       if (page) errors.push(`${page} is not a file in the project.`);
-      else errors.push('There is no .ui page to render: manifest.json\'s main should name one, e.g. "main": "ui/main.ui".');
+      else errors.push('There is no page to render: manifest.json\'s main should name one, e.g. "main": "index.html".');
       return { ok: false, errors: dedupe(errors), warnings: dedupe(warnings), renderedHeadless: false };
     }
     const composed = composePreviewProject(files, target);
@@ -795,7 +796,7 @@ const checks: AgentEnvironment = {
 
   async inspectPreview(files, page) {
     const target = pageToCheck(files, page);
-    if (!target) return { ok: false, text: page ? `${page} is not a file in the project.` : 'There is no .ui page to render.' };
+    if (!target) return { ok: false, text: page ? `${page} is not a file in the project.` : 'There is no page to render.' };
     if (typeof document === 'undefined') return { ok: false, text: 'inspect_preview needs a browser document, and there is none here. Use check_app.' };
     const outcome = await renderHeadless(files, target);
     if ('composeError' in outcome) return { ok: false, text: `${target} cannot be composed: ${outcome.composeError}` };
@@ -917,7 +918,7 @@ export function setupAssignments(step: SetupCall, functions: Record<string, unkn
  */
 export async function runAppFunction(files: Map<string, VFSFile>, request: RunFunctionRequest): Promise<{ ok: boolean; text: string }> {
   const target = pageToCheck(files, request.page);
-  if (!target) return { ok: false, text: request.page ? `${request.page} is not a file in the project.` : 'There is no .ui page whose logic to load.' };
+  if (!target) return { ok: false, text: request.page ? `${request.page} is not a file in the project.` : 'There is no page whose logic to load.' };
   const composed = composePreviewProject(files, target);
   if (!composed.ok) return { ok: false, text: `${target} cannot be composed: ${composed.error}` };
   const { composition } = composed;

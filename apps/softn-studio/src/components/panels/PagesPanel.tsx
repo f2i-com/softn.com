@@ -103,7 +103,7 @@ export const PagesPanel: React.FC = () => {
             {hasVFSPages && hasBlueprint && (
               <>
                 <div style={styles.sectionDivider}>
-                  <span style={styles.sectionLabel}>All .ui files</span>
+                  <span style={styles.sectionLabel}>All pages</span>
                 </div>
                 {uiFiles.map((path) => {
                   const name = path.split('/').pop() ?? path;

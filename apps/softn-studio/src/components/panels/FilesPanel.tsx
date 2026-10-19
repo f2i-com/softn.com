@@ -35,7 +35,7 @@ function buildTree(paths: string[]): TreeNode[] {
 }
 
 /** SoftN's own file types, whose extension is set in the language colour. */
-const LANGUAGE_EXT = /\.(ui|logic|py|xdb)$/i;
+const LANGUAGE_EXT = /\.(ui|html?|logic|js|py|xdb)$/i;
 
 function splitName(name: string): { base: string; ext: string } {
   const dot = name.lastIndexOf('.');

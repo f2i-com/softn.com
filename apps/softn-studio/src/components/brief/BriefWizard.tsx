@@ -154,7 +154,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   // One language for all of an app's logic: the runtime refuses a bundle
   // that mixes them, so this is a choice for the whole project.
   const languages: { id: LogicLanguage; label: string; ext: string; desc: string }[] = [
-    { id: 'javascript', label: 'JavaScript', ext: '.logic', desc: 'The SoftN default: logic in .logic files, written in JavaScript syntax.' },
+    { id: 'javascript', label: 'JavaScript', ext: '.js', desc: 'The SoftN default: logic in .js files, written as JavaScript.' },
     { id: 'python', label: 'Python', ext: '.py', desc: 'Logic in .py modules, each named after its file. Pick it if Python is what you know.' },
   ];
 

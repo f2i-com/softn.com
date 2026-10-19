@@ -41,12 +41,12 @@ function scaffold(overrides: Partial<ProjectBrief>) {
 
 const ui = (files: Array<{ path: string; content: unknown }>) =>
   files
-    .filter((f) => f.path.endsWith('.ui'))
+    .filter((f) => /\.(ui|html)$/.test(f.path))
     .map((f) => String(f.content))
     .join('\n');
 
 const logicOf = (files: Array<{ path: string; content: unknown }>) =>
-  String(files.find((f) => f.path === 'logic/main.logic')!.content);
+  String(files.find((f) => f.path === 'main.js')!.content);
 
 const toVfs = (files: Array<{ path: string; content: string }>) =>
   new Map<string, VFSFile>(
@@ -60,14 +60,15 @@ describe('the scaffold as a bundle', () => {
   const files = scaffold({ pages: ['Home', 'Settings'], collections: ['Tasks', 'Notes'] });
   const manifest = JSON.parse(String(files.find((f) => f.path === 'manifest.json')!.content));
 
-  it('names ui/main.ui as main, and lists every file it makes by group', () => {
-    expect(manifest.main).toBe('ui/main.ui');
+  it('names index.html as main, and lists every file it makes by group', () => {
+    expect(manifest.main).toBe('index.html');
     expect(manifest.entry).toBeUndefined();
     const paths = new Set(files.map((f) => f.path));
     for (const group of ['ui', 'logic', 'xdb', 'assets']) {
       for (const p of manifest.files[group]) expect(paths.has(p), `${group} lists ${p}`).toBe(true);
     }
-    expect(manifest.files.ui).toEqual(['ui/main.ui', 'ui/pages/home.ui', 'ui/pages/settings.ui']);
+    expect(manifest.files.ui).toEqual(['index.html', 'pages/home.html', 'pages/settings.html']);
+    expect(manifest.files.logic).toEqual(['main.js']);
     expect(manifest.files.xdb).toEqual(['xdb/tasks.xdb', 'xdb/notes.xdb']);
   });
 
@@ -77,12 +78,13 @@ describe('the scaffold as a bundle', () => {
   });
 
   it('imports every page the shell switches between, from a file that exists', () => {
-    const main = String(files.find((f) => f.path === 'ui/main.ui')!.content);
+    const main = String(files.find((f) => f.path === 'index.html')!.content);
     const paths = new Set(files.map((f) => f.path));
     const imports = [...main.matchAll(/<import (\w+) from="\.\/([^"]+)" \/>/g)];
     expect(imports.length).toBe(2);
+    expect(main).toContain('<script src="main.js"></script>');
     for (const [, component, rel] of imports) {
-      expect(paths.has(`ui/${rel}`)).toBe(true);
+      expect(paths.has(rel)).toBe(true);
       expect(main).toContain(`<${component} />`);
     }
   });
@@ -175,7 +177,7 @@ describe('a collection name carrying markup', () => {
 describe('a page name carrying an expression', () => {
   it('cannot open one in the template', () => {
     const files = scaffold({ pages: ['Home', 'X{alert(1)}'] });
-    const page = String(files.find((f) => f.path === 'ui/pages/x-alert-1.ui')!.content);
+    const page = String(files.find((f) => f.path === 'pages/x-alert-1.html')!.content);
     expect(page).not.toContain('{alert(1)}');
     expect(logicOf(files)).toContain(JSON.stringify('X{alert(1)}'));
   });
@@ -213,8 +215,8 @@ describe('a brief that names no pages', () => {
     expect(blueprint.pages.map((p) => p.name)).toEqual(['Home']);
     expect(blueprint.navigation.items).toEqual(['Home']);
     const files = scaffold({ pages: [] });
-    expect(files.filter((f) => f.path.startsWith('ui/pages/')).map((f) => f.path)).toEqual(['ui/pages/home.ui']);
-    const main = String(files.find((f) => f.path === 'ui/main.ui')!.content);
+    expect(files.filter((f) => f.path.startsWith('pages/')).map((f) => f.path)).toEqual(['pages/home.html']);
+    const main = String(files.find((f) => f.path === 'index.html')!.content);
     expect(main).toContain('<HomePage />');
     expect(main).not.toContain('#each (item in pages)');
     // It is still a bundle the inspector and the composer take.
@@ -227,7 +229,7 @@ describe('a brief that names no pages', () => {
   });
 
   it('keeps the buttons where there are pages to move between', () => {
-    const main = String(scaffold({ pages: ['Home', 'Settings'] }).find((f) => f.path === 'ui/main.ui')!.content);
+    const main = String(scaffold({ pages: ['Home', 'Settings'] }).find((f) => f.path === 'index.html')!.content);
     expect(main).toContain('#each (item in pages)');
   });
 
@@ -245,14 +247,14 @@ describe('a brief that names no pages', () => {
 describe('a name that is only punctuation', () => {
   it('still produces a usable page filename', () => {
     const files = scaffold({ pages: ['///'] });
-    const pages = files.filter((f) => f.path.startsWith('ui/pages/')).map((f) => f.path);
+    const pages = files.filter((f) => f.path.startsWith('pages/')).map((f) => f.path);
     expect(pages.length).toBeGreaterThan(0);
-    for (const p of pages) expect(p).toMatch(/^ui\/pages\/[a-z0-9-]+\.ui$/);
+    for (const p of pages) expect(p).toMatch(/^pages\/[a-z0-9-]+\.html$/);
   });
 
   it('gives two pages that collapse to one slug different files', () => {
     const files = scaffold({ pages: ['Home', 'home!'] });
-    const pages = files.filter((f) => f.path.startsWith('ui/pages/')).map((f) => f.path);
+    const pages = files.filter((f) => f.path.startsWith('pages/')).map((f) => f.path);
     expect(new Set(pages).size).toBe(2);
   });
 
@@ -261,7 +263,7 @@ describe('a name that is only punctuation', () => {
   it('gives every page its own file when a name repeats beside one that already carries its number', () => {
     expect(pageSlugs([{ name: 'Home' }, { name: 'Home 2' }, { name: 'Home' }, { name: 'home' }])).toEqual(['home', 'home-2', 'home-3', 'home-4']);
     const files = scaffold({ pages: ['Home', 'Home 2', 'Home'] });
-    const pages = files.filter((f) => f.path.startsWith('ui/pages/')).map((f) => f.path);
+    const pages = files.filter((f) => f.path.startsWith('pages/')).map((f) => f.path);
     expect(new Set(pages).size).toBe(3);
   });
 
@@ -341,7 +343,7 @@ describe('preview selection after replacing an imported project', () => {
 });
 
 /**
- * One page-path rule. The scaffold writes `ui/pages/<slug>.ui`; the pages
+ * One page-path rule. The scaffold writes `pages/<slug>.html`; the pages
  * panel looked in `pages/` and `ui/` only, so a page of a project Studio had
  * just made could not be opened from the panel, and its slug rule differed
  * from the scaffold's and the validator's.
@@ -352,9 +354,9 @@ describe('where a blueprint page lives', () => {
     const blueprint = generateBlueprintFromBrief(brief);
     const vfs = toVfs(scaffoldProjectFiles(brief, blueprint));
     expect(blueprint.pages.map((_page, index) => findPageFile(vfs, blueprint.pages, index))).toEqual([
-      'ui/pages/home.ui',
-      'ui/pages/home-2.ui',
-      'ui/pages/team-settings.ui',
+      'pages/home.html',
+      'pages/home-2.html',
+      'pages/team-settings.html',
     ]);
     expect(validateProject(vfs, blueprint).filter((e) => e.type === 'missing-page-file')).toEqual([]);
   });
@@ -368,6 +370,6 @@ describe('where a blueprint page lives', () => {
     expect(findPageFile(vfs, pages, 0)).toBe('ui/about.ui');
     expect(findPageFile(vfs, pages, 1)).toBe('pages/contact.html');
     expect(findPageFile(vfs, pages, 2)).toBeNull();
-    expect(pageFileCandidates(pageSlugs(pages)[2])[0]).toBe('ui/pages/missing.ui');
+    expect(pageFileCandidates(pageSlugs(pages)[2])[0]).toBe('pages/missing.html');
   });
 });

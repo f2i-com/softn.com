@@ -105,15 +105,15 @@ describe('what the guide teaches about importing a page', () => {
   it('gives an example that the check itself accepts, with no warning', async () => {
     const guide = buildGuide({ python: false, torch: false, style: 'clean' });
     const [main, row] = blocks(guide.slice(guide.indexOf('### Reuse'), guide.indexOf('### Assets')), 'softn');
-    expect(main).toContain('<import TaskRow from="./task-row.ui" />');
+    expect(main).toContain('<import TaskRow from="./task-row.html" />');
     expect(row).toContain('editingId === task.id');
     const files = vfs({
-      'manifest.json': JSON.stringify({ name: 'Tasks', version: '1.0.0', description: 'Tasks to do.', main: 'ui/main.ui', icon: 'assets/icon.svg', files: { ui: ['ui/main.ui', 'ui/task-row.ui'], logic: ['logic/main.logic'], assets: ['assets/icon.svg'] } }),
+      'manifest.json': JSON.stringify({ name: 'Tasks', version: '1.0.0', description: 'Tasks to do.', main: 'index.html', icon: 'assets/icon.svg', files: { ui: ['index.html', 'task-row.html'], logic: ['main.js'], assets: ['assets/icon.svg'] } }),
       'permission.json': JSON.stringify({ permissions: {} }),
       'assets/icon.svg': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" /></svg>',
-      'ui/main.ui': main,
-      'ui/task-row.ui': row,
-      'logic/main.logic': LOGIC,
+      'index.html': main,
+      'task-row.html': row,
+      'main.js': LOGIC,
     });
     expect(lintTemplates(files)).toEqual({ errors: [], warnings: [] });
     const report = await browserEnvironment.checkApp(files, { blueprint: null });

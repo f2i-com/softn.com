@@ -70,16 +70,16 @@ describe('the brief wizard', () => {
 
     const scaffolded = [...useVFSStore.getState().files.keys()].sort();
     expect(scaffolded).toContain('manifest.json');
-    expect(scaffolded).toContain('ui/main.ui');
+    expect(scaffolded).toContain('index.html');
     // Nothing happened yet in this project: there is nothing to undo, and no AI turn to revert.
     expect(useVFSStore.getState().history).toEqual([]);
     expect(useVFSStore.getState().journal).toEqual([]);
 
     // A run writes a file; taking back everything the AI did leaves the scaffold.
-    useVFSStore.getState().applyTransaction([{ op: 'update', path: 'ui/main.ui', content: '<App />' }], 'ai', 'run-step-1');
+    useVFSStore.getState().applyTransaction([{ op: 'update', path: 'index.html', content: '<App />' }], 'ai', 'run-step-1');
     useVFSStore.getState().revertAIChanges();
     expect([...useVFSStore.getState().files.keys()].sort()).toEqual(scaffolded);
-    expect(useVFSStore.getState().readFile('ui/main.ui')).not.toBe('<App />');
+    expect(useVFSStore.getState().readFile('index.html')).not.toBe('<App />');
   });
 
   // Enter also confirms a candidate in an input method (Japanese, Chinese, Korean). The page and
