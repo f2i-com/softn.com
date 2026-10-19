@@ -114,13 +114,29 @@ describe('NavItem navigate', () => {
     expect(followLink).toHaveBeenCalledTimes(1);
   });
 
-  it('is no link at all for an address that would run code', () => {
+  it('is no link at all for an address that would run code, however it is hidden', () => {
     view = mount(
       <AppScopeProvider value={scope({})}>
         <NavItem label="Bad" navigate="javascript:alert(1)" />
+        <NavItem label="Tab" navigate={'java\tscript:alert(1)'} />
+        <NavItem label="Line" navigate={'\njavascript:alert(1)'} />
+        <NavItem label="Control" navigate={'\u0001javascript:alert(1)'} />
+        <NavItem label="Data" navigate="data:text/html,hi" />
+        <NavItem label="Blob" navigate="blob:https://site.test/1" />
       </AppScopeProvider>
     );
     expect(view.container.querySelector('a')).toBeNull();
-    expect(view.container.querySelector('button')).not.toBeNull();
+    expect(view.container.querySelectorAll('button')).toHaveLength(6);
+  });
+
+  it('shows its page and is then not followed as a link too', () => {
+    const showPage = vi.fn(() => true);
+    view = mount(
+      <AppScopeProvider value={scope({ currentPage: 'home', showPage })}>
+        <NavItem label="About" page="about" navigate="about.html" />
+      </AppScopeProvider>
+    );
+    expect(prevented(click(view.container.querySelector('a')!))).toBe(true);
+    expect(showPage).toHaveBeenCalledWith('about');
   });
 });

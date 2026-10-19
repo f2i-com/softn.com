@@ -242,6 +242,53 @@ describe('the document a page’s code is given', () => {
   });
 });
 
+describe('the document, as a browser keeps it', () => {
+  it('does not run a listener taken off by one before it during the same event', async () => {
+    const doc = await page(`
+      let ran = [];
+      const list = document.getElementById('list');
+      function second() { ran.push('second'); }
+      list.addEventListener('click', () => { ran.push('first'); list.removeEventListener('click', second); });
+      list.addEventListener('click', second);
+      function read() { return ran; }`);
+    doc.take();
+    doc.event(4, 'click');
+    expect(doc.call('read')).toEqual(['first']);
+  });
+
+  it('reads <div/> in HTML as an open <div>, as a browser does, and <circle/> in a drawing as closed', async () => {
+    const doc = await page(`
+      function read() {
+        const list = document.getElementById('list');
+        list.innerHTML = '<div/><span>in</span>';
+        const box = list.firstChild;
+        list.innerHTML = '<svg><circle r="1"/><rect/></svg>';
+        return [box.children.length, list.firstChild.children.length];
+      }`);
+    expect(doc.call('read')).toEqual([1, 2]);
+  });
+
+  it('makes URLSearchParams from another, or from a form', async () => {
+    const doc = await page(`
+      function read() {
+        const a = new URLSearchParams('x=1&y=2');
+        const b = new URLSearchParams(a);
+        document.querySelector('input[name="task"]').value = 'milk';
+        const c = new URLSearchParams(new FormData(document.getElementById('add')));
+        return [b.toString(), c.toString()];
+      }`);
+    expect(doc.call('read')).toEqual(['x=1&y=2', 'task=milk']);
+  });
+
+  it('lets go of a node taken off the page: an event for it finds nothing', async () => {
+    const doc = await page(`
+      function remove() { document.getElementById('title').remove(); }`);
+    doc.take();
+    doc.call('remove');
+    expect(doc.event(2, 'click')).toBe(0);
+  });
+});
+
 describe('code written for a browser', () => {
   it('is told by a name of the window used as one, not by a property of the same name', () => {
     for (const code of ['document.getElementById("a")', 'fetch("/api")', 'location.href = "a.html"', 'new URLSearchParams(location.search)', 'requestAnimationFrame(draw)', 'x = sessionStorage.getItem("k")']) {

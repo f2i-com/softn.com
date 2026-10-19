@@ -263,6 +263,10 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
       if (path === null) return false;
       if (path === from) return true;
       if (!show(path)) return false;
+      // The entry left is marked as the page it showed, so Back to it is
+      // told apart from a fragment link, which leaves no page in history.
+      const here = (history.state ?? {}) as Record<string, unknown>;
+      if (typeof here.softnPage !== 'string') history.replaceState({ ...here, softnPage: from }, '');
       history.pushState({ softnPage: path }, '');
       content.current?.scrollTo?.(0, 0);
       return true;
@@ -273,7 +277,8 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     if (app.followsLinks === false) return;
     const back = (event: PopStateEvent) => {
       const path = (event.state as { softnPage?: unknown } | null)?.softnPage;
-      show(typeof path === 'string' ? path : null);
+      // A move to a fragment of the page showing says no page: it stays.
+      if (typeof path === 'string') show(path);
     };
     window.addEventListener('popstate', back);
     return () => window.removeEventListener('popstate', back);

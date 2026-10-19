@@ -932,8 +932,12 @@ export function NavItem({
     onClick?.();
     if (page !== undefined && page !== '') {
       // A page of the app's own, by name; or, in an app that keeps no page
-      // state, the page of the bundle by that name, as a link names it.
-      if (scope.showPage?.(page) || scope.followLink?.(page)) return;
+      // state, the page of the bundle by that name, as a link names it. An
+      // item that is a link as well is then not followed by the browser too.
+      if (scope.showPage?.(page) || scope.followLink?.(page)) {
+        event.preventDefault();
+        return;
+      }
     }
     if (href === undefined || event.defaultPrevented) return;
     // A new tab, another window, a download: the browser's, as for any link.
@@ -1096,7 +1100,10 @@ function safeHref(navigate: string | undefined): string | undefined {
   if (typeof navigate !== 'string') return undefined;
   const href = navigate.trim();
   if (href === '') return undefined;
-  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(href)?.[1]?.toLowerCase();
-  if (scheme === undefined) return href;
+  // Judged as the browser reads it: it ignores control characters, tabs and
+  // line breaks in an address, so "java\tscript:" is javascript:.
+  const read = href.replace(/[\u0000-\u0020\u007f]/g, '');
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(read)?.[1]?.toLowerCase();
+  if (scheme === undefined) return read.startsWith('\\') || read.startsWith('/\\') ? undefined : href;
   return scheme === 'http' || scheme === 'https' || scheme === 'mailto' || scheme === 'tel' ? href : undefined;
 }

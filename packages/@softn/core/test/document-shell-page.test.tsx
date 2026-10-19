@@ -269,6 +269,90 @@ describe('a page whose code is written for a browser', () => {
     }
   });
 
+  it('compiles beside a page that declares the window\u2019s names itself, however it declares them', async () => {
+    await mount(
+      `<p id="out">-</p>
+<script>
+  const { location = 'home' } = {};
+  let a = 1, Text = 'mine';
+  class Comment { constructor() { this.kind = 'comment'; } }
+  function alert(message) { return 'own ' + message; }
+  document.getElementById('out').textContent = [location, Text, new Comment().kind, alert('alert'), typeof fetch].join(' ');
+</script>`,
+      () => $('#out')?.textContent !== '-'
+    );
+    expect($('#out')!.textContent).toBe('home mine comment own alert function');
+  });
+
+  it('lets the code cancel a link before SoftN follows it', async () => {
+    const links: string[] = [];
+    await mount(
+      `<a id="go" href="about.html">About</a><p id="out">-</p>
+<script>
+  document.getElementById('go').addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('out').textContent = 'stayed';
+  });
+</script>`,
+      () => $('#go')?.hasAttribute('data-softn-node') === true,
+      { onLink: (href: string) => (links.push(href), true) }
+    );
+    await act(async () => {
+      $('#go')!.click();
+    });
+    await settle();
+    expect($('#out')!.textContent).toBe('stayed');
+    expect(links).toEqual([]);
+  });
+
+  it('adds to a class SoftN draws from a value', async () => {
+    await mount(
+      `<p id="item" class={cls}>item</p><button id="flash">Flash</button>
+<script>
+  let cls = 'done';
+  document.getElementById('flash').addEventListener('click', () => {
+    document.getElementById('item').classList.add('flash');
+  });
+</script>`,
+      () => $('#item')?.className === 'done'
+    );
+    await act(async () => {
+      $('#flash')!.click();
+    });
+    await settle();
+    expect($('#item')!.className).toBe('done flash');
+  });
+
+  it('draws a page whose code uses the document from it from the first draw, so nothing is drawn twice', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    let removed = 0;
+    const watch = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.removedNodes) if (node instanceof Element && (node.id === 'field' || node.querySelector?.('#field'))) removed++;
+      }
+    });
+    watch.observe(container, { childList: true, subtree: true });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <SoftNRenderer
+          source={'<input id="field"><p id="out">-</p><script>document.getElementById("out").textContent = "ready";</script>'}
+          appId="document-shell-first-draw"
+          scriptExecutionMode="main"
+        />
+      );
+    });
+    for (let i = 0; i < 100 && $('#out')?.textContent !== 'ready'; i++) {
+      await act(async () => {
+        await sleep(20);
+      });
+    }
+    watch.disconnect();
+    expect($('#out')!.textContent).toBe('ready');
+    expect(removed).toBe(0);
+  });
+
   it('leaves a page whose code does not use the document as it was', async () => {
     await mount(`<p id="shown">{n}</p><script>let n = 3</script>`, () => $('#shown')?.textContent === '3');
     expect($('#shown')!.hasAttribute('data-softn-node')).toBe(false);

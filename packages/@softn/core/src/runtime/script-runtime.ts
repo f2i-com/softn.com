@@ -1024,9 +1024,8 @@ export class SoftNScriptRuntime {
         ]);
         if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
         this.documentShell = shell;
-        shellCode = shellPrelude(shell.seedJson(), ownNames);
+        shellCode = shellPrelude(shell.seedJson());
         this.documentShellOn = true;
-        this.ownShellNames = ownNames;
       } else if (asks && !useHostBridges) {
         console.warn('[SoftN] This page\u2019s code uses the document, which is given to code on the main thread only; in a worker, document is not defined.');
       }
@@ -1106,10 +1105,9 @@ export class SoftNScriptRuntime {
       // Skip bridge-injected variables
       if (BRIDGE_VARS.has(name)) continue;
 
-      // The document's own names, when the page is given one, are not the
-      // page's state or its functions, unless the page declared the name
-      // itself.
-      if (this.documentShellOn && isShellName(name) && !this.ownShellNames.has(name)) continue;
+      // The shell's own names, when the page is given one, are not the
+      // page's state or its functions.
+      if (this.documentShellOn && isShellName(name)) continue;
 
       // Generated `$:` bodies are engine plumbing, not script API.
       if (name.startsWith(COMPUTED_PREFIX)) continue;
@@ -1684,8 +1682,6 @@ export class SoftNScriptRuntime {
   private readonly documentShellRequest: DocumentShellRequest | null;
   private documentShell: DocumentShell | null = null;
   private documentShellOn = false;
-  /** Names of the shell's the page's code declares itself, and keeps. */
-  private ownShellNames: ReadonlySet<string> = new Set();
 
   /** What the person did to the page (typed, ticked, focused), into the document before the code runs. */
   private syncDocumentIn(): void {

@@ -638,6 +638,21 @@ function ShellBody({ shell, template, context, registry }: ShellProps & { templa
 }
 
 /**
+ * Take off a plain tag what would run as code in the page itself. A handler
+ * is a function SoftN made (`onClick` from `@click` or `onclick="…"`); one
+ * given as text (`ONCLICK="…"`, or `onclick` from the code a page runs) is
+ * React's to write as an attribute wherever it treats the element as custom,
+ * and `is="…"` makes any element custom, so the browser would run it. Both
+ * go: `is`, and every `on…` that is not a function.
+ */
+function dropCodeAttributes(props: SoftNProps): void {
+  for (const name of Object.keys(props)) {
+    const lower = name.toLowerCase();
+    if (lower === 'is' || (lower.startsWith('on') && typeof props[name] !== 'function')) delete props[name];
+  }
+}
+
+/**
  * Check if a tag is a valid HTML element (safe for untrusted rendering)
  */
 function isHTMLElement(tag: string): boolean {
@@ -956,6 +971,8 @@ const COMPONENT_URL_PROPS = new Set([
   // know: a remote fallback beaconed while consent was pending, and with no
   // `net` grant at all after it. Judged here it is withheld like `src`.
   'fallbacksrc',
+  // <NavItem navigate> is the address its link goes to.
+  'navigate',
 ]);
 
 /**
@@ -1832,6 +1849,7 @@ function renderElement(
     // it refuses.
     if (FinalComponent === 'form') keepFormOnPage(props);
     if (FinalComponent === 'a') followPageLinks(props, context.followLink);
+    dropCodeAttributes(props);
     dropTopLayerProps(props);
     dropDocumentName(props, FinalComponent);
   } else {

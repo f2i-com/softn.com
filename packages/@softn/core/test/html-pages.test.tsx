@@ -17,6 +17,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { composeBundleSource, pageLogicSources, pageStylesheetHrefs } from '../src/bundle/source-composer';
+import { sameSiteAddress } from '../src/renderer/html-elements';
 import { parse } from '../src/parser';
 import type { ElementNode, SoftNDocument, TemplateNode } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
@@ -295,6 +296,27 @@ describe('a file of the app’s, named as an HTML page names one', () => {
     ).toBe(
       '.a { background: url("blob:logo") } .b { background: url("blob:logo") } .c { background: url(missing.png) } .d { fill: url(#g) }'
     );
+  });
+});
+
+describe('an attribute that would run code', () => {
+  it('never reaches a plain tag, whatever the case of its name, and is="…" is taken off', () => {
+    const page = mount('<div id="a" is="x-y" ONCLICK="steal()" onMouseOver="steal()">a</div><span id="b" is="z">b</span>');
+    const a = page.querySelector('#a')!;
+    expect(a.getAttributeNames().filter((name) => /^on|^is$/i.test(name))).toEqual([]);
+    expect(page.querySelector('#b')!.hasAttribute('is')).toBe(false);
+  });
+});
+
+describe('where a page\u2019s code may send the window', () => {
+  it('is a web address on this site, and nowhere else', () => {
+    const base = 'https://site.test/app/index.html';
+    const origin = 'https://site.test';
+    expect(sameSiteAddress('about.html', base, origin)).toBe('https://site.test/app/about.html');
+    expect(sameSiteAddress('/docs/', base, origin)).toBe('https://site.test/docs/');
+    for (const href of ['https://other.test/', '//other.test/x', 'blob:https://site.test/1234', 'data:text/html,hi', 'javascript:alert(1)', 'java\tscript:alert(1)']) {
+      expect(sameSiteAddress(href, base, origin), href).toBeNull();
+    }
   });
 });
 

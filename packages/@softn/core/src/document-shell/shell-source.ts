@@ -67,6 +67,7 @@ var __softnShell = (function (win) {
   // A subtree that joins the document is told to the host whole, as it is
   // now: what was done to it while it was apart was told to no one.
   function announce(r) {
+    if (!r.island) BY_ID[r.id] = r.node;
     if (r.type === 1 && !r.island) {
       ops.push(['e', r.id, r.tag, attrsOf(r)]);
       for (var i = 0; i < r.kids.length; i++) announce(rec(r.kids[i]));
@@ -110,11 +111,18 @@ var __softnShell = (function (win) {
   // holds a node (const list = document.getElementById('list')) is read out
   // as { __softnNode: id }, and the host knows not to write that copy back
   // over the node.
+  // Only a node on the page is in BY_ID, where the host's events find it: a
+  // node made and dropped, or taken off the page, is not kept alive by it.
   function register(node, r) {
     STATE.set(node, r);
-    BY_ID[r.id] = node;
+    r.node = node;
     node.__softnNode = r.id;
     return node;
+  }
+
+  function forget(r) {
+    if (BY_ID[r.id] === r.node) delete BY_ID[r.id];
+    for (var i = 0; i < r.kids.length; i++) forget(rec(r.kids[i]));
   }
 
   function newRecord(type, id) {
@@ -155,9 +163,11 @@ var __softnShell = (function (win) {
     var c = rec(child);
     if (!c.parent) return;
     var p = rec(c.parent);
+    var was = isConnected(p);
     var at = p.kids.indexOf(child);
     if (at >= 0) p.kids.splice(at, 1);
     c.parent = null;
+    if (was) forget(c);
     childrenChanged(p);
   }
 
@@ -227,7 +237,11 @@ var __softnShell = (function (win) {
   function replaceAllChildren(parent, nodes) {
     var p = rec(parent);
     var old = p.kids.slice();
-    for (var i = 0; i < old.length; i++) rec(old[i]).parent = null;
+    var was = isConnected(p);
+    for (var i = 0; i < old.length; i++) {
+      rec(old[i]).parent = null;
+      if (was) forget(rec(old[i]));
+    }
     p.kids = [];
     if (nodes.length > 0) insert(parent, nodes, null);
     else childrenChanged(p);
@@ -307,6 +321,7 @@ var __softnShell = (function (win) {
   // what it compiles for as long as it runs, so a list redrawn every second
   // must not compile its handlers every second.
   var HANDLERS = {};
+  var handlerCount = 0;
   function inlineHandler(code) {
     if (Object.prototype.hasOwnProperty.call(HANDLERS, code)) return HANDLERS[code];
     var fn = null;
@@ -320,6 +335,7 @@ var __softnShell = (function (win) {
     var handler = function (event) {
       if (fn.call(this, event) === false) event.preventDefault();
     };
+    if (++handlerCount > 500) { HANDLERS = {}; handlerCount = 1; }
     HANDLERS[code] = handler;
     return handler;
   }
@@ -472,6 +488,7 @@ var __softnShell = (function (win) {
   // ---------------------------------------------------------------- selectors
 
   var SELECTORS = {};
+  var selectorCount = 0;
 
   function parseSelectors(text) {
     if (SELECTORS[text]) return SELECTORS[text];
@@ -573,6 +590,7 @@ var __softnShell = (function (win) {
       }
     }
     if (current.length > 0) groups.push(current);
+    if (++selectorCount > 500) { SELECTORS = {}; selectorCount = 1; }
     SELECTORS[text] = groups;
     return groups;
   }
@@ -753,6 +771,7 @@ var __softnShell = (function (win) {
   // that have no end, the text of a <textarea>, and an <li> or <option> or
   // <p> that ends where the next begins.
   var CLOSES = { li: { li: 1 }, option: { option: 1 }, dt: { dt: 1, dd: 1 }, dd: { dt: 1, dd: 1 }, tr: { tr: 1 }, td: { td: 1, th: 1 }, th: { td: 1, th: 1 } };
+  var FOREIGN = { svg: 1, path: 1, circle: 1, ellipse: 1, line: 1, polyline: 1, polygon: 1, rect: 1, use: 1, stop: 1, image: 1, g: 1, math: 1 };
   var BLOCKS = { p: 1, div: 1, ul: 1, ol: 1, table: 1, h1: 1, h2: 1, h3: 1, h4: 1, h5: 1, h6: 1, section: 1, article: 1, header: 1, footer: 1, form: 1, pre: 1, blockquote: 1, hr: 1 };
 
   function parseHTML(html) {
@@ -844,7 +863,7 @@ var __softnShell = (function (win) {
         i = gt < 0 ? s.length : gt + 1;
         continue;
       }
-      if (!VOID[tag] && !selfClosing) stack.push(el);
+      if (!VOID[tag] && !(selfClosing && FOREIGN[tag])) stack.push(el);
     }
     return rec(root).kids.slice();
   }
@@ -871,6 +890,7 @@ var __softnShell = (function (win) {
     this.timeStamp = Date.now();
     this.detail = init.detail === undefined ? null : init.detail;
     Object.defineProperty(this, '_stop', { value: 0, writable: true, enumerable: false });
+    Object.defineProperty(this, '_captureStop', { value: false, writable: true, enumerable: false });
   }
   Event.prototype.preventDefault = function () { if (this.cancelable) this.defaultPrevented = true; };
   Event.prototype.stopPropagation = function () { if (this._stop < 1) this._stop = 1; };
@@ -926,6 +946,8 @@ var __softnShell = (function (win) {
       var l = list[i];
       if (phase === 1 && !l.capture) continue;
       if (phase === 3 && l.capture) continue;
+      // Taken off by a listener before it, during this event: not run.
+      if ((r.listeners[event.type] || []).indexOf(l) < 0) continue;
       if (l.once) removeListener(node, event.type, l.fn, l.capture);
       try {
         if (typeof l.fn === 'function') l.fn.call(node, event);
@@ -949,6 +971,7 @@ var __softnShell = (function (win) {
     event.target = target;
     event._stop = 0;
     for (var i = path.length - 1; i > 0 && event._stop === 0; i--) { event.eventPhase = 1; invoke(path[i], event, 1); }
+    event._captureStop = event._stop !== 0;
     if (event._stop === 0) { event.eventPhase = 2; invoke(target, event, 2); }
     if (event.bubbles) for (var j = 1; j < path.length && event._stop === 0; j++) { event.eventPhase = 3; invoke(path[j], event, 3); }
     event.eventPhase = 0;
@@ -1035,7 +1058,8 @@ var __softnShell = (function (win) {
       if (r.island) warnOnce('island-clone', 'A part of the page SoftN draws is copied as an empty element of its kind.');
       copy = makeElement(r.tag);
       var cr = rec(copy);
-      for (var i = 0; i < r.attrs.length; i++) cr.attrs.push([r.attrs[i][0], r.attrs[i][1]]);
+      for (var i = 0; i < r.attrs.length; i++) if (!/^on/i.test(r.attrs[i][0])) cr.attrs.push([r.attrs[i][0], r.attrs[i][1]]);
+      for (var type in r.inline) cr.inline[type] = r.inline[type];
       if (r.value !== undefined) cr.value = r.value;
       if (r.checked !== undefined) cr.checked = r.checked;
     }
@@ -1516,7 +1540,17 @@ var __softnShell = (function (win) {
           options.headers = {};
           headers.forEach(function (value, name) { options.headers[name] = value; });
         }
-        if (init.body !== undefined && init.body !== null) options.body = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
+        if (init.body !== undefined && init.body !== null) {
+          var body = init.body;
+          if (body instanceof FormData) body = new URLSearchParams(body);
+          if (body instanceof URLSearchParams) {
+            options.body = body.toString();
+            options.headers = options.headers || {};
+            if (!options.headers['content-type']) options.headers['content-type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
+          } else {
+            options.body = typeof body === 'string' ? body : JSON.stringify(body);
+          }
+        }
       }
       softn.net.fetch(url, options, function (result) {
         if (!result || result.error) reject(new TypeError(result && result.error ? String(result.error) : 'Failed to fetch'));
@@ -1565,7 +1599,10 @@ var __softnShell = (function (win) {
 
   function URLSearchParams(init) {
     Object.defineProperty(this, '_list', { value: [], writable: true, enumerable: false });
-    if (typeof init === 'string') {
+    if (init instanceof URLSearchParams || init instanceof FormData) {
+      var self = this;
+      init.forEach(function (value, name) { self._list.push([String(name), String(value)]); });
+    } else if (typeof init === 'string') {
       var text = init.charAt(0) === '?' ? init.slice(1) : init;
       var pairs = text === '' ? [] : text.split('&');
       for (var i = 0; i < pairs.length; i++) {
@@ -1631,11 +1668,13 @@ var __softnShell = (function (win) {
     else {
       node = makeElement(seed.t, seed.i, !!seed.o);
       var r = rec(node);
-      for (var key in seed.a || {}) r.attrs.push([key, String(seed.a[key])]);
+      // A handler written in the markup is SoftN's, not an attribute.
+      for (var key in seed.a || {}) if (!/^on/i.test(key)) r.attrs.push([key, String(seed.a[key])]);
       if (seed.c) for (var i = 0; i < seed.c.length; i++) build(seed.c[i], node);
     }
     rec(node).parent = parent;
     rec(parent).kids.push(node);
+    BY_ID[seed.i] = node;
     return node;
   }
 
@@ -1649,6 +1688,7 @@ var __softnShell = (function (win) {
     rec(html).parent = doc; d.kids.push(html);
     rec(head).parent = html; rec(html).kids.push(head);
     rec(body).parent = html; rec(html).kids.push(body);
+    BY_ID[1] = body;
     for (var i = 0; i < (seed.body || []).length; i++) build(seed.body[i], body);
     nextId = Math.max(nextId, seed.next || 2);
     if (seed.title) d.title = seed.title;
@@ -1677,6 +1717,15 @@ var __softnShell = (function (win) {
       if (c[0] === 'v') r.value = String(c[2]);
       else if (c[0] === 'k') r.checked = !!c[2];
       else if (c[0] === 's') r.selectedIndex = Number(c[2]);
+      else if (c[0] === 'A') {
+        // An attribute SoftN draws from a {value}: told as the page shows it,
+        // so classList.add on class={cls} adds to what is there.
+        var at = -1;
+        for (var a = 0; a < r.attrs.length; a++) if (r.attrs[a][0] === c[2]) at = a;
+        if (c[3] === null) { if (at >= 0) r.attrs.splice(at, 1); }
+        else if (at >= 0) r.attrs[at][1] = String(c[3]);
+        else r.attrs.push([c[2], String(c[3])]);
+      }
     }
   }
 
@@ -1729,7 +1778,7 @@ var __softnShell = (function (win) {
     }
     e.isTrusted = true;
     dispatch(target, e);
-    return (e.defaultPrevented ? 1 : 0) | (e._stop ? 2 : 0);
+    return (e.defaultPrevented ? 1 : 0) | (e._stop ? 2 : 0) | (e._captureStop ? 4 : 0);
   }
 
   // DOMContentLoaded and load, once the page has been drawn, as a browser
@@ -1790,17 +1839,19 @@ function __softnDocReady() { __softnShell.ready(); }
 `;
 
 /**
- * The globals the page's code reads, declared after the shell is set up
- * with its seed: what a browser gives a page by these names, but for any the
- * code declares itself (`own`).
+ * The globals the page's code reads, set up with the shell's seed: what a
+ * browser gives a page by these names. They are properties of the global
+ * object, not declarations, as a browser's are: a page's own `let location`,
+ * `const { Text } = …` or `class Comment` shadows one with no clash, and a
+ * page's own `function alert()`, which is on the global object before this
+ * runs, is left as it is.
  */
-export function shellPrelude(seedJson: string, own: ReadonlySet<string> = new Set()): string {
-  const names = [...SHELL_GLOBAL_NAMES].filter((name) => name !== '__softnShell' && name !== 'document' && !own.has(name));
+export function shellPrelude(seedJson: string): string {
+  const names = [...SHELL_GLOBAL_NAMES].filter((name) => name !== '__softnShell');
   return (
     DOCUMENT_SHELL_SOURCE +
     '\n__softnShell.init(' + seedJson + ');\n' +
-    'var document = __softnShell.document;\n' +
-    names.map((name) => 'var ' + name + ' = __softnShell.' + name + ';').join('\n') +
-    '\nif (typeof window !== "undefined" && window) { try { window.document = document; window.location = __softnShell.location; } catch (e) {} }\n'
+    names.map((name) => 'if (typeof globalThis.' + name + ' === "undefined") globalThis.' + name + ' = __softnShell.' + name + ';').join('\n') +
+    '\nif (typeof window !== "undefined" && window) { try { window.document = __softnShell.document; window.location = __softnShell.location; } catch (e) {} }\n'
   );
 }

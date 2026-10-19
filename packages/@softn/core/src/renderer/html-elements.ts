@@ -259,6 +259,24 @@ export function followPageLinks(props: SoftNProps, follow: ((href: string) => bo
 }
 
 /**
+ * Where a page's code may send the window with `location.href = …`: a web
+ * address on the site the app is on, or nowhere (null). Never another site,
+ * and never a `blob:` or `data:` address, though one of those can have this
+ * site's origin: the code cannot send the person somewhere a link they did
+ * not click would not take them.
+ */
+export function sameSiteAddress(href: string, base: string, origin: string): string | null {
+  let target: URL;
+  try {
+    target = new URL(href, base);
+  } catch {
+    return null;
+  }
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return null;
+  return target.origin === origin ? target.href : null;
+}
+
+/**
  * The text a `<textarea>` holds, written between its tags: words and `{…}`
  * values, joined. Undefined when it holds anything else. React takes a
  * textarea's text as its value only, and drew the content it was given as

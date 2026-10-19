@@ -120,6 +120,10 @@ export class DocumentShell implements DocumentShellView {
   private readonly versions = new Map<number, number>();
   private readonly pendingProps = new Map<number, Array<[string, unknown]>>();
   private readonly listened = new Set<string>();
+  /** Attributes of the markup's elements SoftN draws from a `{value}`, by element. */
+  private readonly drawnFromValues = new Map<number, string[]>();
+  /** What the shell was last told each of them is, by `id:name`. */
+  private readonly toldValues = new Map<string, string | null>();
   private pendingSync: unknown[] = [];
   private dispatcher: ((id: number, type: string, props: Record<string, unknown>, path: SeenElement[]) => number) | null = null;
   private readyHook: (() => void) | null = null;
@@ -157,6 +161,8 @@ export class DocumentShell implements DocumentShellView {
         nodes.set(id, element);
         this.ids.set(node, id);
         this.drawnBy.set(id, node);
+        const drawn = drawnAttributes(node);
+        if (drawn.length > 0) this.drawnFromValues.set(id, drawn);
         const c: SeedNode[] = [];
         for (const child of node.children) {
           const seeded = seedOf(child, id);
@@ -202,7 +208,7 @@ export class DocumentShell implements DocumentShellView {
   // ------------------------------------------------------------------ drawing
 
   idOf(node: TemplateNode): number | undefined {
-    return this.active ? this.ids.get(node) : undefined;
+    return this.ids.get(node);
   }
 
   subscribe(id: number, onChange: () => void): () => void {
@@ -325,6 +331,7 @@ export class DocumentShell implements DocumentShellView {
     if (!ops || ops.length === 0) return;
     const touched = new Set<number>();
     const navigations: string[] = [];
+    const dropped: number[] = [];
     for (const op of ops) {
       switch (op[0]) {
         case 'e': {
@@ -386,6 +393,7 @@ export class DocumentShell implements DocumentShellView {
           const [, id, children] = op;
           const node = this.nodes.get(id);
           if (!node || node.kind !== 'element') break;
+          for (const old of node.children) if (!children.includes(old)) dropped.push(old);
           node.children = children.slice();
           node.childrenTouched = true;
           for (const child of children) {
@@ -414,9 +422,37 @@ export class DocumentShell implements DocumentShellView {
           break;
       }
     }
+    for (const id of dropped) if (!this.isOnPage(id)) this.letGo(id);
     for (const id of touched) this.changed(id);
     // After what the code drew: the last place it asked to go is where it goes.
     if (navigations.length > 0) this.onNavigate?.(navigations[navigations.length - 1]);
+  }
+
+  /** Whether a node is in its parent's children: on the page, or in a part of it taken off whole. */
+  private isOnPage(id: number): boolean {
+    const node = this.nodes.get(id);
+    if (!node) return false;
+    const parent = this.nodes.get(node.parent);
+    return !!parent && parent.kind === 'element' && parent.children.includes(id);
+  }
+
+  /**
+   * Forget a node the code took off the page, and what is in it: the code
+   * tells the host about it again, whole, if it puts it back. The markup's
+   * own nodes are kept, since putting one back must find the markup it
+   * stands for, and there are only as many of them as the page has.
+   */
+  private letGo(id: number): void {
+    const node = this.nodes.get(id);
+    if (!node) return;
+    if ((node.kind === 'element' || node.kind === 'text') && node.ast) return;
+    if (node.kind === 'island') return;
+    if (node.kind === 'element') for (const child of node.children) this.letGo(child);
+    this.nodes.delete(id);
+    this.drawnBy.delete(id);
+    this.versions.delete(id);
+    this.listeners.delete(id);
+    this.pendingProps.delete(id);
   }
 
   /** A text node changed: its element is drawn from the mirror from now on. */
@@ -433,10 +469,34 @@ export class DocumentShell implements DocumentShellView {
    * nothing.
    */
   takeSync(): unknown[] | null {
+    this.readDrawnValues();
     if (this.pendingSync.length === 0) return null;
     const out = this.pendingSync;
     this.pendingSync = [];
     return out;
+  }
+
+  /**
+   * The attributes SoftN draws from a `{value}` (`class={cls}`), as the page
+   * shows them now, for those the code has not taken over: the shell's seed
+   * could not know them, and `classList.add` on one added to nothing.
+   */
+  private readDrawnValues(): void {
+    if (!this.container) return;
+    for (const [id, names] of this.drawnFromValues) {
+      const node = this.nodes.get(id);
+      if (!node || node.kind !== 'element') continue;
+      const element = this.elementById(id);
+      if (!element) continue;
+      for (const name of names) {
+        if (node.touched.has(name)) continue;
+        const value = element.getAttribute(name);
+        const key = `${id}:${name}`;
+        if (this.toldValues.get(key) === value) continue;
+        this.toldValues.set(key, value);
+        this.pendingSync.push(['A', id, name, value]);
+      }
+    }
   }
 
   // ------------------------------------------------------------------ the browser's side
@@ -507,27 +567,42 @@ export class DocumentShell implements DocumentShellView {
     if (this.container) this.hear(type);
   }
 
+  /**
+   * Hear one kind of event for the page's code. On the app it is heard on
+   * the app's container on the way down, before SoftN's own handlers (which
+   * React runs on the way up): the code's `preventDefault()` on a link then
+   * keeps the link from being followed, as it does in a browser. A stop the
+   * code made on the way down stops the event there; one made on the way up
+   * cannot reach back past what already ran.
+   *
+   * On the page around the app (the body, with nothing focused) it is heard
+   * on the document and given to the code's body, but what the code does
+   * with it stays its own: an app cannot cancel the page's keys.
+   */
   private hear(type: string): void {
     if (type === 'DOMContentLoaded' || type === 'load') return;
-    const doc = this.container!.ownerDocument;
-    const capture = !BUBBLES.has(type);
-    const listener = (event: Event) => {
-      if (!this.dispatcher || !this.container) return;
+    const container = this.container!;
+    const doc = container.ownerDocument;
+    const onApp = (event: Event) => {
+      if (!this.dispatcher) return;
       const target = event.target as Node | null;
-      let id = this.idIn(target);
-      if (id === null) {
-        // On the app but on nothing of the document's own, or on the page
-        // around it: the body, where a browser would start the event.
-        const outside = !target || target === doc || target === doc.body || target === doc.documentElement;
-        if (!(target && this.container.contains(target)) && !outside) return;
-        id = BODY;
-      }
+      const id = this.idIn(target) ?? BODY;
       const flags = this.dispatcher(id, type, eventData(event), this.seenPath(target, id));
       if (flags & 1) event.preventDefault();
-      if (flags & 2) event.stopPropagation();
+      if (flags & 4) event.stopPropagation();
     };
-    doc.addEventListener(type, listener, capture);
-    this.unhook.push(() => doc.removeEventListener(type, listener, capture));
+    const aroundApp = (event: Event) => {
+      if (!this.dispatcher) return;
+      const target = event.target as Node | null;
+      if (target !== doc && target !== doc.body && target !== doc.documentElement) return;
+      this.dispatcher(BODY, type, eventData(event), []);
+    };
+    container.addEventListener(type, onApp, true);
+    doc.addEventListener(type, aroundApp, !BUBBLES.has(type));
+    this.unhook.push(() => {
+      container.removeEventListener(type, onApp, true);
+      doc.removeEventListener(type, aroundApp, !BUBBLES.has(type));
+    });
   }
 
   /**
@@ -623,6 +698,19 @@ function writtenAttributes(node: ElementNode): Record<string, string> {
     else if (value.type === 'boolean' && value.value) out[name] = '';
   }
   return out;
+}
+
+/** The attributes of a markup element SoftN draws from a `{value}`, as HTML names them. */
+function drawnAttributes(node: ElementNode): string[] {
+  const names = new Set<string>();
+  for (const prop of node.props) {
+    if (prop.value.type !== 'expression' || prop.name.startsWith('@') || /^on/i.test(prop.name)) continue;
+    names.add(attributeName(prop.name.startsWith('class:') ? 'class' : prop.name.startsWith('style:') ? 'style' : prop.name));
+  }
+  for (const binding of node.bindings) {
+    if (binding.name === 'class' || binding.name === 'className' || binding.name === 'style') names.add(attributeName(binding.name));
+  }
+  return [...names];
 }
 
 /** An attribute's name as HTML has it: `className` is `class`, `htmlFor` is `for`. */

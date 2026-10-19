@@ -55,9 +55,14 @@ export const SHELL_GLOBAL_NAMES: ReadonlySet<string> = new Set([
   'prompt',
 ]);
 
-/** Whether a name is the shell's own: a function the host calls, or one it declares. */
+/**
+ * Whether a declared name is the shell's own: the functions the host calls
+ * and the shell itself. The names it gives the page are properties of the
+ * global object, never declarations, so a page that declares one of them
+ * declares its own.
+ */
 export function isShellName(name: string): boolean {
-  return name.startsWith('__softnDoc') || SHELL_GLOBAL_NAMES.has(name);
+  return name.startsWith('__softnDoc') || name === '__softnShell';
 }
 
 /**

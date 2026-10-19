@@ -16,6 +16,8 @@ import React, {
 import { parseCached } from '../parser';
 import { renderDocument } from '../renderer';
 import { shellOwnsTag } from '../renderer/render';
+import { sameSiteAddress } from '../renderer/html-elements';
+import { usesDocument } from '../document-shell/names';
 import type { DocumentShell } from '../document-shell/host';
 import type { DocumentShellRequest } from '../runtime/script-runtime';
 import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
@@ -681,6 +683,8 @@ export function SoftNRenderer({
   const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
   // The document the page's code is given, once its code is found to use one.
   const [documentShell, setDocumentShell] = useState<DocumentShell | null>(null);
+  // Whether the page's code took the document: it is told the page is ready then.
+  const [shellActive, setShellActive] = useState(false);
 
   // Script runtime ref for .logic execution
   const scriptRuntimeRef = useRef<ScriptRuntimeHandle | null>(null);
@@ -948,6 +952,9 @@ export function SoftNRenderer({
         // them reads state for the page, whether the markup names it or not.
         const drawnNames = collectDrawnNames(doc) ?? undefined;
 
+        // Set when the page is to be drawn from its document from the start.
+        let earlyShell: Promise<void> | null = null;
+
         if (codeBlock && !scriptInitializedRef.current) {
           scriptInitializedRef.current = true;
 
@@ -956,8 +963,9 @@ export function SoftNRenderer({
           // then is the document made and its code loaded (see
           // DocumentShellRequest). The page is drawn from it from then on.
           let documentShell: DocumentShell | null = null;
+          let making: Promise<DocumentShell> | null = null;
           const shellRequest: DocumentShellRequest = {
-            create: async () => {
+            create: () => (making ??= (async () => {
               const { DocumentShell: Shell } = await import('../document-shell/host');
               const made = new Shell(
                 doc.template,
@@ -976,22 +984,16 @@ export function SoftNRenderer({
                   console.warn(`[SoftN] The page's code asked to go to ${href}, and this host shows no other page.`);
                   return;
                 }
-                let target: URL;
-                try {
-                  target = new URL(href, window.document.baseURI);
-                } catch {
-                  console.warn(`[SoftN] The page's code asked to go to ${href}, which is not an address.`);
+                const target = sameSiteAddress(href, window.document.baseURI, window.location.origin);
+                if (target === null) {
+                  console.warn(`[SoftN] The page's code asked to go to ${href}, which is not a page of this site; only a link the person clicks goes elsewhere.`);
                   return;
                 }
-                if (target.origin !== window.location.origin) {
-                  console.warn(`[SoftN] The page's code asked to go to ${target.href}, on another site; only a link the person clicks goes there.`);
-                  return;
-                }
-                window.location.assign(target.href);
+                window.location.assign(target);
               };
               documentShell = made;
               return made;
-            },
+            })()),
           };
 
           // Create the script context with a mutable state object
@@ -1172,6 +1174,20 @@ export function SoftNRenderer({
           if (runtimePython && effectiveMode !== 'main') {
             effectiveMode = 'main';
             forceWorker = false;
+          }
+
+          // A page whose own code asks for the document is drawn from it from
+          // its first draw. Drawn plainly first and from the document once the
+          // code had loaded, every element on it was drawn twice, and what was
+          // typed in between was lost. (Code an import brings in is found as
+          // it compiles, and such a page changes over then.)
+          if (!forceWorker && !runtimePython && usesDocument(codeBlock.code || '')) {
+            earlyShell = shellRequest.create().then(
+              (made) => {
+                if (!stale && mountedRef.current) setDocumentShell(made);
+              },
+              () => {}
+            );
           }
 
           // From here to the script's top level having run: engine creation,
@@ -1372,7 +1388,10 @@ export function SoftNRenderer({
 
               // A page whose code uses the document is drawn from it from now on.
               const madeShell = documentShell as DocumentShell | null;
-              if (madeShell?.active) setDocumentShell(madeShell);
+              if (madeShell?.active) {
+                setDocumentShell(madeShell);
+                setShellActive(true);
+              }
 
               // Merge script state into componentState and set functions
               setState((prev) => {
@@ -1475,16 +1494,26 @@ export function SoftNRenderer({
         // Set the document immediately (functions/state arrive asynchronously via loadScript).
         // Clear old script functions to prevent stale closures from calling a cleaned-up
         // runtime's vmEngine (which is null) during the gap before loadScript resolves.
-        setState((prev) => ({
-          ...prev,
-          document: doc,
-          loading: false,
-          error: null,
-          scriptFunctions: codeBlock ? {} : prev.scriptFunctions,
-          scriptSyncFunctions: codeBlock ? {} : prev.scriptSyncFunctions,
-          scriptComputed: codeBlock ? {} : prev.scriptComputed,
-        }));
-        onLoadRef.current?.(doc);
+        // A page drawn from its document waits the moment it takes to make it.
+        const showDocument = () => {
+          setState((prev) => ({
+            ...prev,
+            document: doc,
+            loading: false,
+            error: null,
+            scriptFunctions: codeBlock ? {} : prev.scriptFunctions,
+            scriptSyncFunctions: codeBlock ? {} : prev.scriptSyncFunctions,
+            scriptComputed: codeBlock ? {} : prev.scriptComputed,
+          }));
+          onLoadRef.current?.(doc);
+        };
+        if (earlyShell) {
+          void (earlyShell as Promise<void>).then(() => {
+            if (!stale && mountedRef.current) showDocument();
+          });
+        } else {
+          showDocument();
+        }
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
         setState((prev) => ({
@@ -1513,6 +1542,7 @@ export function SoftNRenderer({
       // Allow re-initialization on next mount (React Strict Mode double-mount)
       scriptInitializedRef.current = false;
       setDocumentShell(null);
+      setShellActive(false);
     };
   }, [
     appId,
@@ -1866,9 +1896,11 @@ export function SoftNRenderer({
   useEffect(() => {
     if (!documentShell || !containerElement) return;
     documentShell.connect(containerElement);
-    documentShell.ready();
     return () => documentShell.disconnect();
   }, [documentShell, containerElement]);
+  useEffect(() => {
+    if (documentShell && containerElement && shellActive) documentShell.ready();
+  }, [documentShell, containerElement, shellActive]);
 
   // Get the default registry
   const registry = useMemo(() => getDefaultRegistry(), []);
