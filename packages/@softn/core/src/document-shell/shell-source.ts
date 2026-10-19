@@ -69,6 +69,9 @@ export const SHELL_GLOBAL_NAMES: ReadonlySet<string> = new Set([
   'cancelAnimationFrame',
   'structuredClone',
   'sessionStorage',
+  'alert',
+  'confirm',
+  'prompt',
 ]);
 
 /** Whether a name is the shell's own: a function the host calls, or one it declares. */
@@ -101,7 +104,7 @@ export function holdsShellNode(value: unknown, depth = 0): boolean {
 export function usesDocument(code: string): boolean {
   return (
     /\bdocument\s*[.[]/.test(code) ||
-    /(?<![.\w$])(?:fetch\s*\(|location\s*[.=[]|URLSearchParams\b|requestAnimationFrame\b|queueMicrotask\b|structuredClone\b|sessionStorage\b)/.test(code)
+    /(?<![.\w$])(?:fetch\s*\(|location\s*[.=[]|URLSearchParams\b|requestAnimationFrame\b|queueMicrotask\b|structuredClone\b|sessionStorage\b|(?:alert|confirm|prompt)\s*\()/.test(code)
   );
 }
 
@@ -1671,6 +1674,21 @@ var __softnShell = (function (win) {
   URLSearchParams.prototype.entries = function () { return this._list.map(function (e) { return [e[0], e[1]]; }); };
   URLSearchParams.prototype.toString = function () { return this._list.map(function (e) { return queryText(e[0]) + '=' + queryText(e[1]); }).join('&'); };
 
+  // alert(): shown by the host once the code's turn is over, since nothing
+  // waits on it. confirm() and prompt() wait for an answer, which code in the
+  // sandbox cannot do; they say what to use instead rather than answer no.
+  function alert(message) {
+    var text = message === undefined ? '' : String(message);
+    if (typeof host !== 'undefined' && host && typeof host.call === 'function') host.call('dialog.alert', [text], function () {});
+    else console.log(text);
+  }
+  function confirm() {
+    throw new Error('confirm() cannot wait for an answer here: ask with a <Confirm> component, or buttons the page shows.');
+  }
+  function prompt() {
+    throw new Error('prompt() cannot wait for an answer here: ask with an <input> on the page, or a <Dialog>.');
+  }
+
   function queueMicrotask(fn) { Promise.resolve().then(fn); }
   function requestAnimationFrame(fn) { return setTimeout(function () { fn(Date.now()); }, 16); }
   function cancelAnimationFrame(id) { clearTimeout(id); }
@@ -1841,6 +1859,7 @@ var __softnShell = (function (win) {
     getComputedStyle: getComputedStyle, fetch: fetch, Headers: Headers, Response: Response, location: location,
     URLSearchParams: URLSearchParams, queueMicrotask: queueMicrotask, requestAnimationFrame: requestAnimationFrame,
     cancelAnimationFrame: cancelAnimationFrame, structuredClone: structuredClone, sessionStorage: sessionStorage,
+    alert: alert, confirm: confirm, prompt: prompt,
   };
   return api;
 })(typeof window !== 'undefined' ? window : null);

@@ -2789,6 +2789,14 @@ export class SoftNScriptRuntime {
         return this.handleGpuReleaseAll();
       case 'storage.op':
         return this.handleStorageOp(call);
+      case 'dialog.alert': {
+        // A page's alert(), shown when its turn is over: nothing waits on it.
+        const [message] = call.args;
+        if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+          window.alert(String(message ?? '').slice(0, 4000));
+        }
+        return null;
+      }
       default:
         throw new Error(`Unknown host call: ${call.kind}`);
     }

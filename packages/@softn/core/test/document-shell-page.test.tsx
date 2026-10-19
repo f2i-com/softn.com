@@ -5,7 +5,7 @@
  */
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SoftNRenderer } from '../src/loader/SoftNRenderer';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -240,6 +240,33 @@ describe('a page whose code is written for a browser', () => {
     });
     await settle();
     expect($('#picked')!.textContent).toBe('B b2 Emma');
+  });
+
+  it('shows alert(), and says what to use for confirm()', async () => {
+    const shown: string[] = [];
+    const alert = vi.spyOn(window, 'alert').mockImplementation((message?: unknown) => {
+      shown.push(String(message));
+    });
+    try {
+      await mount(
+        `<button id="b">Save</button><p id="out">-</p>
+<script>
+  document.getElementById('b').addEventListener('click', () => {
+    alert('Saved ' + 2 + ' notes');
+    try { confirm('Sure?'); } catch (error) { document.getElementById('out').textContent = error.message; }
+  });
+</script>`,
+        () => $('#b') !== null && $('#b')!.hasAttribute('data-softn-node')
+      );
+      await act(async () => {
+        $('#b')!.click();
+      });
+      await settle();
+      expect(shown).toEqual(['Saved 2 notes']);
+      expect($('#out')!.textContent).toMatch(/^confirm\(\) cannot wait for an answer here/);
+    } finally {
+      alert.mockRestore();
+    }
   });
 
   it('leaves a page whose code does not use the document as it was', async () => {
