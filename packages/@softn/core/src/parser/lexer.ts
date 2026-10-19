@@ -58,6 +58,14 @@ export class Lexer {
   private sawScriptKeyword: boolean = false;
   private sawLogicKeyword: boolean = false;
   private sawStyleKeyword: boolean = false;
+  /** Whether the tag being read opens a `<pre>` or a `<textarea>`. */
+  private sawPreformattedTag: boolean = false;
+  /**
+   * How many `<pre>` and `<textarea>` elements are open around the text being
+   * read. Inside one, text keeps its whitespace as written, as HTML keeps it:
+   * collapsing it ran the lines of a code sample into one.
+   */
+  private preformatted: number = 0;
   // Template literal state
   private inTemplateLiteral: boolean = false;
   /**
@@ -135,6 +143,19 @@ export class Lexer {
       return this.readTemplateContent();
     }
 
+    if (
+      this.preformatted > 0 &&
+      !this.inTag &&
+      this.inExpression === 0 &&
+      this.inControlFlow === 0 &&
+      this.ch !== '' &&
+      !(this.ch === '<' && this.ltOpensMarkup(this.position)) &&
+      this.ch !== '{' &&
+      !(this.ch === '#' && this.hashStartsControlFlow())
+    ) {
+      return this.readTextContent();
+    }
+
     if ((this.afterContentExpression || this.afterContentElement) && /\s/.test(this.ch)) {
       const inline = this.inlineWhitespace();
       if (inline) return inline;
@@ -163,6 +184,14 @@ export class Lexer {
       this.peekCharAt(3) === '-'
     ) {
       return this.readHtmlComment();
+    }
+
+    // `<!DOCTYPE html>` and any other `<!…>` declaration an HTML page opens
+    // with. It says what the page is, not what to draw, so it reads as a
+    // comment. Read as a tag it became an element named "" and the page drew
+    // "Unknown component: <>" above everything else.
+    if (this.ch === '<' && this.peekCharAt(1) === '!' && !this.inTag && this.inExpression === 0) {
+      return this.readDeclaration();
     }
 
     // Control flow: #if, #each, #else, #end, #empty
@@ -258,6 +287,12 @@ export class Lexer {
         } else if (this.sawStyleKeyword) {
           this.inStyleBlock = true;
           this.sawStyleKeyword = false;
+        } else if (this.sawPreformattedTag) {
+          this.sawPreformattedTag = false;
+          this.preformatted++;
+          // As in HTML, a line break straight after the tag is not content.
+          if (this.currentChar() === '\r' && this.peekChar() === '\n') this.readChar();
+          if (this.currentChar() === '\n') this.readChar();
         }
         return createToken(
           TokenType.TAG_CLOSE,
@@ -277,6 +312,7 @@ export class Lexer {
           this.sawScriptKeyword = false;
           this.sawLogicKeyword = false;
           this.sawStyleKeyword = false;
+          this.sawPreformattedTag = false;
           return createToken(
             TokenType.TAG_SELF_CLOSE,
             '/>',
@@ -800,6 +836,7 @@ export class Lexer {
       this.readChar();
       this.inTag = true;
       this.readingClosingTag = true;
+      if (this.preformatted > 0 && this.preformattedTagAhead()) this.preformatted--;
       return createToken(
         TokenType.TAG_END_OPEN,
         '</',
@@ -821,6 +858,8 @@ export class Lexer {
       this.sawLogicKeyword = true;
     } else if (nextWord === 'style') {
       this.sawStyleKeyword = true;
+    } else if (this.preformattedTagAhead()) {
+      this.sawPreformattedTag = true;
     }
 
     return createToken(TokenType.TAG_OPEN, '<', startLine, startColumn, startPos, this.position);
@@ -1121,6 +1160,11 @@ export class Lexer {
       this.readChar();
     }
 
+    // Inside <pre> or <textarea> the text is what was written.
+    if (this.preformatted > 0 && content !== '') {
+      return createToken(TokenType.TEXT, content, startLine, startColumn, startPos, this.position);
+    }
+
     // Normalize whitespace but preserve single leading/trailing spaces
     // This ensures "{expr} text" keeps the space between expression and text
     const hadLeadingSpace = /^\s/.test(content);
@@ -1394,6 +1438,27 @@ export class Lexer {
     );
   }
 
+  /** Read a `<!…>` declaration, such as `<!DOCTYPE html>`, as a comment. */
+  private readDeclaration(): Token {
+    const startLine = this.line;
+    const startColumn = this.column;
+    const startPos = this.position;
+
+    this.readChar(); // <
+    this.readChar(); // !
+    const declaration = this.readWhile((ch) => ch !== '>');
+    this.readChar(); // >
+
+    return createToken(
+      TokenType.COMMENT,
+      declaration.trim(),
+      startLine,
+      startColumn,
+      startPos,
+      this.position
+    );
+  }
+
   /**
    * Whether the `<` at `at` can begin markup: a tag, a closing tag or a
    * comment. One followed by anything else is words, as HTML reads it:
@@ -1480,6 +1545,21 @@ export class Lexer {
       pos++;
     }
     return word.toLowerCase();
+  }
+
+  /**
+   * Whether the tag name under the cursor is `pre` or `textarea`, written in
+   * lower case: the HTML elements. `<Textarea>` is a component, and keeps the
+   * whitespace rules of any other.
+   */
+  private preformattedTagAhead(): boolean {
+    let pos = this.position;
+    let word = '';
+    while (pos < this.source.length && this.isIdentifierPart(this.source[pos])) {
+      word += this.source[pos];
+      pos++;
+    }
+    return word === 'pre' || word === 'textarea';
   }
 
   /**

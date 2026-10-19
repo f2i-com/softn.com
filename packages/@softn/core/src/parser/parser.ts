@@ -55,6 +55,15 @@ import {
   isTemplateNode,
 } from './ast';
 import {
+  VOID_ELEMENTS,
+  HEAD_ELEMENTS,
+  DocumentWrapper,
+  documentWrapper,
+  htmlHandlerEvent,
+  isRemoteReference,
+  scriptLanguage,
+} from './html';
+import {
   SoftNParseError,
   UnexpectedTokenError,
   UnclosedTagError,
@@ -258,6 +267,17 @@ export class Parser {
    * expression closes (see parsePrimary and closeExpression).
    */
   private pendingOperand: ParseDiagnostic | null = null;
+  /**
+   * The `<script>`, `<logic>` and `<style>` blocks written inside an element,
+   * waiting to be placed on the document as if written at its top. An HTML
+   * page puts its `<style>` and `<script>` wherever it likes, often at the
+   * end of `<body>`; read as elements, their content was dropped unsaid.
+   */
+  private nestedBlocks: Array<ScriptBlock | LogicBlock | StyleBlock> = [];
+  /** Whether the top-level elements being read are inside a document's `<head>`. */
+  private inHead: boolean = false;
+  /** The text of a document's `<title>`. */
+  private title: string | undefined;
 
   constructor(source: string) {
     this.source = source;
@@ -350,6 +370,27 @@ export class Parser {
       doc.template.push(node);
     };
 
+    const place = (element: TopLevelElement): void => {
+      if (isImportDeclaration(element)) {
+        doc.imports.push(element);
+      } else if (isComponentDeclaration(element)) {
+        doc.component = element;
+      } else if (isScriptBlock(element)) {
+        doc.script = element;
+      } else if (isLogicBlock(element)) {
+        doc.logic = element;
+      } else if (isDataBlock(element)) {
+        // A page that writes either block more than once means all of
+        // them. The last used to replace the others, and nothing said
+        // that the first block's rules or collections were gone.
+        doc.data = doc.data ? this.joinDataBlocks(doc.data, element) : element;
+      } else if (isStyleBlock(element)) {
+        doc.style = doc.style ? joinStyleBlocks(doc.style, element) : element;
+      } else if (isTemplateNode(element)) {
+        pushTemplate(element);
+      }
+    };
+
     while (!this.curTokenIs(TokenType.EOF)) {
       this.skipComments();
 
@@ -363,26 +404,19 @@ export class Parser {
             heldSpace = null;
             afterTemplateNode = false;
           }
-          if (element) {
-            if (isImportDeclaration(element)) {
-              doc.imports.push(element);
-            } else if (isComponentDeclaration(element)) {
-              doc.component = element;
-            } else if (isScriptBlock(element)) {
-              doc.script = element;
-            } else if (isLogicBlock(element)) {
-              doc.logic = element;
-            } else if (isDataBlock(element)) {
-              // A page that writes either block more than once means all of
-              // them. The last used to replace the others, and nothing said
-              // that the first block's rules or collections were gone.
-              doc.data = doc.data ? this.joinDataBlocks(doc.data, element) : element;
-            } else if (isStyleBlock(element)) {
-              doc.style = doc.style ? joinStyleBlocks(doc.style, element) : element;
-            } else if (isTemplateNode(element)) {
-              pushTemplate(element);
-            }
+          if (element) place(element);
+          // Blocks written inside it come after it, in the order written.
+          for (const block of this.nestedBlocks.splice(0)) place(block);
+        } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
+          // A closing tag with nothing open: the `</head>`, `</body>` and
+          // `</html>` of a page written as a whole document, or a stray one,
+          // which was always passed over.
+          this.nextToken();
+          if (this.readTagName() === 'head') this.inHead = false;
+          while (!this.curTokenIs(TokenType.TAG_CLOSE) && !this.curTokenIs(TokenType.EOF)) {
+            this.nextToken();
           }
+          if (this.curTokenIs(TokenType.TAG_CLOSE)) this.nextToken();
         } else if (this.curTokenIs(TokenType.HASH)) {
           // Control flow at top level
           const controlFlow = this.parseControlFlow();
@@ -411,6 +445,9 @@ export class Parser {
       }
     }
 
+    for (const block of this.nestedBlocks.splice(0)) place(block);
+    if (this.title !== undefined) doc.title = this.title;
+
     // Attach diagnostics if any were collected
     if (this.diagnostics.length > 0) {
       doc.diagnostics = this.diagnostics;
@@ -425,6 +462,22 @@ export class Parser {
   private parseTopLevelElement(): TopLevelElement | null {
     this.expectToken(TokenType.TAG_OPEN);
 
+    // A page written as a whole HTML document.
+    const wrapper = this.isPropertyName() ? documentWrapper(this.curToken.literal) : null;
+    if (wrapper) {
+      return this.parseDocumentWrapper(wrapper);
+    }
+    // At the top of a page, `<title>`, `<meta>` and `<link>` are the head's
+    // wherever they stand, as a browser reads them.
+    if (
+      this.isPropertyName() &&
+      HEAD_ELEMENTS.has(this.curToken.literal) &&
+      (this.inHead || this.curToken.literal !== 'noscript')
+    ) {
+      this.readHeadElement();
+      return null;
+    }
+
     // Check for special elements
     if (this.curTokenIs(TokenType.IMPORT)) {
       return this.parseImport();
@@ -432,21 +485,95 @@ export class Parser {
     if (this.curTokenIs(TokenType.COMPONENT)) {
       return this.parseComponentDeclaration();
     }
-    if (this.curTokenIs(TokenType.SCRIPT)) {
-      return this.parseScriptBlock();
-    }
-    if (this.curTokenIs(TokenType.LOGIC)) {
-      return this.parseLogicBlock();
-    }
     if (this.curTokenIs(TokenType.DATA)) {
       return this.parseDataBlock();
     }
-    if (this.curTokenIs(TokenType.STYLE)) {
-      return this.parseStyleBlock();
+    const block = this.blockAhead();
+    if (block) {
+      return this.parseBlock(block);
     }
 
     // Regular element
     return this.parseElement();
+  }
+
+  /**
+   * Which block the tag being read opens: `<script>`, `<logic>` or `<style>`,
+   * in any case, as the lexer reads them. The lexer has always taken
+   * `<Logic>` and `<Style>` for blocks and read their content as one; this
+   * took only the lower-case spelling, so the content of the others was
+   * dropped and the page drew "Unknown component" in its place.
+   */
+  private blockAhead(): 'script' | 'logic' | 'style' | null {
+    if (this.curTokenIs(TokenType.SCRIPT)) return 'script';
+    if (this.curTokenIs(TokenType.LOGIC)) return 'logic';
+    if (this.curTokenIs(TokenType.STYLE)) return 'style';
+    if (this.curTokenIs(TokenType.IDENTIFIER)) {
+      const word = this.curToken.literal.toLowerCase();
+      if (word === 'script' || word === 'logic' || word === 'style') return word;
+    }
+    return null;
+  }
+
+  private parseBlock(block: 'script' | 'logic' | 'style'): ScriptBlock | LogicBlock | StyleBlock | null {
+    if (block === 'script') return this.parseScriptBlock();
+    if (block === 'logic') return this.parseLogicBlock();
+    return this.parseStyleBlock();
+  }
+
+  /**
+   * `<html>`, `<head>` or `<body>`, opening a page written as a whole HTML
+   * document. What is inside is read as the page itself, so its `<style>`
+   * and `<script>` are the page's and its elements are drawn. A `<body>`
+   * with attributes keeps them, on a `<div>` around the page; one without is
+   * passed over like the others. Their closing tags are passed over in
+   * `parse()`.
+   */
+  private parseDocumentWrapper(wrapper: DocumentWrapper): ElementNode | null {
+    if (wrapper === 'body' && this.peekToken.type !== TokenType.TAG_CLOSE) {
+      const element = this.parseElement() as ElementNode;
+      element.tag = 'div';
+      return element;
+    }
+    while (
+      !this.curTokenIs(TokenType.TAG_CLOSE) &&
+      !this.curTokenIs(TokenType.TAG_SELF_CLOSE) &&
+      !this.curTokenIs(TokenType.EOF)
+    ) {
+      this.nextToken();
+    }
+    this.nextToken(); // consume > or />
+    this.inHead = wrapper === 'head';
+    return null;
+  }
+
+  /**
+   * An element of a document's `<head>`. The `<title>` names the page, and
+   * a host may show it; the rest (`<meta>`, `<link>`, `<base>`) describe the
+   * page to a browser that is not the one drawing it here, so none is drawn.
+   * A stylesheet a `<link>` names is the bundle composer's to place.
+   */
+  private readHeadElement(): void {
+    const element = this.parseElement();
+    if (element.type !== 'Element') return;
+    if (element.tag === 'title') {
+      this.title = element.children
+        .map((child) => (child.type === 'Text' ? child.content : ''))
+        .join('')
+        .trim();
+    } else if (element.tag === 'link') {
+      const rel = (this.staticPropValue(element, 'rel') ?? '').toLowerCase().split(/\s+/);
+      const href = this.staticPropValue(element, 'href') ?? '';
+      if (rel.includes('stylesheet') && isRemoteReference(href)) {
+        this.diagnostics.push({
+          message:
+            `<link rel="stylesheet" href="${href}"> is not loaded: an app's styles come from the app's own files. ` +
+            'Put the rules the page needs in a .css file of the app, or in a <style> block',
+          severity: 'warning',
+          loc: element.loc,
+        });
+      }
+    }
   }
 
   /**
@@ -655,32 +782,61 @@ export class Parser {
   }
 
   /**
-   * Parse a script block
+   * Parse a script block: the page's code, written in it.
+   *
+   * Its attributes are read for what they say about that code. A `src`
+   * names a file, which the bundle composer places as it places
+   * `<logic src>`; read on its own, a page has no files to read it from, so
+   * the tag is no block here (an empty one would have taken the place of the
+   * page's `<logic>`). A `type` that is not JavaScript is data or a template,
+   * such as `application/ld+json`, and is not run.
    */
-  private parseScriptBlock(): ScriptBlock {
+  private parseScriptBlock(): ScriptBlock | null {
     const loc = this.currentLoc();
 
     // Consume 'script' keyword
     this.nextToken();
 
-    // Skip any attributes until TAG_CLOSE or SCRIPT_CONTENT
+    const attributes: Record<string, string> = {};
     while (
       !this.curTokenIs(TokenType.TAG_CLOSE) &&
+      !this.curTokenIs(TokenType.TAG_SELF_CLOSE) &&
       !this.curTokenIs(TokenType.SCRIPT_CONTENT) &&
       !this.curTokenIs(TokenType.EOF)
     ) {
+      if (this.isPropertyName() && this.peekToken.type === TokenType.EQUALS) {
+        const name = this.curToken.literal.toLowerCase();
+        this.nextToken(); // name
+        this.nextToken(); // =
+        if (this.curTokenIs(TokenType.STRING) || this.curTokenIs(TokenType.IDENTIFIER)) {
+          attributes[name] = decodeHtmlEntities(this.curToken.literal);
+        } else {
+          continue;
+        }
+      }
       this.nextToken();
     }
 
-    // Consume TAG_CLOSE if present
-    if (this.curTokenIs(TokenType.TAG_CLOSE)) {
+    let code = '';
+    if (this.curTokenIs(TokenType.TAG_SELF_CLOSE)) {
+      // `<script src="main.js" />`, as XHTML writes it.
       this.nextToken();
-    }
+    } else {
+      // Consume TAG_CLOSE if present
+      if (this.curTokenIs(TokenType.TAG_CLOSE)) {
+        this.nextToken();
+      }
 
-    // Now we should be at SCRIPT_CONTENT
-    if (this.curTokenIs(TokenType.SCRIPT_CONTENT)) {
-      const content = this.curToken.literal;
-      this.nextToken();
+      // Now we should be at SCRIPT_CONTENT
+      if (this.curTokenIs(TokenType.SCRIPT_CONTENT)) {
+        code = this.curToken.literal;
+        this.nextToken();
+      } else {
+        // Fallback: skip to end
+        while (!this.curTokenIs(TokenType.TAG_END_OPEN) && !this.curTokenIs(TokenType.EOF)) {
+          this.nextToken();
+        }
+      }
 
       // Consume closing tag </script>
       if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
@@ -691,16 +847,33 @@ export class Parser {
           this.nextToken();
         }
       }
-
-      return { type: 'ScriptBlock', code: content, loc };
     }
 
-    // Fallback: skip to end
-    while (!this.curTokenIs(TokenType.TAG_END_OPEN) && !this.curTokenIs(TokenType.EOF)) {
-      this.nextToken();
+    const src = attributes.src?.trim();
+    if (src) {
+      if (isRemoteReference(src)) {
+        this.diagnostics.push({
+          message:
+            `<script src="${src}"> is not loaded: an app's code runs in its own sandbox, from the app's own files, ` +
+            'so a script from another site cannot run beside it. Put the code the page needs in a file of the app',
+          severity: 'warning',
+          loc,
+        });
+      }
+      return null;
     }
-
-    return { type: 'ScriptBlock', code: '', loc };
+    const language = scriptLanguage(attributes.type);
+    if (language === 'other') return null;
+    if (language === 'python') {
+      this.diagnostics.push({
+        message:
+          'Python is not written inside a page, where its indentation is not safe: put it in a .py file and refer to it with <script src="main.py">',
+        severity: 'error',
+        loc,
+      });
+      return null;
+    }
+    return { type: 'ScriptBlock', code, loc };
   }
 
   /**
@@ -960,10 +1133,17 @@ export class Parser {
     // Skip any attributes until TAG_CLOSE or STYLE_CONTENT
     while (
       !this.curTokenIs(TokenType.TAG_CLOSE) &&
+      !this.curTokenIs(TokenType.TAG_SELF_CLOSE) &&
       !this.curTokenIs(TokenType.STYLE_CONTENT) &&
       !this.curTokenIs(TokenType.EOF)
     ) {
       this.nextToken();
+    }
+
+    // `<style />` has no rules, and nothing after it is its content.
+    if (this.curTokenIs(TokenType.TAG_SELF_CLOSE)) {
+      this.nextToken();
+      return { type: 'StyleBlock', content: '', loc };
     }
 
     // Consume TAG_CLOSE if present
@@ -1007,11 +1187,7 @@ export class Parser {
     // "attribute". Its close tag then never matched the empty name, so the
     // element swallowed every sibling after it — `<Card><slot/></Card><Text>`
     // lost the Text — with only a "expected </>" diagnostic to go on.
-    let tagName = '';
-    if (this.isPropertyName()) {
-      tagName = this.curToken.literal;
-      this.nextToken();
-    }
+    const tagName = this.readTagName();
 
     const element = createElementNode(tagName, loc);
 
@@ -1123,7 +1299,12 @@ export class Parser {
       };
     }
 
-    element.selfClosing = this.curTokenIs(TokenType.TAG_SELF_CLOSE);
+    this.takeHandlerAttributes(element);
+
+    // `<br>`, `<img …>` and `<input …>` end where their tag ends, as in HTML.
+    element.selfClosing =
+      this.curTokenIs(TokenType.TAG_SELF_CLOSE) ||
+      (this.curTokenIs(TokenType.TAG_CLOSE) && VOID_ELEMENTS.has(tagName));
     this.nextToken(); // consume > or />
 
     // Parse children if not self-closing
@@ -1156,6 +1337,110 @@ export class Parser {
     return element;
   }
 
+  /**
+   * Read a tag name: a word, or words joined by hyphens, as a custom element
+   * is named (`<my-card>`). The lexer reads a hyphen as a minus, so the
+   * pieces are joined here, where they touch, as an attribute's name is.
+   * Read as one word, `<my-card>` was the tag `my` with an attribute `card`,
+   * and its closing tag a mismatch.
+   */
+  private readTagName(): string {
+    if (!this.isPropertyName()) return '';
+    let name = this.curToken.literal;
+    let end = this.curToken.end;
+    this.nextToken();
+    while (
+      this.curTokenIs(TokenType.MINUS) &&
+      this.curToken.start === end &&
+      this.peekToken.start === this.curToken.end &&
+      /^[A-Za-z0-9_$]+$/.test(this.peekToken.literal)
+    ) {
+      this.nextToken(); // -
+      name += `-${this.curToken.literal}`;
+      end = this.curToken.end;
+      this.nextToken();
+    }
+    return name;
+  }
+
+  /**
+   * A child element, or none: a `<script>`, `<logic>` or `<style>` written
+   * inside an element is the page's, and is placed on the document (see
+   * `nestedBlocks`).
+   */
+  private parseChildElement(): TemplateNode[] {
+    const block = this.blockAhead();
+    if (block) {
+      const parsed = this.parseBlock(block);
+      if (parsed) this.nestedBlocks.push(parsed);
+      return [];
+    }
+    return [this.parseElement()];
+  }
+
+  /**
+   * `<button onclick="save()">`: a handler written as HTML writes one, as the
+   * attribute named for its event, holding code. It is read as the quoted
+   * `@click="save()"` is (see `quotedHandler`). Left as an attribute, it was
+   * dropped from the element with nothing said, and the button did nothing.
+   */
+  private takeHandlerAttributes(element: ElementNode): void {
+    if (!element.props.some((prop) => htmlHandlerEvent(element.tag, prop.name))) return;
+    element.props = element.props.filter((prop) => {
+      const event = htmlHandlerEvent(element.tag, prop.name);
+      if (!event || prop.value.type !== 'static') return true;
+      const handler = this.quotedHandler(event, [], prop.value.value, prop.loc, prop.name);
+      if (handler) element.events.push(handler);
+      return false;
+    });
+  }
+
+  /**
+   * A handler written as code in quotes, `onclick="count++"` or
+   * `@click="save(); close()"`, read as the arrow `(event) => { … }` it means:
+   * the code runs when the event fires, with the event as `event`, as in an
+   * HTML page. A `return false` at its end is HTML's way to cancel what the
+   * event would do, so it is the `.prevent` modifier. Code the page cannot
+   * read is a warning, and no handler.
+   */
+  private quotedHandler(
+    name: string,
+    modifiers: string[],
+    code: string,
+    loc: SourceLocation,
+    written: string
+  ): EventNode | null {
+    let body = code.trim();
+    const all = [...modifiers];
+    const cancels = /(?:^|;)\s*return\s+false\s*;?\s*$/;
+    if (cancels.test(body)) {
+      body = body.replace(cancels, '').trim();
+      if (!all.includes('prevent')) all.push('prevent');
+    }
+    // A name alone, `@click="save"`, is the function to call, as Vue reads
+    // it and as `@click={save}` is; as a statement it would do nothing.
+    const reference = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(body);
+    const parsed = new Parser(reference ? `{${body}}` : `{(event) => { ${body} }}`).parse();
+    const node = parsed.template.length === 1 ? parsed.template[0] : undefined;
+    const handler = node?.type === 'Expression' ? node.expression : undefined;
+    const readable = reference
+      ? handler?.type === 'Identifier' || handler?.type === 'MemberExpression'
+      : handler?.type === 'ArrowFunctionExpression' && handler.statements !== undefined;
+    if (parsed.diagnostics?.length || !handler || !readable) {
+      this.diagnostics.push({
+        message:
+          `${written}="${code}" could not be read as a handler, so it does nothing. ` +
+          `Call a function of the app's logic, as in ${written}="save()", or write @${name}={() => …}`,
+        severity: 'warning',
+        loc,
+      });
+      return null;
+    }
+    return all.length > 0
+      ? { type: 'Event', name, handler, modifiers: all, loc }
+      : { type: 'Event', name, handler, loc };
+  }
+
   /** The value of a quoted attribute — `name="x"` — or undefined if not written that way. */
   private staticPropValue(element: ElementNode, name: string): string | undefined {
     const prop = element.props.find((p) => p.name === name);
@@ -1179,22 +1464,28 @@ export class Parser {
         this.nextToken(); // consume </
         // Keyword tags (`</slot>`) close like any other — see parseElement.
         if (this.isPropertyName()) {
-          const closeTagName = this.curToken.literal;
+          const nameLoc = this.currentLoc();
+          const closeTagName = this.readTagName();
           if (closeTagName === parentTag) {
-            this.nextToken(); // consume tag name
             if (this.curTokenIs(TokenType.TAG_CLOSE)) {
               this.nextToken(); // consume >
             }
             closed = true;
             break;
           }
-          // Mismatched tag - record diagnostic and skip it, then continue
-          // parsing children so the parent's actual close tag is consumed
-          this.addDiagnostic(
-            new MismatchedTagError(parentTag, closeTagName, this.currentLoc(), this.source)
-          );
-          // Consume the mismatched closing tag
-          this.nextToken(); // consume tag name
+          // `</br>` and `</input>` close nothing: their elements ended with
+          // their tags. Pages wrote `<br></br>` while `<br>` needed closing,
+          // and HTML passes over them, so they are passed over here too; as
+          // are the `</body>` and `</html>` a document's page ends with.
+          const passedOver = VOID_ELEMENTS.has(closeTagName) || documentWrapper(closeTagName) !== null;
+          if (!passedOver) {
+            // Mismatched tag - record diagnostic and skip it, then continue
+            // parsing children so the parent's actual close tag is consumed
+            this.addDiagnostic(
+              new MismatchedTagError(parentTag, closeTagName, nameLoc, this.source)
+            );
+          }
+          // Consume the rest of the closing tag
           if (this.curTokenIs(TokenType.TAG_CLOSE)) {
             this.nextToken(); // consume >
           }
@@ -1207,7 +1498,7 @@ export class Parser {
         if (this.curTokenIs(TokenType.TAG_OPEN)) {
           // Child element
           this.nextToken();
-          children.push(this.parseElement());
+          children.push(...this.parseChildElement());
         } else if (this.curTokenIs(TokenType.HASH)) {
           // Control flow
           const controlFlow = this.parseControlFlow();
@@ -1418,27 +1709,26 @@ export class Parser {
     } else {
       // Fallback to undefined handler
       handler = createIdentifier('undefined', this.currentLoc());
-      // `@click="save()"` is how other frameworks write a handler. Here the
-      // quotes make it words, and the button had no handler and nothing to
-      // say so. It still has none, and now the page says what to write. A
-      // warning: the page runs, and the Builder, which takes an error for a
-      // page it cannot write back as written, could write this one and still
-      // can.
+      // `@click="save()"` is how other frameworks write a handler, and how
+      // HTML writes `onclick="save()"`: code in quotes, run when the event
+      // fires. It is read that way (see quotedHandler). The quotes used to
+      // make it words, and the button had no handler. Code that cannot be
+      // read is still a warning, not an error: the page runs, and the
+      // Builder, which takes an error for a page it cannot write back as
+      // written, could write it and still can.
       if (this.curTokenIs(TokenType.STRING)) {
-        const written = this.curToken.literal.trim();
+        const written = decodeHtmlEntities(this.curToken.literal);
         const event = `@${name}${modifiers.map((modifier) => `.${modifier}`).join('')}`;
-        const braced =
-          written === ''
-            ? '{…}'
-            : /^[A-Za-z_$][\w$]*$/.test(written)
-              ? `{${written}}`
-              : `{() => ${written}}`;
-        this.diagnostics.push({
-          message: `${event} takes its handler in braces, not in quotes: write ${event}=${braced}`,
-          severity: 'warning',
-          loc,
-        });
         this.nextToken();
+        const quoted = written.trim() === '' ? null : this.quotedHandler(name, modifiers, written, loc, event);
+        if (quoted) return quoted;
+        if (written.trim() === '') {
+          this.diagnostics.push({
+            message: `${event}="" has no handler: write the code to run in the quotes, or ${event}={…}`,
+            severity: 'warning',
+            loc,
+          });
+        }
       }
     }
 
@@ -1517,7 +1807,7 @@ export class Parser {
 
       if (this.curTokenIs(TokenType.TAG_OPEN)) {
         this.nextToken();
-        consequent.push(this.parseElement());
+        consequent.push(...this.parseChildElement());
       } else if (this.curTokenIs(TokenType.HASH)) {
         const cf = this.parseControlFlow();
         if (cf) consequent.push(cf);
@@ -1566,7 +1856,7 @@ export class Parser {
 
           if (this.curTokenIs(TokenType.TAG_OPEN)) {
             this.nextToken();
-            alternate.push(this.parseElement());
+            alternate.push(...this.parseChildElement());
           } else if (this.curTokenIs(TokenType.HASH)) {
             const cf = this.parseControlFlow();
             if (cf) alternate.push(cf);
@@ -1727,7 +2017,7 @@ export class Parser {
 
       if (this.curTokenIs(TokenType.TAG_OPEN)) {
         this.nextToken();
-        body.push(this.parseElement());
+        body.push(...this.parseChildElement());
       } else if (this.curTokenIs(TokenType.HASH)) {
         const cf = this.parseControlFlow();
         if (cf) body.push(cf);
@@ -1764,7 +2054,7 @@ export class Parser {
 
         if (this.curTokenIs(TokenType.TAG_OPEN)) {
           this.nextToken();
-          emptyFallback.push(this.parseElement());
+          emptyFallback.push(...this.parseChildElement());
         } else if (this.curTokenIs(TokenType.HASH)) {
           // An #if or an #each inside #empty. This branch had no rule for
           // one and stepped over the `#`, the keyword and the header a token
@@ -3086,4 +3376,13 @@ export function parse(source: string): SoftNDocument {
 // 8: A page's `<style>` blocks are one stylesheet and its `<data>` blocks one
 //    set of declarations, in the order written. The last block of either used
 //    to replace the ones before it.
-export const PARSER_VERSION = 8;
+// 9: A page can be written as an HTML page is. `<!DOCTYPE>` is a comment;
+//    `<html>`, `<head>` and `<body>` are read through (a `<body>` with
+//    attributes is a `<div>`) and the head's `<title>` is the document's
+//    `title`; `<br>`, `<img>`, `<input>` and the other void elements end with
+//    their tags; `<my-card>` is one tag name; `<script>`, `<logic>` and
+//    `<style>` inside an element, or spelled with a capital, are the page's
+//    blocks; `<script src>` and a `<script type>` that is not code are no
+//    block; `onclick="…"` and `@click="…"` are handlers; and text inside
+//    `<pre>` and `<textarea>` keeps its whitespace.
+export const PARSER_VERSION = 9;

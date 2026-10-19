@@ -60,14 +60,31 @@ describe('a < in words', () => {
 });
 
 describe('a handler written as a quoted string', () => {
-  it('is reported, with the braces it needs', () => {
-    expect(messages('<div>\n<button @click="save()">x</button>\n</div>')).toEqual([
-      '2: @click takes its handler in braces, not in quotes: write @click={() => save()}',
+  // It was words, with a warning that said where the braces went. Quoted code
+  // is how HTML writes `onclick="save()"` and how Vue writes `@click`, so it
+  // is read as that code now, run when the event fires.
+  it('is the code it holds, run when the event fires', () => {
+    const event = (source: string) => {
+      const doc = parse(source);
+      expect(doc.diagnostics ?? [], source).toEqual([]);
+      return (doc.template[0] as { events: Array<{ handler: { type: string }; modifiers?: string[] }> }).events[0];
+    };
+    expect(event('<button @click="save()">x</button>').handler.type).toBe('ArrowFunctionExpression');
+    expect(event('<button @click="save(); close()">x</button>').handler.type).toBe('ArrowFunctionExpression');
+    // A name alone is the function to call, as `@click={save}` is.
+    expect(event('<button @click="save">x</button>').handler.type).toBe('Identifier');
+    expect(event('<a href="#" @click="go(); return false">x</a>').modifiers).toEqual(['prevent']);
+  });
+
+  it('is reported when it is code a page cannot run', () => {
+    expect(messages('<div>\n<button @click="if (a) save()">x</button>\n</div>')).toEqual([
+      '2: @click="if (a) save()" could not be read as a handler, so it does nothing. ' +
+        `Call a function of the app's logic, as in @click="save()", or write @click={() => …}`,
     ]);
-    expect(messages('<button @click="save">x</button>')).toEqual([
-      '1: @click takes its handler in braces, not in quotes: write @click={save}',
+    expect(severities('<button @click="if (a) save()">x</button>')).toEqual(['warning']);
+    expect(messages('<button @click="">x</button>')).toEqual([
+      '1: @click="" has no handler: write the code to run in the quotes, or @click={…}',
     ]);
-    expect(severities('<button @click="save()">x</button>')).toEqual(['warning']);
   });
 });
 

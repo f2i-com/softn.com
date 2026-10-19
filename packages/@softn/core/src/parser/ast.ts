@@ -5,6 +5,7 @@
  */
 
 import type { SourceLocation } from './token';
+import { HTML_ENTITIES } from './html-entities';
 
 // ============================================================================
 // Document Structure
@@ -39,6 +40,8 @@ export interface SoftNDocument {
   loc: SourceLocation;
   /** Parse diagnostics (errors/warnings) — present when fault-tolerant parsing recovered from issues */
   diagnostics?: ParseDiagnostic[];
+  /** The `<title>` of a page written as a whole HTML document, for a host to show. */
+  title?: string;
 }
 
 // ============================================================================
@@ -672,18 +675,6 @@ export function createElementNode(
   };
 }
 
-/** Decode common HTML entities in text content */
-const htmlEntities: Record<string, string> = {
-  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'",
-  '&nbsp;': '\u00A0', '&larr;': '\u2190', '&rarr;': '\u2192', '&uarr;': '\u2191', '&darr;': '\u2193',
-  '&laquo;': '\u00AB', '&raquo;': '\u00BB', '&bull;': '\u2022', '&middot;': '\u00B7',
-  '&mdash;': '\u2014', '&ndash;': '\u2013', '&hellip;': '\u2026', '&trade;': '\u2122',
-  '&copy;': '\u00A9', '&reg;': '\u00AE', '&deg;': '\u00B0', '&plusmn;': '\u00B1',
-  '&times;': '\u00D7', '&divide;': '\u00F7', '&lsquo;': '\u2018', '&rsquo;': '\u2019',
-  '&ldquo;': '\u201C', '&rdquo;': '\u201D', '&check;': '\u2713', '&cross;': '\u2717',
-  '&star;': '\u2605', '&hearts;': '\u2665', '&infin;': '\u221E',
-};
-
 /**
  * The character a numeric reference names. A number that names none (past
  * U+10FFFF, half of a surrogate pair, zero) is U+FFFD, as HTML reads it:
@@ -701,7 +692,7 @@ export function decodeHtmlEntities(text: string): string {
   return text.replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|(\w+));/g, (match, decimal, hex, named) => {
     if (decimal) return referencedCharacter(parseInt(decimal, 10));
     if (hex) return referencedCharacter(parseInt(hex, 16));
-    if (named) return htmlEntities[`&${named};`] ?? match;
+    if (named) return Object.hasOwn(HTML_ENTITIES, named) ? HTML_ENTITIES[named] : match;
     return match;
   });
 }

@@ -18,6 +18,7 @@
  */
 
 import { PYTHON_PACKAGES, readPythonPackages } from './inspect';
+import { isRemoteReference, scriptLanguage } from '../parser/html';
 import {
   declareCollections,
   declareStyles,
@@ -304,9 +305,19 @@ export function composeBundleSource(
   };
 
   const collectLogic = (source: string, uiPath: string, main: boolean): string => {
-    const logicTag = /<logic\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/logic\s*>)/gi;
-    return source.replace(logicTag, (fullTag, attributes: string, inlineCode?: string) => {
+    // `<script>` is `<logic>` as an HTML page spells it: `<script
+    // src="main.js"></script>` names a file of the app's code, and
+    // `<script>…</script>` holds it. A script that is not code (JSON, a
+    // template) or comes from another site is left in the page, for the
+    // parser, which passes over the one and says the other is not loaded.
+    const logicTag = /<(logic|script)\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/\1\s*>)/gi;
+    return source.replace(logicTag, (fullTag, tag: string, attributes: string, inlineCode?: string) => {
+      const script = tag.toLowerCase() === 'script';
+      const type = attributes.match(/\btype\s*=\s*(["'])([^"']*)\1/i)?.[2];
+      const language = script ? scriptLanguage(type) : 'javascript';
+      if (language === 'other') return fullTag;
       const src = attributes.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i)?.[2];
+      if (src && script && isRemoteReference(src)) return fullTag;
       if (src) {
         sawExternalLogic = true;
         const externalPath = resolveBundlePath(uiPath, src);
@@ -346,6 +357,11 @@ export function composeBundleSource(
           `${uiPath} has an inline <logic lang="python"> block: put Python in a .py file and reference it with <logic src="...">`
         );
       }
+      if (language === 'python') {
+        throw new Error(
+          `${uiPath} has an inline <script type="${type}"> block: put Python in a .py file and reference it with <script src="...">`
+        );
+      }
       const fragment: LogicFragment = {
         code: rewriteBundleLogicImports(inlineCode, uiPath),
         basePath: uiPath,
@@ -356,6 +372,31 @@ export function composeBundleSource(
     });
   };
 
+  /**
+   * `<link rel="stylesheet" href="styles.css">`: a stylesheet of the app's,
+   * named as an HTML page names one. Its rules take the tag's place as a
+   * `<style>` block, which is what the page would have written inline, so
+   * they join the page's stylesheet like any other. One from another site is
+   * left in the page, which does not load it; so is one the bundle does not
+   * carry, said here. Lower case only: `<Link>` is a component.
+   */
+  const inlineStylesheets = (source: string, pagePath: string): string =>
+    source.replace(/<link\b([^>]*?)\/?>/g, (fullTag, attributes: string) => {
+      const rel =
+        attributes.match(/\brel\s*=\s*(["'])([^"']*)\1/i)?.[2] ??
+        attributes.match(/\brel\s*=\s*([^\s"'>/]+)/i)?.[1];
+      if (!rel || !rel.toLowerCase().split(/\s+/).includes('stylesheet')) return fullTag;
+      const href = attributes.match(/\bhref\s*=\s*(["'])([^"']+)\1/i)?.[2];
+      if (!href || isRemoteReference(href)) return fullTag;
+      const stylesheetPath = resolveBundlePath(pagePath, href);
+      const rules = textFiles.get(stylesheetPath);
+      if (rules === undefined) {
+        console.warn(`[SoftN] ${pagePath}: the stylesheet ${stylesheetPath} is not in the bundle.`);
+        return fullTag;
+      }
+      return `<style>\n${rules}\n</style>`;
+    });
+
   const inlineImports = (
     source: string,
     basePath: string,
@@ -363,7 +404,7 @@ export function composeBundleSource(
     cache: Map<string, string>,
     main: boolean
   ): string => {
-    let nextSource = collectLogic(source, basePath, main);
+    let nextSource = collectLogic(inlineStylesheets(source, basePath), basePath, main);
 
     if (!main) {
       // An imported page is placed inside another, so what only a whole page

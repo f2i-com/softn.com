@@ -50,6 +50,13 @@ import {
 } from '../runtime/egress-policy';
 import { parseStatePath } from '../runtime/state-path';
 import { markupValue } from './host-values';
+import {
+  SVG_CHILD_ELEMENTS,
+  keepFieldEditable,
+  loadsFromOutside,
+  textareaText,
+  renameToReactAttributes,
+} from './html-elements';
 
 /**
  * Write `value` at `path` in `state`, copying each record and list on the
@@ -716,6 +723,38 @@ function sanitizeUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy):
 }
 
 /**
+ * What an SVG element would load, judged as a fetch.
+ *
+ * On `<use>` or a gradient, `href` is not a link a person follows but what
+ * the element draws or inherits from, so it is judged as `src` is, unless it
+ * names something in the page (`#icon`), which is how a sprite is used. And
+ * a value that loads through `url(…)` from outside the page, such as
+ * `fill="url(https://…#paint)"`, is dropped: see `loadsFromOutside`.
+ */
+function sanitizeSvgReferences(props: SoftNProps, tag: string, policy: EgressPolicy): void {
+  for (const name of Object.keys(props)) {
+    const value = props[name];
+    const lower = name.toLowerCase();
+    let refused: boolean;
+    if (lower === 'href' || lower === 'xlinkhref' || lower === 'xlink:href') {
+      const text = urlText(value);
+      refused =
+        text !== undefined &&
+        !text.trim().startsWith('#') &&
+        (!isSafeUrl(text) || isWithheldUrl('src', text, policy));
+    } else {
+      refused = name !== 'style' && loadsFromOutside(value);
+    }
+    if (refused) {
+      if (isDevelopment) {
+        console.warn(`[SoftN] Blocked a load from outside the app in <${tag} ${name}>: ${describeUrlValue(value)}`);
+      }
+      delete props[name];
+    }
+  }
+}
+
+/**
  * A URL prop's value as the text the browser will be given, or `undefined`
  * when it is not one.
  *
@@ -1284,6 +1323,10 @@ function renderElement(
     if (isHTMLElement(node.tag)) {
       // Use the lowercase HTML tag as the component
       Component = node.tag.toLowerCase() as keyof JSX.IntrinsicElements;
+    } else if (SVG_CHILD_ELEMENTS.has(node.tag.toLowerCase())) {
+      // A shape inside an `<svg>`, by the name SVG gives it. Only `svg` was
+      // allowed, so an icon drew "Unknown component" for each of its paths.
+      Component = SVG_CHILD_ELEMENTS.get(node.tag.toLowerCase()) as keyof JSX.IntrinsicElements;
     } else {
       if (isDevelopment) {
         console.warn(
@@ -1439,6 +1482,9 @@ function renderElement(
   // A custom element (a tag with a hyphen) is left as it is written: React
   // hands such an element its attributes by the names they are given.
   const customElement = typeof FinalComponent === 'string' && FinalComponent.includes('-');
+  const svgElement =
+    typeof FinalComponent === 'string' &&
+    (FinalComponent === 'svg' || SVG_CHILD_ELEMENTS.has(FinalComponent.toLowerCase()));
   if (!customElement && 'class' in props) {
     // What was drawn for a plain tag still is: a number was written as text.
     const plainTag = typeof FinalComponent === 'string';
@@ -1455,6 +1501,11 @@ function renderElement(
     const key = customElement && typeof props.className !== 'string' ? 'class' : 'className';
     const base = typeof props[key] === 'string' ? (props[key] as string) : '';
     props[key] = [base, ...classToggles].filter(Boolean).join(' ');
+  }
+
+  // `for`, `readonly`, `tabindex`: HTML's names, as React knows them.
+  if (typeof FinalComponent === 'string' && !customElement && !svgElement) {
+    renameToReactAttributes(props);
   }
 
   // Bindings
@@ -1672,6 +1723,10 @@ function renderElement(
     }
   }
 
+  if (typeof FinalComponent === 'string') {
+    keepFieldEditable(FinalComponent, node, props);
+  }
+
   if (styleDirectives) {
     const base =
       typeof props.style === 'string'
@@ -1690,8 +1745,20 @@ function renderElement(
     ? { ...context, slots: slotContent }
     : context;
 
+  // A textarea's content is the text it starts with, not children.
+  let contentNodes = defaultChildren;
+  if (FinalComponent === 'textarea' && defaultChildren.length > 0) {
+    const text = textareaText(defaultChildren, (child) =>
+      evaluateStructural(child.expression, context, '', 'textarea text')
+    );
+    if (text !== undefined) {
+      if (!('value' in props) && !('defaultValue' in props)) props.defaultValue = text;
+      contentNodes = [];
+    }
+  }
+
   // Render non-slot children with parent key for stable keys
-  const children = renderNodes(defaultChildren, childContext, registry, String(key));
+  const children = renderNodes(contentNodes, childContext, registry, String(key));
 
   // A string tag means these props go straight to the DOM, so every name HTML
   // treats as a URL can be judged by name. A registered component gets the
@@ -1700,6 +1767,7 @@ function renderElement(
   const egressPolicy = egressPolicyFor(context);
   if (typeof FinalComponent === 'string') {
     sanitizeUrlProps(props, node.tag, egressPolicy);
+    if (svgElement) sanitizeSvgReferences(props, node.tag, egressPolicy);
     dropTopLayerProps(props);
     dropDocumentName(props, FinalComponent);
   } else {

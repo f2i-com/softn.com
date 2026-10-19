@@ -340,8 +340,13 @@ export const TOP_LAYER_ATTRIBUTES = new Set([
  */
 export const DOCUMENT_NAMED_TAGS = new Set(['img', 'form', 'iframe', 'embed', 'object']);
 
-/** SVG elements that only describe shapes — no scripting, no external loads. */
-const SVG_TAGS = new Set([
+/**
+ * SVG elements that only describe shapes — no scripting, no external loads —
+ * by the names SVG gives them. SVG is case-sensitive where HTML is not: the
+ * renderer creates them by these names (see `SVG_CHILD_ELEMENTS`), and the
+ * sanitiser below compares them lower-cased, as the DOM parser reports them.
+ */
+export const SVG_ELEMENT_NAMES: readonly string[] = [
   'svg',
   'g',
   'defs',
@@ -358,25 +363,27 @@ const SVG_TAGS = new Set([
   'polygon',
   'text',
   'tspan',
-  'textpath',
+  'textPath',
   'marker',
   'mask',
-  'clippath',
+  'clipPath',
   'pattern',
-  'lineargradient',
-  'radialgradient',
+  'linearGradient',
+  'radialGradient',
   'stop',
   'filter',
-  'fegaussianblur',
-  'feoffset',
-  'feblend',
-  'femerge',
-  'femergenode',
-  'fecolormatrix',
-  'fedropshadow',
-  'fecomposite',
-  'feflood',
-]);
+  'feGaussianBlur',
+  'feOffset',
+  'feBlend',
+  'feMerge',
+  'feMergeNode',
+  'feColorMatrix',
+  'feDropShadow',
+  'feComposite',
+  'feFlood',
+];
+
+const SVG_TAGS = new Set(SVG_ELEMENT_NAMES.map((name) => name.toLowerCase()));
 
 /** Inline formatting a rich-text value may contain. */
 const RICH_TEXT_TAGS = new Set([
