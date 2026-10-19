@@ -34,8 +34,9 @@ const DEPLOYED_WORKSPACES = [
 ];
 
 // Workbox is a build dependency, but these packages become the service-worker
-// runtime copied into dist. A production-only dependency walk would otherwise
-// omit the licence for code the PWA actually serves.
+// runtime scripts/pwa.mjs bundles into each app's sw.js. A production-only
+// dependency walk would otherwise omit the licence for code the PWA actually
+// serves.
 //
 // The Tauri bridge is the same case from the other side: Builder declares it
 // under devDependencies, for its desktop build, and imports it from sources
@@ -54,7 +55,6 @@ const EMITTED_BUILD_PACKAGES = [
   'workbox-precaching',
   'workbox-routing',
   'workbox-strategies',
-  'workbox-window',
 ];
 
 // These are real npm dependency edges, but not browser-runtime edges:

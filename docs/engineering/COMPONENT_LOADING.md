@@ -174,7 +174,8 @@ be there when the network is not.
 offline" is the first two; "this app works offline" is the third, and the
 launcher says which of the two it is promising for each app.
 
-1. **Shell precache.** Workbox's glob sweeps `dist` for js, css, html, svg,
+1. **Shell precache.** The precache glob (`scripts/pwa.mjs`, which writes each
+   app's manifest and bundles its `sw.js` on Workbox's runtime) sweeps `dist` for js, css, html, svg,
    png, woff2 and wasm, minus:
    `core-runtime/`, the demos, `assets/vendor-three-*.js`, the feature
    chunks `assets/{scene3d,charts,editors,smart,media,animation}-*.js`, the

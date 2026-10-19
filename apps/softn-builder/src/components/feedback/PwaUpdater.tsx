@@ -1,11 +1,9 @@
-/// <reference types="vite-plugin-pwa/react" />
-
 /**
  * PwaUpdater - Registers the service worker and surfaces its update prompt
  */
 
 import { useEffect, useRef } from 'react';
-import { useRegisterSW } from 'virtual:pwa-register/react';
+import { useRegisterSW } from 'virtual:softn-pwa/react';
 import { useNotificationStore } from '../../stores/notificationStore';
 
 export function PwaUpdater() {

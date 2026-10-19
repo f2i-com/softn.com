@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { VitePWA } from 'vite-plugin-pwa';
+import { softnPwa } from '../../scripts/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
@@ -23,23 +23,20 @@ export default defineConfig({
     // the desktop build, whose webview has a policy of its own, nor in FormLogic's, which is
     // drawn inside FormLogic's own document.
     ...(isTauri || env.VITE_FORMLOGIC_EDITOR === '1' ? [] : [scriptPolicyPlugin()]),
-    VitePWA({
+    softnPwa({
       // A service worker buys nothing inside the Tauri webview — the assets are
       // already local — and it can keep serving a previous build after the app
       // updates, so the PWA exists only for the web build. Disabling the plugin
-      // rather than dropping it keeps `virtual:pwa-register/react` resolvable,
+      // rather than dropping it keeps `virtual:softn-pwa/react` resolvable,
       // which the Tauri build still has to compile.
       disable: isTauri || env.VITE_FORMLOGIC_EDITOR === '1',
-      // 'prompt' is what makes PwaUpdater's toast reachable: under 'autoUpdate'
-      // the generated client only reloads on `activated` and never calls
-      // onNeedRefresh, so a worker update would throw away the canvas mid-edit.
-      // Studio arrives at the same behaviour from 'autoUpdate' by setting
-      // injectRegister false to stop Workbox forcing skipWaiting, but it needs
-      // that only because it registers the worker by hand; the builder goes
-      // through `virtual:pwa-register/react`, which already suppresses the
-      // injected registration script, so asking for prompt outright is the
-      // shorter route.
+      // 'prompt' is what makes PwaUpdater's toast reachable: a new worker waits
+      // until the toast's Reload asks it to take over, rather than taking the
+      // page at once and throwing away the canvas mid-edit.
       registerType: 'prompt',
+      // PwaUpdater registers the worker through `virtual:softn-pwa/react`, so
+      // the build writes no registration script of its own.
+      injectRegister: false,
       // The workbox globs below already sweep up everything in dist, icons
       // included, and listing them twice puts duplicate precache entries in
       // the service worker.

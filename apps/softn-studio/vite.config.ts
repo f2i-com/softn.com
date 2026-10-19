@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { VitePWA } from 'vite-plugin-pwa';
+import { softnPwa } from '../../scripts/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
@@ -14,7 +14,7 @@ export default defineConfig({
     coreWorkerAssetPlugin(),
     // What runs as script: this deployment's files only (scripts/script-policy.mjs).
     scriptPolicyPlugin(),
-    VitePWA({
+    softnPwa({
       disable: env.VITE_FORMLOGIC_EDITOR === '1',
       registerType: 'autoUpdate',
       // PWAPrompt registers the worker itself, so the plugin must not also

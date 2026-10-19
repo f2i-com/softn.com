@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useRegisterSW } from 'virtual:pwa-register/react';
+import { useRegisterSW } from 'virtual:softn-pwa/react';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;

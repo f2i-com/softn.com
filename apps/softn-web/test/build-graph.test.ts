@@ -218,12 +218,12 @@ describe.skipIf(!built)('softn-web build graph', () => {
     );
   });
 
-  /** The URLs sw.js precaches, as its precacheAndRoute call lists them. */
+  /** The URLs sw.js precaches, as scripts/pwa.mjs writes them ahead of the worker (one JSON line). */
   function precachedUrls(): Set<string> {
     const sw = readFileSync(resolve(dist, 'sw.js'), 'utf8');
-    const list = /precacheAndRoute\((\[[\s\S]*?\])\s*[,)]/.exec(sw);
-    expect(list, 'sw.js has no precacheAndRoute call').not.toBeNull();
-    const precached = new Set([...list![1].matchAll(/url:"([^"]+)"/g)].map((m) => m[1]));
+    const list = /^self\.__SOFTN_PRECACHE=(\[.*\]);$/m.exec(sw);
+    expect(list, 'sw.js has no precache list').not.toBeNull();
+    const precached = new Set((JSON.parse(list![1]) as Array<{ url: string }>).map((entry) => entry.url));
     expect(precached.size).toBeGreaterThan(0);
     return precached;
   }
