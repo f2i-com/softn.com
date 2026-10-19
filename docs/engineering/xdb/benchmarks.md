@@ -1,10 +1,12 @@
 # Persistence and write-amplification baseline (XD-04)
 
-Recorded 14 September 2026 on the reviewer's Windows 11 workstation (nightly Rust per `rust-toolchain.toml`, release profile, bundled SQLite via rusqlite 0.31, NVMe storage). Harness: `crates/xdb/src/bench_tests.rs`.
+Moved here with the crate (`crates/softn-xdb`) from its former repository. The harness path and the commands are written for this repository; the measurements are as they were recorded there.
+
+Recorded 14 September 2026 on the reviewer's Windows 11 workstation (nightly Rust, per the former repository's `rust-toolchain.toml`; release profile, bundled SQLite via rusqlite 0.31, NVMe storage). Harness: `crates/softn-xdb/src/bench_tests.rs`.
 
 ```sh
-cargo test -p xdb --release -- --ignored --nocapture bench_persistence
-XDB_BENCH_LARGE=1 cargo test -p xdb --release -- --ignored --nocapture bench_persistence   # adds 50k
+cargo test --manifest-path crates/softn-xdb/Cargo.toml --release -- --ignored --nocapture bench_persistence
+XDB_BENCH_LARGE=1 cargo test --manifest-path crates/softn-xdb/Cargo.toml --release -- --ignored --nocapture bench_persistence   # adds 50k
 ```
 
 Fixed record (~180 B JSON), fixed seeds, 50 single edits, one 100-edit batch. "rows touched" is SQLite's own change counter (`sqlite3_total_changes`) divided by the operations in the lane; "WAL bytes" is the WAL file size after the lane (checkpointed before each lane); "delta bytes" is the encoded Yrs update. These are a **baseline for the product to set a budget against**, not a target chosen by this document. Memory is left to the operator's process monitor; the harness does not claim allocator numbers.

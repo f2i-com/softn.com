@@ -560,7 +560,7 @@ pub fn run() {
         .setup(|app| {
             // Initialize XDB local databases. Peer networking is OFF unless the
             // user explicitly enabled it (persisted network-settings.json); see
-            // xdb.org docs/networking-and-restore-policy.md (audit XD-01).
+            // docs/engineering/xdb/networking-and-restore-policy.md (audit XD-01).
             info!("Initializing XDB local database (peer networking opt-in)...");
             xdb::tauri::setup_xdb(app)?;
             info!("XDB initialized successfully");

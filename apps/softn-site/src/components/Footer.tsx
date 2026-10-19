@@ -1,6 +1,6 @@
 import React from 'react';
 import { Mark } from '@softn/brand';
-import { BUILDER_HREF, REPO_URL, STUDIO_HREF, WEB_HREF, XDB_URL, ZIPP_URL } from '../lib/appUrls';
+import { BUILDER_HREF, REPO_URL, STUDIO_HREF, WEB_HREF, ZIPP_URL } from '../lib/appUrls';
 
 export function Footer(): React.ReactElement {
   return (
@@ -46,9 +46,6 @@ export function Footer(): React.ReactElement {
               </a>
               <a href={ZIPP_URL} target="_blank" rel="noreferrer">
                 zipp.org
-              </a>
-              <a href={XDB_URL} target="_blank" rel="noreferrer">
-                xdb.org
               </a>
               <a href="/#language">The language</a>
               <a href="/#components">Components</a>

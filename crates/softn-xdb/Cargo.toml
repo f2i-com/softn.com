@@ -2,9 +2,10 @@
 # The package is named for SoftN, the library is still `xdb`: the loader and
 # the Rust host write `use xdb::...`, and the Tauri command names, the `.xdb`
 # bundle files and the runtime's `getXDB` that existing bundles and FormLogic
-# rely on are unchanged. It came from xdb.org at
-# f76727fe5e6293ad0271e4f4d665c13779c19f39 and lives only here now; it is not
-# published, so the dependents take it by path.
+# rely on are unchanged. The crate was a separate repository until it was
+# imported here (the commit that added this folder names the source revision);
+# it lives only here now and is not published, so the dependents take it by
+# path.
 name = "softn-xdb"
 version = "1.0.0"
 edition = "2021"
@@ -22,8 +23,8 @@ name = "xdb"
 default = ["tauri-commands"]
 tauri-commands = ["dep:tauri"]
 
-# The version requirements and features are the ones xdb.org's workspace
-# declared, so Cargo.lock resolves to what was tested there.
+# The version requirements and features are the ones the crate's former
+# workspace declared, so Cargo.lock resolves to what was tested there.
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

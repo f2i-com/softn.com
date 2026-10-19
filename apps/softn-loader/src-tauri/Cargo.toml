@@ -28,8 +28,9 @@ url = "2"
 # A bundle's digest, computed here from the bytes the person chose (data_identity.rs).
 sha2 = "0.10"
 
-# XDB P2P Database
-xdb = { path = "../../../../xdb.org/crates/xdb" }
+# XDB P2P Database, from this repository (crates/softn-xdb); its library is
+# still called `xdb`.
+xdb = { package = "softn-xdb", path = "../../../crates/softn-xdb" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

@@ -1,6 +1,8 @@
 # Native networking, reconciliation and restore policy
 
-**Status:** implemented in the `xdb` crate on 14 September 2026 for the ecosystem review tickets XD-01, XD-02 and XD-03, plus the bulk import required by SN-01; the same day's recheck tickets R2-XD-01 to R2-XD-04 are folded in below. This document is the contract hosts (Softn's native loader, the demo) rely on. Where a guarantee is *not* provided, it says so.
+Moved here with the crate (`crates/softn-xdb`) from its former repository. The commands and the hosts it names are written for this repository (the demo app there did not come along); the policy itself is as it was.
+
+**Status:** implemented in the `xdb` crate on 14 September 2026 for the ecosystem review tickets XD-01, XD-02 and XD-03, plus the bulk import required by SN-01; the same day's recheck tickets R2-XD-01 to R2-XD-04 are folded in below. This document is the contract hosts (SoftN's desktop runtime, `apps/softn-loader`) rely on. Where a guarantee is *not* provided, it says so.
 
 ## 1. Networking is opt-in (XD-01)
 
@@ -87,15 +89,16 @@ Retention and compaction rules (explicit so the offline window is knowable):
 
 ## 5. Verification
 
+From the repository root:
+
 ```sh
-cargo test --locked -p xdb --no-default-features
-cargo test --locked -p xdb
-cargo clippy -p xdb --all-targets
-npm run typecheck -w @xdb/react && npm test -w @xdb/react
-# XD-04 baseline (see docs/benchmarks.md)
-XDB_BENCH_LARGE=1 cargo test -p xdb --release -- --ignored --nocapture bench_persistence
+cargo test --locked --no-default-features --manifest-path crates/softn-xdb/Cargo.toml
+cargo test --locked --manifest-path crates/softn-xdb/Cargo.toml
+cargo clippy --manifest-path crates/softn-xdb/Cargo.toml --all-targets
+# XD-04 baseline (see benchmarks.md)
+XDB_BENCH_LARGE=1 cargo test --manifest-path crates/softn-xdb/Cargo.toml --release -- --ignored --nocapture bench_persistence
 ```
 
 Dialing after discovery (found by the two-container run, 15 September 2026): libp2p's default dial reuses the listening port as the source port. Two peers that discover each other in the same instant (both answering the same mDNS query, which is what two nodes starting together do) then dial each other at once with mirrored 4-tuples; the kernel merges the two dials into one TCP simultaneous open, both sides run the Noise handshake as initiator, both fail with "input error", and nothing retried, so the peers never connected until one of them restarted at a different moment. The node now dials a discovered peer itself from a fresh source port (`allocate_new_port`), registers it as an explicit GossipSub peer only once the connection exists (so GossipSub never issues its own port-reusing dial), and retries a failed dial up to `MAX_DIAL_RETRIES` times with exponential back-off jittered by both peer ids. Outgoing and incoming connection failures are logged.
 
-A live two-machine LAN run (discovery, partition, reconnect) is still a manual check with two demo instances. Short of that, `two_nodes_discover_deliver_partition_and_reconcile_over_loopback` (ignored by default; `cargo test -p xdb -- --ignored two_nodes`) runs two real `NetworkNode`s in one process over loopback sockets: mDNS discovery, GossipSub delivery, one node shut down while both sides write, a restart under a new peer identity on the same database, convergence in both directions with no manual sync request, and live delivery after the reconnect. Recorded 14 September 2026 on Windows 11: passes in about 35 s. The database-level tests exercise the convergence, epoch and import semantics that the network loop calls.
+A live two-machine LAN run (discovery, partition, reconnect) is still a manual check with two instances of the desktop runtime. Short of that, `two_nodes_discover_deliver_partition_and_reconcile_over_loopback` (ignored by default; `cargo test --manifest-path crates/softn-xdb/Cargo.toml -- --ignored two_nodes`) runs two real `NetworkNode`s in one process over loopback sockets: mDNS discovery, GossipSub delivery, one node shut down while both sides write, a restart under a new peer identity on the same database, convergence in both directions with no manual sync request, and live delivery after the reconnect. Recorded 14 September 2026 on Windows 11: passes in about 35 s. The database-level tests exercise the convergence, epoch and import semantics that the network loop calls.

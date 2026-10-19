@@ -10,7 +10,7 @@ license = "Apache-2.0"
 # the browser engine (packages/@softn/core/wasm-zipp/, generated) from the same
 # release and scripts/engine-pin.test.mjs holds Cargo.lock to its commit, so
 # the host and the browser run one engine and ZIPP need not be checked out
-# beside this repository (XDB, below, still does). When ZIPP releases, bump the tag and Cargo.lock
+# beside this repository (XDB, below, is in it). When ZIPP releases, bump the tag and Cargo.lock
 # together; a SoftN release refuses an older one (scripts/zipp-release-gate.mjs)
 # unless told otherwise. To develop against a sibling checkout
 # instead: cargo test --config 'patch."https://github.com/f2i-com/zipp.org".zipp-vm.path="../../../zipp.org/crates/zipp-vm"'
@@ -18,7 +18,9 @@ license = "Apache-2.0"
 # abort flag for untrusted scripts; it switches the JIT off, which is the
 # price of the budget being real.
 zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.27", features = ["instrument"] }
-xdb = { path = "../../../xdb.org/crates/xdb", default-features = false }
+# The database, from this repository (crates/softn-xdb), without its Tauri
+# commands; its library is still called `xdb`.
+xdb = { package = "softn-xdb", path = "../../crates/softn-xdb", default-features = false }
 
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }

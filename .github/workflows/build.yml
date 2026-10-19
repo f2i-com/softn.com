@@ -122,10 +122,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout pinned xdb.org dependency
-        if: matrix.app == 'softn-loader'
-        run: bash .github/scripts/checkout-xdb.sh
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

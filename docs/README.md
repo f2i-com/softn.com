@@ -79,6 +79,7 @@ when you revise a guide against newer source, update that block, the page's
 | `engineering/FORMLOGIC_INTEGRATION.md` | The FormLogic starter adapter |
 | `FORMLOGIC_RUNTIME_REPAIR.md`, `engineering/QUALIFICATION_STATUS.md` | v0.0.21's FormLogic runtime repair (acknowledged storage, STRICT-table migrations on the PHP host, composition events), and the record of its candidate's qualification |
 | `engineering/LOCAL_SPEECH.md`, `SCENE3D_*.md`, `ZIPP_LANGUAGES.md`, `zipp-memory-lifecycle.md`, `PERFORMANCE_MEASUREMENT.md` | Subsystem notes |
+| `engineering/xdb/` | The XDB crate (`crates/softn-xdb`): its data model, the three sync paths, the native networking and restore policy, its benchmarks and its September 2026 review |
 | `engineering/hosting-the-poker-authority.md` | Running the optional table authority the poker example uses |
 | `engineering/dependency-maintenance.md` | Keeping the dependency graph current |
 | `engineering/audits/` | Audit reports and the responses to them |

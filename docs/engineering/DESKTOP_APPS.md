@@ -45,8 +45,9 @@ identity. Keep a data backup before moving between app versions or hosts.
 ## Run the desktop apps locally
 
 Install Node and the Rust toolchain, including the Windows C++ build tools and
-WebView2 on Windows. The native runtime expects the `xdb.org` repository beside
-this checkout. Run `npm install` and `npm run build:packages` first.
+WebView2 on Windows. The native runtime's database, XDB, is the crate in
+`crates/softn-xdb`, so nothing outside this checkout is needed. Run
+`npm install` and `npm run build:packages` first.
 
 ```sh
 # Desktop runtime UI on 1431, in its Tauri window

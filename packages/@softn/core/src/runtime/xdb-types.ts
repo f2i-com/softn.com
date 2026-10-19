@@ -172,7 +172,7 @@ export interface XDBPersistResult {
   tombstoned: number;
 }
 
-/** Honest native network status (audit XD-01/XD-02); see xdb.org docs/networking-and-restore-policy.md. */
+/** Honest native network status (audit XD-01/XD-02); see docs/engineering/xdb/networking-and-restore-policy.md. */
 export interface XDBNetworkStatus {
   peer_id: string;
   connected_peers: string[];

@@ -8,8 +8,8 @@ local network. Open a file, drop one onto the window, or double-click a
 
 - Develop: `npm run dev` (web view only) or `npm run tauri dev` (the desktop
   shell, with the web inspector available as in every debug build).
-- Build: `npm run tauri build` from this directory; the Rust side needs the
-  XDB checkout the repository pins (`.github/scripts/checkout-xdb.sh`).
+- Build: `npm run tauri build` from this directory; the Rust side takes XDB
+  from this repository (`crates/softn-xdb`, by path).
 - Test: `npx vitest run` here; `cargo check --offline` in `src-tauri/`.
 
 ## What the page may ask the native side to do

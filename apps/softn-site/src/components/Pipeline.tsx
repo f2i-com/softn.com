@@ -1,6 +1,6 @@
 import React from 'react';
 import { Reveal } from './Reveal';
-import { ZIPP_URL, XDB_URL } from '../lib/appUrls';
+import { ZIPP_URL } from '../lib/appUrls';
 
 interface Stage {
   name: string;
@@ -127,7 +127,7 @@ export function Pipeline(): React.ReactElement {
 
         <p className="band-sub" style={{ marginTop: '2.25rem' }}>
           Data lives in{' '}
-          <a href={XDB_URL} target="_blank" rel="noreferrer" style={{ textDecoration: 'underline', textUnderlineOffset: '3px' }}>
+          <a href="/docs/xdb-data/" style={{ textDecoration: 'underline', textUnderlineOffset: '3px' }}>
             XDB
           </a>
           , which keeps every collection in memory — so reads and writes are synchronous and only sync is awaited. Two

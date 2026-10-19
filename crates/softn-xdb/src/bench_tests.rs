@@ -18,7 +18,8 @@
 //! (an already-converged peer) is measured on purpose, not only new inserts.
 //!
 //! The numbers are a BASELINE for the product to set a budget against, not a
-//! target invented here. See docs/benchmarks.md for the recorded run.
+//! target invented here. See docs/engineering/xdb/benchmarks.md for the
+//! recorded run.
 
 use super::*;
 use serde_json::json;

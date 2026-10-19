@@ -15,9 +15,9 @@ name: Verify
 # all of them: the build, typecheck and lint; the test suites, cut into four
 # shards by scripts/test-shards.mjs (every workspace suite, every root test
 # pattern and core's suite on the host JavaScript engine, each in exactly one
-# shard, which scripts/test-shards.test.mjs holds); the Rust backend host; and
-# the desktop loader's Rust side. One job ran all of it in a row, eleven
-# minutes, most of it the suites one after another.
+# shard, which scripts/test-shards.test.mjs holds); the XDB crate; the Rust
+# backend host; and the desktop loader's Rust side. One job ran all of it in a
+# row, eleven minutes, most of it the suites one after another.
 #
 # `ref` is what to verify. Empty means the ref that triggered the caller,
 # which is what a push or pull request wants; a release passes its tag so the
@@ -199,10 +199,36 @@ jobs:
       - name: Test
         run: node scripts/test-shards.mjs --shard ${{ matrix.shard }}/4
 
+  # The XDB crate (crates/softn-xdb), which the backend host and the desktop
+  # loader are both built on. It is a Rust crate outside the npm workspaces
+  # with its own lockfile, so nothing else runs its suite. It runs without the
+  # Tauri commands, the way the backend host uses it, so it needs no Node and
+  # no system libraries; the loader job below compiles the commands.
+  xdb:
+    name: Test the XDB crate (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Rust toolchain for the XDB crate
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo for the XDB crate
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            crates/softn-xdb/target/
+          key: xdb-${{ runner.os }}-${{ hashFiles('crates/softn-xdb/Cargo.lock') }}
+      - name: Test the XDB crate
+        run: cargo test --no-default-features --manifest-path crates/softn-xdb/Cargo.toml
+
   # The private backend host is Rust and lives outside the npm workspaces;
-  # nothing else runs its tests, and they need no Node. It depends on XDB by
-  # sibling path (../../../xdb.org), so the pinned checkout comes first; the
-  # ZIPP engine comes from ZIPP's release tag through Cargo itself.
+  # nothing else runs its tests, and they need no Node. XDB comes from this
+  # repository (crates/softn-xdb, a path dependency) and the ZIPP engine from
+  # ZIPP's release tag through Cargo itself, so the checkout is all it needs.
   host-rust:
     name: Test the private backend host (Rust)
     runs-on: ubuntu-latest
@@ -210,8 +236,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - name: Checkout pinned xdb.org dependency
-        run: bash .github/scripts/checkout-xdb.sh
       - name: Rust toolchain for the private backend host
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo for the private backend host
@@ -226,11 +250,11 @@ jobs:
       - name: Test the private backend host
         run: cargo test --manifest-path apps/softn-host-rust/Cargo.toml
 
-  # The desktop loader's Rust side, against the pinned XDB checkout the
-  # release matrix builds with (.github/scripts/checkout-xdb.sh), so a change
-  # that breaks its Tauri commands or the XDB path dependency is seen on
-  # every push rather than on the next dispatched six-runner build. A check,
-  # not a build: it compiles every crate without linking or bundling.
+  # The desktop loader's Rust side, with XDB's Tauri commands compiled in (the
+  # XDB job above tests the crate without them), so a change that breaks those
+  # commands or the loader's use of them is seen on every push rather than on
+  # the next dispatched six-runner build. A check, not a build: it compiles
+  # every crate without linking or bundling.
   loader:
     name: Check the desktop loader (Rust)
     runs-on: ubuntu-22.04
@@ -238,8 +262,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - name: Checkout pinned xdb.org dependency
-        run: bash .github/scripts/checkout-xdb.sh
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo

@@ -28,8 +28,8 @@ softn-server run path/to/softn-Examples/bundles/TexasHoldem --port 9877 --host 1
   the host instead with `--allowed-hosts poker.example.com`.
 
 Build the binary with `cargo build --release` in `apps/softn-host-rust`. The
-engine comes from ZIPP's release tag named in its `Cargo.toml`; XDB is a path
-dependency, so clone `xdb.org` beside this repository first.
+engine comes from ZIPP's release tag named in its `Cargo.toml`, and XDB from
+this repository (`crates/softn-xdb`), so the checkout is all it needs.
 
 ## Where to put it
 

@@ -154,8 +154,8 @@ polling routes and a separately started WebSocket bridge give live updates.
 PHP host, plus what a long-running process can offer (persistent
 connections, XDB synchronisation, a worker pool). It loads a private bundle
 directory, keeps its data in an operator-owned directory and sits behind a
-same-origin reverse proxy that forwards `/api/*` to it. XDB comes from the
-sibling `xdb.org` checkout.
+same-origin reverse proxy that forwards `/api/*` to it. XDB is the crate in
+[`crates/softn-xdb`](../crates/softn-xdb), taken by path.
 
 - Build and test: `cargo test --manifest-path apps/softn-host-rust/Cargo.toml`.
 - Guide: [`softn-host-rust/PRIVATE_BACKEND.md`](softn-host-rust/PRIVATE_BACKEND.md).

@@ -5249,6 +5249,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "softn-xdb",
  "tauri",
  "tauri-build",
  "tauri-plugin-cli",
@@ -5259,7 +5260,25 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "webpki-root-certs",
- "xdb",
+]
+
+[[package]]
+name = "softn-xdb"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "libp2p",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "yrs",
 ]
 
 [[package]]
@@ -7289,25 +7308,6 @@ dependencies = [
  "rusticata-macros",
  "thiserror 2.0.19",
  "time",
-]
-
-[[package]]
-name = "xdb"
-version = "1.0.0"
-dependencies = [
- "chrono",
- "futures",
- "libp2p",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "yrs",
 ]
 
 [[package]]

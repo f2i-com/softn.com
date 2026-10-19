@@ -1,5 +1,3 @@
-.github/scripts/*.sh text eol=lf
-
 # Bundle sources are packed into .softn archives byte for byte, so an archive
 # and the file it was built from have to agree exactly. On Windows core.autocrlf
 # rewrites text files on checkout, and a packed copy then no longer matches.

@@ -2,9 +2,10 @@ name: CI
 
 # Every push to main and every pull request runs the shared verification
 # (verify.yml: install, audit, build, typecheck, lint, every test suite, the
-# Rust hosts). verify.yml is workflow_call only and build.yml is dispatched
-# by hand for the six-runner desktop matrix, so without this file nothing
-# ran on a push. The release workflow calls the same verification on the tag.
+# XDB crate and the Rust hosts). verify.yml is workflow_call only and
+# build.yml is dispatched by hand for the six-runner desktop matrix, so
+# without this file nothing ran on a push. The release workflow calls the
+# same verification on the tag.
 #
 # A commit whose message carries `[skip ci]` (or `[ci skip]`, `[skip actions]`)
 # is not run: GitHub skips push and pull_request workflows for it. Run the

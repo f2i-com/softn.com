@@ -35,7 +35,9 @@
 //!
 //! ```toml
 //! [dependencies]
-//! xdb = { path = "../crates/xdb" }  # or from crates.io
+//! # The package is softn-xdb, by path from this repository (it is not
+//! # published); the library keeps the name xdb.
+//! xdb = { package = "softn-xdb", path = "../../crates/softn-xdb" }
 //! ```
 //!
 //! Then in your `lib.rs`:

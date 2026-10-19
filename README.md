@@ -556,7 +556,10 @@ function addClient(name, email) {
 
 ## XDB Database
 
-Local-first, reactive database with P2P synchronization. Source: [xdb.org](https://github.com/f2i-com/xdb.org).
+Local-first, reactive database with P2P synchronization. In the browser it is
+SoftN's own service (`packages/@softn/core/src/runtime/xdb.ts`); the desktop
+runtime and the Rust server store records with the XDB crate in
+[`crates/softn-xdb`](crates/softn-xdb) ([notes](docs/engineering/xdb/README.md)).
 
 ```javascript
 let client = db.create('clients', { name: 'John', email: 'john@example.com' });
@@ -1031,19 +1034,19 @@ unified website. See [desktop apps and the shared bundle workflow](docs/engineer
 for native file dialogs, app transfers, saved-data behavior and manual checks.
 
 The native loader and server take the ZIPP engine from its release tag (the
-`zipp-vm` entry in `apps/softn-host-rust/Cargo.toml`) and XDB as a local path
-dependency. Clone XDB as a sibling of this checkout before running their Cargo
-commands:
+`zipp-vm` entry in `apps/softn-host-rust/Cargo.toml`) and XDB from this
+repository (`crates/softn-xdb`, a path dependency), so their Cargo commands
+need nothing beside this checkout:
 
 ```bash
-git clone https://github.com/f2i-com/xdb.org.git ../xdb.org
 cargo test --manifest-path apps/softn-host-rust/Cargo.toml
+cargo test --no-default-features --manifest-path crates/softn-xdb/Cargo.toml
 ```
 
 ### Testing
 
 Every push to `main` and every pull request runs the [CI workflow](.github/workflows/ci.yml):
-install, audit, build, typecheck, lint, every test suite and the Rust hosts, the steps
+install, audit, build, typecheck, lint, every test suite, the XDB crate and the Rust hosts, the steps
 [verify.yml](.github/workflows/verify.yml) holds, in jobs that run side by side (the suites in four
 shards, which `node scripts/test-shards.mjs --plan 4` lists). A commit whose message carries
 `[skip ci]` is not checked by GitHub, so run the same checks locally before pushing one, or start
@@ -1074,6 +1077,7 @@ Chromium and skips itself until `npm run e2e:install` has put one on the machine
 | `packages/@softn/core/src/runtime/script-runtime.ts` | Script runtime (state sync, bridges, host calls)                                                                                                                                                                             |
 | `packages/@softn/core/src/runtime/vm-adapter.ts`     | Which engine `.logic` runs on                                                                                                                                                                                                |
 | `packages/@softn/core/src/runtime/xdb.ts`            | XDB database service                                                                                                                                                                                                         |
+| `crates/softn-xdb/`                                  | XDB crate: SQLite storage and CRDT sync for the desktop runtime and the Rust server                                                                                                                                          |
 | `packages/@softn/core/src/bundle/bundle.ts`          | ZIP bundle reader                                                                                                                                                                                                            |
 | `packages/@softn/core/src/loader/SoftNRenderer.tsx`  | Main renderer component                                                                                                                                                                                                      |
 | `packages/@softn/components/src/registry.ts`         | Built-in component registration                                                                                                                                                                                              |
@@ -1094,4 +1098,4 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and
 
 ## Credits
 
-Built with [zipp](https://github.com/f2i-com/zipp.org), [XDB](https://github.com/f2i-com/xdb.org), [Tauri](https://tauri.app), [React](https://react.dev), [Three.js](https://threejs.org), and [Yjs](https://yjs.dev).
+Built with [zipp](https://github.com/f2i-com/zipp.org), [Tauri](https://tauri.app), [React](https://react.dev), [Three.js](https://threejs.org), and [Yjs](https://yjs.dev).

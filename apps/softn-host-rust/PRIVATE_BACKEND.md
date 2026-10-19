@@ -622,8 +622,8 @@ A push is one transaction and one saved CRDT document per collection it
 touches. The document is as large as the collection, and it used to be
 written again for every op of the push, under the store's one writer lock:
 a push of 500 ops into a large collection held every other write on the
-host for the length of 500 such writes. This needs xdb at the revision
-`.github/scripts/checkout-xdb.sh` pins (`with_batch`).
+host for the length of 500 such writes. The one save per collection is the
+XDB crate's `with_batch` (`crates/softn-xdb`).
 
 Sync hooks: what `onBeforeSync` or `onBeforeSyncBatch` hands back as an op's
 `data` must be an object no larger than a client may send (512 KB). Anything

@@ -6,8 +6,9 @@ Its MIT license and copyright notices are included.
 
 Tauri's GTK 3 dependencies require glib 0.18, so adding glib 0.20 alongside it
 would leave the vulnerable copy installed. Both desktop Cargo manifests instead
-patch crates.io to this local copy. The version remains 0.18.5; this is not an
-upstream release.
+patch crates.io to this local copy, and so does the XDB crate's
+(`crates/softn-xdb`, whose default feature brings in Tauri). The version
+remains 0.18.5; this is not an upstream release.
 
 The fix passes a mutable out-pointer to `g_variant_get_child`, matching
 [upstream PR 1343](https://github.com/gtk-rs/gtk-rs-core/pull/1343), commit
@@ -22,5 +23,6 @@ cargo test --manifest-path vendor/glib/Cargo.toml --release --test variant_str_s
 
 Run this in release mode: compiler optimization exposed the original bug.
 Remove this patch when Tauri's GTK dependency supports a fixed upstream GLib
-release, then regenerate both desktop lockfiles and repeat the desktop checks.
+release, then regenerate both desktop lockfiles and the XDB crate's, and
+repeat the desktop checks.
 Do not suppress the advisory merely because a Windows build does not compile GTK.
