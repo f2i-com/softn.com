@@ -23,10 +23,10 @@ export function withMod(key: string, apple = isApplePlatform()): string {
 }
 
 /**
- * The code editor's own key for handing Tab back: pressed once, Tab moves
- * the focus on instead of indenting, until it is pressed again. Ctrl+M, and
- * Control+Shift+M on a Mac, where the editor keeps ⌘M for the window.
+ * The code editor's own key for handing Tab back: after Escape, the next Tab
+ * moves the focus on instead of indenting (@softn/components' CodeEditor).
+ * The same key on every platform.
  */
-export function tabFocusKeyLabel(apple = isApplePlatform()): string {
-  return apple ? '⌃⇧M' : 'Ctrl+M';
+export function tabFocusKeyLabel(): string {
+  return 'Esc';
 }

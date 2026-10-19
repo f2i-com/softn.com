@@ -6,8 +6,8 @@
  * In a code editor Tab indents. That is right, and it meant the Tab key
  * stopped at the Logic dock under the canvas: Properties and the hierarchy
  * came after it, and were reached forward only by hiding the dock. The
- * editor has a key of its own that hands Tab back (Ctrl+M), which nothing
- * on the screen said.
+ * editor has a key of its own that hands Tab back (Escape, then Tab), which
+ * nothing on the screen said.
  *
  * F6 goes to the next panel and Shift+F6 to the one before, from anywhere,
  * a code editor included: the panels are what App marks as such
@@ -129,9 +129,8 @@ describe('the way out of a code editor', () => {
     act(() => hint.unmount());
   });
 
-  it('names the editor\'s key as each platform has it', () => {
-    expect(tabFocusKeyLabel(false)).toBe('Ctrl+M');
-    expect(tabFocusKeyLabel(true)).toBe('⌃⇧M');
+  it('names the editor\'s key, the same on every platform', () => {
+    expect(tabFocusKeyLabel()).toBe('Esc');
   });
 
   it('is in the list of shortcuts', () => {

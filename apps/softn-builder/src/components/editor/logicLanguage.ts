@@ -2,13 +2,11 @@
  * Which language a logic file is written in, as one pure function.
  *
  * The runtime decides this from the file name and nothing else: a logic file
- * ending `.py` is Python. The editor has to reach the same answer, and not
- * only for the colours — Monaco's JavaScript mode marks correct Python as
- * broken from the first `def`, and its auto-indent fights code whose
- * indentation IS the program.
+ * ending `.py` is Python. The editor has to reach the same answer: read as
+ * JavaScript, a Python `#` comment, a `'''` string and a decorator are
+ * coloured as something else, in code whose indentation IS the program.
  *
- * In a module of its own so it can be read and tested without loading the
- * editor, which pulls in all of Monaco.
+ * In a module of its own so it can be read and tested without the editor.
  */
 
 /** A logic file with this name ending is Python; everything else is JavaScript. */

@@ -1,130 +1,64 @@
 /**
- * CodeEditor - Monaco editor wrapper for code editing
+ * CodeEditor - the Builder's code editor: SoftN's own, from @softn/components.
+ *
+ * A real `<textarea>` laid over a highlighted copy of its text, so the browser
+ * keeps caret, selection, IME, undo and screen readers, and the highlighting
+ * is only paint. It is already in the Builder's bundle, since the canvas draws
+ * every component. Monaco, which this used to wrap, was 99 MB of node_modules
+ * and several megabytes of every Builder install (its TypeScript worker alone
+ * 5.8 MB) for two panels.
+ *
+ * The colours are the brand's, as Monaco's themes had them: the language's
+ * own marks (keywords, tags) in coral; strings and numbers in sand; names in
+ * the ink; comments, attributes and punctuation in its dims (`.bl-code-editor`
+ * in builder.css, which follows the page's theme by itself).
  */
 
-import { useEffect, useRef, useState } from 'react';
-import Editor, { OnMount, OnChange } from '@monaco-editor/react';
-import { currentTheme, subscribeTheme, type Theme } from '@softn/brand';
-import './monacoSetup';
-import { MONACO_FONT_FAMILY, monacoThemeFor } from './monacoThemes';
+import { CodeEditor as SoftnCodeEditor, type CodeEditorProps } from '@softn/components';
 
 interface Props {
   value: string;
   onChange?: (value: string) => void;
+  /** `xml`/`html` for a page's source; `javascript` or `python` for logic. */
   language?: string;
   readOnly?: boolean;
   height?: string | number;
-  theme?: 'light' | 'vs-dark';
 }
 
-export function CodeEditor({
-  value,
-  onChange,
-  language = 'javascript',
-  readOnly = false,
-  height = '100%',
-  theme,
-}: Props) {
-  // Left to itself, the editor follows the theme every SoftN app shares, so
-  // a light page does not carry a dark editor or the other way round.
-  const [shared, setShared] = useState<Theme>(currentTheme);
-  useEffect(() => subscribeTheme(setShared), []);
-  const monacoTheme = monacoThemeFor(shared === 'dark' ? 'dark' : 'light', theme);
+/** The highlighter's name for an editor language. A page's markup is read as HTML. */
+export function highlightLanguage(language: string | undefined): NonNullable<CodeEditorProps['language']> {
+  switch (language) {
+    case 'xml':
+    case 'html':
+    case 'softn':
+    case 'formlogic':
+      return 'html';
+    case 'javascript':
+    case 'typescript':
+    case 'python':
+    case 'json':
+    case 'css':
+      return language;
+    default:
+      return 'plain';
+  }
+}
 
-  // The value as of this render. Monaco loads asynchronously, and a value
-  // that changed while it loaded — opening a project replaces the logic the
-  // dock was created with — was lost: the editor mounted with the first
-  // value, showed the previous project's logic, and the first keystroke
-  // wrote that back over the opened file. Mounting checks against this.
-  const latestValue = useRef(value);
-  latestValue.current = value;
-
-  const handleEditorMount: OnMount = (editor, monaco) => {
-    if (editor.getValue() !== latestValue.current) editor.setValue(latestValue.current);
-
-    // Configure editor settings
-    editor.updateOptions({
-      minimap: { enabled: false },
-      lineNumbers: 'on',
-      fontSize: 13,
-      fontFamily: MONACO_FONT_FAMILY,
-      lineHeight: 20,
-      tabSize: 2,
-      insertSpaces: true,
-      wordWrap: 'on',
-      scrollBeyondLastLine: false,
-      padding: { top: 12, bottom: 12 },
-      renderLineHighlight: 'line',
-      cursorBlinking: 'smooth',
-      smoothScrolling: true,
-    });
-
-    // Add SoftN/.logic syntax highlighting
-    if (language === 'softn' || language === 'formlogic') {
-      monaco.languages.register({ id: 'softn' });
-      monaco.languages.setMonarchTokensProvider('softn', {
-        tokenizer: {
-          root: [
-            [/<\/?[a-zA-Z][a-zA-Z0-9]*/, 'tag'],
-            [/\{[^}]+\}/, 'variable'],
-            [/@[a-zA-Z]+/, 'keyword'],
-            [/:[a-zA-Z]+/, 'attribute'],
-            [/"[^"]*"/, 'string'],
-            [/'[^']*'/, 'string'],
-            [/\b(let|const|function|if|else|return|for|while)\b/, 'keyword'],
-            [/\b(true|false|null|undefined)\b/, 'constant'],
-            [/\b[0-9]+\b/, 'number'],
-            [/\/\/.*$/, 'comment'],
-            [/\/\*/, 'comment', '@comment'],
-          ],
-          comment: [
-            [/\*\//, 'comment', '@pop'],
-            [/./, 'comment'],
-          ],
-        },
-      });
-    }
-  };
-
-  const handleChange: OnChange = (newValue) => {
-    if (onChange && newValue !== undefined) {
-      onChange(newValue);
-    }
-  };
-
+export function CodeEditor({ value, onChange, language = 'javascript', readOnly = false, height = '100%' }: Props) {
+  const size = typeof height === 'number' ? `${height}px` : height;
   return (
-    <Editor
-      height={height}
-      language={language === 'softn' || language === 'formlogic' ? 'javascript' : language}
+    <SoftnCodeEditor
+      className="bl-code-editor"
       value={value}
-      onChange={handleChange}
-      onMount={handleEditorMount}
-      theme={monacoTheme}
-      options={{
-        readOnly,
-        domReadOnly: readOnly,
-        // Monaco's word highlighter leaves its delayed lookup promise uncaught
-        // when a model is disposed during a workspace/view switch. Avoid that
-        // background lookup in these temporary editors; syntax highlighting,
-        // selection highlighting and language completions remain available.
-        occurrencesHighlight: 'off',
-      }}
-      loading={
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '100%',
-            fontSize: 12,
-            color: 'var(--dim)',
-            background: 'var(--ink-2)',
-          }}
-          role="status"
-        >
-          Loading editor…
-        </div>
-      }
+      onChange={onChange}
+      language={highlightLanguage(language)}
+      readOnly={readOnly}
+      tabSize={2}
+      minHeight={size}
+      maxHeight={size}
+      placeholder=""
+      aria-label={language === 'xml' || language === 'html' ? 'Page source' : 'Logic'}
+      style={{ height: size, border: 0, borderRadius: 0, boxShadow: 'none' }}
     />
   );
 }

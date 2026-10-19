@@ -29,6 +29,10 @@ function copyDirectory(source, destination, skipRuntimeMirror = false) {
     // assets — the editors and the ZIPP app runtime among them, which must be
     // able to prove they do not contain it (scripts/host-js-isolation.test.mjs).
     if (entry.name === 'host-js') continue;
+    // Source maps stay with core's dist, where the dev server still serves
+    // them; a deployed Worker never loads one, and they were 3.1 MB of every
+    // app's copy.
+    if (entry.name.endsWith('.map')) continue;
     const from = path.join(source, entry.name);
     const to = path.join(destination, entry.name);
     if (entry.isDirectory()) copyDirectory(from, to);

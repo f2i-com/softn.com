@@ -12,6 +12,9 @@ function copyDirRecursive(src: string, dest: string) {
     // would end up in every app's assets/core-runtime/ — in the editors, which
     // stay on ZIPP, and in the ZIPP entry document, which must not contain it.
     if (entry.name === 'host-js') continue;
+    // Source maps are for reading dist/ itself; a Worker never loads one, and
+    // they were 3.1 MB of the mirror and of every app's copy of it.
+    if (entry.name.endsWith('.map')) continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {

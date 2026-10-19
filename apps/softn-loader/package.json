@@ -18,10 +18,10 @@
     "android:build": "tauri android build --apk"
   },
   "dependencies": {
-    "@softn/brand": "*",
     "@fontsource-variable/bricolage-grotesque": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@softn/brand": "*",
     "@softn/components": "*",
     "@softn/core": "*",
     "@softn/runtime-shell": "*",
@@ -32,7 +32,6 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "@napi-rs/canvas": "^0.1.88",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.2.0",

@@ -37,8 +37,6 @@ export interface WorkspaceShortcutActions {
   changeView: (view: ViewMode) => void;
 }
 
-/** Keys that are held with another, and are no key of a chord on their own. */
-const MODIFIER_KEYS = new Set(['Control', 'Meta', 'Shift', 'Alt']);
 // A modal owns the keyboard: a dialog, and the Builder's yes-or-no question (components/feedback/ConfirmDialog.tsx).
 const MODAL = '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]';
 
@@ -46,20 +44,12 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
   useEffect(() => {
-    // Whether the last key, in a code editor, was Ctrl+K: the code editor's
-    // chord, whose second key may be Ctrl and a digit (fold to that level).
-    let chordStarted = false;
     const keyDown = (event: KeyboardEvent) => {
       // A browser's autofill and some input methods send a `keydown` with no
       // `key` (a plain Event): it is no key of any shortcut, and reading it as
       // text threw from this listener, which hears every key the page gets.
       if (typeof event.key !== 'string') return;
       const current = actionsRef.current;
-      let inChord = false;
-      if (!MODIFIER_KEYS.has(event.key)) {
-        inChord = chordStarted;
-        chordStarted = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && event.target instanceof HTMLElement && event.target.closest('.monaco-editor') !== null;
-      }
       if (event.isComposing || current.blocked) return;
       // F6 goes to the next panel and Shift+F6 to the one before, a code
       // editor included: Tab indents there, and stopped there for good.
@@ -99,7 +89,7 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
         return;
       }
       if (event.ctrlKey || event.metaKey) {
-        // Save and Open belong to the workspace, including while typing in Monaco.
+        // Save and Open belong to the workspace, including while typing in a code editor.
         // Capture phase prevents the browser's Save Page dialog taking the keystroke.
         const fileAction = !event.shiftKey && key === 's' ? current.save
           : !event.shiftKey && key === 'o' ? current.open
@@ -130,10 +120,9 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
         // Heard wherever the focus is: no field and no code editor uses
         // them for text, and from the Code view, where the focus is in the
         // editor, Ctrl+1 did nothing (and the browser took it, for its first
-        // tab). The code editor's own use of them, as the second key of its
-        // Ctrl+K chord, is left to it.
+        // tab).
         const views: Record<string, ViewMode> = { '1': 'design', '2': 'data', '3': 'preview', '4': 'code' };
-        if (views[key] && !inChord) {
+        if (views[key]) {
           event.preventDefault();
           // A schema name commits on blur, as for Save above.
           if (target?.matches('[data-schema-name]')) target.blur();

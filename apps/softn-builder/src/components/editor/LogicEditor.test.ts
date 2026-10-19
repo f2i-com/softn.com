@@ -2,10 +2,9 @@
  * Which language the logic editor highlights, and why it is not a constant.
  *
  * The runtime decides an app's language from its logic file names: a file
- * ending `.py` is Python. The editor has to agree, and not because of the
- * colours — Monaco's auto-indent for JavaScript fights code whose indentation
- * IS the program, and its JavaScript parser marks correct Python as broken
- * from the first `def`.
+ * ending `.py` is Python. The editor has to agree: read as JavaScript, a
+ * Python `#` comment, a `'''` string and a decorator are coloured as
+ * something else, in code whose indentation IS the program.
  */
 
 import { describe, expect, it } from 'vitest';

@@ -87,6 +87,21 @@ test('production refuses missing core assets instead of shipping a broken capabi
   assert.throws(() => plugin.writeBundle({ dir: path.join(temp, 'output') }), /Build @softn\/core/);
 });
 
+test('production leaves source maps behind; development still serves them', t => {
+  const { temp, core } = fixture(t);
+  fs.writeFileSync(path.join(core, 'runtime', 'model-worker.js.map'), '{}');
+  const output = path.join(temp, 'maps');
+  coreWorkerAssetPlugin({ coreDistRoot: core }).writeBundle({ dir: output });
+  assert.equal(fs.existsSync(path.join(output, 'assets', 'core-runtime', 'runtime', 'model-worker.js')), true);
+  assert.equal(fs.existsSync(path.join(output, 'assets', 'core-runtime', 'runtime', 'model-worker.js.map')), false);
+  const plugin = coreWorkerAssetPlugin({ coreDistRoot: core });
+  let middleware;
+  plugin.configureServer({ middlewares: { use(fn) { middleware = fn; } } });
+  let status = 0;
+  middleware({ url: '/assets/core-runtime/runtime/model-worker.js.map' }, { set statusCode(value) { status = value; }, setHeader() {}, end() {} }, () => {});
+  assert.equal(status, 200);
+});
+
 test('production omits the core dist mirror while retaining the worker dependency tree', t => {
   const { temp, core, files } = fixture(t);
   fs.mkdirSync(path.join(core, 'core-runtime', 'runtime'), { recursive: true });

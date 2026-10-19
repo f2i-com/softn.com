@@ -28,8 +28,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
 import { GRID, CORAL, MINT, CORNER, STROKE, DOT_R, BRACKETS, markSvg } from './brand-mark.mjs';
+
+// The PNGs are drawn with @napi-rs/canvas, which is 38 MB of native code for a
+// job done when the mark changes, so a checkout does not install it; the PNGs
+// it draws are committed. Drawing them again takes it for the one run:
+// `npm install --no-save @napi-rs/canvas@0.1.88`. The SVG needs nothing.
+const PNG_FLAGS = ['--og', '--touch'];
+const wantsPng = !process.argv.includes('--svg-only') || PNG_FLAGS.some((flag) => process.argv.includes(flag));
+let createCanvas;
+let GlobalFonts;
+if (wantsPng) {
+  try {
+    ({ createCanvas, GlobalFonts } = await import('@napi-rs/canvas'));
+  } catch {
+    console.error('Drawing the PNG icons needs @napi-rs/canvas, which is not installed with the repository.\n'
+      + 'Install it for this run: npm install --no-save @napi-rs/canvas@0.1.88');
+    process.exit(1);
+  }
+}
 
 // fileURLToPath, not URL.pathname: the pathname keeps percent-encoding, so a
 // checkout under a directory with a space could not find its own node_modules.

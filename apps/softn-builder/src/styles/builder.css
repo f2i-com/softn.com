@@ -97,12 +97,12 @@ body {
  * from when focus was drawn in JavaScript; the !important is what lets this
  * rule replace those.
  */
-#root :focus-visible:not(.monaco-editor *) {
+#root :focus-visible:not(.bl-code-editor *) {
   outline: 2px solid var(--mint) !important;
   outline-offset: 2px;
 }
 
-#root :is(input, textarea, select):focus-visible:not(.monaco-editor *, [data-builder-canvas] *) {
+#root :is(input, textarea, select):focus-visible:not(.bl-code-editor *, [data-builder-canvas] *) {
   outline-offset: 0;
   border-color: var(--line-strong) !important;
 }
@@ -741,4 +741,51 @@ body {
     opacity: 1;
     transform: none;
   }
+}
+
+/* The code editors (components/editor/CodeEditor.tsx): SoftN's own editor in
+ * the brand's colours, as the Monaco themes had them — the language's marks in
+ * coral, strings and numbers in sand, names in the ink, comments, attributes
+ * and punctuation in its dims. Every value is a brand token, so the editor
+ * follows the page's theme with no rule of its own for light. */
+.bl-code-editor {
+  --font-mono: var(--mono);
+  --color-surface: var(--ink-2);
+  --color-text: var(--paper);
+  --color-text-muted: var(--dimmer);
+  --color-border: var(--line-soft);
+  --color-code-keyword: var(--coral);
+  --color-code-tag: var(--coral);
+  --color-code-mark: var(--coral);
+  --color-code-decorator: var(--coral);
+  --color-code-string: var(--sand);
+  --color-code-number: var(--sand);
+  --color-code-literal: var(--sand);
+  --color-code-regex: var(--sand);
+  --color-code-comment: var(--dim);
+  --color-code-attr: var(--dim);
+  --color-code-punct: var(--dim);
+  --color-code-function: var(--paper);
+  --color-code-property: var(--paper);
+  --color-code-type: var(--paper);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* The editor fills its panel: its scroller is given the panel's height, so
+ * the row inside it (min-height 100%) reaches the bottom, and the gutter and
+ * the text field reach it with it; a click below the last line lands in the
+ * field. */
+.bl-code-editor [data-softn-code-scroller] {
+  height: 100%;
+}
+
+/* Where the caret is, for a keyboard: the editor's own ring is turned off so
+ * the panel keeps its edges, and the brand's focus colour marks the panel. */
+.bl-code-editor:focus-within {
+  box-shadow: inset 0 0 0 1px var(--line-strong) !important;
+}
+
+.bl-code-editor textarea::selection {
+  background: color-mix(in srgb, var(--coral) 25%, transparent);
 }

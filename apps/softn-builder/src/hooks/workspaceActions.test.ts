@@ -96,13 +96,11 @@ it('keeps phone Save/Open keys available without opening hidden desktop panels',
 // The view keys were not heard with the focus in a field or a code editor, so
 // from the Code view, where the focus is in the editor, Ctrl+1 did nothing
 // (and the browser took it, to go to its first tab) while the shortcuts
-// listed it. No field and no code editor uses them for text; the code editor
-// uses Ctrl+1 to Ctrl+7 only as the second key of its Ctrl+K chord, which
-// folds the code to that level, and that is left to it.
+// listed it. No field and no code editor uses them for text.
 function codeEditorHarness(actions: WorkspaceShortcutActions) {
   function Harness() {
     useWorkspaceShortcuts(actions);
-    return React.createElement('div', { className: 'monaco-editor' }, React.createElement('textarea', { className: 'inputarea' }));
+    return React.createElement('div', { className: 'bl-code-editor' }, React.createElement('textarea'));
   }
   act(() => root.render(React.createElement(Harness)));
   return host.querySelector('textarea')!;
@@ -116,19 +114,6 @@ it('changes the view from inside a code editor', () => {
   expect(actions.changeView).toHaveBeenCalledWith('design');
   press('3', { metaKey: true }, editor);
   expect(actions.changeView).toHaveBeenLastCalledWith('preview');
-});
-
-it('leaves the second key of the code editor\'s Ctrl+K chord to it', () => {
-  const actions = views();
-  const editor = codeEditorHarness(actions);
-  expect(press('k', { ctrlKey: true }, editor).defaultPrevented).toBe(false);
-  // Ctrl let go and pressed again between the two keys is still the chord.
-  press('Control', { ctrlKey: true }, editor);
-  expect(press('1', { ctrlKey: true }, editor).defaultPrevented).toBe(false);
-  expect(actions.changeView).not.toHaveBeenCalled();
-  // The chord is over: the next is a view key again.
-  press('2', { ctrlKey: true }, editor);
-  expect(actions.changeView).toHaveBeenCalledWith('data');
 });
 
 it('changes the view from a field, which has no use for the keys, and commits a name being typed first', () => {

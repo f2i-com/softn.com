@@ -4,7 +4,7 @@
 
 import React, { useId } from 'react';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
-import { isApplePlatform, modKeyLabel } from '../../utils/platformKeys';
+import { modKeyLabel } from '../../utils/platformKeys';
 
 // The overlay, frame, title and close button are classes in styles/builder.css.
 const styles: Record<string, React.CSSProperties> = {
@@ -85,7 +85,7 @@ interface ShortcutEntry {
 
 const MOD = modKeyLabel();
 /** The code editor's own key for handing Tab back (platformKeys.ts, tabFocusKeyLabel), as keys. */
-const TAB_LEAVES = isApplePlatform() ? ['⌃', '⇧', 'M'] : ['Ctrl', 'M'];
+const TAB_LEAVES = ['Esc'];
 
 const shortcuts: { title: string; entries: ShortcutEntry[] }[] = [
   {
