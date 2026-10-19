@@ -649,6 +649,17 @@ function dropCodeAttributes(props: SoftNProps): void {
   for (const name of Object.keys(props)) {
     const lower = name.toLowerCase();
     if (lower === 'is' || (lower.startsWith('on') && typeof props[name] !== 'function')) delete props[name];
+    // Requests the browser makes on its own, past the network permission:
+    // `ping` beacons each URL in its list on a click, `attributionsrc`
+    // reports to its URL, and SVG's `xml:base` moves where every relative
+    // reference below it resolves.
+    else if (lower === 'ping' || lower === 'attributionsrc' || lower === 'xml:base' || lower === 'xmlbase') delete props[name];
+    // An element answers to its `id` as a global of the page's window, and
+    // the host's own globals are `__` names: `<div id="__TAURI__">` took the
+    // page for the desktop runtime.
+    else if ((lower === 'id' || lower === 'name') && typeof props[name] === 'string' && (props[name] as string).startsWith('__')) {
+      delete props[name];
+    }
   }
 }
 
@@ -665,6 +676,13 @@ function isHTMLElement(tag: string): boolean {
  * HTML elements that cannot contain children. React rejects the children
  * argument for these outright rather than ignoring it.
  */
+/** HTML's boolean attributes: on when present, whatever their value says. */
+const HTML_BOOLEAN_ATTRIBUTES = new Set([
+  'allowfullscreen', 'async', 'autofocus', 'autoplay', 'checked', 'controls', 'default', 'defer', 'disabled',
+  'formnovalidate', 'hidden', 'inert', 'ismap', 'itemscope', 'loop', 'multiple', 'muted', 'nomodule',
+  'novalidate', 'open', 'playsinline', 'readonly', 'required', 'reversed', 'selected',
+]);
+
 const VOID_ELEMENTS = new Set([
   'area',
   'base',
@@ -917,7 +935,15 @@ function dropTopLayerProps(props: SoftNProps): void {
  */
 function withholdRemoteStyleUrls(props: SoftNProps, policy: EgressPolicy): void {
   if (policy === null) return;
-  const style = props.style;
+  // `style`, and a component's other style objects — `tooltipStyle`,
+  // `overlayStyle` — which it spreads onto an element of its own just the same.
+  for (const name of Object.keys(props)) {
+    if (name === 'style' || name.endsWith('Style')) withholdFromStyle(props, name, policy);
+  }
+}
+
+function withholdFromStyle(props: SoftNProps, prop: string, policy: NonNullable<EgressPolicy>): void {
+  const style = props[prop];
   if (typeof style !== 'object' || style === null || Array.isArray(style)) return;
 
   let copy: Record<string, unknown> | null = null;
@@ -940,7 +966,7 @@ function withholdRemoteStyleUrls(props: SoftNProps, policy: EgressPolicy): void 
     if (!copy) copy = { ...(style as Record<string, unknown>) };
     delete copy[name];
   }
-  if (copy) props.style = copy;
+  if (copy) props[prop] = copy;
 }
 
 /**
@@ -1492,6 +1518,13 @@ function renderElement(
     }
     if (prop.value.type === 'static' || prop.value.type === 'number' || prop.value.type === 'boolean') {
       props[prop.name] = prop.value.value;
+      // In HTML an attribute like `disabled` is on when it is there, whatever
+      // it says: `disabled=""` and `hidden="hidden"` both mean yes. React reads
+      // the empty string as no, so `<input disabled="">`, and an element a
+      // script hid with `el.hidden = true`, were drawn as if it were not there.
+      if (typeof FinalComponent === 'string' && prop.value.type === 'static' && HTML_BOOLEAN_ATTRIBUTES.has(prop.name.toLowerCase())) {
+        props[prop.name] = true;
+      }
     } else {
       try {
         // Use callbackContext for props that look like callbacks (on*) to ensure

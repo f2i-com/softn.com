@@ -109,7 +109,7 @@ function markdownToHtml(markdown: string): string {
   html = html.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
     (_m, text: string, target: string) =>
-      `<a href="${safeLinkTarget(target)}" target="_blank" rel="noopener">${text}</a>`
+      `<a href="${safeLinkTarget(target)}" target="_blank" rel="noopener noreferrer">${text}</a>`
   );
 
   // Blockquotes

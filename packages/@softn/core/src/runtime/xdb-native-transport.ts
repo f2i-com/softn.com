@@ -13,7 +13,13 @@
  * Check if running in Tauri environment
  */
 export function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
+  // Tauri's own bridge, which can call it: an element with the id
+  // `__TAURI__`, or an object an app wrote there, has `__TAURI__` in the
+  // window too, and took every app opened after it off its storage.
+  return (
+    typeof window !== 'undefined' &&
+    typeof (window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__?.core?.invoke === 'function'
+  );
 }
 
 /**

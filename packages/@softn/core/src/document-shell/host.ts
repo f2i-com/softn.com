@@ -108,8 +108,13 @@ function nowhere(id: number, column: number): SourceLocation {
 export type OwnsTag = (tag: string) => boolean;
 
 export class DocumentShell implements DocumentShellView {
-  /** Distinguishes this shell's elements from another app's on the same page. */
-  readonly key = 's' + ++shells;
+  /**
+   * Distinguishes this shell's elements from another app's on the same page,
+   * and from an element of the app's own markup that writes the attribute
+   * itself: the page's code never sees the real page, so it cannot learn
+   * this, and a marker it cannot guess cannot stand in for one of the shell's.
+   */
+  readonly key = 's' + (++shells).toString(36) + Math.random().toString(36).slice(2, 10);
   readonly bodyId = BODY;
   readonly seed: ShellSeed;
   private readonly nodes = new Map<number, MirrorNode>();

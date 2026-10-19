@@ -73,12 +73,53 @@ export function describeNetDestination(
       `HTTP not allowed (only HTTPS). Set net.allow_http in permission.json to allow: ${url}`
     );
   }
-  if (Array.isArray(net?.allowed_hosts) && net.allowed_hosts.length > 0) {
-    if (!net.allowed_hosts.includes(parsed.hostname)) {
-      return deny(`Host not allowed: ${parsed.hostname}`);
-    }
+  const listed = Array.isArray(net?.allowed_hosts) && net.allowed_hosts.includes(parsed.hostname);
+  if (Array.isArray(net?.allowed_hosts) && net.allowed_hosts.length > 0 && !listed) {
+    return deny(`Host not allowed: ${parsed.hostname}`);
+  }
+  // `net` with no host list is the internet, not the person's own machine or
+  // network: a router's admin page, a printer, a development server. Those
+  // answer a request from anywhere they can be reached, and a bundle could
+  // send one from an image tag. An app that means to reach one names it.
+  if (!listed && isLocalHostname(parsed.hostname)) {
+    return deny(
+      `Host not allowed: ${parsed.hostname} is on this computer or its local network. Name it in net.allowed_hosts to reach it.`
+    );
   }
   return ALLOW;
+}
+
+/**
+ * Whether a URL's hostname, as the URL parser gives it, names this computer
+ * or its local network: loopback, the private and link-local ranges, the
+ * shared address space, `localhost` and the names kept for local networks.
+ * A name that resolves to such an address is beyond what a page can see; the
+ * desktop runtime, which can resolve it, checks that too (net.rs).
+ */
+export function isLocalHostname(hostname: string): boolean {
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  if (name === 'localhost' || /\.(?:localhost|local|internal|home\.arpa)$/.test(name)) return true;
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(name);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    return (
+      a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+    );
+  }
+  if (!name.startsWith('[')) return false;
+  const v6 = name.slice(1, -1);
+  if (v6 === '::1' || v6 === '::' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6)) return true;
+  // An IPv4 address written as IPv6, which the parser gives in hex.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(v6);
+  if (mapped) {
+    const high = parseInt(mapped[1], 16);
+    const low = parseInt(mapped[2], 16);
+    return isLocalHostname(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+  }
+  return false;
 }
 
 /**

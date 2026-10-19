@@ -12,6 +12,7 @@
 import type { XDBRecord } from '../types';
 import { isTauri, tauriInvoke, tauriListen } from './xdb-native-transport';
 import { XDBStorageError } from './xdb-types';
+import { RECORD_STORAGE_BUDGET, StorageBudget } from './storage-budget';
 import type {
   XDBEvent,
   XDBEventListener,
@@ -67,6 +68,8 @@ const OFFLINE_NETWORK_STATUS: XDBNetworkStatus = { peer_id: '', connected_peers:
  */
 export class XDBService {
   private storage: XDBStorage;
+  /** What the app's records may take of the browser's store, when that is where they are. */
+  private budget: StorageBudget | null = null;
   private prefix: string;
   private listeners: Map<string, Set<XDBEventListener>>;
   private globalListeners: Set<XDBEventListener>;
@@ -149,6 +152,15 @@ export class XDBService {
     }
     this.prefix = prefix;
     this.appId = appId;
+    // The app's share of the browser's store, which the host and every other
+    // app use too (storage-budget.ts).
+    try {
+      if (typeof localStorage !== 'undefined' && this.storage === localStorage) {
+        this.budget = new StorageBudget(localStorage, `${prefix}:`, RECORD_STORAGE_BUDGET);
+      }
+    } catch {
+      // No browser store here to share.
+    }
     this.listeners = new Map();
     this.globalListeners = new Set();
     this.useTauri = options.backend !== 'storage' && isTauri();
@@ -551,7 +563,10 @@ export class XDBService {
     try {
       if (this.destroyed && this.storagePersistence) throw new Error('The hosted storage owner was released.');
       if (this.storagePersistence?.protocol === 1) this.hostedWrite(this.storagePersistence.setItem(quarantineKey, raw), [collection]);
-      else this.storage.setItem(quarantineKey, raw);
+      else {
+        this.storage.setItem(quarantineKey, raw);
+        this.budget?.wrote(quarantineKey, raw);
+      }
     } catch {
       quarantineKey = null;
     }
@@ -682,7 +697,9 @@ export class XDBService {
       const value = JSON.stringify(records);
       if (this.storagePersistence?.protocol === 1) persisted = this.hostedWrite(this.storagePersistence.setItem(key, value), [collection]);
       else {
+        this.budget?.admit(key, value);
         this.storage.setItem(key, value);
+        this.budget?.wrote(key, value);
         if (this.storagePersistence) persisted = this.unsupportedPersistence(collection);
       }
       this.acknowledged.delete(collection);
@@ -1725,6 +1742,7 @@ export class XDBService {
     if (this.storagePersistence?.protocol === 1) this.hostedWrite(this.storagePersistence.removeItem(this.collectionKey(collection)), [collection]);
     else {
       this.storage.removeItem(this.collectionKey(collection));
+      this.budget?.removed(this.collectionKey(collection));
       if (this.storagePersistence) this.unsupportedPersistence(collection);
     }
     this.emit({ type: 'refresh', collection, records: [] });
@@ -2050,8 +2068,14 @@ export class XDBService {
           const restored: string[] = [];
           for (const entry of written.reverse()) {
             try {
-              if (entry.previous === null) this.storage.removeItem(this.collectionKey(entry.collection));
-              else this.storage.setItem(this.collectionKey(entry.collection), entry.previous);
+              const key = this.collectionKey(entry.collection);
+              if (entry.previous === null) {
+                this.storage.removeItem(key);
+                this.budget?.removed(key);
+              } else {
+                this.storage.setItem(key, entry.previous);
+                this.budget?.wrote(key, entry.previous);
+              }
               restored.push(entry.collection);
               this.emit({ type: 'refresh', collection: entry.collection, records: this.getCollectionData(entry.collection) });
             } catch {

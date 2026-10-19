@@ -8,6 +8,7 @@
 import React, { useState, useCallback, useId } from 'react';
 import { focusRing, isFocusVisible } from './focus';
 import { choice } from '../utils/choice';
+import { cssPaint } from '../utils/css-values';
 import { controlAttributes, describedBy } from '../utils/domAttributes';
 
 export interface SwitchProps {
@@ -115,18 +116,22 @@ export function Switch({
   );
   const handleBlur = useCallback(() => setIsFocused(false), []);
 
+  // Colours, painted into `background`: a value that is not one (an
+  // `url(https://…)`) was a background image loaded on sight.
+  const onPaint = cssPaint(onColor);
+  const offPaint = cssPaint(offColor);
   const getTrackBackground = () => {
     if (currentChecked) {
       if (disabled) return 'var(--color-primary-300, #93c5fd)';
-      if (onColor) return onColor;
+      if (onPaint) return onPaint;
       // Gradient for "on" state
       return 'linear-gradient(135deg, var(--color-primary-400, #818cf8), var(--color-primary-500, #6366f1), var(--color-primary-600, #4f46e5))';
     }
     // The off track is a step darker than it was: a white thumb on the
     // palest grey was all but invisible on a light page.
     if (disabled) return 'var(--color-gray-200, #3f3f46)';
-    if (isHovered) return offColor || 'var(--color-gray-400, #d1d5db)';
-    return offColor || 'var(--color-gray-300, #3f3f46)';
+    if (isHovered) return offPaint || 'var(--color-gray-400, #d1d5db)';
+    return offPaint || 'var(--color-gray-300, #3f3f46)';
   };
 
   const getTrackShadow = () => {

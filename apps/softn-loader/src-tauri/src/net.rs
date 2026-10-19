@@ -15,11 +15,21 @@
 //! refused rather than followed — as the page's `fetch` does with
 //! `redirect: 'error'` — so an allowed host cannot forward the request to one
 //! that is not.
+//!
+//! `net` with no host list is the internet, not the person's own computer or
+//! network: an address there (loopback, private, link-local, `localhost`, a
+//! `.local` name) is reached only when `allowed_hosts` names it. A request
+//! made here, with no CORS between it and the answer, would otherwise read a
+//! router's admin page or a development server. A name is resolved first and
+//! the request is sent to the addresses that were checked, so a name that
+//! resolves to the local network — or that changes what it resolves to
+//! between the check and the request — is refused the same way.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
-use url::Url;
+use url::{Host, Url};
 
 /// The same cap the script runtime puts on a response it reads itself.
 pub const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
@@ -72,16 +82,96 @@ pub fn check_destination(url: &str, allow_http: bool, allowed_hosts: &[String]) 
         }
         other => return Err(format!("Scheme not allowed: {}:", other)),
     }
-    if !allowed_hosts.is_empty() {
-        // `host_str` is the WHATWG hostname the page's URL reports: lowercased,
-        // punycoded, an IPv6 address in brackets. The list is compared as
-        // written, exactly as the runtime compares it.
-        let host = parsed.host_str().unwrap_or("");
-        if !allowed_hosts.iter().any(|allowed| allowed == host) {
-            return Err(format!("Host not allowed: {}", host));
-        }
+    // `host_str` is the WHATWG hostname the page's URL reports: lowercased,
+    // punycoded, an IPv6 address in brackets. The list is compared as
+    // written, exactly as the runtime compares it.
+    let host = parsed.host_str().unwrap_or("");
+    let listed = allowed_hosts.iter().any(|allowed| allowed == host);
+    if !allowed_hosts.is_empty() && !listed {
+        return Err(format!("Host not allowed: {}", host));
+    }
+    if !listed && parsed.host().is_some_and(|named| names_local_host(&named)) {
+        return Err(local_refusal(host));
     }
     Ok(parsed)
+}
+
+fn local_refusal(host: &str) -> String {
+    format!(
+        "Host not allowed: {} is on this computer or its local network. Name it in net.allowed_hosts to reach it.",
+        host
+    )
+}
+
+/// An address on this computer or its local network: loopback, private, link-local, the
+/// shared address space, unspecified, multicast and broadcast, and IPv4 written as IPv6.
+pub fn is_local_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || a == 0
+                || (a == 100 && (64..=127).contains(&b))
+                || a >= 240
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_local_ip(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// A host the URL itself says is local: an address above, `localhost`, or a name kept for
+/// local networks.
+fn names_local_host(host: &Host<&str>) -> bool {
+    match host {
+        Host::Ipv4(ip) => is_local_ip(IpAddr::V4(*ip)),
+        Host::Ipv6(ip) => is_local_ip(IpAddr::V6(*ip)),
+        Host::Domain(name) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            name == "localhost"
+                || [".localhost", ".local", ".internal", ".home.arpa"]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+        }
+    }
+}
+
+/// For a name the grant does not list: the addresses it resolves to, each checked, which the
+/// request is then sent to and no others. None for an address, or a listed host.
+async fn checked_addresses(url: &Url, allowed_hosts: &[String]) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
+    let Some(Host::Domain(name)) = url.host() else { return Ok(None) };
+    if allowed_hosts.iter().any(|allowed| allowed == name) {
+        return Ok(None);
+    }
+    let name = name.to_string();
+    let port = url.port_or_known_default().unwrap_or(443);
+    let lookup = name.clone();
+    let addresses: Vec<SocketAddr> = tauri::async_runtime::spawn_blocking(move || {
+        (lookup.as_str(), port).to_socket_addrs().map(|found| found.collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|e| format!("Network request failed: {}", e))?
+    .map_err(|e| format!("Network request failed: {} could not be found ({})", name, e))?;
+    if addresses.is_empty() {
+        return Err(format!("Network request failed: {} could not be found", name));
+    }
+    if addresses.iter().any(|address| is_local_ip(address.ip())) {
+        return Err(local_refusal(&name));
+    }
+    Ok(Some((name, addresses)))
 }
 
 /// The script's `timeout`, clamped as the runtime clamps it.
@@ -93,10 +183,14 @@ pub fn timeout_for(requested: Option<f64>) -> Duration {
     Duration::from_millis(ms)
 }
 
-fn client(timeout: Duration) -> Result<reqwest::Client, String> {
-    let builder = reqwest::Client::builder()
+fn client(timeout: Duration, pinned: Option<(String, Vec<SocketAddr>)>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(timeout);
+    // The addresses that were checked, and only those.
+    if let Some((name, addresses)) = pinned {
+        builder = builder.resolve_to_addrs(&name, &addresses);
+    }
     #[cfg(target_os = "android")]
     let builder = builder.tls_certs_only(
         webpki_root_certs::TLS_SERVER_ROOT_CERTS
@@ -178,7 +272,9 @@ pub async fn net_fetch(
 /// Send one request and read its response under the size cap.
 async fn send(request: NetRequest) -> Result<NetResponse, String> {
     let timeout = timeout_for(request.timeout_ms);
-    let mut response = outgoing(&client(timeout)?, request)?
+    let url = check_destination(&request.url, request.allow_http, &request.allowed_hosts)?;
+    let pinned = checked_addresses(&url, &request.allowed_hosts).await?;
+    let mut response = outgoing(&client(timeout, pinned)?, request)?
         .send()
         .await
         .map_err(|e| format!("Network request failed: {}", e))?;
@@ -238,6 +334,38 @@ mod tests {
     }
 
     #[test]
+    fn the_local_network_is_reached_only_when_named() {
+        for url in [
+            "http://localhost:3000/",
+            "http://127.0.0.1:18765/",
+            "http://192.168.1.1/admin",
+            "http://10.0.0.5/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.64.0.1/",
+            "http://[::1]/",
+            "http://[fd00::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "https://printer.local/",
+            "https://db.internal/",
+        ] {
+            assert!(check_destination(url, true, &[]).is_err(), "{}", url);
+        }
+        assert!(check_destination("http://127.0.0.1:18765/", true, &hosts(&["127.0.0.1"])).is_ok());
+        assert!(check_destination("http://localhost/", true, &hosts(&["localhost"])).is_ok());
+        assert!(check_destination("https://8.8.8.8/", false, &[]).is_ok());
+        assert!(check_destination("https://172.32.0.1/", false, &[]).is_ok());
+    }
+
+    #[test]
+    fn a_name_that_resolves_to_the_local_network_is_refused() {
+        let url = Url::parse("https://localhost./").unwrap();
+        assert!(check_destination(url.as_str(), false, &[]).is_err());
+        assert!(is_local_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_local_ip("::ffff:10.1.2.3".parse().unwrap()));
+        assert!(!is_local_ip("93.184.216.34".parse().unwrap()));
+    }
+
+    #[test]
     fn an_empty_host_list_permits_every_https_host() {
         assert!(check_destination("https://api.example.com/v1", false, &[]).is_ok());
     }
@@ -271,7 +399,9 @@ mod tests {
         assert!(check_destination("http://localhost:8080/", false, &[])
             .unwrap_err()
             .starts_with("HTTP not allowed"));
-        assert!(check_destination("http://localhost:8080/", true, &[]).is_ok());
+        assert!(check_destination("http://api.example.com:8080/", true, &[]).is_ok());
+        // This computer, when the grant names it.
+        assert!(check_destination("http://localhost:8080/", true, &hosts(&["localhost"])).is_ok());
         assert!(check_destination("http://localhost:8080/", true, &hosts(&["api.example.com"])).is_err());
     }
 
@@ -308,7 +438,7 @@ mod tests {
     fn a_script_cannot_ask_an_allowed_host_for_another_site() {
         // `Host` as the script wrote it would reach a second site served from the allowed
         // host's address, which is the destination `allowed_hosts` exists to rule out.
-        let client = client(timeout_for(None)).unwrap();
+        let client = client(timeout_for(None), None).unwrap();
         let built = outgoing(
             &client,
             request(
@@ -329,7 +459,7 @@ mod tests {
 
     #[test]
     fn a_script_does_not_frame_the_request_itself() {
-        let client = client(timeout_for(None)).unwrap();
+        let client = client(timeout_for(None), None).unwrap();
         let built = outgoing(
             &client,
             request(

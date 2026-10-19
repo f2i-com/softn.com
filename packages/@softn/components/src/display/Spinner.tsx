@@ -95,13 +95,16 @@ function RingSpinner({
   speed: number;
   glow: boolean;
 }): React.ReactElement {
+  // A width, written into the mask as a number: any other text there was a
+  // mask layer of the bundle's own — `url(https://…)` — loaded on sight.
+  const ring = Number.isFinite(Number(thickness)) ? Number(thickness) : 3;
   const spinnerStyle: React.CSSProperties = {
     width: sizeValue,
     height: sizeValue,
     borderRadius: '50%',
     background: colorConfig.gradient,
-    mask: `radial-gradient(farthest-side, transparent calc(100% - ${thickness}px), #fff calc(100% - ${thickness}px + 1px))`,
-    WebkitMask: `radial-gradient(farthest-side, transparent calc(100% - ${thickness}px), #fff calc(100% - ${thickness}px + 1px))`,
+    mask: `radial-gradient(farthest-side, transparent calc(100% - ${ring}px), #fff calc(100% - ${ring}px + 1px))`,
+    WebkitMask: `radial-gradient(farthest-side, transparent calc(100% - ${ring}px), #fff calc(100% - ${ring}px + 1px))`,
     animation: `softn-spinner-rotate ${speed}s linear infinite`,
     boxShadow: glow ? `0 0 16px ${colorConfig.glowColor}` : undefined,
   };

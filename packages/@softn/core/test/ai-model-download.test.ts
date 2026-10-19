@@ -82,7 +82,28 @@ describe('model URL egress', () => {
     const data = await mgr.resolveModel({ url: 'https://models.test/m.onnx' }, MB);
     expect(data.byteLength).toBe(3);
     expect(new Uint8Array(data)).toEqual(new Uint8Array([1, 2, 3]));
-    expect(fetch).toHaveBeenCalledWith('https://models.test/m.onnx');
+    // As the app's request: no cookie of the page, and no redirect followed.
+    expect(fetch).toHaveBeenCalledWith('https://models.test/m.onnx', {
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      redirect: 'error',
+    });
+  });
+
+  it('needs net: ai alone does not reach the network', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const mgr = manager({ allowedSources: ['url'] });
+    await expect(mgr.resolveModel({ url: 'https://models.test/m.onnx' }, MB)).rejects.toThrow(/needs net/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses a relative address, which would be the host’s own server', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const mgr = manager({ allowedSources: ['url'] }, { enabled: true });
+    await expect(mgr.resolveModel({ url: '/api/apps/x/storage' }, MB)).rejects.toThrow(/Model URL not allowed/);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 
@@ -92,7 +113,7 @@ describe('model size cap', () => {
       'content-length': String(2 * MB),
     });
     vi.stubGlobal('fetch', vi.fn(async () => response));
-    const mgr = manager({ allowedSources: ['url'] });
+    const mgr = manager({ allowedSources: ['url'] }, { enabled: true });
     await expect(mgr.resolveModel({ url: 'https://models.test/m.onnx' }, MB)).rejects.toThrow(
       /exceeds limit/
     );

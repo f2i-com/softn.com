@@ -55,7 +55,7 @@ export interface PopoverProps {
 export function Popover({
   trigger,
   children,
-  placement = 'bottom',
+  placement: placementProp = 'bottom',
   open: controlledOpen,
   defaultOpen = false,
   onOpenChange,
@@ -67,6 +67,9 @@ export function Popover({
   className,
   style,
 }: PopoverProps): React.ReactElement {
+  // One of the four, since it is written into a stylesheet: any other text
+  // there was a rule of the bundle's own, for the whole page.
+  const placement = (['top', 'bottom', 'left', 'right'] as const).find((side) => side === placementProp) ?? 'bottom';
   const [triggerNode, content] = triggerAndContent(trigger, children);
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const containerRef = useRef<HTMLSpanElement>(null);

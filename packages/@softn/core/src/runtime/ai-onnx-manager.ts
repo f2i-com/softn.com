@@ -87,11 +87,19 @@ export class OnnxManager {
    * the server chose to send. Whether the URL may be reached at all is the
    * caller's question; see resolveModel.
    */
-  private async downloadModel(url: string, label: string, maxBytes: number): Promise<ArrayBuffer> {
+  private async downloadModel(
+    url: string,
+    label: string,
+    maxBytes: number,
+    redirect: RequestRedirect = 'error'
+  ): Promise<ArrayBuffer> {
     const tooLarge = () =>
       new Error(`Model ${label} exceeds limit of ${(maxBytes / (1024 * 1024)).toFixed(0)}MB`);
 
-    const resp = await fetch(url);
+    // The app's download, not the host's: no cookie of the page goes with
+    // it, and a redirect to a host the app was not allowed is refused, as
+    // `softn.net.fetch` refuses it.
+    const resp = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect });
     if (!resp.ok) {
       try {
         await resp.body?.cancel();
@@ -231,9 +239,18 @@ export class OnnxManager {
       // The HuggingFace path above is not judged: its host is fixed here,
       // and `allowedSources: ["huggingface"]` is the bundle's declaration
       // of it. A bundle path, blob: or data: URL carries no host.
+      //
+      // And it is the network: `ai` alone does not reach it. A relative
+      // address would be a request to the host's own server, not a file of
+      // the bundle's — that is `bundle`.
       if (isRemoteUrl(source.url)) {
+        if (this.netPermission?.enabled !== true) {
+          throw new Error('Model URL not allowed: downloading a model needs net in permission.json');
+        }
         const verdict = describeNetDestination(source.url, this.netPermission);
         if (!verdict.allowed) throw new Error(`Model URL not allowed: ${verdict.reason}`);
+      } else if (!/^\s*(?:blob|data):/i.test(source.url)) {
+        throw new Error('Model URL not allowed: name a bundled model with `bundle`, or give a full https:// address');
       }
       return this.downloadModel(source.url, source.url, maxBytes);
     }
@@ -257,8 +274,9 @@ export class OnnxManager {
     // Download from HuggingFace
     const url = `https://huggingface.co/${modelId}/resolve/main/model.onnx`;
     debug(`[SoftN AI] Downloading model: ${modelId}`);
-    // Capped while downloading — see downloadModel.
-    const data = await this.downloadModel(url, modelId, maxBytes);
+    // Capped while downloading — see downloadModel. The Hub answers with a
+    // redirect to its own file store, which is followed.
+    const data = await this.downloadModel(url, modelId, maxBytes, 'follow');
 
     // Cache for next time
     try {

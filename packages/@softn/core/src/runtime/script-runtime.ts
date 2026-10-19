@@ -304,6 +304,12 @@ export interface ScriptRuntimeOptions {
    * otherwise learns of a lost save when they come back for it.
    */
   onPersistenceFailure?: (failure: PersistenceFailure) => void;
+  /**
+   * Show what the page's `alert()` says, inside the app. With none, it is
+   * written to the console: the browser's own dialog is never used, since
+   * it carries the host's name and holds the whole tab.
+   */
+  onAlert?: (message: string) => void;
 }
 
 /**
@@ -495,6 +501,36 @@ function FINGERPRINT_AUDIT(): boolean {
  */
 const COMPUTED_SETTLE_PASSES = 8;
 
+/** Kinds of file a double-click runs rather than opens. */
+const RUNS_WHEN_OPENED =
+  /\.(?:exe|com|bat|cmd|msi|msix|msp|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ps1|psm1|reg|cpl|jar|app|dmg|pkg|command|desktop|appimage|deb|rpm|apk|sh|scf|inf|gadget|application|appref-ms)$/i;
+
+/**
+ * The name a file an app saves is offered under. A leaf, never a path, so an
+ * app cannot suggest "../.bashrc"; no control characters, and none of the
+ * invisible ones that turn text around (`report\u202efdp.exe` reads as
+ * `reportexe.pdf`); not a name Windows keeps for a device; and a kind of file
+ * that runs when it is opened is saved as text, so a click in an app is never
+ * a program on the person's desktop.
+ */
+export function downloadName(raw: unknown): string {
+  let name = String(raw || 'download')
+    // The control characters are the point of the pattern, not a slip.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f-\u009f]/g, '_')
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
+    .replace(/^[.\s]+/, '')
+    .replace(/[.\s]+$/, '')
+    .slice(0, 200);
+  if (!name) name = 'download';
+  if (/^(?:con|prn|aux|nul|com\d|lpt\d)(?:\.|$)/i.test(name)) name = `_${name}`;
+  if (RUNS_WHEN_OPENED.test(name)) name = `${name}.txt`;
+  return name;
+}
+
+/** `window.__…` names a script's window never writes to the page's (see syncWindowFromVM). */
+const HOST_WINDOW_NAME = /^__(?:tauri|react|softn|vite|webpack|playwright|vue|next|nuxt|zone|proto__$)/i;
+
 /** A name safe to paste into generated source as an identifier. */
 const VALID_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
 
@@ -527,6 +563,9 @@ function normalizeExternalPrimitive(value: unknown): ExternalValueRead {
 export class SoftNScriptRuntime {
   private vmEngine: LogicEngine | null = null;
   private readonly onPersistenceFailure: ((failure: PersistenceFailure) => void) | null;
+  private readonly onAlert: ((message: string) => void) | null;
+  /** How many of the page's alerts have been shown (see `dialog.alert`). */
+  private alertsShown = 0;
   private context: ScriptContext;
   private db: DBNamespace;
   private permissions?: AppPermissions;
@@ -675,6 +714,8 @@ export class SoftNScriptRuntime {
   private netAbortControllers = new Set<AbortController>();
   private localSpeech: LocalSpeechHost | null = null;
   private static readonly MAX_NET_RESPONSE_BYTES = 10 * 1024 * 1024;
+  /** A page that has said this much with `alert()` has stopped telling the person anything. */
+  private static readonly MAX_ALERTS = 50;
 
   /** Sounds this app currently has playing, by the handle its script holds.
    *  `watchers` are pending `whenEnded` calls; each hears exactly one outcome. */
@@ -745,6 +786,7 @@ export class SoftNScriptRuntime {
     this.pythonProject = options?.pythonProject;
     this.visitorToken = options?.storageVisitorToken;
     this.onPersistenceFailure = options?.onPersistenceFailure ?? null;
+    this.onAlert = options?.onAlert ?? null;
     this.externalFunctions = externalFunctions ?? null;
     this.db = createDBNamespace(() => this.permissionConfig, appId);
     if (typeof importResolver === 'function') {
@@ -2548,6 +2590,10 @@ export class SoftNScriptRuntime {
       // receives one (syncWindowToVM skips them), so it cannot be handing one
       // back, only replacing it.
       if (this.hostWindowKeys.has(key) || typeof realWin[key] === 'function') continue;
+      // Nor names the host, its frameworks or SoftN itself may give a value
+      // later: `__TAURI__` written from here made every app opened after it
+      // take the page for the desktop runtime, and fail to open its storage.
+      if (HOST_WINDOW_NAME.test(key)) continue;
       // A value the script did not touch is not written back. The browser
       // may have moved it since the call began — a pointer-locked camera
       // writes __scene3dYaw on every mouse move — and echoing the copy the
@@ -2704,7 +2750,13 @@ export class SoftNScriptRuntime {
         // browser path sees.
         if (!this.netFetchHandler) return this.handleNetFetch(call);
         const [url, optionsJson] = call.args;
-        return this.netFetchHandler(url, optionsJson ? JSON.parse(optionsJson) : {});
+        let options: Record<string, unknown> = {};
+        try {
+          options = optionsJson ? JSON.parse(optionsJson) : {};
+        } catch {
+          return { error: 'The request options are not JSON.' };
+        }
+        return this.netFetchHandler(url, options);
       }
       case 'qr.encode':
         return this.handleQrEncode(call);
@@ -2812,10 +2864,20 @@ export class SoftNScriptRuntime {
         return this.handleStorageOp(call);
       case 'dialog.alert': {
         // A page's alert(), shown when its turn is over: nothing waits on it.
+        //
+        // Never the browser's own dialog. That one says it is the host
+        // speaking ("softn.com says…"), and holds the whole tab until it is
+        // answered: an app could word a host's request for a password, or
+        // raise one from a timer each time the last was closed, so nobody
+        // could reach the permission bar or leave. It is shown in the app,
+        // as the app's; not while the permission bar is asking, so nothing
+        // the app says sits beside that question; and not past a limit.
         const [message] = call.args;
-        if (typeof window !== 'undefined' && typeof window.alert === 'function') {
-          window.alert(String(message ?? '').slice(0, 4000));
-        }
+        if (this.permissionConfig?.consentPending) return null;
+        if (++this.alertsShown > SoftNScriptRuntime.MAX_ALERTS) return null;
+        const text = String(message ?? '').slice(0, 2000);
+        if (this.onAlert) this.onAlert(text);
+        else console.warn(`[SoftN] The app says: ${text}`);
         return null;
       }
       default:
@@ -2947,6 +3009,12 @@ export class SoftNScriptRuntime {
               : undefined,
         signal: abortController.signal,
         redirect: 'error',
+        // The app's request, not the host's: no cookie or login of the page
+        // it is drawn in goes with it, and the server is not told that page's
+        // address. An app that signs in says so itself (an Authorization
+        // header), or asks the host's backend (`softn.backend`).
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
       });
 
       const declaredHeader = resp.headers.get('content-length');
@@ -3656,15 +3724,20 @@ export class SoftNScriptRuntime {
         return { error: 'The save options are not valid JSON.' };
       }
     }
-    // A file name is a leaf, never a path: strip separators and control
-    // characters so an app cannot suggest "../.bashrc" to the download dialog.
-    const name = String(rawName || 'download')
-      // The control characters are the point of the pattern, not a slip.
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
-      .replace(/^\.+/, '')
-      .slice(0, 200) || 'download';
-    const mime = typeof options.mime === 'string' && options.mime ? options.mime : (options.base64 ? 'application/octet-stream' : 'text/plain;charset=utf-8');
+    // A download the person asked for, with a click or a key: not one an app
+    // starts on a timer, as many as it likes, attributed to the host's site.
+    const activation = typeof navigator === 'undefined' ? undefined : (navigator as { userActivation?: { isActive?: boolean } }).userActivation;
+    if (activation && activation.isActive === false) {
+      return { error: 'A file is saved when the person asks for it: call files.saveFile from a click or a key press.' };
+    }
+    const name = downloadName(rawName);
+    // A type the content says it is, or bytes.
+    const mime =
+      typeof options.mime === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;\s*charset=[\w-]+)?$/.test(options.mime)
+        ? options.mime
+        : options.base64
+          ? 'application/octet-stream'
+          : 'text/plain;charset=utf-8';
     let blob: Blob;
     if (options.base64) {
       let buffer: ArrayBuffer;

@@ -242,11 +242,10 @@ describe('a page whose code is written for a browser', () => {
     expect($('#picked')!.textContent).toBe('B b2 Emma');
   });
 
-  it('shows alert(), and says what to use for confirm()', async () => {
-    const shown: string[] = [];
-    const alert = vi.spyOn(window, 'alert').mockImplementation((message?: unknown) => {
-      shown.push(String(message));
-    });
+  it('shows alert() in the app, as the app’s, and says what to use for confirm()', async () => {
+    // Never the browser's own dialog, which says it is the host speaking and
+    // holds the whole tab until it is answered.
+    const native = vi.spyOn(window, 'alert').mockImplementation(() => {});
     try {
       await mount(
         `<button id="b">Save</button><p id="out">-</p>
@@ -262,11 +261,33 @@ describe('a page whose code is written for a browser', () => {
         $('#b')!.click();
       });
       await settle();
-      expect(shown).toEqual(['Saved 2 notes']);
+      const notice = $('[data-softn-notice="alert"]');
+      expect(notice?.getAttribute('role')).toBe('alertdialog');
+      expect(notice?.textContent).toContain('Saved 2 notes');
+      expect(native).not.toHaveBeenCalled();
       expect($('#out')!.textContent).toMatch(/^confirm\(\) cannot wait for an answer here/);
+      await act(async () => {
+        (notice!.querySelector('button') as HTMLButtonElement).click();
+      });
+      expect($('[data-softn-notice="alert"]')).toBeNull();
     } finally {
-      alert.mockRestore();
+      native.mockRestore();
     }
+  });
+
+  it('shows no alert() while the permission bar is asking', async () => {
+    await mount(
+      `<p id="out">-</p>
+<script>
+  alert('Type your password to continue');
+  document.getElementById('out').textContent = 'ran';
+</script>`,
+      () => $('#out')?.textContent === 'ran',
+      { permissionConfig: { consentPending: true, permissions: { net: { enabled: true } } } as never }
+    );
+    await settle();
+    expect($('#out')!.textContent).toBe('ran');
+    expect($('[data-softn-notice="alert"]')).toBeNull();
   });
 
   it('compiles beside a page that declares the window\u2019s names itself, however it declares them', async () => {

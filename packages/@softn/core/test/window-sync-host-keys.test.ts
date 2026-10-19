@@ -97,6 +97,29 @@ describe('window.__ sync and the host page', () => {
     runtime.cleanup();
   });
 
+  it('never writes a name the host or SoftN may give a value later, however late', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        function init() {
+          window.__TAURI__ = { core: { invoke: 1 } }
+          window.__softnKeys = { w: true }
+          window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = 1
+          window.__mine = 1
+        }
+        function tick() {}
+      `)
+    );
+    await result.functions.init();
+    await result.functions.tick();
+    await result.functions.tick();
+    expect('__TAURI__' in realWin).toBe(false);
+    expect('__softnKeys' in realWin).toBe(false);
+    expect('__REACT_DEVTOOLS_GLOBAL_HOOK__' in realWin).toBe(false);
+    expect(realWin.__mine).toBe(1);
+    runtime.cleanup();
+  });
+
   it('keeps an app-declared latch flowing both ways', async () => {
     const runtime = makeRuntime();
     const result = await runtime.loadScript(

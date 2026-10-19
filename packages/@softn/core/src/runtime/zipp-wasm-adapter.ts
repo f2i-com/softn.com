@@ -21,6 +21,7 @@ import { Engine, accelGuestCall } from '../../wasm-zipp/zipp_wasm.js';
 import { createAccelHost } from './accel-host';
 import { ensureZippWasm } from './zipp-wasm-loader';
 import { flushEngineOutput } from './engine-output';
+import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
 
 import type { DBNamespace } from './script-runtime';
 import type { LogicEngine } from './vm-adapter';
@@ -422,6 +423,8 @@ export class ZippWasmAdapter {
 
     const safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
     const prefix = `softn:${safeAppId}:`;
+    // The app's share of the store, which the host and every other app use too.
+    const budget = typeof localStorage === 'undefined' ? null : new StorageBudget(localStorage, prefix, LOCAL_STORAGE_BUDGET);
 
     // A write that fails is thrown to the guest, not logged and swallowed.
     // The bridge used to catch the browser's exception — quota, most often —
@@ -441,7 +444,10 @@ export class ZippWasmAdapter {
       },
       setItem: (key: string, value: string) => {
         try {
-          localStorage.setItem(prefix + key, value);
+          const text = String(value);
+          budget?.admit(prefix + key, text);
+          localStorage.setItem(prefix + key, text);
+          budget?.wrote(prefix + key, text);
         } catch (e) {
           throw this.refuseStorage('setItem', key, e);
         }
@@ -449,6 +455,7 @@ export class ZippWasmAdapter {
       removeItem: (key: string) => {
         try {
           localStorage.removeItem(prefix + key);
+          budget?.removed(prefix + key);
         } catch (e) {
           throw this.refuseStorage('removeItem', key, e);
         }
@@ -461,7 +468,10 @@ export class ZippWasmAdapter {
             const k = localStorage.key(i);
             if (k?.startsWith(prefix)) keysToRemove.push(k);
           }
-          for (const k of keysToRemove) localStorage.removeItem(k);
+          for (const k of keysToRemove) {
+            localStorage.removeItem(k);
+            budget?.removed(k);
+          }
         } catch (e) {
           throw this.refuseStorage('clear', '', e);
         }

@@ -48,6 +48,7 @@ interface TransformersModule {
   // Image support for VLMs
   RawImage: {
     fromURL(url: string): Promise<unknown>;
+    fromBlob?(blob: Blob): Promise<unknown>;
   };
   // Dynamic access to named model classes (e.g. Qwen3_5ForConditionalGeneration)
   [key: string]: unknown;
@@ -435,12 +436,30 @@ export class TransformersManager {
               // is held to the same `allow_http` / `allowed_hosts` verdict
               // as `softn.net.fetch`. Thrown, not warned past: the script
               // asked for something the bundle is not allowed to do.
-              if (typeof imageUrl === 'string' && isRemoteUrl(imageUrl)) {
+              //
+              // It is the network, so `ai` alone does not reach it, and it is
+              // fetched here as `softn.net.fetch` fetches: with no cookie of
+              // the page, and no redirect to a host the app was not allowed.
+              // A relative address would be the host's own server.
+              const remote = typeof imageUrl === 'string' && isRemoteUrl(imageUrl);
+              if (remote) {
+                if (this.netPermission?.enabled !== true) {
+                  throw new Error('Image URL not allowed: an image from the network needs net in permission.json');
+                }
                 const verdict = describeNetDestination(imageUrl, this.netPermission);
                 if (!verdict.allowed) throw new Error(`Image URL not allowed: ${verdict.reason}`);
+              } else if (!/^\s*(?:blob|data):/i.test(String(imageUrl))) {
+                throw new Error('Image URL not allowed: give a data: or blob: image, or a full https:// address');
               }
               try {
-                image = await tf.RawImage.fromURL(imageUrl);
+                if (remote) {
+                  const resp = await fetch(imageUrl, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error' });
+                  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+                  if (typeof tf.RawImage.fromBlob !== 'function') throw new Error('this engine cannot read an image it was handed');
+                  image = await tf.RawImage.fromBlob(await resp.blob());
+                } else {
+                  image = await tf.RawImage.fromURL(imageUrl);
+                }
               } catch (e) {
                 console.warn('[SoftN AI] Failed to load image for VLM:', e);
               }

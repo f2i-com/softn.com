@@ -76,6 +76,8 @@ export interface WorkerRuntimeOptions {
    * on this thread, so the handler stays here and is never posted across.
    */
   netFetchHandler?: NetFetchHandler;
+  /** Show what an `alert()` says, inside the app; see ScriptRuntimeOptions.onAlert. */
+  onAlert?: (message: string) => void;
   /**
    * Called once if the worker is terminated for missing its hard deadline —
    * see `HARD_DEADLINE_MS`. The runtime is dead after this; every function
@@ -305,7 +307,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       appId,
       importResolver,
       logicBasePath,
-      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall, netFetchHandler: options?.netFetchHandler },
+      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall, netFetchHandler: options?.netFetchHandler, onAlert: options?.onAlert },
       options?.bundleFileProvider,
       options?.externalFunctions
     );

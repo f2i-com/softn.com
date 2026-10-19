@@ -24,7 +24,8 @@ describe('softn.net.fetch through the native side', () => {
 
   it('sends a permitted request with the grant the native side re-checks', async () => {
     const invoke = vi.fn(async () => reply);
-    const fetch = createNativeNetFetch({ permissions: { net: { enabled: true, allow_http: true } } }, invoke);
+    // This computer is reached only when the grant names it.
+    const fetch = createNativeNetFetch({ permissions: { net: { enabled: true, allow_http: true, allowed_hosts: ['localhost'] } } }, invoke);
     await expect(fetch('http://localhost:8080/items', { headers: { 'X-Count': 2, bad: {} }, body: 'a=1' })).resolves.toEqual(reply);
     expect(invoke).toHaveBeenCalledWith('net_fetch', {
       request: {
@@ -34,9 +35,17 @@ describe('softn.net.fetch through the native side', () => {
         body: 'a=1',
         timeoutMs: undefined,
         allowHttp: true,
-        allowedHosts: [],
+        allowedHosts: ['localhost'],
       },
     });
+  });
+
+  it('does not reach this computer or its network with net alone', async () => {
+    const invoke = vi.fn(async () => reply);
+    const fetch = createNativeNetFetch({ permissions: { net: { enabled: true, allow_http: true } } }, invoke);
+    await expect(fetch('http://localhost:8080/items', {})).rejects.toThrow(/local network/);
+    await expect(fetch('http://192.168.1.1/', {})).rejects.toThrow(/local network/);
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
 

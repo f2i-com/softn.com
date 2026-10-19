@@ -552,15 +552,18 @@ function describePersistenceFailure(failure: PersistenceFailure): string {
 function PersistenceNotice({
   message,
   onDismiss,
+  kind = 'persistence',
 }: {
   message: string;
   onDismiss: () => void;
+  /** `alert`: what the page's `alert()` said, which the person answers. */
+  kind?: 'persistence' | 'alert';
 }): React.ReactElement {
   return (
     <div
-      role="status"
-      aria-live="polite"
-      data-softn-notice="persistence"
+      role={kind === 'alert' ? 'alertdialog' : 'status'}
+      aria-live={kind === 'alert' ? 'assertive' : 'polite'}
+      data-softn-notice={kind}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -586,7 +589,7 @@ function PersistenceNotice({
           cursor: 'pointer',
         }}
       >
-        Dismiss
+        {kind === 'alert' ? 'OK' : 'Dismiss'}
       </button>
     </div>
   );
@@ -704,6 +707,9 @@ export function SoftNRenderer({
   // script is told by an exception; without this the person is told by
   // nothing, and finds out when they come back for the save.
   const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
+  // What the page's `alert()` last said, shown in the app as the app's.
+  const [appAlert, setAppAlert] = useState<string | null>(null);
+  const showAlert = useCallback((message: string) => setAppAlert(message), []);
   // The document the page's code is given, once its code is found to use one.
   const [documentShell, setDocumentShell] = useState<DocumentShell | null>(null);
   // Whether the page's code took the document: it is told the page is ready then.
@@ -1240,6 +1246,7 @@ export function SoftNRenderer({
                 storageEndpoint,
                 backendCall,
                 netFetchHandler,
+                onAlert: showAlert,
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
@@ -1283,6 +1290,7 @@ export function SoftNRenderer({
                 storageEndpoint,
                 backendCall,
                 netFetchHandler,
+                onAlert: showAlert,
                 bundleFileProvider,
                 externalFunctions: runtimeFunctions,
                 // A worker that missed its hard deadline has been terminated;
@@ -1326,6 +1334,7 @@ export function SoftNRenderer({
                 storageEndpoint,
                 backendCall,
                 netFetchHandler,
+                onAlert: showAlert,
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
@@ -1363,6 +1372,7 @@ export function SoftNRenderer({
                 storageEndpoint,
                 backendCall,
                 netFetchHandler,
+                onAlert: showAlert,
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
@@ -1581,6 +1591,8 @@ export function SoftNRenderer({
     storageEndpoint,
     backendCall,
     netFetchHandler,
+    // Stable: made once with useCallback.
+    showAlert,
     runtimePython,
     runtimePermissions,
     runtimePreIncludedLogicPaths,
@@ -2056,6 +2068,9 @@ export function SoftNRenderer({
             message={persistenceNotice}
             onDismiss={() => setPersistenceNotice(null)}
           />
+        )}
+        {appAlert !== null && (
+          <PersistenceNotice kind="alert" message={appAlert} onDismiss={() => setAppAlert(null)} />
         )}
         <SoftNErrorBoundary
           fallback={(error, reset) =>
