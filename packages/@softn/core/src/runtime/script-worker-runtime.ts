@@ -27,6 +27,8 @@ import {
 import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 import { LogicTimers } from './logic-timers';
 import { printRuntimeLine } from './engine-output';
+import { getXDB } from './xdb-registry';
+import type { XDBService } from './xdb-service';
 
 type WorkerPayloadMap = {
   init: Record<string, unknown>;
@@ -213,6 +215,10 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private lsDirty = true;
   /** Maps worker-created temp IDs (_wk_*) to real XDB IDs. */
   private tempIdMap = new Map<string, string>();
+  /** The app's store the snapshots are read from, and the watch on it; see `watchStore`. */
+  private watchedStore: { store: XDBService; unsubscribe: () => void } | null = null;
+  /** Whether the script's db namespace has its store; until it has, a db batch waits for it. */
+  private dbNamespaceLoaded = false;
   /**
    * The state variables the template can observe. The worker mirrors only
    * these; everything else stays VM-owned — the same partition the main-thread
@@ -386,11 +392,46 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   // ==========================================================================
 
   /**
-   * Collect current XDB data as a serializable snapshot.
-   * Uses context.data which is kept up-to-date by SoftNRenderer subscriptions.
+   * The app's store as a serializable snapshot: every collection it holds,
+   * without the deleted records, which is what the script's `db` reads on the
+   * main thread. It was `context.data`, which the renderer hands over empty
+   * and nothing fills, so a script in a worker saw no records at all, and the
+   * delta sent after its own `db.create` took the new record away again.
    */
   private getDBSnapshot(): Record<string, unknown[]> {
-    return (this.context.data || {}) as Record<string, unknown[]>;
+    const store = this.watchStore();
+    if (!store) return (this.context.data || {}) as Record<string, unknown[]>;
+    const snapshot: Record<string, unknown[]> = {};
+    for (const [collection, records] of Object.entries(store.export().collections)) {
+      snapshot[collection] = records.filter((record) => !record.deleted);
+    }
+    return snapshot;
+  }
+
+  /**
+   * The app's store, watched: a change made in it outside the worker (by the
+   * page, by sync, by a desktop store still loading) marks its collection
+   * dirty, so the script's next call carries it. Null when there is none.
+   */
+  private watchStore(): XDBService | null {
+    if (this.disposed) return null;
+    let store: XDBService;
+    try {
+      store = getXDB(this.appId);
+    } catch {
+      return null;
+    }
+    if (this.watchedStore?.store !== store) {
+      this.watchedStore?.unsubscribe();
+      this.watchedStore = { store, unsubscribe: store.subscribeAll((event) => this.markDbDirty(event.collection)) };
+      // The namespace opens the same store; once it has, a db batch is
+      // applied as it arrives (applyDBMutations).
+      this.dbNamespace.ready().then(
+        () => { this.dbNamespaceLoaded = true; },
+        () => {}
+      );
+    }
+    return store;
   }
 
   /**
@@ -460,11 +501,17 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // Nothing here waited for it, so the first worker batch carrying either
     // threw, and one try round the whole loop dropped every mutation after it
     // without a word: the worker's snapshot had the change, the store did not.
-    let xdb: import('./xdb').XDBService;
+    // Only a batch with either waits, and only until it has loaded: a batch
+    // that waited let a call made as soon as the last one returned take its
+    // snapshot from a store these writes were not in yet, and the worker
+    // lost them from view.
+    let xdb: XDBService;
     try {
-      const { getXDB } = await import('./xdb');
       xdb = getXDB(this.appId);
-      await this.dbNamespace.ready();
+      if (!this.dbNamespaceLoaded && mutations.some((m) => m.type === 'prune' || m.type === 'clearCollection')) {
+        await this.dbNamespace.ready();
+        this.dbNamespaceLoaded = true;
+      }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       console.error('[Worker Bridge] the database is unavailable; no worker writes were kept:', error);
@@ -488,7 +535,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     }
   }
 
-  private applyDBMutation(xdb: import('./xdb').XDBService, m: DBMutation): void {
+  private applyDBMutation(xdb: XDBService, m: DBMutation): void {
     switch (m.type) {
       case 'create': {
         // The worker's own id is kept when it is a real one (the store
@@ -654,6 +701,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.coalescers = [];
     // The captured keys are the host executor's, and go with it.
     this.hostExecutor.cleanup();
+    this.watchedStore?.unsubscribe();
+    this.watchedStore = null;
     const error = new Error(reason);
     for (const [, p] of this.pending) p.reject(error);
     this.pending.clear();
