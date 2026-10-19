@@ -23,6 +23,46 @@
 /** The keys each app asked for, by the runtime that asked. */
 const captured = new Map<object, Set<string>>();
 
+const MAX_CAPTURED_KEYS = 32;
+
+/**
+ * The element each app is drawn in, by the runtime that runs it.
+ *
+ * A script's `window.addEventListener('keydown', …)` was a listener on the
+ * host's window, and heard every key pressed in the document: the host's
+ * own fields (Studio's API key, its editor), and another app's password
+ * field, in a tab beside it or behind it. With no permission, and while the
+ * permission bar was still asking. An app now hears what is aimed at it —
+ * at its own elements, or at the page itself when nothing has focus and the
+ * app is on screen — and the pointer anywhere while it is on screen, which
+ * a drag that leaves the app needs and which carries no text.
+ */
+const appElements = new Map<object, Element>();
+
+/** Where `owner`'s app is drawn; null when it is not drawn anywhere now. */
+export function setAppElement(owner: object, element: Element | null): void {
+  if (element) appElements.set(owner, element);
+  else appElements.delete(owner);
+}
+
+const POINTER_EVENT = /^(?:mouse|pointer|touch|drag|drop|wheel|click|dblclick|contextmenu|lostpointercapture|gotpointercapture)/;
+
+/** Whether a listener `owner`'s app put on the window hears `event`. */
+export function appHears(owner: object, event: Event): boolean {
+  const target = event.target as (Node & { ownerDocument: Document | null }) | null;
+  // The window and the document themselves: a resize, a page leaving, a key
+  // sent to the window. Nothing typed into anything.
+  if (!target || typeof target.nodeType !== 'number' || target.nodeType !== 1) return true;
+  const element = appElements.get(owner);
+  if (!element) return !targetIsEditable(target);
+  if (element.contains(target)) return true;
+  const shown = typeof element.checkVisibility === 'function' ? element.checkVisibility() : element.isConnected;
+  if (!shown) return false;
+  const doc = target.ownerDocument;
+  if (doc && (target === doc.body || target === doc.documentElement)) return true;
+  return POINTER_EVENT.test(event.type);
+}
+
 /**
  * Replace the keys `owner` captures; an empty list releases them. Entries
  * are `KeyboardEvent.key` or `.code` values.
@@ -32,6 +72,8 @@ export function setCapturedKeys(owner: object, keys: Iterable<string>): void {
   for (const key of keys) {
     const name = String(key);
     if (name !== '') names.add(name);
+    // A game's controls, not the keyboard: the rest are the browser's.
+    if (names.size >= MAX_CAPTURED_KEYS) break;
   }
   if (names.size > 0) captured.set(owner, names);
   else captured.delete(owner);
@@ -49,7 +91,11 @@ export function capturedKeyCount(): number {
   return all.size;
 }
 
-function isCaptured(key: string, code: string): boolean {
+function isCaptured(key: string, code: string, owner?: object): boolean {
+  if (owner) {
+    const names = captured.get(owner);
+    return !!names && (names.has(key) || names.has(code));
+  }
   for (const names of captured.values()) {
     if (names.has(key) || names.has(code)) return true;
   }
@@ -70,13 +116,16 @@ function targetIsEditable(target: EventTarget | null): boolean {
  * sees it: a captured key, on its way somewhere other than a text field, with
  * no modifier that makes it the browser's.
  */
-export function shouldCaptureKey(event: Event): boolean {
+export function shouldCaptureKey(event: Event, owner?: object): boolean {
   if (captured.size === 0) return false;
   if (typeof KeyboardEvent === 'undefined' || !(event instanceof KeyboardEvent)) return false;
   if (event.type !== 'keydown' && event.type !== 'keyup') return false;
   if (event.metaKey) return false;
   if (event.ctrlKey && event.key.length === 1) return false;
-  if (!isCaptured(event.key, event.code)) return false;
+  if (!isCaptured(event.key, event.code, owner)) return false;
+  // Only a key the app hears: Enter on the host's own button, or Tab out of
+  // the permission bar, is the host's.
+  if (owner && !appHears(owner, event)) return false;
   return !targetIsEditable(event.target);
 }
 

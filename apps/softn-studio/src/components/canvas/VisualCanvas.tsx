@@ -987,6 +987,10 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
     display: 'flex',
     overflow: 'hidden',
+    // The app's paint stays in the preview: a `position: fixed` element of a
+    // project's, or one with a large z-index, cannot be drawn over Studio.
+    contain: 'paint',
+    isolation: 'isolate',
     background: 'var(--studio-bg-elevated)',
   },
   capabilityNote: {

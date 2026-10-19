@@ -1,6 +1,6 @@
 import type { AppPermissions } from '../bundle/types';
 import { eventForScript, extractEventProps } from './event-props';
-import { shouldCaptureKey } from './key-capture';
+import { appHears, setAppElement, shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
 import { isWorkerPlaceholderId } from './script-worker-bridges';
 import { debug } from './debug';
@@ -1055,21 +1055,27 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         const coalescer = new EventCoalescer(policy, dispatch);
         this.coalescers.push(coalescer);
         listener = (event: Event) => {
-          if (this.disposed) return;
+          if (this.disposed || !appHears(this.hostExecutor.owner, event)) return;
           coalescer.push(extractEventProps(event));
         };
       } else {
         listener = (event: Event) => {
-          if (this.disposed) return;
+          // Only what is aimed at this app: see key-capture.ts.
+          if (this.disposed || !appHears(this.hostExecutor.owner, event)) return;
           // A key the script asked to keep whole: cancelled here, on the
           // thread that can, before the event is sent across.
-          if (shouldCaptureKey(event)) event.preventDefault();
+          if (shouldCaptureKey(event, this.hostExecutor.owner)) event.preventDefault();
           dispatch(extractEventProps(event));
         };
       }
       window.addEventListener(eventType, listener);
       this.nativeListeners.push([eventType, listener]);
     }
+  }
+
+  /** The element the app is drawn in (see key-capture.ts `appHears`). */
+  setAppRoot(element: Element | null): void {
+    setAppElement(this.hostExecutor.owner, element);
   }
 
   cleanup(): void {

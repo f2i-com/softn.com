@@ -172,7 +172,14 @@ html.softn-layout-page #root,
   overflow: visible;
   contain: none;
 }
-.single-app.layout-page .application-content > div {
+/* Except while the permission bar asks: an app's `position: fixed` element
+   is then held to the app's box, so it cannot be drawn over the bar. */
+.single-app.layout-page .application-layout.consenting .application-content {
+  contain: paint;
+  isolation: isolate;
+}
+.single-app.layout-page .application-content > div,
+.single-app.layout-page .application-content > [data-softn-app] > div {
   height: auto !important;
 }
 .single-app.layout-page .softn-app {

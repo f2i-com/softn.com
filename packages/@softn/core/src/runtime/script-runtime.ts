@@ -42,7 +42,7 @@ import {
 } from '../document-shell/names';
 import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
-import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
+import { appHears, clearCapturedKeys, parseCapturedKeys, setAppElement, setCapturedKeys, shouldCaptureKey } from './key-capture';
 import { deepEqual } from './vm-state';
 import {
   COMPUTED_PREFIX,
@@ -352,6 +352,8 @@ export interface ScriptRuntimeHandle {
   loadScript: (script: CodeBlock) => Promise<ScriptLoadResult>;
   updateContext: (newState: Partial<RuntimeState>) => void;
   cleanup: () => void;
+  /** The element the app is drawn in: its window listeners hear what is aimed there. */
+  setAppRoot?: (element: Element | null) => void;
 }
 
 /**
@@ -2217,15 +2219,16 @@ export class SoftNScriptRuntime {
         const coalescer = new EventCoalescer(policy, dispatch);
         this.eventCoalescers.push(coalescer);
         listener = (event: Event) => {
-          if (!this.vmEngine) return;
+          if (!this.vmEngine || !appHears(this, event)) return;
           coalescer.push(extractEventProps(event));
         };
       } else {
         listener = (event: Event) => {
-          if (!this.vmEngine) return;
+          // Only what is aimed at this app: see key-capture.ts.
+          if (!this.vmEngine || !appHears(this, event)) return;
           // A key the script asked to keep whole: the browser's default is
           // cancelled here, since the handler runs too late to do it.
-          if (shouldCaptureKey(event)) event.preventDefault();
+          if (shouldCaptureKey(event, this)) event.preventDefault();
           dispatch(extractEventProps(event));
         };
       }
@@ -2289,6 +2292,7 @@ export class SoftNScriptRuntime {
       this.loadEntry = null;
     }
     clearCapturedKeys(this);
+    setAppElement(this, null);
     this.syncCallCache.clear();
     this.externalFunctionNames = [];
     this.externalFunctionValues = [];
@@ -2668,6 +2672,11 @@ export class SoftNScriptRuntime {
    */
   executeHostCallExternal(call: PendingHostCall): Promise<unknown> {
     return this.executeHostCall(call);
+  }
+
+  /** The element the app is drawn in (see key-capture.ts `appHears`). */
+  setAppRoot(element: Element | null): void {
+    setAppElement(this, element);
   }
 
   private async executeHostCall(call: PendingHostCall): Promise<unknown> {
@@ -4087,6 +4096,8 @@ export function buildExternalValuesPreamble(
 export interface HostCallExecutor {
   executeHostCall(call: PendingHostCall): Promise<unknown>;
   cleanup(): void;
+  /** Whose captured keys and app element these are (key-capture.ts). */
+  readonly owner: object;
 }
 
 /**
@@ -4117,6 +4128,7 @@ export function createHostCallExecutor(
   return {
     executeHostCall: (call) => runtime.executeHostCallExternal(call),
     cleanup: () => runtime.cleanup(),
+    owner: runtime,
   };
 }
 

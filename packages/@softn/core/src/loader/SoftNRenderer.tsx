@@ -74,6 +74,29 @@ function useStructurallyStableValue<T>(value: T): T {
 }
 
 /**
+ * loader/scope-css.ts, once an app with a style block has asked for it: what
+ * keeps that app's CSS to the app. Most apps have none, and the web
+ * runtime's first load does without it. A load that fails leaves the style
+ * block out, not unscoped, and the next app asks again.
+ */
+let scopeCss: typeof import('./scope-css') | null = null;
+let scopeCssLoading: Promise<void> | null = null;
+function loadScopeCss(): Promise<void> {
+  scopeCssLoading ??= import('./scope-css').then(
+    (module) => {
+      scopeCss = module;
+    },
+    () => {
+      scopeCssLoading = null;
+    }
+  );
+  return scopeCssLoading;
+}
+
+/** Names the apps drawn in this document by, for their CSS (see scope-css.ts). */
+let appsNamed = 0;
+
+/**
  * A phase boundary on the performance timeline, where a profile can read it
  * back. Every phase is `softn:<phase>:start` / `softn:<phase>:end`. Guarded
  * because the renderer also runs under Node and older WebViews.
@@ -1507,6 +1530,8 @@ export function SoftNRenderer({
           }));
           onLoadRef.current?.(doc);
         };
+        // Started now, so the page is hidden for as little as can be.
+        if (doc.style?.content && !scopeCss) void loadScopeCss();
         if (earlyShell) {
           void (earlyShell as Promise<void>).then(() => {
             if (!stale && mountedRef.current) showDocument();
@@ -1783,6 +1808,38 @@ export function SoftNRenderer({
   onTitleChangeRef.current = onTitleChange;
   const followLink = useCallback((href: string) => onLinkRef.current?.(href) === true, []);
 
+  // What the app's window listeners hear is what is aimed at the element it
+  // is drawn in (runtime/key-capture.ts).
+  useEffect(() => {
+    scriptRuntimeRef.current?.setAppRoot?.(containerElement);
+  }, [containerElement, scriptLoaded, state.document]);
+
+  // The app's style block, kept to the element the app is drawn in.
+  const [appName] = useState(() => `a${(++appsNamed).toString(36)}`);
+  const [styleScoper, setStyleScoper] = useState<'loading' | 'ready' | 'failed'>(scopeCss ? 'ready' : 'loading');
+  const styleContent = state.document?.style?.content;
+  useEffect(() => {
+    if (!styleContent) return;
+    if (scopeCss) {
+      setStyleScoper('ready');
+      return;
+    }
+    let live = true;
+    void loadScopeCss().then(() => {
+      if (live) setStyleScoper(scopeCss ? 'ready' : 'failed');
+    });
+    return () => {
+      live = false;
+    };
+  }, [styleContent]);
+  const scopedStyle = useMemo(
+    () =>
+      styleContent && styleScoper === 'ready' && scopeCss
+        ? scopeCss.scopeAppCss(showBundleFilesInStyles(sanitizeBundleCSS(styleContent), assetResolver), appName)
+        : null,
+    [styleContent, assetResolver, appName, styleScoper]
+  );
+
   const context = useMemo<SoftNRenderContext>(() => {
     // Merge state: componentState is the source of truth, initialState only provides defaults
     const mergedState = { ...state.componentState };
@@ -1817,10 +1874,12 @@ export function SoftNRenderer({
       followLink,
       renderCache,
       ...(documentShell ? { documentShell } : {}),
+      ...(scopedStyle?.names ? { appStyleNames: scopedStyle.names } : {}),
     };
   }, [
     followLink,
     documentShell,
+    scopedStyle,
     state.componentState,
     setComponentState,
     shareComponentState,
@@ -1974,19 +2033,24 @@ export function SoftNRenderer({
       // and the device.
       <AppScopeProvider value={appScope}>
       <CapabilityProvider value={capabilityState}>
+      {/* What the app's CSS is kept inside (scope-css.ts). It draws no box of
+          its own, and holds nothing but the page: the page's element is the
+          app's `html` and `body`, and has nothing beside it to reach. */}
+      <div data-softn-app={appName} style={{ display: 'contents' }}>
       <div
         ref={attachContainer}
         key={`softn-container-${stateKey}`}
         data-softn-page={stateKey}
-        style={{ height: '100%', minHeight: 0 }}
+        // Not seen without its style block, for the moment it takes to load
+        // what keeps that block to the app. (A load that failed shows the
+        // page without the block, rather than not at all.)
+        style={
+          styleContent && !scopedStyle && styleScoper === 'loading'
+            ? { height: '100%', minHeight: 0, visibility: 'hidden' }
+            : { height: '100%', minHeight: 0 }
+        }
       >
-        {state.document.style?.content && (
-          <style
-            dangerouslySetInnerHTML={{
-              __html: showBundleFilesInStyles(sanitizeBundleCSS(state.document.style.content), assetResolver),
-            }}
-          />
-        )}
+        {scopedStyle && <style dangerouslySetInnerHTML={{ __html: scopedStyle.css }} />}
         {persistenceNotice && (
           <PersistenceNotice
             message={persistenceNotice}
@@ -2009,6 +2073,7 @@ export function SoftNRenderer({
         >
           {renderDocument(state.document, context, registry)}
         </SoftNErrorBoundary>
+      </div>
       </div>
       </CapabilityProvider>
       </AppScopeProvider>

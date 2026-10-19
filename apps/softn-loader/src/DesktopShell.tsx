@@ -45,7 +45,11 @@ export function DesktopShell({ children, chrome, appName, onHome, onOpen, canOpe
       </header>
       {chrome}
     </div>
-    <main className="desktop-content" ref={contentRef} tabIndex={-1} data-softn-theme-box={themeBox}>{children}</main>
+    {/* The app is drawn in a box that keeps its paint: a `position: fixed`
+        element of the app's stops at the box and cannot cover the permission
+        bar above it. The box does not scroll, so such an element stays where
+        the app put it while the app scrolls. */}
+    <main className="desktop-content" ref={contentRef} tabIndex={-1} data-softn-theme-box={themeBox}><div className="desktop-scroll">{children}</div></main>
   </div>;
 }
 

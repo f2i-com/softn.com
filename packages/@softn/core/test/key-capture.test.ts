@@ -160,6 +160,110 @@ describe('key capture with two apps on one page', () => {
   });
 });
 
+describe('an app hears the keys aimed at it, and no others', () => {
+  // A script's window listener was a listener on the host's window: it heard
+  // every key pressed in the document, in the host's own fields and in
+  // another app's password field, with no permission and while the
+  // permission bar was still asking.
+  async function listeningApp(capture?: string) {
+    const state: Record<string, unknown> = {};
+    const context: ScriptContext = {
+      state,
+      setState: (path: string, value: unknown) => {
+        state[path] = value;
+      },
+      data: {},
+      xdb: createMockXDBModule(),
+      nav: createMockNavModule(),
+      console: createConsoleModule(),
+    };
+    const runtime = createScriptRuntime(context);
+    const code = `
+      let typed = ""
+      function listen() {
+        window.addEventListener("keydown", function (event) { typed = typed + event.key })
+        ${capture === undefined ? '' : `softn.input.captureKeys([${JSON.stringify(capture)}])`}
+      }
+    `;
+    const loaded = await runtime.loadScript({ type: 'LogicBlock', code, loc: { line: 1, column: 0, start: 0, end: code.length } });
+    await loaded.functions.listen();
+    return { runtime, typed: () => String(state.typed ?? '') };
+  }
+
+  function press(target: EventTarget, key: string): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  it('hears its own fields, the window and the page, and not the host’s fields or another app’s', async () => {
+    const box = document.createElement('div');
+    const own = document.createElement('input');
+    box.appendChild(own);
+    const otherBox = document.createElement('div');
+    const otherPassword = document.createElement('input');
+    otherPassword.type = 'password';
+    otherBox.appendChild(otherPassword);
+    const hostKey = document.createElement('input');
+    document.body.append(box, otherBox, hostKey);
+    const { runtime, typed } = await listeningApp();
+    try {
+      runtime.setAppRoot?.(box);
+      press(hostKey, 's');
+      press(otherPassword, 'p');
+      expect(typed()).toBe('');
+      press(own, 'a');
+      press(window, 'b');
+      press(document.body, 'c');
+      expect(typed()).toBe('abc');
+      // Off the page: nothing aimed at the page is its any more.
+      box.remove();
+      press(document.body, 'd');
+      expect(typed()).toBe('abc');
+    } finally {
+      runtime.cleanup();
+      box.remove();
+      otherBox.remove();
+      hostKey.remove();
+    }
+  });
+
+  it('keeps a captured key from the browser only where the app hears it', async () => {
+    const box = document.createElement('div');
+    const hostButton = document.createElement('button');
+    document.body.append(box, hostButton);
+    const { runtime } = await listeningApp('Enter');
+    try {
+      runtime.setAppRoot?.(box);
+      expect(press(hostButton, 'Enter').defaultPrevented).toBe(false);
+      expect(press(document.body, 'Enter').defaultPrevented).toBe(true);
+    } finally {
+      runtime.cleanup();
+      box.remove();
+      hostButton.remove();
+    }
+  });
+
+  it('hears no text field outside it before it is told where it is drawn', async () => {
+    const hostKey = document.createElement('input');
+    document.body.append(hostKey);
+    const { runtime, typed } = await listeningApp();
+    try {
+      press(hostKey, 's');
+      press(document.body, 'b');
+      expect(typed()).toBe('b');
+    } finally {
+      runtime.cleanup();
+      hostKey.remove();
+    }
+  });
+
+  it('captures a game’s controls, not the keyboard', () => {
+    setCapturedKeys(app, Array.from({ length: 40 }, (_, i) => `Key${i}`));
+    expect(capturedKeyCount()).toBe(32);
+  });
+});
+
 describe('event properties for a script', () => {
   it('gives a pointer event its target rectangle and buttons', () => {
     const canvas = document.createElement('canvas');

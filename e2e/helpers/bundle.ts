@@ -15,6 +15,21 @@ export interface PythonBundle {
   packages?: string[];
 }
 
+/** A .softn bundle of one HTML page, with the permissions given, as a buffer for a file input. */
+export function pageBundle({ id, name, html, permissions = {} }: { id: string; name: string; html: string; permissions?: Record<string, unknown> }): Buffer {
+  const manifest = { id, name, version: '1.0.0', description: 'Built by the e2e gate.', main: 'index.html', files: { ui: ['index.html'] } };
+  const files: Record<string, string> = {
+    'manifest.json': JSON.stringify(manifest, null, 2),
+    'permission.json': JSON.stringify({ permissions }),
+    'index.html': html,
+  };
+  const zipped = zipSync(
+    Object.fromEntries(Object.entries(files).map(([file, text]) => [file, strToU8(text)])),
+    { level: 6, mtime: new Date('2026-09-25T00:00:00.000Z') }
+  );
+  return Buffer.from(zipped);
+}
+
 /** A .softn bundle whose logic is `logic/main.py`, as a buffer for a file input. */
 export function pythonBundle({ id, name, ui, python, packages }: PythonBundle): Buffer {
   const manifest = {

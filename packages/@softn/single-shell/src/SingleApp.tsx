@@ -296,7 +296,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     <ThemeProvider defaultDarkMode={app.config.theme === 'dark'} declaredMode={app.themeMode} box={THEME_BOX}>
       <div
         ref={layout}
-        className="application-layout"
+        className={answer === 'pending' ? 'application-layout consenting' : 'application-layout'}
         style={{ '--softn-tab-bar-height': `${barHeight}px` } as React.CSSProperties}
       >
         {framed && chromeHidden && (

@@ -137,6 +137,12 @@ export interface SoftNRenderContext {
    */
   documentShell?: import('../document-shell/host').DocumentShellView;
 
+  /**
+   * An inline style with the names the app's stylesheet gave its fonts and
+   * animations put to the ones they go by on the page (loader/scope-css.ts).
+   */
+  appStyleNames?: import('../loader/scope-css').StyleNames;
+
   // Current iteration context (for #each)
   each?: {
     item: unknown;

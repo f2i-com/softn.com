@@ -11,7 +11,8 @@
 .desktop-shell button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
 /* Focused only to put focus back into the app (after Allow); it draws no ring. */
 .desktop-content:focus { outline: none; }
-.desktop-content { flex: 1; min-height: 0; position: relative; overflow: auto; }
+.desktop-content { flex: 1; min-height: 0; position: relative; overflow: hidden; contain: paint; isolation: isolate; display: flex; flex-direction: column; }
+.desktop-scroll { flex: 1; min-height: 0; position: relative; overflow: auto; }
 .desktop-welcome { max-width: 1180px; min-height: 100%; margin: auto; padding: clamp(2rem,5vw,4rem); display: grid; grid-template-columns: 1.2fr 1fr; align-items: center; gap: clamp(2rem,5vw,5rem); }
 /* Neutral, like every label: coral is reserved for the language and mint for what is running (tokens.css). */
 .desktop-eyebrow { font: 0.75rem var(--mono); color: var(--dim); }

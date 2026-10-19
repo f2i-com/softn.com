@@ -120,6 +120,15 @@ export function hasRemoteSrcSetCandidate(value: string): boolean {
 const CSS_RESOURCE_FUNCTION =
   /(-webkit-image-set|-webkit-cross-fade|image-set|cross-fade|image|url|src)\s*\(/g;
 
+/**
+ * A value the browser fills in from somewhere else when it draws: a custom
+ * property, an attribute. Inside a resource function it is a URL nobody
+ * reading the CSS can see — `image-set(var(--u))` with `--u: "https://…"`
+ * fetched it whatever the bundle was allowed — so the function is treated
+ * as one that loads something unknown.
+ */
+const VALUE_FROM_ELSEWHERE = /(?:var|attr|env)\s*\(/;
+
 /** ASCII-only lowercasing: the same length as its input, so indices carry over. */
 function lowerAscii(text: string): string {
   return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
@@ -225,6 +234,8 @@ export function cssResourceReferences(value: string): CssResourceScan {
       break;
     }
     const inner = decoded.slice(open + 1, close);
+    // `image-set(var(--u))` loads whatever `--u` says, which is not here to read.
+    if (VALUE_FROM_ELSEWHERE.test(lower.slice(open + 1, close))) scan.opaque = true;
     if (name === 'url') scan.urls.push(urlTarget(inner));
     else scan.urls.push(...cssStringsIn(inner));
     // Carry on inside the function: `image-set(url(…) 1x)` nests one.
@@ -263,7 +274,7 @@ export function rewriteCssResources(css: string, isBlocked: (target: string) => 
     }
     const inner = css.slice(open + 1, close);
     const targets = name === 'url' ? [urlTarget(inner)] : cssStringsIn(inner);
-    if (targets.some(isBlocked)) {
+    if (VALUE_FROM_ELSEWHERE.test(lower.slice(open + 1, close)) || targets.some(isBlocked)) {
       out += css.slice(last, start) + removed;
       last = close + 1;
       pattern.lastIndex = close + 1;
