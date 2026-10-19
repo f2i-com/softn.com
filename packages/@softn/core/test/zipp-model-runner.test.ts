@@ -155,6 +155,22 @@ describe('generation', () => {
     await expect(runner.generate([{ role: 'user', content: 'three' }], greedy)).rejects.toThrow(/released/);
   });
 
+  it('opens with less context when the compute budget refuses what was asked, and still answers', async () => {
+    const { bytes } = tinyQwen3();
+    // A budget the tiny model's step program fits at 256 positions and not at 4096.
+    const roomy = await ZippModelRunner.open(blob(bytes), deps, { backend: 'cpu-js', context: 256 });
+    const small = await ZippModelRunner.open(blob(bytes), deps, { backend: 'cpu-js', context: 4096, budgetBytes: 6_000_000 });
+    expect(small.info.context).toBeLessThan(4096);
+    expect(small.info.context).toBeGreaterThanOrEqual(256);
+    const reference = await roomy.generate(longChat, greedy);
+    // Its chunk program does not fit beside it, so the long prompt is read a token at a time: the same answer.
+    const answer = await small.generate(longChat, greedy);
+    expect(answer.text).toBe(reference.text);
+    roomy.dispose();
+    small.dispose();
+    await expect(ZippModelRunner.open(blob(bytes), deps, { backend: 'cpu-js', context: 256, budgetBytes: 1000 })).rejects.toThrow(/budget/);
+  });
+
   it('refuses an architecture it has no plugin for, and an untied output matrix', async () => {
     await expect(ZippModelRunner.open(blob(tinyQwen3({ architecture: 'llama' }).bytes), deps, { backend: 'cpu-js' })).rejects.toThrow(/llama architecture/);
     await expect(ZippModelRunner.open(blob(tinyQwen3({ untied: true }).bytes), deps, { backend: 'cpu-js' })).rejects.toThrow(/separate output matrix/);

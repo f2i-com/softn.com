@@ -81,6 +81,8 @@ export interface OpenOptions {
   progress?: (phase: string) => void;
   /** The longest new stretch of a prompt read a token at a time; past it, the prompt is read in chunks. */
   stepPrefillMax?: number;
+  /** The compute runtime's allocation budget, in bytes (3 GiB unless a host holds less). */
+  budgetBytes?: number;
 }
 
 export interface GenerateOptions {
@@ -149,6 +151,15 @@ const COMPUTE_LIMITS = {
   maxDimension: 1 << 21, maxSessions: 4, maxStepsPerRun: 64, maxWebGLTextureBytes: 2 * GB,
 };
 
+/** The least context a model is opened with when the budget refuses more. */
+const MIN_CONTEXT = 256;
+
+/** Whether the compute runtime refused a program for its size, which a smaller one may not be. */
+function overBudget(error: unknown): boolean {
+  const failure = error as { code?: unknown; message?: unknown } | null;
+  return failure?.code === 'LIMIT' && /budget/i.test(String(failure.message ?? ''));
+}
+
 const clampInt = (value: unknown, low: number, high: number, fallback: number): number => {
   const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback;
   return Math.min(high, Math.max(low, n));
@@ -159,6 +170,8 @@ export class ZippModelRunner {
   #seed: Record<string, unknown> | null = null;
   #busy = false;
   #closed = false;
+  /** The compute runtime refused the chunk program once; prompts are read a token at a time from then on. */
+  #chunkRefused = false;
 
   private constructor(
     private readonly engine: ZippEngine,
@@ -211,37 +224,56 @@ export class ZippModelRunner {
       const config = call('zipp_model_config', [JSON.stringify(metadata), JSON.stringify(tokenizer.vocab_size)]);
       const described = call('zipp_model_describe', [JSON.stringify(config)]) as { family: string; vocab_size: number; max_context: number };
       if (!supportsChat(described.family)) throw new Error(`The ${described.family} family has no chat format here`);
-      const context = Math.min(requested, described.max_context);
       const layers = (config as { num_layers: number }).num_layers;
-
-      progress('binding');
       store = new zippModels.WeightStore([index], limits);
-      const stepPlan = await zippModels.prepareDecode(
-        call('zipp_model_decode_stage', [JSON.stringify(config), JSON.stringify(context), '0', JSON.stringify(layers - 1), 'null', '1']),
-        store, limits);
+      const weights = store;
+      const backend = options.backend ?? 'auto';
+      const computeLimits = options.budgetBytes ? { ...COMPUTE_LIMITS, maxLogicalBytes: Math.floor(options.budgetBytes) } : COMPUTE_LIMITS;
 
-      progress('preparing');
-      const prepare = async (backend: ModelBackend) => {
-        const made = await zippCompute.createRuntime({ backend, limits: COMPUTE_LIMITS, ...deps.kernels });
+      /** The one-token program for `context` positions, prepared on the backend asked for or, chosen by us, the CPU kernels. */
+      const prepareAt = async (context: number) => {
+        progress('binding');
+        const plan = await zippModels.prepareDecode(
+          call('zipp_model_decode_stage', [JSON.stringify(config), JSON.stringify(context), '0', JSON.stringify(layers - 1), 'null', '1']),
+          weights, loaderLimits(context));
+        progress('preparing');
+        const attempt = async (on: ModelBackend) => {
+          const made = await zippCompute.createRuntime({ backend: on, limits: computeLimits, ...deps.kernels });
+          try {
+            return { plan, runtime: made, session: await made.prepare(plan.program, { typedOutputs: true }) };
+          } catch (error) {
+            made.dispose();
+            throw error;
+          }
+        };
         try {
-          return { runtime: made, session: await made.prepare(stepPlan.program, { typedOutputs: true }) };
+          return await attempt(backend);
         } catch (error) {
-          made.dispose();
-          throw error;
+          // A GPU that offers an adapter can still refuse the program (memory,
+          // a lost device). Chosen by us, the device falls back to the CPU
+          // kernels; asked for by name, the failure is the answer. A program
+          // past the budget is past it on every backend.
+          if (backend !== 'auto' || overBudget(error)) throw error;
+          return attempt('wasm');
         }
       };
-      const backend = options.backend ?? 'auto';
-      let prepared: { runtime: ComputeRuntime; session: ComputeSession };
-      try {
-        prepared = await prepare(backend);
-      } catch (error) {
-        // A GPU that offers an adapter can still refuse the program (memory,
-        // a lost device). Chosen by us, the device falls back to the CPU
-        // kernels; asked for by name, the failure is the answer.
-        if (backend !== 'auto') throw error;
-        prepared = await prepare('wasm');
+
+      // A context the compute runtime's budget refuses is halved until one
+      // fits: the key/value caches and their working copies grow with it, so
+      // a model's own ceiling is no promise this device can hold that much.
+      let context = Math.min(requested, described.max_context);
+      let prepared: { plan: DecodePlan; runtime: ComputeRuntime; session: ComputeSession };
+      for (;;) {
+        try {
+          prepared = await prepareAt(context);
+          break;
+        } catch (error) {
+          if (!overBudget(error) || context <= MIN_CONTEXT) throw error;
+          context = Math.max(MIN_CONTEXT, context >> 1);
+        }
       }
       runtime = prepared.runtime;
+      const stepPlan = prepared.plan;
       const info: ModelInfo = {
         architecture,
         family: described.family,
@@ -359,15 +391,25 @@ export class ZippModelRunner {
     while (shared < limit && this.#cached[shared] === prompt[shared]) shared++;
     let logits: Float32Array | null = null;
     let written = shared;
-    if (prompt.length - shared <= this.stepPrefillMax) {
+    let chunked = false;
+    if (prompt.length - shared > this.stepPrefillMax && !this.#chunkRefused) {
+      try {
+        logits = await this.#chunked(prompt);
+        shared = 0;
+        written = prompt.length;
+        chunked = true;
+      } catch (error) {
+        // A chunk program past the compute budget: the prompt is read a token
+        // at a time instead, slower and the same. Not asked again.
+        if (!overBudget(error)) throw error;
+        this.#chunkRefused = true;
+      }
+    }
+    if (!chunked) {
       for (let position = shared; position < prompt.length && !hooks.cancelled?.(); position++) {
         logits = await this.#step(prompt[position], position, position === prompt.length - 1);
         written = position + 1;
       }
-    } else {
-      shared = 0;
-      logits = await this.#chunked(prompt);
-      written = prompt.length;
     }
     // The ids whose keys and values the step program's caches now hold.
     const fed = prompt.slice(0, written);
