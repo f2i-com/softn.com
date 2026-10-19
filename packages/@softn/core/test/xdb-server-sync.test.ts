@@ -7,8 +7,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { XDBService } from '../src/runtime/xdb';
+import { XDBService, createEphemeralXDBScope } from '../src/runtime/xdb';
 import { XDBServerSync, backoffDelay, syncTicketUrl } from '../src/runtime/xdb-server-sync';
+import { createDBNamespace } from '../src/runtime/script-runtime';
 
 class FakeSocket {
   static OPEN = 1;
@@ -507,6 +508,81 @@ describe("an edit is stamped in the host's time", () => {
 function pushedOps(socket: FakeSocket): Array<{ id: string; operation: string; recordId: string; data?: Record<string, unknown> }> {
   return socket.ofType('sync_push').flatMap((push) => push.ops as Array<{ id: string; operation: string; recordId: string; data?: Record<string, unknown> }>);
 }
+
+/**
+ * A record removed for good here: `hardDelete`, and `db.prune` and
+ * `db.clearCollection`, which remove records with it. It told the page and
+ * nobody else, so the server kept the record and the next pull brought it
+ * back.
+ */
+describe('a record removed for good here', () => {
+  const stamp = '2026-01-02T00:00:00Z';
+  const row = (id: string) => ({ id, collection: 'notes', data: { title: id }, createdAt: stamp, updatedAt: stamp });
+
+  it('is deleted on the server, and a pull answered before that does not bring it back', () => {
+    vi.useFakeTimers();
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'], reconnectDelay: 10 });
+    sync.connect();
+    const first = FakeSocket.made[0];
+    try {
+      first.open();
+      authOk(first);
+      first.receive({ type: 'sync_state', collection: 'notes', records: [row('a'), row('b')] });
+      const made = xdb.create('notes', { title: 'c' });
+      xdb.hardDelete('notes', made.id);
+      xdb.hardDelete('notes', 'a');
+      expect(pushedOps(first).map((op) => [op.operation, op.recordId])).toEqual([
+        ['create', made.id],
+        ['delete', made.id],
+        ['delete', 'a'],
+      ]);
+      // Not yet answered: a pull still has it, and it stays gone.
+      first.receive({ type: 'sync_state', collection: 'notes', records: [row('a'), row('b')] });
+      expect(xdb.query('notes').map((r) => r.id)).toEqual(['b']);
+
+      // Removed while offline: the pull of the reconnect is answered first.
+      first.drop();
+      xdb.hardDelete('notes', 'b');
+      vi.advanceTimersByTime(20);
+      const second = FakeSocket.made[1];
+      second.open();
+      authOk(second);
+      second.receive({ type: 'sync_state', collection: 'notes', records: [row('b')] });
+      expect(xdb.query('notes')).toEqual([]);
+      expect(pushedOps(second).filter((op) => op.recordId === 'b').map((op) => op.operation)).toEqual(['delete']);
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('by prune or clearCollection is deleted on the server', async () => {
+    const scope = createEphemeralXDBScope();
+    const sync = new XDBServerSync(scope.xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['log'] });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      socket.open();
+      authOk(socket);
+      socket.receive({
+        type: 'sync_state',
+        collection: 'log',
+        records: ['x', 'y', 'z'].map((id, i) => ({ id, collection: 'log', data: {}, createdAt: `2026-01-0${i + 1}T00:00:00Z`, updatedAt: stamp })),
+      });
+      const db = createDBNamespace(undefined, scope.appId);
+      await db.ready();
+      expect(db.prune('log', 1)).toBe(2);
+      db.clearCollection('log');
+      expect(pushedOps(socket).map((op) => [op.operation, op.recordId])).toEqual([
+        ['delete', 'x'],
+        ['delete', 'y'],
+        ['delete', 'z'],
+      ]);
+    } finally {
+      sync.disconnect();
+      scope.dispose();
+    }
+  });
+});
 
 /**
  * A record from the server that could not be written here. The store was

@@ -1445,6 +1445,10 @@ export class XDBService {
 
   /**
    * Hard delete - permanently remove a record
+   *
+   * Server sync is told as it is of any delete (`db.prune` and
+   * `db.clearCollection` remove records this way). It used to hear nothing:
+   * the server kept the record, and the next pull brought it back.
    */
   hardDelete(collection: string, id: string): boolean {
     this.assertWritable(collection, true);
@@ -1454,9 +1458,11 @@ export class XDBService {
       if (!record) return false;
       coll!.delete(id);
 
-      if (this.pendingCreateIds.has(id)) {
+      const stillBeingCreated = this.pendingCreateIds.has(id);
+      if (stillBeingCreated) {
         // No row yet: the create callback deletes the one SQLite writes and
-        // never puts the record back in the cache.
+        // never puts the record back in the cache. Nor does it announce the
+        // create, so there is no delete to announce either.
         this.abandonedCreates.add(id);
       } else {
         this.native<boolean>('delete_record', { id })
@@ -1465,6 +1471,7 @@ export class XDBService {
       }
 
       this.emit({ type: 'delete', collection, record });
+      if (!stillBeingCreated) this.notifyMutation('delete', collection, id);
       return true;
     }
 
@@ -1477,8 +1484,8 @@ export class XDBService {
     records.splice(index, 1);
     this.setCollectionData(collection, records);
 
-
     this.emit({ type: 'delete', collection, record });
+    this.notifyMutation('delete', collection, id);
 
     return true;
   }
@@ -1616,6 +1623,9 @@ export class XDBService {
     // it. Deliberately not `get()`, which hides soft-deleted rows — the
     // deleted ones are a case this has to see.
     const existing = this.getAllCollectionData(collection).find((r) => r.id === record.id);
+    // Removed here for good (`hardDelete`) and not yet answered: there is no
+    // row to keep deleted, and writing one brought the record back to life.
+    if (keepLocalDelete && !existing) return;
     const xdbRecord: XDBRecord = {
       id: record.id,
       collection: record.collection,

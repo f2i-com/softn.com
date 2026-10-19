@@ -230,6 +230,24 @@ describe('XDB Service (Tauri mode)', () => {
     }
   });
 
+  it('notifies server sync of a hard delete, but not of one whose create it never announced', async () => {
+    backend.set('tasks', [makeRecord('stored', 'tasks', { title: 'A' })]);
+    const xdb = new XDBService(undefined, 'hard-delete-sync', 'hard-delete-sync-app');
+    await xdb.isReady;
+    const onMutation = vi.fn();
+    const unsubscribe = xdb.onMutation(onMutation);
+    try {
+      expect(xdb.hardDelete('tasks', 'stored')).toBe(true);
+      const pending = xdb.create('tasks', { title: 'never stored' });
+      expect(xdb.hardDelete('tasks', pending.id)).toBe(true);
+      await flushPromises();
+      await flushPromises();
+      expect(onMutation.mock.calls.map(([event]) => [event.type, event.recordId])).toEqual([['delete', 'stored']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('rehydrates collection on sync event', async () => {
     backend.set('tasks', [makeRecord('1', 'tasks', { title: 'A' })]);
     const xdb = new XDBService(undefined, 'test-xdb');
