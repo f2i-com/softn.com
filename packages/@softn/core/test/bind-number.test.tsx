@@ -179,4 +179,35 @@ describe.skipIf(!logicEngineRunsPython())('a number field bound with :bind, with
     await click('more');
     expect(shown()).toBe('number:6');
   });
+  it('keeps a value the page holds only a copy of, a tuple or a record with number keys', async () => {
+    const source = `<div>
+  <button id="more" @click={() => more()}>More</button>
+  <p id="out">{label}</p>
+  <p id="sizes">{pair.length} {Object.keys(names).length}</p>
+</div>
+<logic>
+</logic>`;
+    await mount({
+      source,
+      appId: 'python-lossy-copy',
+      scriptExecutionMode: 'main',
+      python: {
+        files: {
+          app: [
+            'names = {1: "one", 2: "two"}',
+            'pair = (1, 2)',
+            'label = "start"',
+            '',
+            'def more():',
+            '    global label',
+            '    label = names[1] + ":" + type(pair).__name__',
+            '',
+          ].join('\n'),
+        },
+        modules: ['app'],
+      },
+    });
+    await click('more');
+    expect(shown()).toBe('one:tuple');
+  }, 30_000);
 });

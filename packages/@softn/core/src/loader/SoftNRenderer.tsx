@@ -1197,6 +1197,7 @@ export function SoftNRenderer({
                 onFatal: (err) => {
                   if (stale || !mountedRef.current) return;
                   setState((prev) => ({ ...prev, error: err }));
+                  onErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
                 },
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
@@ -1409,6 +1410,10 @@ export function SoftNRenderer({
                 error: scriptError,
                 loading: false,
               }));
+              // Told to the host as a markup error is: a host that reports
+              // through onError (FormLogic's frame does) heard of a page that
+              // would not parse, and of no logic that would not compile.
+              onErrorRef.current?.(scriptError);
             });
         }
 

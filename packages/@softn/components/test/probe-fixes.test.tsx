@@ -7,8 +7,7 @@
  * a split pane drawn at nothing, and a form that saved without its defaults.
  */
 
-import React, { useState } from 'react';
-import { act } from 'react';
+import { act, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, type, click } from './dom';
 import { DataGrid } from '../src/data/DataGrid';
@@ -135,7 +134,7 @@ describe('Tab in a Drawer that ends with a group of radios', () => {
   function open(defaultValue?: string) {
     mount(
       <Drawer open onClose={() => {}} title="Size">
-        <Radio name="size" options={['S', 'M', 'L']} defaultValue={defaultValue} />
+        <Radio name="size" options={['S', 'M', 'L'].map((size) => ({ value: size, label: size }))} defaultValue={defaultValue} />
       </Drawer>
     );
     const radios = [...document.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
