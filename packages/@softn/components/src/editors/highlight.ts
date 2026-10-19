@@ -63,8 +63,10 @@ export function languageForPath(path: string): CodeLanguage {
   if (/\.(ts|tsx|mts|cts)$/.test(lower)) return 'typescript';
   if (/\.py$/.test(lower)) return 'python';
   if (/\.(json|xdb)$/.test(lower)) return 'json';
-  if (/\.(ui|softn)$/.test(lower)) return 'softn';
-  if (/\.(html?|svg|xml)$/.test(lower)) return 'html';
+  // A page may be called index.html: a page is HTML with expressions, blocks
+  // and handlers in it, so an .html file is read as a page is.
+  if (/\.(ui|softn|html?)$/.test(lower)) return 'softn';
+  if (/\.(svg|xml)$/.test(lower)) return 'html';
   if (/\.css$/.test(lower)) return 'css';
   if (/\.sql$/.test(lower)) return 'sql';
   if (/\.(md|markdown)$/.test(lower)) return 'markdown';

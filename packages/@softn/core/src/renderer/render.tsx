@@ -53,6 +53,7 @@ import { markupValue } from './host-values';
 import {
   keepFieldEditable,
   keepFormOnPage,
+  showBundleFiles,
   loadsFromOutside,
   textareaText,
   renameToReactAttributes,
@@ -1770,6 +1771,8 @@ function renderElement(
   // rather than only its top level.
   const egressPolicy = egressPolicyFor(context);
   if (typeof FinalComponent === 'string') {
+    // `src="images/logo.png"`: the bundle's file, before the URL check.
+    showBundleFiles(node, props, context.functions?.asset);
     sanitizeUrlProps(props, node.tag, egressPolicy);
     if (svgElement) sanitizeSvgReferences(props, node.tag, egressPolicy);
     // After the URL check, which drops an action it refuses.
@@ -1825,9 +1828,13 @@ function renderElement(
     return before.result;
   }
 
+  // An `<option>`'s words as one text, which React reads its value from: as
+  // a list they drew the same, with a warning that the value could not be
+  // read from them.
+  const optionText = FinalComponent === 'option' && !childless ? textOf(children as React.ReactNode[]) : undefined;
   const element = childless
     ? React.createElement(FinalComponent, props)
-    : React.createElement(FinalComponent, props, children);
+    : React.createElement(FinalComponent, props, optionText ?? children);
 
   // Wrap registered (non-HTML) components in a per-component error boundary
   // so a single component crash doesn't take down the entire document
@@ -1854,6 +1861,31 @@ function renderElement(
 }
 
 const NO_CHILDREN: readonly React.ReactNode[] = [];
+
+/**
+ * Drawn children as the one text they make, when they are only words and
+ * values (each drawn in a fragment of its own), or undefined.
+ */
+function textOf(children: readonly React.ReactNode[]): string | undefined {
+  let text = '';
+  for (const child of children) {
+    if (isNothingDrawn(child)) continue;
+    if (typeof child === 'string' || typeof child === 'number') {
+      text += child;
+      continue;
+    }
+    if (React.isValidElement(child) && child.type === React.Fragment) {
+      const inner = (child.props as { children?: unknown }).children;
+      if (typeof inner === 'string' || typeof inner === 'number') {
+        text += inner;
+        continue;
+      }
+      if (inner === null || inner === undefined || inner === false) continue;
+    }
+    return undefined;
+  }
+  return text;
+}
 
 /** What a condition that does not hold, or a list with nothing in it, draws. */
 function isNothingDrawn(child: React.ReactNode): boolean {

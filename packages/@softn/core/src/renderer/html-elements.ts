@@ -158,6 +158,72 @@ export function keepFormOnPage(props: SoftNProps): void {
 }
 
 /**
+ * A path a page names a file of its own by, `images/logo.png` or
+ * `../images/logo.png`, as the bundle path it most likely means: from the
+ * bundle's root, where an `index.html` stands, with no leading `./` or
+ * `../` (nothing climbs out of a bundle). Null for anything else: an
+ * address on another site, `data:` and `blob:`, a fragment, a path from the
+ * site's root.
+ */
+export function bundlePathOf(written: string): string | null {
+  const path = written.trim();
+  if (path === '' || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith('/') || path.startsWith('#')) return null;
+  const file = path.replace(/^(?:\.\.?\/)+/, '').split(/[?#]/)[0];
+  return file === '' ? null : file;
+}
+
+/** The attributes a page names one of its files in, to be shown or played. */
+const FILE_ATTRIBUTES = ['src', 'poster'] as const;
+
+/**
+ * `<img src="images/logo.png">`: a file of the app's, named as an HTML page
+ * names one, is shown from the bundle, as `asset("images/logo.png")` would
+ * show it. Read against the host page's address, it was a request for a
+ * file the server does not have. A path the bundle does not carry is left
+ * as written, so a deployment that serves its pictures beside the page still
+ * shows them. Only a value written in the page: one an expression makes is
+ * the author's to resolve.
+ */
+export function showBundleFiles(node: ElementNode, props: SoftNProps, asset: unknown): void {
+  if (typeof asset !== 'function') return;
+  for (const name of FILE_ATTRIBUTES) {
+    const value = props[name];
+    if (typeof value !== 'string') continue;
+    if (!node.props.some((prop) => prop.name === name && prop.value.type === 'static')) continue;
+    const path = bundlePathOf(value);
+    if (path === null) continue;
+    let url: unknown;
+    try {
+      url = (asset as (path: string) => unknown)(path);
+    } catch {
+      continue;
+    }
+    if (typeof url === 'string' && url !== '') props[name] = url;
+  }
+}
+
+/**
+ * The same for a stylesheet: `background: url(images/paper.png)` in a page's
+ * `<style>` or in a stylesheet it links shows the bundle's file. Run on the
+ * rules after they are sanitised, which removes every address that leaves
+ * the bundle, so what is left that names a file is relative.
+ */
+export function showBundleFilesInStyles(css: string, resolve: ((path: string) => string) | undefined): string {
+  if (!resolve || !/url\(/i.test(css)) return css;
+  return css.replace(/url\(\s*(["']?)([^"')\s]+)\1\s*\)/gi, (whole, _quote: string, written: string) => {
+    const path = bundlePathOf(written);
+    if (path === null) return whole;
+    let url = '';
+    try {
+      url = resolve(path);
+    } catch {
+      return whole;
+    }
+    return typeof url === 'string' && url !== '' ? `url("${url}")` : whole;
+  });
+}
+
+/**
  * The text a `<textarea>` holds, written between its tags: words and `{…}`
  * values, joined. Undefined when it holds anything else. React takes a
  * textarea's text as its value only, and drew the content it was given as

@@ -663,7 +663,7 @@ final class Bundle
                 if ($name === '' || str_ends_with($name, '/')) continue;
                 $size = (int) $stat['size'];
                 $text = null;
-                if (preg_match('/\.(ui|logic|json|md|txt|css|js|ts|html|svg|csv|xml|yml|yaml|toml|ini)$/i', $name) && $size <= 256 * 1024 && $budget > 0) {
+                if (preg_match('/\.(ui|logic|py|json|md|txt|css|js|ts|html|svg|csv|xml|yml|yaml|toml|ini)$/i', $name) && $size <= 256 * 1024 && $budget > 0) {
                     $bytes = $zip->getFromIndex($i);
                     if (is_string($bytes) && mb_check_encoding($bytes, 'UTF-8')) {
                         $text = $bytes;

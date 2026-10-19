@@ -20,6 +20,7 @@ import { composeBundleSource } from '../src/bundle/source-composer';
 import { parse } from '../src/parser';
 import type { ElementNode, SoftNDocument, TemplateNode } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
+import { showBundleFilesInStyles } from '../src/renderer/html-elements';
 import type { SoftNProps, SoftNRenderContext } from '../src/types';
 
 function context(overrides: Partial<SoftNRenderContext> = {}): SoftNRenderContext {
@@ -246,6 +247,51 @@ describe('a field given a starting value', () => {
     const doc = parse('<input :bind={name}>');
     expect(doc.diagnostics ?? []).toEqual([]);
     expect(html('<input :bind={name}>', { state: { name: 'Ada' } })).toBe('<input value="Ada"/>');
+  });
+});
+
+describe('a file of the app’s, named as an HTML page names one', () => {
+  const asset = (path: unknown): string => (path === 'images/logo.png' ? 'blob:logo' : '');
+
+  it('is shown from the bundle', () => {
+    expect(html('<img src="images/logo.png" alt="Logo"><img src="./images/logo.png"><img src="../images/logo.png">', { functions: { asset } })).toBe(
+      '<img src="blob:logo" alt="Logo"/><img src="blob:logo"/><img src="blob:logo"/>'
+    );
+    expect(html('<video poster="images/logo.png"></video>', { functions: { asset } })).toBe('<video poster="blob:logo"></video>');
+  });
+
+  it('is left as written when the bundle does not carry it, or it is not a file of the app’s', () => {
+    expect(
+      html('<img src="photo.jpg"><img src="https://example.com/a.png"><img src="/site/a.png"><img src={pic}>', {
+        functions: { asset },
+        state: { pic: 'images/logo.png' },
+      })
+    ).toBe('<img src="photo.jpg"/><img src="https://example.com/a.png"/><img src="/site/a.png"/><img src="images/logo.png"/>');
+  });
+
+  it('is shown from the bundle in a stylesheet too', () => {
+    expect(
+      showBundleFilesInStyles(
+        '.a { background: url(images/logo.png) } .b { background: url("../images/logo.png") } .c { background: url(missing.png) } .d { fill: url(#g) }',
+        asset
+      )
+    ).toBe(
+      '.a { background: url("blob:logo") } .b { background: url("blob:logo") } .c { background: url(missing.png) } .d { fill: url(#g) }'
+    );
+  });
+});
+
+describe('an option', () => {
+  it('gives React its words as one text, which its value is read from', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const page = mount('<select id="s"><option>Tea {kind}</option><option selected>Coffee</option></select>', {
+      state: { kind: 'green' },
+    });
+    const said = error.mock.calls.map((call) => String(call[0])).join('\n');
+    error.mockRestore();
+    expect(said).not.toContain('complex children');
+    expect(page.querySelector<HTMLSelectElement>('#s')!.value).toBe('Coffee');
+    expect(page.querySelector('option')!.textContent).toBe('Tea green');
   });
 });
 

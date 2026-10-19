@@ -29,7 +29,8 @@ describe('the language comes from the file name', () => {
     ['notes.txt', 'plain'],
     ['src/app.ts', 'typescript'],
     ['styles/site.css', 'css'],
-    ['public/index.html', 'html'],
+    ['index.html', 'softn'],
+    ['images/logo.svg', 'html'],
     ['db/schema.sql', 'sql'],
   ])('%s is %s', (path, language) => {
     expect(languageForPath(path)).toBe(language);

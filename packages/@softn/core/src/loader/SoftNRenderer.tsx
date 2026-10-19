@@ -19,6 +19,7 @@ import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
 import { getDefaultRegistry } from '../renderer/registry';
 import { collectFirstScreenTags } from '../renderer/document-tags';
 import { isRemoteUrl, rewriteCssResources } from '../renderer/sanitize-html';
+import { showBundleFilesInStyles } from '../renderer/html-elements';
 import {
   collectDrawnNames,
   collectObservedStateNames,
@@ -1812,7 +1813,9 @@ export function SoftNRenderer({
       >
         {state.document.style?.content && (
           <style
-            dangerouslySetInnerHTML={{ __html: sanitizeBundleCSS(state.document.style.content) }}
+            dangerouslySetInnerHTML={{
+              __html: showBundleFilesInStyles(sanitizeBundleCSS(state.document.style.content), assetResolver),
+            }}
           />
         )}
         {persistenceNotice && (
