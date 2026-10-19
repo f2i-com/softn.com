@@ -115,6 +115,37 @@ describe('XDB storage state (browser backend)', () => {
     return expect(persisted).resolves.toEqual({ backend: 'storage', collections: ['notes'], imported: 1, tombstoned: 0 });
   });
 
+  /**
+   * A damaged collection's bytes are kept beside it, under
+   * `<collection>.corrupt.<stamp>`. In a storage that lists its keys the copy
+   * was read as a collection of its own, found damaged too, and copied again:
+   * every export, and every update or delete by id, left one more copy until
+   * the storage was full.
+   */
+  it('does not read the quarantined copy as a collection and copy it again', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const store = new Map<string, string>([
+      ['xdb:notes', 'garbage'],
+      ['xdb:tasks', JSON.stringify([{ ...record('t1', 'todo'), collection: 'tasks' }])],
+    ]);
+    const listing = {
+      get length() { return store.size; },
+      key: (i: number) => [...store.keys()][i] ?? null,
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+    };
+    const xdb = new XDBService(listing, 'xdb');
+    xdb.getAll('notes');
+    for (let i = 0; i < 3; i++) {
+      xdb.export();
+      xdb.update('t1', { title: `edit ${i}` });
+    }
+    expect([...store.keys()].filter((k) => k.includes('.corrupt.'))).toHaveLength(1);
+    expect(Object.keys(xdb.export().collections).sort()).toEqual(['notes', 'tasks']);
+    expect(xdb.get('tasks', 't1')?.data.title).toBe('edit 2');
+  });
+
   it('notifies subscribers when the state changes', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const xdb = new XDBService(storageWith({ 'xdb:notes': 'garbage' }), 'xdb');

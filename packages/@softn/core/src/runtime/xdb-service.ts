@@ -45,6 +45,9 @@ interface ImportPlan {
 
 /** Durable-completion signal of an import (audit SN-01). */
 
+/** The key suffix under which a damaged collection's bytes are kept (`recordCorruption`). */
+const QUARANTINE_COPY = /\.corrupt\.[0-9a-z]+$/;
+
 const OFFLINE_NETWORK_STATUS: XDBNetworkStatus = { peer_id: '', connected_peers: [], is_running: false, mode: 'local-only', enabled: false, discovery: false, listening: false, sync_paused: false };
 
 // ============================================================================
@@ -1690,6 +1693,11 @@ export class XDBService {
         // this the unnamespaced default instance would enumerate, and through
         // `update`/`delete` by id also mutate, every app's records.
         if (collection.includes(':')) continue;
+        // Nor is the copy of a damaged collection kept beside it
+        // (recordCorruption). Read as a collection, it was found damaged
+        // too and copied again, so every export, update or delete by id
+        // left one more copy behind until the storage was full.
+        if (QUARANTINE_COPY.test(collection)) continue;
         keys.push(collection);
       }
       return keys;
