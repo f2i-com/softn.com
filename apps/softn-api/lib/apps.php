@@ -16,10 +16,21 @@ final class Apps
 {
     private const SORTS = ['trending', 'newest', 'top', 'remixed', 'runs', 'name'];
 
-    private static function copyBundle(string $from, string $to): void {
-        $tmp=tempnam(dirname($to),'.upload-');
+    /**
+     * A copy of `$from` in `$dir` under a name discovery passes over (a dot
+     * file, not `*.softn`), for the caller to rename into place or delete.
+     */
+    private static function stageBundle(string $from, string $dir): string {
+        $tmp=tempnam($dir,'.upload-');
         if($tmp===false)throw new ApiError(503,'Cannot stage bundle.');
-        try { if(!copy($from,$tmp) || !rename($tmp,$to))throw new ApiError(503,'Cannot store bundle.'); }
+        try { if(!copy($from,$tmp))throw new ApiError(503,'Cannot store bundle.'); }
+        catch (Throwable $e) { @unlink($tmp); throw $e; }
+        return $tmp;
+    }
+
+    private static function copyBundle(string $from, string $to): void {
+        $tmp=self::stageBundle($from,dirname($to));
+        try { if(!rename($tmp,$to))throw new ApiError(503,'Cannot store bundle.'); }
         finally { if(is_file($tmp))@unlink($tmp); }
     }
 
@@ -459,27 +470,49 @@ final class Apps
      * ran preapproved on every visitor's machine without anyone having seen
      * it. The operator trusts the new version by setting the key again.
      *
+     * The bundle takes its version's name only once app.json records the
+     * version. It was copied to vN.softn first and recorded last, so an
+     * upload that failed in between (an icon that would not write, a full
+     * disk, a killed request) left a file that discovery listed as the
+     * latest version, with the operator's trust still on the app: the write
+     * that would have removed it was the one that failed. Until the rename
+     * the copy is a dot file discovery passes over, and a failure removes it.
+     *
      * @return array<string, mixed>
      */
     public static function addVersion(string $slug, string $bundlePath, ?string $notes, bool $byAdmin = false): array {
-        $row=self::row($slug,true);$info=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);
+        $row=self::row($slug,true);$info=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);$before=$doc;
         $next=(int)$row['latest_version']+1;
         if($next>(int)Config::get('maxVersionsPerApp',50))throw new ApiError(400,'This app has reached its version limit.');
         $promised=self::promisedPolicies($row);
         if(!$byAdmin&&$promised!==null)self::refuseChangedPolicies($promised,$info);
         $dir=self::dir($slug);$file="v$next.softn";
-        self::copyBundle($bundlePath,"$dir/$file");
-        $icon=self::storeIcon($dir,$info['icon'])??$row['icon'];$now=time();
-        $doc['versions'][]=['slug'=>$slug,'version'=>$next,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>Text::clean($notes,400,true),'created_at'=>$now];
-        $doc['app']=array_replace($doc['app'],['latest_version'=>$next,'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon,'size'=>$info['size'],'updated_at'=>$now]);
-        // What the versions after this one are held to: this version's own
-        // declaration while it has storage (the same rules, or the operator's
-        // new ones), and otherwise what was in force before it, which a
-        // version without storage does not erase.
-        $remembered=in_array('storage',$info['capabilities'],true)?$info['storagePolicies']:$promised;
-        if($remembered!==null)$doc['app']['storage_promised']=$remembered;
-        if(!$byAdmin && array_key_exists('trusted',$doc['app'])){unset($doc['app']['trusted']);error_log("softn-api: $slug has a new version from its publisher; it is no longer trusted until the operator sets trusted again");}
-        Catalog::put($slug,$doc);
+        $staged=self::stageBundle($bundlePath,$dir);
+        try {
+            $icon=self::storeIcon($dir,$info['icon'])??$row['icon'];$now=time();
+            $doc['versions'][]=['slug'=>$slug,'version'=>$next,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>Text::clean($notes,400,true),'created_at'=>$now];
+            $doc['app']=array_replace($doc['app'],['latest_version'=>$next,'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon,'size'=>$info['size'],'updated_at'=>$now]);
+            // What the versions after this one are held to: this version's own
+            // declaration while it has storage (the same rules, or the operator's
+            // new ones), and otherwise what was in force before it, which a
+            // version without storage does not erase.
+            $remembered=in_array('storage',$info['capabilities'],true)?$info['storagePolicies']:$promised;
+            if($remembered!==null)$doc['app']['storage_promised']=$remembered;
+            $untrusted=!$byAdmin && array_key_exists('trusted',$doc['app']);
+            if($untrusted)unset($doc['app']['trusted']);
+            Catalog::put($slug,$doc);
+            try { if(!rename($staged,"$dir/$file"))throw new ApiError(503,'Cannot store bundle.'); }
+            catch (Throwable $e) {
+                // Recorded, and not on disk: the record goes back to what it
+                // was. If that fails too, the next discovery drops a version
+                // whose file is missing, and the trust stays off.
+                try { Catalog::put($slug,$before); } catch (Throwable $undo) { error_log("softn-api: $slug records version $next, whose bundle could not be stored: " . $undo->getMessage()); }
+                throw $e;
+            }
+        } finally {
+            if(is_file($staged))@unlink($staged);
+        }
+        if($untrusted)error_log("softn-api: $slug has a new version from its publisher; it is no longer trusted until the operator sets trusted again");
         return self::detail(self::row($slug,true));
     }
 

@@ -127,6 +127,53 @@ test('a version that switches storage off does not lift the freeze on its polici
   assert.equal((await anonymous(old.app.slug)).status, 403);
 });
 
+test('a new version that fails before it is recorded leaves no version behind, and no trust on one', skip, async () => {
+  const s = await server();
+  const pub = await s.publish('Vouched For');
+  const slug = pub.app.slug;
+  const dir = path.join(s.dataDir, 'apps', slug);
+  // The operator vouches for version 1, by hand, as the README says.
+  const appJson = path.join(dir, 'app.json');
+  const doc = JSON.parse(fs.readFileSync(appJson, 'utf8'));
+  doc.app.trusted = true;
+  fs.writeFileSync(appJson, JSON.stringify(doc, null, 2));
+  const playConfig = async () => {
+    const html = await (await fetch(`${s.base}/play/${slug}`, { headers: { Accept: 'text/html' } })).text();
+    return JSON.parse(html.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+  };
+  const vouched = await playConfig();
+  assert.equal(vouched.permissionMode, 'preapproved');
+
+  // The publisher's next version, whose icon cannot be written: a directory
+  // stands where it goes, so the upload fails after its bundle is copied
+  // and before app.json records it. The bundle used to stay, as v2.softn,
+  // and the next request listed it as the latest version, still trusted.
+  const upload = () => {
+    const fd = new FormData();
+    fd.append('bundle', new Blob([makeBundle('Vouched For', { version: '2.0.0', icon: { path: 'assets/icon.png', bytes: PNG_1x1 } })]), 'next.softn');
+    fd.append('editKey', pub.editKey);
+    return s.api('POST', `/api/apps/${slug}/versions`, { body: fd });
+  };
+  fs.mkdirSync(path.join(dir, 'icon.png'));
+  const failed = await upload();
+  assert.equal(failed.status, 500, failed.text);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['app.json', 'icon.png', 'v1.softn'], 'nothing of the failed version is in the folder');
+  const after = (await s.api('GET', `/api/apps/${slug}`)).json.app;
+  assert.deepEqual(after.versions.map((v) => v.version), [1]);
+  assert.equal(after.trusted, true, 'the version the operator vouched for is still the one served, and still trusted');
+  const still = await playConfig();
+  assert.equal(still.sha256, vouched.sha256, 'the play page runs version 1');
+  assert.equal(still.permissionMode, 'preapproved');
+
+  // With the way clear the same upload is version 2, and the trust goes, as it does for any upload of the publisher's.
+  fs.rmdirSync(path.join(dir, 'icon.png'));
+  const added = await upload();
+  assert.equal(added.status, 201, added.text);
+  assert.deepEqual(added.json.app.versions.map((v) => v.version), [2, 1]);
+  assert.equal(added.json.app.trusted, false);
+  assert.equal((await playConfig()).permissionMode, 'prompt');
+});
+
 test('a collection name ends where it ends: a line break after it is not a name', skip, async () => {
   // The pattern ended in `$`, which PHP also matches before a final line
   // break, so "scores\n" was taken as a name. The app page then listed a
