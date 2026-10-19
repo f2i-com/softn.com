@@ -503,6 +503,45 @@ describe("an edit is stamped in the host's time", () => {
   });
 });
 
+/** Every op this socket has pushed, in order. */
+function pushedOps(socket: FakeSocket): Array<{ id: string; operation: string; recordId: string; data?: Record<string, unknown> }> {
+  return socket.ofType('sync_push').flatMap((push) => push.ops as Array<{ id: string; operation: string; recordId: string; data?: Record<string, unknown> }>);
+}
+
+/**
+ * A record from the server that could not be written here. The store was
+ * told the writes it was making were the server's, so as not to push them
+ * back, and was never told they had stopped: from then on every edit made
+ * here was taken for the server's and never pushed.
+ */
+describe('a server write that fails', () => {
+  it('leaves the edits made here after it to be pushed', () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    const op = { collection: 'notes', recordId: 'r9', data: { text: 'theirs' }, timestamp: '2026-01-02T00:00:00Z', clientId: 'c9' };
+    try {
+      socket.open();
+      authOk(socket);
+      vi.spyOn(xdb, 'writeRecord').mockImplementationOnce(() => {
+        throw new Error('quota exceeded');
+      });
+      socket.receive({ type: 'sync_delta', ops: [{ ...op, id: 'd1', operation: 'create' }] });
+      xdb.create('notes', { text: 'after a failed write' });
+      expect(pushedOps(socket).map((o) => o.data?.text)).toEqual(['after a failed write']);
+
+      vi.spyOn(xdb, 'removeRecord').mockImplementationOnce(() => {
+        throw new Error('quota exceeded');
+      });
+      socket.receive({ type: 'sync_delta', ops: [{ ...op, id: 'd2', operation: 'delete' }] });
+      xdb.create('notes', { text: 'after a failed delete' });
+      expect(pushedOps(socket).map((o) => o.data?.text)).toEqual(['after a failed write', 'after a failed delete']);
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
 describe('XDBServerSync with a token', () => {
   function ticketFetch(answer: () => Response) {
     const calls: Array<{ url: string; init: RequestInit }> = [];

@@ -1624,10 +1624,16 @@ export class XDBService {
       updated_at: record.updatedAt || new Date().toISOString(),
       deleted: keepLocalDelete && existing?.deleted === true,
     };
+    // Restored however the write ends: a write that threw (a full disk) left
+    // it set, and every local edit after it was taken for the server's and
+    // never pushed.
     this._mutationSource = 'server';
-    this.writeRecord(collection, xdbRecord);
-    this.notifyMutation('upsert', collection, record.id, record.data);
-    this._mutationSource = undefined;
+    try {
+      this.writeRecord(collection, xdbRecord);
+      this.notifyMutation('upsert', collection, record.id, record.data);
+    } finally {
+      this._mutationSource = undefined;
+    }
   }
 
   /**
@@ -1635,9 +1641,12 @@ export class XDBService {
    */
   deleteFromServer(collection: string, recordId: string): void {
     this._mutationSource = 'server';
-    this.removeRecord(collection, recordId);
-    this.notifyMutation('delete', collection, recordId);
-    this._mutationSource = undefined;
+    try {
+      this.removeRecord(collection, recordId);
+      this.notifyMutation('delete', collection, recordId);
+    } finally {
+      this._mutationSource = undefined;
+    }
   }
 
   // --------------------------------------------------------------------------
