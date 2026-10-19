@@ -1101,8 +1101,10 @@ function safeHref(navigate: string | undefined): string | undefined {
   const href = navigate.trim();
   if (href === '') return undefined;
   // Judged as the browser reads it: it ignores control characters, tabs and
-  // line breaks in an address, so "java\tscript:" is javascript:.
-  const read = href.replace(/[\u0000-\u0020\u007f]/g, '');
+  // line breaks in an address, so "java\tscript:" is javascript:. The
+  // characters are the point here, which the lint rule takes for a typo.
+  // eslint-disable-next-line no-control-regex
+  const read = href.replace(/[\u0000-\u0020\u007f\u00a0\u2000-\u200f\u2028\u2029\ufeff]/g, '');
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(read)?.[1]?.toLowerCase();
   if (scheme === undefined) return read.startsWith('\\') || read.startsWith('/\\') ? undefined : href;
   return scheme === 'http' || scheme === 'https' || scheme === 'mailto' || scheme === 'tel' ? href : undefined;
