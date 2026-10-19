@@ -239,6 +239,43 @@ function requested_digest(Request $req): ?string
     return $d;
 }
 
+/**
+ * What a remix sent with no bundle starts from: its parent's latest bundle,
+ * copied to a file of the request's own and checked before the catalogue is
+ * taken, as an uploaded one is. [path, what Bundle::inspect said], or null
+ * when the folder cannot be read that way (no app.json yet, no version, a
+ * bundle that does not pass), and the remix is then made from the parent's
+ * file under the lock, as it always was.
+ *
+ * The folder is read without the lock. app.json is only ever replaced whole,
+ * by a rename, so what is read is a version of it, if perhaps not the latest:
+ * the route uses the copy only when its digest is the one the catalogue
+ * names for the parent's latest version once the lock is held.
+ *
+ * @return array{0: string, 1: array<string, mixed>}|null
+ */
+function remix_source(string $given): ?array
+{
+    foreach (array_unique([trim($given), Apps::slugOf($given)]) as $slug) {
+        $dir = Config::dataDir() . '/apps/' . $slug;
+        if (!Catalog::validSlug($slug) || is_link($dir) || !is_file("$dir/app.json")) continue;
+        $doc = json_decode((string) @file_get_contents("$dir/app.json"), true);
+        $latest = null;
+        foreach (is_array($doc['versions'] ?? null) ? $doc['versions'] : [] as $v) {
+            if (is_array($v) && is_int($v['version'] ?? null) && is_string($v['file'] ?? null) && ($latest === null || $v['version'] > $latest['version'])) $latest = $v;
+        }
+        if ($latest === null || basename($latest['file']) !== $latest['file']) return null;
+        try {
+            $copy = TempFiles::create();
+            if (!@copy("$dir/{$latest['file']}", $copy)) return null;
+            return [$copy, Bundle::inspect($copy)];
+        } catch (Throwable) {
+            return null;
+        }
+    }
+    return null;
+}
+
 function storage_app(string $given): string
 {
     $slug = Apps::resolveSlug($given);
@@ -382,13 +419,17 @@ function handle(string $handler, array $args, Request $req): Response
             // listed, its edit key was never sent to anyone, and the retry
             // published a second one.
             $image = $req->imageUpload();
+            // The bundle is checked before the parent is looked up: finding
+            // the parent takes the catalogue lock, and the check reads every
+            // file in the bundle, which held every other request meanwhile.
+            $info = Bundle::inspect($file);
             $parent = $req->field('parent');
             $parentSlug = is_string($parent) && $parent !== '' ? Apps::resolveParent($parent) : null;
             $result = Apps::create($file, [
                 'name' => $req->field('name'), 'description' => $req->field('description'), 'author' => $req->field('author'),
                 'category' => $req->field('category'), 'tags' => $req->field('tags'), 'notes' => $req->field('notes'),
                 'primary' => $req->field('primary'),
-            ], $parentSlug !== null ? 'remix' : ($req->contentType() === 'multipart/form-data' ? 'upload' : 'api'), $parentSlug);
+            ], $parentSlug !== null ? 'remix' : ($req->contentType() === 'multipart/form-data' ? 'upload' : 'api'), $parentSlug, $info);
             if ($image !== null) {
                 Apps::setThumbnail($result['app']['slug'], $image);
                 $result['app'] = Apps::card(Apps::row($result['app']['slug']));
@@ -511,11 +552,16 @@ function handle(string $handler, array $args, Request $req): Response
             // included, for as long as its upload took. The bytes are
             // bounded the same way on the publish route, which needs no
             // key at all, so reading them first costs nothing new.
-            $file = $req->bundleFile();
-            $slug = Apps::resolveSlug($args[0]);
-            Apps::requireOwner($req, $slug);
-            // A linked app takes no bundle: remove play_url from its app.json first.
-            Apps::requireBundle($slug);
+            //
+            // The bundle is checked before the catalogue is opened as well:
+            // the check reads every file in it, and under the lock it held
+            // every other request meanwhile. Since the key is not known to be
+            // good until the catalogue is open, the window below is counted
+            // first, as publishing's is, so that a request with no key cannot
+            // have bundles checked without end. A wrong key is counted, and a
+            // request with a wrong key and a bundle that is not one is told
+            // about the bundle (400) before the key (403).
+            //
             // Its own window, wider than publishing's: an owner iterating on
             // one app is not ten new apps an hour, but a stolen key must not
             // be a way to fill a folder to its version limit in a minute.
@@ -523,8 +569,14 @@ function handle(string $handler, array $args, Request $req): Response
             if (!$byAdmin) {
                 Db::rateLimit('version', Config::limitKey($req->ip));
             }
+            $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent.');
-            return Response::json(['ok' => true, 'app' => Apps::addVersion($slug, $file, $req->field('notes'), $byAdmin)], 201);
+            $info = Bundle::inspect($file);
+            $slug = Apps::resolveSlug($args[0]);
+            Apps::requireOwner($req, $slug);
+            // A linked app takes no bundle: remove play_url from its app.json first.
+            Apps::requireBundle($slug);
+            return Response::json(['ok' => true, 'app' => Apps::addVersion($slug, $file, $req->field('notes'), $byAdmin, $info)], 201);
         }
 
         case 'replaceKey': {
@@ -551,13 +603,18 @@ function handle(string $handler, array $args, Request $req): Response
             // picture too, and before the remix exists: see publish.
             $file = $req->bundleFile();
             $image = $req->imageUpload();
+            // And checked before it, as on the publish route; with no bundle
+            // sent, the parent's is copied and checked instead (remix_source).
+            $info = $file === null ? null : Bundle::inspect($file);
+            $source = $file === null ? remix_source($args[0]) : null;
             $parentSlug = Apps::resolveSlug($args[0]);
             $parent = Apps::requireBundle($parentSlug);
             $copied = false;
             if ($file === null) {
                 // No bundle: the remix starts as an exact copy, to be edited later.
                 $ver = Apps::version($parentSlug);
-                $file = Config::dataDir() . '/apps/' . $parentSlug . '/' . $ver['file'];
+                if ($source !== null && $source[1]['sha256'] === $ver['sha256']) [$file, $info] = $source;
+                else $file = Config::dataDir() . '/apps/' . $parentSlug . '/' . $ver['file'];
                 $copied = true;
             }
             $result = Apps::create($file, [
@@ -568,7 +625,7 @@ function handle(string $handler, array $args, Request $req): Response
                 'tags' => $req->field('tags') ?? json_encode(json_decode((string) $parent['tags'], true) ?: []),
                 'notes' => $req->field('notes') ?: ($copied ? 'Remixed from ' . $parent['name'] : ''),
                 'primary' => $req->field('primary') ?: $parent['primary_color'],
-            ], 'remix', $parentSlug);
+            ], 'remix', $parentSlug, $info);
             if ($image !== null) {
                 Apps::setThumbnail($result['app']['slug'], $image);
                 $result['app'] = Apps::card(Apps::row($result['app']['slug']));

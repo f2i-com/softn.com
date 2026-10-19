@@ -352,14 +352,18 @@ final class Apps
 
     /**
      * Publish a bundle as a new app. `$opts` are the visitor's fields; the
-     * bundle's own manifest fills whatever they left out.
+     * bundle's own manifest fills whatever they left out. `$info` is what
+     * Bundle::inspect said of the bundle, when the caller asked it before
+     * taking the catalogue (a route that has to find a parent first): the
+     * check reads every file in the bundle, and is not done under the lock.
      *
      * @param array<string, mixed> $opts
+     * @param array<string, mixed>|null $info
      * @return array{app: array<string, mixed>, editKey: string|null}
      */
-    public static function create(string $bundlePath, array $opts, string $source = 'upload', ?string $parentSlug = null): array
+    public static function create(string $bundlePath, array $opts, string $source = 'upload', ?string $parentSlug = null, ?array $info = null): array
     {
-        $info = Bundle::inspect($bundlePath);
+        $info ??= Bundle::inspect($bundlePath);
         $name = Text::clean($opts['name'] ?? '', 64) ?: $info['name'];
         $description = Text::clean($opts['description'] ?? '', 600, true) ?: $info['description'];
         $author = Text::clean($opts['author'] ?? '', 40) ?: (self::authorFromManifest($info['manifest']) ?? 'Anonymous');
@@ -479,10 +483,14 @@ final class Apps
      * that would have removed it was the one that failed. Until the rename
      * the copy is a dot file discovery passes over, and a failure removes it.
      *
+     * `$info` is what Bundle::inspect said of the bundle, asked before the
+     * catalogue was taken, as for create().
+     *
+     * @param array<string, mixed>|null $info
      * @return array<string, mixed>
      */
-    public static function addVersion(string $slug, string $bundlePath, ?string $notes, bool $byAdmin = false): array {
-        $row=self::row($slug,true);$info=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);$before=$doc;
+    public static function addVersion(string $slug, string $bundlePath, ?string $notes, bool $byAdmin = false, ?array $info = null): array {
+        $row=self::row($slug,true);$info??=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);$before=$doc;
         $next=(int)$row['latest_version']+1;
         if($next>(int)Config::get('maxVersionsPerApp',50))throw new ApiError(400,'This app has reached its version limit.');
         $promised=self::promisedPolicies($row);

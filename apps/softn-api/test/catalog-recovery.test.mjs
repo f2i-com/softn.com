@@ -143,3 +143,57 @@ Catalog::release();`,
   const doc = JSON.parse(fs.readFileSync(path.join(s.dataDir, 'apps', app.slug, 'app.json'), 'utf8'));
   assert.equal(doc.app.description, 'written under the lock');
 });
+
+test('a bundle is checked before the catalogue is taken: a publish with a parent, a remix and a new version', skip, async () => {
+  // Checking a bundle inflates every file in it, up to 128 MB. A plain
+  // publish did that before taking the lock; a publish naming a parent, a
+  // remix and a new version took the lock first, to find the app, and
+  // checked the bundle under it, holding every other request meanwhile.
+  const s = await startServer({ config: { debugTimings: true }, prefix: 'softn-check-first-' });
+  servers.push(s);
+  const parent = await s.publish('Checked Parent');
+  const slug = parent.app.slug;
+  const notABundle = () => {
+    const fd = new FormData();
+    fd.append('bundle', new Blob([Buffer.from('not a zip archive, though long enough to be read for one')]), 'app.softn');
+    return fd;
+  };
+  const withParent = () => {
+    const fd = notABundle();
+    fd.append('parent', slug);
+    return fd;
+  };
+  // Another process holds the catalogue throughout: each of these must
+  // refuse its bundle without waiting for it.
+  const marker = path.join(s.dataDir, 'holding');
+  const w = startPhp({ dataDir: s.dataDir, script: `Catalog::boot(); touch(${JSON.stringify(marker.replace(/\\/g, '/'))}); sleep(30);` });
+  try {
+    for (let i = 0; i < 200 && !fs.existsSync(marker); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(fs.existsSync(marker), 'the holder has the lock');
+    for (const [what, route, body] of [
+      ['a publish with a parent', '/api/apps', withParent],
+      ['a remix with a bundle', `/api/apps/${slug}/remix`, notABundle],
+      ['a new version', `/api/apps/${slug}/versions`, notABundle],
+    ]) {
+      const r = await fetch(s.base + route, { method: 'POST', body: body(), headers: { 'X-Admin-Key': s.adminKey }, signal: AbortSignal.timeout(3000) }).catch((err) => err);
+      assert.ok(!(r instanceof Error), `${what} waited for the catalogue before it checked the bundle (${r.message})`);
+      assert.equal(r.status, 400, `${what}: ${await r.text()}`);
+    }
+  } finally {
+    w.process.kill();
+    await w.done;
+  }
+
+  // A remix sent with no bundle is a copy of its parent's, which is checked
+  // outside the catalogue too: here a parent that takes a while to check.
+  const zeros = new Uint8Array(40 * 1024 * 1024);
+  const heavy = await s.publish('Heavy Parent', { extra: { 'assets/a.bin': zeros, 'assets/b.bin': zeros, 'assets/c.bin': zeros } });
+  // The first request after a publish reads the new folder's bundle into the cache.
+  assert.equal((await s.api('GET', '/api/apps')).status, 200);
+  const started = performance.now();
+  const remix = await s.api('POST', `/api/apps/${heavy.app.slug}/remix`);
+  const took = performance.now() - started;
+  assert.equal(remix.status, 201, remix.text);
+  const hold = Number((remix.headers.get('server-timing') || '').match(/\bhold;dur=([\d.]+)/)?.[1]);
+  assert.ok(hold < took / 2, `the catalogue was held for ${hold} ms of a ${Math.round(took)} ms remix`);
+});

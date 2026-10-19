@@ -178,7 +178,14 @@ serialized, including ratings, comments and plays. The rate limits have a
 lock of their own (`ratelimits.lock`), held for the counter update alone:
 a limit is checked before an upload is read, and the catalogue must not be
 held while a slow body arrives. The upload routes read their body before
-they open the catalogue for the same reason.
+they open the catalogue for the same reason, and check the bundle in it
+before then too: the check inflates every file in the bundle, up to 128 MB.
+That includes a publish naming a parent, a remix (one sent with no bundle
+copies its parent's and checks the copy) and a new version. A new version
+is counted against `limits.version` before its bundle is checked, as a
+publish is against `limits.publish`, because its edit key cannot be checked
+until the catalogue is open: a wrong key counts, and a bundle that is not
+one is refused (400) before a wrong key is (403).
 
 An app's own storage is not the directory's business either. A storage
 request (`POST .../storage`, the two storage listings) and the storage
@@ -816,7 +823,8 @@ temp-file cleanup, a body larger than `memory_limit`); `proxy.test.mjs`
 the trusted-proxy resolver and the rate-limit identity behind it;
 `policies.test.mjs` the storage policy matrix under concurrent writers and
 the edit key's confinement to the publish reply; `catalog-recovery.test.mjs`
-the timings and a writer killed mid-commit; `catalog-warm.test.mjs` that a
+the timings, a writer killed mid-commit, and a bundle checked before the
+catalogue is taken; `catalog-warm.test.mjs` that a
 warm catalogue inspects no bundle, that a change re-inspects only its own,
 that the sweep is bounded, and that listing, cards and details answer
 exactly as they did before the round-2 repair (`test/fixtures/catalog`,
@@ -824,7 +832,8 @@ whose `make.mjs` regenerates `expected.json` from a known-good revision);
 `backup.test.mjs` export, verify and restore, tampered archives, the
 `--force` rule and a restore into a deployed data folder;
 `publishing-integrity.test.mjs` policies a new version may not change, a
-publish or remix whose picture is refused creating nothing, `?v=` and the
+publish or remix whose picture is refused creating nothing, a new version
+that fails before it is recorded leaving nothing, `?v=` and the
 digest in the address a bundle is cached under, the storage quota in bytes, a storage file that is not a database, and the demo
 sync leaving a visitor's app alone; `review.test.mjs` a slow body holding no catalogue lock, a storage request holding none while it works (and an export and an unpublish waiting for it),
 trust dropped by a publisher's new version, one rating per /64, duplicate
