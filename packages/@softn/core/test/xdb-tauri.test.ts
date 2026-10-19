@@ -185,6 +185,26 @@ describe('XDB Service (Tauri mode)', () => {
     expect(records[0].data.title).toBe('A');
   });
 
+  it('keeps a record deleted in the same tick it was updated', async () => {
+    backend.set('tasks', [makeRecord('doomed', 'tasks', { title: 'A' })]);
+    const xdb = new XDBService(undefined, 'update-then-delete', 'update-then-delete-app');
+    await xdb.isReady;
+    // SQLite's answer to the update is stamped no earlier than the tombstone:
+    // the same millisecond here, as it is in a quick tick.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      xdb.update('doomed', { title: 'B' });
+      expect(xdb.delete('doomed')).toBe(true);
+      await flushPromises();
+      await flushPromises();
+      expect(xdb.get('tasks', 'doomed')).toBeNull();
+      expect(xdb.getAll('tasks')).toEqual([]);
+      expect(backend.get('tasks')![0].deleted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('persists collection-scoped edits and deletes to the desktop backend', async () => {
     backend.set('tasks', [makeRecord('scoped-record', 'tasks', { title: 'before' })]);
     const xdb = new XDBService(undefined, 'scoped-write', 'scoped-write-app');

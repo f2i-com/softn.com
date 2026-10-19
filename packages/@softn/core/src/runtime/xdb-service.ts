@@ -1118,6 +1118,8 @@ export class XDBService {
       // and whether its own create was still in flight when this was sent:
       // by the time SQLite answers, the create may have landed.
       let touched: string | undefined;
+      // What this update put in the cache, set below before SQLite can answer.
+      let applied: XDBRecord | undefined;
       // While the record's own create is in flight SQLite has no row to
       // address: the change is kept in the cache and the create callback
       // sends it, merged, once the row exists. Sending it now could only fail.
@@ -1128,10 +1130,13 @@ export class XDBService {
         })
           .then((serverRecord) => {
             this.nativeWriteLanded(serverRecord.collection);
-            // Only apply server response if no newer local changes exist
+            // Applied only while the cache still holds what this update put
+            // there, as updateInCollection does: a newer edit or a deletion
+            // wins even if this answer comes last. Weighed by time instead,
+            // a delete in the same tick (stamped in the same millisecond, or
+            // before SQLite's own clock) lost, and the record came back.
             const c = this.getOrCreateCollection(serverRecord.collection);
-            const current = c.get(serverRecord.id);
-            if (!current || current.updated_at <= serverRecord.updated_at) {
+            if (c.get(serverRecord.id) === applied) {
               c.set(serverRecord.id, serverRecord);
               this.emit({ type: 'update', collection: serverRecord.collection, record: serverRecord });
             }
@@ -1156,6 +1161,7 @@ export class XDBService {
             updated_at: new Date().toISOString(),
           };
           coll.set(record.id, updatedRecord);
+          applied = updatedRecord;
           this.emit({ type: 'update', collection, record: updatedRecord });
           this.notifyMutation('update', collection, record.id, updatedRecord.data);
           return updatedRecord;
