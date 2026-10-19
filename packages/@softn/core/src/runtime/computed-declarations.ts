@@ -42,10 +42,139 @@ export interface ComputedDeclaration {
   topLevel: boolean;
 }
 
+/** A character that can stand in a name, as the engine reads names. */
+const NAME_CHARACTER = /[\p{ID_Continue}$]/u;
+
+/** The name or number whose last character is at `at`. */
+function wordEndingAt(code: string, at: number): { word: string; start: number } {
+  let start = at + 1;
+  while (start > 0 && NAME_CHARACTER.test(code[start - 1])) start--;
+  return { word: code.slice(start, at + 1), start };
+}
+
+/** Words after which an expression is not finished: `a instanceof` wants what follows. */
+const OPERATOR_WORDS = new Set(['in', 'instanceof', 'typeof', 'void', 'delete', 'new']);
+
+/** Words after which a `/` begins a regular expression rather than dividing. */
+const REGEXP_AFTER_WORDS = new Set([...OPERATOR_WORDS, 'return', 'throw', 'case', 'do', 'else', 'of', 'yield', 'await']);
+
+/** Characters at the end of a line that leave the expression wanting more. */
+const OPEN_ENDINGS = '+-*/%&|^!~<>=?:,.';
+
+/** Characters at the start of a line that carry on the expression above it. */
+const CONTINUING_STARTS = '.?:,([`=<>*/%&|^';
+
+/** `in` or `instanceof` as a word of its own, at the start of a line. */
+const CONTINUING_WORD = /(?:instanceof|in)(?![\p{ID_Continue}$])/uy;
+
+/**
+ * Whether a `/` read after `last` begins a regular expression. After a value
+ * — a name, a number, a closing bracket, a string — it divides; after an
+ * operator, an opening bracket or nothing at all, it begins a pattern.
+ */
+function startsRegExp(code: string, last: number, lastClosedLiteral: boolean): boolean {
+  if (last === -1) return true;
+  if (lastClosedLiteral) return false;
+  const ch = code[last];
+  // `count++ / 2` divides: the `++` finished `count`.
+  if ((ch === '+' || ch === '-') && code[last - 1] === ch) return false;
+  if ('(,=:[!&|?{};+-*%<>~^'.includes(ch)) return true;
+  if (!NAME_CHARACTER.test(ch)) return false;
+  const { word, start } = wordEndingAt(code, last);
+  return code[start - 1] !== '.' && REGEXP_AFTER_WORDS.has(word);
+}
+
+/**
+ * Where the regular expression starting at `at` ends, flags and all. One
+ * that reaches the end of its line has no end, and stops there, so the line
+ * break is still read as one.
+ */
+function regExpEnd(code: string, at: number): number {
+  let j = at + 1;
+  let inClass = false;
+  while (j < code.length && code[j] !== '\n') {
+    const ch = code[j];
+    if (ch === '\\') {
+      j += 2;
+      continue;
+    }
+    if (ch === '[') inClass = true;
+    else if (ch === ']') inClass = false;
+    else if (ch === '/' && !inClass) {
+      j++;
+      while (j < code.length && NAME_CHARACTER.test(code[j])) j++;
+      return j;
+    }
+    j++;
+  }
+  return Math.min(j, code.length);
+}
+
+/**
+ * Whether an expression whose last character is at `last` wants more: it
+ * ends on an operator, or has nothing in it yet. `count++` is finished; so
+ * is a number written `1.`.
+ */
+function endsOpen(code: string, last: number, lastClosedLiteral: boolean): boolean {
+  if (last === -1) return true;
+  if (lastClosedLiteral) return false;
+  const ch = code[last];
+  if ((ch === '+' || ch === '-') && code[last - 1] === ch) return false;
+  if (ch === '.') return !/^\d/.test(wordEndingAt(code, last - 1).word);
+  if (OPEN_ENDINGS.includes(ch)) return true;
+  if (!NAME_CHARACTER.test(ch)) return false;
+  const { word, start } = wordEndingAt(code, last);
+  return code[start - 1] !== '.' && OPERATOR_WORDS.has(word);
+}
+
+/** Where the next thing that is neither space nor comment stands, from `from` on. */
+function nextSignificant(code: string, from: number): number {
+  let k = from;
+  while (k < code.length) {
+    if (/\s/.test(code[k])) {
+      k++;
+    } else if (code[k] === '/' && code[k + 1] === '/') {
+      while (k < code.length && code[k] !== '\n') k++;
+    } else if (code[k] === '/' && code[k + 1] === '*') {
+      const close = code.indexOf('*/', k + 2);
+      k = close === -1 ? code.length : close + 2;
+    } else {
+      break;
+    }
+  }
+  return k;
+}
+
+/**
+ * Whether what starts at `at` carries on the expression on the line above.
+ * `++` and `--` never do: after a line break JavaScript gives them to what
+ * follows. A `!` does only as `!=` or `!==`.
+ */
+function continuesAt(code: string, at: number): boolean {
+  const ch = code[at];
+  if (ch === undefined) return false;
+  if (ch === '+' || ch === '-') return code[at + 1] !== ch;
+  if (ch === '!') return code[at + 1] === '=';
+  if (CONTINUING_STARTS.includes(ch)) return true;
+  CONTINUING_WORD.lastIndex = at;
+  return CONTINUING_WORD.test(code);
+}
+
 /**
  * Extract `$: name = expression;` reactive declarations from source code.
  * Uses a comment/string-aware scanner to avoid matching inside comments or strings,
  * and supports multi-line expressions by balancing brackets.
+ *
+ * Outside brackets, a line's end ends the expression only where JavaScript
+ * would end the statement there, because the engine reads the script by
+ * JavaScript's rules and the expression must be the one it reads. So the
+ * expression carries on where its line ends on an operator (`a +` above
+ * `b`), or where the next line starts with something JavaScript reads as
+ * more of it (`todos` above `.filter(...)`). That includes a next line
+ * starting with `+` or `-`, and one starting with `(` or `[`, which calls or
+ * indexes the line above; never one starting with `++` or `--`, which
+ * JavaScript gives to the statement after. Blank lines and comments between
+ * are passed over, as JavaScript passes over them.
  */
 export function extractComputedDeclarations(code: string): ComputedDeclaration[] {
   const results: ComputedDeclaration[] = [];
@@ -112,6 +241,11 @@ export function extractComputedDeclarations(code: string): ComputedDeclaration[]
             // Skips strings AND comments to avoid false termination
             const exprStart = j;
             let depth = 0;
+            // The expression's last character so far, leaving out spaces and
+            // comments, and whether it closed a string or a regular
+            // expression: what a line's end is read by.
+            let last = -1;
+            let lastClosedLiteral = false;
             while (j < len) {
               const ec = code[j];
               // Skip single-line comments inside expression
@@ -127,6 +261,7 @@ export function extractComputedDeclarations(code: string): ComputedDeclaration[]
                 if (j + 1 < len) j += 2;
                 continue;
               }
+              let closedLiteral = false;
               if (ec === '(' || ec === '[' || ec === '{') {
                 depth++;
               } else if (ec === ')' || ec === ']' || ec === '}') {
@@ -143,11 +278,26 @@ export function extractComputedDeclarations(code: string): ComputedDeclaration[]
                   if (code[j] === '\\' && j + 1 < len) j++;
                   j++;
                 }
+                closedLiteral = true;
+              } else if (ec === '/' && startsRegExp(code, last, lastClosedLiteral)) {
+                // Passed over whole, so that a bracket or quote in the pattern
+                // is not counted, and its closing `/` is not taken for a
+                // division wanting more on the next line.
+                j = regExpEnd(code, j);
+                last = j - 1;
+                lastClosedLiteral = true;
+                continue;
               } else if (ec === ';' && depth === 0) {
                 break;
               } else if (ec === '\n' && depth === 0) {
-                // Newline at depth 0 also ends the expression (ASI)
-                break;
+                // A line's end ends the expression where JavaScript would
+                // end the statement (see above). Where it does not, the
+                // lines between are read as they come.
+                if (!endsOpen(code, last, lastClosedLiteral) && !continuesAt(code, nextSignificant(code, j + 1))) break;
+              }
+              if (j < len && !/\s/.test(code[j])) {
+                last = j;
+                lastClosedLiteral = closedLiteral;
               }
               j++;
             }

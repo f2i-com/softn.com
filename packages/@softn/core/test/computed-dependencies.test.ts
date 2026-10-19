@@ -274,6 +274,43 @@ describe('what a $: declaration is to the rest of the script', () => {
     expect([app.value('double'), app.value('list'), app.value('label')]).toEqual([4, [2, 4], '4!']);
   });
 
+  it('carries on over the next line, as the engine reads it, wherever an expression is not finished', async () => {
+    // A newline at the top of an expression used to end it. `todos` and its
+    // `.filter` on the line below were read as `todos` alone: the value was
+    // right as the script loaded, where the engine still saw the `.filter`,
+    // and every list after that was all of the records. And `a +` was
+    // compiled on its own, did not compile, and took every `$:` value of
+    // the script down to being worked out at each draw.
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const app = await load(`
+      let todos = [{ title: "write", done: true }, { title: "test", done: false }]
+      let a = 1
+      let b = 2
+      $: open = todos
+        .filter(t => !t.done)
+        .map(t => t.title)
+      $: total = a +
+        b
+      $: size = total > 2
+        ? "big"
+        : "small"
+      let first = total
+      function add(title) { todos = [...todos, { title: title, done: false }] }
+      function finish(title) { todos = todos.map(t => t.title === title ? { title: t.title, done: true } : t) }
+      function openCount() { return open.length }
+      function setA(value) { a = value }
+    `);
+    expect(app.value('open')).toEqual(['test']);
+    expect([app.value('total'), app.value('size'), app.state.first]).toEqual([3, 'big', 3]);
+    await app.call('add', 'ship');
+    await app.call('finish', 'test');
+    expect(app.value('open')).toEqual(['ship']);
+    expect(app.ask('openCount')).toBe(1);
+    await app.call('setA', 0);
+    expect([app.value('total'), app.value('size')]).toEqual([2, 'small']);
+    expect(warned.mock.calls.map((call) => call.map(String).join(' ')).join('\n')).not.toMatch(/could not be compiled/);
+  });
+
   it('written inside a function is that function’s assignment, as it was', async () => {
     // Only a declaration at the top of the script is a computed value kept
     // up to date. Inside a function `$:` is a label on an ordinary

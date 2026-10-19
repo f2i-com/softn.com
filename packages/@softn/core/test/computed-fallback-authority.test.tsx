@@ -23,20 +23,24 @@ import { SoftNRenderer } from '../src/loader/SoftNRenderer';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 /*
- * `base +` on its own line is valid JavaScript in the script — no semicolon is
- * inserted after a binary operator, so the script reads `bumped = base + 1`.
- * The scanner ends a `$:` expression at the first newline at bracket depth
- * zero, so it extracts `base +` and generates `return (\nbase +\n);` — a
- * SyntaxError in the combined unit and nowhere else. That is exactly the
- * mis-extraction the fallback exists for.
+ * A template inside another template's `${}` is valid JavaScript, and the
+ * engine reads `bumped` as the string it builds. The scanner that finds `$:`
+ * expressions does not follow a template into its `${}`: it takes the inner
+ * template's opening backtick for the end of the outer one, and the `}` after
+ * it for the end of the block the declaration is written in. So it extracts
+ * `` `${base > 0 ? ` `` and generates a function around it that does not
+ * compile — a SyntaxError in the combined unit and nowhere else. That is
+ * exactly the mis-extraction the fallback exists for.
+ *
+ * (This used to be `base +` above a line holding `1`, which the scanner cut
+ * at the line's end. It reads that as JavaScript does now.)
  */
 const SOURCE = `<logic>
 let base = 1
 
 db.create("runs", { at: "x" })
 
-$: bumped = base +
-  1
+$: bumped = \`\${base > 0 ? \`}\` : ""}\`
 
 function runCount() { return db.query("runs").length }
 </logic>
@@ -86,10 +90,11 @@ describe('the `$:` compile fallback', () => {
       // `SecurityError: synchronous host capability denied`.
       expect(container.querySelector('.runs')?.textContent).toBe('1');
 
-      // The mis-extracted value itself stays empty: `base +` is no more
-      // evaluable per-render than it was compilable, so what the fallback
-      // actually buys is the rest of the app — the record above, the function,
-      // the markup — surviving one bad declaration.
+      // The mis-extracted value itself stays empty: the half a template it
+      // was cut to is no more evaluable per-render than it was compilable,
+      // so what the fallback actually buys is the rest of the app — the
+      // record above, the function, the markup — surviving one bad
+      // declaration.
       expect(container.querySelector('.bumped')?.textContent).toBe('');
     } finally {
       warn.mockRestore();
