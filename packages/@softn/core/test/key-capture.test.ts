@@ -100,7 +100,8 @@ describe('key capture with two apps on one page', () => {
   // runtime is still being cleaned up. The captured keys were one list for
   // the page: the second app's list replaced the first's, and the first to
   // close released the other's as well.
-  async function openApp(key: string) {
+  /** An app listening for keys on the window, which captures `key` if it is given one. */
+  async function openApp(key?: string) {
     const state: Record<string, unknown> = {};
     const context: ScriptContext = {
       state,
@@ -117,7 +118,7 @@ describe('key capture with two apps on one page', () => {
       let presses = 0
       function grab() {
         window.addEventListener("keydown", function (event) { presses = presses + 1 })
-        softn.input.captureKeys([${JSON.stringify(key)}])
+        ${key === undefined ? '' : `softn.input.captureKeys([${JSON.stringify(key)}])`}
       }
     `;
     const loaded = await runtime.loadScript({ type: 'LogicBlock', code, loc: { line: 1, column: 0, start: 0, end: code.length } });
@@ -144,6 +145,18 @@ describe('key capture with two apps on one page', () => {
       first.cleanup();
     }
     expect(kept('ArrowUp')).toBe(false);
+  });
+
+  it('keeps them when an app that captured nothing closes', async () => {
+    const first = await openApp('ArrowUp');
+    const bystander = await openApp();
+    try {
+      bystander.cleanup();
+      expect(kept('ArrowUp')).toBe(true);
+    } finally {
+      bystander.cleanup();
+      first.cleanup();
+    }
   });
 });
 
