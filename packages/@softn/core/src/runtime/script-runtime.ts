@@ -37,11 +37,9 @@ import {
   holdsShellNode,
   isShellName,
   namesDeclaredBy,
-  shellGlobalLookupSource,
   shellPrelude,
   usesDocument,
 } from '../document-shell/shell-source';
-import { declaredFunctionNames } from './zipp-wasm-adapter';
 import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
@@ -1008,13 +1006,11 @@ export class SoftNScriptRuntime {
       // HTML, seeded before the code's first line runs, so the code finds
       // what is written above it as a browser's code does.
       let shellCode = '';
-      let shellLookup = '';
       // Code that declares a `document` of its own is not given another; a
       // name of the shell's it declares itself (`class Comment`) stays its own.
       const ownNames = this.documentShell && usesDocument(resolvedCode) ? namesDeclaredBy(resolvedCode) : new Set<string>();
       if (this.documentShell && useHostBridges && usesDocument(resolvedCode) && !ownNames.has('document')) {
         shellCode = shellPrelude(this.documentShell.seedJson(), ownNames);
-        shellLookup = shellGlobalLookupSource(declaredFunctionNames(resolvedCode));
         this.documentShellOn = true;
         this.ownShellNames = ownNames;
       } else if (this.documentShell && !useHostBridges && usesDocument(resolvedCode)) {
@@ -1023,9 +1019,9 @@ export class SoftNScriptRuntime {
 
       const bridges =
         VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble + shellCode;
-      const scriptCode = bridges + resolvedCode + shellLookup + TIMER_TRAILER;
+      const scriptCode = bridges + resolvedCode + TIMER_TRAILER;
       const fullCode = computedPreamble
-        ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble + shellLookup + TIMER_TRAILER
+        ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble + TIMER_TRAILER
         : scriptCode;
 
       // 5. Compile + run the full .logic code in the WASM VM.

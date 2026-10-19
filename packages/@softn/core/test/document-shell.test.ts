@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { ZippWasmAdapter } from '../src/runtime/zipp-wasm-adapter';
-import { SHELL_EVENT, SHELL_READY, SHELL_SYNC, SHELL_TAKE, shellGlobalLookupSource, shellPrelude } from '../src/document-shell/shell-source';
+import { SHELL_EVENT, SHELL_READY, SHELL_SYNC, SHELL_TAKE, shellPrelude, usesDocument } from '../src/document-shell/shell-source';
 
 type Op = [string, ...unknown[]];
 
@@ -34,9 +34,9 @@ afterEach(() => {
   engine = null;
 });
 
-async function page(code: string, functions: string[] = []) {
+async function page(code: string, seed: object = SEED) {
   engine = await ZippWasmAdapter.create();
-  await engine.initializeScript(shellPrelude(JSON.stringify(SEED)) + '\n' + code + '\n' + shellGlobalLookupSource(functions));
+  await engine.initializeScript(shellPrelude(JSON.stringify(seed)) + '\n' + code);
   const run = engine;
   return {
     take: () => (run.callFunction(SHELL_TAKE, []) as Op[] | null) ?? [],
@@ -138,8 +138,7 @@ describe('the document a page’s code is given', () => {
       let removed = [];
       function remove(id, el) { removed.push(id + ':' + el.tagName); }
       document.getElementById('list').innerHTML = '<li><button onclick="remove(3, this)">x</button></li>';
-      function read() { return removed; }`,
-      ['remove', 'read']
+      function read() { return removed; }`
     );
     const ops = doc.take();
     const button = ops.find((op) => op[0] === 'e' && op[2] === 'button')!;
@@ -198,5 +197,57 @@ describe('the document a page’s code is given', () => {
       result = String(error);
     }
     expect(result).toEqual([2, 1, '2', '3', 1, '2', 4, '2', true, true]);
+  });
+
+  it('runs on…="…" in HTML the code wrote as code, with this and event, in the page\u2019s scope', async () => {
+    const doc = await page(`
+      let count = 0;
+      document.getElementById('list').innerHTML =
+        '<li><button id="b" onclick="count++; this.textContent = count + \\':\\' + event.type">0</button></li>' +
+        '<li><a id="a" href="#" onclick="count = 10; return false">ten</a></li>';
+      function read() { return [count, document.getElementById('b').textContent]; }`);
+    const ops = doc.take();
+    const ids = Object.fromEntries(ops.filter((op) => op[0] === 'e').map((op) => [(op[3] as Record<string, string>).id, op[1] as number]));
+    doc.event(ids.b, 'click');
+    doc.event(ids.b, 'click');
+    expect(doc.call('read')).toEqual([2, '2:click']);
+    expect(doc.event(ids.a, 'click')).toBe(1);
+    expect(doc.call('read')).toEqual([10, '2:click']);
+  });
+
+  it('gives the rest of a browser\u2019s window: location, URLSearchParams and the small helpers', async () => {
+    const doc = await page(
+      `
+      function read() {
+        const params = new URLSearchParams(location.search);
+        params.append('q', 'a b&c');
+        const copy = structuredClone({ a: [1, { b: 2 }] });
+        sessionStorage.setItem('k', 'v');
+        let queued = 'no';
+        queueMicrotask(() => { queued = 'yes'; });
+        return [location.pathname, location.search, location.hash, params.get('tab'), params.toString(), copy.a[1].b, sessionStorage.getItem('k'), sessionStorage.length, typeof fetch, typeof requestAnimationFrame];
+      }
+      function go() { location.href = 'about.html'; }
+      function jump() { location.hash = 'top'; return location.hash; }`,
+      { ...SEED, url: 'https://example.test/app/index.html?tab=2#intro' }
+    );
+    expect(doc.call('read')).toEqual(['/app/index.html', '?tab=2', '#intro', '2', 'tab=2&q=a+b%26c', 2, 'v', 1, 'function', 'function']);
+    doc.take();
+    // A fragment stays on the page; another page is asked of the host.
+    expect(doc.call('jump')).toBe('#top');
+    expect(doc.take()).toEqual([]);
+    doc.call('go');
+    expect(doc.take()).toEqual([['n', 'about.html']]);
+  });
+});
+
+describe('code written for a browser', () => {
+  it('is told by a name of the window used as one, not by a property of the same name', () => {
+    for (const code of ['document.getElementById("a")', 'fetch("/api")', 'location.href = "a.html"', 'new URLSearchParams(location.search)', 'requestAnimationFrame(draw)', 'x = sessionStorage.getItem("k")']) {
+      expect(usesDocument(code), code).toBe(true);
+    }
+    for (const code of ['let city = user.location.city', 'api.fetch(url)', 'let n = 1', 'softn.net.fetch(url, {}, done)', 'my_location.x = 1']) {
+      expect(usesDocument(code), code).toBe(false);
+    }
   });
 });

@@ -42,6 +42,8 @@ export interface ShellSeed {
   next: number;
   body: SeedNode[];
   title?: string;
+  /** Where the page is, for `location`. */
+  url?: string;
 }
 
 /** What the shell tells the host after a turn of the engine. */
@@ -53,7 +55,8 @@ export type ShellOp =
   | ['c', number, number[]]
   | ['p', number, string, unknown]
   | ['l', string]
-  | ['t', string];
+  | ['t', string]
+  | ['n', string];
 
 type MirrorNode =
   | {
@@ -125,8 +128,10 @@ export class DocumentShell implements DocumentShellView {
   /** Set once the page's code was found to use the document. */
   active = false;
   onTitle: ((title: string) => void) | null = null;
+  /** The page's code asked to go to an address (`location.href = …`). */
+  onNavigate: ((href: string) => void) | null = null;
 
-  constructor(template: TemplateNode[], owns: OwnsTag, title?: string) {
+  constructor(template: TemplateNode[], owns: OwnsTag, title?: string, url?: string) {
     let next = BODY + 1;
     const nodes = this.nodes;
     const seedOf = (node: TemplateNode, parent: number): SeedNode | null => {
@@ -186,7 +191,7 @@ export class DocumentShell implements DocumentShellView {
         bodyChildren.push(seeded.i);
       }
     }
-    this.seed = { next, body, ...(title ? { title } : {}) };
+    this.seed = { next, body, ...(title ? { title } : {}), ...(url ? { url } : {}) };
   }
 
   /** The seed as the source the shell is started with. */
@@ -319,6 +324,7 @@ export class DocumentShell implements DocumentShellView {
   apply(ops: readonly ShellOp[] | null | undefined): void {
     if (!ops || ops.length === 0) return;
     const touched = new Set<number>();
+    const navigations: string[] = [];
     for (const op of ops) {
       switch (op[0]) {
         case 'e': {
@@ -403,9 +409,14 @@ export class DocumentShell implements DocumentShellView {
         case 't':
           this.onTitle?.(op[1]);
           break;
+        case 'n':
+          navigations.push(op[1]);
+          break;
       }
     }
     for (const id of touched) this.changed(id);
+    // After what the code drew: the last place it asked to go is where it goes.
+    if (navigations.length > 0) this.onNavigate?.(navigations[navigations.length - 1]);
   }
 
   /** A text node changed: its element is drawn from the mirror from now on. */

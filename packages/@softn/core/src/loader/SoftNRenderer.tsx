@@ -275,6 +275,12 @@ export interface SoftNRendererProps {
   onLink?: (href: string) => boolean;
 
   /**
+   * The page's code set `document.title`. A host that owns the window (the
+   * standalone runtime) shows it; an editor's preview does not.
+   */
+  onTitleChange?: (title: string) => void;
+
+  /**
    * Import resolver for .logic file imports.
    * Called with resolved/absolute paths, returns source code or null.
    */
@@ -630,6 +636,7 @@ export function SoftNRenderer({
   onError,
   onPageChange,
   onLink,
+  onTitleChange,
   importResolver,
   logicBasePath,
   preIncludedLogicPaths,
@@ -946,7 +953,36 @@ export function SoftNRenderer({
           // The page's HTML as the document its code is given, if the code
           // turns out to use one: the runtime decides as it compiles, and the
           // page is drawn from it only then.
-          const documentShell = new DocumentShell(doc.template, shellOwnsTag, doc.title);
+          const documentShell = new DocumentShell(
+            doc.template,
+            shellOwnsTag,
+            doc.title,
+            typeof window === 'undefined' ? undefined : window.location.href
+          );
+          documentShell.onTitle = (title) => onTitleChangeRef.current?.(title);
+          // `location.href = 'about.html'` is a link the code follows: shown
+          // in the app where the host shows the app's pages, and otherwise
+          // followed on the same site where the host follows links at all.
+          // Never to another site: the code cannot send the person there.
+          documentShell.onNavigate = (href) => {
+            if (onLinkRef.current?.(href) === true) return;
+            if (!onLinkRef.current || typeof window === 'undefined') {
+              console.warn(`[SoftN] The page's code asked to go to ${href}, and this host shows no other page.`);
+              return;
+            }
+            let target: URL;
+            try {
+              target = new URL(href, window.document.baseURI);
+            } catch {
+              console.warn(`[SoftN] The page's code asked to go to ${href}, which is not an address.`);
+              return;
+            }
+            if (target.origin !== window.location.origin) {
+              console.warn(`[SoftN] The page's code asked to go to ${target.href}, on another site; only a link the person clicks goes there.`);
+              return;
+            }
+            window.location.assign(target.href);
+          };
 
           // Create the script context with a mutable state object
           // The state will be populated by loadScript() after VM initialization
@@ -1702,6 +1738,8 @@ export function SoftNRenderer({
   // passes a fresh function each render does not redraw the page for it.
   const onLinkRef = useRef(onLink);
   onLinkRef.current = onLink;
+  const onTitleChangeRef = useRef(onTitleChange);
+  onTitleChangeRef.current = onTitleChange;
   const followLink = useCallback((href: string) => onLinkRef.current?.(href) === true, []);
 
   const context = useMemo<SoftNRenderContext>(() => {

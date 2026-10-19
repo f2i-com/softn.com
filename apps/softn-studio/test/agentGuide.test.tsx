@@ -264,7 +264,7 @@ describe('what the guide says of timers', () => {
     const logic = js.slice(js.indexOf('## Logic (.js)'), js.indexOf('## Capabilities'));
     for (const name of ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval']) expect(logic).toContain(`\`${name}\``);
     expect(logic).toMatch(/work in page logic/);
-    expect(logic).toMatch(/`requestAnimationFrame` is not available/);
+    expect(logic).toMatch(/`requestAnimationFrame` waits about a frame/);
     expect(logic).not.toMatch(/For a timer or game clock use/);
     expect(PRIVATE_BACKEND_SECTION).toMatch(/no timers in server logic/);
     expect(logic).toMatch(/do not work in backend \(server\) logic/);

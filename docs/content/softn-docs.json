@@ -1902,10 +1902,11 @@
               "items": [
                 "`document`: `getElementById`, `querySelector` and `querySelectorAll` (tags, ids, classes, attributes, `>`, `+`, `~`, `:not()`, `:nth-child()`, `:first-child`, `:checked` and more), `createElement`, `createTextNode`, `createDocumentFragment`, `body`, `title`, `readyState`, and `DOMContentLoaded` once the page is drawn; `window.addEventListener(\"load\", …)` runs then too.",
                 "Elements: `appendChild`, `append`, `prepend`, `insertBefore`, `remove`, `replaceWith`, `before`, `after`, `cloneNode`, `textContent`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `getAttribute` and `setAttribute`, `classList`, `style` (`el.style.color = \"red\"`), `dataset`, `children`, `parentElement`, `closest`, `matches`, `focus()` and `click()`.",
-                "Events: `addEventListener` and `removeEventListener` with capture, bubbling and `once`, `preventDefault`, `stopPropagation`, `event.target`, `key`, `clientX` and the rest, `el.onclick = …`, and `onclick=\"remove(3, this)\"` in HTML the code writes (a call of one of its functions, with numbers, strings, `this` or `event`).",
+                "Events: `addEventListener` and `removeEventListener` with capture, bubbling and `once`, `preventDefault`, `stopPropagation`, `event.target`, `key`, `clientX` and the rest, `el.onclick = …`, and `onclick=\"…\"` in HTML the code writes, run as a browser runs it, with `this` and `event`.",
                 "Forms: a field’s `value` and `checked` are what the person typed or ticked; setting them changes the field; `new FormData(form)` reads a form; a `<form>` with no `action` stays on the page.",
                 "What SoftN draws (a component, a `{value}`, `#if` and `#each`) the code can find, move and remove, but not change inside.",
-                "Layout is not known: `offsetWidth`, `getBoundingClientRect()` and the like are zero. There is no `fetch` (use `softn.net.fetch`), and Python logic and code run in a worker are not given the document."
+                "Also given: `fetch` (a promise; the hosts it may reach are those `permission.json` allows `net`), `location` (`location.href = \"about.html\"` goes to another page of the app, never to another site), `URLSearchParams`, `structuredClone`, `queueMicrotask`, `requestAnimationFrame` and `sessionStorage`. `document.title` names the browser tab where the app has the window to itself.",
+                "Layout is not known: `offsetWidth`, `getBoundingClientRect()` and the like are zero. Python logic and code run in a worker are not given the document."
               ]
             }
           ]
@@ -2299,7 +2300,7 @@
             },
             {
               "type": "paragraph",
-              "text": "A `$:` declaration is a name and the expression it is always worth: `$: remaining = tasks.filter(t => !t.done)`. A page, a function and another `$:` all read it as it stands. The values are worked out again before a page is drawn and before a function is called, each after the ones it reads, in whatever order they are written. A function that changes state and then reads one reads what it was when the function was called. Keep the expression on one line, or break it only inside brackets."
+              "text": "A `$:` declaration is a name and the expression it is always worth: `$: remaining = tasks.filter(t => !t.done)`. A page, a function and another `$:` all read it as it stands. The values are worked out again before a page is drawn and before a function is called, each after the ones it reads, in whatever order they are written. A function that changes state and then reads one reads what it was when the function was called. An expression may go on over several lines where JavaScript would read it as one: a line that ends on an operator, or a next line that starts with `.`, `?`, `:` or an operator."
             },
             {
               "type": "paragraph",
@@ -2307,7 +2308,7 @@
             },
             {
               "type": "paragraph",
-              "text": "In JavaScript logic, `setTimeout`, `setInterval`, `clearTimeout` and `clearInterval` work as in a browser, for a delay, a debounce or a countdown. A callback runs the way a click handler does, so what it writes is drawn, and every timer is cleared when the app stops. Set one from a logic function: markup cannot call them. A game clock is better as `<Loop interval={100} running={running} @tick={() => step()} />`, which also pauses and resumes. `requestAnimationFrame` is not available."
+              "text": "In JavaScript logic, `setTimeout`, `setInterval`, `clearTimeout` and `clearInterval` work as in a browser, for a delay, a debounce or a countdown. A callback runs the way a click handler does, so what it writes is drawn, and every timer is cleared when the app stops. Set one from a logic function: markup cannot call them. A game clock is better as `<Loop interval={100} running={running} @tick={() => step()} />`, which also pauses and resumes. `requestAnimationFrame` waits about a frame (16 ms) before it calls its function."
             }
           ]
         },

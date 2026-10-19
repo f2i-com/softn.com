@@ -31,8 +31,6 @@ export const SHELL_TAKE = '__softnDocTake';
 export const SHELL_EVENT = '__softnDocEvent';
 export const SHELL_SYNC = '__softnDocSync';
 export const SHELL_READY = '__softnDocReady';
-/** Looks a function of the page's up by name, for an `onclick="save(1)"` the code wrote itself. */
-export const SHELL_GLOBAL = '__softnDocGlobal';
 
 /** Names the shell declares at the top of the logic: none of them is the page's state. */
 export const SHELL_GLOBAL_NAMES: ReadonlySet<string> = new Set([
@@ -61,6 +59,16 @@ export const SHELL_GLOBAL_NAMES: ReadonlySet<string> = new Set([
   'SubmitEvent',
   'FormData',
   'getComputedStyle',
+  'fetch',
+  'Headers',
+  'Response',
+  'location',
+  'URLSearchParams',
+  'queueMicrotask',
+  'requestAnimationFrame',
+  'cancelAnimationFrame',
+  'structuredClone',
+  'sessionStorage',
 ]);
 
 /** Whether a name is the shell's own: a function the host calls, or one it declares. */
@@ -83,24 +91,18 @@ export function holdsShellNode(value: unknown, depth = 0): boolean {
 }
 
 /**
- * Whether code is written for a document: it names `document`. Read roughly,
- * comments and strings included; a page that only mentions the word gets a
- * document it does not use, which costs a little and changes nothing.
+ * Whether code is written for a browser: it names `document`, or another of
+ * the window's names the shell gives (`fetch(…)`, `location.…`,
+ * `URLSearchParams`…) as a name of its own rather than a property
+ * (`user.location` is not one). Read roughly, comments and strings
+ * included; a page that only mentions one gets a document it does not use,
+ * which costs a little and changes nothing.
  */
 export function usesDocument(code: string): boolean {
-  return /\bdocument\s*[.[]/.test(code);
-}
-
-/**
- * The lookup `onclick="save(1)"` in HTML the code wrote uses to find `save`:
- * a switch over the functions the script declares, as the event entry is
- * (zipp-wasm-adapter.ts), since there is no reading a name at run time.
- */
-export function shellGlobalLookupSource(names: Iterable<string>): string {
-  const cases = [...names]
-    .map((name) => 'case ' + JSON.stringify(name) + ': return typeof ' + name + ' === "function" ? ' + name + ' : undefined;')
-    .join('\n    ');
-  return '\n;function ' + SHELL_GLOBAL + '(name) {\n  switch (name) {\n    ' + cases + '\n  }\n  return undefined;\n}\n';
+  return (
+    /\bdocument\s*[.[]/.test(code) ||
+    /(?<![.\w$])(?:fetch\s*\(|location\s*[.=[]|URLSearchParams\b|requestAnimationFrame\b|queueMicrotask\b|structuredClone\b|sessionStorage\b)/.test(code)
+  );
 }
 
 export const DOCUMENT_SHELL_SOURCE = String.raw`
@@ -377,68 +379,27 @@ var __softnShell = (function (win) {
     }
   }
 
-  // onclick="save(1)": a call of one of the page's functions with plain
-  // values, this and event. There is no running written code here, so
-  // anything more says so and does nothing.
+  // onclick="..." in HTML the code wrote: its code, run as a browser runs a
+  // handler attribute, with the element as this and the event as event, in
+  // the page's global scope. Compiled once for each text: the engine keeps
+  // what it compiles for as long as it runs, so a list redrawn every second
+  // must not compile its handlers every second.
+  var HANDLERS = {};
   function inlineHandler(code) {
-    var m = /^\s*([A-Za-z_$][\w$]*)\s*\(([^()]*)\)\s*;?\s*(return\s+false\s*;?)?\s*$/.exec(code);
-    if (!m) {
-      warnOnce('inline:' + code, 'onclick="' + code + '" written by the page\u2019s code runs only a call of one of its functions, such as save(1) or toggle(this).');
+    if (Object.prototype.hasOwnProperty.call(HANDLERS, code)) return HANDLERS[code];
+    var fn = null;
+    try {
+      fn = (0, eval)('(function (event) {\n' + code + '\n})');
+    } catch (error) {
+      warnOnce('inline:' + code, 'on...="' + code + '" written by the page\u2019s code is not JavaScript: ' + (error && error.message ? error.message : error));
+      HANDLERS[code] = null;
       return null;
     }
-    var name = m[1];
-    var args = splitArgs(m[2]);
-    var cancels = !!m[3];
-    return function (event) {
-      var fn = typeof __softnDocGlobal === 'function' ? __softnDocGlobal(name) : undefined;
-      if (typeof fn !== 'function') {
-        warnOnce('inline-missing:' + name, name + ' in an on... attribute is not a function of the page\u2019s.');
-        return;
-      }
-      var values = [];
-      for (var i = 0; i < args.length; i++) values.push(argValue(args[i], this, event));
-      var result = fn.apply(this, values);
-      if (cancels || result === false) event.preventDefault();
+    var handler = function (event) {
+      if (fn.call(this, event) === false) event.preventDefault();
     };
-  }
-
-  function splitArgs(text) {
-    var out = [];
-    var current = '';
-    var quote = '';
-    for (var i = 0; i < text.length; i++) {
-      var ch = text.charAt(i);
-      if (quote) {
-        current += ch;
-        if (ch === quote && text.charAt(i - 1) !== '\\') quote = '';
-      } else if (ch === '"' || ch === "'") {
-        quote = ch;
-        current += ch;
-      } else if (ch === ',') {
-        out.push(current.trim());
-        current = '';
-      } else {
-        current += ch;
-      }
-    }
-    if (current.trim() !== '') out.push(current.trim());
-    return out;
-  }
-
-  function argValue(text, self, event) {
-    if (text === 'this') return self;
-    if (text === 'event') return event;
-    if (text === 'true') return true;
-    if (text === 'false') return false;
-    if (text === 'null') return null;
-    if (text === 'undefined') return undefined;
-    if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
-    var q = text.charAt(0);
-    if ((q === '"' || q === "'") && text.charAt(text.length - 1) === q) {
-      return text.slice(1, -1).replace(/\\(.)/g, '$1');
-    }
-    warnOnce('inline-arg:' + text, text + ' in an on... attribute is not a value the page\u2019s code can be given here; a number, a string, this or event can.');
-    return undefined;
+    HANDLERS[code] = handler;
+    return handler;
   }
 
   // ---------------------------------------------------------------- style and lists
@@ -1576,6 +1537,154 @@ var __softnShell = (function (win) {
 
   function getComputedStyle(node) { return node && rec(node) && rec(node).type === 1 ? styleOf(node) : {}; }
 
+  // ---------------------------------------------------------------- the rest of the window
+
+  // fetch, through softn.net.fetch: the app's permission.json says which
+  // hosts it may reach, as it does for every request the app makes.
+  function Headers(init) {
+    Object.defineProperty(this, '_map', { value: {}, writable: true, enumerable: false });
+    if (init && typeof init === 'object') {
+      if (typeof init.forEach === 'function' && !Array.isArray(init)) {
+        var self = this;
+        init.forEach(function (value, name) { self.set(name, value); });
+      } else if (Array.isArray(init)) {
+        for (var i = 0; i < init.length; i++) this.set(init[i][0], init[i][1]);
+      } else {
+        for (var key in init) this.set(key, init[key]);
+      }
+    }
+  }
+  Headers.prototype.get = function (name) { var v = this._map[String(name).toLowerCase()]; return v === undefined ? null : v; };
+  Headers.prototype.has = function (name) { return this._map[String(name).toLowerCase()] !== undefined; };
+  Headers.prototype.set = function (name, value) { this._map[String(name).toLowerCase()] = String(value); };
+  Headers.prototype.append = function (name, value) { var k = String(name).toLowerCase(); this._map[k] = this._map[k] === undefined ? String(value) : this._map[k] + ', ' + String(value); };
+  Headers.prototype.delete = function (name) { delete this._map[String(name).toLowerCase()]; };
+  Headers.prototype.forEach = function (fn) { for (var k in this._map) fn(this._map[k], k, this); };
+  Headers.prototype.entries = function () { var out = []; for (var k in this._map) out.push([k, this._map[k]]); return out; };
+
+  function Response(result, url) {
+    var body = result.body === undefined || result.body === null ? '' : String(result.body);
+    this.ok = !!result.ok;
+    this.status = Number(result.status) || 0;
+    this.statusText = result.statusText || '';
+    this.url = url;
+    this.headers = new Headers(result.headers || {});
+    this.bodyUsed = false;
+    Object.defineProperty(this, '_body', { value: body, enumerable: false });
+  }
+  Response.prototype.text = function () { this.bodyUsed = true; return Promise.resolve(this._body); };
+  Response.prototype.json = function () {
+    this.bodyUsed = true;
+    var body = this._body;
+    return new Promise(function (resolve) { resolve(JSON.parse(body)); });
+  };
+
+  function fetch(input, init) {
+    return new Promise(function (resolve, reject) {
+      if (typeof softn === 'undefined' || !softn || !softn.net) {
+        reject(new TypeError('fetch is not available to this page'));
+        return;
+      }
+      var url = typeof input === 'string' ? input : input && input.url ? input.url : String(input);
+      var options = {};
+      if (init && typeof init === 'object') {
+        if (init.method) options.method = String(init.method).toUpperCase();
+        if (init.headers) {
+          var headers = init.headers instanceof Headers ? init.headers : new Headers(init.headers);
+          options.headers = {};
+          headers.forEach(function (value, name) { options.headers[name] = value; });
+        }
+        if (init.body !== undefined && init.body !== null) options.body = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
+      }
+      softn.net.fetch(url, options, function (result) {
+        if (!result || result.error) reject(new TypeError(result && result.error ? String(result.error) : 'Failed to fetch'));
+        else resolve(new Response(result, url));
+      });
+    });
+  }
+
+  // location: where the page is, and going to another of the app's pages.
+  // The host takes the address as a link: another page of the app is shown;
+  // anywhere else is refused, so a page's code cannot send the person to
+  // another site on its own.
+  var here = parseUrl('');
+  function parseUrl(href) {
+    var m = /^(([a-z][a-z0-9+.-]*:)\/\/([^\/?#]*))?([^?#]*)(\?[^#]*)?(#.*)?$/i.exec(String(href)) || [];
+    var host = m[3] || '';
+    var port = /:(\d+)$/.exec(host);
+    return {
+      href: String(href), protocol: m[2] || '', host: host, hostname: port ? host.slice(0, -port[0].length) : host,
+      port: port ? port[1] : '', pathname: m[4] || '', search: m[5] || '', hash: m[6] || '', origin: m[1] || '',
+    };
+  }
+  function navigate(url) {
+    var target = String(url);
+    if (target.charAt(0) === '#') {
+      here = parseUrl(here.href.split('#')[0] + target);
+      return;
+    }
+    ops.push(['n', target]);
+  }
+  var location = {
+    assign: function (url) { navigate(url); },
+    replace: function (url) { navigate(url); },
+    reload: function () { warnOnce('reload', 'location.reload() does nothing here: the page is drawn again as its state changes.'); },
+    toString: function () { return here.href; },
+  };
+  ['protocol', 'host', 'hostname', 'port', 'pathname', 'search', 'origin'].forEach(function (key) {
+    Object.defineProperty(location, key, { enumerable: true, get: function () { return here[key]; } });
+  });
+  Object.defineProperty(location, 'href', { enumerable: true, get: function () { return here.href; }, set: function (url) { navigate(url); } });
+  Object.defineProperty(location, 'hash', {
+    enumerable: true,
+    get: function () { return here.hash; },
+    set: function (value) { var v = String(value); navigate(v.charAt(0) === '#' ? v : '#' + v); },
+  });
+
+  function URLSearchParams(init) {
+    Object.defineProperty(this, '_list', { value: [], writable: true, enumerable: false });
+    if (typeof init === 'string') {
+      var text = init.charAt(0) === '?' ? init.slice(1) : init;
+      var pairs = text === '' ? [] : text.split('&');
+      for (var i = 0; i < pairs.length; i++) {
+        if (pairs[i] === '') continue;
+        var at = pairs[i].indexOf('=');
+        this._list.push([unquery(at < 0 ? pairs[i] : pairs[i].slice(0, at)), unquery(at < 0 ? '' : pairs[i].slice(at + 1))]);
+      }
+    } else if (init && typeof init === 'object') {
+      if (Array.isArray(init)) for (var j = 0; j < init.length; j++) this._list.push([String(init[j][0]), String(init[j][1])]);
+      else for (var key in init) this._list.push([key, String(init[key])]);
+    }
+  }
+  function unquery(text) { try { return decodeURIComponent(text.replace(/\+/g, ' ')); } catch (error) { return text; } }
+  function queryText(text) { return encodeURIComponent(text).replace(/%20/g, '+'); }
+  URLSearchParams.prototype.get = function (name) { for (var i = 0; i < this._list.length; i++) if (this._list[i][0] === name) return this._list[i][1]; return null; };
+  URLSearchParams.prototype.getAll = function (name) { return this._list.filter(function (e) { return e[0] === name; }).map(function (e) { return e[1]; }); };
+  URLSearchParams.prototype.has = function (name) { return this.get(name) !== null; };
+  URLSearchParams.prototype.append = function (name, value) { this._list.push([String(name), String(value)]); };
+  URLSearchParams.prototype.set = function (name, value) { this.delete(name); this.append(name, value); };
+  URLSearchParams.prototype.delete = function (name) { this._list = this._list.filter(function (e) { return e[0] !== name; }); };
+  URLSearchParams.prototype.forEach = function (fn) { for (var i = 0; i < this._list.length; i++) fn(this._list[i][1], this._list[i][0], this); };
+  URLSearchParams.prototype.keys = function () { return this._list.map(function (e) { return e[0]; }); };
+  URLSearchParams.prototype.values = function () { return this._list.map(function (e) { return e[1]; }); };
+  URLSearchParams.prototype.entries = function () { return this._list.map(function (e) { return [e[0], e[1]]; }); };
+  URLSearchParams.prototype.toString = function () { return this._list.map(function (e) { return queryText(e[0]) + '=' + queryText(e[1]); }).join('&'); };
+
+  function queueMicrotask(fn) { Promise.resolve().then(fn); }
+  function requestAnimationFrame(fn) { return setTimeout(function () { fn(Date.now()); }, 16); }
+  function cancelAnimationFrame(id) { clearTimeout(id); }
+  function structuredClone(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
+
+  // sessionStorage: for as long as the page is open.
+  function Storage() { Object.defineProperty(this, '_items', { value: {}, writable: true, enumerable: false }); }
+  Storage.prototype.getItem = function (key) { var v = this._items[String(key)]; return v === undefined ? null : v; };
+  Storage.prototype.setItem = function (key, value) { this._items[String(key)] = String(value); };
+  Storage.prototype.removeItem = function (key) { delete this._items[String(key)]; };
+  Storage.prototype.clear = function () { this._items = {}; };
+  Storage.prototype.key = function (i) { var keys = Object.keys(this._items); return i < keys.length ? keys[i] : null; };
+  Object.defineProperty(Storage.prototype, 'length', { get: function () { return Object.keys(this._items).length; } });
+  var sessionStorage = new Storage();
+
   // ---------------------------------------------------------------- the host's side
 
   function build(seed, parent) {
@@ -1606,6 +1715,7 @@ var __softnShell = (function (win) {
     for (var i = 0; i < (seed.body || []).length; i++) build(seed.body[i], body);
     nextId = Math.max(nextId, seed.next || 2);
     if (seed.title) d.title = seed.title;
+    here = parseUrl(seed.url || '');
     ops = [];
     api.document = doc;
   }
@@ -1700,7 +1810,9 @@ var __softnShell = (function (win) {
     HTMLImageElement: HTMLImageElement, Text: Text, Comment: Comment, DocumentFragment: DocumentFragment,
     Event: Event, CustomEvent: CustomEvent, KeyboardEvent: KeyboardEvent, MouseEvent: MouseEvent,
     InputEvent: InputEvent, FocusEvent: FocusEvent, SubmitEvent: SubmitEvent, FormData: FormData,
-    getComputedStyle: getComputedStyle,
+    getComputedStyle: getComputedStyle, fetch: fetch, Headers: Headers, Response: Response, location: location,
+    URLSearchParams: URLSearchParams, queueMicrotask: queueMicrotask, requestAnimationFrame: requestAnimationFrame,
+    cancelAnimationFrame: cancelAnimationFrame, structuredClone: structuredClone, sessionStorage: sessionStorage,
   };
   return api;
 })(typeof window !== 'undefined' ? window : null);
@@ -1739,6 +1851,6 @@ export function shellPrelude(seedJson: string, own: ReadonlySet<string> = new Se
     '\n__softnShell.init(' + seedJson + ');\n' +
     'var document = __softnShell.document;\n' +
     names.map((name) => 'var ' + name + ' = __softnShell.' + name + ';').join('\n') +
-    '\nif (typeof window !== "undefined" && window) { try { window.document = document; } catch (e) {} }\n'
+    '\nif (typeof window !== "undefined" && window) { try { window.document = document; window.location = __softnShell.location; } catch (e) {} }\n'
   );
 }

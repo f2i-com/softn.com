@@ -3,7 +3,7 @@
  * given the page as its document, and what it does to it is drawn, through
  * the renderer's checks, as if it had been written in the page.
  */
-import { act } from 'react';
+import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SoftNRenderer } from '../src/loader/SoftNRenderer';
@@ -24,12 +24,12 @@ afterEach(async () => {
   container?.remove();
 });
 
-async function mount(source: string, ready: () => boolean) {
+async function mount(source: string, ready: () => boolean, props: Partial<React.ComponentProps<typeof SoftNRenderer>> = {}) {
   container = document.createElement('div');
   document.body.appendChild(container);
   await act(async () => {
     root = createRoot(container);
-    root.render(<SoftNRenderer source={source} appId="document-shell-page" scriptExecutionMode="main" />);
+    root.render(<SoftNRenderer source={source} appId="document-shell-page" scriptExecutionMode="main" {...props} />);
   });
   for (let i = 0; i < 100 && !ready(); i++) {
     await act(async () => {
@@ -177,6 +177,45 @@ describe('a page whose code is written for a browser', () => {
       () => $('#shown')?.className === 'ready'
     );
     expect($('#shown')!.textContent).toBe('hello launch');
+  });
+
+  it('fetches, names the page and goes to another, through its host', async () => {
+    const asked: Array<[string, Record<string, unknown>]> = [];
+    const titles: string[] = [];
+    const links: string[] = [];
+    await mount(
+      `<p id="out">waiting</p><button id="go">Go</button>
+<script>
+  fetch('https://api.example.test/books', { method: 'post', headers: { 'X-Mode': 'test' }, body: { n: 1 } })
+    .then((response) => response.json().then((books) => {
+      document.getElementById('out').textContent = response.status + ' ' + books.length + ' ' + response.headers.get('content-type');
+      document.title = 'Books (' + books.length + ')';
+    }))
+    .catch((error) => { document.getElementById('out').textContent = 'failed: ' + error.message; });
+  document.getElementById('go').addEventListener('click', () => { location.href = 'about.html'; });
+</script>`,
+      () => $('#out')?.textContent !== 'waiting',
+      {
+        netFetchHandler: async (url, options) => {
+          asked.push([url, options]);
+          return { ok: true, status: 200, statusText: 'OK', body: '[1,2,3]', headers: { 'content-type': 'application/json' } };
+        },
+        onTitleChange: (title: string) => titles.push(title),
+        onLink: (href: string) => {
+          links.push(href);
+          return true;
+        },
+      }
+    );
+    expect($('#out')!.textContent).toBe('200 3 application/json');
+    expect(asked[0][0]).toBe('https://api.example.test/books');
+    expect(asked[0][1]).toMatchObject({ method: 'POST', headers: { 'x-mode': 'test' }, body: '{"n":1}' });
+    expect(titles).toEqual(['Books (3)']);
+    await act(async () => {
+      $('#go')!.click();
+    });
+    await settle();
+    expect(links).toEqual(['about.html']);
   });
 
   it('leaves a page whose code does not use the document as it was', async () => {

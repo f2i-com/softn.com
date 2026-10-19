@@ -279,6 +279,10 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     return () => window.removeEventListener('popstate', back);
   }, [app, show]);
   const shown = page?.composed ?? app;
+  // The page's code set document.title: the window is the app's.
+  const showTitle = useCallback((title: string) => {
+    document.title = title;
+  }, []);
   return (
     // The project's declared side over the deployment's `theme`, which stays
     // the default; the rule that weighs them is the provider's. The box named
@@ -347,6 +351,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               key={page?.path ?? ''}
               source={shown.source}
               onLink={followLink}
+              onTitleChange={showTitle}
               backendCall={backendCall}
               appId={app.appId}
               functions={functions}
