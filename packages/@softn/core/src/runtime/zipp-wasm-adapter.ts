@@ -198,7 +198,7 @@ const EVENT_ENTRY = '__zippSoftnEvent';
  * that is nested somewhere instead is undefined at the top and fails as the
  * host's direct call of it would.
  */
-function declaredFunctionNames(code: string): Set<string> {
+export function declaredFunctionNames(code: string): Set<string> {
   const names = new Set<string>();
   for (const match of code.matchAll(/\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g)) names.add(match[1]);
   const assigned =

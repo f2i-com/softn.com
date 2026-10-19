@@ -28,6 +28,19 @@ import { LogicTimers, TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from 
 import { placeSyntaxError } from './logic-syntax';
 import { moduleSyntaxAsScript } from './module-syntax';
 import { sanitizeArgs } from './vm-args';
+import type { DocumentShell, ShellOp } from '../document-shell/host';
+import {
+  SHELL_EVENT,
+  SHELL_READY,
+  SHELL_SYNC,
+  SHELL_TAKE,
+  holdsShellNode,
+  isShellName,
+  shellGlobalLookupSource,
+  shellPrelude,
+  usesDocument,
+} from '../document-shell/shell-source';
+import { declaredFunctionNames } from './zipp-wasm-adapter';
 import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
@@ -182,6 +195,13 @@ export function collectObservedStateNames(doc: SoftNDocument): ReadonlySet<strin
 
 export interface ScriptRuntimeOptions {
   mode?: ScriptRuntimeMode;
+  /**
+   * The document the page's code is given when it uses one (`document.…`):
+   * its plain HTML as a tree the code can find, change and listen to, as in
+   * a browser (document-shell/). Taken only by JavaScript on the main
+   * thread; Python, and a script in a worker, are not given it.
+   */
+  documentShell?: DocumentShell;
   /**
    * Logic files the host already concatenated into `script.code` itself.
    *
@@ -707,6 +727,7 @@ export class SoftNScriptRuntime {
         : Object.getOwnPropertyNames(window).filter((k) => k.startsWith('__'))
     );
     this.runtimeMode = options?.mode || 'main';
+    this.documentShell = options?.documentShell ?? null;
     this.observedStateNames = options?.observedStateNames ?? null;
     this.drawnNames = options?.drawnNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
@@ -982,11 +1003,24 @@ export class SoftNScriptRuntime {
       // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
       // window/navigator/db/localStorage/host itself) then SoftN's own, and
       // the timers (logic-timers.ts).
+      // 5a. Code written for a browser is given its document: the page's
+      // HTML, seeded before the code's first line runs, so the code finds
+      // what is written above it as a browser's code does.
+      let shellCode = '';
+      let shellLookup = '';
+      if (this.documentShell && useHostBridges && usesDocument(resolvedCode)) {
+        shellCode = shellPrelude(this.documentShell.seedJson());
+        shellLookup = shellGlobalLookupSource(declaredFunctionNames(resolvedCode));
+        this.documentShellOn = true;
+      } else if (this.documentShell && !useHostBridges && usesDocument(resolvedCode)) {
+        console.warn('[SoftN] This page\u2019s code uses the document, which is given to code on the main thread only; in a worker, document is not defined.');
+      }
+
       const bridges =
-        VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble;
-      const scriptCode = bridges + resolvedCode + TIMER_TRAILER;
+        VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble + shellCode;
+      const scriptCode = bridges + resolvedCode + shellLookup + TIMER_TRAILER;
       const fullCode = computedPreamble
-        ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble + TIMER_TRAILER
+        ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble + shellLookup + TIMER_TRAILER
         : scriptCode;
 
       // 5. Compile + run the full .logic code in the WASM VM.
@@ -1027,6 +1061,16 @@ export class SoftNScriptRuntime {
       }
     }
     this.symbolMap = symbolMap;
+
+    // The document is set up and the code's first run has changed it: the
+    // page's events can come in, and what the code did goes out to be drawn.
+    if (this.documentShellOn) {
+      this.documentShell!.attach(
+        (id, type, props) => this.dispatchDocumentEvent(id, type, props),
+        () => this.documentReady()
+      );
+      this.takeDocumentChanges();
+    }
     this.externalValuesGlobalIndex = symbolMap.get(EXTERNAL_VALUES_VAR)?.index ?? -1;
 
     // 6. Set up window global index (sync keys are discovered dynamically)
@@ -1046,6 +1090,10 @@ export class SoftNScriptRuntime {
     for (const [name, sym] of symbolMap.entries()) {
       // Skip bridge-injected variables
       if (BRIDGE_VARS.has(name)) continue;
+
+      // The document's own names, when the page is given one, are not the
+      // page's state or its functions.
+      if (this.documentShellOn && isShellName(name)) continue;
 
       // Generated `$:` bodies are engine plumbing, not script API.
       if (name.startsWith(COMPUTED_PREFIX)) continue;
@@ -1616,12 +1664,74 @@ export class SoftNScriptRuntime {
     };
   }
 
+  /** The document the page's code is given, when it uses one; see ScriptRuntimeOptions.documentShell. */
+  private readonly documentShell: DocumentShell | null;
+  private documentShellOn = false;
+
+  /** What the person did to the page (typed, ticked, focused), into the document before the code runs. */
+  private syncDocumentIn(): void {
+    if (!this.documentShellOn || !this.vmEngine) return;
+    const changes = this.documentShell!.takeSync();
+    if (changes) this.vmEngine.callFunctionSync(SHELL_SYNC, [changes]);
+  }
+
+  /** What the code did to the document, out to the page, after it ran. */
+  private takeDocumentChanges(): void {
+    if (!this.documentShellOn || !this.vmEngine) return;
+    try {
+      const ops = this.vmEngine.callFunctionSync(SHELL_TAKE, []) as ShellOp[] | null;
+      if (ops) this.documentShell!.apply(ops);
+    } catch (error) {
+      console.error('[SoftN] What the page\u2019s code did to the document could not be read:', error);
+    }
+  }
+
+  /**
+   * Run the engine for something that happened on the page, the way a
+   * listener the logic put on the window is run (bridgeEventListeners): the
+   * page's state in, the call, then what changed back out to the page. Said
+   * and returned as nothing when it fails, as a listener's failure is.
+   */
+  private enterForDocument(name: string, args: unknown[]): unknown {
+    if (!this.vmEngine || this.disposed || this.vmEngine.terminated) return 0;
+    this.syncReactStateToVM();
+    this.syncWindowToVM();
+    this.settleComputedIfStale();
+    let result: unknown = 0;
+    try {
+      result = this.vmEngine.callFunctionSync(name, args);
+    } catch (error) {
+      console.error('[SoftN] The page\u2019s code failed while handling the page:', error);
+    }
+    this.computedMayHaveMoved();
+    this.syncCallCache.clear();
+    this.syncVMStateToReact();
+    this.syncWindowFromVM();
+    this.discoverWindowSyncKeys();
+    this.bridgeEventListeners();
+    const pending = this.vmEngine.drainPendingHostCalls();
+    if (pending.length > 0) void this.processPendingHostCallsUnlocked(pending);
+    return result;
+  }
+
+  /** An event on an element of the document, dispatched there: 1 when cancelled, 2 when stopped. */
+  dispatchDocumentEvent(id: number, type: string, props: Record<string, unknown>): number {
+    const flags = this.enterForDocument(SHELL_EVENT, [id, type, props]);
+    return typeof flags === 'number' ? flags : 0;
+  }
+
+  /** The page has been drawn: DOMContentLoaded and load, to the code that waits for them. */
+  documentReady(): void {
+    this.enterForDocument(SHELL_READY, []);
+  }
+
   /**
    * Sync React component state → VM globals.
    * Uses batch API: single WASM boundary crossing for all state variables.
    */
   private syncReactStateToVM(): void {
     if (!this.symbolMap || !this.vmEngine) return;
+    this.syncDocumentIn();
     // _vmDirty is set by the worker runtime when state comes back from the worker thread,
     // ensuring the main-thread WASM VM globals stay in sync with worker-reported state.
     const vmDirty = (this.context as unknown as Record<string, unknown>)._vmDirty;
@@ -1641,8 +1751,12 @@ export class SoftNScriptRuntime {
       const values: unknown[] = [];
       for (let i = 0; i < this.stateVarNames.length; i++) {
         if (watched.has(this.stateVarNames[i])) continue;
+        const value = this.context.state[this.stateVarNames[i]];
+        // The page's copy of a node of the document is a record standing
+        // for it, and never the node: the engine's own is left alone.
+        if (this.documentShellOn && holdsShellNode(value)) continue;
         indices.push(this.stateVarIndices[i]);
-        values.push(this.context.state[this.stateVarNames[i]]);
+        values.push(value);
       }
       this.vmEngine.setGlobalsBatch(indices, values);
       // The cached digests describe what the host last READ. They are used to
@@ -1662,8 +1776,10 @@ export class SoftNScriptRuntime {
         if (this.vmOwnedStateSet.has(key) || this.watchedStateSet.has(key)) continue;
         const sym = this.symbolMap!.get(key);
         if (sym) {
+          const value = this.context.state[key];
+          if (this.documentShellOn && holdsShellNode(value)) continue;
           indices.push(sym.index);
-          values.push(this.context.state[key]);
+          values.push(value);
         }
       }
       if (indices.length > 0) {
@@ -1726,6 +1842,7 @@ export class SoftNScriptRuntime {
 
   private syncVMStateToReact(): void {
     if (!this.symbolMap || !this.vmEngine) return;
+    this.takeDocumentChanges();
 
     // Ask the engine which globals moved before reading any of them.
     //

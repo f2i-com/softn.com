@@ -50,6 +50,7 @@ import {
 } from '../runtime/egress-policy';
 import { parseStatePath } from '../runtime/state-path';
 import { markupValue } from './host-values';
+import type { DocumentShellView } from '../document-shell/host';
 import {
   followPageLinks,
   keepFieldEditable,
@@ -315,6 +316,11 @@ export function renderDocument(
   context: SoftNRenderContext,
   registry: ComponentRegistry
 ): React.ReactNode {
+  // A page whose code is given the document: its body is what the code has
+  // made of it (see document-shell/host.ts).
+  if (context.documentShell) {
+    return React.createElement(ShellBody, { shell: context.documentShell, template: document.template, context, registry });
+  }
   // A host that keeps a cache for this mount gets back, for everything that
   // comes out the same as last time, the element it was given last time; see
   // reuse.ts. Without one every element is made afresh.
@@ -414,8 +420,14 @@ function renderNodeOfKind(
   key?: number | string
 ): React.ReactNode {
   switch (node.type) {
-    case 'Element':
+    case 'Element': {
+      const shell = context.documentShell;
+      const id = shell?.idOf(node);
+      if (shell && id !== undefined) {
+        return React.createElement(ShellElement, { key, shell, id, context, registry });
+      }
       return renderElement(node, context, registry, key);
+    }
 
     case 'Text':
       return renderText(node, key);
@@ -584,6 +596,46 @@ const BLOCKED_TAGS = new Set([
   'param',     // object parameters
   'slot',      // web component slot
 ]);
+
+/**
+ * Whether the document a page's code is given holds this tag as plain HTML
+ * it may change: an element the renderer draws as itself, written in lower
+ * case, and not an `<svg>`, whose inside is a drawing of its own.
+ */
+export function shellOwnsTag(tag: string): boolean {
+  return tag === tag.toLowerCase() && tag !== 'svg' && isHTMLElement(tag);
+}
+
+interface ShellProps {
+  shell: DocumentShellView;
+  context: SoftNRenderContext;
+  registry: ComponentRegistry;
+}
+
+/**
+ * An element of the document the page's code is given: drawn as its markup
+ * says, with what the code has done to it over that, or as the markup for
+ * an element the code made would be, through the renderer's one path for
+ * elements and its checks. Drawn again when the code changes it, and no
+ * more than it.
+ */
+function ShellElement({ shell, id, context, registry }: ShellProps & { id: number }): React.ReactElement {
+  const subscribe = React.useCallback((onChange: () => void) => shell.subscribe(id, onChange), [shell, id]);
+  const read = () => shell.version(id);
+  const version = React.useSyncExternalStore(subscribe, read, read);
+  // A value, a tick or focus the code asked for is the drawn element's own
+  // state, not markup: done to it once it is on the page.
+  React.useLayoutEffect(() => shell.settle(id), [shell, id, version]);
+  return React.createElement(React.Fragment, null, renderElement(shell.elementFor(id), context, registry));
+}
+
+/** The page's body, as the code has made it. */
+function ShellBody({ shell, template, context, registry }: ShellProps & { template: TemplateNode[] }): React.ReactElement {
+  const subscribe = React.useCallback((onChange: () => void) => shell.subscribe(shell.bodyId, onChange), [shell]);
+  const read = () => shell.version(shell.bodyId);
+  React.useSyncExternalStore(subscribe, read, read);
+  return React.createElement(React.Fragment, null, renderNodes(shell.bodyFor(template), context, registry));
+}
 
 /**
  * Check if a tag is a valid HTML element (safe for untrusted rendering)

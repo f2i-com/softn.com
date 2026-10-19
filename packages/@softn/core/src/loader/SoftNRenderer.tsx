@@ -15,6 +15,8 @@ import React, {
 } from 'react';
 import { parseCached } from '../parser';
 import { renderDocument } from '../renderer';
+import { shellOwnsTag } from '../renderer/render';
+import { DocumentShell } from '../document-shell/host';
 import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
 import { getDefaultRegistry } from '../renderer/registry';
 import { collectFirstScreenTags } from '../renderer/document-tags';
@@ -669,6 +671,8 @@ export function SoftNRenderer({
   // script is told by an exception; without this the person is told by
   // nothing, and finds out when they come back for the save.
   const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
+  // The document the page's code is given, once its code is found to use one.
+  const [documentShell, setDocumentShell] = useState<DocumentShell | null>(null);
 
   // Script runtime ref for .logic execution
   const scriptRuntimeRef = useRef<ScriptRuntimeHandle | null>(null);
@@ -931,6 +935,11 @@ export function SoftNRenderer({
         if (codeBlock && !scriptInitializedRef.current) {
           scriptInitializedRef.current = true;
 
+          // The page's HTML as the document its code is given, if the code
+          // turns out to use one: the runtime decides as it compiles, and the
+          // page is drawn from it only then.
+          const documentShell = new DocumentShell(doc.template, shellOwnsTag, doc.title);
+
           // Create the script context with a mutable state object
           // The state will be populated by loadScript() after VM initialization
           const scriptState: Record<string, unknown> = {};
@@ -1132,6 +1141,7 @@ export function SoftNRenderer({
               logicBasePath,
               {
                 mode: 'main',
+                documentShell,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1216,6 +1226,7 @@ export function SoftNRenderer({
               logicBasePath,
               {
                 mode: 'main',
+                documentShell,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1252,6 +1263,7 @@ export function SoftNRenderer({
               logicBasePath,
               {
                 mode: 'main',
+                documentShell,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1302,6 +1314,9 @@ export function SoftNRenderer({
                   },
                 };
               }
+
+              // A page whose code uses the document is drawn from it from now on.
+              if (documentShell.active) setDocumentShell(documentShell);
 
               // Merge script state into componentState and set functions
               setState((prev) => {
@@ -1437,6 +1452,7 @@ export function SoftNRenderer({
 
       // Allow re-initialization on next mount (React Strict Mode double-mount)
       scriptInitializedRef.current = false;
+      setDocumentShell(null);
     };
   }, [
     appId,
@@ -1708,9 +1724,11 @@ export function SoftNRenderer({
       egress: runtimePermissionConfig ?? null,
       followLink,
       renderCache,
+      ...(documentShell ? { documentShell } : {}),
     };
   }, [
     followLink,
+    documentShell,
     state.componentState,
     setComponentState,
     shareComponentState,
@@ -1748,6 +1766,17 @@ export function SoftNRenderer({
     () => ({ appId, xdb: scopedXdb, active, assets: assetResolver, clipboard: runtimePermissions?.clipboard !== false }),
     [appId, scopedXdb, active, assetResolver, runtimePermissions]
   );
+
+  // The page has been drawn from the document: the browser's events on it go
+  // to the page's code, and the code is told the page is ready
+  // (DOMContentLoaded, then load), as a browser tells it after reading it.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!documentShell || !container) return;
+    documentShell.connect(container);
+    documentShell.ready();
+    return () => documentShell.disconnect();
+  }, [documentShell]);
 
   // Get the default registry
   const registry = useMemo(() => getDefaultRegistry(), []);

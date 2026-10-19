@@ -131,6 +131,12 @@ export interface SoftNRenderContext {
    */
   followLink?: (href: string) => boolean;
 
+  /**
+   * The document the page's code is given, when its code uses one: the
+   * renderer draws the page's plain HTML from it (document-shell/host.ts).
+   */
+  documentShell?: import('../document-shell/host').DocumentShellView;
+
   // Current iteration context (for #each)
   each?: {
     item: unknown;
