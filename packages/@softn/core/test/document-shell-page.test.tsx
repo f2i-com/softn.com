@@ -378,4 +378,200 @@ describe('a page whose code is written for a browser', () => {
     await mount(`<p id="shown">{n}</p><script>let n = 3</script>`, () => $('#shown')?.textContent === '3');
     expect($('#shown')!.hasAttribute('data-softn-node')).toBe(false);
   });
+
+  it('moves between its own states by hash and history, and hears hashchange and popstate', async () => {
+    await mount(
+      `<button id="go">Go</button><button id="push">Push</button><button id="back">Back</button><p id="out">-</p>
+<script>
+  const out = document.getElementById('out');
+  const seen = [];
+  window.addEventListener('hashchange', () => { seen.push('hash ' + location.hash); out.textContent = seen.join(', '); });
+  window.addEventListener('popstate', (e) => { seen.push('pop ' + (e.state ? e.state.n : 'none')); out.textContent = seen.join(', '); });
+  document.getElementById('go').addEventListener('click', () => { location.hash = '#two'; });
+  document.getElementById('push').addEventListener('click', () => { history.pushState({ n: 3 }, '', '?view=3'); out.textContent = location.search + ' ' + history.state.n; });
+  document.getElementById('back').addEventListener('click', () => { history.back(); });
+</script>`,
+      () => $('#go')?.hasAttribute('data-softn-node') === true
+    );
+    await act(async () => $('#go')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('hash #two');
+    await act(async () => $('#push')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('?view=3 3');
+    await act(async () => $('#back')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('hash #two, pop none');
+  });
+
+  it('knows a <details> the person opened, and every option of a <select multiple> they chose', async () => {
+    await mount(
+      `<details id="d"><summary>More</summary>Hidden</details>
+<form id="f"><select id="s" name="tags" multiple><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></form>
+<button id="read">Read</button><p id="out">-</p>
+<script>
+  document.getElementById('read').addEventListener('click', () => {
+    const tags = new FormData(document.getElementById('f')).getAll('tags');
+    document.getElementById('out').textContent = document.getElementById('d').open + ' ' + tags.join(',');
+  });
+</script>`,
+      () => $('#read')?.hasAttribute('data-softn-node') === true
+    );
+    await act(async () => {
+      const details = $('#d') as HTMLDetailsElement;
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      const select = $('#s') as HTMLSelectElement;
+      select.options[0].selected = true;
+      select.options[2].selected = true;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => $('#read')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('true x,z');
+  });
+
+  it('copies a <template>’s content, and never draws the template', async () => {
+    await mount(
+      `<template id="row"><li class="r"><b></b> <span>left</span></li></template><ul id="list"></ul>
+<script>
+  const row = document.getElementById('row');
+  for (const name of ['tea', 'bun']) {
+    const copy = row.content.cloneNode(true);
+    copy.querySelector('b').textContent = name;
+    document.getElementById('list').appendChild(copy);
+  }
+</script>`,
+      () => container.querySelectorAll('li.r').length === 2
+    );
+    expect([...container.querySelectorAll('li.r b')].map((b) => b.textContent)).toEqual(['tea', 'bun']);
+    expect(container.textContent).not.toContain('Unknown component');
+    expect(container.querySelector('template')).toBeNull();
+  });
+
+  it('opens a <dialog> over the app, and closes it with its form’s button and Escape', async () => {
+    await mount(
+      `<button id="open">Open</button>
+<dialog id="d"><form method="dialog"><button id="yes" value="yes">Yes</button></form></dialog>
+<p id="out">-</p>
+<script>
+  const d = document.getElementById('d');
+  document.getElementById('open').addEventListener('click', () => d.showModal());
+  d.addEventListener('close', () => { document.getElementById('out').textContent = 'closed ' + d.returnValue; });
+</script>`,
+      () => $('#open')?.hasAttribute('data-softn-node') === true
+    );
+    await act(async () => $('#open')!.click());
+    await settle();
+    const dialog = $('#d') as HTMLDialogElement;
+    expect(dialog.hasAttribute('open')).toBe(true);
+    expect(dialog.style.position).toBe('fixed');
+    await act(async () => $('#yes')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('closed yes');
+    expect(dialog.hasAttribute('open')).toBe(false);
+    await act(async () => $('#open')!.click());
+    await settle();
+    await act(async () => {
+      $('#yes')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await settle();
+    expect(dialog.hasAttribute('open')).toBe(false);
+  });
+
+  it('runs a handler written for a browser, with this and event, on a page with no code of its own', async () => {
+    await mount(
+      `<button id="b" onclick="this.classList.toggle('on'); document.getElementById('out').textContent = event.type + ' ' + this.id">Toggle</button><p id="out">-</p>`,
+      () => $('#b')?.hasAttribute('data-softn-node') === true
+    );
+    await act(async () => $('#b')!.click());
+    await settle();
+    expect($('#b')!.classList.contains('on')).toBe(true);
+    expect($('#out')!.textContent).toBe('click b');
+    // The text never reaches the page as an attribute.
+    expect($('#b')!.hasAttribute('onclick')).toBe(false);
+  });
+
+  it('draws what the code puts on its html and body on the app’s root', async () => {
+    await mount(
+      `<p id="out">x</p>
+<script>
+  document.body.classList.add('dark');
+  document.body.dataset.mode = 'night';
+  document.documentElement.style.setProperty('--accent', 'red');
+  document.body.style.backgroundImage = 'url(https://evil.example/b.png)';
+  document.getElementById('out').textContent = 'set';
+</script>`,
+      () => $('#out')?.textContent === 'set',
+      { permissionConfig: { permissions: {} } as never }
+    );
+    await settle();
+    const root = container.querySelector('[data-softn-page]') as HTMLElement;
+    expect(root.classList.contains('dark')).toBe(true);
+    expect(root.getAttribute('data-mode')).toBe('night');
+    expect(root.style.getPropertyValue('--accent')).toBe('red');
+    // Checked as any element's style: a remote image the app may not load is not drawn.
+    expect(root.style.backgroundImage).toBe('');
+  });
+
+  it('keeps the page when its script stops, as a browser does, and says so', async () => {
+    await mount(
+      `<h1 id="title">Still here</h1><p id="out">-</p>
+<script>
+  document.getElementById('out').textContent = 'started';
+  new SomethingNoBrowserHas();
+</script>`,
+      () => container.querySelector('[data-softn-notice]') !== null
+    );
+    expect($('#title')!.textContent).toBe('Still here');
+    expect(container.querySelector('[data-softn-notice]')!.textContent).toMatch(/This page's script stopped: .*SomethingNoBrowserHas/);
+  });
+
+  it('fetches its own files from where its markup finds them, with no network', async () => {
+    const real = globalThis.fetch;
+    const asked: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      asked.push(String(url));
+      return new Response(JSON.stringify([{ name: 'tea' }, { name: 'bun' }]), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      await mount(
+        `<ul id="list"></ul><p id="out">-</p>
+<script>
+  fetch('data/items.json').then((r) => r.json()).then((items) => {
+    for (const item of items) { const li = document.createElement('li'); li.textContent = item.name; document.getElementById('list').appendChild(li); }
+  });
+  fetch('../secret.json').then((r) => { document.getElementById('out').textContent = String(r.status); });
+</script>`,
+        () => container.querySelectorAll('li').length === 2 && $('#out')?.textContent !== '-',
+        { assetResolver: ((path: string) => (path.includes('..') ? '' : `site/${path}`)) as never, permissionConfig: { permissions: {} } as never }
+      );
+      expect([...container.querySelectorAll('li')].map((li) => li.textContent)).toEqual(['tea', 'bun']);
+      expect($('#out')!.textContent).toBe('404');
+      expect(asked).toEqual(['site/data/items.json']);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  it('checks a form before it is sent, as a browser does', async () => {
+    await mount(
+      `<form id="f"><input id="email" name="email" type="email" required><button id="send">Send</button></form><p id="out">-</p>
+<script>
+  const form = document.getElementById('f');
+  let sent = 0;
+  form.addEventListener('submit', (e) => { e.preventDefault(); sent++; document.getElementById('out').textContent = 'sent ' + sent; });
+  form.addEventListener('invalid', (e) => { document.getElementById('out').textContent = e.target.validationMessage; }, true);
+  document.getElementById('send').addEventListener('click', (e) => { e.preventDefault(); form.requestSubmit(); });
+</script>`,
+      () => $('#send')?.hasAttribute('data-softn-node') === true
+    );
+    await act(async () => $('#send')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('Please fill in this field.');
+    await type($('#email') as HTMLInputElement, 'a@b.co');
+    await act(async () => $('#send')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('sent 1');
+  });
 });

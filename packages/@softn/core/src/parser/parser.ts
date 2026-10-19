@@ -290,6 +290,8 @@ export class Parser {
    * end of `<body>`; read as elements, their content was dropped unsaid.
    */
   private nestedBlocks: Array<ScriptBlock | LogicBlock | StyleBlock> = [];
+  /** The elements being read, outermost first: what an end tag an HTML element leaves out may end. */
+  private openTags: string[] = [];
   /** Whether the top-level elements being read are inside a document's `<head>`. */
   private inHead: boolean = false;
   /** The text of a document's `<title>`. */
@@ -1277,7 +1279,7 @@ export class Parser {
           }
         } else {
           // Regular prop (including keywords like 'data' that can be used as attribute names)
-          element.props.push(this.parseProp());
+          element.props.push(this.parseProp(element.tag));
         }
       } else if (
         (this.curTokenIs(TokenType.ELSE) || this.curTokenIs(TokenType.ELSEIF)) &&
@@ -1412,7 +1414,11 @@ export class Parser {
       if (!event || prop.value.type !== 'static') return true;
       const handler = this.quotedHandler(event, [], prop.value.value, prop.loc, prop.name);
       if (handler) element.events.push(handler);
-      return false;
+      // Code SoftN does not read (`this.classList.toggle('on')`) stays the
+      // attribute it was written as: never on the page (the renderer draws
+      // no handler from text), and run as a browser runs it where the page
+      // is given its document (document-shell/).
+      return !handler;
     });
   }
 
@@ -1448,9 +1454,15 @@ export class Parser {
       ? handler?.type === 'Identifier' || handler?.type === 'MemberExpression'
       : handler?.type === 'ArrowFunctionExpression' && handler.statements !== undefined;
     if (parsed.diagnostics?.length || !handler || !readable) {
+      // An HTML attribute is kept (see takeHandlerAttributes), and runs on a
+      // page whose code is written for a browser; `@click="…"` is not.
+      const html = !written.startsWith('@');
       this.diagnostics.push({
         message:
-          `${written}="${code}" could not be read as a handler, so it does nothing. ` +
+          `${written}="${code}" could not be read as a handler, so ` +
+          (html
+            ? 'SoftN runs no handler for it (on a page given its document, it runs as a browser runs it). '
+            : 'it does nothing. ') +
           `Call a function of the app's logic, as in ${written}="save()", or write @${name}={() => …}`,
         severity: 'warning',
         loc,
@@ -1479,10 +1491,29 @@ export class Parser {
     const children: TemplateNode[] = [];
     let closed = false;
     const diagnosticsBefore = this.diagnostics.length;
+    this.openTags.push(parentTag);
+    try {
 
     while (!this.curTokenIs(TokenType.EOF)) {
       this.skipComments();
       const passStart = this.curToken.start;
+
+      // An HTML element whose end tag may be left out ends where HTML ends
+      // it: an `<li>` at the next `<li>`, a `<p>` at a `<div>`, a cell at the
+      // next cell or row, and any of them at the end tag of an element it is
+      // in. Read as needing its end tag, an unclosed `<li>` held everything
+      // after it, and the rest of the page was inside the list item.
+      if (OPTIONAL_END_TAGS.has(parentTag)) {
+        const next = this.peekToken.literal;
+        if (this.curTokenIs(TokenType.TAG_OPEN) && endsBefore(parentTag, next)) {
+          closed = true;
+          break;
+        }
+        if (this.curTokenIs(TokenType.TAG_END_OPEN) && next !== parentTag && this.openTags.slice(0, -1).includes(next)) {
+          closed = true;
+          break;
+        }
+      }
 
       // Check for closing tag
       if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
@@ -1559,11 +1590,29 @@ export class Parser {
     // for. Only when nothing else was reported inside this element, though —
     // a mismatched tag or an unterminated template literal already explains
     // the truncation, and every ancestor would otherwise repeat it.
-    if (!closed && this.diagnostics.length === diagnosticsBefore) {
+    if (!closed && this.diagnostics.length === diagnosticsBefore && !OPTIONAL_END_TAGS.has(parentTag)) {
       this.addDiagnostic(new UnclosedTagError(parentTag, openLoc, this.source));
     }
 
     return children;
+    } finally {
+      this.openTags.pop();
+    }
+  }
+
+  /**
+   * A quoted attribute of an HTML element (a lower-case tag), as written: in
+   * HTML a backslash is a backslash, and `pattern="\d{3}"` means a digit.
+   * Read as a SoftN string, `\d` was an escape for `d`, and the pattern
+   * checked for a letter d. Undefined where the value has no backslash, or
+   * the element is a component, whose strings are SoftN's.
+   */
+  private htmlAttributeText(tag: string | undefined): string | undefined {
+    if (!tag || !/^[a-z]/.test(tag)) return undefined;
+    const text = this.source.slice(this.curToken.start, this.curToken.end);
+    const quote = text[0];
+    if ((quote !== '"' && quote !== "'") || !text.includes('\\')) return undefined;
+    return text.slice(1, text.length > 1 && text[text.length - 1] === quote ? -1 : undefined);
   }
 
   /**
@@ -1574,7 +1623,7 @@ export class Parser {
    * - Expression: prop={expression}
    * - Bare identifier/value shorthand: prop=value (for simple values like primary, lg, etc.)
    */
-  private parseProp(): PropNode {
+  private parseProp(tag?: string): PropNode {
     const loc = this.currentLoc();
     let name = this.curToken.literal;
     let nameEnd = this.curToken.end;
@@ -1640,7 +1689,7 @@ export class Parser {
         // Quoted string: prop="value". Its entities are read as text's are:
         // `&quot;` is the only way to write the quote the value is closed
         // by, and it used to arrive as six characters.
-        value = { type: 'static', value: decodeHtmlEntities(this.curToken.literal) };
+        value = { type: 'static', value: decodeHtmlEntities(this.htmlAttributeText(tag) ?? this.curToken.literal) };
         this.nextToken();
       } else if (this.curTokenIs(TokenType.EXPR_START)) {
         // Expression: prop={expression}
@@ -3410,4 +3459,49 @@ export function parse(source: string): SoftNDocument {
 //    blocks; `<script src>` and a `<script type>` that is not code are no
 //    block; `onclick="…"` and `@click="…"` are handlers; and text inside
 //    `<pre>` and `<textarea>` keeps its whitespace.
-export const PARSER_VERSION = 9;
+// 10: An `onclick="…"` whose code SoftN does not read stays an attribute
+//    (it was dropped), for the document a browser-style page is given; and
+//    a backslash in a quoted attribute of an HTML element is a backslash
+//    (`pattern="\d{3}"`), not the start of an escape; and an HTML element
+//    whose end tag may be left out (`<li>`, `<p>`, `<td>`…) ends where HTML
+//    ends it, where it held the rest of the page.
+export const PARSER_VERSION = 10;
+
+/**
+ * HTML elements whose end tag may be left out (the HTML standard's "optional
+ * end tags"), and what ends one when it is.
+ */
+const OPTIONAL_END_TAGS = new Set(['li', 'dt', 'dd', 'p', 'option', 'optgroup', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'rt', 'rp']);
+const ENDS_A_PARAGRAPH = new Set([
+  'address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'div', 'dl', 'fieldset', 'figcaption', 'figure',
+  'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav', 'ol', 'p',
+  'pre', 'section', 'table', 'ul',
+]);
+function endsBefore(open: string, next: string): boolean {
+  switch (open) {
+    case 'li':
+      return next === 'li';
+    case 'dt':
+    case 'dd':
+      return next === 'dt' || next === 'dd';
+    case 'p':
+      return ENDS_A_PARAGRAPH.has(next);
+    case 'option':
+      return next === 'option' || next === 'optgroup';
+    case 'optgroup':
+      return next === 'optgroup';
+    case 'tr':
+      return next === 'tr' || next === 'tbody' || next === 'thead' || next === 'tfoot';
+    case 'td':
+    case 'th':
+      return next === 'td' || next === 'th' || next === 'tr' || next === 'tbody' || next === 'thead' || next === 'tfoot';
+    case 'thead':
+    case 'tbody':
+      return next === 'tbody' || next === 'tfoot';
+    case 'rt':
+    case 'rp':
+      return next === 'rt' || next === 'rp';
+    default:
+      return false;
+  }
+}

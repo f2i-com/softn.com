@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
+import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -73,6 +74,8 @@ export default defineConfig({
     retireServiceWorkersPlugin(),
     react(),
     coreWorkerAssetPlugin(),
+    // What runs as script: this deployment's files only (scripts/script-policy.mjs).
+    scriptPolicyPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       // Nothing is named here on purpose. Everything in public/ is copied into

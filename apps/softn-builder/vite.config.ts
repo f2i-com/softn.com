@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
+import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -18,6 +19,10 @@ export default defineConfig({
     retireServiceWorkersPlugin(),
     react(),
     coreWorkerAssetPlugin(),
+    // What runs as script: this deployment's files only (scripts/script-policy.mjs). Not in
+    // the desktop build, whose webview has a policy of its own, nor in FormLogic's, which is
+    // drawn inside FormLogic's own document.
+    ...(isTauri || env.VITE_FORMLOGIC_EDITOR === '1' ? [] : [scriptPolicyPlugin()]),
     VitePWA({
       // A service worker buys nothing inside the Tauri webview — the assets are
       // already local — and it can keep serving a previous build after the app

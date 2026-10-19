@@ -21,6 +21,7 @@
  */
 import type { ElementNode, PropNode, TemplateNode, TextNode } from '../parser/ast';
 import type { SourceLocation } from '../parser/token';
+import { SHELL_HTML_ID } from './names';
 
 /** One node of the seed: an element, text, or an island. */
 export interface SeedNode {
@@ -36,6 +37,8 @@ export interface SeedNode {
   x?: string;
   /** An island: SoftN draws it. */
   o?: 1;
+  /** A template's content, which is not on the page. */
+  tpl?: SeedNode[];
 }
 
 export interface ShellSeed {
@@ -44,6 +47,33 @@ export interface ShellSeed {
   title?: string;
   /** Where the page is, for `location`. */
   url?: string;
+  /** 32 bytes from the host's crypto, which key the page's `crypto`. */
+  r?: number[];
+  /** The window: width, height, dark, reduced motion, pixel ratio, coarse pointer. */
+  v?: Viewport;
+}
+
+type Viewport = [number, number, 0 | 1, 0 | 1, number, 0 | 1];
+
+/** The window as the page's code reads it (innerWidth, matchMedia). */
+function viewportNow(): Viewport | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const query = (q: string) => (typeof window.matchMedia === 'function' ? window.matchMedia(q).matches : false);
+  return [
+    window.innerWidth,
+    window.innerHeight,
+    query('(prefers-color-scheme: dark)') ? 1 : 0,
+    query('(prefers-reduced-motion: reduce)') ? 1 : 0,
+    window.devicePixelRatio || 1,
+    query('(pointer: coarse)') ? 1 : 0,
+  ];
+}
+
+/** Bytes the host's own crypto gives, for the page's `crypto` (shell-source.ts). */
+function randomKey(): number[] | undefined {
+  const crypto = (globalThis as { crypto?: { getRandomValues?: (array: Uint8Array) => Uint8Array } }).crypto;
+  if (typeof crypto?.getRandomValues !== 'function') return undefined;
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)));
 }
 
 /** What the shell tells the host after a turn of the engine. */
@@ -91,12 +121,16 @@ export interface DocumentShellView {
   bodyFor(template: TemplateNode[]): TemplateNode[];
   /** Do to the drawn element what the code asked of it (a value, focus). */
   settle(id: number): void;
+  /** What the code put on its `html` and `body`, which are the app's root: `html`'s first. */
+  rootAttributes(): Record<string, string>;
 }
 
 /** The attribute every element the shell draws carries, naming it to the host. */
 export const SHELL_NODE_ATTRIBUTE = 'data-softn-node';
 
 const BODY = 1;
+/** The page's `html`, whose attributes are drawn on the app's root with the body's. */
+const HTML = SHELL_HTML_ID;
 let shells = 0;
 
 /** A place in no source, for a node the code made: unique, so a key made from it is too. */
@@ -180,8 +214,24 @@ export class DocumentShell implements DocumentShellView {
       }
       if (node.type === 'TemplateSlot') return null;
       nodes.set(id, { kind: 'island', id, ast: node, parent });
+      if (node.type === 'Element' && node.tag === 'template') {
+        // Never drawn; what it holds is its content, for the code to copy.
+        return { i: id, o: 1, t: 'template', a: writtenAttributes(node), tpl: inertSeeds(node.children) };
+      }
       if (node.type === 'Element') return { i: id, o: 1, t: node.tag, a: writtenAttributes(node) };
       return { i: id, o: 1 };
+    };
+    // A template's content: elements and text as written, with ids of their
+    // own and nothing of the host's mirror, since none of it is on the page.
+    const inertSeeds = (children: TemplateNode[]): SeedNode[] => {
+      const out: SeedNode[] = [];
+      for (const child of children) {
+        if (child.type === 'Text') out.push({ i: next++, x: child.content });
+        else if (child.type === 'Element' && !child.conditionalIf && !child.inlineEach) {
+          out.push({ i: next++, t: child.tag, a: writtenAttributes(child), c: inertSeeds(child.children) });
+        }
+      }
+      return out;
     };
     const body: SeedNode[] = [];
     const bodyChildren: number[] = [];
@@ -195,6 +245,7 @@ export class DocumentShell implements DocumentShellView {
       children: bodyChildren,
       parent: 0,
     });
+    nodes.set(HTML, { kind: 'element', id: HTML, tag: 'html', attrs: new Map(), touched: new Set(), childrenTouched: false, children: [], parent: 0 });
     for (const node of template) {
       const seeded = seedOf(node, BODY);
       if (seeded) {
@@ -202,7 +253,16 @@ export class DocumentShell implements DocumentShellView {
         bodyChildren.push(seeded.i);
       }
     }
-    this.seed = { next, body, ...(title ? { title } : {}), ...(url ? { url } : {}) };
+    const random = randomKey();
+    const viewport = viewportNow();
+    this.seed = {
+      next,
+      body,
+      ...(title ? { title } : {}),
+      ...(url ? { url } : {}),
+      ...(random ? { r: random } : {}),
+      ...(viewport ? { v: viewport } : {}),
+    };
   }
 
   /** The seed as the source the shell is started with. */
@@ -214,6 +274,22 @@ export class DocumentShell implements DocumentShellView {
 
   idOf(node: TemplateNode): number | undefined {
     return this.ids.get(node);
+  }
+
+  rootAttributes(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const id of [HTML, BODY]) {
+      const node = this.nodes.get(id);
+      if (!node || node.kind !== 'element') continue;
+      for (const [name, value] of node.attrs) {
+        // Each says something of its own; class and style are put together.
+        if (name === 'class' && out.class) out.class += ' ' + value;
+        else if (name === 'style' && out.style) out.style += ';' + value;
+        else out[name] = value;
+      }
+    }
+    delete out.id;
+    return out;
   }
 
   subscribe(id: number, onChange: () => void): () => void {
@@ -318,6 +394,12 @@ export class DocumentShell implements DocumentShellView {
       if (name === 'value' && 'value' in field) field.value = String(value);
       else if (name === 'checked' && 'checked' in field) field.checked = Boolean(value);
       else if (name === 'selectedIndex' && 'selectedIndex' in field) field.selectedIndex = Number(value);
+      else if (name === 'chosen' && Array.isArray(value) && field.tagName === 'SELECT') {
+        const chosen = new Set(value.map(Number));
+        Array.from(field.options).forEach((option, i) => {
+          option.selected = chosen.has(i);
+        });
+      } else if (name === 'measure') this.measure(id, element);
       else if (name === 'focus') (element as HTMLElement).focus?.();
       else if (name === 'blur') (element as HTMLElement).blur?.();
       else if (name === 'scrollIntoView') element.scrollIntoView?.({ block: 'nearest' });
@@ -526,7 +608,16 @@ export class DocumentShell implements DocumentShellView {
       const id = this.idIn(event.target);
       if (id === null) return;
       const element = event.target as HTMLInputElement;
-      if (element.tagName === 'SELECT') this.pendingSync.push(['s', id, (element as unknown as HTMLSelectElement).selectedIndex]);
+      if (element.tagName === 'SELECT') {
+        const select = element as unknown as HTMLSelectElement;
+        if (select.multiple) {
+          const chosen: number[] = [];
+          Array.from(select.options).forEach((option, i) => {
+            if (option.selected) chosen.push(i);
+          });
+          this.pendingSync.push(['S', id, chosen]);
+        } else this.pendingSync.push(['s', id, select.selectedIndex]);
+      }
       else if (element.type === 'checkbox' || element.type === 'radio') {
         this.pendingSync.push(['k', id, element.checked]);
         // A radio chosen takes its group's other choices with it.
@@ -543,13 +634,45 @@ export class DocumentShell implements DocumentShellView {
       const id = this.idIn(event.target);
       this.pendingSync.push(['f', id ?? 0]);
     };
+    // A <details> opened or closed by the person: its open, as the page shows it.
+    const toggled = (event: Event) => {
+      const id = this.idIn(event.target);
+      const element = event.target as HTMLDetailsElement;
+      if (id === null || element.tagName !== 'DETAILS') return;
+      this.pendingSync.push(['A', id, 'open', element.open ? '' : null]);
+    };
     doc.addEventListener('input', field, true);
     doc.addEventListener('change', field, true);
     doc.addEventListener('focusin', focus, true);
+    doc.addEventListener('toggle', toggled, true);
+    // The window's size and the person's settings, as innerWidth and
+    // matchMedia() read them. Told with the next thing the code hears; and at
+    // once, when the code listens for a resize or a media query.
+    const view = doc.defaultView;
+    let viewTold = JSON.stringify(this.seed.v ?? null);
+    const viewChanged = () => {
+      const now = viewportNow();
+      const text = JSON.stringify(now ?? null);
+      if (!now || text === viewTold) return;
+      viewTold = text;
+      this.pendingSync = this.pendingSync.filter((change) => !Array.isArray(change) || change[0] !== 'W');
+      if (this.listened.has('softn:viewport') && this.dispatcher) this.dispatcher(-1, 'softn:viewport', { v: now }, []);
+      else this.pendingSync.push(['W', now]);
+    };
+    const media = view && typeof view.matchMedia === 'function'
+      ? ['(prefers-color-scheme: dark)', '(prefers-reduced-motion: reduce)', '(pointer: coarse)'].map((q) => view.matchMedia(q))
+      : [];
+    view?.addEventListener('resize', viewChanged);
+    for (const list of media) list.addEventListener?.('change', viewChanged);
     this.unhook.push(() => {
       doc.removeEventListener('input', field, true);
       doc.removeEventListener('change', field, true);
       doc.removeEventListener('focusin', focus, true);
+      doc.removeEventListener('toggle', toggled, true);
+      view?.removeEventListener('resize', viewChanged);
+      for (const list of media) list.removeEventListener?.('change', viewChanged);
+      this.sizes?.disconnect();
+      this.sizes = null;
     });
     for (const type of this.listened) this.hear(type);
     // Values and settings the code asked for before the page was drawn.
@@ -559,6 +682,42 @@ export class DocumentShell implements DocumentShellView {
   disconnect(): void {
     for (const off of this.unhook.splice(0)) off();
     this.container = null;
+  }
+
+  /** Elements whose size the code asked, measured whenever they change. */
+  private sizes: ResizeObserver | null = null;
+  private readonly measuring = new Map<Element, number>();
+  private boxesDue: Array<[number, number, number, number, number]> | null = null;
+
+  /** Measure an element of the code's, now and whenever it changes size. */
+  private measure(id: number, element: Element): void {
+    if (typeof ResizeObserver !== 'function' || this.measuring.size >= MAX_MEASURED) return;
+    for (const [known, knownId] of this.measuring) if (knownId === id && known !== element) this.sizes?.unobserve(known);
+    this.measuring.set(element, id);
+    this.sizes ??= new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const measured = this.measuring.get(entry.target);
+        if (measured === undefined) continue;
+        // Taken off the page, or drawn again as another element: let go.
+        if (!entry.target.isConnected) {
+          this.sizes?.unobserve(entry.target);
+          this.measuring.delete(entry.target);
+          continue;
+        }
+        const box = entry.target.getBoundingClientRect();
+        (this.boxesDue ??= []).push([measured, box.x, box.y, box.width, box.height]);
+      }
+      this.tellBoxes();
+    });
+    this.sizes.observe(element);
+  }
+
+  /** What was measured, to the code, once a frame. */
+  private tellBoxes(): void {
+    if (!this.boxesDue || !this.dispatcher) return;
+    const boxes = this.boxesDue;
+    this.boxesDue = null;
+    this.dispatcher(-1, 'softn:boxes', { boxes }, []);
   }
 
   /** The page has been drawn: DOMContentLoaded and load. */
@@ -585,14 +744,21 @@ export class DocumentShell implements DocumentShellView {
    * with it stays its own: an app cannot cancel the page's keys.
    */
   private hear(type: string): void {
-    if (type === 'DOMContentLoaded' || type === 'load') return;
+    if (type === 'DOMContentLoaded' || type === 'load' || type === 'softn:viewport') return;
     const container = this.container!;
     const doc = container.ownerDocument;
     const onApp = (event: Event) => {
       if (!this.dispatcher) return;
       const target = event.target as Node | null;
       const id = this.idIn(target) ?? BODY;
-      const flags = this.dispatcher(id, type, eventData(event), this.seenPath(target, id));
+      const data = eventData(event);
+      // The button a form was sent with, as event.submitter.
+      const submitter = (event as SubmitEvent).submitter;
+      if (submitter) {
+        const submitterId = this.idIn(submitter);
+        if (submitterId !== null) data.submitter = submitterId;
+      }
+      const flags = this.dispatcher(id, type, data, this.seenPath(target, id));
       if (flags & 1) event.preventDefault();
       if (flags & 4) event.stopPropagation();
     };
@@ -649,6 +815,9 @@ export interface SeenElement {
   k?: boolean;
 }
 
+/** How many of the page's elements are measured for it at once. */
+const MAX_MEASURED = 2000;
+
 /** How far up from an event's target an island's elements are seen. */
 const MAX_SEEN = 32;
 /** How much of an element's text, and of an attribute's value, is seen. */
@@ -679,11 +848,11 @@ const BUBBLES = new Set([
 /** What a script is told of an event, besides where it happened. */
 function eventData(event: Event): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  const e = event as Event & Partial<KeyboardEvent & MouseEvent & InputEvent & WheelEvent>;
+  const e = event as Event & Partial<KeyboardEvent & MouseEvent & InputEvent & WheelEvent & PointerEvent>;
   for (const key of [
     'key', 'code', 'repeat', 'ctrlKey', 'shiftKey', 'altKey', 'metaKey', 'clientX', 'clientY', 'pageX', 'pageY',
     'offsetX', 'offsetY', 'screenX', 'screenY', 'button', 'buttons', 'deltaX', 'deltaY', 'deltaMode', 'data',
-    'inputType', 'detail',
+    'inputType', 'detail', 'pointerId', 'pointerType', 'isPrimary', 'pressure', 'width', 'height', 'movementX', 'movementY',
   ] as const) {
     const value = e[key];
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') out[key] = value;

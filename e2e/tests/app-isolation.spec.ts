@@ -68,7 +68,7 @@ const STAND_INS = `<!doctype html><html><head><style>
 </style></head><body>
 <div class="softn-consent-bar host" id="bar">Bar</div>
 <div class="host" id="h2">host</div>
-<div data-softn-app="a1" style="display:contents"><div id="approot"><div class="a"><span class="b q" title="}">app</span></div></div></div>
+<div class="host-theme"><div data-softn-app="a1" style="display:contents"><div id="approot"><div class="a"><span class="b q" title="}">app</span></div></div></div></div>
 <div class="host" id="h3">after</div>
 </body></html>`;
 
@@ -127,7 +127,7 @@ window.scope = (css) => scopeAppCss(sanitizeBundleCSS(css), 'a1').css;`,
   const own = await page.evaluate(() => {
     const style = document.createElement('style');
     style.textContent = (window as unknown as { scope: (css: string) => string }).scope(
-      '.a{color:rgb(9,9,9)} body{background-color:rgb(7,7,7)} .a{ .b{color:rgb(8,8,8)} } @keyframes spin{to{opacity:.5}} .b{animation:spin 1s}'
+      '.a{color:rgb(9,9,9)} body{background-color:rgb(7,7,7)} .a{ .b{color:rgb(8,8,8)} } @keyframes spin{to{opacity:.5}} .b{animation:spin 1s} .host-theme .b{text-decoration-line:underline}'
     );
     document.querySelector('#approot')!.appendChild(style);
     return {
@@ -135,9 +135,11 @@ window.scope = (css) => scopeAppCss(sanitizeBundleCSS(css), 'a1').css;`,
       root: getComputedStyle(document.getElementById('approot')!).backgroundColor,
       b: getComputedStyle(document.querySelector('.b')!).color,
       animation: getComputedStyle(document.querySelector('.b')!).animationName,
+      // A theme the host sets on an element around the app.
+      themed: getComputedStyle(document.querySelector('.b')!).textDecorationLine,
     };
   });
-  expect(own).toEqual({ a: 'rgb(9, 9, 9)', root: 'rgb(7, 7, 7)', b: 'rgb(8, 8, 8)', animation: 'spin-a1' });
+  expect(own).toEqual({ a: 'rgb(9, 9, 9)', root: 'rgb(7, 7, 7)', b: 'rgb(8, 8, 8)', animation: 'spin-a1', themed: 'underline' });
 });
 
 /** Open `buffer` through the workspace's "Open a .softn file" button. */

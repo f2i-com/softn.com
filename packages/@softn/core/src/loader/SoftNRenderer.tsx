@@ -11,13 +11,14 @@ import React, {
   useCallback,
   useMemo,
   useRef,
+  useSyncExternalStore,
   Component,
 } from 'react';
 import { parseCached } from '../parser';
 import { renderDocument } from '../renderer';
-import { shellOwnsTag } from '../renderer/render';
+import { rootProps, shellOwnsTag } from '../renderer/render';
 import { sameSiteAddress } from '../renderer/html-elements';
-import { usesDocument } from '../document-shell/names';
+import { hasPageHandlers, SHELL_HTML_ID, usesDocument } from '../document-shell/names';
 import type { DocumentShell } from '../document-shell/host';
 import type { DocumentShellRequest } from '../runtime/script-runtime';
 import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
@@ -710,6 +711,8 @@ export function SoftNRenderer({
   // What the page's `alert()` last said, shown in the app as the app's.
   const [appAlert, setAppAlert] = useState<string | null>(null);
   const showAlert = useCallback((message: string) => setAppAlert(message), []);
+  // Why a page written for a browser has no script running, said on the page.
+  const [scriptNotice, setScriptNotice] = useState<string | null>(null);
   // The document the page's code is given, once its code is found to use one.
   const [documentShell, setDocumentShell] = useState<DocumentShell | null>(null);
   // Whether the page's code took the document: it is told the page is ready then.
@@ -870,6 +873,11 @@ export function SoftNRenderer({
   onLoadRef.current = onLoad;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  // Where the app's files are, read as it is now: a page's fetch('data.json')
+  // asks it (bundle.read), and a new function each render must not restart the app.
+  const assetResolverRef = useRef(assetResolver);
+  assetResolverRef.current = assetResolver;
+  const readAsset = useCallback((path: string) => assetResolverRef.current?.(path) ?? '', []);
 
   // Host functions are often supplied inline (the web and native loaders both
   // do this for asset()). Rebuilding the VM on each identity change would run
@@ -925,6 +933,7 @@ export function SoftNRenderer({
     let stale = false;
     // A refused save belonged to the runtime being replaced.
     setPersistenceNotice(null);
+    setScriptNotice(null);
 
     if (resolvedSource) {
       // Capture scroll/focus before re-parsing for hot reload
@@ -971,7 +980,10 @@ export function SoftNRenderer({
 
         // Process script or logic block if present (only on first parse or source change)
         // Support both <script> and <logic> tags - <logic> is the preferred new syntax
-        const codeBlock = doc.script || doc.logic;
+        // A page with handlers written for a browser runs them in its document,
+        // with code of its own or none.
+        const browserHandlers = logicEngineIsSandboxed() && hasPageHandlers(doc.template);
+        const codeBlock = doc.script || doc.logic || (browserHandlers ? { type: 'LogicBlock' as const, code: '', loc: doc.loc } : undefined);
 
         // Which state variables the markup can actually read. Derived here
         // because this is where the parsed document lives; the runtime only
@@ -1210,7 +1222,7 @@ export function SoftNRenderer({
           // code had loaded, every element on it was drawn twice, and what was
           // typed in between was lost. (Code an import brings in is found as
           // it compiles, and such a page changes over then.)
-          if (!forceWorker && !runtimePython && logicEngineIsSandboxed() && usesDocument(codeBlock.code || '')) {
+          if (!forceWorker && !runtimePython && logicEngineIsSandboxed() && (usesDocument(codeBlock.code || '') || browserHandlers)) {
             earlyShell = shellRequest.create().then(
               (made) => {
                 if (!stale && mountedRef.current) setDocumentShell(made);
@@ -1241,6 +1253,8 @@ export function SoftNRenderer({
               {
                 mode: 'main',
                 documentShell: shellRequest,
+                browserHandlers,
+                assetResolver: readAsset,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1329,6 +1343,8 @@ export function SoftNRenderer({
               {
                 mode: 'main',
                 documentShell: shellRequest,
+                browserHandlers,
+                assetResolver: readAsset,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1367,6 +1383,8 @@ export function SoftNRenderer({
               {
                 mode: 'main',
                 documentShell: shellRequest,
+                browserHandlers,
+                assetResolver: readAsset,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
@@ -1512,11 +1530,19 @@ export function SoftNRenderer({
               if (stale || !mountedRef.current) return;
               console.error('[SoftN] Error loading script:', err);
               const scriptError = err instanceof Error ? err : new Error(String(err));
-              setState((prev) => ({
-                ...prev,
-                error: scriptError,
-                loading: false,
-              }));
+              if (browserHandlers || usesDocument(codeBlock.code || '')) {
+                // Code written for a browser: as in a browser, the page stays,
+                // and only its script stopped. The page is drawn as written,
+                // and what stopped it is said on it.
+                setScriptNotice(`This page's script stopped: ${scriptError.message}`);
+                setState((prev) => ({ ...prev, loading: false }));
+              } else {
+                setState((prev) => ({
+                  ...prev,
+                  error: scriptError,
+                  loading: false,
+                }));
+              }
               // Told to the host as a markup error is: a host that reports
               // through onError (FormLogic's frame does) heard of a page that
               // would not parse, and of no logic that would not compile.
@@ -1593,6 +1619,7 @@ export function SoftNRenderer({
     netFetchHandler,
     // Stable: made once with useCallback.
     showAlert,
+    readAsset,
     runtimePython,
     runtimePermissions,
     runtimePreIncludedLogicPaths,
@@ -1826,6 +1853,24 @@ export function SoftNRenderer({
     scriptRuntimeRef.current?.setAppRoot?.(containerElement);
   }, [containerElement, scriptLoaded, state.document]);
 
+  // What the page's code put on its html and body, drawn on the app's root.
+  const rootVersion = useSyncExternalStore(
+    useCallback(
+      (onChange: () => void) => {
+        if (!documentShell) return () => {};
+        const offBody = documentShell.subscribe(documentShell.bodyId, onChange);
+        const offHtml = documentShell.subscribe(SHELL_HTML_ID, onChange);
+        return () => {
+          offBody();
+          offHtml();
+        };
+      },
+      [documentShell]
+    ),
+    () => (documentShell ? documentShell.version(documentShell.bodyId) * 65536 + documentShell.version(SHELL_HTML_ID) : 0),
+    () => 0
+  );
+
   // The app's style block, kept to the element the app is drawn in.
   const [appName] = useState(() => `a${(++appsNamed).toString(36)}`);
   const [styleScoper, setStyleScoper] = useState<'loading' | 'ready' | 'failed'>(scopeCss ? 'ready' : 'loading');
@@ -2027,6 +2072,10 @@ export function SoftNRenderer({
     // Generate a key based on state values that should trigger full re-render
     // This ensures React remounts content when navigation happens
     const stateKey = (state.componentState['currentPage'] as string) ?? 'default';
+    // What the page's code put on its html and body (a theme class, a CSS
+    // variable), checked as any element's attributes are.
+    const root = documentShell && rootVersion >= 0 ? rootProps(documentShell.rootAttributes(), context, registry) : {};
+    const rootStyle = root.style && typeof root.style === 'object' ? (root.style as React.CSSProperties) : null;
 
     return (
       // Both providers sit outside the keyed container, so a page change does
@@ -2050,6 +2099,7 @@ export function SoftNRenderer({
           app's `html` and `body`, and has nothing beside it to reach. */}
       <div data-softn-app={appName} style={{ display: 'contents' }}>
       <div
+        {...root}
         ref={attachContainer}
         key={`softn-container-${stateKey}`}
         data-softn-page={stateKey}
@@ -2058,8 +2108,8 @@ export function SoftNRenderer({
         // page without the block, rather than not at all.)
         style={
           styleContent && !scopedStyle && styleScoper === 'loading'
-            ? { height: '100%', minHeight: 0, visibility: 'hidden' }
-            : { height: '100%', minHeight: 0 }
+            ? { height: '100%', minHeight: 0, ...rootStyle, visibility: 'hidden' }
+            : { height: '100%', minHeight: 0, ...rootStyle }
         }
       >
         {scopedStyle && <style dangerouslySetInnerHTML={{ __html: scopedStyle.css }} />}
@@ -2071,6 +2121,9 @@ export function SoftNRenderer({
         )}
         {appAlert !== null && (
           <PersistenceNotice kind="alert" message={appAlert} onDismiss={() => setAppAlert(null)} />
+        )}
+        {scriptNotice !== null && (
+          <PersistenceNotice message={scriptNotice} onDismiss={() => setScriptNotice(null)} />
         )}
         <SoftNErrorBoundary
           fallback={(error, reset) =>

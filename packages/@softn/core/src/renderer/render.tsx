@@ -19,6 +19,7 @@ import type {
   BindingPattern,
   BindingTarget,
   ArrowFunctionExpression,
+  PropNode,
 } from '../parser/ast';
 import { EVENT_MODIFIERS, isIdentifierName, patternNames } from '../parser/ast';
 import type { SoftNLocalScope, SoftNRenderContext, SoftNProps } from '../types';
@@ -332,6 +333,29 @@ export function renderDocument(
   } finally {
     pass = outer;
   }
+}
+
+/**
+ * What the page's code has put on its `html` and `body` (a class, a style,
+ * a data attribute), as props for the app's own root element, which those
+ * are in an app: drawn through the same checks as any element's, then the
+ * few a root takes. An `id` is not one: the root is the host's element.
+ */
+export function rootProps(
+  attrs: Record<string, string>,
+  context: SoftNRenderContext,
+  registry: ComponentRegistry
+): Record<string, unknown> {
+  const props: PropNode[] = [];
+  const loc = { line: 0, column: 0, start: 0, end: 0 };
+  for (const [name, value] of Object.entries(attrs)) props.push({ type: 'Prop', name, value: { type: 'static', value }, loc });
+  const drawn = renderElement({ type: 'Element', tag: 'div', props, events: [], bindings: [], children: [], selfClosing: true, loc }, context, registry);
+  const out: Record<string, unknown> = {};
+  if (!React.isValidElement(drawn)) return out;
+  for (const [name, value] of Object.entries(drawn.props as Record<string, unknown>)) {
+    if (/^(?:className|style|lang|dir|title|role)$|^(?:data|aria)-/.test(name) && value !== undefined) out[name] = value;
+  }
+  return out;
 }
 
 /**
@@ -676,6 +700,17 @@ function isHTMLElement(tag: string): boolean {
  * HTML elements that cannot contain children. React rejects the children
  * argument for these outright rather than ignoring it.
  */
+/** How a modal <dialog> is drawn: over the app, with the app dimmed behind it. */
+const MODAL_DIALOG: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  margin: 'auto',
+  zIndex: 2147483000,
+  maxWidth: 'calc(100% - 2em)',
+  maxHeight: 'calc(100% - 2em)',
+  boxShadow: '0 0 0 100vmax rgba(0, 0, 0, 0.45)',
+};
+
 /** HTML's boolean attributes: on when present, whatever their value says. */
 const HTML_BOOLEAN_ATTRIBUTES = new Set([
   'allowfullscreen', 'async', 'autofocus', 'autoplay', 'checked', 'controls', 'default', 'defer', 'disabled',
@@ -1413,6 +1448,10 @@ function renderElement(
     return reusableFragment(node, 'each', key, key, renderedItems);
   }
 
+  // A <template> is never drawn, as in a browser: what it holds is for the
+  // page's code to copy (document-shell/), not something on the page.
+  if (node.tag === 'template' && !registry.get(node.tag)) return null;
+
   // First, check the registry for a custom component
   let Component: SoftNComponent | keyof JSX.IntrinsicElements | undefined = registry.get(node.tag);
 
@@ -1881,6 +1920,12 @@ function renderElement(
     // After the URL check, which drops an action it refuses, and a link
     // it refuses.
     if (FinalComponent === 'form') keepFormOnPage(props);
+    // A dialog the page's code opened with showModal(): drawn over the app,
+    // inside the app's box, rather than in the browser's top layer, which
+    // no box keeps in.
+    if (FinalComponent === 'dialog' && props['data-softn-modal'] !== undefined) {
+      props.style = { ...MODAL_DIALOG, ...(isPlainObject(props.style) ? props.style : {}) };
+    }
     if (FinalComponent === 'a') followPageLinks(props, context.followLink);
     dropCodeAttributes(props);
     dropTopLayerProps(props);

@@ -133,6 +133,7 @@ var __softnShell = (function (win) {
     var lower = String(tag).toLowerCase();
     var Ctor = ELEMENT_CLASSES[lower] || HTMLElement;
     var node = Object.create(Ctor.prototype);
+    if (lower === 'form') node = new Proxy(node, FORM_FIELDS);
     var r = newRecord(1, id);
     r.tag = lower;
     r.island = !!island;
@@ -162,13 +163,15 @@ var __softnShell = (function (win) {
   function detach(child) {
     var c = rec(child);
     if (!c.parent) return;
-    var p = rec(c.parent);
+    var parent = c.parent;
+    var p = rec(parent);
     var was = isConnected(p);
     var at = p.kids.indexOf(child);
     if (at >= 0) p.kids.splice(at, 1);
     c.parent = null;
     if (was) forget(c);
     childrenChanged(p);
+    mutated({ type: 'childList', target: parent, removedNodes: [child], previousSibling: p.kids[at - 1] || null, nextSibling: p.kids[at] || null });
   }
 
   function nodesFrom(args) {
@@ -223,6 +226,9 @@ var __softnShell = (function (win) {
       for (var q = 0; q < flat.length; q++) announce(rec(flat[q]));
       ops.push(['c', p.id, kidIds(p)]);
     }
+    if (flat.length > 0) {
+      mutated({ type: 'childList', target: parent, addedNodes: flat, previousSibling: p.kids[at - 1] || null, nextSibling: p.kids[at + flat.length] || null });
+    }
   }
 
   function nextSiblingOf(node, skipping) {
@@ -243,6 +249,7 @@ var __softnShell = (function (win) {
       if (was) forget(rec(old[i]));
     }
     p.kids = [];
+    if (old.length > 0) mutated({ type: 'childList', target: parent, removedNodes: old });
     if (nodes.length > 0) insert(parent, nodes, null);
     else childrenChanged(p);
   }
@@ -292,13 +299,16 @@ var __softnShell = (function (win) {
     for (var i = 0; i < r.attrs.length; i++) {
       if (r.attrs[i][0] === name) {
         if (r.attrs[i][1] === value) return;
+        var was = r.attrs[i][1];
         r.attrs[i][1] = value;
         attrChanged(r, name, value);
+        mutated({ type: 'attributes', target: node, attributeName: name, oldValue: was });
         return;
       }
     }
     r.attrs.push([name, value]);
     attrChanged(r, name, value);
+    mutated({ type: 'attributes', target: node, attributeName: name, oldValue: null });
   }
 
   function removeAttr(node, name) {
@@ -308,8 +318,10 @@ var __softnShell = (function (win) {
     if (name.indexOf('on') === 0 && name.length > 2) { delete r.inline[name.slice(2)]; return; }
     for (var i = 0; i < r.attrs.length; i++) {
       if (r.attrs[i][0] === name) {
+        var was = r.attrs[i][1];
         r.attrs.splice(i, 1);
         attrChanged(r, name, null);
+        mutated({ type: 'attributes', target: node, attributeName: name, oldValue: was });
         return;
       }
     }
@@ -464,6 +476,10 @@ var __softnShell = (function (win) {
       toString: function () { return getAttr(r, 'class') || ''; },
     };
     Object.defineProperty(r.classList, 'length', { get: function () { return classesOf(r).length; } });
+    r.classList[Symbol.iterator] = function () { return classesOf(r)[Symbol.iterator](); };
+    r.classList.entries = function () { return classesOf(r).entries(); };
+    r.classList.values = function () { return classesOf(r).values(); };
+    r.classList.keys = function () { return classesOf(r).keys(); };
     Object.defineProperty(r.classList, 'value', { get: function () { return getAttr(r, 'class') || ''; } });
     return r.classList;
   }
@@ -481,6 +497,17 @@ var __softnShell = (function (win) {
       },
       set: function (target, key, value) { setAttr(node, dataName(key), value); return true; },
       deleteProperty: function (target, key) { removeAttr(node, dataName(key)); return true; },
+      has: function (target, key) { return typeof key === 'string' && getAttr(r, dataName(key)) !== null; },
+      // Object.keys(el.dataset), for…in and {...el.dataset} see what is set.
+      ownKeys: function () {
+        return r.attrs.filter(function (a) { return a[0].indexOf('data-') === 0; }).map(function (a) {
+          return a[0].slice(5).replace(/-([a-z])/g, function (m, c) { return c.toUpperCase(); });
+        });
+      },
+      getOwnPropertyDescriptor: function (target, key) {
+        var value = typeof key === 'string' ? getAttr(r, dataName(key)) : null;
+        return value === null ? undefined : { value: value, writable: true, enumerable: true, configurable: true };
+      },
     });
     return r.dataset;
   }
@@ -705,6 +732,12 @@ var __softnShell = (function (win) {
   // The element a search was asked of, for :scope.
   var scopeNode = null;
 
+  // A list the document hands back, which answers to item() as a NodeList does.
+  function nodeList(list) {
+    Object.defineProperty(list, 'item', { value: function (i) { return this[i] || null; }, enumerable: false, configurable: true });
+    return list;
+  }
+
   function query(root, selector, all) {
     var groups = parseSelectors(selector);
     var found = [];
@@ -721,7 +754,7 @@ var __softnShell = (function (win) {
     } finally {
       scopeNode = outer;
     }
-    return all ? found : found[0] || null;
+    return all ? nodeList(found) : found[0] || null;
   }
 
   // ---------------------------------------------------------------- HTML
@@ -875,6 +908,11 @@ var __softnShell = (function (win) {
   }
 
   function setInnerHTML(node, html) {
+    if (rec(node).tag === 'template') {
+      var content = node.content;
+      replaceAllChildren(content, parseHTML(html).map(function (n) { rec(n).parent = null; return n; }));
+      return;
+    }
     var nodes = parseHTML(html);
     for (var i = 0; i < nodes.length; i++) rec(nodes[i]).parent = null;
     replaceAllChildren(node, nodes);
@@ -919,6 +957,8 @@ var __softnShell = (function (win) {
   var CustomEvent = subEvent({});
   var KeyboardEvent = subEvent({ key: '', code: '', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, repeat: false });
   var MouseEvent = subEvent({ clientX: 0, clientY: 0, pageX: 0, pageY: 0, button: 0, buttons: 0, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false });
+  var PointerEvent = subEvent({ clientX: 0, clientY: 0, pageX: 0, pageY: 0, button: 0, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, pressure: 0, width: 1, height: 1, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false });
+  var DragEvent = subEvent({ clientX: 0, clientY: 0, dataTransfer: null });
   var InputEvent = subEvent({ data: null, inputType: '' });
   var FocusEvent = subEvent({ relatedTarget: null });
   var SubmitEvent = subEvent({ submitter: null });
@@ -931,7 +971,7 @@ var __softnShell = (function (win) {
     var list = r.listeners[type] || (r.listeners[type] = []);
     for (var i = 0; i < list.length; i++) if (list[i].fn === fn && list[i].capture === capture) return;
     list.push({ fn: fn, capture: capture, once: once });
-    listen(type);
+    if (r.type !== 0) listen(type);
   }
 
   function removeListener(node, type, fn, options) {
@@ -996,13 +1036,19 @@ var __softnShell = (function (win) {
       dispatch(node, new Event('change', { bubbles: true }));
     } else if ((r.tag === 'button' && type !== 'button' && type !== 'reset') || (r.tag === 'input' && type === 'submit')) {
       var form = node.closest('form');
-      if (form) form.requestSubmit();
+      if (form) {
+        form.requestSubmit(node);
+        return;
+      }
     }
   }
 
   // ---------------------------------------------------------------- classes
 
   class EventTarget {
+    // One of the page's own (new EventTarget(), an AbortSignal): listeners,
+    // with no place in the document.
+    constructor() { if (!rec(this)) STATE.set(this, newRecord(0, -1)); }
     addEventListener(type, fn, options) { addListener(this, String(type), fn, options); }
     removeEventListener(type, fn, options) { removeListener(this, String(type), fn, options); }
     dispatchEvent(event) { return dispatch(this, event); }
@@ -1012,7 +1058,7 @@ var __softnShell = (function (win) {
     get nodeType() { return rec(this).type; }
     get parentNode() { return rec(this).parent; }
     get parentElement() { var p = rec(this).parent; return p && rec(p).type === 1 ? p : null; }
-    get childNodes() { return rec(this).kids.slice(); }
+    get childNodes() { return nodeList(rec(this).kids.slice()); }
     get firstChild() { var k = rec(this).kids; return k.length ? k[0] : null; }
     get lastChild() { var k = rec(this).kids; return k.length ? k[k.length - 1] : null; }
     get nextSibling() { var r = rec(this); if (!r.parent) return null; var k = rec(r.parent).kids; return k[k.indexOf(this) + 1] || null; }
@@ -1030,8 +1076,10 @@ var __softnShell = (function (win) {
     set nodeValue(value) {
       var r = rec(this);
       if (r.type !== 3 && r.type !== 8) return;
+      var was = r.text;
       r.text = value === null || value === undefined ? '' : String(value);
       if (r.type === 3 && isConnected(r)) ops.push(['x', r.id, r.text]);
+      if (was !== r.text) mutated({ type: 'characterData', target: this, oldValue: was });
     }
     appendChild(child) { insert(this, [child], null); return child; }
     insertBefore(child, ref) { insert(this, [child], ref || null); return child; }
@@ -1068,6 +1116,7 @@ var __softnShell = (function (win) {
       for (var type in r.inline) cr.inline[type] = r.inline[type];
       if (r.value !== undefined) cr.value = r.value;
       if (r.checked !== undefined) cr.checked = r.checked;
+      if (deep && r.content) cr.content = clone(r.content, true);
     }
     if (deep && !r.island) {
       for (var k = 0; k < r.kids.length; k++) {
@@ -1105,7 +1154,7 @@ var __softnShell = (function (win) {
     for (var key in getters) Object.defineProperty(proto, key, { get: getters[key], configurable: true });
   }
   var PARENT_GETTERS = {
-    children: function () { return rec(this).kids.filter(function (n) { return rec(n).type === 1; }); },
+    children: function () { return nodeList(rec(this).kids.filter(function (n) { return rec(n).type === 1; })); },
     childElementCount: function () { return this.children.length; },
     firstElementChild: function () { return this.children[0] || null; },
     lastElementChild: function () { var c = this.children; return c[c.length - 1] || null; },
@@ -1126,7 +1175,13 @@ var __softnShell = (function (win) {
     get attributes() {
       return rec(this).attrs.map(function (a) { return { name: a[0], value: a[1] }; });
     }
-    get innerHTML() { var r = rec(this); var out = ''; if (!r.island) for (var i = 0; i < r.kids.length; i++) out += serialize(rec(r.kids[i])); return out; }
+    get innerHTML() {
+      var r = rec(this);
+      var from = r.tag === 'template' ? rec(this.content) : r;
+      var out = '';
+      if (!r.island || r.tag === 'template') for (var i = 0; i < from.kids.length; i++) out += serialize(rec(from.kids[i]));
+      return out;
+    }
     set innerHTML(html) {
       if (rec(this).island) { warnOnce('island-children', 'A part of the page SoftN draws cannot be given children by the page\u2019s code.'); return; }
       setInnerHTML(this, html === null || html === undefined ? '' : html);
@@ -1176,16 +1231,21 @@ var __softnShell = (function (win) {
       if (dispatch(this, event)) clickDefault(this);
     }
     scrollIntoView() { propChanged(rec(this), 'scrollIntoView', true); }
-    getBoundingClientRect() { return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }; }
-    getClientRects() { return []; }
-    get offsetWidth() { return 0; }
-    get offsetHeight() { return 0; }
-    get offsetTop() { return 0; }
-    get offsetLeft() { return 0; }
-    get clientWidth() { return 0; }
-    get clientHeight() { return 0; }
-    get scrollWidth() { return 0; }
-    get scrollHeight() { return 0; }
+    // The pointer is the host's to hold; a drag that leaves the element is
+    // still heard, by the window's own listeners.
+    setPointerCapture() {}
+    releasePointerCapture() {}
+    hasPointerCapture() { return false; }
+    getBoundingClientRect() { return boxRect(measured(this)); }
+    getClientRects() { var box = measured(this); return box ? [boxRect(box)] : []; }
+    get offsetWidth() { var box = measured(this); return box ? Math.round(box.w) : 0; }
+    get offsetHeight() { var box = measured(this); return box ? Math.round(box.h) : 0; }
+    get offsetTop() { var box = measured(this); return box ? Math.round(box.y) : 0; }
+    get offsetLeft() { var box = measured(this); return box ? Math.round(box.x) : 0; }
+    get clientWidth() { var box = measured(this); return box ? Math.round(box.w) : 0; }
+    get clientHeight() { var box = measured(this); return box ? Math.round(box.h) : 0; }
+    get scrollWidth() { var box = measured(this); return box ? Math.round(box.w) : 0; }
+    get scrollHeight() { var box = measured(this); return box ? Math.round(box.h) : 0; }
   }
   mix(Element.prototype, PARENT_METHODS);
   defineGetters(Element.prototype, PARENT_GETTERS);
@@ -1278,6 +1338,124 @@ var __softnShell = (function (win) {
     return v === null ? '' : v;
   }
 
+  // What a form's checks say of a field: its validity, as a browser works it
+  // out from required, type, pattern, minlength, maxlength, min, max and
+  // step, and what setCustomValidity() said.
+  var EMAIL = /^[a-zA-Z0-9.!#$%&'*+\/=?^_\x60{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+  var NOT_CHECKED = { hidden: 1, button: 1, submit: 1, reset: 1, image: 1 };
+  var VALIDITY_MESSAGES = [
+    ['valueMissing', 'Please fill in this field.'], ['typeMismatch', 'Please enter a valid value.'],
+    ['patternMismatch', 'Please match the requested format.'], ['tooLong', 'Please shorten this text.'],
+    ['tooShort', 'Please lengthen this text.'], ['rangeUnderflow', 'The value is too low.'],
+    ['rangeOverflow', 'The value is too high.'], ['stepMismatch', 'Please enter a valid value.'],
+    ['badInput', 'Please enter a number.'],
+  ];
+  function willValidate(r) {
+    if (r.tag !== 'input' && r.tag !== 'select' && r.tag !== 'textarea') return false;
+    if (getAttr(r, 'disabled') !== null || getAttr(r, 'readonly') !== null) return false;
+    return !NOT_CHECKED[(getAttr(r, 'type') || '').toLowerCase()];
+  }
+  function inputNumber(type, text) {
+    if (text === '' || text === null) return NaN;
+    if (type === 'number' || type === 'range') return Number(text);
+    return Date.parse(type === 'time' ? '1970-01-01T' + text + 'Z' : text);
+  }
+  function radioGroup(radio) {
+    var name = getAttr(rec(radio), 'name');
+    if (!name) return [radio];
+    var scope = radio.closest('form') || doc;
+    return query(scope, 'input[type="radio"]', true).filter(function (o) { return getAttr(rec(o), 'name') === name; });
+  }
+  function validityOf(node) {
+    var r = rec(node);
+    var v = {
+      valueMissing: false, typeMismatch: false, patternMismatch: false, tooLong: false, tooShort: false,
+      rangeUnderflow: false, rangeOverflow: false, stepMismatch: false, badInput: false, customError: !!r.customValidity, valid: true,
+    };
+    if (willValidate(r)) {
+      var type = (getAttr(r, 'type') || '').toLowerCase();
+      var required = getAttr(r, 'required') !== null;
+      if (r.tag === 'input' && type === 'checkbox') v.valueMissing = required && !node.checked;
+      else if (r.tag === 'input' && type === 'radio') {
+        var group = radioGroup(node);
+        if (group.some(function (o) { return getAttr(rec(o), 'required') !== null; })) v.valueMissing = !group.some(function (o) { return o.checked; });
+      } else {
+        var value = node.value;
+        if (required && value === '') v.valueMissing = true;
+        if (value !== '' && r.tag === 'input') {
+          if (type === 'email') {
+            var addresses = getAttr(r, 'multiple') !== null ? value.split(',') : [value];
+            v.typeMismatch = addresses.some(function (a) { return !EMAIL.test(a.trim()); });
+          }
+          if (type === 'url') v.typeMismatch = !/^[a-z][a-z0-9+.-]*:\S+$/i.test(value);
+          var pattern = getAttr(r, 'pattern');
+          if (pattern !== null && /^(?:text|search|url|tel|email|password|)$/.test(type)) {
+            try { v.patternMismatch = !new RegExp('^(?:' + pattern + ')$', 'v').test(value); } catch (e) {
+              try { v.patternMismatch = !new RegExp('^(?:' + pattern + ')$', 'u').test(value); } catch (e2) { v.patternMismatch = false; }
+            }
+          }
+          var n = inputNumber(type, value);
+          if (/^(?:number|range|date|month|time|datetime-local)$/.test(type)) {
+            if (isNaN(n)) v.badInput = type === 'number';
+            else {
+              var low = inputNumber(type, getAttr(r, 'min'));
+              var high = inputNumber(type, getAttr(r, 'max'));
+              if (!isNaN(low) && n < low) v.rangeUnderflow = true;
+              if (!isNaN(high) && n > high) v.rangeOverflow = true;
+              var step = getAttr(r, 'step');
+              if ((type === 'number' || type === 'range') && step !== null && step !== 'any' && Number(step) > 0) {
+                var steps = (n - (isNaN(low) ? 0 : low)) / Number(step);
+                v.stepMismatch = Math.abs(steps - Math.round(steps)) > 1e-9;
+              }
+            }
+          }
+        }
+        if (value !== '' && (r.tag === 'input' || r.tag === 'textarea')) {
+          var maxLength = getAttr(r, 'maxlength');
+          var minLength = getAttr(r, 'minlength');
+          if (maxLength !== null && value.length > Number(maxLength)) v.tooLong = true;
+          if (minLength !== null && value.length < Number(minLength)) v.tooShort = true;
+        }
+      }
+    }
+    v.valid = !(v.valueMissing || v.typeMismatch || v.patternMismatch || v.tooLong || v.tooShort ||
+      v.rangeUnderflow || v.rangeOverflow || v.stepMismatch || v.badInput || v.customError);
+    return v;
+  }
+  // A field's own checks, for an input, a select and a textarea alike.
+  var FIELD_CHECKS = {
+    checkValidity: function () {
+      if (validityOf(this).valid) return true;
+      dispatch(this, new Event('invalid', { cancelable: true }));
+      return false;
+    },
+    reportValidity: function () {
+      var valid = this.checkValidity();
+      if (!valid) this.focus();
+      return valid;
+    },
+    setCustomValidity: function (message) { rec(this).customValidity = message === undefined || message === null ? '' : String(message); },
+  };
+  var FIELD_CHECK_GETTERS = {
+    validity: function () { return validityOf(this); },
+    willValidate: function () { return willValidate(rec(this)); },
+    validationMessage: function () {
+      var r = rec(this);
+      if (!willValidate(r)) return '';
+      if (r.customValidity) return r.customValidity;
+      var v = validityOf(this);
+      for (var i = 0; i < VALIDITY_MESSAGES.length; i++) if (v[VALIDITY_MESSAGES[i][0]]) return VALIDITY_MESSAGES[i][1];
+      return '';
+    },
+    labels: function () {
+      var id = getAttr(rec(this), 'id');
+      var found = id ? query(doc, 'label[for="' + id.replace(/"/g, '') + '"]', true) : [];
+      var around = this.closest('label');
+      if (around && found.indexOf(around) < 0) found.push(around);
+      return nodeList(found);
+    },
+  };
+
   class HTMLInputElement extends HTMLElement {
     get value() { return fieldValue(rec(this)); }
     set value(v) { var r = rec(this); r.value = v === null || v === undefined ? '' : String(v); propChanged(r, 'value', r.value); }
@@ -1292,12 +1470,20 @@ var __softnShell = (function (win) {
     }
     get valueAsNumber() { var n = parseFloat(this.value); return isNaN(n) ? NaN : n; }
     set valueAsNumber(n) { this.value = String(n); }
+    get valueAsDate() {
+      var type = (getAttr(rec(this), 'type') || '').toLowerCase();
+      var t = /^(?:date|month|week|time)$/.test(type) ? inputNumber(type, this.value) : NaN;
+      return isNaN(t) ? null : new Date(t);
+    }
+    set valueAsDate(date) {
+      var type = (getAttr(rec(this), 'type') || '').toLowerCase();
+      if (date === null) { this.value = ''; return; }
+      var iso = new Date(date.getTime()).toISOString();
+      this.value = type === 'time' ? iso.slice(11, 16) : type === 'month' ? iso.slice(0, 7) : iso.slice(0, 10);
+    }
     get form() { return this.closest('form'); }
     select() {}
     setSelectionRange() {}
-    checkValidity() { return true; }
-    reportValidity() { return true; }
-    setCustomValidity() {}
   }
 
   function uncheckGroup(radio) {
@@ -1332,13 +1518,37 @@ var __softnShell = (function (win) {
     set text(v) { this.textContent = v; }
     get selected() {
       var select = this.closest('select');
-      return select ? select.selectedIndex === select.options.indexOf(this) : getAttr(rec(this), 'selected') !== null;
+      if (!select) return getAttr(rec(this), 'selected') !== null;
+      return chosenIndexes(select).indexOf(select.options.indexOf(this)) >= 0;
     }
     set selected(v) {
       var select = this.closest('select');
-      if (select && v) select.selectedIndex = select.options.indexOf(this);
+      if (!select) return;
+      var at = select.options.indexOf(this);
+      if (getAttr(rec(select), 'multiple') === null) { if (v) select.selectedIndex = at; return; }
+      var chosen = chosenIndexes(select).filter(function (i) { return i !== at; });
+      if (v) chosen.push(at);
+      choose(select, chosen.sort(function (a, b) { return a - b; }));
     }
     get index() { var select = this.closest('select'); return select ? select.options.indexOf(this) : 0; }
+  }
+
+  // What a select holds chosen: for one with multiple, every option chosen,
+  // as the page shows them; for any other, the one at selectedIndex.
+  function chosenIndexes(select) {
+    var r = rec(select);
+    if (getAttr(r, 'multiple') === null) { var i = select.selectedIndex; return i < 0 ? [] : [i]; }
+    if (r.chosen !== undefined) return r.chosen.slice();
+    var options = select.options;
+    var out = [];
+    for (var k = 0; k < options.length; k++) if (getAttr(rec(options[k]), 'selected') !== null) out.push(k);
+    return out;
+  }
+  function choose(select, indexes) {
+    var r = rec(select);
+    r.chosen = indexes;
+    r.selectedIndex = indexes.length ? indexes[0] : -1;
+    propChanged(r, 'chosen', indexes);
   }
 
   class HTMLSelectElement extends HTMLElement {
@@ -1350,8 +1560,16 @@ var __softnShell = (function (win) {
       for (var i = 0; i < options.length; i++) if (getAttr(rec(options[i]), 'selected') !== null) return i;
       return options.length > 0 ? 0 : -1;
     }
-    set selectedIndex(i) { var r = rec(this); r.selectedIndex = Number(i); propChanged(r, 'selectedIndex', r.selectedIndex); }
-    get selectedOptions() { var o = this.options[this.selectedIndex]; return o ? [o] : []; }
+    set selectedIndex(i) {
+      var r = rec(this);
+      if (getAttr(r, 'multiple') !== null) { choose(this, Number(i) < 0 ? [] : [Number(i)]); return; }
+      r.selectedIndex = Number(i);
+      propChanged(r, 'selectedIndex', r.selectedIndex);
+    }
+    get selectedOptions() {
+      var options = this.options;
+      return nodeList(chosenIndexes(this).map(function (i) { return options[i]; }).filter(Boolean));
+    }
     get value() { var o = this.options[this.selectedIndex]; return o ? o.value : ''; }
     set value(v) {
       var options = this.options;
@@ -1363,13 +1581,62 @@ var __softnShell = (function (win) {
     add(option) { this.appendChild(option); }
   }
 
+  // A form's fields, each also under its name and its id (a list of them
+  // where several share one, as radio buttons do), as form.elements has them.
+  function formFields(form) {
+    var list = nodeList(query(form, 'input, select, textarea, button, fieldset, output', true));
+    var named = {};
+    for (var i = 0; i < list.length; i++) {
+      var r = rec(list[i]);
+      var keys = [getAttr(r, 'name'), getAttr(r, 'id')];
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        if (!key || /^\d+$/.test(key) || key in Array.prototype) continue;
+        if (!named[key]) named[key] = [];
+        if (named[key].indexOf(list[i]) < 0) named[key].push(list[i]);
+      }
+    }
+    for (var name in named) {
+      var found = named[name];
+      Object.defineProperty(list, name, { value: found.length === 1 ? found[0] : radioNodeList(found), enumerable: false, configurable: true });
+    }
+    Object.defineProperty(list, 'namedItem', { value: function (n) { return this[n] && Object.prototype.hasOwnProperty.call(named, n) ? this[n] : null; }, enumerable: false, configurable: true });
+    return list;
+  }
+  function radioNodeList(nodes) {
+    var list = nodeList(nodes.slice());
+    Object.defineProperty(list, 'value', {
+      enumerable: false,
+      get: function () { for (var i = 0; i < this.length; i++) if (this[i].checked) return this[i].value; return ''; },
+      set: function (value) { for (var i = 0; i < this.length; i++) if (this[i].value === String(value)) { this[i].checked = true; return; } },
+    });
+    return list;
+  }
+  // form.email, as a browser has it: a form answers to its fields' names.
+  var FORM_FIELDS = {
+    get: function (target, key, receiver) {
+      if (typeof key === 'string' && !(key in target)) {
+        var field = formFields(receiver)[key];
+        if (field) return field;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  };
+
   class HTMLFormElement extends HTMLElement {
-    get elements() { return query(this, 'input, select, textarea, button', true); }
+    get elements() { return formFields(this); }
     get length() { return this.elements.length; }
+    get noValidate() { return getAttr(rec(this), 'novalidate') !== null; }
+    set noValidate(v) { if (v) setAttr(this, 'novalidate', ''); else removeAttr(this, 'novalidate'); }
     submit() {}
-    requestSubmit() {
-      if (dispatch(this, new SubmitEvent('submit', { bubbles: true, cancelable: true }))) {
-        warnOnce('form-submit', 'A form with nowhere to send what it holds is kept on the page.');
+    requestSubmit(submitter) {
+      // As a browser sends it: checked first, unless the form or the button says not to.
+      var skip = this.noValidate || (submitter && getAttr(rec(submitter), 'formnovalidate') !== null);
+      if (!skip && !this.reportValidity()) return;
+      if (dispatch(this, new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: submitter || null }))) {
+        var dialog = (getAttr(rec(this), 'method') || '').toLowerCase() === 'dialog' ? this.closest('dialog') : null;
+        if (dialog) dialog.close(submitter ? submitter.value : undefined);
+        else warnOnce('form-submit', 'A form with nowhere to send what it holds is kept on the page.');
       }
     }
     reset() {
@@ -1381,8 +1648,21 @@ var __softnShell = (function (win) {
       }
       dispatch(this, new Event('reset', { bubbles: true }));
     }
-    checkValidity() { return true; }
-    reportValidity() { return true; }
+    checkValidity() {
+      var fields = this.elements;
+      var valid = true;
+      for (var i = 0; i < fields.length; i++) if (typeof fields[i].checkValidity === 'function' && !fields[i].checkValidity()) valid = false;
+      return valid;
+    }
+    reportValidity() {
+      var fields = this.elements;
+      var first = null;
+      for (var i = 0; i < fields.length; i++) {
+        if (typeof fields[i].checkValidity === 'function' && !fields[i].checkValidity() && !first) first = fields[i];
+      }
+      if (first) first.focus();
+      return !first;
+    }
   }
 
   class HTMLButtonElement extends HTMLElement {
@@ -1390,10 +1670,80 @@ var __softnShell = (function (win) {
     set value(v) { setAttr(this, 'value', v); }
     get form() { return this.closest('form'); }
   }
+  // An address an element names, as a browser gives it: whole, against where the page is.
+  function addressOf(node, attr) {
+    var v = getAttr(rec(node), attr);
+    if (v === null) return '';
+    try { return new URL(v, here.href || undefined).href; } catch (e) { return v; }
+  }
   class HTMLAnchorElement extends HTMLElement {
     get text() { return this.textContent; }
+    get href() { return addressOf(this, 'href'); }
+    set href(v) { setAttr(this, 'href', v); }
+    toString() { return this.href; }
+  }
+  ['protocol', 'host', 'hostname', 'port', 'pathname', 'search', 'hash', 'origin'].forEach(function (part) {
+    Object.defineProperty(HTMLAnchorElement.prototype, part, {
+      configurable: true,
+      get: function () { var href = this.href; try { return href ? new URL(href)[part] : ''; } catch (e) { return ''; } },
+    });
+  });
+  // <template>: what it holds is not on the page but in its content, a
+  // fragment the page's code copies from.
+  class HTMLTemplateElement extends HTMLElement {
+    get content() { var r = rec(this); return r.content || (r.content = makeFragment()); }
+  }
+
+  // <dialog>: open, shown by show() where it is and by showModal() over the
+  // rest of the app, closed with a returnValue. It is never put in the
+  // browser's top layer, where the host's own controls could be covered:
+  // modal, it is drawn over the app inside the app's box.
+  class HTMLDialogElement extends HTMLElement {
+    get returnValue() { var v = rec(this).returnValue; return v === undefined ? '' : v; }
+    set returnValue(v) { rec(this).returnValue = String(v); }
+    show() { if (!this.open) { setAttr(this, 'open', ''); heedDialogs(); } }
+    showModal() {
+      if (this.open) return;
+      heedDialogs();
+      setAttr(this, 'open', '');
+      setAttr(this, 'data-softn-modal', '');
+      var first = this.querySelector('[autofocus]') || this.querySelector('button, input, select, textarea, a[href], [tabindex]');
+      if (first) first.focus();
+    }
+    close(value) {
+      if (!this.open) return;
+      if (value !== undefined) this.returnValue = value;
+      removeAttr(this, 'open');
+      removeAttr(this, 'data-softn-modal');
+      dispatch(this, new Event('close'));
+    }
+    requestClose(value) {
+      if (!this.open) return;
+      if (dispatch(this, new Event('cancel', { cancelable: true }))) this.close(value);
+    }
+  }
+  // What closes a dialog comes from the page: its form sent, Escape pressed.
+  function heedDialogs() { listen('submit'); listen('keydown'); }
+
+  // The modal dialog open now, if any: Escape asks it to close.
+  function openModal() {
+    var found = null;
+    walk(rec(doc), function (node, r) {
+      if (r.tag === 'dialog' && getAttr(r, 'data-softn-modal') !== null && getAttr(r, 'open') !== null) found = node;
+      return true;
+    });
+    return found;
+  }
+
+  class HTMLOutputElement extends HTMLElement {
+    get value() { return this.textContent; }
+    set value(v) { this.textContent = v; }
+    get defaultValue() { return this.textContent; }
+    get form() { return this.closest('form'); }
   }
   class HTMLImageElement extends HTMLElement {
+    get src() { return addressOf(this, 'src'); }
+    set src(v) { setAttr(this, 'src', v); }
     get width() { return Number(getAttr(rec(this), 'width')) || 0; }
     get height() { return Number(getAttr(rec(this), 'height')) || 0; }
     get complete() { return true; }
@@ -1401,8 +1751,13 @@ var __softnShell = (function (win) {
 
   var ELEMENT_CLASSES = {
     input: HTMLInputElement, textarea: HTMLTextAreaElement, select: HTMLSelectElement, option: HTMLOptionElement,
-    form: HTMLFormElement, button: HTMLButtonElement, a: HTMLAnchorElement, img: HTMLImageElement,
+    form: HTMLFormElement, button: HTMLButtonElement, a: HTMLAnchorElement, img: HTMLImageElement, output: HTMLOutputElement,
+    template: HTMLTemplateElement, dialog: HTMLDialogElement,
   };
+  [HTMLInputElement, HTMLSelectElement, HTMLTextAreaElement].forEach(function (Field) {
+    mix(Field.prototype, FIELD_CHECKS);
+    defineGetters(Field.prototype, FIELD_CHECK_GETTERS);
+  });
 
   class Text extends Node {
     get nodeName() { return '#text'; }
@@ -1473,6 +1828,11 @@ var __softnShell = (function (win) {
       var type = (getAttr(r, 'type') || '').toLowerCase();
       if ((type === 'checkbox' || type === 'radio') && !f.checked) continue;
       if (type === 'submit' || type === 'button' || type === 'reset' || type === 'file') continue;
+      if (r.tag === 'select' && getAttr(r, 'multiple') !== null) {
+        var chosen = f.selectedOptions;
+        for (var c = 0; c < chosen.length; c++) this._entries.push([name, chosen[c].value]);
+        continue;
+      }
       this._entries.push([name, type === 'checkbox' || type === 'radio' ? (getAttr(r, 'value') || 'on') : f.value]);
     }
   }
@@ -1486,6 +1846,7 @@ var __softnShell = (function (win) {
   FormData.prototype.keys = function () { return this._entries.map(function (e) { return e[0]; }); };
   FormData.prototype.values = function () { return this._entries.map(function (e) { return e[1]; }); };
   FormData.prototype.forEach = function (fn) { for (var i = 0; i < this._entries.length; i++) fn(this._entries[i][1], this._entries[i][0], this); };
+  FormData.prototype[Symbol.iterator] = function () { return this.entries()[Symbol.iterator](); };
 
   function getComputedStyle(node) { return node && rec(node) && rec(node).type === 1 ? styleOf(node) : {}; }
 
@@ -1513,6 +1874,9 @@ var __softnShell = (function (win) {
   Headers.prototype.delete = function (name) { delete this._map[String(name).toLowerCase()]; };
   Headers.prototype.forEach = function (fn) { for (var k in this._map) fn(this._map[k], k, this); };
   Headers.prototype.entries = function () { var out = []; for (var k in this._map) out.push([k, this._map[k]]); return out; };
+  Headers.prototype.keys = function () { return Object.keys(this._map); };
+  Headers.prototype.values = function () { var m = this._map; return Object.keys(m).map(function (k) { return m[k]; }); };
+  Headers.prototype[Symbol.iterator] = function () { return this.entries()[Symbol.iterator](); };
 
   function Response(result, url) {
     var body = result.body === undefined || result.body === null ? '' : String(result.body);
@@ -1538,6 +1902,10 @@ var __softnShell = (function (win) {
         return;
       }
       var url = typeof input === 'string' ? input : input && input.url ? input.url : String(input);
+      var signal = init && init.signal;
+      if (signal && signal.aborted) { reject(signal.reason); return; }
+      var settled = false;
+      if (signal) signal.addEventListener('abort', function () { if (!settled) { settled = true; reject(signal.reason); } });
       var options = {};
       if (init && typeof init === 'object') {
         if (init.method) options.method = String(init.method).toUpperCase();
@@ -1558,7 +1926,15 @@ var __softnShell = (function (win) {
           }
         }
       }
-      softn.net.fetch(url, options, function (result) {
+      // An address of the page's own ('data.json', './list.json'): the app's
+      // own file, read where its markup would find it, with no network.
+      var own = !/^[a-zA-Z][a-zA-Z0-9+.-]*:|^[\\\/]{2}/.test(url) && (!options.method || options.method === 'GET');
+      var read = own
+        ? function (done) { host.call('bundle.read', [url], done); }
+        : function (done) { softn.net.fetch(url, options, done); };
+      read(function (result) {
+        if (settled) return;
+        settled = true;
         if (!result || result.error) reject(new TypeError(result && result.error ? String(result.error) : 'Failed to fetch'));
         else resolve(new Response(result, url));
       });
@@ -1582,7 +1958,12 @@ var __softnShell = (function (win) {
   function navigate(url) {
     var target = String(url);
     if (target.charAt(0) === '#') {
-      here = parseUrl(here.href.split('#')[0] + target);
+      var href = here.href.split('#')[0] + target;
+      if (href === here.href) return;
+      entries = entries.slice(0, entryAt + 1);
+      entries.push({ href: href, state: null });
+      entryAt = entries.length - 1;
+      moveTo(href, null, true);
       return;
     }
     ops.push(['n', target]);
@@ -1594,6 +1975,7 @@ var __softnShell = (function (win) {
     toString: function () { return here.href; },
   };
   ['protocol', 'host', 'hostname', 'port', 'pathname', 'search', 'origin'].forEach(function (key) {
+    // here is parsed roughly; a URL reads it whole.
     Object.defineProperty(location, key, { enumerable: true, get: function () { return here[key]; } });
   });
   Object.defineProperty(location, 'href', { enumerable: true, get: function () { return here.href; }, set: function (url) { navigate(url); } });
@@ -1634,6 +2016,9 @@ var __softnShell = (function (win) {
   URLSearchParams.prototype.values = function () { return this._list.map(function (e) { return e[1]; }); };
   URLSearchParams.prototype.entries = function () { return this._list.map(function (e) { return [e[0], e[1]]; }); };
   URLSearchParams.prototype.toString = function () { return this._list.map(function (e) { return queryText(e[0]) + '=' + queryText(e[1]); }).join('&'); };
+  URLSearchParams.prototype.sort = function () { this._list.sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; }); };
+  URLSearchParams.prototype[Symbol.iterator] = function () { return this.entries()[Symbol.iterator](); };
+  Object.defineProperty(URLSearchParams.prototype, 'size', { get: function () { return this._list.length; } });
 
   // alert(): shown by the host once the code's turn is over, since nothing
   // waits on it. confirm() and prompt() wait for an answer, which code in the
@@ -1653,7 +2038,43 @@ var __softnShell = (function (win) {
   function queueMicrotask(fn) { Promise.resolve().then(fn); }
   function requestAnimationFrame(fn) { return setTimeout(function () { fn(Date.now()); }, 16); }
   function cancelAnimationFrame(id) { clearTimeout(id); }
-  function structuredClone(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
+  // A copy as a browser makes one: dates, maps, sets, typed arrays and a
+  // value that holds itself, which a round trip through JSON loses.
+  function structuredClone(value, seen) {
+    if (value === null || typeof value !== 'object') {
+      if (typeof value === 'function' || typeof value === 'symbol') throw new DOMException(String(value) + ' could not be cloned.', 'DataCloneError');
+      return value;
+    }
+    seen = seen || new Map();
+    if (seen.has(value)) return seen.get(value);
+    if (rec(value)) throw new DOMException('A node of the document could not be cloned.', 'DataCloneError');
+    var out;
+    if (value instanceof Date) out = new Date(value.getTime());
+    else if (value instanceof RegExp) out = new RegExp(value.source, value.flags);
+    else if (ArrayBuffer.isView(value)) out = value.slice();
+    else if (value instanceof ArrayBuffer) out = value.slice(0);
+    else if (value instanceof Map) {
+      out = new Map();
+      seen.set(value, out);
+      value.forEach(function (v, k) { out.set(structuredClone(k, seen), structuredClone(v, seen)); });
+      return out;
+    } else if (value instanceof Set) {
+      out = new Set();
+      seen.set(value, out);
+      value.forEach(function (v) { out.add(structuredClone(v, seen)); });
+      return out;
+    } else if (value instanceof Error) {
+      out = new Error(value.message);
+      out.name = value.name;
+    } else {
+      out = Array.isArray(value) ? [] : {};
+      seen.set(value, out);
+      for (var key in value) if (Object.prototype.hasOwnProperty.call(value, key)) out[key] = structuredClone(value[key], seen);
+      return out;
+    }
+    seen.set(value, out);
+    return out;
+  }
 
   // sessionStorage: for as long as the page is open.
   function Storage() { Object.defineProperty(this, '_items', { value: {}, writable: true, enumerable: false }); }
@@ -1665,22 +2086,633 @@ var __softnShell = (function (win) {
   Object.defineProperty(Storage.prototype, 'length', { get: function () { return Object.keys(this._items).length; } });
   var sessionStorage = new Storage();
 
+
+  // ---------------------------------------------------------------- more of the window
+
+  // DOMException, as a browser's errors are made.
+  class DOMException extends Error {
+    constructor(message, name) {
+      super(message === undefined ? '' : String(message));
+      this.name = name === undefined ? 'Error' : String(name);
+    }
+  }
+
+  // AbortController and its signal: what fetch, and a page's own code, are told to stop by.
+  class AbortSignal extends EventTarget {
+    get aborted() { return !!rec(this).aborted; }
+    get reason() { return rec(this).reason; }
+    throwIfAborted() { if (this.aborted) throw this.reason; }
+    static abort(reason) { var signal = new AbortSignal(); abortWith(signal, reason); return signal; }
+    static timeout(ms) {
+      var signal = new AbortSignal();
+      setTimeout(function () { abortWith(signal, new DOMException('The operation timed out.', 'TimeoutError')); }, Number(ms) || 0);
+      return signal;
+    }
+    static any(signals) {
+      var signal = new AbortSignal();
+      for (var i = 0; i < signals.length; i++) {
+        if (signals[i].aborted) { abortWith(signal, signals[i].reason); break; }
+        signals[i].addEventListener('abort', function (e) { abortWith(signal, e.target.reason); });
+      }
+      return signal;
+    }
+  }
+  function abortWith(signal, reason) {
+    var r = rec(signal);
+    if (r.aborted) return;
+    r.aborted = true;
+    r.reason = reason === undefined ? new DOMException('signal is aborted without reason', 'AbortError') : reason;
+    var e = new Event('abort');
+    dispatch(signal, e);
+    if (typeof signal.onabort === 'function') signal.onabort(e);
+  }
+  class AbortController {
+    constructor() { this.signal = new AbortSignal(); }
+    abort(reason) { abortWith(this.signal, reason); }
+  }
+
+  // URL: an address, taken apart and put together as a browser does it.
+  var DEFAULT_PORTS = { 'http:': '80', 'https:': '443', 'ws:': '80', 'wss:': '443', 'ftp:': '21' };
+  function cleanPath(path) {
+    var out = [];
+    var parts = path.split('/');
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (part === '..') { if (out.length > 1) out.pop(); if (i === parts.length - 1) out.push(''); }
+      else if (part === '.') { if (i === parts.length - 1) out.push(''); }
+      else out.push(part);
+    }
+    return out.join('/');
+  }
+  function absoluteParts(text) {
+    var m = /^([a-zA-Z][a-zA-Z0-9+.-]*:)(\/\/([^\/?#]*))?([^?#]*)(\?[^#]*)?(#.*)?$/.exec(text);
+    if (!m) return null;
+    var protocol = m[1].toLowerCase();
+    var special = DEFAULT_PORTS[protocol] !== undefined || protocol === 'file:';
+    var authority = m[3] || '';
+    var at = authority.lastIndexOf('@');
+    var user = at >= 0 ? authority.slice(0, at) : '';
+    var hostPort = at >= 0 ? authority.slice(at + 1) : authority;
+    var hp = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/.exec(hostPort);
+    if (!hp) return null;
+    var hostname = hp[1].toLowerCase();
+    if (special && protocol !== 'file:' && m[2] !== undefined && hostname === '') return null;
+    var port = hp[2] || '';
+    if (port !== '' && DEFAULT_PORTS[protocol] === String(Number(port))) port = '';
+    var path = (m[4] || '').replace(special ? /\\/g : /$^/g, '/');
+    if (special && path === '') path = '/';
+    return {
+      protocol: protocol, username: user.split(':')[0] || '', password: user.indexOf(':') >= 0 ? user.slice(user.indexOf(':') + 1) : '',
+      hostname: hostname, port: port, pathname: special ? cleanPath(path) : path,
+      search: m[5] && m[5] !== '?' ? m[5] : '', hash: m[6] && m[6] !== '#' ? m[6] : '', opaque: !special && m[2] === undefined,
+    };
+  }
+  function resolveParts(ref, base) {
+    var text = String(ref).replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').replace(/[\t\n\r]/g, '');
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text)) {
+      var whole = absoluteParts(text);
+      if (whole) return whole;
+    }
+    if (!base || base.opaque) return null;
+    var out = { protocol: base.protocol, username: base.username, password: base.password, hostname: base.hostname, port: base.port, pathname: base.pathname, search: base.search, hash: '', opaque: false };
+    text = text.replace(/\\/g, '/');
+    if (text.slice(0, 2) === '//') return absoluteParts(base.protocol + text);
+    var hashAt = text.indexOf('#');
+    var hash = hashAt >= 0 ? text.slice(hashAt) : '';
+    if (hashAt >= 0) text = text.slice(0, hashAt);
+    out.hash = hash === '#' ? '' : hash;
+    if (text === '') return out;
+    var queryAt = text.indexOf('?');
+    out.search = queryAt >= 0 ? (text.slice(queryAt) === '?' ? '' : text.slice(queryAt)) : '';
+    var path = queryAt >= 0 ? text.slice(0, queryAt) : text;
+    if (path === '') return out;
+    out.pathname = cleanPath(path.charAt(0) === '/' ? path : base.pathname.slice(0, base.pathname.lastIndexOf('/') + 1) + path);
+    return out;
+  }
+  class URL {
+    constructor(url, base) {
+      var baseParts = null;
+      if (base !== undefined) {
+        baseParts = absoluteParts(String(base instanceof URL ? base.href : base));
+        if (!baseParts) throw new TypeError('Invalid base URL: ' + base);
+      }
+      var parts = resolveParts(url instanceof URL ? url.href : String(url), baseParts);
+      if (!parts) throw new TypeError('Invalid URL: ' + url);
+      Object.defineProperty(this, '_p', { value: parts, writable: true, enumerable: false });
+      Object.defineProperty(this, '_q', { value: null, writable: true, enumerable: false });
+    }
+    static canParse(url, base) { try { new URL(url, base); return true; } catch (e) { return false; } }
+    get protocol() { return this._p.protocol; }
+    set protocol(v) { var p = String(v).replace(/:?$/, ':').toLowerCase(); if (/^[a-z][a-z0-9+.-]*:$/.test(p)) this._p.protocol = p; }
+    get username() { return this._p.username; }
+    set username(v) { this._p.username = String(v); }
+    get password() { return this._p.password; }
+    set password(v) { this._p.password = String(v); }
+    get hostname() { return this._p.hostname; }
+    set hostname(v) { this._p.hostname = String(v).toLowerCase(); }
+    get port() { return this._p.port; }
+    set port(v) { var n = String(v); this._p.port = DEFAULT_PORTS[this._p.protocol] === n ? '' : n; }
+    get host() { return this._p.hostname + (this._p.port ? ':' + this._p.port : ''); }
+    set host(v) { var m = /^([^:]*)(?::(\d*))?$/.exec(String(v)); if (m) { this.hostname = m[1]; this.port = m[2] || ''; } }
+    get origin() { return DEFAULT_PORTS[this._p.protocol] !== undefined ? this._p.protocol + '//' + this.host : 'null'; }
+    get pathname() { return this._p.pathname; }
+    set pathname(v) { var path = String(v); this._p.pathname = cleanPath(path.charAt(0) === '/' ? path : '/' + path); }
+    get search() { return this._q ? (this._q.toString() ? '?' + this._q.toString() : '') : this._p.search; }
+    set search(v) { var t = String(v); this._p.search = t === '' || t === '?' ? '' : t.charAt(0) === '?' ? t : '?' + t; this._q = null; }
+    get searchParams() {
+      if (!this._q) {
+        this._q = new URLSearchParams(this._p.search);
+        var self = this;
+        // Changed through searchParams, the address changes with it.
+        Object.defineProperty(this._q, '_url', { value: self, enumerable: false });
+      }
+      return this._q;
+    }
+    get hash() { return this._p.hash; }
+    set hash(v) { var t = String(v); this._p.hash = t === '' || t === '#' ? '' : t.charAt(0) === '#' ? t : '#' + t; }
+    get href() {
+      var p = this._p;
+      if (p.opaque) return p.protocol + p.pathname + this.search + p.hash;
+      var user = p.username ? p.username + (p.password ? ':' + p.password : '') + '@' : '';
+      return p.protocol + '//' + user + this.host + p.pathname + this.search + p.hash;
+    }
+    set href(v) { var parts = absoluteParts(String(v)); if (!parts) throw new TypeError('Invalid URL: ' + v); this._p = parts; this._q = null; }
+    toString() { return this.href; }
+    toJSON() { return this.href; }
+  }
+
+  // base64, of text whose characters are bytes, as a browser's are.
+  var BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  function btoa(text) {
+    text = String(text);
+    var out = '';
+    for (var i = 0; i < text.length; i += 3) {
+      var a = text.charCodeAt(i);
+      var b = i + 1 < text.length ? text.charCodeAt(i + 1) : -1;
+      var c = i + 2 < text.length ? text.charCodeAt(i + 2) : -1;
+      if (a > 255 || b > 255 || c > 255) throw new DOMException('The string to be encoded contains characters outside of the Latin1 range.', 'InvalidCharacterError');
+      out += BASE64.charAt(a >> 2) + BASE64.charAt(((a & 3) << 4) | (b < 0 ? 0 : b >> 4));
+      out += b < 0 ? '==' : BASE64.charAt(((b & 15) << 2) | (c < 0 ? 0 : c >> 6)) + (c < 0 ? '=' : BASE64.charAt(c & 63));
+    }
+    return out;
+  }
+  function atob(text) {
+    var clean = String(text).replace(/[\t\n\f\r ]/g, '');
+    if (clean.length % 4 === 0) clean = clean.replace(/==?$/, '');
+    if (clean.length % 4 === 1 || /[^A-Za-z0-9+\/]/.test(clean)) throw new DOMException('The string to be decoded is not correctly encoded.', 'InvalidCharacterError');
+    var out = '';
+    var bits = 0;
+    var count = 0;
+    for (var i = 0; i < clean.length; i++) {
+      bits = (bits << 6) | BASE64.indexOf(clean.charAt(i));
+      count += 6;
+      if (count >= 8) { count -= 8; out += String.fromCharCode((bits >> count) & 255); }
+    }
+    return out;
+  }
+
+  // Text as UTF-8 bytes, and back.
+  class TextEncoder {
+    get encoding() { return 'utf-8'; }
+    encode(text) {
+      var input = text === undefined ? '' : String(text);
+      var bytes = [];
+      for (var i = 0; i < input.length; i++) {
+        var code = input.codePointAt(i);
+        if (code > 0xffff) i++;
+        if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;
+        if (code < 0x80) bytes.push(code);
+        else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 63));
+        else if (code < 0x10000) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63));
+        else bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 63), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63));
+      }
+      return new Uint8Array(bytes);
+    }
+  }
+  class TextDecoder {
+    constructor(label) {
+      var name = label === undefined ? 'utf-8' : String(label).toLowerCase();
+      if (name !== 'utf-8' && name !== 'utf8') throw new RangeError('Only UTF-8 is read here, not ' + label);
+    }
+    get encoding() { return 'utf-8'; }
+    decode(input) {
+      if (input === undefined) return '';
+      var bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : input;
+      var out = '';
+      for (var i = 0; i < bytes.length; ) {
+        var b = bytes[i++];
+        var code;
+        var more;
+        if (b < 0x80) { code = b; more = 0; }
+        else if (b >= 0xc2 && b < 0xe0) { code = b & 31; more = 1; }
+        else if (b >= 0xe0 && b < 0xf0) { code = b & 15; more = 2; }
+        else if (b >= 0xf0 && b < 0xf5) { code = b & 7; more = 3; }
+        else { out += String.fromCharCode(0xfffd); continue; }
+        var ok = true;
+        for (var k = 0; k < more; k++) {
+          if (i >= bytes.length || (bytes[i] & 0xc0) !== 0x80) { ok = false; break; }
+          code = (code << 6) | (bytes[i++] & 63);
+        }
+        out += ok ? String.fromCodePoint(code) : String.fromCharCode(0xfffd);
+      }
+      return out;
+    }
+  }
+
+  // crypto: random numbers a page can rely on. The engine has none of its
+  // own; these are ChaCha20's keystream (RFC 8439), keyed by bytes the host's
+  // own crypto gave this page and no one else.
+  var randomKey = null;
+  var randomBlock = new Uint8Array(64);
+  var randomUsed = 64;
+  var randomCounter = 0;
+  function rotl(v, c) { return (v << c) | (v >>> (32 - c)); }
+  function quarter(x, a, b, c, d) {
+    x[a] = (x[a] + x[b]) | 0; x[d] = rotl(x[d] ^ x[a], 16);
+    x[c] = (x[c] + x[d]) | 0; x[b] = rotl(x[b] ^ x[c], 12);
+    x[a] = (x[a] + x[b]) | 0; x[d] = rotl(x[d] ^ x[a], 8);
+    x[c] = (x[c] + x[d]) | 0; x[b] = rotl(x[b] ^ x[c], 7);
+  }
+  function nextRandomBlock() {
+    if (!randomKey) throw new DOMException('This page was given no random numbers.', 'OperationError');
+    var state = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574];
+    for (var i = 0; i < 8; i++) state.push(randomKey[4 * i] | (randomKey[4 * i + 1] << 8) | (randomKey[4 * i + 2] << 16) | (randomKey[4 * i + 3] << 24));
+    state.push(randomCounter++ | 0, 0, 0, 0);
+    var x = state.slice();
+    for (var round = 0; round < 10; round++) {
+      quarter(x, 0, 4, 8, 12); quarter(x, 1, 5, 9, 13); quarter(x, 2, 6, 10, 14); quarter(x, 3, 7, 11, 15);
+      quarter(x, 0, 5, 10, 15); quarter(x, 1, 6, 11, 12); quarter(x, 2, 7, 8, 13); quarter(x, 3, 4, 9, 14);
+    }
+    for (var j = 0; j < 16; j++) {
+      var word = (x[j] + state[j]) | 0;
+      randomBlock[4 * j] = word & 255; randomBlock[4 * j + 1] = (word >>> 8) & 255;
+      randomBlock[4 * j + 2] = (word >>> 16) & 255; randomBlock[4 * j + 3] = (word >>> 24) & 255;
+    }
+    randomUsed = 0;
+  }
+  function randomByte() {
+    if (randomUsed === 64) nextRandomBlock();
+    return randomBlock[randomUsed++];
+  }
+  var crypto = {
+    getRandomValues: function (array) {
+      if (!ArrayBuffer.isView(array) || array instanceof Float32Array || array instanceof Float64Array) {
+        throw new DOMException('The array is not an integer array.', 'TypeMismatchError');
+      }
+      if (array.byteLength > 65536) throw new DOMException('At most 65536 bytes are asked for at once.', 'QuotaExceededError');
+      var bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+      for (var i = 0; i < bytes.length; i++) bytes[i] = randomByte();
+      return array;
+    },
+    randomUUID: function () {
+      var b = [];
+      for (var i = 0; i < 16; i++) b.push(randomByte());
+      b[6] = (b[6] & 15) | 64;
+      b[8] = (b[8] & 63) | 128;
+      var hex = b.map(function (n) { return (n < 16 ? '0' : '') + n.toString(16); }).join('');
+      return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+    },
+  };
+
+  // MutationObserver: told of what changes in the document, as the page's
+  // code changes it, once the code's turn is over.
+  var mutationObservers = [];
+  var mutationsDue = false;
+  function mutated(record) {
+    if (mutationObservers.length === 0) return;
+    for (var i = 0; i < mutationObservers.length; i++) {
+      var o = mutationObservers[i];
+      for (var j = 0; j < o._targets.length; j++) {
+        var t = o._targets[j];
+        var opts = t.options;
+        if (t.node !== record.target && !(opts.subtree && contains(t.node, record.target))) continue;
+        if (record.type === 'childList' && !opts.childList) continue;
+        if (record.type === 'attributes' && (!opts.attributes || (opts.attributeFilter && opts.attributeFilter.indexOf(record.attributeName) < 0))) continue;
+        if (record.type === 'characterData' && !opts.characterData) continue;
+        var copy = {
+          type: record.type, target: record.target, addedNodes: nodeList(record.addedNodes || []), removedNodes: nodeList(record.removedNodes || []),
+          previousSibling: record.previousSibling || null, nextSibling: record.nextSibling || null,
+          attributeName: record.attributeName || null, attributeNamespace: null,
+          oldValue: (record.type === 'attributes' && opts.attributeOldValue) || (record.type === 'characterData' && opts.characterDataOldValue) ? record.oldValue : null,
+        };
+        o._records.push(copy);
+        break;
+      }
+    }
+    if (!mutationsDue) {
+      mutationsDue = true;
+      Promise.resolve().then(deliverMutations);
+    }
+  }
+  function deliverMutations() {
+    mutationsDue = false;
+    var due = mutationObservers.slice();
+    for (var i = 0; i < due.length; i++) {
+      var o = due[i];
+      if (o._records.length === 0) continue;
+      var records = o._records;
+      o._records = [];
+      try { o._callback.call(o, records, o); } catch (error) {
+        console.error('[SoftN] A MutationObserver failed: ' + (error && error.message ? error.message : error));
+      }
+    }
+  }
+  class MutationObserver {
+    constructor(callback) {
+      if (typeof callback !== 'function') throw new TypeError('MutationObserver needs a function');
+      this._callback = callback;
+      this._targets = [];
+      this._records = [];
+    }
+    observe(node, options) {
+      var o = Object.assign({}, options || {});
+      if (o.attributeOldValue || o.attributeFilter) o.attributes = o.attributes !== false;
+      if (o.characterDataOldValue) o.characterData = o.characterData !== false;
+      if (!o.childList && !o.attributes && !o.characterData) throw new TypeError('observe() needs childList, attributes or characterData');
+      this._targets = this._targets.filter(function (t) { return t.node !== node; });
+      this._targets.push({ node: node, options: o });
+      if (mutationObservers.indexOf(this) < 0) mutationObservers.push(this);
+    }
+    disconnect() {
+      this._targets = [];
+      this._records = [];
+      var at = mutationObservers.indexOf(this);
+      if (at >= 0) mutationObservers.splice(at, 1);
+    }
+    takeRecords() { var records = this._records; this._records = []; return records; }
+  }
+
+  // Layout, as far as it is known here: the size and place of an element
+  // whose size the page asked about, as the host measured it on the page.
+  // The first ask has nothing to go on and reads zero; the host measures
+  // the element then and again whenever it changes size, and from then on
+  // this is what it says, and a ResizeObserver hears of each change.
+  function measured(node) {
+    var r = rec(node);
+    if (!r || r.type !== 1) return null;
+    if (!r.measured && isConnected(r)) { r.measured = true; propChanged(r, 'measure', true); }
+    return r.box || null;
+  }
+  function boxRect(box) {
+    var x = box ? box.x : 0;
+    var y = box ? box.y : 0;
+    var w = box ? box.w : 0;
+    var h = box ? box.h : 0;
+    return { x: x, y: y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h, toJSON: function () { return this; } };
+  }
+  var resizeObservers = [];
+  class ResizeObserver {
+    constructor(callback) {
+      if (typeof callback !== 'function') throw new TypeError('ResizeObserver needs a function');
+      this._callback = callback;
+      this._nodes = [];
+    }
+    observe(node) {
+      if (this._nodes.indexOf(node) >= 0) return;
+      this._nodes.push(node);
+      if (resizeObservers.indexOf(this) < 0) resizeObservers.push(this);
+      var box = measured(node);
+      // As a browser does: once on observe, with the size it has.
+      if (box) this._tell([node]);
+    }
+    unobserve(node) { this._nodes = this._nodes.filter(function (n) { return n !== node; }); }
+    disconnect() {
+      this._nodes = [];
+      var at = resizeObservers.indexOf(this);
+      if (at >= 0) resizeObservers.splice(at, 1);
+    }
+    _tell(nodes) {
+      var entries = nodes.map(function (node) {
+        var box = rec(node).box;
+        var rect = boxRect(box ? { x: 0, y: 0, w: box.w, h: box.h } : null);
+        var size = [{ inlineSize: rect.width, blockSize: rect.height }];
+        return { target: node, contentRect: rect, borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size };
+      });
+      try { this._callback.call(this, entries, this); } catch (error) {
+        console.error('[SoftN] A ResizeObserver failed: ' + (error && error.message ? error.message : error));
+      }
+    }
+  }
+  // Sizes the host measured, by id: [id, x, y, width, height].
+  function boxesMeasured(list) {
+    var changed = [];
+    for (var i = 0; i < list.length; i++) {
+      var node = BY_ID[list[i][0]];
+      var r = node && rec(node);
+      if (!r) continue;
+      r.box = { x: list[i][1], y: list[i][2], w: list[i][3], h: list[i][4] };
+      changed.push(node);
+    }
+    for (var o = 0; o < resizeObservers.slice().length; o++) {
+      var observer = resizeObservers[o];
+      var seen = changed.filter(function (n) { return observer._nodes.indexOf(n) >= 0; });
+      if (seen.length > 0) observer._tell(seen);
+    }
+  }
+
+  // IntersectionObserver: where an element is against the window is not
+  // known here, so whatever is observed is taken to be in view, once: content
+  // waiting to be seen is shown, rather than never.
+  class IntersectionObserver {
+    constructor(callback, options) {
+      if (typeof callback !== 'function') throw new TypeError('IntersectionObserver needs a function');
+      this._callback = callback;
+      this._nodes = [];
+      this.root = (options && options.root) || null;
+      this.rootMargin = (options && options.rootMargin) || '0px';
+      this.thresholds = [].concat((options && options.threshold) || 0);
+    }
+    observe(node) {
+      if (this._nodes.indexOf(node) >= 0) return;
+      this._nodes.push(node);
+      var self = this;
+      Promise.resolve().then(function () {
+        if (self._nodes.indexOf(node) < 0) return;
+        var rect = boxRect(rec(node).box);
+        try {
+          self._callback.call(self, [{ target: node, isIntersecting: true, intersectionRatio: 1, boundingClientRect: rect, intersectionRect: rect, rootBounds: null, time: Date.now() }], self);
+        } catch (error) {
+          console.error('[SoftN] An IntersectionObserver failed: ' + (error && error.message ? error.message : error));
+        }
+      });
+    }
+    unobserve(node) { this._nodes = this._nodes.filter(function (n) { return n !== node; }); }
+    disconnect() { this._nodes = []; }
+    takeRecords() { return []; }
+  }
+
+  // The window's size and the person's settings, as the host reports them:
+  // innerWidth and innerHeight, devicePixelRatio, and matchMedia() for the
+  // queries a page asks (widths, heights, orientation, colour scheme,
+  // reduced motion, hover and pointer).
+  var viewport = { w: 0, h: 0, dark: false, reduced: false, ratio: 1, coarse: false };
+  function mediaFeature(feature) {
+    var m = /^\(\s*([a-z-]+)\s*(?::\s*([^)]+?)\s*)?\)$/.exec(feature.trim());
+    if (!m) return false;
+    var name = m[1];
+    var value = m[2] === undefined ? null : m[2];
+    var px = function (v) {
+      var n = parseFloat(v);
+      return /em$/.test(v) ? n * 16 : n;
+    };
+    switch (name) {
+      case 'min-width': return viewport.w >= px(value);
+      case 'max-width': return viewport.w <= px(value);
+      case 'min-height': return viewport.h >= px(value);
+      case 'max-height': return viewport.h <= px(value);
+      case 'width': return value === null ? true : viewport.w === px(value);
+      case 'orientation': return value === (viewport.w >= viewport.h ? 'landscape' : 'portrait');
+      case 'prefers-color-scheme': return value === (viewport.dark ? 'dark' : 'light');
+      case 'prefers-reduced-motion': return value === null ? viewport.reduced : value === (viewport.reduced ? 'reduce' : 'no-preference');
+      case 'hover': return value === null ? !viewport.coarse : value === (viewport.coarse ? 'none' : 'hover');
+      case 'any-hover': return value === null ? !viewport.coarse : value === (viewport.coarse ? 'none' : 'hover');
+      case 'pointer': case 'any-pointer': return value === (viewport.coarse ? 'coarse' : 'fine');
+      case 'min-resolution': return viewport.ratio * 96 >= px(value) * (/dppx|x$/.test(value) ? 96 : 1);
+      case 'prefers-contrast': return value === 'no-preference';
+      default: return false;
+    }
+  }
+  function mediaMatches(query) {
+    var any = String(query).split(',');
+    for (var i = 0; i < any.length; i++) {
+      var text = any[i].trim().toLowerCase();
+      var negate = /^not\s+/.test(text);
+      text = text.replace(/^(?:not|only)\s+/, '').replace(/^(?:all|screen)\s*(?:and\s*)?/, '');
+      if (text === 'print') { if (negate) return true; continue; }
+      var parts = text === '' ? [] : text.split(/\s+and\s+/);
+      var all = parts.every(mediaFeature);
+      if (negate ? !all : all) return true;
+    }
+    return false;
+  }
+  var mediaLists = [];
+  function matchMedia(query) {
+    var list = new EventTarget();
+    var text = String(query);
+    var matches = mediaMatches(text);
+    Object.defineProperty(list, 'media', { value: text, enumerable: true });
+    Object.defineProperty(list, 'matches', { get: function () { return matches; }, enumerable: true });
+    list.onchange = null;
+    list.addListener = function (fn) { list.addEventListener('change', fn); };
+    list.removeListener = function (fn) { list.removeEventListener('change', fn); };
+    list._recheck = function () {
+      var now = mediaMatches(text);
+      if (now === matches) return;
+      matches = now;
+      var e = new Event('change');
+      e.matches = now;
+      e.media = text;
+      dispatch(list, e);
+      if (typeof list.onchange === 'function') list.onchange(e);
+    };
+    mediaLists.push(list);
+    // Told when the window changes, so a list can say it changed.
+    listen('softn:viewport');
+    return list;
+  }
+  function viewportChanged(v) {
+    var resized = v[0] !== viewport.w || v[1] !== viewport.h;
+    viewport = { w: v[0], h: v[1], dark: !!v[2], reduced: !!v[3], ratio: v[4] || 1, coarse: !!v[5] };
+    for (var i = 0; i < mediaLists.length; i++) mediaLists[i]._recheck();
+    return resized;
+  }
+
+  // history, and where the page is: in this document's own keeping. Going
+  // back and forward, a hash and pushState move between the page's own
+  // states and say so with popstate and hashchange, as in a browser; the
+  // host's address is not changed.
+  var entries = [];
+  var entryAt = 0;
+  var windowListeners = { hashchange: [], popstate: [] };
+  function toWindow(type, e) {
+    var list = windowListeners[type].slice();
+    for (var i = 0; i < list.length; i++) {
+      try { list[i].call(win, e); } catch (error) {
+        console.error('[SoftN] A ' + type + ' listener failed: ' + (error && error.message ? error.message : error));
+      }
+    }
+    var inline = win && win['on' + type];
+    if (typeof inline === 'function') {
+      try { inline.call(win, e); } catch (error) { console.error('[SoftN] An on' + type + ' handler failed: ' + (error && error.message ? error.message : error)); }
+    }
+  }
+  function moveTo(href, state, hashOnly) {
+    var before = here.href;
+    here = parseUrl(href);
+    if (hashOnly && before !== here.href) {
+      var e = new Event('hashchange');
+      e.oldURL = before;
+      e.newURL = here.href;
+      setTimeout(function () { toWindow('hashchange', e); }, 0);
+    }
+  }
+  var history = {
+    get length() { return entries.length; },
+    get state() { return entries[entryAt] ? entries[entryAt].state : null; },
+    scrollRestoration: 'auto',
+    pushState: function (state, title, url) {
+      var href = url === undefined || url === null ? here.href : new URL(String(url), here.href || undefined).href;
+      entries = entries.slice(0, entryAt + 1);
+      entries.push({ href: href, state: state === undefined ? null : structuredClone(state) });
+      entryAt = entries.length - 1;
+      moveTo(href, state, false);
+    },
+    replaceState: function (state, title, url) {
+      var href = url === undefined || url === null ? here.href : new URL(String(url), here.href || undefined).href;
+      entries[entryAt] = { href: href, state: state === undefined ? null : structuredClone(state) };
+      moveTo(href, state, false);
+    },
+    go: function (delta) {
+      var to = entryAt + (Number(delta) || 0);
+      if (to < 0 || to >= entries.length || to === entryAt) return;
+      var from = entries[entryAt].href;
+      entryAt = to;
+      var entry = entries[to];
+      setTimeout(function () {
+        here = parseUrl(entry.href);
+        var pop = new Event('popstate');
+        pop.state = entry.state;
+        toWindow('popstate', pop);
+        if (from.split('#')[0] === entry.href.split('#')[0] && from !== entry.href) {
+          var hash = new Event('hashchange');
+          hash.oldURL = from;
+          hash.newURL = entry.href;
+          toWindow('hashchange', hash);
+        }
+      }, 0);
+    },
+    back: function () { history.go(-1); },
+    forward: function () { history.go(1); },
+  };
+
   // ---------------------------------------------------------------- the host's side
 
-  function build(seed, parent) {
+  function build(seed, parent, inert) {
     var node;
     if (seed.x !== undefined) node = makeText(seed.x, seed.i);
     else if (seed.o && !seed.t) node = makeComment('', seed.i, true);
     else {
-      node = makeElement(seed.t, seed.i, !!seed.o);
+      node = makeElement(seed.t, seed.i, !!seed.o && !seed.tpl);
       var r = rec(node);
-      // A handler written in the markup is SoftN's, not an attribute.
-      for (var key in seed.a || {}) if (!/^on/i.test(key)) r.attrs.push([key, String(seed.a[key])]);
-      if (seed.c) for (var i = 0; i < seed.c.length; i++) build(seed.c[i], node);
+      for (var key in seed.a || {}) {
+        // A handler written in the markup as code is the page's to run, with
+        // the element as this and the event as event, as a browser runs it.
+        // One SoftN reads (onclick="save()") is SoftN's, and is not here.
+        if (/^on/i.test(key)) {
+          var type = key.slice(2).toLowerCase();
+          var handler = inlineHandler(String(seed.a[key]));
+          if (handler) { r.inline[type] = handler; listen(type); }
+          continue;
+        }
+        r.attrs.push([key, String(seed.a[key])]);
+      }
+      if (seed.c) for (var i = 0; i < seed.c.length; i++) build(seed.c[i], node, inert);
+      if (seed.tpl) for (var t = 0; t < seed.tpl.length; t++) build(seed.tpl[t], node.content, true);
+      if (r.tag === 'dialog' && !inert) heedDialogs();
     }
     rec(node).parent = parent;
     rec(parent).kids.push(node);
-    BY_ID[seed.i] = node;
+    if (!inert) BY_ID[seed.i] = node;
     return node;
   }
 
@@ -1699,7 +2731,13 @@ var __softnShell = (function (win) {
     nextId = Math.max(nextId, seed.next || 2);
     if (seed.title) d.title = seed.title;
     here = parseUrl(seed.url || '');
+    entries = [{ href: here.href, state: null }];
+    entryAt = 0;
+    if (seed.r && seed.r.length >= 32) randomKey = seed.r.slice(0, 32);
+    if (seed.v) viewportChanged(seed.v);
     ops = [];
+    // What the markup itself listens for: its handlers, its dialogs.
+    for (var heard in listening) ops.push(['l', heard]);
     api.document = doc;
   }
 
@@ -1717,12 +2755,15 @@ var __softnShell = (function (win) {
     for (var i = 0; i < changes.length; i++) {
       var c = changes[i];
       if (c[0] === 'f') { activeId = c[1] || 0; continue; }
+      if (c[0] === 'W') { viewportChanged(c[1]); continue; }
+      if (c[0] === 'B') { boxesMeasured(c[1]); continue; }
       var node = BY_ID[c[1]];
       var r = node && rec(node);
       if (!r) continue;
       if (c[0] === 'v') r.value = String(c[2]);
       else if (c[0] === 'k') r.checked = !!c[2];
       else if (c[0] === 's') r.selectedIndex = Number(c[2]);
+      else if (c[0] === 'S') { r.chosen = c[2].slice(); r.selectedIndex = r.chosen.length ? r.chosen[0] : -1; }
       else if (c[0] === 'A') {
         // An attribute SoftN draws from a {value}: told as the page shows it,
         // so classList.add on class={cls} adds to what is there.
@@ -1740,6 +2781,9 @@ var __softnShell = (function (win) {
     click: MouseEvent, dblclick: MouseEvent, mousedown: MouseEvent, mouseup: MouseEvent, mousemove: MouseEvent,
     mouseover: MouseEvent, mouseout: MouseEvent, mouseenter: MouseEvent, mouseleave: MouseEvent, contextmenu: MouseEvent,
     input: InputEvent, focus: FocusEvent, blur: FocusEvent, focusin: FocusEvent, focusout: FocusEvent, submit: SubmitEvent,
+    pointerdown: PointerEvent, pointerup: PointerEvent, pointermove: PointerEvent, pointerover: PointerEvent, pointerout: PointerEvent,
+    pointerenter: PointerEvent, pointerleave: PointerEvent, pointercancel: PointerEvent,
+    dragstart: DragEvent, drag: DragEvent, dragend: DragEvent, dragenter: DragEvent, dragover: DragEvent, dragleave: DragEvent, drop: DragEvent,
   };
   var OWN_EVENT_FIELDS = { type: 1, target: 1, currentTarget: 1, bubbles: 1, cancelable: 1, defaultPrevented: 1, eventPhase: 1, isTrusted: 1, timeStamp: 1, srcElement: 1 };
   var NOT_BUBBLING = { focus: 1, blur: 1, mouseenter: 1, mouseleave: 1, load: 1, error: 1, scroll: 1, toggle: 1, invalid: 1 };
@@ -1770,6 +2814,12 @@ var __softnShell = (function (win) {
   }
 
   function event(id, type, props, path) {
+    if (type === 'softn:viewport') {
+      // innerWidth and matchMedia() follow; a resize is heard as one.
+      if (viewportChanged(props.v)) toResize();
+      return 0;
+    }
+    if (type === 'softn:boxes') { boxesMeasured(props.boxes); return 0; }
     var target = id === -1 ? doc : BY_ID[id];
     if (!target) return 0;
     if (path && path.length) {
@@ -1782,9 +2832,53 @@ var __softnShell = (function (win) {
       if (OWN_EVENT_FIELDS[key]) continue;
       e[key] = props[key];
     }
+    if (type === 'submit') e.submitter = typeof props.submitter === 'number' ? BY_ID[props.submitter] || null : null;
+    if (/^drag|^drop$/.test(type)) {
+      if (type === 'dragstart' || !dragging) dragging = new DataTransfer();
+      e.dataTransfer = dragging;
+    }
     e.isTrusted = true;
     dispatch(target, e);
+    // A form of a dialog's (method="dialog") closes it, with its button's value.
+    if (type === 'submit' && !e.defaultPrevented && rec(target) && (getAttr(rec(target), 'method') || '').toLowerCase() === 'dialog') {
+      var dialog = target.closest('dialog');
+      if (dialog) dialog.close(e.submitter ? e.submitter.value : undefined);
+      e.defaultPrevented = true;
+    }
+    if (type === 'drop' || type === 'dragend') dragging = null;
+    // Escape asks the modal dialog to close, as it does in a browser.
+    if (type === 'keydown' && props.key === 'Escape' && !e.defaultPrevented) {
+      var modal = openModal();
+      if (modal) modal.requestClose();
+    }
+    // A link to a place on this page, followed: the page's hash moves with it.
+    if (type === 'click' && !e.defaultPrevented) {
+      var link = target && typeof target.closest === 'function' ? target.closest('a[href^="#"]') : null;
+      if (link) navigate(getAttr(rec(link), 'href'));
+    }
     return (e.defaultPrevented ? 1 : 0) | (e._stop ? 2 : 0) | (e._captureStop ? 4 : 0);
+  }
+  var resizeListeners = [];
+
+  // What is being dragged: data by type, as setData() put it.
+  var dragging = null;
+  function DataTransfer() {
+    Object.defineProperty(this, '_data', { value: {}, writable: true, enumerable: false });
+    this.dropEffect = 'none';
+    this.effectAllowed = 'all';
+    this.files = [];
+  }
+  DataTransfer.prototype.setData = function (format, data) { this._data[String(format).toLowerCase()] = String(data); };
+  DataTransfer.prototype.getData = function (format) { var v = this._data[String(format).toLowerCase()]; return v === undefined ? '' : v; };
+  DataTransfer.prototype.clearData = function (format) { if (format === undefined) this._data = {}; else delete this._data[String(format).toLowerCase()]; };
+  DataTransfer.prototype.setDragImage = function () {};
+  Object.defineProperty(DataTransfer.prototype, 'types', { get: function () { return Object.keys(this._data); } });
+  function toResize() {
+    var list = resizeListeners.slice();
+    var e = new Event('resize');
+    for (var i = 0; i < list.length; i++) {
+      try { list[i].call(win, e); } catch (error) { console.error('[SoftN] A resize listener failed: ' + (error && error.message ? error.message : error)); }
+    }
   }
 
   // DOMContentLoaded and load, once the page has been drawn, as a browser
@@ -1813,7 +2907,15 @@ var __softnShell = (function (win) {
       win.addEventListener = function (type, fn, options) {
         if (type === 'load') { windowLoad.push(fn); return; }
         if (type === 'DOMContentLoaded') { addListener(doc, type, fn, options); return; }
+        if (type === 'hashchange' || type === 'popstate') { windowListeners[type].push(fn); return; }
+        if (type === 'resize') { resizeListeners.push(fn); listen('softn:viewport'); return; }
         return engineAdd.call(win, type, fn, options);
+      };
+      var engineRemove = win.removeEventListener;
+      win.removeEventListener = function (type, fn, options) {
+        var list = type === 'resize' ? resizeListeners : windowListeners[type];
+        if (list) { var at = list.indexOf(fn); if (at >= 0) list.splice(at, 1); return; }
+        if (typeof engineRemove === 'function') return engineRemove.call(win, type, fn, options);
       };
     } catch (error) {
       warnOnce('window-load', 'window.addEventListener("load") is not heard on this engine; use document.addEventListener("DOMContentLoaded").');
@@ -1829,10 +2931,17 @@ var __softnShell = (function (win) {
     HTMLImageElement: HTMLImageElement, Text: Text, Comment: Comment, DocumentFragment: DocumentFragment,
     Event: Event, CustomEvent: CustomEvent, KeyboardEvent: KeyboardEvent, MouseEvent: MouseEvent,
     InputEvent: InputEvent, FocusEvent: FocusEvent, SubmitEvent: SubmitEvent, FormData: FormData,
+    PointerEvent: PointerEvent, DragEvent: DragEvent,
     getComputedStyle: getComputedStyle, fetch: fetch, Headers: Headers, Response: Response, location: location,
     URLSearchParams: URLSearchParams, queueMicrotask: queueMicrotask, requestAnimationFrame: requestAnimationFrame,
     cancelAnimationFrame: cancelAnimationFrame, structuredClone: structuredClone, sessionStorage: sessionStorage,
     alert: alert, confirm: confirm, prompt: prompt,
+    EventTarget: EventTarget, DOMException: DOMException, AbortController: AbortController, AbortSignal: AbortSignal,
+    URL: URL, btoa: btoa, atob: atob, TextEncoder: TextEncoder, TextDecoder: TextDecoder, crypto: crypto,
+    MutationObserver: MutationObserver, ResizeObserver: ResizeObserver, IntersectionObserver: IntersectionObserver,
+    matchMedia: matchMedia, history: history, HTMLOutputElement: HTMLOutputElement,
+    HTMLTemplateElement: HTMLTemplateElement, HTMLDialogElement: HTMLDialogElement, DataTransfer: DataTransfer,
+    viewport: function () { return viewport; },
   };
   return api;
 })(typeof window !== 'undefined' ? window : null);
@@ -1858,6 +2967,15 @@ export function shellPrelude(seedJson: string): string {
     DOCUMENT_SHELL_SOURCE +
     '\n__softnShell.init(' + seedJson + ');\n' +
     names.map((name) => 'if (typeof globalThis.' + name + ' === "undefined") globalThis.' + name + ' = __softnShell.' + name + ';').join('\n') +
-    '\nif (typeof window !== "undefined" && window) { try { window.document = __softnShell.document; window.location = __softnShell.location; } catch (e) {} }\n'
+    '\nif (typeof window !== "undefined" && window) { try { window.document = __softnShell.document; window.location = __softnShell.location; } catch (e) {} }\n' +
+    // The engine's window is an object of its own: window.matchMedia(),
+    // window.history and the rest are there too, where the engine has none.
+    'if (typeof window !== "undefined" && window) { ' +
+    names.map((name) => 'if (typeof window.' + name + ' === "undefined") window.' + name + ' = __softnShell.' + name + ';').join(' ') +
+    ' }\n' +
+    // The window's size, read as it is now.
+    '[["innerWidth", "w"], ["innerHeight", "h"], ["devicePixelRatio", "ratio"]].forEach(function (p) { ' +
+    '[globalThis, typeof window !== "undefined" ? window : null].forEach(function (o) { ' +
+    'if (o && typeof o[p[0]] === "undefined") { try { Object.defineProperty(o, p[0], { configurable: true, get: function () { return __softnShell.viewport()[p[1]]; } }); } catch (e) {} } }); });\n'
   );
 }

@@ -11,13 +11,16 @@
  * app's paint in. Nothing about the app's CSS was wrong as CSS; it simply
  * reached past the app.
  *
- * Each rule is now made to say "inside this app". The renderer draws the
- * app in an element of its own, marked with an attribute naming it
- * (`data-softn-app`), and every selector here is put under that element:
- * `.card` becomes `:where([data-softn-app="a1"]) .card`, which no element
- * outside the app matches. `html`, `body` and `:root`, which in a page of
- * its own are the page, become the app's own root element, so a page's
- * `body { margin: 0 }` and `:root { --brand: … }` still mean what their
+ * Each rule is now made to style only what is inside this app. The renderer
+ * draws the app in an element of its own, marked with an attribute naming it
+ * (`data-softn-app`), and what every selector here styles — its subject, the
+ * last part — must be inside that element: `.card` becomes
+ * `.card:where([data-softn-app="a1"] *)`, which no element outside the app
+ * matches, however the rest of the selector is written. What is around the
+ * subject may still be anything, so `.softn-theme-dark .fn` answers to a
+ * theme the host sets around the app. `html`, `body` and `:root`, which in a
+ * page of its own are the page, are the app's own root element as well, so a
+ * page's `body { margin: 0 }` and `:root { --brand: … }` still mean what their
  * author meant. `:where()` adds nothing to a selector's specificity, so the
  * app's rules weigh against each other, and against the components' own,
  * exactly as they did.
@@ -145,28 +148,70 @@ function compoundEnd(text: string): number {
 
 const ROOT_COMPOUND = /^(?:html|body|:root|&)(?![\w-])/i;
 
-/** One selector of a top-level rule, put inside the app; null to drop it. */
-function scopeSelector(selector: string, prefix: string, root: string): string | null {
-  let rest = selector.trim();
-  // `> a`, `+ a`, `~ a` are not selectors at the top of a stylesheet, but
-  // with the app's element written in front they would be its siblings.
-  if (!rest || /^[>+~|]/.test(rest)) return null;
-  let atRoot = false;
+/** Where the subject — the last compound, what the selector styles — starts. */
+function subjectStart(selector: string): number {
+  let start = 0;
+  for (let i = 0; i < selector.length; ) {
+    const next = pastValue(selector, i);
+    if (/[\s>+~]/.test(selector[i])) start = next;
+    i = next;
+  }
+  return start;
+}
+
+/**
+ * `selector` with its subject held inside the app: `restriction` added to
+ * the subject's compound, before any pseudo-element (`.x::before` styles a
+ * part of `.x`, and is held by holding `.x`).
+ */
+function restrictSubject(selector: string, restriction: string): string {
+  let at = selector.length;
+  for (let i = subjectStart(selector); i < selector.length; i = pastValue(selector, i)) {
+    if (selector[i] === ':' && /^(?:::|:(?:before|after|first-line|first-letter)(?![\w-]))/i.test(selector.slice(i))) {
+      at = i;
+      break;
+    }
+  }
+  return selector.slice(0, at) + restriction + selector.slice(at);
+}
+
+/**
+ * One selector of a top-level rule, as the selectors that style the same
+ * things inside the app: none, one, or two.
+ *
+ * The subject — what is styled — is held inside the app; what is around it
+ * may be anything, as it is for any stylesheet: `.softn-theme-dark .fn` and
+ * `[data-theme="dark"] .card` still answer to a theme the host sets on an
+ * element around the app. `html`, `body` and `:root` at its start are the
+ * app's own root as well, so `body { margin: 0 }` and `body.dark .x`, where
+ * the page's code put `dark` on its body, mean what they meant.
+ */
+function scopeSelector(selector: string, restriction: string, root: string): string[] {
+  const written = selector.trim();
+  // `> a`, `+ a`, `~ a` are not selectors at the top of a stylesheet.
+  if (!written || /^[>+~|]/.test(written)) return [];
+  if (!ROOT_COMPOUND.test(written)) return [restrictSubject(written, restriction)];
+  let rest = written;
   let suffix = '';
   let child = false;
+  let beside = false;
   for (let m = ROOT_COMPOUND.exec(rest); m; m = ROOT_COMPOUND.exec(rest)) {
-    atRoot = true;
     rest = rest.slice(m[0].length);
     const end = compoundEnd(rest);
     suffix += rest.slice(0, end);
     rest = rest.slice(end).trimStart();
     child = rest.startsWith('>');
     if (child) rest = rest.slice(1).trimStart();
-    // `body + a` is beside the page, which is beside the app.
-    if (/^[+~|]/.test(rest)) return null;
+    // `body + a` is beside the page, which in an app is nothing.
+    beside = /^[+~|]/.test(rest);
+    if (beside) break;
   }
-  if (!atRoot) return prefix + ' ' + rest;
-  return root + suffix + (rest ? (child ? ' > ' : ' ') + rest : '');
+  const out: string[] = [];
+  if (!beside) out.push(root + suffix + (rest ? (child ? ' > ' : ' ') + rest : ''));
+  // As written too, when something below the root is styled: the root's
+  // class may be the host's, on its own `html` or `body`.
+  if (rest) out.push(restrictSubject(written, restriction));
+  return out;
 }
 
 function escapeRegExp(text: string): string {
@@ -181,13 +226,13 @@ function unquote(text: string): string {
 class Scoper {
   readonly fonts: Map<string, string>;
   readonly animations: Map<string, string>;
-  readonly prefix: string;
+  readonly restriction: string;
   readonly root: string;
 
   /** `outer`: the stylesheet a group rule's block is in, whose names it shares. */
   constructor(readonly css: string, readonly app: string, outer?: Scoper) {
-    this.prefix = `:where([data-softn-app="${app}"])`;
-    this.root = `:where([data-softn-app="${app}"] > *)`;
+    this.restriction = insideTheApp(app);
+    this.root = rootOfTheApp(app);
     this.fonts = outer?.fonts ?? new Map();
     this.animations = outer?.animations ?? new Map();
   }
@@ -260,10 +305,7 @@ class Scoper {
       return '';
     }
     const selectors: string[] = [];
-    for (const selector of splitList(prelude)) {
-      const scoped = scopeSelector(selector, this.prefix, this.root);
-      if (scoped) selectors.push(scoped);
-    }
+    for (const selector of splitList(prelude)) selectors.push(...scopeSelector(selector, this.restriction, this.root));
     return selectors.length > 0 ? `${selectors.join(', ')} {${body}}\n` : '';
   }
 
@@ -323,12 +365,31 @@ function subjectIsParent(selector: string): boolean {
   return false;
 }
 
+/** The pseudo-class that holds a subject inside the app named `app`. */
+function insideTheApp(app: string): string {
+  return `:where([data-softn-app="${app}"] *)`;
+}
+
+/** The app's root element: what `html`, `body` and `:root` are in its stylesheet. */
+function rootOfTheApp(app: string): string {
+  return `:where([data-softn-app="${app}"] > *)`;
+}
+
+/** Whether `token` is in `compound` itself, and not inside one of its `:not()` or `:is()`. */
+function atTopOf(compound: string, token: string): boolean {
+  for (let i = 0; i < compound.length; i = pastValue(compound, i)) if (compound.startsWith(token, i)) return true;
+  return false;
+}
+
 function insideApp(selectorText: string, app: string, nested: boolean): boolean {
-  const below = new RegExp(`^:where\\(\\[data-softn-app="${app}"\\]\\)\\s+[^\\s+~]`);
+  const restriction = insideTheApp(app);
   const root = new RegExp(`^:where\\(\\[data-softn-app="${app}"\\]\\s*>\\s*\\*\\)`);
   for (const part of splitList(selectorText)) {
     const selector = part.trim();
-    if (below.test(selector) || root.test(selector)) continue;
+    // What it styles is inside the app: its subject is held there, or it
+    // starts from the app's root, and nothing an app's root leads to is
+    // outside the element around it.
+    if (root.test(selector) || atTopOf(selector.slice(subjectStart(selector)), restriction)) continue;
     // A nested rule without `&` is under its parent's element, and so is
     // one that starts from it (`& .b`, as a browser writes `.b` back out);
     // with `&` written in anywhere else, it is only if what it styles is

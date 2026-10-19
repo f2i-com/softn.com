@@ -210,6 +210,17 @@ export interface ScriptRuntimeOptions {
    */
   documentShell?: DocumentShellRequest;
   /**
+   * The page's markup has handlers written for a browser that SoftN does not
+   * read (see `hasPageHandlers`): the page is given its document for them,
+   * whatever its code says.
+   */
+  browserHandlers?: boolean;
+  /**
+   * Where the app's own files are, as its markup's `src="images/x.png"`
+   * finds them: what a page's `fetch('data.json')` reads (`bundle.read`).
+   */
+  assetResolver?: (path: string) => string;
+  /**
    * Logic files the host already concatenated into `script.code` itself.
    *
    * A host that assembles a bundle may inline manifest-listed `.logic` files
@@ -778,6 +789,8 @@ export class SoftNScriptRuntime {
     );
     this.runtimeMode = options?.mode || 'main';
     this.documentShellRequest = options?.documentShell ?? null;
+    this.browserHandlers = options?.browserHandlers === true;
+    this.assetResolver = options?.assetResolver ?? null;
     this.observedStateNames = options?.observedStateNames ?? null;
     this.drawnNames = options?.drawnNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
@@ -1060,7 +1073,8 @@ export class SoftNScriptRuntime {
       let shellCode = '';
       // Code that declares a `document` of its own is not given another; a
       // name of the shell's it declares itself (`class Comment`) stays its own.
-      const asks = this.documentShellRequest !== null && logicEngineIsSandboxed() && usesDocument(resolvedCode);
+      const asks =
+        this.documentShellRequest !== null && logicEngineIsSandboxed() && (usesDocument(resolvedCode) || this.browserHandlers);
       const ownNames = asks ? namesDeclaredBy(resolvedCode) : new Set<string>();
       if (asks && useHostBridges && !ownNames.has('document')) {
         const [{ shellPrelude }, shell] = await Promise.all([
@@ -1725,6 +1739,9 @@ export class SoftNScriptRuntime {
 
   /** The document the page's code is given, when it uses one; see ScriptRuntimeOptions.documentShell. */
   private readonly documentShellRequest: DocumentShellRequest | null;
+  /** The page has handlers written for a browser: see ScriptRuntimeOptions.browserHandlers. */
+  private readonly browserHandlers: boolean;
+  private readonly assetResolver: ((path: string) => string) | null;
   private documentShell: DocumentShell | null = null;
   private documentShellOn = false;
 
@@ -2862,6 +2879,8 @@ export class SoftNScriptRuntime {
         return this.handleGpuReleaseAll();
       case 'storage.op':
         return this.handleStorageOp(call);
+      case 'bundle.read':
+        return this.handleBundleRead(call);
       case 'dialog.alert': {
         // A page's alert(), shown when its turn is over: nothing waits on it.
         //
@@ -3077,6 +3096,30 @@ export class SoftNScriptRuntime {
     } finally {
       clearTimeout(timeout);
       this.netAbortControllers.delete(abortController);
+    }
+  }
+
+  /**
+   * A page's `fetch('data.json')`: the app's own file, read where its
+   * markup's `src` would find it, with no network and no permission, as an
+   * image of its is. A bundle's file is a `blob:` address; a site's (page
+   * mode) a path in the page's own folder. Anything else is not one of the
+   * app's files, and is not found.
+   */
+  private async handleBundleRead(call: PendingHostCall): Promise<unknown> {
+    const notFound = { ok: false, status: 404, statusText: 'Not Found', body: '', headers: {} };
+    const path = String(call.args[0] ?? '').replace(/[?#].*$/, '').replace(/^\.\//, '');
+    const url = path && this.assetResolver ? this.assetResolver(path) : '';
+    if (!url || (!/^blob:/i.test(url) && /^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(url))) return notFound;
+    try {
+      const resp = await fetch(url, { redirect: 'error' });
+      if (!resp.ok) return { ...notFound, status: resp.status, statusText: resp.statusText };
+      const body = await resp.text();
+      if (body.length > SoftNScriptRuntime.MAX_NET_RESPONSE_BYTES) throw new Error('The file is too large');
+      const type = resp.headers.get('content-type');
+      return { ok: true, status: 200, statusText: 'OK', body, headers: type ? { 'content-type': type } : {} };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'The file could not be read' };
     }
   }
 

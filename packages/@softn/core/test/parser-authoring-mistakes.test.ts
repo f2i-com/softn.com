@@ -156,7 +156,8 @@ describe('a // comment after something on the line, before a closing tag', () =>
       '2: This // comment runs to the end of its line and takes the "</p>" after it with it. ' +
         'Put the comment on a line of its own, or write the words in braces, as in {"// items"}'
     );
-    expect(said.length).toBeGreaterThan(1);
+    // The `</div>` after it ends the paragraph, as in HTML, with nothing more to say.
+    expect(said.length).toBeGreaterThanOrEqual(1);
   });
 
   it('is not said of a line of markup commented out, or of a note after a closing tag', () => {

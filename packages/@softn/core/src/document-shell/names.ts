@@ -6,6 +6,9 @@
  * since most pages never do and every app would otherwise carry both.
  */
 
+/** The id of the page's `html` in the document; the body's is 1. */
+export const SHELL_HTML_ID = -2;
+
 /** The functions the host calls, declared at the top of the logic. */
 export const SHELL_INIT = '__softnDocInit';
 export const SHELL_TAKE = '__softnDocTake';
@@ -53,6 +56,27 @@ export const SHELL_GLOBAL_NAMES: ReadonlySet<string> = new Set([
   'alert',
   'confirm',
   'prompt',
+  'EventTarget',
+  'DOMException',
+  'AbortController',
+  'AbortSignal',
+  'URL',
+  'btoa',
+  'atob',
+  'TextEncoder',
+  'TextDecoder',
+  'crypto',
+  'MutationObserver',
+  'ResizeObserver',
+  'IntersectionObserver',
+  'matchMedia',
+  'history',
+  'HTMLOutputElement',
+  'HTMLTemplateElement',
+  'HTMLDialogElement',
+  'PointerEvent',
+  'DragEvent',
+  'DataTransfer',
 ]);
 
 /**
@@ -90,8 +114,32 @@ export function holdsShellNode(value: unknown, depth = 0): boolean {
 export function usesDocument(code: string): boolean {
   return (
     /\bdocument\s*[.[]/.test(code) ||
-    /(?<![.\w$])(?:fetch\s*\(|location\s*[.=[]|URLSearchParams\b|requestAnimationFrame\b|queueMicrotask\b|structuredClone\b|sessionStorage\b|(?:alert|confirm|prompt)\s*\()/.test(code)
+    /(?<![.\w$])(?:fetch\s*\(|location\s*[.=[]|URLSearchParams\b|requestAnimationFrame\b|queueMicrotask\b|structuredClone\b|sessionStorage\b|(?:alert|confirm|prompt|btoa|atob|matchMedia)\s*\(|(?:crypto|history|URL|AbortSignal)\s*\.|inner(?:Width|Height)\b)/.test(code) ||
+    /\bnew\s+(?:URL|TextEncoder|TextDecoder|AbortController|EventTarget|MutationObserver|ResizeObserver|IntersectionObserver|DOMException)\b/.test(code) ||
+    /\bwindow\s*\.\s*(?:matchMedia|history|inner(?:Width|Height)|crypto|location|fetch|alert|btoa|atob)\b/.test(code)
   );
+}
+
+/**
+ * Whether a page's markup has a handler written for a browser that SoftN
+ * does not read (`onclick="this.classList.toggle('on')"`, kept as the
+ * attribute by the parser): such a page is given its document, where the
+ * handler runs as a browser runs it, whether or not it has code of its own.
+ */
+export function hasPageHandlers(nodes: readonly unknown[]): boolean {
+  for (const node of nodes as Array<Record<string, unknown>>) {
+    if (!node || typeof node !== 'object') continue;
+    if (node.type === 'Element') {
+      const props = node.props as Array<{ name: string; value: { type: string } }>;
+      if (props.some((prop) => /^on[a-z]/i.test(prop.name) && prop.value.type === 'static')) return true;
+    }
+    for (const key of ['children', 'consequent', 'alternate', 'body', 'emptyFallback']) {
+      const inner = node[key];
+      if (Array.isArray(inner) && hasPageHandlers(inner)) return true;
+      if (inner && typeof inner === 'object' && !Array.isArray(inner) && hasPageHandlers([inner])) return true;
+    }
+  }
+  return false;
 }
 
 /**

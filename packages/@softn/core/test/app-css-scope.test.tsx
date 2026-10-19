@@ -16,7 +16,7 @@ import { cssResourceReferences } from '../src/renderer/sanitize-html';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const IN = ':where([data-softn-app="a1"])';
+const IN = ':where([data-softn-app="a1"] *)';
 const ROOT = ':where([data-softn-app="a1"] > *)';
 
 function scoped(css: string): string {
@@ -50,34 +50,54 @@ function preludes(css: string): string[] {
 }
 
 describe('an app stylesheet is kept to the app', () => {
-  it('puts every selector under the app', () => {
-    const css = scoped('.card { color: red } h1, .title > b { margin: 0 }');
-    expect(preludes(css)).toEqual([`${IN} .card`, `${IN} h1, ${IN} .title > b`]);
+  it('holds what every selector styles inside the app', () => {
+    const css = scoped('.card { color: red } h1, .title > b { margin: 0 } .x::before, li:hover::marker, a:after { content: "" }');
+    expect(preludes(css)).toEqual([
+      `.card${IN}`,
+      `h1${IN}, .title > b${IN}`,
+      `.x${IN}::before, li:hover${IN}::marker, a${IN}:after`,
+    ]);
+  });
+
+  it('lets what is around the subject be anything, such as a host’s theme', () => {
+    expect(preludes(scoped('.softn-theme-dark .fn { color: red } [data-theme="dark"] .card > p { color: red }'))).toEqual([
+      `.softn-theme-dark .fn${IN}`,
+      `[data-theme="dark"] .card > p${IN}`,
+    ]);
   });
 
   it('makes html, body and :root the app’s own element', () => {
     const css = scoped(':root { --brand: teal } body { margin: 0 } html body.dark .x { color: red } body > main { padding: 0 }');
-    expect(preludes(css)).toEqual([ROOT, ROOT, `${ROOT}.dark .x`, `${ROOT} > main`]);
+    // And as written, for a class the host puts on its own html or body.
+    expect(preludes(css)).toEqual([
+      ROOT,
+      ROOT,
+      `${ROOT}.dark .x, html body.dark .x${IN}`,
+      `${ROOT} > main, body > main${IN}`,
+    ]);
   });
 
-  it('drops what would be beside the app rather than in it', () => {
-    expect(preludes(scoped('body + .x { display: none } :root ~ * { display: none } + .y { color: red } ~ .z { color: red }'))).toEqual([]);
-    expect(preludes(scoped('body + .x, .ok { color: red }'))).toEqual([`${IN} .ok`]);
+  it('styles nothing beside the app', () => {
+    expect(preludes(scoped('body + .x { display: none } :root ~ * { display: none } + .y { color: red } ~ .z { color: red }'))).toEqual([
+      `body + .x${IN}`,
+      `:root ~ *${IN}`,
+    ]);
+    expect(preludes(scoped('body + .x, .ok { color: red }'))).toEqual([`body + .x${IN}, .ok${IN}`]);
   });
 
   it('keeps group rules, scoping what is inside them', () => {
     const css = scoped('@media (min-width: 40em) { .a { color: red } @supports (display: grid) { body { display: grid } } } @layer base, app; @layer app { .b { color: blue } }');
-    expect(css).toContain(`@media (min-width: 40em) {\n${IN} .a {`);
+    expect(css).toContain(`@media (min-width: 40em) {\n.a${IN} {`);
     expect(css).toContain(`@supports (display: grid) {\n${ROOT} {`);
     expect(css).toContain('@layer base, app;');
-    expect(css).toContain(`@layer app {\n${IN} .b {`);
+    expect(css).toContain(`@layer app {\n.b${IN} {`);
   });
 
   it('drops at-rules that reach the whole document or choose their own scope', () => {
     const css = scoped(
       '@import "x.css"; @property --c { syntax: "<color>"; inherits: false; initial-value: red } @scope (.consent) { * { display: none } } @page { margin: 0 } @view-transition { navigation: auto } @font-palette-values --p { font-family: X } @unknown-thing { .a { color: red } } .ok { color: red }'
     );
-    expect(preludes(css)).toEqual([`${IN} .ok`]);
+    expect(preludes(css)).toEqual([`.ok${IN}`]);
   });
 
   it('renames the app’s fonts and animations, and its CSS and inline styles follow', () => {
@@ -104,34 +124,34 @@ describe('an app stylesheet is kept to the app', () => {
   it('reads blocks the way the browser does', () => {
     // An unquoted url is one token: the `{` in it opens nothing, so the rule after it is a rule of its own.
     expect(preludes(scoped('.a { background: url(x{) } .softn-consent-bar { display: none }'))).toEqual([
-      `${IN} .a`,
-      `${IN} .softn-consent-bar`,
+      `.a${IN}`,
+      `.softn-consent-bar${IN}`,
     ]);
     // A `}` in a string, or in an attribute selector, closes nothing.
     expect(preludes(scoped('.a { content: "}" } [title="}"] .b { color: red } .c { color: red }'))).toEqual([
-      `${IN} .a`,
-      `${IN} [title="}"] .b`,
-      `${IN} .c`,
+      `.a${IN}`,
+      `[title="}"] .b${IN}`,
+      `.c${IN}`,
     ]);
     // A newline ends a string that was never closed, and the block goes on.
     expect(preludes(scoped('.a { content: "x\n; color: red } .softn-consent-bar { display: none }'))).toEqual([
-      `${IN} .a`,
-      `${IN} .softn-consent-bar`,
+      `.a${IN}`,
+      `.softn-consent-bar${IN}`,
     ]);
     // A stray `}` or `;` at the top ends nothing that is let through unscoped.
     expect(preludes(scoped('} .softn-consent-bar { display: none } x; .y { color: red }'))).toEqual([
-      `${IN} .softn-consent-bar`,
-      `${IN} .y`,
+      `.softn-consent-bar${IN}`,
+      `.y${IN}`,
     ]);
     // Comments and HTML comment markers.
-    expect(preludes(scoped('<!-- .a /* , body */ , .b { color: red } -->'))).toEqual([`${IN} .a, ${IN} .b`]);
+    expect(preludes(scoped('<!-- .a /* , body */ , .b { color: red } -->'))).toEqual([`.a${IN}, .b${IN}`]);
     // A block the file never closes is closed.
-    expect(scoped('.a { color: red')).toBe(`${IN} .a { color: red}\n`);
+    expect(scoped('.a { color: red')).toBe(`.a${IN} { color: red}\n`);
   });
 
   it('keeps nested rules under their parent', () => {
     const css = scoped('.a { color: red; .b { color: blue } &:hover { color: green } }');
-    expect(css).toBe(`${IN} .a { color: red; .b { color: blue } &:hover { color: green } }\n`);
+    expect(css).toBe(`.a${IN} { color: red; .b { color: blue } &:hover { color: green } }\n`);
   });
 });
 
@@ -177,7 +197,7 @@ describe('the renderer draws an app inside its own element', () => {
     expect(app.style.display).toBe('contents');
     const name = app.getAttribute('data-softn-app');
     const css = container.querySelector('style')?.textContent ?? '';
-    expect(css).toContain(`:where([data-softn-app="${name}"]) .card`);
+    expect(css).toContain(`.card:where([data-softn-app="${name}"] *)`);
     expect(css).toContain(`:where([data-softn-app="${name}"] > *)`);
     expect(css).not.toMatch(/(^|\})\s*(body|\.card)\s*\{/);
     expect(app.querySelector('.card')?.textContent).toBe('Hi');

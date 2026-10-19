@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { docsDevPlugin } from '../../scripts/dev-docs.mjs';
+import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
 
 const appDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -35,7 +36,8 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
-    plugins: [retireServiceWorkersPlugin(), docsDevPlugin(), react()],
+    // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/script-policy.mjs).
+    plugins: [retireServiceWorkersPlugin(), docsDevPlugin(), react(), scriptPolicyPlugin()],
     server: {
       port: env.VITE_PORT ? Number(env.VITE_PORT) : 1421,
       strictPort: true,
