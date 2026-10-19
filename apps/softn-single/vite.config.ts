@@ -14,7 +14,12 @@ export default defineConfig({
     // test/build-graph.test.ts holds free of Three.js and the model loaders.
     manifest: true,
     rolldownOptions: {
+      // The runtime's own page, and the module `softn.js` loads into a page
+      // of the author's site (src/page.tsx), at a name softn.js can find
+      // beside itself: its other files are named for their contents.
+      input: { index: 'index.html', page: 'src/page.tsx' },
       output: {
+        entryFileNames: (chunk) => (chunk.name === 'page' ? 'softn-page.js' : 'assets/[name]-[hash].js'),
         codeSplitting: {
           groups: [
             // Three.js itself — `three/build/` — under one name. It is reached

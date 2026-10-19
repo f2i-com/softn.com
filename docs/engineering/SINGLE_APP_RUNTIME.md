@@ -48,6 +48,25 @@ The site build places this same shell under `/play/`, and the directory API serv
 
 The sample bundle is generated only when `public/app.softn` is absent, never committed, and never overwrites your supplied file. For custom builds place your bundle there before building, or replace it after deployment. Config is capped at 16 KiB, sidecar permissions at 64 KiB and the compressed bundle at 32 MiB; the shared core ZIP validator also applies its entry/decompression limits. Fetch startup is bounded to 60 seconds.
 
+### A page of your own site
+
+A page of your site can be the app with no bundle at all. Put this archive's contents in a folder beside the page (`softn/`, say) and name its loader as the first script in the page's `<head>`:
+
+```html
+<head>
+  <script src="softn/softn.js"></script>
+  <title>Field notes</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="main.js"></script>
+</head>
+```
+
+`softn.js` is a plain script. It keeps the rest of the document from being drawn or run (it writes a hidden `<plaintext>`, so the browser holds what follows as text), and loads `softn-page.js`, the runtime built for this (`src/page.tsx`). That fetches the page's own text and what it names, by the bundle composer's rules (`@softn/single-shell`, `page.ts`): `<script src>` and `<logic src>` files and what they import, `<link rel="stylesheet">` files, imported pages, and `xdb/<name>.xdb` for each collection the page binds, when the site has one. They are assembled as a bundle's text is (`assemble.ts`), with the page as `main`. Pictures and other files are read by the browser from the site, by their paths: `asset("x.png")` answers `x.png`. Each file is capped at 2 MiB and the whole at 16 MiB and 256 files, and all must be in the page's folder or below it, on its origin.
+
+A `manifest.json` beside the page is read for its `id`, theme and other configuration (the page stays `main`), and a `permission.json` for what the app may use; without one the app is granted nothing. Every page of a site keeps one store of records, keyed by the folder and the manifest's `id` (`site` when it has none). The deployment theme is light and the layout `page`, so the document scrolls as a site does.
+
+Placed after other tags, or written `async`, `defer` or as a module, the loader cannot stop the browser: it hides the page until the app is drawn, but the scripts before it have run, and the browser runs the page's code files itself (they fail at their first `import` or `export`). `<script src="softn/softn.js" data-page="app.html">` runs another page of the site in this one's place. A site without `manifest.json` and `permission.json` sees the browser report the two as not found. The runtime's folder must be on the page's own site; scripts and stylesheets from other sites are not loaded.
+
 ## Permissions and local records
 
 By default (`"permissionMode": "prompt"`), the app loads immediately with capabilities withheld. A compact, unbranded bar above the app lists requested access, with expandable permission details, Allow and Not now. The bar occupies its own space instead of covering the app; visitors can interact with the app while deciding. Dismissing it leaves access disabled and exposes Review permissions without restarting the app. Allowing access updates the runtime permission configuration; the shared engine may reinitialize scripts so startup features can retry with permission. Browser camera/microphone prompts remain independent. Consent is scoped to the config location, exact bundle digest and full permission declaration; changing the app or host restrictions asks again. Storage failures do not prevent a session-only grant.

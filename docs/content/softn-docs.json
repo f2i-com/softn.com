@@ -4431,7 +4431,7 @@
       "id": "single-app-runtime",
       "slug": "single-app-runtime",
       "title": "Host one app on its own website",
-      "summary": "Ship one SoftN app on its own website: build the unbranded runtime, point runtime.config.json at your bundle, choose how permissions are granted, and keep the identity that your visitors’ records depend on.",
+      "summary": "Ship one SoftN app on its own website: build the unbranded runtime, point runtime.config.json at your bundle, choose how permissions are granted, and keep the identity that your visitors’ records depend on, or run a page of your own site as the app with no bundle at all.",
       "kind": "guide",
       "audience": [
         "app creators",
@@ -4442,7 +4442,7 @@
         "title": "Host one app on its own website | SoftN Docs",
         "description": "Host a SoftN app on its own website with the single-app runtime: the build and package commands, every runtime.config.json field, permission modes, identity and the archive variants."
       },
-      "updatedAt": "2026-10-12",
+      "updatedAt": "2026-10-19",
       "sourceIds": [
         "softn-single-guide",
         "softn-package",
@@ -4563,6 +4563,34 @@
             {
               "type": "paragraph",
               "text": "Any other key is refused. Limits: the configuration is capped at 16 KiB, a sidecar permission declaration at 64 KiB and the compressed bundle at 32 MiB; the shared bundle validator also applies its entry and decompression limits, and a startup download fails when nothing arrives for 60 seconds; a slow download that keeps arriving is not cut off."
+            }
+          ]
+        },
+        {
+          "id": "site-pages",
+          "title": "Run a page of your own site, with no bundle",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A page of your own site can be the app, as you wrote it: no .softn file and no build. Put the runtime’s folder beside the page (the contents of the archive, here in softn/), and name its loader first in the page’s head. The page is then read by SoftN instead of drawn by the browser: an HTML page with SoftN’s components and syntax in it, whose code is in the files its <script src> tags name and runs in SoftN’s sandbox."
+            },
+            {
+              "type": "code",
+              "language": "html",
+              "code": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <script src=\"softn/softn.js\"></script>\n  <meta charset=\"utf-8\">\n  <title>Field notes</title>\n  <link rel=\"stylesheet\" href=\"styles.css\">\n  <script src=\"main.js\"></script>\n</head>\n<body>\n  <h1>{notes.length} notes</h1>\n  <form onsubmit=\"add(event)\">\n    <input :bind={draft} placeholder=\"A note\">\n    <button>Add</button>\n  </form>\n  #each (note in notes) key={note.id}\n    <p>{note.text}</p>\n  #end\n</body>\n</html>",
+              "caption": "index.html, beside softn/, main.js and styles.css. `notes`, `draft` and `add` are main.js’s."
+            },
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "The loader fetches the page’s own text and what it names: the code its `<script src>` tags name and what that code imports, the stylesheets its `<link>`s name, the pages it imports, and `xdb/<name>.xdb` for each collection it binds, when the site has one. Pictures are read by the browser from the site, by their paths.",
+                "A `manifest.json` and a `permission.json` beside the page are read when the site has them: the manifest for what a page cannot say (an `id`, a theme, Python packages), and the declaration for what the app may use. Without a declaration the app is granted nothing. A site without them sees the browser report two files not found when the page loads.",
+                "Every page of a site shares one store of records, keyed by the site’s folder and the manifest’s `id`.",
+                "The loader must be the first script in the head, and a plain one (not async, defer or a module): everything after it is then kept as text, with none of its scripts run and nothing drawn. Placed later, the page is hidden until the app is drawn, but the browser has already run any script written before it, and runs your code files itself as well (where they fail at their first `import` or `export`).",
+                "`<script src=\"softn/softn.js\" data-page=\"app.html\"></script>` runs another page of the site in this one’s place.",
+                "The runtime’s folder must be on the same site as the page. Scripts and stylesheets from other sites are not loaded."
+              ]
             }
           ]
         },

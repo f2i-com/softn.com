@@ -212,21 +212,73 @@ export function resolveBundlePath(basePath: string, relativePath: string): strin
  */
 export function rewriteBundleLogicImports(source: string, basePath: string): string {
   source = moduleSyntaxAsScript(source);
-  const importLine = /^([ \t]*import[ \t]+)(["'])([^"'\r\n]+)\2([ \t]*;?[ \t]*)(\r?)$/gm;
   return source.replace(
-    importLine,
+    new RegExp(LOGIC_IMPORT_LINE.source, 'gm'),
     (line, prefix: string, quote: string, rawPath: string, suffix: string, carriage: string) => {
-      if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) return line;
-
-      let path: string;
-      if (rawPath.startsWith('./') || rawPath.startsWith('../')) {
-        path = resolveBundlePath(basePath, rawPath);
-      } else {
-        path = normalizeRootPath(rawPath);
-      }
-      return `${prefix}${quote}${path}${quote}${suffix}${carriage}`;
+      const path = logicImportPath(basePath, rawPath);
+      return path === null ? line : `${prefix}${quote}${path}${quote}${suffix}${carriage}`;
     }
   );
+}
+
+/** A whole-file `import "./x.js"` line of logic; group 3 is the path as written. */
+const LOGIC_IMPORT_LINE = /^([ \t]*import[ \t]+)(["'])([^"'\r\n]+)\2([ \t]*;?[ \t]*)(\r?)$/m;
+
+/**
+ * The bundle path an `import` in the logic file at `basePath` names: from
+ * that file for `./` and `../`, from the bundle's root otherwise. Null for an
+ * address on another site, which the runtime fetches itself.
+ */
+function logicImportPath(basePath: string, rawPath: string): string | null {
+  if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) return null;
+  return rawPath.startsWith('./') || rawPath.startsWith('../')
+    ? resolveBundlePath(basePath, rawPath)
+    : normalizeRootPath(rawPath);
+}
+
+/**
+ * The bundle paths the logic file at `basePath` imports, read as the runtime
+ * places them: written as a module or as a script (see moduleSyntaxAsScript).
+ * A path that would climb out of the bundle is left out; the composer refuses
+ * it where it is placed.
+ */
+export function logicImportPaths(source: string, basePath: string): string[] {
+  const paths: string[] = [];
+  for (const match of moduleSyntaxAsScript(source).matchAll(new RegExp(LOGIC_IMPORT_LINE.source, 'gm'))) {
+    try {
+      const path = logicImportPath(basePath, match[3]);
+      if (path !== null) paths.push(path);
+    } catch {
+      // An unsafe path; the composer says so.
+    }
+  }
+  return paths;
+}
+
+/**
+ * The stylesheet a `<link>` names, when it is one of the app's: `rel`
+ * includes `stylesheet` and `href` is not on another site. Null otherwise.
+ */
+function stylesheetHref(attributes: string): string | null {
+  const rel =
+    attributes.match(/\brel\s*=\s*(["'])([^"']*)\1/i)?.[2] ??
+    attributes.match(/\brel\s*=\s*([^\s"'>/]+)/i)?.[1];
+  if (!rel || !rel.toLowerCase().split(/\s+/).includes('stylesheet')) return null;
+  const href = attributes.match(/\bhref\s*=\s*(["'])([^"']+)\1/i)?.[2];
+  return href && !isRemoteReference(href) ? href : null;
+}
+
+/** A lower-case `<link>` tag: group 1 is its attributes. `<Link>` is a component. */
+const LINK_TAG = /<link\b([^>]*?)\/?>/;
+
+/** The app's stylesheets a page links with `<link rel="stylesheet" href>`, as written, in order. */
+export function pageStylesheetHrefs(source: string): string[] {
+  const hrefs: string[] = [];
+  for (const match of source.matchAll(new RegExp(LINK_TAG.source, 'g'))) {
+    const href = stylesheetHref(match[1]);
+    if (href !== null) hrefs.push(href);
+  }
+  return hrefs;
 }
 
 /** Escape a name before embedding it in a regular expression. */
@@ -421,13 +473,9 @@ export function composeBundleSource(
    * carry, said here. Lower case only: `<Link>` is a component.
    */
   const inlineStylesheets = (source: string, pagePath: string): string =>
-    source.replace(/<link\b([^>]*?)\/?>/g, (fullTag, attributes: string) => {
-      const rel =
-        attributes.match(/\brel\s*=\s*(["'])([^"']*)\1/i)?.[2] ??
-        attributes.match(/\brel\s*=\s*([^\s"'>/]+)/i)?.[1];
-      if (!rel || !rel.toLowerCase().split(/\s+/).includes('stylesheet')) return fullTag;
-      const href = attributes.match(/\bhref\s*=\s*(["'])([^"']+)\1/i)?.[2];
-      if (!href || isRemoteReference(href)) return fullTag;
+    source.replace(new RegExp(LINK_TAG.source, 'g'), (fullTag, attributes: string) => {
+      const href = stylesheetHref(attributes);
+      if (href === null) return fullTag;
       const stylesheetPath = resolveBundlePath(pagePath, href);
       const rules = textFiles.get(stylesheetPath);
       if (rules === undefined) {

@@ -10,9 +10,9 @@ import { createImportResolver } from '@softn/runtime-shell/bundleProcessor';
 import { hasSavedGrant, saveGrant, withheldPermissions } from '@softn/runtime-shell/consent';
 import { PermissionBar } from '@softn/runtime-shell/PermissionBar';
 import type { AssetResolver } from '@softn/runtime-shell/bundleProcessor';
-import { loadApplication, type ConfigSource, type LoadedApplication } from './load';
+import { loadApplication, type ConfigSource } from './load';
 import { watchForStall } from './stall';
-import type { DirectoryConfig } from './config';
+import type { DirectoryConfig, SingleConfig } from './config';
 import { installFavicon } from './favicon';
 import { loadHost, type HostBackendCall } from './host';
 // The slim bar the runtime draws over every app, for the pages a directory
@@ -305,11 +305,27 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   );
 }
 /**
- * One app, from its configuration. A `backendCall` passed here wins; without
- * one, the configuration's `host` module supplies it (see ./host).
+ * What the shell runs: an app with the configuration it was deployed with.
+ * A bundle's (load.ts), and a page of a site's (page.ts).
  */
-export function SingleApp({ source, backendCall }: { source: ConfigSource; backendCall?: HostBackendCall }) {
-  const [app, setApp] = useState<LoadedApplication | null>(null);
+export type LoadedPage = RunnableApplication & { config: SingleConfig };
+
+/**
+ * One app, from its configuration, or from what `load` gives, for an app that
+ * comes from somewhere else: a page of a site (page.ts). A `backendCall`
+ * passed here wins; without one, the configuration's `host` module supplies
+ * it (see ./host).
+ */
+export function SingleApp({
+  source,
+  load,
+  backendCall,
+}: {
+  source?: ConfigSource;
+  load?: (signal: AbortSignal, progress: () => void) => Promise<LoadedPage>;
+  backendCall?: HostBackendCall;
+}) {
+  const [app, setApp] = useState<LoadedPage | null>(null);
   const [hosted, setHosted] = useState<HostBackendCall | undefined>(undefined);
   // The reason the app could not load, or null while it has not failed.
   const [failure, setFailure] = useState<{ error: unknown } | null>(null);
@@ -319,12 +335,17 @@ export function SingleApp({ source, backendCall }: { source: ConfigSource; backe
   passed.current = backendCall;
   useEffect(() => {
     const controller = new AbortController();
-    let owned: LoadedApplication | null = null;
+    let owned: LoadedPage | null = null;
     let restoreFavicon: (() => void) | undefined;
     let active = true;
     // A minute with nothing arriving, not a minute in all: see stall.ts.
     const stall = watchForStall(controller);
-    void loadApplication(source, controller.signal, stall.touch)
+    const loading: Promise<LoadedPage> = load
+      ? load(controller.signal, stall.touch)
+      : source
+        ? loadApplication(source, controller.signal, stall.touch)
+        : Promise.reject(Error('Nothing to load: give the shell a configuration or a page'));
+    void loading
       .then(async (result) => {
         owned = result;
         // Before the app mounts, so its first action has somewhere to go. A
@@ -353,7 +374,7 @@ export function SingleApp({ source, backendCall }: { source: ConfigSource; backe
       owned?.assets.dispose();
       restoreFavicon?.();
     };
-  }, [source]);
+  }, [source, load]);
   // The page layout lets the document scroll, which means the root elements
   // above this one have to stop being viewport-high too; see style.css.
   const page = app?.config.layout === 'page';
