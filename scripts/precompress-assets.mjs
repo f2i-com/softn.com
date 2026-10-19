@@ -100,8 +100,8 @@ export function precompressTree(root) {
  * The same pass with the compression spread over worker threads: the same
  * twins, byte for byte (each is made by compressTwins with the same settings,
  * only on another thread), and the same counts. Quality-11 Brotli is what a
- * site build spends its time on — the onnxruntime modules alone are 70 MB, and
- * one of them takes most of a minute — so the largest contents are handed out
+ * site build spends its time on — the engine modules are megabytes each, and
+ * the largest takes seconds on its own — so the largest contents are handed out
  * first and the rest fill in around them.
  */
 export async function precompressTreeInParallel(root, { workers = defaultWorkers() } = {}) {

@@ -17,11 +17,10 @@ function fixture(t) {
   });
   const core = path.join(temp, 'core');
   const files = {
-    'runtime/neural-speech-worker.js': Buffer.from('export const local = true;'),
-    'runtime/speech/ort/ort-wasm-simd-threaded.mjs': Buffer.from('export default {};'),
-    'runtime/speech/ort/ort-wasm-simd-threaded.wasm': Buffer.from([0, 97, 115, 109, 0, 255, 254]),
-    'runtime/speech/voices/af_heart.bin': Buffer.from([0, 255, 0, 254]),
-    'runtime/speech/NOTICE.txt': Buffer.from('Local speech notices'),
+    'runtime/model-worker.js': Buffer.from('export const local = true;'),
+    'runtime/models/kernels.wasm': Buffer.from([0, 97, 115, 109, 0, 255, 254]),
+    'runtime/models/gguf_wasm_bg.wasm': Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]),
+    'runtime/models/ZIPP-gpu-lab-LICENSE.txt': Buffer.from('Apache License 2.0'),
   };
   for (const [name, bytes] of Object.entries(files)) {
     const target = path.join(core, name);
@@ -44,7 +43,7 @@ test('every browser runtime consumer registers assets before its PWA and exclude
   }
 });
 
-test('production copies nested worker, WASM, voices and notices byte-for-byte for each app', t => {
+test('production copies nested worker, WASM and licences byte-for-byte for each app', t => {
   const { temp, core, files } = fixture(t);
   for (const name of ['web', 'builder', 'studio']) {
     const plugin = coreWorkerAssetPlugin({ coreDistRoot: core });

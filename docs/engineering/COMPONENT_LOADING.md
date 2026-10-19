@@ -175,7 +175,7 @@ offline" is the first two; "this app works offline" is the third, and the
 launcher says which of the two it is promising for each app.
 
 1. **Shell precache.** Workbox's glob sweeps `dist` for js, css, html, svg,
-   png, woff2 and wasm, minus: the ONNX runtimes (`ort-*.wasm`),
+   png, woff2 and wasm, minus:
    `core-runtime/`, the demos, `assets/vendor-three-*.js`, the feature
    chunks `assets/{scene3d,charts,editors,smart,media,animation}-*.js`, the
    Three addon chunks — `GLTFLoader-*`, `OBJLoader-*`, `FBXLoader-*`,
@@ -185,9 +185,8 @@ launcher says which of the two it is promising for each app.
    post-processing chunks share, `Pass-*` and `CopyShader-*`
    (`threeAddonChunks` in the config) — and
    core's own on-demand modules that only some apps reach —
-   `ai-manager-*`, `ai-onnx-manager-*`, `ai-transformers-manager-*`,
-   `ai-gpu-compute-manager-*`, `transformers.web-*` (~557 KB),
-   `ort.bundle.min-*` (~403 KB), `xdb-sync-*` (~200 KB) and
+   `ai-manager-*`, `model-host-*`, `ai-gpu-compute-manager-*`,
+   `xdb-sync-*` (~200 KB) and
    `xdb-server-sync-*` (`onDemandRuntimeChunks` in the config). What remains
    is the shell: the entry, its CSS and fonts, the scripting engine's wasm,
    the inflate worker (`zipWorker-*.js`) and the XDB module every app opens
@@ -260,8 +259,8 @@ launcher says which of the two it is promising for each app.
    One install runs per record at a time; a second open joins the first.
 
    **AI stays online by design.** The models an app requesting `ai` uses are
-   downloads, so the AI runtime (the transformers and ORT bundles, the
-   managers) is neither precached nor installed per app. Such an app is
+   downloads, so the AI runtime (the model host and the local-model worker
+   under `core-runtime/`) is neither precached nor installed per app. Such an app is
    reported ready with `optionalOnline: ['ai']`: it opens and runs offline,
    and its AI features need a connection. Server storage (`storage`) and
    the manifest's `config.server` sync are network features by nature and

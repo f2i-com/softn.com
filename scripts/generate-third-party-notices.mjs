@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkZippProvenance } from './lib/zipp-provenance.mjs';
+import { checkVendored } from '../packages/@softn/core/scripts/vendor-zipp-models.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_FILE = path.join(ROOT, 'package-lock.json');
@@ -47,7 +48,6 @@ const EMITTED_BUILD_PACKAGES = [
   '@tauri-apps/api',
   '@tauri-apps/plugin-dialog',
   '@tauri-apps/plugin-fs',
-  'kokoro-js',
   'workbox-cacheable-response',
   'workbox-core',
   'workbox-expiration',
@@ -57,16 +57,11 @@ const EMITTED_BUILD_PACKAGES = [
   'workbox-window',
 ];
 
-// These are real npm dependency edges, but not browser-runtime edges. The
-// Transformers browser entry never includes its Node inference/image stack,
-// and zxing-wasm's two declarations-only packages produce no deployed bytes.
+// These are real npm dependency edges, but not browser-runtime edges:
+// zxing-wasm's two declarations-only packages produce no deployed bytes.
 // Keeping this list narrow and parent-qualified prevents a package name from
 // being excluded when another runtime dependency genuinely uses it.
 const STATIC_BROWSER_OMISSIONS = new Map([
-  // The distributed worker uses a verifier for the separately downloaded engine,
-  // not phonemizer's embedded eSpeak binary. Its provenance is in speech/NOTICE.
-  ['kokoro-js', new Set(['phonemizer'])],
-  ['@huggingface/transformers', new Set(['onnxruntime-node', 'sharp'])],
   ['zxing-wasm', new Set(['@types/emscripten', 'type-fest'])],
 ]);
 
@@ -343,6 +338,31 @@ if (torch) {
   });
 }
 
+// ZIPP's local-model stack, vendored as source (packages/@softn/core/vendor/
+// zipp-models/) and bundled into every app's core-runtime/runtime/
+// model-worker.js with its two WebAssembly modules. Its SOURCE.json records
+// the ZIPP commit and each file's digest; a tree that differs is refused here.
+const modelVendorDir = path.join(ROOT, 'packages', '@softn', 'core', 'vendor', 'zipp-models');
+const modelProblems = checkVendored(modelVendorDir);
+if (modelProblems.length) fail(`vendor/zipp-models does not match its SOURCE.json:\n${modelProblems.join('\n')}`);
+const models = readJson(path.join(modelVendorDir, 'SOURCE.json'), 'the vendored ZIPP model stack');
+for (const [name, revision, repository, license, artifact, licenseFiles] of [
+  ['zipp-gpu-lab', models.commit, models.repository, 'Apache-2.0', 'gpu-lab/wasm/kernels.wasm', ['gpu-lab/LICENSE', 'gpu-lab/NOTICE']],
+  ['zipp-model-plugins', models.commit, models.repository, 'Apache-2.0', 'model-plugins/plugins/qwen3/plugin.json', ['model-plugins/LICENSE']],
+  ['gguf-wasm', models.ggufWasm.commit, models.ggufWasm.repository, 'Apache-2.0 OR MIT', 'model-plugins/wasm/gguf/gguf_wasm_bg.wasm', ['model-plugins/wasm/gguf/LICENSE-APACHE', 'model-plugins/wasm/gguf/LICENSE-MIT']],
+]) {
+  const key = `${name}@${revision}`;
+  vendored.push({
+    name,
+    revision,
+    repository,
+    license,
+    artifact: relative(path.join(modelVendorDir, artifact)),
+    sha256: models.files[artifact],
+    licenseFiles: licenseFiles.map((file) => addText(key, path.join(modelVendorDir, file), false)),
+  });
+}
+
 const lockfileHash = sha256(fs.readFileSync(LOCK_FILE));
 const inventory = {
   formatVersion: 1,
@@ -365,7 +385,7 @@ const noticeLines = [
   '========',
   '',
   ...inventoryPackages.map((entry) => `${entry.name}@${entry.version} — ${entry.license}`),
-  `zipp-wasm@${zipp.revision} — ${zipp.license}`,
+  ...vendored.filter((entry) => entry.name !== 'zipp-wasm-torch').map((entry) => `${entry.name}@${entry.revision} — ${entry.license}`),
   '',
   'LICENCE AND NOTICE TEXTS',
   '========================',

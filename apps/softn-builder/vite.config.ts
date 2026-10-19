@@ -71,10 +71,10 @@ export default defineConfig({
         // codicon font, which its @font-face pulls in for every chevron and
         // suggest-widget glyph in the editor chrome.
         globPatterns: ['**/*.{js,css,html,svg,png,ttf,woff2,wasm}'],
-        // The ONNX runtime binaries are 20+ MB each and back optional AI
-        // features. Precaching them would make an install download tens of
-        // megabytes it will most likely never use, so they stay on-demand.
-        globIgnores: ['**/ort-*.wasm', '**/core-runtime/**'],
+        // core-runtime/ holds the workers' files (the script and local-model
+        // workers), fetched by the apps that start one rather than by every
+        // install.
+        globIgnores: ['**/core-runtime/**'],
         // Everything left after that ignore fits inside 8 MiB — the largest
         // is the ZIPP engine at ~6.1 MiB (javascript-python-base: torch is a package
         // under core-runtime/, fetched only for apps that declare it), then

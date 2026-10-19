@@ -26,7 +26,7 @@
  *
  * What is deliberately left online: models. An app that asked for `ai`
  * downloads them from the network by design, and the AI runtime (the
- * transformers and ORT bundles) is not precached either, so such an app is
+ * local-model worker under core-runtime/) is not precached either, so such an app is
  * reported ready with `optionalOnline: ['ai']` — the app opens and runs
  * offline; its AI features do not.
  */

@@ -21,7 +21,7 @@ function copyDirectory(source, destination, skipRuntimeMirror = false) {
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
     // Core keeps an adjacent mirror for consumers loading dist directly. The
     // browser app is already copying that tree to assets/core-runtime, so a
-    // second nested copy only duplicates engines, speech assets and chunks.
+    // second nested copy only duplicates engines, model assets and chunks.
     if (skipRuntimeMirror && entry.name === 'core-runtime') continue;
     // The host-JavaScript engine is the one part of core no worker can reach:
     // it runs the app author's code as the document's own JavaScript, on the
@@ -36,7 +36,7 @@ function copyDirectory(source, destination, skipRuntimeMirror = false) {
   }
 }
 
-/** Serve/copy the adjacent assets required by script and optional speech workers. */
+/** Serve/copy the adjacent assets required by the script and local-model workers. */
 export function coreWorkerAssetPlugin({ coreDistRoot = defaultCoreRoot } = {}) {
   const sourceRoot = path.resolve(coreDistRoot);
   let outputRoot;

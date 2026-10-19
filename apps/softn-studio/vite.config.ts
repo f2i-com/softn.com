@@ -55,11 +55,10 @@ export default defineConfig({
         // it nothing the studio generates runs offline. It is also larger than
         // Workbox's 2 MiB default cap, which would silently skip the file.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
-        // The ONNX runtime binaries studio pulls in are ~22 MB and ~25 MB and
-        // back optional AI features. Precaching them would make first load pay
-        // for capabilities most sessions never touch; they are fetched on
-        // demand instead.
-        globIgnores: ['**/ort-*.wasm', '**/core-runtime/**'],
+        // core-runtime/ holds the workers' files (the script and local-model
+        // workers), fetched by the apps that start one rather than by every
+        // first load.
+        globIgnores: ['**/core-runtime/**'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
       },
     }),

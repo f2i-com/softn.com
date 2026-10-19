@@ -12,7 +12,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.0.0-next.5",
     "@softn/brand": "*",
     "@softn/bundle-format": "*",
     "@softn/components": "*",
@@ -20,7 +19,6 @@
     "@softn/runtime-shell": "*",
     "fflate": "^0.8.2",
     "idb": "^8.0.0",
-    "onnxruntime-web": "^1.17.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

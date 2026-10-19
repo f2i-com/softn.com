@@ -21,10 +21,13 @@ moving one of its dependencies means updating three lockfiles: the crate's,
 the loader's and the backend host's. libp2p 0.57 supplies the patched
 GossipSub, Hickory, and Yamux networking dependencies.
 
-Keep the explicit `@huggingface/transformers` nested overrides for `sharp` and
-`onnxruntime-node`'s `adm-zip`. With npm 11.17, broad overrides alone retained
-vulnerable nested resolutions. Check `npm ls adm-zip sharp --all` and a clean
-`npm ci` after updating them; do not accept a lockfile with invalid resolutions.
+Local models run on ZIPP's own model stack, vendored as source in
+`packages/@softn/core/vendor/zipp-models/` rather than installed from npm.
+Update it with `node scripts/vendor-zipp-models.mjs --zipp <checkout> --ref
+<tag>` in that package, which copies the files at that git ref byte for byte,
+checks the GPU runtime against the release's embed kit when the kit is cached,
+and records every file's digest in `SOURCE.json`; `--check` (and the licence
+inventory) refuse a tree that differs from it.
 
 The two GTK desktop dependency trees use the reviewed GLib 0.18.5 backport in
 [vendor/README.md](../vendor/README.md), and so does the XDB crate's own

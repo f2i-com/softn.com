@@ -69,16 +69,8 @@ on:
         type: boolean
         default: false
 
-# onnxruntime-node (under transformers.js and kokoro-js) downloads its CUDA and
-# TensorRT provider libraries from nuget.org when it is installed on Linux and
-# Windows x64. Nothing here runs on a GPU, the CPU runtime ships in the npm
-# package itself, and that download was the one fetch `npm ci` made outside the
-# registry: on 2026-10-13 its timeout failed a test shard. Both switches, one
-# for each version in the lock.
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-  ONNXRUNTIME_NODE_INSTALL: skip
-  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
 jobs:
   # Whether this run ships without the test gates: the `skip-tests` dispatch

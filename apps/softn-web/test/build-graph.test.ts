@@ -73,19 +73,17 @@ const ADDON_KEY = /three[\\/]examples[\\/]jsm[\\/]|three[\\/]addons[\\/]/;
 const ADDON_FILE = new RegExp(
   `/(?:${[...THREE_ADDONS, ...THREE_ADDON_SHARED].join('|')})-[^/]+\\.js$`
 );
-// Core's on-demand modules that only some apps reach — the AI managers and
-// the runtimes behind them, the peer and server sync runtimes — by the name
-// each chunk starts with. vite.config.ts keeps these out of the precache
-// (`onDemandRuntimeChunks`); the per-app install fetches the sync one for an
-// app that asked for `sync` and the torch loader for an app that declares the
-// torch Python package, and the AI ones stay online by design.
+// Core's on-demand modules that only some apps reach — the AI side (the
+// capability report, the local-model host, the compute-shader bridge), the
+// peer and server sync runtimes — by the name each chunk starts with.
+// vite.config.ts keeps these out of the precache (`onDemandRuntimeChunks`);
+// the per-app install fetches the sync one for an app that asked for `sync`
+// and the torch loader for an app that declares the torch Python package, and
+// the AI ones stay online by design.
 const ON_DEMAND_RUNTIME = [
   'ai-manager',
-  'ai-onnx-manager',
-  'ai-transformers-manager',
+  'model-host',
   'ai-gpu-compute-manager',
-  'transformers.web',
-  'ort.bundle.min',
   'xdb-sync',
   'xdb-server-sync',
   'zipp_torch',

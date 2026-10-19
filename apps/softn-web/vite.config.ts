@@ -16,10 +16,10 @@ const env = (globalThis as { process?: { env?: Record<string, string | undefined
 const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation'];
 
 // Core's own on-demand modules that only some apps reach, by the name each
-// chunk starts with in dist/assets: `ai-manager-*`, `ai-onnx-manager-*`,
-// `ai-transformers-manager-*` and `ai-gpu-compute-manager-*` are the AI
-// managers; `transformers.web-*` and `ort.bundle.min-*` the runtimes behind
-// them; `xdb-sync-*` the peer sync runtime (yjs) and `xdb-server-sync-*` the
+// chunk starts with in dist/assets: `ai-manager-*`, `model-host-*` and
+// `ai-gpu-compute-manager-*` are the AI side (a local model itself runs in
+// core-runtime/runtime/model-worker.js, a worker asset); `xdb-sync-*` the
+// peer sync runtime (yjs) and `xdb-server-sync-*` the
 // directory's server sync; `zipp_torch-*` the loader for the torch Python
 // package (its zipp_torch.wasm is a worker asset). Each is a dynamic import in core, so each is a
 // chunk of its own, and none is fetched until an app asks. `xdb-*` alone —
@@ -27,11 +27,8 @@ const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animat
 // The build-graph test checks both halves against the emitted names.
 const onDemandRuntimeChunks = [
   'ai-manager',
-  'ai-onnx-manager',
-  'ai-transformers-manager',
+  'model-host',
   'ai-gpu-compute-manager',
-  'transformers.web',
-  'ort.bundle.min',
   'xdb-sync',
   'xdb-server-sync',
   'zipp_torch',
@@ -116,10 +113,6 @@ export default defineConfig({
         // it every bundle fails to run offline. It is also larger than
         // Workbox's 2 MiB default cap, which would silently skip the file.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
-        // The ONNX runtime binaries are ~25 MB each and back optional AI
-        // features. Precaching them would make first load pay for capabilities
-        // most bundles never touch; they are fetched on demand instead.
-        //
         // assets/core-runtime/ is a whole copy of @softn/core's dist, put there
         // by coreWorkerAssetPlugin above so the off-main-thread script runtime
         // can reach its worker (core's SoftNRenderer starts one for a bundle
@@ -129,7 +122,7 @@ export default defineConfig({
         // second copy of both WASM engines. The worker needs three modules and
         // one .wasm of it; the per-app install fetches exactly those, for
         // exactly the apps that run a worker, through the softn-worker-assets
-        // route below. The rest of the copy stays for the speech worker and
+        // route below. The rest of the copy stays for the model worker and
         // for dev, and precaching it does not.
         // Optional demos are removed from the default website distribution.
         // Missing demo icons must not prevent the worker from installing.
@@ -137,8 +130,8 @@ export default defineConfig({
         // The feature chunks, Three.js and its addons are not precached
         // either, and nor are the runtime's own on-demand modules that only
         // some apps reach:
-        // the AI managers with the transformers and ORT bundles behind them
-        // (~1 MB together, for apps that asked for `ai`), and the peer and
+        // the AI side (tens of kilobytes, for apps that asked for `ai`;
+        // the model worker is a core-runtime asset), and the peer and
         // server sync runtimes (~200 KB, for apps that asked for `sync` or
         // configured a server). What is precached is the shell: the entry,
         // what it imports statically, the engine's wasm, the inflate worker
@@ -155,7 +148,6 @@ export default defineConfig({
         // docs/engineering/COMPONENT_LOADING.md has the whole policy; the build-graph
         // test holds the precache to it.
         globIgnores: [
-          '**/ort-*.wasm',
           // The QR decoder (<QRReader>), ~0.9 MB, emitted from the host's
           // build now rather than fetched from jsDelivr. Only a scanning app
           // needs it, so it is kept by the runtime rule below, not precached.
