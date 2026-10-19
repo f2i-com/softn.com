@@ -1401,10 +1401,11 @@ impl SyncManager {
             // read could arrive first, and the older record then undid it on
             // the pusher's screen. The acknowledgement of the ops it answers
             // goes just before it, in the same stream, as it went before it
-            // in the answer: a client keeps a record it deleted hidden only
-            // while that delete is unanswered, so a skipped delete's record
-            // comes back on the device that pushed it
-            // (`XDBServerSync.unansweredDeletes` in @softn/core).
+            // in the answer: a client keeps a record it deleted hidden, and
+            // one it edited as it edited it, only while that op is
+            // unanswered, so a skipped op's record comes back on the device
+            // that pushed it (`XDBServerSync.unansweredChanges` in
+            // @softn/core).
             if let Some((replayed, current)) = to_pusher {
                 if !replayed.is_empty() {
                     let _ = self.broadcast_tx.send((Audience::Only(client_id.to_string()), Arc::new(ServerMessage::SyncAck { op_ids: replayed })));
@@ -2017,7 +2018,7 @@ mod tests {
     /// One push that edits a record and then deletes it, both overtaken: the
     /// record as it stands answers the delete. The pusher keeps a record it
     /// deleted hidden until that delete is answered (@softn/core
-    /// `XDBServerSync.unansweredDeletes`), and it knows the answer by the
+    /// `XDBServerSync.unansweredChanges`), and it knows the answer by the
     /// op's id; under the edit's id the record stayed hidden there until the
     /// delete's acknowledgement came, which it may do after the record.
     #[test]
