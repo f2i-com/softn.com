@@ -57,6 +57,11 @@ const HUB = 'https://huggingface.co';
 const OPEN_TIMEOUT = 5 * 60_000;
 /** A reply of the longest length on the slowest backend, with room to spare. */
 const GENERATE_TIMEOUT = 15 * 60_000;
+/** A download that has sent nothing for this long is given up. */
+const STALL_MS = 60_000;
+/** What the site's model cache holds at most, across every app. */
+const CACHE_FILES = 4;
+const CACHE_BYTES = 4 * 1024 * MB;
 /** Which of a repository's quantizations to take when the app names none: the ones ZIPP keeps resident as blocks. */
 const PREFERRED_QUANTS = ['Q4_K_M', 'Q4_K_S', 'Q6_K'];
 
@@ -113,18 +118,47 @@ export function chooseGgufFile(paths: readonly string[], quant?: string): string
   return pick;
 }
 
-/** A body that errors once it passes `max` bytes, saying so to `onOver` as well. */
-function capped(body: ReadableStream<Uint8Array>, max: number, label: string, onOver: () => void = () => {}): ReadableStream<Uint8Array> {
+/** A body that errors once it passes `max` bytes, saying so to `onOver` as well; `onChunk` hears each piece and `onEnd` the end. */
+function capped(body: ReadableStream<Uint8Array>, max: number, label: string, onOver: () => void = () => {}, onChunk: () => void = () => {}, onEnd: () => void = () => {}): ReadableStream<Uint8Array> {
   let seen = 0;
   return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
+      onChunk();
       seen += chunk.byteLength;
       if (seen > max) {
         onOver();
+        onEnd();
         controller.error(new Error(`${label} passes the app's limit of ${Math.round(max / MB)} MB`));
       } else controller.enqueue(chunk);
     },
+    flush() {
+      onEnd();
+    },
   }));
+}
+
+/**
+ * Make room in the model cache before a new file goes in. The cache is the
+ * site's, shared by every app that loads a model, so it is held to
+ * {@link CACHE_FILES} files and {@link CACHE_BYTES} in all: the files that
+ * have been there longest go first, and an app cannot fill the origin's
+ * storage, which other apps' records share, by loading one URL after another.
+ */
+export async function evictForRoom(cache: Cache, incoming: string, bytes: number | null): Promise<void> {
+  const keys = (await cache.keys()).filter((request) => request.url !== incoming);
+  const entries: Array<{ request: Request; size: number }> = [];
+  for (const request of keys) {
+    const response = await cache.match(request);
+    const size = Number(response?.headers.get('content-length')) || (response ? (await response.blob()).size : 0);
+    entries.push({ request, size });
+  }
+  let total = entries.reduce((sum, entry) => sum + entry.size, 0) + (bytes ?? 0);
+  // Cache Storage lists keys in insertion order, so the oldest are first.
+  while (entries.length && (entries.length + 1 > CACHE_FILES || total > CACHE_BYTES)) {
+    const oldest = entries.shift()!;
+    await cache.delete(oldest.request);
+    total -= oldest.size;
+  }
 }
 
 async function openCache(): Promise<Cache | null> {
@@ -149,12 +183,42 @@ async function roomFor(bytes: number | null): Promise<boolean> {
   }
 }
 
+/**
+ * A signal that aborts with `outer`, or when nothing has arrived for
+ * {@link STALL_MS}: a server that stops sending holds no app's callback for
+ * ever. `alive()` is called for each chunk that does arrive.
+ */
+function watchdog(outer: AbortSignal | undefined, label: string) {
+  const controller = new AbortController();
+  const stop = () => controller.abort(outer?.reason ?? new Error('The app has closed'));
+  if (outer?.aborted) stop();
+  else outer?.addEventListener('abort', stop, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const alive = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(new Error(`${label} stopped arriving`)), STALL_MS);
+  };
+  const done = () => {
+    clearTimeout(timer);
+    outer?.removeEventListener('abort', stop);
+  };
+  alive();
+  return { signal: controller.signal, alive, done };
+}
+
 /** The response's body, capped at the app's limit, once its status, its final host and its declared size have passed. */
-async function download(url: string, label: string, maxBytes: number, redirect: RequestRedirect, finalHost: (host: string) => boolean) {
+async function download(url: string, label: string, maxBytes: number, redirect: RequestRedirect, finalHost: (host: string) => boolean, outer?: AbortSignal) {
+  const dog = watchdog(outer, label);
   // No cookie of the page goes with it and no referrer, and the browser's own
   // cache keeps no second copy of a file this large.
-  const response = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect, cache: 'no-store' });
-  const cancel = () => response.body?.cancel().catch(() => {});
+  let response: Response;
+  try {
+    response = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect, cache: 'no-store', signal: dog.signal });
+  } catch (error) {
+    dog.done();
+    throw dog.signal.aborted ? dog.signal.reason : error;
+  }
+  const cancel = () => { dog.done(); return response.body?.cancel().catch(() => {}); };
   if (!response.ok || !response.body) {
     void cancel();
     throw new Error(`${label} could not be downloaded (${response.status} ${response.statusText})`);
@@ -171,8 +235,8 @@ async function download(url: string, label: string, maxBytes: number, redirect: 
     throw new Error(`${label} is ${Math.round(declared / MB)} MB, past the app's limit of ${Math.round(maxBytes / MB)} MB`);
   }
   let over = false;
-  const body = capped(response.body, maxBytes, label, () => { over = true; });
-  return { body, declared, over: () => over };
+  const body = capped(response.body, maxBytes, label, () => { over = true; }, dog.alive, dog.done);
+  return { body, declared, over: () => over, aborted: () => dog.signal.aborted, reason: () => dog.signal.reason as unknown };
 }
 
 /**
@@ -184,26 +248,37 @@ async function download(url: string, label: string, maxBytes: number, redirect: 
  * "unexpected internal error"), the file is downloaded again and held for
  * this load only: the app's model still loads, and only the next load pays.
  */
-export async function fetchModel(url: string, label: string, maxBytes: number, redirect: RequestRedirect, finalHost: (host: string) => boolean): Promise<Blob> {
+export async function fetchModel(url: string, label: string, maxBytes: number, redirect: RequestRedirect, finalHost: (host: string) => boolean, signal?: AbortSignal): Promise<Blob> {
   const cache = await openCache();
   const hit = await cache?.match(url).catch(() => undefined);
   if (hit) {
     const blob = await hit.blob();
     if (blob.size > 0 && blob.size <= maxBytes) return blob;
   }
-  const first = await download(url, label, maxBytes, redirect, finalHost);
-  if (!cache || !(await roomFor(first.declared))) return new Response(first.body).blob();
+  const first = await download(url, label, maxBytes, redirect, finalHost, signal);
+  const held = async (attempt: typeof first) => {
+    try {
+      return await new Response(attempt.body).blob();
+    } catch (error) {
+      throw attempt.aborted() ? attempt.reason() : error;
+    }
+  };
+  if (!cache || !(await roomFor(first.declared))) return held(first);
   try {
+    // Room first; a cache that cannot be listed is written to all the same.
+    await evictForRoom(cache, url, first.declared).catch(() => {});
     await cache.put(url, new Response(first.body, { headers: { 'content-type': 'application/octet-stream' } }));
     const stored = await cache.match(url);
     if (stored) return stored.blob();
   } catch (error) {
-    // Past the limit is the app's answer, whatever the cache made of it.
-    if (first.over()) throw new Error(`${label} passes the app's limit of ${Math.round(maxBytes / MB)} MB`);
     await cache.delete(url).catch(() => false);
+    // Past the limit is the app's answer, and a closed app or a stalled
+    // server is the end of it, whatever the cache made of either.
+    if (first.over()) throw new Error(`${label} passes the app's limit of ${Math.round(maxBytes / MB)} MB`);
+    if (first.aborted()) throw first.reason();
     if (!(error instanceof Error) || error.name === 'AbortError') throw error;
   }
-  return new Response((await download(url, label, maxBytes, redirect, finalHost)).body).blob();
+  return held(await download(url, label, maxBytes, redirect, finalHost, signal));
 }
 
 class ModelWorker {
@@ -295,6 +370,8 @@ export function generationOptions(raw: Record<string, unknown>): GenerateOptions
 export class ModelHost {
   #models = new Map<string, LoadedModel>();
   #loading = 0;
+  /** Aborted when the app closes: every download this host started stops with it. */
+  #abort = new AbortController();
   #next = 1;
   #closed = false;
 
@@ -331,14 +408,14 @@ export class ModelHost {
       const verdict = describeNetDestination(parsed.url!, net);
       if (!verdict.allowed) throw new Error(`Model URL not allowed: ${verdict.reason}`);
       if (!/\.gguf(?:[?#]|$)/i.test(parsed.url!)) throw new Error('A model URL names a .gguf file');
-      return { blob: await fetchModel(parsed.url!, parsed.url!, maxBytes, 'error', () => true), label: parsed.url! };
+      return { blob: await fetchModel(parsed.url!, parsed.url!, maxBytes, 'error', () => true, this.#abort.signal), label: parsed.url! };
     }
     // The hub: its API lists the repository, and the file comes from its
     // resolve URL, which redirects to its file store and nowhere else.
     const repoPath = parsed.repo!.split('/').map(encodeURIComponent).join('/');
     let file = parsed.file;
     if (!file) {
-      const listing = await fetch(`${HUB}/api/models/${repoPath}/tree/${encodeURIComponent(parsed.revision)}`, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error' });
+      const listing = await fetch(`${HUB}/api/models/${repoPath}/tree/${encodeURIComponent(parsed.revision)}`, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', signal: this.#abort.signal });
       if (!listing.ok) throw new Error(`Hugging Face has no repository ${parsed.repo} (${listing.status})`);
       const entries = (await listing.json()) as Array<{ type?: string; path?: string; size?: number; lfs?: { size?: number } }>;
       file = chooseGgufFile(Array.isArray(entries) ? entries.filter((e) => e.type === 'file' && typeof e.path === 'string').map((e) => e.path!) : [], parsed.quant);
@@ -350,7 +427,7 @@ export class ModelHost {
     }
     const url = `${HUB}/${repoPath}/resolve/${encodeURIComponent(parsed.revision)}/${file.split('/').map(encodeURIComponent).join('/')}`;
     const label = `${parsed.repo}/${file}`;
-    return { blob: await fetchModel(url, label, maxBytes, 'follow', isHubHost), label };
+    return { blob: await fetchModel(url, label, maxBytes, 'follow', isHubHost, this.#abort.signal), label };
   }
 
   async load(spec: ModelSpec, options: ModelLoadOptions = {}): Promise<{ modelHandle: string; modelId: string } & ModelInfo> {
@@ -359,6 +436,7 @@ export class ModelHost {
     this.#loading++;
     try {
       const { blob, label } = await this.fetchCheckpoint(spec, options);
+      if (this.#closed) throw new Error('The app has closed');
       const device = options.device === 'webgpu' || options.device === 'wasm' ? options.device : 'auto';
       const worker = new ModelWorker((this.config.createWorker ?? defaultWorker)());
       let info: ModelInfo;
@@ -423,6 +501,7 @@ export class ModelHost {
 
   dispose(): void {
     this.#closed = true;
+    this.#abort.abort(new Error('The app has closed'));
     this.releaseAll();
   }
 }

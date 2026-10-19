@@ -6,7 +6,7 @@
  * here the Worker is a stand-in that answers as the real one does.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ModelHost, chooseGgufFile, generationOptions, isHubHost, parseModelSpec, type ModelHostConfig } from '../src/runtime/models/model-host';
+import { ModelHost, chooseGgufFile, evictForRoom, generationOptions, isHubHost, parseModelSpec, type ModelHostConfig } from '../src/runtime/models/model-host';
 
 const MB = 1024 * 1024;
 
@@ -82,7 +82,7 @@ describe('where a model may come from', () => {
     expect(fetch).not.toHaveBeenCalled();
     const { blob } = await host({ ai: { allowedSources: ['url'] }, net: { enabled: true, allowed_hosts: ['models.test'] } }).fetchCheckpoint('https://models.test/m.gguf', {});
     expect(blob.size).toBe(3);
-    expect(fetch).toHaveBeenCalledWith('https://models.test/m.gguf', { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', cache: 'no-store' });
+    expect(fetch).toHaveBeenCalledWith('https://models.test/m.gguf', { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', cache: 'no-store', signal: expect.any(AbortSignal) });
   });
 
   it('lists a repository on the hub, takes its resident quantization, and refuses one past the limit before downloading it', async () => {
@@ -113,8 +113,10 @@ describe('where a model may come from', () => {
     const store = new Map<string, Response>();
     vi.stubGlobal('caches', {
       open: async () => ({
-        match: async (key: string) => store.get(key)?.clone(),
+        keys: async () => [...store.keys()].map((url) => new Request(url)),
+        match: async (key: string | Request) => store.get(typeof key === 'string' ? key : key.url)?.clone(),
         put: async (key: string, response: Response) => { store.set(key, new Response(await response.arrayBuffer())); },
+        delete: async (key: string | Request) => store.delete(typeof key === 'string' ? key : key.url),
       }),
     });
     const fetch = vi.fn(async () => respond(new Uint8Array([1, 2, 3]), { url: 'https://huggingface.co/a/b' }));
@@ -132,7 +134,7 @@ describe('where a model may come from', () => {
       throw Object.assign(new Error("Failed to execute 'put' on 'Cache': Unexpected internal error."), { name: 'UnknownError' });
     });
     const remove = vi.fn(async () => true);
-    vi.stubGlobal('caches', { open: async () => ({ match: async () => undefined, put, delete: remove }) });
+    vi.stubGlobal('caches', { open: async () => ({ keys: async () => [], match: async () => undefined, put, delete: remove }) });
     const fetch = vi.fn(async () => respond(new Uint8Array([7, 8]), { url: 'https://huggingface.co/a/b' }));
     vi.stubGlobal('fetch', fetch);
     const { blob } = await host({}).fetchCheckpoint('a/b', { file: 'm.gguf' });
@@ -143,6 +145,60 @@ describe('where a model may come from', () => {
     vi.stubGlobal('caches', { open: async () => ({ match: async () => undefined, put: async (_k: string, r: Response) => { await r.arrayBuffer(); }, delete: remove }) });
     vi.stubGlobal('fetch', vi.fn(async () => respond(2 * MB, { url: 'https://huggingface.co/a/b' })));
     await expect(host({ ai: { maxModelSizeMB: 1 } }).fetchCheckpoint('a/b', { file: 'm.gguf' })).rejects.toThrow(/passes the app's limit of 1 MB/);
+  });
+
+  it('stops a download when the app closes, and starts no Worker for it', async () => {
+    let started!: () => void;
+    const begun = new Promise<void>((resolve) => { started = resolve; });
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+      started();
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+      });
+    }));
+    const createWorker = vi.fn();
+    const closing = new ModelHost({ createWorker });
+    const load = closing.load('a/b', { file: 'm.gguf' });
+    await begun;
+    closing.dispose();
+    await expect(load).rejects.toThrow(/app has closed/);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
+  it('gives up on a server that stops sending', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(8));
+            init.signal?.addEventListener('abort', () => controller.error(init.signal!.reason));
+          },
+        });
+        return respond(0, { url: 'https://huggingface.co/a/b' }) && Object.defineProperty(new Response(body), 'url', { value: 'https://huggingface.co/a/b' });
+      }));
+      const pending = host({}).fetchCheckpoint('a/b', { file: 'm.gguf' });
+      const settled = expect(pending).rejects.toThrow(/stopped arriving/);
+      await vi.advanceTimersByTimeAsync(61_000);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('holds the site\'s model cache to a few files, letting the oldest go first', async () => {
+    const store = new Map<string, Response>();
+    const cache = {
+      keys: async () => [...store.keys()].map((url) => new Request(url)),
+      match: async (key: string | Request) => store.get(typeof key === 'string' ? key : key.url)?.clone(),
+      delete: async (key: string | Request) => store.delete(typeof key === 'string' ? key : key.url),
+    };
+    for (let i = 1; i <= 4; i++) store.set(`https://huggingface.co/m${i}`, new Response(new Uint8Array(10)));
+    await evictForRoom(cache as unknown as Cache, 'https://huggingface.co/m5', 10);
+    expect([...store.keys()]).toEqual(['https://huggingface.co/m2', 'https://huggingface.co/m3', 'https://huggingface.co/m4']);
+    // Reloading what is there already makes no room for itself.
+    await evictForRoom(cache as unknown as Cache, 'https://huggingface.co/m4', 10);
+    expect(store.size).toBe(3);
   });
 
   it('keeps no copy when the origin has no room for one', async () => {
