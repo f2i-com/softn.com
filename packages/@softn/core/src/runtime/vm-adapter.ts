@@ -158,6 +158,13 @@ export interface LogicEngineFactory {
   createPython?(): Promise<LogicEngine>;
   /** Defaults to `'any'` when a factory does not say. */
   readonly threads?: LogicEngineThreads;
+  /**
+   * False for an engine that runs the code as the host document's own
+   * JavaScript, with the real `document` in its reach: such code is not
+   * given SoftN's document (document-shell/), since it has the page's own.
+   * A sandbox when a factory does not say.
+   */
+  readonly sandboxed?: boolean;
 }
 
 let engineFactory: LogicEngineFactory = ZippWasmAdapter;
@@ -211,6 +218,11 @@ export function createPythonLogicEngine(): Promise<LogicEngine> {
 /** Whether the configured engine can run a Python app at all. */
 export function logicEngineRunsPython(): boolean {
   return typeof engineFactory.createPython === 'function';
+}
+
+/** Whether the configured engine keeps the code from the host document. See {@link LogicEngineFactory.sandboxed}. */
+export function logicEngineIsSandboxed(): boolean {
+  return engineFactory.sandboxed !== false;
 }
 
 /** Where the configured engine can run. See {@link LogicEngineThreads}. */

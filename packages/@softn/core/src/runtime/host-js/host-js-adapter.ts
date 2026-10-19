@@ -936,5 +936,7 @@ export interface HostJsEngineFactory extends LogicEngineFactory {
 export const HostJsEngine: HostJsEngineFactory = {
   mark: HOST_JS_ENGINE_MARK,
   threads: 'main-only',
+  // The code has the page's own document; SoftN's is not put over it.
+  sandboxed: false,
   create: () => HostJsAdapter.create(),
 };

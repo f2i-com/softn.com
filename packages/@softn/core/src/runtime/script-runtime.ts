@@ -17,6 +17,7 @@ import {
   VM_BRIDGE_PREAMBLE,
   createLogicEngine,
   createPythonLogicEngine,
+  logicEngineIsSandboxed,
   type LogicEngine,
   type PythonProject,
   type SymbolScope,
@@ -1015,7 +1016,7 @@ export class SoftNScriptRuntime {
       let shellCode = '';
       // Code that declares a `document` of its own is not given another; a
       // name of the shell's it declares itself (`class Comment`) stays its own.
-      const asks = this.documentShellRequest !== null && usesDocument(resolvedCode);
+      const asks = this.documentShellRequest !== null && logicEngineIsSandboxed() && usesDocument(resolvedCode);
       const ownNames = asks ? namesDeclaredBy(resolvedCode) : new Set<string>();
       if (asks && useHostBridges && !ownNames.has('document')) {
         const [{ shellPrelude }, shell] = await Promise.all([

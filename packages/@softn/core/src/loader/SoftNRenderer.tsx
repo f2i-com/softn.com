@@ -45,7 +45,7 @@ import {
 // other path routes calls through the main-thread VM. See the note where
 // `forceWorker` is decided.
 import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
-import { logicEngineThreads, type PythonProject } from '../runtime/vm-adapter';
+import { logicEngineIsSandboxed, logicEngineThreads, type PythonProject } from '../runtime/vm-adapter';
 import { CapabilityProvider, type CapabilityState } from './consent-gate';
 import { AppScopeProvider, type AppAssetResolver, type AppScope } from './app-scope';
 import { createSyncControls, type SyncControls } from '../runtime/db-sync-controls';
@@ -1181,7 +1181,7 @@ export function SoftNRenderer({
           // code had loaded, every element on it was drawn twice, and what was
           // typed in between was lost. (Code an import brings in is found as
           // it compiles, and such a page changes over then.)
-          if (!forceWorker && !runtimePython && usesDocument(codeBlock.code || '')) {
+          if (!forceWorker && !runtimePython && logicEngineIsSandboxed() && usesDocument(codeBlock.code || '')) {
             earlyShell = shellRequest.create().then(
               (made) => {
                 if (!stale && mountedRef.current) setDocumentShell(made);

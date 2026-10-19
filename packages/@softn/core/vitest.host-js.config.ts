@@ -37,6 +37,12 @@ export default defineWorkspaceTest({
       // are ZIPP's own contract and both run in the default suite. Nothing in
       // this file is weakened for the host engine's benefit.
       'test/logic-engine-seam.test.ts',
+      // The document a page's code is given exists only in a sandbox: on
+      // this engine the code is the host document's own JavaScript, with the
+      // real document in reach, and is not given SoftN's (see
+      // LogicEngineFactory.sandboxed). Every test in the file asserts what
+      // the sandbox's document does.
+      'test/document-shell-page.test.tsx',
       // Python app logic, run on the real web-python engine. The
       // host-JavaScript engine cannot execute Python at all — that is not a
       // gap this run should work around, it is the property the engine exists
