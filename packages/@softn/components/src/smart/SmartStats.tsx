@@ -21,7 +21,7 @@ export interface StatItem {
   label: string;
   value: number | string;
   icon?: string;
-  trend?: string;
+  trend?: string | number;
   trendDirection?: 'up' | 'down' | 'neutral';
   color?: string;
   prefix?: string;
@@ -226,9 +226,10 @@ function formatValue(value: number | string, prefix?: string, suffix?: string): 
   return `${prefix || ''}${formatted}${suffix || ''}`;
 }
 
-// Parse trend direction
-function parseTrend(trend: string): { value: string; direction: 'up' | 'down' | 'neutral' } {
-  const trimmed = trend.trim();
+// Parse trend direction. A number is a change by that much: `12` is up, as
+// "+12" is; it was called with `.trim()` and the stat failed to draw.
+function parseTrend(trend: string | number): { value: string; direction: 'up' | 'down' | 'neutral' } {
+  const trimmed = typeof trend === 'number' ? (trend > 0 ? `+${trend}` : String(trend)) : String(trend).trim();
   if (trimmed.startsWith('+') && trimmed !== '+0%' && trimmed !== '+0') {
     return { value: trimmed, direction: 'up' };
   } else if (trimmed.startsWith('-') && trimmed !== '-0%' && trimmed !== '-0') {
@@ -320,7 +321,7 @@ export function SmartStats({
     <div className={`softn-smart-stats ${className || ''}`} style={containerStyle}>
       {parsedStats.map((stat, index) => {
         const icon = stat.icon || iconList[index];
-        const trend = stat.trend ? parseTrend(stat.trend) : trendList[index];
+        const trend = stat.trend !== undefined && stat.trend !== null && stat.trend !== '' ? parseTrend(stat.trend) : trendList[index];
         const gradient = gradientColors[index % gradientColors.length];
 
         const isGradient = variant === 'gradient';

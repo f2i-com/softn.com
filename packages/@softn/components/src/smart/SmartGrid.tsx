@@ -10,6 +10,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect, useId, useRef } from 'react';
 import { commaList, recordRows } from '../utils/rows';
+import { recordDate } from './record-dates';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -137,7 +138,7 @@ function formatValue(value: unknown, type: ColumnConfig['type']): React.ReactNod
       );
     case 'date':
       try {
-        const date = new Date(value as string | number | Date);
+        const date = recordDate(value);
         return date.toLocaleDateString(undefined, {
           year: 'numeric',
           month: 'short',

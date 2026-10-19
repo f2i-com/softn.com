@@ -264,9 +264,16 @@ export function CodeEditor({
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === 'Escape') {
+        // The first Escape lets Tab leave the editor, as its hint says, and
+        // is the editor's: a dialog around it closed on it, with the code in
+        // it. A second goes on to the dialog.
+        if (!tabReleased.current) e.preventDefault();
         tabReleased.current = true;
         return;
       }
+      // Shift is held for Shift+Tab, which leaves backwards: not a key that
+      // takes the release back.
+      if (e.key === 'Shift') return;
       const released = tabReleased.current;
       tabReleased.current = false;
       if (readOnly || disabled || e.nativeEvent.isComposing) return;

@@ -84,12 +84,23 @@ export function useModalLayer(
   const onEscapeRef = useRef(options.onEscape);
   onEscapeRef.current = options.onEscape;
 
+  // What had focus when the layer opened, read in the render that opens it.
+  // The effect below runs after the layer's content has taken focus (Confirm's
+  // first answer, a field with autoFocus), and read there it was that content:
+  // focus went back to a control that was gone, and so to the page's body.
+  const openedFrom = useRef<HTMLElement | null>(null);
+  const wasActive = useRef(false);
+  if (active && !wasActive.current && typeof document !== 'undefined') {
+    openedFrom.current = document.activeElement as HTMLElement | null;
+  }
+  wasActive.current = active;
+
   useEffect(() => {
     if (!active || typeof document === 'undefined') return;
     const layer = Symbol('modal-layer');
     layers.push({ id: layer, ref });
 
-    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const previouslyFocused = openedFrom.current ?? (document.activeElement as HTMLElement | null);
     const root = ref.current;
     if (root && !root.contains(document.activeElement)) root.focus();
 

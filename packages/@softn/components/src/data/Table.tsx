@@ -58,6 +58,9 @@ function TableRow<T extends Record<string, unknown>>({
   const [isHovered, setIsHovered] = React.useState(false);
 
   const handleRowKeyDown = (e: React.KeyboardEvent) => {
+    // A key pressed on a button or in a field inside the row is that
+    // control's: Enter on a Delete button deletes, a space in a field is typed.
+    if (e.target !== e.currentTarget) return;
     if (onRowClick && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       onRowClick(row, index);

@@ -220,6 +220,10 @@ describe('what they draw in that state', () => {
       type(hex, '');
       expect(changes).toEqual([]);
       type(hex, '#abc');
+      // A short colour is taken when the field is left: typed, it may yet be
+      // the start of a six-digit one.
+      expect(changes).toEqual([]);
+      act(() => hex?.dispatchEvent(new FocusEvent('focusout', { bubbles: true })));
       expect(changes).toEqual(['#AABBCC']);
     } finally {
       open.unmount();

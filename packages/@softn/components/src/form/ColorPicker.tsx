@@ -167,8 +167,12 @@ export function ColorPicker({
       const value = e.target.value;
       setInputValue(value);
 
-      const normalized = normalizeHex(value);
-      if (isValidHex(normalized)) {
+      // Taken once it is whole. A three-digit colour is also the start of a
+      // six-digit one: taken at its third digit, it was expanded and written back
+      // into a field with no room left for the rest. The short form is taken
+      // when the field is left.
+      const normalized = normalizeHex(value.trim());
+      if (/^#?[0-9A-F]{6}$/i.test(value.trim())) {
         if (!isControlled) setSelectedColor(normalized);
         onChange?.(normalized);
       }
@@ -177,9 +181,16 @@ export function ColorPicker({
   );
 
   const handleInputBlur = useCallback(() => {
+    const typed = normalizeHex(inputValue.trim());
+    if (isValidHex(typed) && typed !== selectedColor) {
+      if (!isControlled) setSelectedColor(typed);
+      setInputValue(typed);
+      onChange?.(typed);
+      return;
+    }
     // Reset to valid color on blur
     setInputValue(selectedColor);
-  }, [selectedColor]);
+  }, [inputValue, selectedColor, isControlled, onChange]);
 
   const handleNativeChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {

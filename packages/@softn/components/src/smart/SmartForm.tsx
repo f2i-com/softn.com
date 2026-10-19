@@ -145,6 +145,22 @@ function formFields(given: unknown): FieldConfig[] {
   });
 }
 
+/** No value: what `required` refuses. */
+function isEmptyValue(value: unknown): boolean {
+  return value === null || value === undefined || value === '';
+}
+
+/** Whether two records hold the same values: the same record, written again. */
+function sameRecord(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
 // Built-in validators
 const validators: Record<string, (value: unknown, config: FieldConfig) => string | null> = {
   required: (value, config) => {
@@ -171,8 +187,11 @@ const validators: Record<string, (value: unknown, config: FieldConfig) => string
     }
     return null;
   },
+  // An empty field is not too small or too large: whether it may be empty is
+  // `required`'s to say. `Number('')` is 0, so an optional quantity with
+  // `min: 1` left blank kept the form from being sent.
   min: (value, config) => {
-    if (config.min !== undefined) {
+    if (config.min !== undefined && !isEmptyValue(value)) {
       if (config.type === 'number' && Number(value) < config.min) {
         return `Must be at least ${config.min}`;
       }
@@ -183,7 +202,7 @@ const validators: Record<string, (value: unknown, config: FieldConfig) => string
     return null;
   },
   max: (value, config) => {
-    if (config.max !== undefined) {
+    if (config.max !== undefined && !isEmptyValue(value)) {
       if (config.type === 'number' && Number(value) > config.max) {
         return `Must be at most ${config.max}`;
       }
@@ -278,8 +297,12 @@ export function SmartForm({
   // form for a frame first. `data` is read before its default is applied: with
   // `= {}` in the destructure, an omitted prop would be a fresh object every
   // render and this would never stop reseeding.
+  //
+  // The same record written again is not another record: `data={{ status:
+  // 'new' }}` is a new object each time the page is drawn, and reseeding on
+  // each one put back what was written over every keystroke.
   const [seededFrom, setSeededFrom] = useState(initialData);
-  if (initialData !== seededFrom) {
+  if (initialData !== seededFrom && !sameRecord(initialData, seededFrom)) {
     setSeededFrom(initialData);
     setFormData(seedForm(initialData));
   }

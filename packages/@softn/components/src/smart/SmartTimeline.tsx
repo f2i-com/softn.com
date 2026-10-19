@@ -17,6 +17,7 @@
 import React from 'react';
 import { choice } from '../utils/choice';
 import { recordRows } from '../utils/rows';
+import { isDateOnly, recordDate } from './record-dates';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -261,13 +262,12 @@ function formatTime(value: unknown): string {
   if (typeof value === 'string') {
     // Check if it's a date string
     if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
-      const date = new Date(value);
-      return date.toLocaleDateString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
+      const date = recordDate(value);
+      // A day with no time is shown as the day, with no hour made up for it.
+      return date.toLocaleDateString(
+        undefined,
+        isDateOnly(value) ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+      );
     }
     return value;
   }

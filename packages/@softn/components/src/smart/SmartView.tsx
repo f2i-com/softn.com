@@ -9,6 +9,7 @@
  */
 
 import React from 'react';
+import { recordDate } from './record-dates';
 
 export interface SmartViewProps {
   /** Data object to display */
@@ -172,7 +173,7 @@ function formatValue(
       );
     case 'date':
       try {
-        const date = new Date(value as string | number | Date);
+        const date = recordDate(value);
         return (
           <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-text, #1a1a2e)' }}>
             {date.toLocaleDateString(undefined, {
