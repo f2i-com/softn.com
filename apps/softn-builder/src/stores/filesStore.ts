@@ -457,7 +457,9 @@ interface FilesStore {
   loadFromBundle: (
     uiFiles: Map<string, UIFileState>,
     logicFiles: Map<string, LogicFileState>,
-    assetFiles?: Map<string, AssetFile>
+    assetFiles?: Map<string, AssetFile>,
+    /** The bundle's main page, as the manifest names it; `ui/main.ui` when not said. */
+    mainFileId?: string | null
   ) => void;
 }
 
@@ -1288,7 +1290,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     set(initialFiles(language));
   },
 
-  loadFromBundle: (uiFiles, logicFiles, assetFiles = new Map()) => {
+  loadFromBundle: (uiFiles, logicFiles, assetFiles = new Map(), entryId = null) => {
     // Build node tree from loaded files
     const nodes = new Map<string, ProjectFileNode>();
     const rootFolders: string[] = [];
@@ -1412,13 +1414,13 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       });
     }
 
-    // Find main UI file to open
-    let mainFileId: string | null = null;
+    // The main page is open: the one the manifest names (`index.html` in a
+    // project written as HTML), or `ui/main.ui`. Looking for that path alone
+    // left an HTML project open on its page with no file active.
+    let mainFileId: string | null = entryId && uiFiles.has(entryId) ? entryId : null;
     for (const [id, file] of uiFiles) {
-      if (file.path === 'ui/main.ui') {
-        mainFileId = id;
-        break;
-      }
+      if (mainFileId) break;
+      if (file.path === 'ui/main.ui') mainFileId = id;
     }
 
     debug('[loadFromBundle] Loaded:', {

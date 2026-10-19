@@ -93,6 +93,13 @@ describe('a project written as HTML', () => {
     ]);
   });
 
+  it('opens on its main page, index.html, with that file active', async () => {
+    commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(zipSync(entries()))));
+    const files = useFilesStore.getState();
+    expect(files.activeFileId).not.toBeNull();
+    expect(files.uiFiles.get(files.activeFileId!)?.path).toBe('index.html');
+  });
+
   it('is written back as it was opened when nothing is changed', async () => {
     commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(zipSync(entries()))));
     const out = readBundleEntries(await buildProjectBundle());

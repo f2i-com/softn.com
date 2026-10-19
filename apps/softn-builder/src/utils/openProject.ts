@@ -548,7 +548,7 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
 
     const files = useFilesStore.getState();
     if (snapshot.files.kind === 'bundle') {
-      files.loadFromBundle(snapshot.files.uiFiles, snapshot.files.logicFiles, snapshot.files.assetFiles);
+      files.loadFromBundle(snapshot.files.uiFiles, snapshot.files.logicFiles, snapshot.files.assetFiles, snapshot.files.mainFileId);
       // The file store must hold the same tree the canvas is given, or the
       // first flush reads the theme it put there as an edit and rewrites the
       // file's source. This is the copy on open, not an edit.

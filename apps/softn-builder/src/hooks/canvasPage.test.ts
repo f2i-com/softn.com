@@ -196,12 +196,15 @@ describe('a project opened with no page in the middle', () => {
     expect(files().uiFiles.get(idOf('ui/main.ui'))!.originalSource).toBe(MAIN);
   });
 
-  it('has them written to its entry, where the entry is not ui/main.ui and no file is opened', async () => {
+  // The entry used to be opened with no file active when it was not
+  // ui/main.ui, which an index.html is; it is the active file now. What this
+  // holds is unchanged: the canvas's edits are written to the entry.
+  it('has them written to its entry, where the entry is not ui/main.ui, which is the file opened', async () => {
     const manifest = { name: 'Entry', version: '1.0.0', description: '', main: 'ui/app.ui', files: { ui: ['ui/app.ui'], logic: [], xdb: [], assets: [] } };
     const bundle = await loadBundle(zipSync({ 'manifest.json': strToU8(JSON.stringify(manifest)), 'ui/app.ui': strToU8(ABOUT) }));
     commitProjectSnapshot(prepareProjectSnapshot(bundle));
     mount(React.createElement(Host));
-    expect(files().activeFileId).toBeNull();
+    expect(files().activeFileId).toBe(idOf('ui/app.ui'));
     expect(words()).toEqual(['About']);
 
     act(() => canvas().updateElementProps(text().id, { children: 'Typed with no file open' }));
