@@ -408,10 +408,16 @@ export function ThemeProvider({
   // around the app, and any other app in the same document, is not moved.
   const named = boxName(box);
   const apart = named !== undefined && !customTheme && isDark !== ambientDark;
+  // With its side, for the browser's own controls. The brand's tokens say
+  // `color-scheme: dark` on `:root` unless the host stamps `data-theme`, which
+  // the standalone page does not: a light app was drawn on a white page with
+  // dark text fields, checkboxes and select menus.
   const cssString = useMemo(() => {
-    if (!apart) return generateCss(themeToCssVariables(theme));
-    return generateCss(themeToCssVariables(ambientDark ? darkTheme : lightTheme));
-  }, [apart, theme, ambientDark]);
+    if (!apart) return generateCss(themeToCssVariables(theme), ':root', [`color-scheme: ${isDark ? 'dark' : 'light'};`]);
+    return generateCss(themeToCssVariables(ambientDark ? darkTheme : lightTheme), ':root', [
+      `color-scheme: ${ambientDark ? 'dark' : 'light'};`,
+    ]);
+  }, [apart, theme, ambientDark, isDark]);
   const boxCss = useMemo(
     () =>
       apart

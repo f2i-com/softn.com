@@ -163,9 +163,10 @@ describe('ThemeProvider stylesheet', () => {
     expect(css).not.toContain('evil.example');
     expect(css).not.toContain('</style');
     expect(css).toContain(`--color-primary-500: ${lightTheme.colors.primary[500]};`);
-    // One :root block of plain declarations: nothing opened a second rule.
+    // One :root block of plain declarations, and the side for the browser's
+    // controls: nothing opened a second rule.
     const variables = css.slice(0, css.indexOf('}') + 1);
-    expect(variables).toMatch(/^:root \{\n(?: {2}--[\w-]+: [^;{}<>\n]+;\n)+\}$/);
+    expect(variables).toMatch(/^:root \{\n(?: {2}--[\w-]+: [^;{}<>\n]+;\n)+ {2}color-scheme: (?:light|dark);\n\}$/);
   });
 
   it('is equally safe when rendered on the server', () => {
