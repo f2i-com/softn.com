@@ -567,6 +567,16 @@ test('per-app storage: records, queries, the key-value store, and the limits', s
   assert.equal((await S({ op: 'query', collection: 'scores', where: { 'drop table': 1 } })).status, 400);
   assert.equal((await S({ op: 'query', collection: 'scores', where: { score: { like: 1 } } })).status, 400);
   assert.equal((await S({ op: 'explode' })).status, 400);
+  // A name with a line break after it is not that name. `$` alone matches
+  // before a final line break, so "scores\n" was a collection of its own,
+  // listed beside the one it only looked like and held to the `*` policy
+  // rather than to the one "scores" declares; ids, keys and fields likewise.
+  for (const body of [
+    { op: 'insert', collection: 'scores\n', data: {} },
+    { op: 'set', collection: 'scores', id: 'ann\n', data: {} },
+    { op: 'kvSet', key: 'theme\n', value: 1 },
+    { op: 'query', collection: 'scores', where: { 'score\n': 1 } },
+  ]) assert.equal((await S(body)).status, 400, JSON.stringify(body));
   const empty = (await S({ op: 'insert', collection: 'blank', data: {} })).json.result;
   assert.equal(JSON.stringify(empty.data), '{}', 'an empty record is an object');
 

@@ -43,12 +43,18 @@ declare(strict_types=1);
 
 final class Storage
 {
-    private const COLLECTION = '/^[a-z][a-z0-9_]{0,31}$/';
-    private const FIELD = '/^[A-Za-z_][A-Za-z0-9_]{0,63}(\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,3}$/';
-    private const KEY = '/^[A-Za-z0-9_.:\-]{1,128}$/';
+    /**
+     * `D` on each, as on the declaration's names in Bundle: `$` alone also
+     * matches before a final line break, and "scores\n" was then a
+     * collection of its own beside "scores", under the `*` policy instead
+     * of the one "scores" declares.
+     */
+    private const COLLECTION = '/^[a-z][a-z0-9_]{0,31}$/D';
+    private const FIELD = '/^[A-Za-z_][A-Za-z0-9_]{0,63}(\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,3}$/D';
+    private const KEY = '/^[A-Za-z0-9_.:\-]{1,128}$/D';
     private const OPS = ['eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'in', 'contains', 'exists'];
     /** The visitor token as the runtime mints it: URL-safe base64, never stored, only hashed. */
-    private const TOKEN = '/^[A-Za-z0-9_-]{16,128}$/';
+    private const TOKEN = '/^[A-Za-z0-9_-]{16,128}$/D';
     /** The policies a collection may declare; the same list as the schema's STORAGE_POLICIES. */
     public const POLICIES = ['public', 'append-only', 'owner-write', 'private', 'publisher'];
     /** How far into a collection a query may start; the README's Limits section says so. */
