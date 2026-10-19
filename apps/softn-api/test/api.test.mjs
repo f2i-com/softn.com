@@ -333,7 +333,7 @@ test('metadata, versions and the thumbnail need the edit key', skip, async () =>
   assert.equal(notImage.status, 400);
 });
 
-test('a bundle revalidates by ETag, answers HEAD, and holds a version-addressed URL for a day', skip, async () => {
+test('a bundle revalidates by ETag, answers HEAD, and holds a digest-addressed URL for a day', skip, async () => {
   // test-snake has two versions by now; the bare URL is v2.
   const url = `${base}/api/apps/test-snake/bundle.softn`;
   const full = await fetch(url, { redirect: 'manual' });
@@ -384,17 +384,26 @@ test('a bundle revalidates by ETag, answers HEAD, and holds a version-addressed 
   assert.equal((await headJson.arrayBuffer()).byteLength, 0);
   assert.ok(Number(headJson.headers.get('content-length')) > 2, 'the length of the JSON a GET would send');
 
-  const v1 = await fetch(`${url}?v=1`, { redirect: 'manual' });
+  // A version is held for a day under the address the API hands out for it,
+  // which carries its digest. By its number alone it is asked for each time,
+  // since the bytes behind a number can change.
+  const v1Address = (await (await fetch(`${base}/api/apps/test-snake`)).json()).app.versions.find((v) => v.version === 1).bundle;
+  assert.match(v1Address, /^\/api\/apps\/test-snake\/bundle\.softn\?v=1&sha256=[0-9a-f]{64}$/);
+  const v1 = await fetch(base + v1Address, { redirect: 'manual' });
   assert.equal(v1.status, 200);
   assert.equal(v1.headers.get('cache-control'), 'public, max-age=86400');
   const v1Tag = v1.headers.get('etag');
   assert.notEqual(v1Tag, etag);
   assert.ok(Buffer.from(await v1.arrayBuffer()).equals(fs.readFileSync(path.join(root, 'data/apps/test-snake/v1.softn'))));
-  const v1Same = await fetch(`${url}?v=1`, { redirect: 'manual', headers: { 'If-None-Match': v1Tag } });
+  const v1Same = await fetch(base + v1Address, { redirect: 'manual', headers: { 'If-None-Match': v1Tag } });
   assert.equal(v1Same.status, 304);
   assert.equal(v1Same.headers.get('cache-control'), 'public, max-age=86400');
-  const v1Latest = await fetch(`${url}?v=1`, { redirect: 'manual', headers: { 'If-None-Match': etag } });
+  const v1Latest = await fetch(base + v1Address, { redirect: 'manual', headers: { 'If-None-Match': etag } });
   assert.equal(v1Latest.status, 200, "the latest version's tag does not stand for v1");
+  const v1Bare = await fetch(`${url}?v=1`, { redirect: 'manual' });
+  assert.equal(v1Bare.status, 200);
+  assert.equal(v1Bare.headers.get('etag'), v1Tag);
+  assert.equal(v1Bare.headers.get('cache-control'), 'no-cache, must-revalidate');
 });
 
 test('a page on another origin can revalidate a bundle and read its ETag', skip, async () => {
@@ -760,7 +769,7 @@ test('the play page is the shell with the app written in; app.json is what makes
     version: 1,
     id: 'snake-game',
     title: 'Snake',
-    bundle: `/api/apps/snake-game/bundle.softn?v=${latest.version}`,
+    bundle: `/api/apps/snake-game/bundle.softn?v=${latest.version}&sha256=${latest.sha256}`,
     sha256: latest.sha256,
     loadingText: 'Loading Snake…',
     theme: 'dark',

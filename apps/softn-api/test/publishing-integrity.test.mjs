@@ -238,10 +238,11 @@ test('?v= names a version or is left out; anything else is refused, not read as 
   assert.notEqual(digest[1], digest[2]);
 
   const latest = await get('');
-  const pinned = await get('?v=1');
+  const pinned = await get(`?v=1&sha256=${digest[1]}`);
   assert.equal(latest.sha, digest[2]);
   assert.equal(pinned.sha, digest[1]);
   assert.match(pinned.cache, /max-age=86400/);
+  assert.equal((await get('?v=1')).sha, digest[1]);
 
   // An empty v is no version named: the latest, under the latest's caching.
   const empty = await get('?v=');
@@ -260,6 +261,68 @@ test('?v= names a version or is left out; anything else is refused, not read as 
   assert.equal((await s.api('GET', `/api/apps/${slug}/source?v=`)).json.version, 2);
   assert.equal((await s.api('GET', `/api/apps/${slug}/source?v=1`)).json.version, 1);
   assert.equal((await s.api('GET', `/api/apps/${slug}/source?v=latest`)).status, 400);
+});
+
+test('the address a bundle is cached under names one content: the digest is in it', skip, async () => {
+  // The play page named bundle.softn?v=1 and pinned its digest, and v1 was
+  // served for a day to any cache. The seed rewrites a demo's v1 in place
+  // when the demo changes, and a purged app's name can be published again,
+  // from v1: the same address then held other bytes, and the shell refused
+  // the app as tampered with until the cached copy expired.
+  const s = await server({ config: { seedDemos: true } });
+  const demos = path.join(s.root, 'demos');
+  fs.mkdirSync(demos, { recursive: true });
+  const demo = path.join(demos, 'PinnedDemo.softn');
+  fs.writeFileSync(demo, makeBundle('Pinned Demo', { description: 'As shipped' }));
+  fs.writeFileSync(path.join(demos, 'index.json'), JSON.stringify([{ id: 'pinned-demo', name: 'Pinned Demo', file: 'PinnedDemo.softn' }]));
+  const sha = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
+  const playBundle = async (slug) => {
+    const html = await (await fetch(`${s.base}/play/${slug}`, { headers: { Accept: 'text/html' } })).text();
+    const config = JSON.parse(html.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+    return { url: config.bundle, sha256: config.sha256 };
+  };
+  const get = async (url, headers = {}) => {
+    const r = await fetch(s.base + url, { headers });
+    return { status: r.status, cache: r.headers.get('cache-control') ?? '', sha: r.status === 200 ? sha(Buffer.from(await r.arrayBuffer())) : null };
+  };
+
+  const first = await playBundle('pinned-demo');
+  assert.equal(first.url, `/api/apps/pinned-demo/bundle.softn?v=1&sha256=${first.sha256}`);
+  const detail = (await s.api('GET', '/api/apps/pinned-demo')).json.app;
+  assert.equal(detail.versions[0].bundle, first.url, 'the app page links the same address');
+  const pinned = await get(first.url);
+  assert.equal(pinned.sha, first.sha256);
+  assert.equal(pinned.cache, 'public, max-age=86400', 'bytes named by their digest may be kept for the day');
+  // Without the digest a version number names bytes that can change: every
+  // use asks, and the ETag makes the asking cheap.
+  const bare = await get('/api/apps/pinned-demo/bundle.softn?v=1');
+  assert.equal(bare.sha, first.sha256);
+  assert.equal(bare.cache, 'no-cache, must-revalidate');
+  assert.equal((await get('/api/apps/pinned-demo/bundle.softn?v=1', { 'If-None-Match': `"${first.sha256}"` })).status, 304);
+  for (const bad of ['XYZ', first.sha256.toUpperCase(), first.sha256.slice(1)]) {
+    assert.equal((await get(`/api/apps/pinned-demo/bundle.softn?v=1&sha256=${bad}`)).status, 400, bad);
+  }
+
+  // The demo changes, and the seed writes it over v1.
+  fs.writeFileSync(demo, makeBundle('Pinned Demo', { description: 'As shipped, second printing' }));
+  const second = await playBundle('pinned-demo');
+  assert.notEqual(second.sha256, first.sha256);
+  assert.equal(second.url, `/api/apps/pinned-demo/bundle.softn?v=1&sha256=${second.sha256}`, 'new bytes, a new address');
+  assert.equal((await get(second.url)).sha, second.sha256);
+  const stale = await get(first.url);
+  assert.equal(stale.status, 404, 'the old address is not answered with the new bytes');
+  assert.doesNotMatch(stale.cache, /public|max-age/);
+
+  // An app purged and published again under its name starts again from v1.
+  const gone = await s.publish('Second Life', { description: 'the first' });
+  const before = await playBundle(gone.app.slug);
+  assert.equal((await s.api('DELETE', `/api/apps/${gone.app.slug}?purge=1`, { headers: { 'X-Admin-Key': s.adminKey } })).status, 204);
+  const again = await s.publish('Second Life', { description: 'another app altogether' });
+  assert.equal(again.app.slug, gone.app.slug);
+  const after = await playBundle(again.app.slug);
+  assert.notEqual(after.url, before.url);
+  assert.equal((await get(before.url)).status, 404);
+  assert.equal((await get(after.url)).sha, after.sha256);
 });
 
 test('the storage quota is counted in bytes, whatever the text is made of', skip, async () => {

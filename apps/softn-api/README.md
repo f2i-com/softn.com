@@ -574,7 +574,7 @@ Nothing else about a visitor is kept.
 |-------|--------------|
 | `GET /api/apps` | Search and browse. `q=`, `category=`, `tag=`, `author=`, `cap=nonet\|none\|storage\|worker`, `sort=trending\|newest\|top\|remixed\|runs\|name`, `page=`, `perPage=` |
 | `GET /api/apps/{slug}` | One listing, with its versions |
-| `GET /api/apps/{slug}/bundle.softn` | The bundle. `v=` picks a version, `download=1` sends it as an attachment. Carries an `ETag` and answers `If-None-Match` with a 304; `HEAD` gives the headers alone. See "Caching a bundle" |
+| `GET /api/apps/{slug}/bundle.softn` | The bundle. `v=` picks a version, `sha256=` pins its digest (a 404 when the version's bytes are no longer those), `download=1` sends it as an attachment. Carries an `ETag` and answers `If-None-Match` with a 304; `HEAD` gives the headers alone. See "Caching a bundle" |
 | `GET /api/apps/{slug}/thumbnail`, `/icon` | Pictures. The URLs the API hands out carry `?v=<updated_at>` because pictures are cached for ten minutes. Served, like every bundle, with `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` and `X-Content-Type-Options: nosniff`: they are publishers' bytes on the site's own origin, and an SVG opened as a page must run nothing there |
 | `GET /api/apps/{slug}/source` | The bundle's source files, for the app page's viewer |
 | `GET /api/apps/{slug}/comments`, `/rating` | Comments (paged) and the rating summary |
@@ -610,7 +610,7 @@ the document:
 ```html
 <script type="application/json" id="softn-runtime-config">
 {"version":1,"id":"snake-game","title":"Snake",
- "bundle":"/api/apps/snake-game/bundle.softn?v=3","sha256":"…",
+ "bundle":"/api/apps/snake-game/bundle.softn?v=3&sha256=…","sha256":"…",
  "loadingText":"Loading Snake…","theme":"dark","permissionMode":"prompt",
  "directory":{"runs":"/api/apps/snake-game/runs","storage":"/api/apps/snake-game/storage"}}
 </script>
@@ -621,9 +621,9 @@ so the shell holds it to the same rules: every location is a path on this
 origin, and anything else stops the load. What it buys over the full
 runtime at `/web/app/{slug}`: no launcher, catalogue, tab bar or bundle
 cache in the download, no round trip for a config file, and a bundle named
-by version with its digest pinned — so the browser may keep it for the day
-the API allows and the shell still refuses bytes that are not the ones
-published. The shell counts the run on the `runs` endpoint once the app is
+by version and digest with the digest pinned — so the browser may keep it
+for the day the API allows, a version whose bytes change gets a new address,
+and the shell still refuses bytes that are not the ones published. The shell counts the run on the `runs` endpoint once the app is
 up, and reaches the app's own database through `storage`, which is named
 only when the app declared that capability. The page wears the same slim
 bar the runtime draws over every app: the way back to the directory and to
@@ -678,14 +678,23 @@ browser would otherwise refuse to send it), and `ETag`, `Content-Disposition`
 and `Retry-After` are exposed, so a page elsewhere can read the tag,
 revalidate with it, name a download, and honour a rate limit.
 
-The two shapes of URL cache differently. `bundle.softn` with no `v=` is the
-latest version, which the next publish moves: it is `no-cache, must-revalidate`,
-so every use asks the server, and the answer is usually the 304. `bundle.softn?v=N`
-names one version whose bytes are settled: it is `public, max-age=86400` — a day,
-not immutable, because an unpublish or an admin purge has to reach every cache
-within a day, and because the seed can replace a demo's v1 in place. An empty
-`v=` is the same as none; a `v` that is not a whole number from 1 (`latest`,
-`0`) answers 400 rather than being read as version 1.
+Only one shape of URL is cached. `bundle.softn?v=N&sha256=<digest>` is the
+address the API hands out for a version (the play page's `bundle`, and
+`bundle` on each of an app's `versions`): it is answered with the bytes of
+that digest or with a 404, never with other bytes, so it is
+`public, max-age=86400` — a day, not immutable, because an unpublish or an
+admin purge has to reach every cache within a day. Every other shape is
+`no-cache, must-revalidate`, so every use asks the server, and the answer is
+usually the 304: `bundle.softn` with no `v=` is the latest version, which the
+next publish moves, and `bundle.softn?v=N` alone can name other bytes
+tomorrow, because the seed replaces a demo's v1 in place when the demo
+changes and an app purged by the admin can be published again under its
+name, from v1. That address used to be held for a day, and a cache that
+kept the old bytes made the play page, which pins the digest, refuse the
+app as tampered with until the copy expired. An empty `v=` or `sha256=` is
+the same as none; a `v` that is not a whole number from 1 (`latest`, `0`)
+and a `sha256` that is not 64 lower-case hex digits answer 400 rather than
+being read as something else.
 
 `HEAD` on either URL returns the status and headers a `GET` would, `Content-Length`
 and `ETag` included, with no body. `Range` requests are not implemented: the
@@ -815,8 +824,8 @@ whose `make.mjs` regenerates `expected.json` from a known-good revision);
 `backup.test.mjs` export, verify and restore, tampered archives, the
 `--force` rule and a restore into a deployed data folder;
 `publishing-integrity.test.mjs` policies a new version may not change, a
-publish or remix whose picture is refused creating nothing, `?v=`, the
-storage quota in bytes, a storage file that is not a database, and the demo
+publish or remix whose picture is refused creating nothing, `?v=` and the
+digest in the address a bundle is cached under, the storage quota in bytes, a storage file that is not a database, and the demo
 sync leaving a visitor's app alone; `review.test.mjs` a slow body holding no catalogue lock, a storage request holding none while it works (and an export and an unpublish waiting for it),
 trust dropped by a publisher's new version, one rating per /64, duplicate
 archive entries, the extension report, and no file in `api/` or a dotfile

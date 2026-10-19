@@ -245,7 +245,8 @@ final class Apps
                 'sha256' => (string) $r['sha256'],
                 'notes' => (string) $r['notes'],
                 'createdAt' => gmdate('c', (int) $r['created_at']),
-                'bundle' => "/api/apps/$slug/bundle.softn?v=" . (int) $r['version'],
+                // The address the play page uses: the digest makes it one content's, so it may be cached.
+                'bundle' => "/api/apps/$slug/bundle.softn?v=" . (int) $r['version'] . '&sha256=' . $r['sha256'],
             ];
         }
         $breakdown = [1=>0,2=>0,3=>0,4=>0,5=>0];

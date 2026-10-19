@@ -96,10 +96,13 @@ final class Pages
             'version' => 1,
             'id' => $slug,
             'title' => $title,
-            // Version-addressed and digest-pinned, so the shell may let the
-            // browser cache answer for it: the bytes behind ?v=N never change,
-            // and a new version is a new URL.
-            'bundle' => "/api/apps/$slug/bundle.softn?v=" . (int) $ver['version'],
+            // Addressed by version and digest, and the digest pinned below,
+            // so the shell may let the browser cache answer for it: the API
+            // answers this address with these bytes or a 404. The version
+            // number alone was not enough, because the bytes behind it can
+            // change (see the bundle route in index.php), and a cached old
+            // copy failed the pin for as long as it was kept.
+            'bundle' => "/api/apps/$slug/bundle.softn?v=" . (int) $ver['version'] . '&sha256=' . $ver['sha256'],
             'sha256' => (string) $ver['sha256'],
             'loadingText' => mb_substr('Loading ' . $name . '…', 0, 160),
             'theme' => 'dark',

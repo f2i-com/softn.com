@@ -210,9 +210,9 @@ function server_timing(): void
  *
  * `?v=`, `?v=latest` and `?v=0` used to be read as version 1 (an integer
  * cast, then at least 1) and answered with the one-day public cache a
- * numbered version gets: an old bundle, served as the pinned one, under a URL
- * the caller meant as "the current one". An empty value is no version named;
- * anything else that is not a whole number from 1 is refused.
+ * numbered version then got: an old bundle, served as the pinned one, under
+ * a URL the caller meant as "the current one". An empty value is no version
+ * named; anything else that is not a whole number from 1 is refused.
  */
 function requested_version(Request $req): ?int
 {
@@ -222,6 +222,21 @@ function requested_version(Request $req): ?int
         throw new ApiError(400, 'v must be a version number, 1 or more; leave it out for the latest.');
     }
     return (int) $v;
+}
+
+/**
+ * The digest a request pins its bundle to with `?sha256=`, or null when it
+ * names none. An empty value is none; anything but the 64 lower-case hex
+ * digits the API hands out is refused, so one content has one address.
+ */
+function requested_digest(Request $req): ?string
+{
+    $d = $req->query['sha256'] ?? null;
+    if ($d === null || $d === '') return null;
+    if (!is_string($d) || !preg_match('/^[0-9a-f]{64}$/D', $d)) {
+        throw new ApiError(400, 'sha256 must be the bundle\'s digest as the API gives it: 64 lower-case hex digits.');
+    }
+    return $d;
 }
 
 function storage_app(string $given): string
@@ -246,7 +261,7 @@ function handle(string $handler, array $args, Request $req): Response
                 'routes' => [
                     'GET /api/apps?q=&category=&tag=&author=&cap=nonet|none|storage|worker&sort=trending|newest|top|remixed|runs|name&page=&perPage=',
                     'GET /api/apps/{slug}',
-                    'GET /api/apps/{slug}/bundle.softn?v=&download=1',
+                    'GET /api/apps/{slug}/bundle.softn?v=&sha256=&download=1',
                     'GET /api/apps/{slug}/thumbnail',
                     'GET /api/apps/{slug}/source?v=',
                     'GET /api/apps/{slug}/comments?page=',
@@ -421,19 +436,26 @@ function handle(string $handler, array $args, Request $req): Response
             $slug = Apps::resolveSlug($args[0]);
             $row = Apps::requireBundle($slug);
             $v = requested_version($req);
+            $pinned = requested_digest($req);
             $ver = Apps::version($slug, $v);
             $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
             if (!is_file($path)) throw new ApiError(404, 'The bundle file is missing.');
-            // The bare URL is "latest", which the next publish moves, so a
-            // cache must ask every time. An explicit ?v= names one version
-            // whose bytes are settled, so it may be held for a day. A day
-            // rather than immutable for a year, because the two things that
-            // do change a version — an unpublish or a purge, and the seed
-            // replacing a demo's v1 — must reach every cache within a day;
-            // the ETag lets a cache revalidate cheaply until then.
+            // An address with the digest in it is answered with those bytes
+            // or not at all, so it never names two contents and a cache may
+            // hold it for a day. A day rather than immutable for a year,
+            // because an unpublish or a purge must reach every cache within
+            // a day. Without the digest an address can name other bytes
+            // tomorrow, the version number included: the seed rewrites a
+            // demo's v1 in place, and a purged app's name can be published
+            // again from v1. Held for a day, a cache answered with the old
+            // bytes, and the play page, which pins the digest, refused the
+            // app. So it is revalidated, which the ETag makes cheap.
+            if ($pinned !== null && $pinned !== $ver['sha256']) {
+                throw new ApiError(404, 'That version of the bundle has been replaced; ask the app for its current address.');
+            }
             $type = 'application/octet-stream';
             $headers = [
-                'Cache-Control' => $v === null ? 'no-cache, must-revalidate' : 'public, max-age=86400',
+                'Cache-Control' => $pinned !== null ? 'public, max-age=86400' : 'no-cache, must-revalidate',
                 'ETag' => '"' . $ver['sha256'] . '"',
             ] + Response::USER_CONTENT;
             // The validator is the archive's own digest, so a client holding

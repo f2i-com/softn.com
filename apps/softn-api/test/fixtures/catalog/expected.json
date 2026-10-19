@@ -2132,7 +2132,7 @@
           "sha256": "d81037e3304a94b2e274f61421997238d942081dc2e22a382eeffb9c8085a1be",
           "notes": "Tides.",
           "createdAt": "2025-01-02T00:00:00+00:00",
-          "bundle": "/api/apps/alpha/bundle.softn?v=2"
+          "bundle": "/api/apps/alpha/bundle.softn?v=2&sha256=d81037e3304a94b2e274f61421997238d942081dc2e22a382eeffb9c8085a1be"
         },
         {
           "version": 1,
@@ -2141,7 +2141,7 @@
           "sha256": "276d36faae34295e81bbac4f3ce1b73104da8e3fd1edf47f37103d542c5f6c6c",
           "notes": "",
           "createdAt": "2025-01-01T00:00:00+00:00",
-          "bundle": "/api/apps/alpha/bundle.softn?v=1"
+          "bundle": "/api/apps/alpha/bundle.softn?v=1&sha256=276d36faae34295e81bbac4f3ce1b73104da8e3fd1edf47f37103d542c5f6c6c"
         }
       ],
       "ratingBreakdown": {
@@ -2230,7 +2230,7 @@
           "sha256": "1513cab1fbde06366a49a37da07da1f159d76ac42edf845c6ba1fd1c545547d5",
           "notes": "",
           "createdAt": "2025-01-01T01:00:00+00:00",
-          "bundle": "/api/apps/beta-lantern/bundle.softn?v=1"
+          "bundle": "/api/apps/beta-lantern/bundle.softn?v=1&sha256=1513cab1fbde06366a49a37da07da1f159d76ac42edf845c6ba1fd1c545547d5"
         }
       ],
       "ratingBreakdown": {
@@ -2386,7 +2386,7 @@
           "sha256": "a139710279fcfa9ff8e88b9e4248ad5d0ec5dc4c61f0d69a104b36171eb6e0fb",
           "notes": "",
           "createdAt": "2025-01-01T04:00:00+00:00",
-          "bundle": "/api/apps/epsilon/bundle.softn?v=1"
+          "bundle": "/api/apps/epsilon/bundle.softn?v=1&sha256=a139710279fcfa9ff8e88b9e4248ad5d0ec5dc4c61f0d69a104b36171eb6e0fb"
         }
       ],
       "ratingBreakdown": {
@@ -2463,7 +2463,7 @@
           "sha256": "c710044f6fefa626d84c4a01c87b6a8ff5f2ac22487210195661841e59fdcd74",
           "notes": "",
           "createdAt": "2025-01-01T02:00:00+00:00",
-          "bundle": "/api/apps/gamma/bundle.softn?v=1"
+          "bundle": "/api/apps/gamma/bundle.softn?v=1&sha256=c710044f6fefa626d84c4a01c87b6a8ff5f2ac22487210195661841e59fdcd74"
         }
       ],
       "ratingBreakdown": {
