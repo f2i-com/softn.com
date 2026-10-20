@@ -186,7 +186,7 @@ def train(steps):
   calls `addTorch({ addPythonPackage }, bytes)` with `zipp_torch.wasm`
   (2.16 MB raw), fetched from `./core-runtime/zipp_torch.wasm` beside core's
   chunk — `dist/core-runtime/` in core's build, `assets/core-runtime/` in
-  every app that ships core (`scripts/core-worker-assets.mjs`), which is
+  every app that ships core (`scripts/build/core-worker-assets.mjs`), which is
   outside every PWA's startup precache. `zippTorchWasmUrl()` names that URL
   without starting anything. A host that already holds the bytes (or a test)
   hands them over with `configureZippTorchSource(bytes | WebAssembly.Module)`

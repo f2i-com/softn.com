@@ -1,10 +1,10 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
-import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
-import { docsDevPlugin } from '../../scripts/dev-docs.mjs';
-import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
-import { buildSourcemaps } from '../../scripts/sourcemaps.mjs';
+import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
+import { docsDevPlugin } from '../../scripts/dev/dev-docs.mjs';
+import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
+import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
 
 const appDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -37,7 +37,7 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
-    // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/script-policy.mjs).
+    // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
     plugins: [retireServiceWorkersPlugin(), docsDevPlugin(), react(), scriptPolicyPlugin()],
     server: {
       port: env.VITE_PORT ? Number(env.VITE_PORT) : 1421,
@@ -53,7 +53,7 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       target: 'es2022',
-      // In a development build only (scripts/sourcemaps.mjs).
+      // In a development build only (scripts/build/sourcemaps.mjs).
       sourcemap: buildSourcemaps(),
     },
   };

@@ -2,8 +2,8 @@
 
 Scope: `apps/softn-api` (directory API + pages), `apps/softn-php` (PHP front + Node worker
 for one app's backend), `apps/softn-rust` (native host, single and multi-tenant), the
-deployment configs emitted by `scripts/build-site.mjs`, `scripts/package-*.mjs`,
-`scripts/single-backend-inputs.mjs`, and the shipped `.htaccess` files.
+deployment configs emitted by `scripts/build/build-site.mjs`, `scripts/package-*.mjs`,
+`scripts/release/single-backend-inputs.mjs`, and the shipped `.htaccess` files.
 
 Overall: the three hosts are in good shape. Input bounds, path containment, SQLite
 authorisers, SSRF blocking, constant-time key comparison, atomic writes and lock discipline
@@ -122,7 +122,7 @@ Add `410`/redirect metadata to the catalog if renamed slugs need to keep working
 
 ## M5. Single-app hosts do not ship the isolation headers the site does
 
-- `scripts/build-site.mjs` APACHE_CONFIG/NGINX_CONFIG: `Cross-Origin-Opener-Policy:
+- `scripts/build/build-site.mjs` APACHE_CONFIG/NGINX_CONFIG: `Cross-Origin-Opener-Policy:
   same-origin`, `Cross-Origin-Embedder-Policy: credentialless`.
 - `apps/softn-single/public/.htaccess` (only `nosniff` + `no-store`) and
   `apps/softn-single-php-serve/public/.htaccess` (`Service-Worker-Allowed`, `no-cache`):
@@ -191,8 +191,8 @@ slot (the ETag is computed in PHP at `http.php:116`, so the check could move ahe
 ## L6. Directory `.htaccess` blocks `lib/` and `*.md`, nginx config relies on `location` order
 
 - `apps/softn-api/.htaccess` `RewriteRule ^lib/ - [F,L]` and `data/.htaccess` deny-all only
-  work with `AllowOverride All`. `scripts/build-site.mjs` NGINX_CONFIG does map `/data` to
-  404, but `scripts/package-site.test.mjs` only checks the *page* allowlist agrees; add a
+  work with `AllowOverride All`. `scripts/build/build-site.mjs` NGINX_CONFIG does map `/data` to
+  404, but `scripts/release/package-site.test.mjs` only checks the *page* allowlist agrees; add a
   test that both configs deny `/api/lib/`, `/api/data/`, `/api/backup.php` and `*.md`.
 
 ---
@@ -229,7 +229,7 @@ slot (the ETag is computed in PHP at `http.php:116`, so the check could move ahe
   `max_redirects(0)`, 20 s global timeout under the 25 s VM wall time; fs bridge
   canonicalises and rejects symlinks per component; WS frames capped at 4 MB;
   writer mutex poison recovery.
-- **Packaging** (`scripts/single-backend-inputs.mjs`): Node 24.20.0 and `ws` pinned by
+- **Packaging** (`scripts/release/single-backend-inputs.mjs`): Node 24.20.0 and `ws` pinned by
   SHA-256, vendored ZIPP WASM checked against `SOURCE.json`, licences copied beside it.
 
 ## Consistency matrix (what an app author gets on each host)

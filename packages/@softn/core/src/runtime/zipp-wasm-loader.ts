@@ -188,7 +188,7 @@ export function configureZippTorchSource(source: BufferSource | WebAssembly.Modu
 }
 
 // Beside the chunk in core's dist/core-runtime/ mirror, which every app that
-// ships core copies to assets/core-runtime/ (scripts/core-worker-assets.mjs).
+// ships core copies to assets/core-runtime/ (scripts/build/core-worker-assets.mjs).
 // A variable, not a literal, like the script worker's path: a literal would be
 // rewritten by Vite into a hashed copy under assets/ that every PWA's glob
 // would then precache for every visitor, where this file is for the apps that

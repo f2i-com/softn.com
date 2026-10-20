@@ -124,7 +124,7 @@ function removeMap(file) {
 
 /**
  * Remove every source map under `dir` the way dropMachineMaps removes one:
- * a production build carries none (scripts/sourcemaps.mjs). The paths
+ * a production build carries none (scripts/build/sourcemaps.mjs). The paths
  * removed, relative to `dir`.
  */
 export function dropSourceMaps(dir) {

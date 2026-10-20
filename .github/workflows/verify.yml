@@ -13,9 +13,9 @@ name: Verify
 #
 # The work is spread over jobs that run side by side, and a caller waits for
 # all of them: the build, typecheck and lint; the test suites, cut into four
-# shards by scripts/test-shards.mjs (every workspace suite, every root test
+# shards by scripts/checks/test-shards.mjs (every workspace suite, every root test
 # pattern and core's suite on the host JavaScript engine, each in exactly one
-# shard, which scripts/test-shards.test.mjs holds); the XDB crate; the Rust
+# shard, which scripts/checks/test-shards.test.mjs holds); the XDB crate; the Rust
 # backend host; and the desktop loader's Rust side. One job ran all of it in a
 # row, eleven minutes, most of it the suites one after another.
 #
@@ -115,7 +115,7 @@ jobs:
         run: npm run lint
 
   # Every suite, in four shards. Which suites a shard runs, and what it has to
-  # build or install first, is scripts/test-shards.mjs's answer for that shard;
+  # build or install first, is scripts/checks/test-shards.mjs's answer for that shard;
   # among them is core's suite a second time, with @softn/core/host-js behind
   # the engine seam instead of ZIPP (`test:host-js`). That engine runs an app
   # author's code as the host document's own JavaScript, with no VM around it,
@@ -169,15 +169,15 @@ jobs:
 
       - name: What this shard needs
         id: needs
-        run: node scripts/test-shards.mjs --shard ${{ matrix.shard }}/4 --needs >> "$GITHUB_OUTPUT"
+        run: node scripts/checks/test-shards.mjs --shard ${{ matrix.shard }}/4 --needs >> "$GITHUB_OUTPUT"
 
-      # scripts/host-js-isolation.test.mjs looks inside the built Builder,
+      # scripts/checks/host-js-isolation.test.mjs looks inside the built Builder,
       # Studio and web app, and skips what is not built.
       - name: Build browser applications for the tests that read them
         if: steps.needs.outputs.apps == 'true'
         run: npm run build:apps
 
-      # scripts/dev-service-worker.test.mjs drives a real Chromium through a
+      # scripts/dev/dev-service-worker.test.mjs drives a real Chromium through a
       # stale service worker; it skips itself when no browser is installed,
       # so this is what makes it run here rather than pass by skipping.
       - name: Install Chromium for the browser-driven script tests
@@ -187,7 +187,7 @@ jobs:
       # The runner image ships PHP, so the directory API's and the PHP host's
       # suites run here rather than being skipped.
       - name: Test
-        run: node scripts/test-shards.mjs --shard ${{ matrix.shard }}/4
+        run: node scripts/checks/test-shards.mjs --shard ${{ matrix.shard }}/4
 
   # The XDB crate (crates/softn-xdb), which the backend host and the desktop
   # loader are both built on. It is a Rust crate outside the npm workspaces

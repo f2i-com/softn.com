@@ -874,8 +874,8 @@ verify. `dev`, `dev:web`, `build:site --with-demos`, `screenshot:demos` and `tes
 first, so a fresh clone needs nothing more than the network the first time.
 
 ```bash
-node scripts/fetch-demos.mjs --pin v1.0.1   # move to a new release: rewrites the sizes, digests and URLs in index.json, then fetches
-node scripts/fetch-demos.mjs --check        # verify what is on disk without downloading
+node scripts/demos/fetch-demos.mjs --pin v1.0.1   # move to a new release: rewrites the sizes, digests and URLs in index.json, then fetches
+node scripts/demos/fetch-demos.mjs --check        # verify what is on disk without downloading
 ```
 
 Each is a worked example of some part of the runtime.
@@ -996,7 +996,7 @@ the flag before the script sees it.
 
 What each folder is: [`apps/README.md`](apps/README.md) explains every app and
 what it ships as; [`packages/README.md`](packages/README.md) the packages they
-are built from; [`scripts/release-packages.mjs`](scripts/release-packages.mjs)
+are built from; [`scripts/release/release-packages.mjs`](scripts/release/release-packages.mjs)
 the five release archives, in the words of the `README.md` each carries.
 
 ### Running Apps
@@ -1048,7 +1048,7 @@ cargo test --no-default-features --manifest-path crates/softn-xdb/Cargo.toml
 Every push to `main` and every pull request runs the [CI workflow](.github/workflows/ci.yml):
 install, audit, build, typecheck, lint, every test suite, the XDB crate and the Rust hosts, the steps
 [verify.yml](.github/workflows/verify.yml) holds, in jobs that run side by side (the suites in four
-shards, which `node scripts/test-shards.mjs --plan 4` lists). A commit whose message carries
+shards, which `node scripts/checks/test-shards.mjs --plan 4` lists). A commit whose message carries
 `[skip ci]` is not checked by GitHub, so run the same checks locally before pushing one, or start
 the CI workflow by hand. The [Build SoftN workflow](.github/workflows/build.yml) is started by hand
 for the hosting archives and the desktop matrix, and a version tag runs
@@ -1083,9 +1083,9 @@ Chromium and skips itself until `npm run e2e:install` has put one on the machine
 | `packages/@softn/components/src/registry.ts`         | Built-in component registration                                                                                                                                                                                              |
 | `packages/@softn/components/src/threed/Scene3D.tsx`  | The 3D scene: instancing, pointer lock, attached objects                                                                                                                                                                     |
 | `apps/softn-api/index.php`                           | The directory API's routes                                                                                                                                                                                                   |
-| `scripts/build-site.mjs`                             | Assembles `dist/` and writes `.htaccess`, `nginx.conf.example` and `DEPLOY.md`                                                                                                                                               |
-| `scripts/fetch-demos.mjs`                            | Fetches and verifies the demo bundles from the softn-Examples release `public/demos/index.json` pins                                                                                                                         |
-| `scripts/softn-apps/`                                | Every app from every release in `repos.json`, photographed, as one folder a site loads: `npm run apps:build`, then `build:site -- --demos-dir`, an upload beside `api/` as `demos/`, or `apps:publish` (its README explains) |
+| `scripts/build/build-site.mjs`                             | Assembles `dist/` and writes `.htaccess`, `nginx.conf.example` and `DEPLOY.md`                                                                                                                                               |
+| `scripts/demos/fetch-demos.mjs`                            | Fetches and verifies the demo bundles from the softn-Examples release `public/demos/index.json` pins                                                                                                                         |
+| `scripts/demos/softn-apps/`                                | Every app from every release in `repos.json`, photographed, as one folder a site loads: `npm run apps:build`, then `build:site -- --demos-dir`, an upload beside `api/` as `demos/`, or `apps:publish` (its README explains) |
 
 ---
 

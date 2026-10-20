@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
+import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 // The same build as apps/softn-single, emitted into dist/webroot: the PHP
 // host serves that folder and keeps everything else in dist/private.
 export default defineConfig({

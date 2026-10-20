@@ -89,7 +89,7 @@ test('host JavaScript is turned on in the host entry, and only there', () => {
   assert.ok(!adapter.includes('data-softn-logic-engine'), 'nor which document it is in');
 
   // And the shell reaches the entry only on demand, so the ZIPP document never
-  // loads the chunk the engine is in (scripts/host-js-isolation.test.mjs).
+  // loads the chunk the engine is in (scripts/checks/host-js-isolation.test.mjs).
   const main = fs.readFileSync(path.join(app, 'src/main.tsx'), 'utf8');
   assert.match(main, /await import\('\.\/hostEngine'\)/);
   assert.ok(!/^import .* from '\.\/hostEngine'/m.test(main), 'never statically');

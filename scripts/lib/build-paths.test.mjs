@@ -116,7 +116,7 @@ test('a production build leaves every map out, with its twins and the comment th
 });
 
 test('build-site leaves the maps out before the twins are made: every map in production, the machine maps in development', () => {
-  const source = fs.readFileSync(new URL('../build-site.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const source = fs.readFileSync(new URL('../build/build-site.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const machine = source.indexOf('dropMachineMaps(outDir, root)');
   const all = source.indexOf('dropSourceMaps(outDir)');
   assert.ok(machine > 0, 'build-site calls dropMachineMaps(outDir, root): the checkout is looked for as well');

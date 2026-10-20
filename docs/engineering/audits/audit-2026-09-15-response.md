@@ -124,7 +124,7 @@ workflows, e2e, the Tauri side, the docs kit, the examples) was acted on.
   ten capabilities and the whole `db` surface documented, a test that every
   repository link names a file in the checkout.
 - Release: `apps/README.md` and `packages/README.md` explain every folder;
-  one `scripts/release-packages.mjs` describes the five archives and
+  one `scripts/release/release-packages.mjs` describes the five archives and
   generates each archive's `README.md`, the `RELEASE-GUIDE.md` attached to
   the release and the release notes from `CHANGELOG.md` (a tag without a
   section fails before anything is built); one shared zip writer

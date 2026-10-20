@@ -15,7 +15,7 @@
  * The declared release is the zipp-vm tag in apps/softn-host-rust/Cargo.toml:
  * one commit builds against one ZIPP in every job, and a new ZIPP release
  * never changes an existing commit's result. Only the release gate
- * (scripts/zipp-release-gate.mjs) asks for the latest.
+ * (scripts/release/zipp-release-gate.mjs) asks for the latest.
  *
  * Environment: ZIPP_RELEASE=vX.Y.Z names the release; ZIPP_RELEASE_DIR=<dir>
  * reads SHA256SUMS and the release's files from a folder instead of GitHub
@@ -390,7 +390,7 @@ export function versionFromSums(sums) {
 
 /**
  * The repository's declared ZIPP release: the zipp-vm tag the Rust host builds
- * with (scripts/engine-pin.test.mjs holds the browser engine to it).
+ * with (scripts/checks/engine-pin.test.mjs holds the browser engine to it).
  */
 export function declaredRelease(cargoToml = CARGO_TOML) {
   let text;

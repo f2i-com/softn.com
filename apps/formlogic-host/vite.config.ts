@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
+import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 const entry = (name: string) => fileURLToPath(new URL(`./${name}.html`, import.meta.url));
 export default defineConfig({
   base: './', plugins: [react(), coreWorkerAssetPlugin()],

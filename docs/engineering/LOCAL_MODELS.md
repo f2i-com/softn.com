@@ -43,7 +43,7 @@ node scripts/vendor-zipp-models.mjs --zipp ../../../../zipp.org --ref v0.0.27
 node scripts/vendor-zipp-models.mjs --check
 ```
 
-The first copies the listed files at that git ref byte for byte (`.gitattributes` keeps the folder out of line-ending conversion, because a plugin's hashes would otherwise refuse it), checks the GPU runtime against the release's embed kit when `.zipp-release/` holds it, checks gguf-wasm's files against ZIPP's own lock, and records each file's sha256. The licence inventory (`scripts/generate-third-party-notices.mjs`) refuses a vendored tree that differs from `SOURCE.json`. A new architecture is a new plugin folder in ZIPP, listed in `VENDORED`, bundled in `model-worker.ts`, and named in `ai-manager.ts`'s capability report.
+The first copies the listed files at that git ref byte for byte (`.gitattributes` keeps the folder out of line-ending conversion, because a plugin's hashes would otherwise refuse it), checks the GPU runtime against the release's embed kit when `.zipp-release/` holds it, checks gguf-wasm's files against ZIPP's own lock, and records each file's sha256. The licence inventory (`scripts/licenses/generate-third-party-notices.mjs`) refuses a vendored tree that differs from `SOURCE.json`. A new architecture is a new plugin folder in ZIPP, listed in `VENDORED`, bundled in `model-worker.ts`, and named in `ai-manager.ts`'s capability report.
 
 ## Tests
 

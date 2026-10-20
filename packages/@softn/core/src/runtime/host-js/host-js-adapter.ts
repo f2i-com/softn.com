@@ -70,7 +70,7 @@ import type { DBNamespace } from '../script-runtime';
 /**
  * A string that is in a built bundle if and only if this adapter is.
  *
- * `scripts/host-js-isolation.test.mjs` greps for it: the editors, the web app
+ * `scripts/checks/host-js-isolation.test.mjs` greps for it: the editors, the web app
  * and the ZIPP entry document must not contain it, and the host document's
  * chunk must.
  */

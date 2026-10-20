@@ -1,11 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { softnPwa } from '../../scripts/pwa.mjs';
-import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
-import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
-import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
-import { buildSourcemaps } from '../../scripts/sourcemaps.mjs';
-import { vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
+import { softnPwa } from '../../scripts/build/pwa.mjs';
+import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
+import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
+import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
+import { vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -14,7 +14,7 @@ export default defineConfig({
     retireServiceWorkersPlugin(),
     react(),
     coreWorkerAssetPlugin(),
-    // What runs as script: this deployment's files only (scripts/script-policy.mjs).
+    // What runs as script: this deployment's files only (scripts/build/script-policy.mjs).
     scriptPolicyPlugin(),
     softnPwa({
       disable: env.VITE_FORMLOGIC_EDITOR === '1',
@@ -74,9 +74,9 @@ export default defineConfig({
   },
   build: {
     target: 'es2022',
-    // In a development build only (scripts/sourcemaps.mjs).
+    // In a development build only (scripts/build/sourcemaps.mjs).
     sourcemap: buildSourcemaps(),
-    // dist/.vite/manifest.json, which scripts/editor-offline.test.mjs reads.
+    // dist/.vite/manifest.json, which scripts/build/editor-offline.test.mjs reads.
     manifest: true,
     rolldownOptions: {
       output: {

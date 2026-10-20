@@ -5,10 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "generate-native-icons": "node ../../scripts/generate-native-icons.mjs",
+    "generate-native-icons": "node ../../scripts/brand/generate-native-icons.mjs",
     "dev": "vite",
     "check:components": "node ./scripts/check-component-registry.mjs && vitest run src/utils/componentRegistry.manifest.test.ts",
-    "generate-icons": "node ../../scripts/generate-icons.mjs --ground #0c0a09",
+    "generate-icons": "node ../../scripts/brand/generate-icons.mjs --ground #0c0a09",
     "build": "npm run check:components && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

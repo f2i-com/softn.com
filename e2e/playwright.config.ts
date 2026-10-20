@@ -3,7 +3,7 @@
  *
  * Every spec here drives the site, the runtime, Studio, Builder and the
  * directory API as one origin at their deployed paths, served by
- * scripts/serve-topology.mjs from dist/. Nothing is built by this config:
+ * scripts/dev/serve-topology.mjs from dist/. Nothing is built by this config:
  * `npm run e2e` expects `SOFTN_WITH_DEMOS=1 npm run build:site` to have run
  * (after `npm run build:packages` on a fresh checkout), and the server
  * script refuses to start on a root that is not that build, naming what is
@@ -36,7 +36,7 @@ const repoRoot = path.resolve(here, '..');
 /**
  * A fixed port, so the base URL is known before the server is up. Override
  * with SOFTN_E2E_PORT; point SOFTN_E2E_URL at a server started by hand
- * (`node scripts/serve-topology.mjs --port 1425 --keep-data`) to skip
+ * (`node scripts/dev/serve-topology.mjs --port 1425 --keep-data`) to skip
  * starting one here and keep its data directory afterwards.
  */
 const port = Number(process.env.SOFTN_E2E_PORT || 1425);
@@ -155,7 +155,7 @@ export default defineConfig({
   webServer: externalServer
     ? undefined
     : {
-        command: `node scripts/serve-topology.mjs --port ${port}`,
+        command: `node scripts/dev/serve-topology.mjs --port ${port}`,
         cwd: repoRoot,
         url: `${baseURL}/api/health`,
         reuseExistingServer: !isCI,

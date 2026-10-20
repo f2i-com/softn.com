@@ -6,7 +6,7 @@ import zlib from 'node:zlib';
 /**
  * A file's precompressed twins: quality-11 Brotli sized to the input, and
  * level-9 gzip. The one place these settings live, for the in-process pass and
- * for the worker threads of the parallel one (scripts/precompress-assets.mjs),
+ * for the worker threads of the parallel one (scripts/build/precompress-assets.mjs),
  * so both write the same bytes.
  */
 export function compressTwins(source) {

@@ -379,7 +379,7 @@ async function serviceWorkerControls(): Promise<boolean> {
 // ── Worker assets ────────────────────────────────────────────────────
 //
 // Core's workers ship in a copy of what they reach of its dist under
-// assets/core-runtime/ (scripts/core-worker-assets.mjs; a worker resolves
+// assets/core-runtime/ (scripts/build/core-worker-assets.mjs; a worker resolves
 // `./core-runtime/runtime/script-worker.js` against its own chunk): the
 // script worker, which runs an app whose manifest asks for
 // `config.execution: "worker"`; the sandbox worker behind

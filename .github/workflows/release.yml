@@ -6,7 +6,7 @@ name: Release
 # SHA256SUMS (packages/@softn/core/scripts/fetch-zipp-release.mjs). Which
 # release is decided once, in the gate, for the whole run: the zipp-vm tag the
 # tagged apps/softn-host-rust/Cargo.toml declares, which has to be ZIPP's
-# latest release (scripts/zipp-release-gate.mjs) unless allow-older-zipp is
+# latest release (scripts/release/zipp-release-gate.mjs) unless allow-older-zipp is
 # asked for. Every job installs that tag and requires the SHA256SUMS digest the
 # gate saw; the website job checks the install against the published release
 # again before packaging, and licenses:check and the FormLogic runtime
@@ -29,7 +29,7 @@ name: Release
 # and deliberately cannot release an arbitrary branch: both paths check out
 # refs/tags/<tag> and refuse if HEAD is not that tag's commit. The jobs run
 # the tag's own scripts, so a retry works for tags from v0.0.15 on, the first
-# with scripts/zipp-release-gate.mjs; the gate refuses an older tag by name.
+# with scripts/release/zipp-release-gate.mjs; the gate refuses an older tag by name.
 # Node comes from the tag's .nvmrc (tags after v0.0.15): to retry v0.0.15, run
 # the workflow from that tag ("Use workflow from"), whose copy of this file
 # still names the Node version itself.
@@ -131,11 +131,11 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ ! -f scripts/zipp-release-gate.mjs ]]; then
-            echo "::error::$TAG predates the ZIPP release gate (scripts/zipp-release-gate.mjs, first in v0.0.15); this workflow cannot release it." >&2
+          if [[ ! -f scripts/release/zipp-release-gate.mjs ]]; then
+            echo "::error::$TAG predates the ZIPP release gate (scripts/release/zipp-release-gate.mjs, first in v0.0.15); this workflow cannot release it." >&2
             exit 1
           fi
-          node scripts/zipp-release-gate.mjs
+          node scripts/release/zipp-release-gate.mjs
 
   # The exact tagged commit, through the complete suite. `env` is not
   # available to a reusable-workflow call, so the tag is spelled out again.
@@ -150,12 +150,12 @@ jobs:
       zipp-sums-sha256: ${{ needs.gate.outputs.zipp-sums-sha256 }}
 
   # `build:site` writes dist/; that directory is packaged in full as one
-  # archive by scripts/package-site.mjs, which reads the archive back and
+  # archive by scripts/release/package-site.mjs, which reads the archive back and
   # compares every entry with dist/ before the file is allowed to exist.
   # The browser journeys (e2e/): Studio and Builder handing a bundle to the
   # runtime and the publish page, the directory, the not-found page, in a real
   # Chromium against the built site served the way a host serves it. The
-  # gate needs the example bundles beside the API (scripts/serve-topology.mjs
+  # gate needs the example bundles beside the API (scripts/dev/serve-topology.mjs
   # refuses a root without them), and the release site ships none, so this
   # job builds its own demos-carrying site from the same tag rather than the
   # packaged archive. Nothing is attached until it passes.
@@ -291,13 +291,13 @@ jobs:
         run: npm audit --audit-level=high
 
       # The release notes come from CHANGELOG.md: the tag's section, then
-      # the downloads table from scripts/release-packages.mjs (the same
+      # the downloads table from scripts/release/release-packages.mjs (the same
       # description that writes the README.md inside every archive and the
       # RELEASE-GUIDE.md attached beside them). A tag with no section is
       # refused here, before anything is built or packaged.
       - name: Write the release guide and notes
         run: |
-          node scripts/release-explainers.mjs --tag "$RELEASE_TAG" --out release
+          node scripts/release/release-explainers.mjs --tag "$RELEASE_TAG" --out release
           test -f release/RELEASE-GUIDE.md && test -f release/RELEASE-NOTES.md
 
       - name: Record skipped gates in the release notes
@@ -326,7 +326,7 @@ jobs:
           fi
 
       - name: Package and verify the archive
-        run: node scripts/package-site.mjs --tag "$RELEASE_TAG" --out release
+        run: node scripts/release/package-site.mjs --tag "$RELEASE_TAG" --out release
 
       # A second opinion from a tool that shares no code with the packager.
       - name: Test the archive with unzip
@@ -358,7 +358,7 @@ jobs:
           zip="$(ls release/softn-website-*.zip)"
           rm -rf smoke-root && mkdir smoke-root
           unzip -q "$zip" -d smoke-root
-          node scripts/smoke-site.mjs --root smoke-root
+          node scripts/release/smoke-site.mjs --root smoke-root
           rm -rf smoke-root
 
       - name: Build and package the single-app runtime
@@ -440,9 +440,9 @@ jobs:
 
       - name: Verify the optional backend distribution
         run: |
-          python3 scripts/test-single-backend.py --archive "$(ls release/softn-app-static-with-backend-linux-x64-v*.zip)"
+          python3 scripts/release/test-single-backend.py --archive "$(ls release/softn-app-static-with-backend-linux-x64-v*.zip)"
           python3 apps/softn-host-php/tests/apache-smoke.py --archive "$(ls release/softn-app-static-with-backend-linux-x64-v*.zip)"
-          python3 scripts/test-single-backend.py --private --archive "$(ls release/softn-app-private-with-backend-linux-x64-v*.zip)"
+          python3 scripts/release/test-single-backend.py --private --archive "$(ls release/softn-app-private-with-backend-linux-x64-v*.zip)"
           python3 apps/softn-host-php/tests/apache-smoke.py --private --archive "$(ls release/softn-app-private-with-backend-linux-x64-v*.zip)"
 
       - name: Keep the archive with the workflow run
@@ -533,7 +533,7 @@ jobs:
             prerelease=""
             if [[ "$RELEASE_TAG" == *-* ]]; then prerelease="--prerelease"; fi
             # release/RELEASE-NOTES.md is .github/release-notes.md with the
-            # downloads table filled in from scripts/release-packages.mjs.
+            # downloads table filled in from scripts/release/release-packages.mjs.
             gh release create "$RELEASE_TAG" --title "SoftN $RELEASE_TAG" $prerelease --notes-file release/RELEASE-NOTES.md \
               || echo "release already exists; attaching to it"
           fi

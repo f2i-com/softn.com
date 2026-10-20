@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
+import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -12,7 +12,7 @@ const env = (globalThis as { process?: { env?: Record<string, string | undefined
 // the same rules: dev serves the files straight from core's dist, and a build
 // copies them without core's nested core-runtime/ mirror (12.9 MB of
 // duplicates) and without the host-JavaScript engine, which no Worker can
-// reach and no app runtime may carry (scripts/host-js-isolation.test.mjs).
+// reach and no app runtime may carry (scripts/checks/host-js-isolation.test.mjs).
 
 export default defineConfig({
   plugins: [react(), coreWorkerAssetPlugin()],

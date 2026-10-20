@@ -10,7 +10,7 @@
  *   node scripts/fetch-zipp-release.mjs --install-local .cache/zipp-local
  *
  * The install is stamped build 'local'. Most suites run on it, but the ones
- * that pin release provenance fail by design: scripts/engine-pin.test.mjs
+ * that pin release provenance fail by design: scripts/checks/engine-pin.test.mjs
  * (build 'release', the Cargo tag) and test/zipp-languages.test.ts (the
  * commit the module reports). licenses:check, the FormLogic runtime packager
  * and --ensure under CI refuse it, and `npm run fetch:zipp` puts a release back.

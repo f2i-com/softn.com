@@ -58,7 +58,7 @@ it('gives a release private/ the samples and the built template, never what dist
   expect(files['app.softn']).toEqual(sampleBundle());
   // Both release scripts build private/ from it and copy nothing else of dist/private.
   for (const script of ['package-single-private.mjs', 'package-private-single-php.mjs']) {
-    const source = readFileSync(new URL(`../../../scripts/${script}`, import.meta.url), 'utf8');
+    const source = readFileSync(new URL(`../../../scripts/release/${script}`, import.meta.url), 'utf8');
     expect(source, script).toContain('releasePrivateFiles(');
     expect(source, script).not.toMatch(/privateDir:\s*join\(dist,\s*'private'\)/);
   }

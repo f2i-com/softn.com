@@ -208,5 +208,5 @@ else here.
 - Build output goes to each app's `dist/` (Builder's desktop build to
   `dist-desktop/`); the site build composes them into the root `dist/`.
 - The release archives and what each one is for are described in
-  [`scripts/release-packages.mjs`](../scripts/release-packages.mjs), which
+  [`scripts/release/release-packages.mjs`](../scripts/release/release-packages.mjs), which
   generates the `README.md` at the root of every archive.

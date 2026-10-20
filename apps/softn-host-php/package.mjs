@@ -17,7 +17,7 @@ export function deploymentConfig(manifest,clientBytes,permissionMode='prompt') {
 // apps/softn-single-private's webroot, the archive and its settings ship
 // under private/, `htaccess` carries the serve rules with the /api rewrite,
 // and `startHere`/`serveGuide` are that variant's guides. `explainer` is the
-// plain-language README.md generated from scripts/release-packages.mjs, the
+// plain-language README.md generated from scripts/release/release-packages.mjs, the
 // front door every release archive has; when it is given, the detailed guide
 // ships as DEPLOYMENT.md beside it, as in the other archives.
 export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,operator,readme,template=false,templateClient=false,permissionMode='prompt',websocketDir,htaccess,privateDir,startHere,serveGuide,explainer}) {

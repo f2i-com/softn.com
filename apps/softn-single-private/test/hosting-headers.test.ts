@@ -19,7 +19,7 @@ function phpHeaders(source: string): string[] {
 }
 
 describe('hosting headers', () => {
-  const expected = apacheHeaders(read('../../../scripts/build-site.mjs'));
+  const expected = apacheHeaders(read('../../../scripts/build/build-site.mjs'));
 
   it('the site sends the two isolation headers this test pins', () => {
     expect(expected).toEqual(['Cross-Origin-Embedder-Policy: credentialless', 'Cross-Origin-Opener-Policy: same-origin']);

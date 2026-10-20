@@ -218,7 +218,7 @@ describe.skipIf(!built)('softn-web build graph', () => {
     );
   });
 
-  /** The URLs sw.js precaches, as scripts/pwa.mjs writes them ahead of the worker (one JSON line). */
+  /** The URLs sw.js precaches, as scripts/build/pwa.mjs writes them ahead of the worker (one JSON line). */
   function precachedUrls(): Set<string> {
     const sw = readFileSync(resolve(dist, 'sw.js'), 'utf8');
     const list = /^self\.__SOFTN_PRECACHE=(\[.*\]);$/m.exec(sw);

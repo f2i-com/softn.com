@@ -2,7 +2,7 @@
  * The guides at /docs/ and the product bar that links to them.
  *
  * /docs/ is static pages generated from docs/content/softn-docs.json, served
- * beside the apps (by the host in a deployment, by scripts/dev-docs.mjs under
+ * beside the apps (by the host in a deployment, by scripts/dev/dev-docs.mjs under
  * `npm run dev`). A guide that exists answers 200 with its article; one that
  * does not answers a real 404, so a stale link is seen as one by a crawler
  * and a person alike, rather than the site's front page with a 200.

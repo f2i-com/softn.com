@@ -51,8 +51,8 @@ Legend: **R** = reproduced on HEAD with a focused test before the fix; **P** = p
 - **STU-03** (P1) R. One `ProjectRecord` per project in IndexedDB, typed `SaveResult`, `SaveStatus` indicator with in-memory Export; migration only after read-back (`test/persistence.test.ts`, `projectRecords.test.ts`).
 - **STU-04** (P1) R. Durable ids, id-keyed recent list, remove-from-list vs scoped delete, checkpoint before replace, provider settings outside project records.
 - **SITE-02** (P1) R. `apps/softn-site/src/lib/selection.ts`; generation-guarded selection, admission before read, bounded concurrency (`test/publish-selection.test.tsx`). Per-row retry exists in the module but is not exposed on the page.
-- **QA-01** (P1). `e2e/` Playwright gate and `scripts/serve-topology.mjs`, run locally (`npm run e2e`; see e2e/README.md) — CI keeps only the shared Verify job. Sensitivity: SHR-02 regressions fail the URL/page-count assertions, SHR-01 the `/publish` href, SITE-01 the key-unchanged assertion.
-- **QA-02** (P1). Runtime/core matrix (`packages/@softn/core/test/threat-boundary-*.test.ts`, `apps/softn-web/test/appStorageIsolation.test.ts`) and API policy matrix (`apps/softn-api/test/policies.test.mjs`). One real defect found and fixed: the runtime granted a capability for any truthy `enabled` (`b606169`). Deployment headers (COOP/CSP) are checked by `scripts/smoke-site.mjs`, not by unit tests.
+- **QA-01** (P1). `e2e/` Playwright gate and `scripts/dev/serve-topology.mjs`, run locally (`npm run e2e`; see e2e/README.md) — CI keeps only the shared Verify job. Sensitivity: SHR-02 regressions fail the URL/page-count assertions, SHR-01 the `/publish` href, SITE-01 the key-unchanged assertion.
+- **QA-02** (P1). Runtime/core matrix (`packages/@softn/core/test/threat-boundary-*.test.ts`, `apps/softn-web/test/appStorageIsolation.test.ts`) and API policy matrix (`apps/softn-api/test/policies.test.mjs`). One real defect found and fixed: the runtime granted a capability for any truthy `enabled` (`b606169`). Deployment headers (COOP/CSP) are checked by `scripts/release/smoke-site.mjs`, not by unit tests.
 
 ### Wave C / D
 

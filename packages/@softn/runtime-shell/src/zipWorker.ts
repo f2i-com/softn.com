@@ -13,7 +13,7 @@
  * only for `new Worker(new URL('./zipWorker.ts', import.meta.url), …)` in a
  * module it transforms, and a URL built inside core's dist would point at a
  * file no host serves — the same reason the script runtime's worker needs
- * scripts/core-worker-assets.mjs.
+ * scripts/build/core-worker-assets.mjs.
  *
  * The reader comes from `@softn/core/bundle` — core's `dist/bundle/zip.js`,
  * its own tsup entry, named by core's exports map — rather than from the

@@ -1,16 +1,16 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { softnPwa } from '../../scripts/pwa.mjs';
-import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
-import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
-import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
-import { buildSourcemaps } from '../../scripts/sourcemaps.mjs';
-import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
+import { softnPwa } from '../../scripts/build/pwa.mjs';
+import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
+import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
+import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
+import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
 // What is fetched the first time a page needs it, the same for Studio and the
-// Builder: scripts/on-demand-chunks.mjs. test/build-graph.test.ts holds the
+// Builder: scripts/build/on-demand-chunks.mjs. test/build-graph.test.ts holds the
 // names to what the manifest actually contains.
 
 export default defineConfig({
@@ -21,7 +21,7 @@ export default defineConfig({
     retireServiceWorkersPlugin(),
     react(),
     coreWorkerAssetPlugin(),
-    // What runs as script: this deployment's files only (scripts/script-policy.mjs).
+    // What runs as script: this deployment's files only (scripts/build/script-policy.mjs).
     scriptPolicyPlugin(),
     softnPwa({
       registerType: 'autoUpdate',
@@ -137,7 +137,7 @@ export default defineConfig({
   },
   build: {
     target: 'es2020',
-    // In a development build only (scripts/sourcemaps.mjs).
+    // In a development build only (scripts/build/sourcemaps.mjs).
     sourcemap: buildSourcemaps(),
     // dist/.vite/manifest.json: the entry's static import closure, which
     // test/build-graph.test.ts holds free of Three.js and the model loaders,

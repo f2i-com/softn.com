@@ -15,7 +15,7 @@
  * the method exists on the object, it is only private to TypeScript) and
  * against the hand-off protocol over an in-memory IndexedDB. Nothing here
  * is a claim about deployment headers: origin isolation (COOP/COEP) is set
- * by the router and the deployed configs, and scripts/smoke-site.mjs checks
+ * by the router and the deployed configs, and scripts/release/smoke-site.mjs checks
  * those on the built site.
  */
 

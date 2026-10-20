@@ -17,7 +17,7 @@ function isolationHeaders(config: string): string[] {
 
 describe('hosting headers', () => {
   it('sends the isolation headers the site sends, and only those', () => {
-    const site = read('../../../scripts/build-site.mjs');
+    const site = read('../../../scripts/build/build-site.mjs');
     const expected = isolationHeaders(site);
     expect(expected).toEqual(['Cross-Origin-Embedder-Policy: credentialless', 'Cross-Origin-Opener-Policy: same-origin']);
     expect(isolationHeaders(read('../public/.htaccess'))).toEqual(expected);

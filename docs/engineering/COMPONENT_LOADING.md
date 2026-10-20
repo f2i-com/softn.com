@@ -36,7 +36,7 @@ service workers precache everything they ship (`globIgnores: []`), the
 features, Three.js and its addons, the QR decoder and the workers' files
 under `core-runtime/` included, so an installed Studio or Builder works
 offline with every feature, while a page still loads each one only when it
-draws it; `scripts/editor-offline.test.mjs` holds the two editors' builds to
+draws it; `scripts/build/editor-offline.test.mjs` holds the two editors' builds to
 both halves. The Builder's entry fell from 2.4 MB to 1.1 MB. SoftN Web keeps
 the shell-only precache below, and installs each app it opens. Studio's agent check, which reads what a
 page shows, preloads every component the page names (on every branch) before
@@ -191,7 +191,7 @@ be there when the network is not.
 offline" is the first two; "this app works offline" is the third, and the
 launcher says which of the two it is promising for each app.
 
-1. **Shell precache.** The precache glob (`scripts/pwa.mjs`, which writes each
+1. **Shell precache.** The precache glob (`scripts/build/pwa.mjs`, which writes each
    app's manifest and bundles its `sw.js` on Workbox's runtime) sweeps `dist` for js, css, html, svg,
    png, woff2 and wasm, minus:
    `core-runtime/`, the demos, `assets/vendor-three-*.js`, the feature
@@ -344,7 +344,7 @@ needs one. If the deployment deleted them, every such tab gets the
 version-mismatch message above the moment it opens a scene, a chart or an
 editor. It recovers with one click, but it should not have to.
 
-`scripts/build-site.mjs` empties `dist/` and rebuilds it, so a deployment
+`scripts/build/build-site.mjs` empties `dist/` and rebuilds it, so a deployment
 that mirrors `dist/` exactly (`rsync --delete`, an S3 sync with deletion, a
 container image) removes the previous release's `assets/`. Deployers should
 retain the previous release's `web/assets/` and `single/assets/` files

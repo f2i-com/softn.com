@@ -143,7 +143,7 @@ export function abbreviateOrigin(origin: string | undefined, length = 12): strin
 // against the build that made it, and each record carries that build's id.
 //
 // Nothing in the build hands the page an id. BUILD-INFO.json is written
-// beside the site by scripts/build-site.mjs, not into the app's env, and
+// beside the site by scripts/build/build-site.mjs, not into the app's env, and
 // vite.config.ts defines no VITE_BUILD_ID — one is honoured if a deployment
 // sets it. Otherwise the id is the hash Vite put in the entry chunk's name,
 // `assets/index-<hash>.js`, which changes whenever the shell's contents do.

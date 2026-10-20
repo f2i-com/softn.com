@@ -36,14 +36,14 @@ What the generator writes:
   guides are drawn from the same variables and type as the site, the
   runtime, Studio and Builder and follow the same stored theme choice
   (`softn.site.theme`). The header is the product bar the four apps share.
-- `sitemap-docs.xml` beside the site's `index.html`; `scripts/build-site.mjs`
+- `sitemap-docs.xml` beside the site's `index.html`; `scripts/build/build-site.mjs`
   writes a `robots.txt` that names it.
 - `generated/landing.json`: a few kilobytes of card data for the front door
   (`apps/softn-site/src/components/LearnDocs.tsx` imports it). It is
   committed so a fresh checkout typechecks; `npm run build:site` regenerates
   it before the site build, and a test keeps it in step with the content.
 
-How the site build uses it: `scripts/build-site.mjs` runs the generator
+How the site build uses it: `scripts/build/build-site.mjs` runs the generator
 once before the site build (validation, fresh card data) and once more into
 `dist/` after the site's own files are in place. The generator owns only the
 files it wrote (`dist/.softn-docs-build.json` is its manifest) and refuses to
@@ -62,7 +62,7 @@ When adding a page, add it to exactly one navigation group; the validator
 rejects missing references, duplicate routes, duplicate titles and unknown
 fields.
 
-`VALIDATION_REPORT.md` records how the current edition (25 September 2026)
+`engineering/VALIDATION_REPORT.md` records how the current edition (25 September 2026)
 was checked against the repository source, what passed and what was not
 checked. The content's `review` block names the commit it was compared with;
 when you revise a guide against newer source, update that block, the page's
@@ -77,7 +77,7 @@ when you revise a guide against newer source, update that block, the page's
 | `engineering/SINGLE_APP_RUNTIME.md`, `SINGLE_APP_PRIVATE.md` | Hosting one app on its own, static or PHP-served (copied into those archives as `DEPLOYMENT.md`) |
 | `engineering/DESKTOP_APPS.md` | The Tauri desktop apps and the shared bundle workflow |
 | `engineering/FORMLOGIC_INTEGRATION.md` | The FormLogic starter adapter |
-| `FORMLOGIC_RUNTIME_REPAIR.md`, `engineering/QUALIFICATION_STATUS.md` | v0.0.21's FormLogic runtime repair (acknowledged storage, STRICT-table migrations on the PHP host, composition events), and the record of its candidate's qualification |
+| `engineering/FORMLOGIC_RUNTIME_REPAIR.md`, `engineering/QUALIFICATION_STATUS.md` | v0.0.21's FormLogic runtime repair (acknowledged storage, STRICT-table migrations on the PHP host, composition events), and the record of its candidate's qualification |
 | `engineering/LOCAL_SPEECH.md`, `SCENE3D_*.md`, `ZIPP_LANGUAGES.md`, `zipp-memory-lifecycle.md`, `PERFORMANCE_MEASUREMENT.md` | Subsystem notes |
 | `engineering/xdb/` | The XDB crate (`crates/softn-xdb`): its data model, the three sync paths, the native networking and restore policy, its benchmarks and its September 2026 review |
 | `engineering/hosting-the-poker-authority.md` | Running the optional table authority the poker example uses |

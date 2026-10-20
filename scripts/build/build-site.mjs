@@ -1,0 +1,1004 @@
+#!/usr/bin/env node
+/**
+ * Build everything softn.com serves, into one `dist/` you can upload anywhere.
+ *
+ *   dist/            the landing page and app directory
+ *   dist/demos/      the example .softn bundles — only with --with-demos, at the
+ *                    root so `?open=/demos/x.softn`
+ *                    resolves the same way from the site and from the runtime
+ *   dist/softn-files/ a clearly named copy of those bundles — only with --with-demos
+ *   dist/web/        the web runtime
+ *   dist/builder/    the visual builder
+ *   dist/studio/     the AI studio
+ *   dist/play/       the single-app shell: /play/<slug> is an app's own page,
+ *                    rendered by the API with the app's configuration written
+ *                    in, so the page fetches the bundle and nothing else first
+ *   dist/docs/       the documentation: static pages generated from
+ *                    docs/content/softn-docs.json (docs/scripts/build-docs.mjs),
+ *                    with sitemap-docs.xml and robots.txt beside index.html
+ *   dist/api/        the directory API (PHP), executed by the host, never served
+ *   dist/data/       the directory's state; starts out holding only the rules
+ *                    that keep it unserved
+ *   dist/.htaccess   Apache deployment rules, with nginx.conf.example and
+ *                    DEPLOY.md alongside; both configs send the cross-origin
+ *                    isolation headers on every response, which the runtime's
+ *                    worker mode depends on
+ *   dist/BUILD-INFO.json  what was built, from which revision
+ *
+ * The three apps are built with a `VITE_BASE` matching where they land, which
+ * is what makes their assets, their service worker scope and their own internal
+ * routes agree with the directory they are served from.
+ */
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { precompressTreeInParallel } from './precompress-assets.mjs';
+import { dropMachineMaps, dropSourceMaps } from '../lib/build-paths.mjs';
+import { buildSite as buildDocs } from '../../docs/scripts/build-docs.mjs';
+import { repoRoot as root } from '../lib/paths.mjs';
+
+const outDir = path.join(root, 'dist');
+
+// By default the site ships without the example apps: the directory starts
+// empty and fills with what its visitors publish, which keeps the release
+// archive to the site itself. `--with-demos` (or SOFTN_WITH_DEMOS=1) fetches
+// the pinned softn-Examples release, ships the bundles under /demos/ and
+// /softn-files/, and lets the API seed the directory with them on first
+// use — the shape softn.com itself deploys.
+// `--demos-dir <folder>` ships a folder of that shape instead — an index.json
+// beside its bundles and a thumbs/ of screenshots, the shape the softn-apps
+// folder produces — without fetching anything.
+const demosDirArg = (() => {
+  const i = process.argv.indexOf('--demos-dir');
+  return i >= 0 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : process.env.SOFTN_DEMOS_DIR ? path.resolve(process.env.SOFTN_DEMOS_DIR) : null;
+})();
+const withDemos = demosDirArg !== null || process.argv.includes('--with-demos') || process.env.SOFTN_WITH_DEMOS === '1';
+// `--no-precompress` (or SOFTN_NO_PRECOMPRESS=1) leaves out the .br/.gz twins,
+// for a build that is only served to tests: the browser journeys run against
+// the topology server, which never sends a twin, and the twins are most of a
+// site build's time. BUILD-INFO.json says so, and the packagers refuse such a
+// dist (lib/build-info.mjs): what is deployed always has them.
+const precompress = !process.argv.includes('--no-precompress') && process.env.SOFTN_NO_PRECOMPRESS !== '1';
+// `--sourcemaps` (or SOFTN_SOURCEMAPS=1, `npm run build:site:dev`) builds the
+// apps with source maps, for a development deployment whose stack traces read
+// as the source. A production build has none (scripts/build/sourcemaps.mjs);
+// BUILD-INFO.json says which, and the packagers refuse a build with maps
+// unless asked for a development package.
+const sourcemaps = process.argv.includes('--sourcemaps') || process.env.SOFTN_SOURCEMAPS === '1';
+if (sourcemaps) process.env.SOFTN_SOURCEMAPS = '1';
+else delete process.env.SOFTN_SOURCEMAPS;
+
+const APPS = [
+  { workspace: '@softn/web', dir: 'apps/softn-web', base: '/web/', into: 'web' },
+  { workspace: '@softn/builder', dir: 'apps/softn-builder', base: '/builder/', into: 'builder' },
+  { workspace: '@softn/studio', dir: 'apps/softn-studio', base: '/studio/', into: 'studio' },
+];
+
+// The single-app shell, the same build that ships on its own as the
+// single-app hosting archive, here under /play/ for the directory to serve
+// for every app in the catalogue. Not in APPS: it is no single-page app with
+// routes of its own — /play/<slug> is a page the API renders, which the
+// deep-link fallbacks for static hosts cannot stand in for — and the sample
+// bundle and config the standalone build carries are stripped on the way.
+const PLAY = { workspace: '@softn/single', dir: 'apps/softn-single', base: '/play/', into: 'play' };
+const PLAY_STANDALONE_ONLY = ['app.softn', 'runtime.config.json', '.htaccess'];
+
+const APACHE_CONFIG = String.raw`# SoftN static deployment for Apache 2.4+
+# Keep this file beside index.html in the website document root.
+
+DirectoryIndex index.html
+Options -Indexes
+# A 404 carries the site as its body: the site renders its not-found page for
+# a path it has no page for, and the status is what a crawler, a link checker
+# and a browser's history act on. The rewrite rules at the end decide which
+# paths are the site's own and send the rest here.
+ErrorDocument 404 /index.html
+
+<IfModule mod_negotiation.c>
+  Options -MultiViews
+</IfModule>
+
+<IfModule mod_mime.c>
+  AddType application/wasm .wasm
+  AddType application/manifest+json .webmanifest
+  AddType application/octet-stream .softn
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set X-Frame-Options "SAMEORIGIN"
+
+  # Cross-origin isolation gives the page SharedArrayBuffer, which is what
+  # lets a language model on the CPU provider use every core instead of one:
+  # on a machine without a usable GPU that is the difference between slow and
+  # apparently hung. credentialless rather than require-corp, so images and
+  # model files fetched from other origins keep working without CORP headers.
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  Header always set Cross-Origin-Embedder-Policy "credentialless"
+
+  # Brief caching for unhashed static files. Vite's fingerprinted assets are
+  # immutable; HTML, service workers, catalogues and bundles must revalidate.
+  #
+  # Each pattern tolerates a trailing .br/.gz because FilesMatch tests the file
+  # Apache ends up serving, not the URL asked for: after the rewrite below picks
+  # a precompressed twin, "app-8f3ac91b.wasm.br" has to match the same rule its
+  # uncompressed original does, or every compressed asset silently drops out of
+  # the immutable bucket and back to an hour.
+  <FilesMatch "\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg|ico)(?:\.(?:br|gz))?$">
+    Header set Cache-Control "public, max-age=3600"
+  </FilesMatch>
+  <FilesMatch "-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)(?:\.(?:br|gz))?$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "\.(?:html?|json|webmanifest|softn)(?:\.(?:br|gz))?$">
+    Header set Cache-Control "no-cache, max-age=0, must-revalidate"
+  </FilesMatch>
+  <FilesMatch "^(?:registerSW|sw|service-worker)\.js(?:\.(?:br|gz))?$">
+    Header set Cache-Control "no-cache, max-age=0, must-revalidate"
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/plain text/css text/javascript
+  AddOutputFilterByType DEFLATE application/javascript application/json
+  AddOutputFilterByType DEFLATE application/manifest+json application/wasm image/svg+xml
+</IfModule>
+
+# Prefer the .br/.gz twins the build wrote. Brotli at the quality used here is
+# far too slow to run per request, so the win only exists if the file is already
+# on disk: the engine alone is 5.4MB raw, 1.8MB gzipped and 1.2MB brotlied.
+# mod_deflate above still covers anything without a twin.
+#
+# AddEncoding, not a Header in a FilesMatch. The first version of this set
+# Content-Encoding from <FilesMatch "\.br$"> after the rewrite had already
+# chosen the file, and those sections are merged from the ORIGINAL request, so
+# on a real host the swap happened and the header did not: browsers were handed
+# brotli bytes labelled as JavaScript and reported "Invalid or unexpected
+# token". AddEncoding is the mechanism Apache provides for exactly this — it
+# reads the trailing .br/.gz as an encoding and takes the content type from the
+# extension underneath, so app.js.br serves as application/javascript with
+# Content-Encoding: br, and no per-type rules are needed at all.
+#
+# Both modules are required. Without mod_mime nothing labels the encoding, and
+# serving a compressed body unlabelled is worse than not compressing, so the
+# rewrite is nested inside it rather than left to run alone.
+<IfModule mod_mime.c>
+  AddEncoding br .br
+  AddEncoding gzip .gz
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  RewriteCond %{HTTP:Accept-Encoding} br
+  RewriteCond %{REQUEST_FILENAME}\.br -f
+  RewriteRule ^(.*)$ $1.br [QSA,L]
+
+  RewriteCond %{HTTP:Accept-Encoding} gzip
+  RewriteCond %{REQUEST_FILENAME}\.gz -f
+  RewriteRule ^(.*)$ $1.gz [QSA,L]
+</IfModule>
+</IfModule>
+
+<IfModule mod_headers.c>
+  # Caches must not hand a brotli body to a client that did not ask for one.
+  <FilesMatch "\.(?:css|js|mjs|map|wasm|svg|json|html?|txt|webmanifest)$">
+    Header append Vary Accept-Encoding
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # The directory API: everything under /api/ is one PHP script. Before the
+  # static rules, because /api/apps/x/bundle.softn has an extension and would
+  # otherwise be refused as a missing asset.
+  RewriteRule ^api(?:/.*)?$ api/index.php [QSA,L]
+
+  # The directory's state — its database, every uploaded bundle, the config
+  # with the admin key — is never served. The data/.htaccess says so too.
+  RewriteRule ^data(?:/|$) - [R=404,L]
+
+  # An app's page, when a browser asks for it, comes through the API so the
+  # <meta> tags carry the app's own name and picture: a link pasted into a
+  # chat unfurls as the app, not as the site. The site's other pages are the
+  # SPA, at the end.
+  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  RewriteRule ^app/[^/]+/?$ api/index.php [L]
+
+  # An app's play page: the single-app shell under /play/ with the app's
+  # configuration written in by the API. The shell's own files sit beside
+  # those pages (/play/GLTFLoader-….js is a chunk, not an app), so a request
+  # that names a real file is a file. The bare directory is nothing to look
+  # at; the directory of apps is.
+  RewriteRule ^play/?$ /apps [R=302,L]
+  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteRule ^play/[^/]+/?$ api/index.php [L]
+
+  # Canonical app roots keep relative assets and service-worker scopes correct.
+  RewriteRule ^(web|builder|studio)$ $1/ [R=308,L,NE]
+
+  # Real files and directories always win.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [END]
+
+  # A missing asset is a real 404, never a successful HTML response. This also
+  # protects extensionless files requested from known static directories.
+  RewriteRule ^(?:assets|demos|softn-files)(?:/|$) - [R=404,L]
+  RewriteRule ^(?:web|builder|studio|play)/(?:assets|demos)(?:/|$) - [R=404,L]
+  RewriteCond %{REQUEST_URI} /[^/]*\.[^/]+$
+  RewriteRule ^ - [R=404,L]
+
+  # Only browser navigations receive an SPA shell. API/fetch requests with a
+  # non-HTML Accept header therefore retain their proper 404 response too.
+  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  RewriteRule ^web(?:/.*)?$ web/index.html [END]
+
+  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  RewriteRule ^builder(?:/.*)?$ builder/index.html [END]
+
+  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  RewriteRule ^studio(?:/.*)?$ studio/index.html [END]
+
+  # The site's own pages, and only those: the front door, the directory, an
+  # app's page and the publish form, with or without a trailing slash (the
+  # query is not part of the match). Every other path is a 404 — with the
+  # site as its body, per the ErrorDocument above, so the visitor sees the
+  # not-found page and the response says not found. Until this rule named
+  # the pages, every unknown path was a 200 that only looked like one.
+  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  RewriteRule ^(?:apps|app/[^/]+|publish)?/?$ index.html [END]
+
+  RewriteRule ^ - [R=404,L]
+</IfModule>
+`;
+
+const NGINX_CONFIG = String.raw`# Install this file in nginx's http context (for example,
+# /etc/nginx/sites-available/softn), then change server_name and root.
+
+map $http_accept $softn_html_navigation {
+    default      0;
+    ~*text/html  1;
+}
+
+# The site's own pages: the front door, the directory, an app's page and the
+# publish form, with or without a trailing slash ($uri carries no query).
+# Anything else the site has no page for, and answers 404.
+map $uri $softn_site_page {
+    default                             0;
+    ~^/(?:apps|app/[^/]+|publish)?/?$   1;
+}
+
+map "$sent_http_content_type|$uri" $softn_cache_control {
+    default                                                        "public, max-age=3600";
+    ~^text/html                                                    "no-cache, max-age=0, must-revalidate";
+    ~^application/(?:json|manifest\+json)                          "no-cache, max-age=0, must-revalidate";
+    ~*\|.*/(?:registerSW|sw|service-worker)\.js$                   "no-cache, max-age=0, must-revalidate";
+    ~*\|.*\.softn$                                                "no-cache, max-age=0, must-revalidate";
+    "~*\|.*-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$"
+                                                                   "public, max-age=31536000, immutable";
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name example.com;
+    root /var/www/softn;
+    index index.html;
+
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    charset utf-8;
+    autoindex off;
+    server_tokens off;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Embedder-Policy "credentialless" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Cache-Control $softn_cache_control;
+
+    # A 404 carries the site as its body, which renders its not-found page;
+    # the status stays 404 (no "=" here), which is what crawlers and link
+    # checkers act on.
+    error_page 404 /index.html;
+
+    # Serve the .br/.gz twins the build wrote in preference to compressing per
+    # request: brotli at build quality is far too slow to run live, and it is
+    # where the engine's 5.4MB becomes 1.2MB rather than the 1.4MB a live
+    # brotli pass would manage. gzip_static needs nginx built with
+    # --with-http_gzip_static_module; brotli_static needs the ngx_brotli module.
+    # Both degrade to the on-the-fly gzip below when absent or when a file has
+    # no twin.
+    # The directory API is PHP: hand /api/ to PHP-FPM, refuse /data/ outright,
+    # and let an app's page go through the API so its <meta> tags are its own.
+    location /data/ { return 404; }
+    location ~ ^/api(/|$) {
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
+        include fastcgi_params;
+    }
+    location ~ ^/app/[^/]+/?$ {
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
+        include fastcgi_params;
+    }
+    # An app's play page: the single-app shell with the app written in by
+    # the API. A real file under /play/ (the shell's own chunks) is a file.
+    location = /play { return 302 /apps; }
+    location = /play/ { return 302 /apps; }
+    location ~ ^/play/[^/]+/?$ {
+        try_files $uri @softn_play;
+    }
+    location @softn_play {
+        if ($softn_html_navigation = 0) { return 404; }
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
+        include fastcgi_params;
+    }
+
+    brotli_static on;
+    gzip_static on;
+
+    gzip on;
+    gzip_vary on;
+    gzip_types text/plain text/css application/javascript application/json
+               application/manifest+json application/wasm image/svg+xml;
+
+    # Configure TLS here, or terminate HTTPS at the reverse proxy/CDN.
+
+    location = /web { return 308 /web/$is_args$args; }
+    location = /builder { return 308 /builder/$is_args$args; }
+    location = /studio { return 308 /studio/$is_args$args; }
+
+    # nginx does not protect Apache control files automatically.
+    location ~ /\.(?!well-known(?:/|$)) { return 404; }
+
+    # Force the MIME types that older distro mime.types files may omit.
+    location ~* \.wasm$ {
+        types { application/wasm wasm; }
+        try_files $uri =404;
+    }
+    location ~* \.webmanifest$ {
+        types { application/manifest+json webmanifest; }
+        try_files $uri =404;
+    }
+    location ~* \.softn$ {
+        types { application/octet-stream softn; }
+        try_files $uri =404;
+    }
+
+    # Missing static files must stay 404s, including extensionless files in
+    # asset/catalogue directories and ordinary files with an extension.
+    location ~ ^/(?:assets|demos|softn-files|web/(?:assets|demos)|builder/assets|studio/assets|play/assets)(?:/|$) {
+        try_files $uri =404;
+    }
+    location ~* /[^/]*\.[^/]+$ {
+        try_files $uri =404;
+    }
+
+    # A guide asked for without its trailing slash goes to its canonical URL
+    # (Apache does this with DirectorySlash); the docs are real files, so
+    # the general rules below serve them and 404 what is not there.
+    location ~ ^/docs/[^/.]+$ { return 301 $uri/; }
+    location /web/ { try_files $uri $uri/ @softn_web; }
+    location /builder/ { try_files $uri $uri/ @softn_builder; }
+    location /studio/ { try_files $uri $uri/ @softn_studio; }
+    location / { try_files $uri $uri/ @softn_site; }
+
+    location @softn_web {
+        if ($softn_html_navigation = 0) { return 404; }
+        try_files /web/index.html =404;
+    }
+    location @softn_builder {
+        if ($softn_html_navigation = 0) { return 404; }
+        try_files /builder/index.html =404;
+    }
+    location @softn_studio {
+        if ($softn_html_navigation = 0) { return 404; }
+        try_files /studio/index.html =404;
+    }
+    location @softn_site {
+        if ($softn_html_navigation = 0) { return 404; }
+        if ($softn_site_page = 0) { return 404; }
+        try_files /index.html =404;
+    }
+}
+`;
+
+const DEPLOY_GUIDE = `# Deploying SoftN
+
+This directory is the complete static release. Upload its **contents** to one
+website document root so that this file sits beside \`index.html\`; keep the
+directory layout intact and make sure your upload includes the hidden
+\`.htaccess\` file.
+
+## The directory API (PHP)
+
+\`/api/\` is the app directory: the catalogue, uploads, comments, ratings,
+remixes and each published app's own database. It is plain PHP (8.1 or newer)
+with folder discovery and JSON catalogue metadata. Optional app databases use
+SQLite. It keeps every piece of state as files under \`data/\`, so the
+host needs no database server and no accounts.
+
+What it needs from the host:
+
+- PHP 8.1+ with the \`pdo_sqlite\` and \`zip\` extensions (both are standard on
+  cPanel hosts; \`/api/health\` reports what it found).
+- \`data/\` writable by PHP. Upload it with the site and, if the first request
+  to \`/api/health\` says it is not writable, give it write permission (0775 or
+  0777 on shared hosting).
+- Upload limits large enough for a bundle: \`api/.user.ini\` asks for 64 MB on
+  PHP-FPM and CGI hosts. A mod_php host reads \`php_value\` from .htaccess
+  instead; if publishing a large bundle fails, raise \`upload_max_filesize\`
+  and \`post_max_size\` wherever this host takes them.
+
+On first use the API writes \`data/config.json\` — which holds the site's
+**admin key**${withDemos ? ' — and publishes the example bundles into the directory' : ''}. Keep that file
+private (it is, by the rules above) and use the key to moderate: approve or
+rename suggested categories, hide apps, remove comments. Back the directory up
+by copying \`data/\`; move it by copying it; reset it by emptying it.
+
+## Adding apps
+
+You can also add apps directly: create \`data/apps/<slug>/\` and copy a
+\`.softn\` bundle into it. The next catalogue request discovers it and creates
+\`app.json\` beside it for listing details, play counts, comments and ratings.
+Bundle inspection uses a disposable cache under \`data/cache/\`. PHP serializes
+updates with filesystem locks and replaces JSON files atomically; all workers
+must share the same filesystem with working locks and atomic renames.
+
+When upgrading an existing installation, back up and preserve its \`data/\`
+directory and stop old PHP workers before switching versions. The first request
+imports \`directory.sqlite\` into the app JSON files, leaving the original
+database as a backup. See \`api/README.md\` for migration and metadata details.
+
+${
+  withDemos
+    ? 'The directory starts with the example apps. '
+    : 'The directory starts empty; this build ships no example apps. '
+}Anyone can add one: drop \`.softn\` files onto any page of the site, or open
+\`/publish\`. Several files at once publish as a batch, named and described
+from their manifests. No account: publishing hands back an edit key, and the
+key is what updates or removes the listing later.
+
+Visitors may publish ten apps an hour. The site owner is not held to that:
+paste the admin key from \`data/config.json\` into the batch form, or send it
+as the \`X-Admin-Key\` header, to publish any number at once — a fresh install
+takes a whole folder of bundles in one drop.
+
+The example apps that softn.com shows are published as \`.softn\` downloads
+with every softn-Examples release (https://github.com/f2i-com/softn-Examples/releases);
+download the ones you want and drop them on the site.
+
+Publishing from a script: \`POST /api/apps\` with the bundle as a multipart
+field, as the raw body, or as base64 in JSON. \`GET /api\` lists the routes.
+
+## Playing apps, and trusting them
+
+Play on the site goes to \`/play/<slug>\`: the single-app shell under
+\`play/\`, which the API serves with the app's configuration written into the
+page — the bundle's version-addressed URL and digest, and the endpoints the
+app reports to and stores through. The page fetches the bundle and nothing
+else before the app is on screen; the full runtime with its launcher and tabs
+is still at \`/web/app/<slug>\`. Both routes need PHP: on a host without it,
+Play falls to the runtime.
+
+An app runs with every capability it declares withheld until the visitor
+presses Allow on the bar above it. To run one of your own apps without that
+bar, mark it trusted: open the app's \`data/apps/<slug>/app.json\` and add
+\`"trusted": true\` to its \`app\` object —
+
+    "app": { "slug": "snake-game", "name": "Snake", "trusted": true, ... }
+
+— and its play page grants what its \`permission.json\` declares from the
+start, the way a preapproved single-app deployment does. No request can set
+that key, so trust is yours alone to give; remove it, or set \`false\`, to
+take it back. Edit the file with the API stopped, as \`data/README.txt\`
+says. The listing reports it as \`trusted\`, and the app's page on the site
+says so.
+
+## Apache / cPanel
+
+The included \`.htaccess\` is ready for Apache 2.4. The host must permit
+\`AllowOverride FileInfo Indexes Options\` (or \`AllowOverride All\`) and enable
+\`mod_rewrite\` and \`mod_mime\`;
+\`mod_headers\` and \`mod_deflate\` add the supplied security, cache and
+compression rules when available.
+
+## Compression
+
+The build writes \`.br\` and \`.gz\` twins beside every compressible file.
+They exist because the quality worth having cannot be afforded per request: the
+zipp engine is 5.4MB raw, 1.8MB gzipped, and 1.2MB at the brotli quality used
+here -- 6.3s to produce against 0.1s for a live-quality pass, which is why it
+is spent once at build time rather than per request. Serving the twin costs
+the server nothing.
+
+nginx needs \`gzip_static\` (built in with
+\`--with-http_gzip_static_module\`) and, for the smaller half of the win,
+the third-party \`ngx_brotli\` module for \`brotli_static\`. Apache serves them
+through the supplied rewrite, which needs \`mod_rewrite\` and \`mod_headers\`:
+without \`mod_headers\` the rewrite is skipped entirely, deliberately, because a
+brotli stream served without \`Content-Encoding\` is not a file any browser can
+read. Either way, anything with no twin still falls back to compressing live.
+
+Bundles are left alone: a \`.softn\` is a ZIP, so a second pass would spend CPU
+to produce a slightly larger file.
+
+## Optional: the poker table authority
+
+Texas Hold'em's online table is a separate process — softn-server running
+the bundle's own server logic — which this static release does not include.
+Without it the app still plays solo, with bots, and over peer-to-peer sync.
+To offer online tables, run the process and proxy a path of the site to it;
+the recipe is \`docs/engineering/hosting-the-poker-authority.md\` in the repository.
+
+## nginx
+
+nginx ignores \`.htaccess\`. Copy \`nginx.conf.example\` into nginx's HTTP
+configuration, change its \`server_name\` and \`root\`, then validate and reload:
+
+    sudo nginx -t
+    sudo systemctl reload nginx
+
+Add TLS in nginx or at your hosting proxy/CDN. HTTPS is required for service
+workers and browser permissions outside localhost.
+
+## What is included
+
+- \`/\` — landing site
+- \`/web/\` — browser runtime
+- \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
+- \`/builder/\` — visual builder
+- \`/studio/\` — AI studio
+${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — the same bundles, clearly separated, as `.softn` downloads\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
+- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
+
+\`BUILD-INFO.json\` records the exact SoftN revision, whether the source tree had
+uncommitted changes, and the Zipp revision/hash used by the browser runtime.
+
+After upload, open each app and refresh a deep link. A request for a nonexistent
+asset such as \`/web/assets/missing.js\` must return 404, not an HTML page. A
+path the site has no page for, such as \`/nothing-here\`, must answer 404 too —
+with the site's own not-found page as the body; only \`/\`, \`/apps\`,
+\`/app/<slug>\` and \`/publish\` are the site's pages. Some demo networking or AI
+features may need their separately configured service or provider, but the
+website and browser apps themselves are static.
+`;
+
+function run(args, env) {
+  console.log(`\n> npm ${args.join(' ')}`);
+  execFileSync('npm', args, {
+    cwd: root,
+    stdio: 'inherit',
+    shell: true,
+    env: { ...process.env, ...env },
+  });
+}
+
+function copyDir(from, to) {
+  fs.mkdirSync(to, { recursive: true });
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    const src = path.join(from, entry.name);
+    const dest = path.join(to, entry.name);
+    if (entry.isDirectory()) copyDir(src, dest);
+    else if (entry.isFile()) fs.copyFileSync(src, dest);
+  }
+}
+
+function requireDir(dir, what) {
+  if (!fs.existsSync(dir)) throw new Error(`${what} did not produce ${path.relative(root, dir)}`);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+/**
+ * Put the public catalogue's exact bundle set in an unmistakable directory for
+ * people who want the portable application files, rather than the website.
+ * The catalogue is authoritative: stale sizes, unsafe names and unlisted files
+ * fail the build instead of silently producing an ambiguous release.
+ */
+function copyCanonicalBundles(from) {
+  const cataloguePath = path.join(from, 'index.json');
+  const catalogue = JSON.parse(fs.readFileSync(cataloguePath, 'utf8'));
+  if (!Array.isArray(catalogue) || catalogue.length === 0) {
+    throw new Error('The demo catalogue must contain at least one .softn bundle');
+  }
+
+  const destination = path.join(outDir, 'softn-files');
+  fs.mkdirSync(destination, { recursive: true });
+
+  const names = new Set();
+  for (const item of catalogue) {
+    const name = item && item.file;
+    if (
+      typeof name !== 'string' ||
+      path.basename(name) !== name ||
+      !name.toLowerCase().endsWith('.softn') ||
+      names.has(name.toLowerCase())
+    ) {
+      throw new Error(`Invalid or duplicate bundle name in demos/index.json: ${String(name)}`);
+    }
+    names.add(name.toLowerCase());
+
+    const source = path.join(from, name);
+    if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+      throw new Error(`The canonical bundle is missing: ${path.relative(root, source)}`);
+    }
+    const actualSize = fs.statSync(source).size;
+    if (item.size !== actualSize) {
+      throw new Error(`${name} is ${actualSize} bytes but demos/index.json declares ${item.size}`);
+    }
+    fs.copyFileSync(source, path.join(destination, name));
+  }
+
+  const unlisted = fs
+    .readdirSync(from, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.softn'))
+    .map((entry) => entry.name)
+    .filter((name) => !names.has(name.toLowerCase()));
+  if (unlisted.length) {
+    throw new Error(`Unlisted .softn bundles in the public demo directory: ${unlisted.join(', ')}`);
+  }
+
+  fs.copyFileSync(cataloguePath, path.join(destination, 'index.json'));
+  const downloadLinks = catalogue
+    .map((item) => {
+      const file = escapeHtml(item.file);
+      const label = escapeHtml(typeof item.name === 'string' ? item.name : item.file);
+      const description = escapeHtml(typeof item.description === 'string' ? item.description : 'SoftN application bundle');
+      const size = `${(item.size / (1024 * 1024)).toFixed(2)} MiB`;
+      return `      <li><a href="./${file}" download>${label}</a><span>${description} · ${size}</span></li>`;
+    })
+    .join('\n');
+  fs.writeFileSync(
+    path.join(destination, 'index.html'),
+    `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SoftN application bundles</title>
+    <style>
+      :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+      body { max-width: 52rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
+      h1 { line-height: 1.15; }
+      ul { display: grid; gap: .75rem; padding: 0; list-style: none; }
+      li { padding: 1rem; border: 1px solid #8886; border-radius: .75rem; }
+      a { display: block; font-size: 1.1rem; font-weight: 700; }
+      span { display: block; margin-top: .25rem; opacity: .78; }
+    </style>
+  </head>
+  <body>
+    <h1>SoftN application bundles</h1>
+    <p>Download any complete, portable <code>.softn</code> application below.</p>
+    <ul>
+${downloadLinks}
+    </ul>
+    <p><a href="../">Back to softn.com</a></p>
+  </body>
+</html>
+`,
+  );
+  fs.writeFileSync(
+    path.join(destination, 'README.txt'),
+    `SoftN application bundles\n` +
+      `=========================\n\n` +
+      `Each .softn file in this directory is one complete, portable SoftN app.\n` +
+      `index.html is a download page and index.json is the canonical catalogue.\n` +
+      `The website also serves these same\n` +
+      `bundles from /demos/ for its live launcher and shared links.\n`
+  );
+
+  return catalogue.length;
+}
+
+/**
+ * The guides under dist/docs/, the docs sitemap, and a robots.txt that names
+ * it. The generator owns only the files it wrote (its manifest sits beside
+ * index.html as .softn-docs-build.json) and refuses to touch anything else,
+ * so it never overwrites the site; the site had no robots.txt before, so
+ * this one is written whole and keeps the directory's state out of crawlers.
+ */
+async function writeDocumentation() {
+  const result = await buildDocs({ outDir, writeIntegration: false });
+  if (!fs.existsSync(path.join(outDir, 'docs', 'index.html'))) throw new Error('The documentation build produced no docs/index.html');
+  if (!fs.existsSync(path.join(outDir, 'sitemap-docs.xml'))) throw new Error('The documentation build produced no sitemap-docs.xml');
+  fs.writeFileSync(
+    path.join(outDir, 'robots.txt'),
+    `User-agent: *\nDisallow: /data/\nDisallow: /api/\n\nSitemap: ${result.origin}/sitemap-docs.xml\n`,
+  );
+  return result;
+}
+function writeDeploymentFiles() {
+  fs.writeFileSync(path.join(outDir, '.htaccess'), APACHE_CONFIG);
+  fs.writeFileSync(path.join(outDir, 'nginx.conf.example'), NGINX_CONFIG);
+  fs.writeFileSync(path.join(outDir, 'DEPLOY.md'), DEPLOY_GUIDE);
+}
+
+function writeBuildInfo() {
+  const sourceDate = process.env.SOURCE_DATE_EPOCH;
+  const builtAt = sourceDate
+    ? new Date(Number.parseInt(sourceDate, 10) * 1000).toISOString()
+    : new Date().toISOString();
+  const revision = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: root,
+    encoding: 'utf8',
+  }).trim();
+  const dirty = Boolean(
+    execFileSync('git', ['status', '--porcelain'], {
+      cwd: root,
+      encoding: 'utf8',
+    }).trim(),
+  );
+  const zipp = JSON.parse(
+    fs.readFileSync(path.join(root, 'packages/@softn/core/wasm-zipp/SOURCE.json'), 'utf8'),
+  );
+  fs.writeFileSync(
+    path.join(outDir, 'BUILD-INFO.json'),
+    `${JSON.stringify(
+      {
+        formatVersion: 1,
+        builtAt,
+        softn: { revision, dirty },
+        // How many example bundles ship in this build; 0 is the default
+        // release shape, and the smoke test reads it to know what to expect.
+        examples: { bundled: bundleCount },
+        precompressed: precompress,
+        sourcemaps,
+        zipp,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+// The example bundles come from the pinned softn-Examples release, verified
+// against the pins in apps/softn-web/public/demos/index.json.
+if (withDemos && demosDirArg === null) run(['run', 'fetch:demos']);
+
+// The apps import @softn/core and @softn/components from dist/, so those have
+// to exist before any app build starts.
+run(['run', 'build:core']);
+run(['run', 'build:components']);
+
+for (const app of [...APPS, PLAY]) {
+  run(['run', 'build', '-w', app.workspace], { VITE_BASE: app.base });
+}
+
+// The documentation is generated twice: once here, so the card data the
+// site's front door imports (docs/generated/landing.json) is current before
+// the site build, and again below into dist/ once the site's own files are
+// in place. Both runs validate the content, so a broken guide fails the
+// build before anything is uploaded.
+console.log('\n> docs (validate, refresh landing data)');
+await buildDocs({ outDir: path.join(root, 'docs/dist') });
+
+// The site links to the apps by path, not by localhost port.
+run(['run', 'build', '-w', '@softn/site'], {
+  VITE_WEB_URL: '/web',
+  VITE_BUILDER_URL: '/builder',
+  VITE_STUDIO_URL: '/studio',
+});
+
+fs.rmSync(outDir, { recursive: true, force: true });
+
+const siteDist = path.join(root, 'apps/softn-site/dist');
+requireDir(siteDist, 'The site build');
+copyDir(siteDist, outDir);
+
+for (const app of APPS) {
+  const appDist = path.join(root, app.dir, 'dist');
+  requireDir(appDist, `The ${app.workspace} build`);
+  copyDir(appDist, path.join(outDir, app.into));
+}
+
+// The play shell, without the sample app and config that make the standalone
+// build runnable on its own: here every page is one the API renders, and a
+// stray /play/app.softn would be a bundle nobody published.
+{
+  const playDist = path.join(root, PLAY.dir, 'dist');
+  requireDir(playDist, `The ${PLAY.workspace} build`);
+  copyDir(playDist, path.join(outDir, PLAY.into));
+  for (const name of PLAY_STANDALONE_ONLY) fs.rmSync(path.join(outDir, PLAY.into, name), { force: true });
+  if (!fs.existsSync(path.join(outDir, PLAY.into, 'index.html'))) throw new Error('The play shell has no index.html');
+}
+
+// With the examples: a second copy of the bundles at the root. The runtime
+// serves its own set from /web/demos/ for its launcher, but every `?open=`
+// link on the landing page is root-relative so that one path works from both
+// places. Without them: the runtime's public copy, which the app build carried
+// into dist/web/demos, is removed as well, so the archive holds no bundle —
+// the launcher treats a missing catalogue as "nothing to offer", not an error.
+const demos = demosDirArg ?? path.join(root, 'apps/softn-web/public/demos');
+if (withDemos) {
+  requireDir(demos, demosDirArg ? 'The --demos-dir folder' : 'The runtime');
+  if (!fs.existsSync(path.join(demos, 'index.json'))) throw new Error(`${demos} has no index.json`);
+  copyDir(demos, path.join(outDir, 'demos'));
+  // The runtime's own copy under /web/demos/ is the pinned set; with a
+  // folder of someone else's apps the root copy is the one the site links
+  // to, so the runtime's launcher list follows it.
+  if (demosDirArg) {
+    fs.rmSync(path.join(outDir, 'web', 'demos'), { recursive: true, force: true });
+    copyDir(demos, path.join(outDir, 'web', 'demos'));
+  }
+} else {
+  fs.rmSync(path.join(outDir, 'web', 'demos'), { recursive: true, force: true });
+}
+
+// The directory API travels with the site: the PHP under apps/softn-api goes
+// to dist/api, and dist/data — its state — starts out holding only the rules
+// that keep it unserved. Nothing in api/ or data/ is precompressed: PHP is
+// executed, not served, and the data is not ours to touch.
+function copyDirectoryApi() {
+  const apiSrc = path.join(root, 'apps/softn-api');
+  requireDir(apiSrc, 'The directory API');
+  const apiDest = path.join(outDir, 'api');
+  fs.mkdirSync(apiDest, { recursive: true });
+  for (const entry of fs.readdirSync(apiSrc, { withFileTypes: true })) {
+    // bench/ holds development benchmarks and their results, not the API.
+    if (['test', 'node_modules', 'package.json', 'data', 'bench'].includes(entry.name)) continue;
+    const src = path.join(apiSrc, entry.name);
+    const dest = path.join(apiDest, entry.name);
+    if (entry.isDirectory()) copyDir(src, dest);
+    else if (entry.isFile()) fs.copyFileSync(src, dest);
+  }
+  const dataDest = path.join(outDir, 'data');
+  fs.mkdirSync(dataDest, { recursive: true });
+  for (const name of ['.htaccess', 'README.txt']) {
+    fs.copyFileSync(path.join(apiSrc, 'data', name), path.join(dataDest, name));
+  }
+}
+
+// Apache-2.0 section 4(a) says a distributed copy must carry the licence, and
+// dist/ IS the distributed copy — uploading it is the act of distributing.
+// Third-party terms are generated separately from the exact dependency graph.
+function copyProjectLicences() {
+  for (const name of ['LICENSE', 'NOTICE']) {
+    fs.copyFileSync(path.join(root, name), path.join(outDir, name));
+  }
+}
+
+/**
+ * Make a shared deep link survive a static host.
+ *
+ * `/web/app/Notes` is a route inside the runtime, not a file on disk. The
+ * service worker binds a navigation route, so it works for anyone who has been
+ * here before — and 404s for exactly the person a shared link is for. Both
+ * conventions below are written because they are inert on hosts that do not use
+ * them: Netlify and Cloudflare read `_redirects` and never reach the 404, GitHub
+ * Pages ignores `_redirects` and serves `404.html`, and a plain file server
+ * ignores both and still works from the second visit onwards.
+ */
+function writeDeepLinkFallbacks() {
+  const apps = APPS.map((a) => a.into);
+
+  fs.writeFileSync(
+    path.join(outDir, '_redirects'),
+    `${apps.map((a) => `/${a}/*  /${a}/index.html  200`).join('\n')}\n/api/*  /api/index.php  200\n/apps  /index.html  200\n/app/:slug  /index.html  200\n/publish  /index.html  200\n/*  /index.html  404\n`,
+  );
+
+  // GitHub Pages hands this file the original URL, so it forwards the path to
+  // the app that owns it; the app puts the address back before first paint.
+  fs.writeFileSync(
+    path.join(outDir, '404.html'),
+    `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SoftN</title>
+    <meta name="robots" content="noindex" />
+    <script>
+      (function () {
+        var apps = ${JSON.stringify(apps)};
+        // Already forwarded once and still nothing here: stop, or this loops.
+        if (location.search.indexOf('softn-restore=') !== -1) {
+          location.replace('/');
+          return;
+        }
+        var path = location.pathname;
+        var owner = apps.filter(function (a) {
+          return path === '/' + a || path.indexOf('/' + a + '/') === 0;
+        })[0];
+        var target = owner ? '/' + owner + '/' : '/';
+        // Nothing to restore for the app root itself.
+        if (path === target) {
+          location.replace(target);
+          return;
+        }
+        location.replace(target + '?softn-restore=' + encodeURIComponent(path + location.search));
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>
+`,
+  );
+
+  return apps.length;
+}
+
+/**
+ * Write .br and .gz twins beside everything worth compressing.
+ *
+ * Done at build time because the quality that makes this worthwhile cannot be
+ * afforded per request: the zipp engine is 5.74MB raw, 1.88MB gzipped, 1.51MB
+ * under the brotli quality a live pass can spare, and 1.28MB at quality 11.
+ * Paying that once here is the difference between the last two figures.
+ *
+ * Skipped: anything already compressed, which for a .softn is the whole point —
+ * they are ZIP archives, and a second pass costs CPU to produce a slightly
+ * larger file. Small files are skipped because the win is smaller than a TCP
+ * segment, and any twin that fails to beat 95% of the original is discarded
+ * rather than shipped as dead weight the server has to stat.
+ */
+async function precompressAssets() {
+  const stats = await precompressTreeInParallel(outDir);
+  const mb = (n) => (n / 1024 / 1024).toFixed(2) + 'MB';
+  console.log(
+    `\nPrecompressed ${stats.scanned} files (${stats.written} twins written; ${stats.reused} identical files reused)\n` +
+      `  raw ${mb(stats.raw)}  ->  gzip ${mb(stats.gzip)}  ->  brotli ${mb(stats.brotli)}`
+  );
+  return stats;
+}
+
+function countFiles(dir) {
+  let n = 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) n += countFiles(path.join(dir, entry.name));
+    else if (entry.isFile()) n += 1;
+  }
+  return n;
+}
+
+copyProjectLicences();
+copyDirectoryApi();
+const bundleCount = withDemos ? copyCanonicalBundles(demos) : 0;
+writeDeepLinkFallbacks();
+writeDeploymentFiles();
+const docsResult = await writeDocumentation();
+console.log(`
+Documentation: ${docsResult.pages} guides, ${docsResult.files} files under ${docsResult.basePath}`);
+run(['run', 'licenses:site']);
+writeBuildInfo();
+// Before the twins are made. The service workers' maps name the temporary
+// file workbox bundled each worker from and the checkout's own path in every
+// import; the apps' maps, relative to the build, stay for reading error
+// reports (lib/build-paths.mjs, and package-site.mjs refuses what is left).
+if (sourcemaps) {
+  for (const map of dropMachineMaps(outDir, root)) console.log(`Left out ${map}: it names paths on this machine`);
+} else {
+  // Nothing the apps build writes a map without --sourcemaps; this keeps a
+  // map anything else left (a copied tree, a stale output) out of production.
+  for (const map of dropSourceMaps(outDir)) console.log(`Left out ${map}: a production build carries no source maps`);
+}
+if (precompress) await precompressAssets();
+else console.log('\nNo .br/.gz twins (--no-precompress): this dist is for tests, and the packagers refuse it.');
+
+console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
+console.log('  dist/           landing page');
+if (withDemos) {
+  console.log(`  dist/demos/     the example .softn bundles (${bundleCount} apps)`);
+  console.log('  dist/softn-files/ the same bundles, as downloads');
+} else {
+  console.log('  (no example bundles: the directory starts empty; --with-demos ships them)');
+}
+console.log('  dist/play/      the single-app shell; /play/<slug> is an app\'s play page, rendered by the API');
+console.log('  dist/api/       the directory API (PHP + folder JSON); dist/data/ its state');
+console.log('  dist/.htaccess, nginx.conf.example, DEPLOY.md');
+console.log('  dist/BUILD-INFO.json');
+if (precompress) console.log('  *.br / *.gz     precompressed twins for brotli_static / gzip_static');
+console.log('  dist/LICENSE, NOTICE, THIRD-PARTY-NOTICES.txt, THIRD-PARTY-INVENTORY.json');
+for (const app of APPS) console.log(`  dist/${app.into}/`.padEnd(18) + app.workspace);

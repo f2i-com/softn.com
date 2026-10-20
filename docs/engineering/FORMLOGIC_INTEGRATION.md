@@ -39,7 +39,7 @@ Use the updated runtime parser (cache version 4) so hyphenated ARIA and data att
 ## FormLogic takes the release, not the source
 
 Every SoftN release (`v*` tag) carries `softn-formlogic-runtime-<tag>.zip`,
-written by `scripts/package-formlogic-runtime.mjs`: `hosted-runtime/`
+written by `scripts/release/package-formlogic-runtime.mjs`: `hosted-runtime/`
 (`apps/formlogic-host` built as FormLogic's `build-hosted-runtime.mjs` builds
 it), `app-editors/` (Builder and Studio built as hosted editors, with the
 editor bridge protocol in `manifest.json`), `native-runtime/`
@@ -83,7 +83,7 @@ a SoftN page posts the engine it compiled to every worker it starts, so their
 `assets/core-runtime/` holds none. The archive alone adds the engine at
 `assets/core-runtime/zipp_wasm_bg.wasm` in `hosted-runtime/` and each editor,
 because FormLogic's `fetch-softn-release.mjs` has required a copy there.
-Nothing reads it; drop it from `scripts/package-formlogic-runtime.mjs` once the
+Nothing reads it; drop it from `scripts/release/package-formlogic-runtime.mjs` once the
 FormLogic installing these archives no longer asks for it.
 
 `hosted-runtime/` has two entry documents. `index.html` serves the ZIPP

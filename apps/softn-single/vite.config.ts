@@ -1,13 +1,13 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
-import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
+import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 export default defineConfig({
   // Relative by default, so a standalone deployment works from any directory.
   // The site build sets VITE_BASE to where the shell lands under softn.com
   // (`/play/`), where the directory serves it for every app in the catalogue.
   base: process.env.VITE_BASE || './',
-  // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/script-policy.mjs).
+  // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
   plugins: [react(), coreWorkerAssetPlugin(), scriptPolicyPlugin()],
   resolve: { dedupe: ['react', 'react-dom'] },
   build: {

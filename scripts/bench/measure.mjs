@@ -190,7 +190,7 @@ const MIME = new Map([
 ]);
 
 /**
- * The same buckets scripts/build-site.mjs writes into .htaccess: hashed assets
+ * The same buckets scripts/build/build-site.mjs writes into .htaccess: hashed assets
  * immutable, other static files an hour, documents, JSON, workers and bundles
  * revalidated. The warm pass measures against these, so a server that said
  * no-cache for everything would report a warm visit that re-fetches the world.

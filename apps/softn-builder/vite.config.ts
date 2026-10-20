@@ -1,11 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { softnPwa } from '../../scripts/pwa.mjs';
-import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
-import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
-import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
-import { buildSourcemaps } from '../../scripts/sourcemaps.mjs';
-import { vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
+import { softnPwa } from '../../scripts/build/pwa.mjs';
+import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
+import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
+import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
+import { vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -21,7 +21,7 @@ export default defineConfig({
     retireServiceWorkersPlugin(),
     react(),
     coreWorkerAssetPlugin(),
-    // What runs as script: this deployment's files only (scripts/script-policy.mjs). Not in
+    // What runs as script: this deployment's files only (scripts/build/script-policy.mjs). Not in
     // the desktop build, whose webview has a policy of its own, nor in FormLogic's, which is
     // drawn inside FormLogic's own document.
     ...(isTauri || env.VITE_FORMLOGIC_EDITOR === '1' ? [] : [scriptPolicyPlugin()]),
@@ -100,9 +100,9 @@ export default defineConfig({
       target: env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari15',
     }),
     minify: !env.TAURI_ENV_DEBUG,
-    // A debug desktop build, or a development build (scripts/sourcemaps.mjs).
+    // A debug desktop build, or a development build (scripts/build/sourcemaps.mjs).
     sourcemap: !!env.TAURI_ENV_DEBUG || buildSourcemaps(),
-    // dist/.vite/manifest.json, which scripts/editor-offline.test.mjs reads.
+    // dist/.vite/manifest.json, which scripts/build/editor-offline.test.mjs reads.
     manifest: true,
     rolldownOptions: {
       output: {

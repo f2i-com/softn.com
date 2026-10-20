@@ -15,7 +15,7 @@ npm run e2e:install:matrix   # Firefox and WebKit, once
 npm run e2e:matrix           # every engine, mobile widths, 200 % zoom
 ```
 
-`scripts/serve-topology.mjs` serves the built `dist/` as one origin — site,
+`scripts/dev/serve-topology.mjs` serves the built `dist/` as one origin — site,
 runtime, Studio, Builder and the directory API on a disposable data dir —
 and the specs run against it. Traces and per-page console output land in
 `e2e/test-results/` on failure.

@@ -307,7 +307,7 @@ describe('where the host JavaScript engine ships', () => {
   it('is reachable only through its own entry, never the default one', () => {
     // The seam's default is still ZIPP, and nothing in the barrel reaches this
     // engine: a build that does not import @softn/core/host-js cannot contain
-    // it. `scripts/host-js-isolation.test.mjs` checks the built bundles.
+    // it. `scripts/checks/host-js-isolation.test.mjs` checks the built bundles.
     for (const file of ['index.ts', 'runtime/index.ts', 'runtime/vm-adapter.ts', 'loader/SoftNRenderer.tsx']) {
       expect(read(file), file).not.toMatch(/host-js/);
     }
