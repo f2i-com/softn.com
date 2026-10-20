@@ -215,9 +215,9 @@
       "title": "SoftN root package.json",
       "url": "https://github.com/f2i-com/softn.com/blob/main/package.json",
       "kind": "repository-source",
-      "reviewedAt": "2026-10-14",
+      "reviewedAt": "2026-10-21",
       "retrieval": "retrieved",
-      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). The package version, 0.0.21, is not the ZIPP engine version."
+      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). The package version, 0.0.24, is not the ZIPP engine version."
     },
     {
       "id": "zipp-wasm",
@@ -1321,7 +1321,7 @@
         "title": "SoftN Studio | SoftN Docs",
         "description": "SoftN Studio for AI-assisted app creation: provider presets, the brief, JavaScript or Python logic, torch, the blueprint review, preview, the validator and export."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-21",
       "sourceIds": [
         "softn-studio-source",
         "softn-languages",
@@ -1373,7 +1373,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The brief has three steps, Basics, Structure and Style, and ends with Generate. Structure is where you choose the Logic language: JavaScript (`.logic`), the default, or Python (`.py`). The whole app uses one language. With Python selected, Uses machine learning `torch` adds torch to `manifest.json`."
+              "text": "The brief has three steps, Basics, Structure and Style, and ends with Generate. Structure is where you choose the Logic language: JavaScript (`main.js`), the default, or Python (`main.py`). The whole app uses one language. With Python selected, Uses machine learning `torch` adds torch to `manifest.json`."
             },
             {
               "type": "paragraph",
@@ -1469,7 +1469,11 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Import takes a whole bundle. Logic files come in as text, `.py` included, and Export bundle lists `.logic` and `.py` files under `files.logic` in the manifest, leaving server logic out of that group. The export is the same `.softn` format Builder and Runtime open."
+              "text": "A new project is written as HTML pages: `index.html`, the page the app opens on, which names its code with `<script src=\"main.js\">` and places each page of the blueprint from `pages/`, such as `pages/dashboard.html`; and `main.js`, or `main.py` in a Python app. Beside them are `manifest.json`, `permission.json`, an `xdb/` seed file for each collection, `assets/icon.svg`, and Studio’s own notes on the brief and blueprint under `builder/`. A project made before, with `.ui` pages under `ui/` and `.logic` files under `logic/`, still opens and is edited as it is."
+            },
+            {
+              "type": "paragraph",
+              "text": "Import takes a whole bundle. Logic files come in as text, `.py` included, and Export bundle lists the logic under `files.logic` in the manifest: `.logic` and `.py` files, and a `.js` file a page links or other logic imports, such as `main.js`. Server logic is left out of that group. The export is the same `.softn` format Builder and Runtime open."
             }
           ]
         },
@@ -1525,7 +1529,7 @@
         "title": "SoftN Runtime | SoftN Docs",
         "description": "SoftN Runtime: open .softn bundles, browse apps, use the saved browser library, switch running apps, and see how it picks the engine for JavaScript or Python logic."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-21",
       "sourceIds": [
         "softn-readme",
         "softn-languages",
@@ -1552,7 +1556,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Runtime reads the app before it starts. Logic files ending `.py` make it a Python app, anything else a JavaScript one, and both run in the same ZIPP web-python engine. A bundle the composer refuses, for example one that mixes the two languages or imports torch without declaring it, does not start, and the message says what to change."
+              "text": "Runtime reads the app before it starts. Logic files ending `.py` make it a Python app, anything else a JavaScript one, and both run in the same engine: ZIPP’s javascript-python-base module, one WebAssembly file for both languages. A bundle the composer refuses, for example one that mixes the two languages or imports torch without declaring it, does not start, and the message says what to change."
             }
           ]
         },
@@ -1642,7 +1646,7 @@
         "title": "The .softn app format | SoftN Docs",
         "description": "The .softn format: a ZIP bundle with manifest.json, permission.json, UI, JavaScript or Python logic, XDB seeds and assets; config.execution and config.python.packages."
       },
-      "updatedAt": "2026-10-12",
+      "updatedAt": "2026-10-21",
       "sourceIds": [
         "softn-readme",
         "softn-bundle-format",
@@ -1670,8 +1674,8 @@
             {
               "type": "code",
               "language": "text",
-              "code": "my-app.softn\n├── manifest.json\n├── permission.json\n├── ui/\n├── logic/\n├── xdb/\n└── assets/",
-              "caption": "The layout Builder and Studio write. Exact files depend on the app."
+              "code": "my-app.softn\n├── manifest.json\n├── permission.json\n├── index.html\n├── pages/\n├── main.js\n├── xdb/\n└── assets/",
+              "caption": "The layout Studio writes for a new project; a Python app has `main.py` in place of `main.js`. Builder’s new projects, and bundles made before, keep their pages in `ui/` and their logic in `logic/`. Exact files depend on the app."
             },
             {
               "type": "definitions",
@@ -1685,12 +1689,12 @@
                   "description": "The capabilities the app requests from its host. Declaring one is not the same as being granted it."
                 },
                 {
-                  "term": "ui/",
-                  "description": "The interface: `.ui` files."
+                  "term": "index.html and pages/",
+                  "description": "The interface: pages written as HTML, with SoftN’s components and syntax in them. `.ui` files under `ui/`, as Builder writes them, are the same language; both open."
                 },
                 {
-                  "term": "logic/",
-                  "description": "Client logic: `.logic` files in JavaScript, or `.py` files in Python. One language per app."
+                  "term": "main.js",
+                  "description": "Client logic: JavaScript in `.js` files (`.logic` files under `logic/` in Builder’s projects), or Python in `.py` files such as `main.py`. One language per app."
                 },
                 {
                   "term": "xdb/",
@@ -1735,7 +1739,7 @@
                 },
                 {
                   "term": "files.logic",
-                  "description": "Lists `.logic` or `.py` files, never both. The file name alone decides the language."
+                  "description": "Lists the logic files: JavaScript (`.js` or `.logic`) or Python (`.py`), never both. The file name alone decides the language."
                 }
               ]
             }
@@ -1751,7 +1755,7 @@
               "items": [
                 "A logic file whose name ends `.py` is Python; any other is JavaScript. Nothing else declares the language.",
                 "A bundle that mixes Python and JavaScript logic is refused: the two run in separate engines and cannot share names.",
-                "Python must live in a file referenced with `<logic src>`. An inline `<logic lang=\"python\">` block is refused, because reindenting markup could change the program.",
+                "Python must live in a file referenced with `<script src>` or `<logic src>`. An inline `<logic lang=\"python\">` block is refused, because reindenting markup could change the program.",
                 "Each `.py` file is a module named after the file, so two with the same name are refused, and the names `softn`, `torch`, `json`, `math` and anything starting `__softn` are reserved.",
                 "Server logic for the PHP and Rust hosts is JavaScript. Python is client logic only."
               ]
@@ -1823,7 +1827,7 @@
         "title": "The SoftN UI language | SoftN Docs",
         "description": "SoftN .ui syntax: components, expression props, what an expression may contain, event handlers and modifiers, two-way binding, class: and style: directives, conditionals, loops, and one page placed inside another."
       },
-      "updatedAt": "2026-10-19",
+      "updatedAt": "2026-10-21",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -1880,7 +1884,7 @@
               "type": "callout",
               "tone": "note",
               "title": "Where a page is not HTML",
-              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. A capitalised tag is a component’s, never HTML’s: `<Button>`, `<Input>` and `<Link>` are SoftN’s, so `<Input>` is not void, while `<button>` and `<BUTTON>` are HTML’s. A tag that ends `/>` ends there, `<div/>` too, where HTML would pass over the slash. A form inside a form is kept, a form written straight in a table holds its rows (so its fields are in it), and `</form>` closes what is still open inside the form; HTML would drop the inner form, leave the table’s form empty and leave the rest open. A `<b>` left open in a paragraph is opened again around the words of the next, but not around the space between tags: HTML would wrap every later paragraph in it. SoftN’s own syntax is read in any case, as HTML is: `#IF`, `#Else If`, `#EACH (item IN items)`, `#End`, `<IMPORT>`, `<LOGIC>`, `@CLICK`, `.PREVENT` and `:BIND`; and a component may be named in any case where no HTML element has its name, `<datatable>` for `DataTable`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files. A `.js` file is SoftN logic: its top-level variables are the page’s state and its functions what the page calls, so `export` before a declaration is read as the declaration, and `import { total } from \"./cart.js\"` places that file’s code, whose names every file sees. An import that renames, a default or namespace import and a package import are not read; and there is no `document` to query: the page shows the state, and a handler changes the state."
+              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. A capitalised tag is a component’s, never HTML’s: `<Button>`, `<Input>` and `<Link>` are SoftN’s, so `<Input>` is not void, while `<button>` and `<BUTTON>` are HTML’s. A tag that ends `/>` ends there, `<div/>` too, where HTML would pass over the slash. A form inside a form is kept, a form written straight in a table holds its rows (so its fields are in it), and `</form>` closes what is still open inside the form; HTML would drop the inner form, leave the table’s form empty and leave the rest open. A `<b>` left open in a paragraph is opened again around the words of the next, but not around the space between tags: HTML would wrap every later paragraph in it. SoftN’s own syntax is read in any case, as HTML is: `#IF`, `#Else If`, `#EACH (item IN items)`, `#End`, `<IMPORT>`, `<LOGIC>`, `@CLICK`, `.PREVENT` and `:BIND`; and a component may be named in any case where no HTML element has its name, `<datatable>` for `DataTable`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files. A `.js` file is SoftN logic: its top-level variables are the page’s state and its functions what the page calls, so `export` before a declaration is read as the declaration, and `import { total } from \"./cart.js\"` places that file’s code, whose names every file sees. An import that renames, a default or namespace import and a package import are not read. The page shows the state, and a handler changes the state; code that names `document` is also given one, the page’s own HTML to query and change, as the next section describes."
             }
           ]
         },
@@ -2104,7 +2108,7 @@
             },
             {
               "type": "paragraph",
-              "text": "`#elseif (…)` adds further branches, and `#else if (…)` is the same thing. An `#empty` branch makes the first-run experience explicit, which is kinder than a blank area that leaves someone wondering whether the app has loaded."
+              "text": "`#elseif (…)` adds further branches, and `#else if (…)` is the same thing. An `#empty` branch makes the first-run experience explicit, which is kinder than a blank area that leaves someone wondering whether the app has loaded. A header may leave out its parentheses, `#if isLoggedIn` or `#each task in tasks`, and then runs to the end of its line; `#else if` keeps them, since without them `#else` could not tell a condition from the words of its branch."
             },
             {
               "type": "code",
@@ -2114,7 +2118,7 @@
             },
             {
               "type": "paragraph",
-              "text": "`#each` goes through a list, a `Set`, a `Map` (as `[key, value]` pairs), a record (its values, with the key as the second name: `#each (value, key in settings)`) and a whole number, which counts from 1. Text is not gone through letter by letter. A second name after the variable is the index, or the key for a record, and `key={…}` after the header tells the page which row is which when the list is reordered."
+              "text": "`#each` goes through a list, a `Set`, a `Map` (as `[key, value]` pairs), a record (its values, with the key as the second name: `#each (value, key in settings)`) and a whole number, which counts from 1. Text is not gone through letter by letter. A second name after the variable is the index, or the key for a record, and `key={…}` after the header tells the page which row is which when the list is reordered. `of` reads as `in` does, as JavaScript’s `for…of` writes it: `#each (task of tasks)`."
             },
             {
               "type": "paragraph",
@@ -2563,7 +2567,7 @@
         "title": "SoftN component guide | SoftN Docs",
         "description": "Explore SoftN components for layouts, forms, tables, dashboards, charts, media, animation, editors and Three.js scenes."
       },
-      "updatedAt": "2026-10-09",
+      "updatedAt": "2026-10-21",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -2671,7 +2675,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Stat and Timeline draw what the app already holds in state: one figure with how it moved, and a list of things that happened. SmartStats and SmartTimeline read a collection themselves."
+              "text": "Stat and Timeline draw what the app already holds in state: one figure with how it moved, and a list of things that happened. SmartStats and SmartTimeline are given what they draw too, and lay it out with less markup: SmartStats takes several figures in `stats`, as `label: value` pairs or a list of items, with `icons` and `trends` beside them; SmartTimeline takes records in `data`, a collection’s records included, and is told which of their fields hold each event’s `title`, `description`, `time` and `status`."
             }
           ]
         },
@@ -2812,7 +2816,7 @@
         "title": "Forms, tables and dashboards | SoftN Docs",
         "description": "Build SoftN forms, tables and dashboards with XDB, SmartForm, SmartGrid and clear record workflows, validation and empty states."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-21",
       "sourceIds": [
         "softn-readme"
       ],
@@ -2827,7 +2831,7 @@
             },
             {
               "type": "paragraph",
-              "text": "SoftN offers ordinary form and data components, and smart components configured by collection. Choose whichever makes your app’s behaviour easiest to explain."
+              "text": "SoftN offers ordinary form and data components, and smart components that configure themselves from a few attributes: SmartForm saves to a collection named by `collection`, while SmartGrid, SmartList and SmartCards draw the records they are given in `data`. Choose whichever makes your app’s behaviour easiest to explain."
             }
           ]
         },
@@ -2858,8 +2862,8 @@
             {
               "type": "code",
               "language": "softn",
-              "code": "<SmartGrid\n  collection=\"clients\"\n  columns=\"name, email, phone, visits\"\n  searchable sortable pageable\n/>",
-              "caption": "A read-oriented SmartGrid. Add editing only after defining and testing the update flow."
+              "code": "<data><collection name=\"clients\" as=\"clients\" /></data>\n\n<SmartGrid\n  data={clients}\n  columns=\"name, email, phone, visits\"\n  searchable sortable pageable\n/>",
+              "caption": "A read-oriented SmartGrid. The page’s `<data>` binds the clients collection to `clients`, and SmartGrid draws the records it is given in `data`. Add editing only after defining and testing the update flow."
             },
             {
               "type": "paragraph",
@@ -3084,7 +3088,7 @@
         "title": "Assets, themes and responsive layouts | SoftN Docs",
         "description": "Manage SoftN assets, light and dark themes, and responsive layouts. Test exported bundles, narrow screens and fresh app instances."
       },
-      "updatedAt": "2026-10-12",
+      "updatedAt": "2026-10-21",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -3106,7 +3110,7 @@
             {
               "type": "code",
               "language": "softn",
-              "code": "<Image src={asset(\"assets/cover.png\")} />",
+              "code": "<Image src={asset(\"assets/cover.png\")} alt=\"The book’s cover\" />",
               "caption": "The asset helper with an Image component. Include the file in the app."
             }
           ]
