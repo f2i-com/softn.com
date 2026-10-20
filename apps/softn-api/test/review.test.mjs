@@ -121,7 +121,11 @@ $pdo->exec('ROLLBACK');`, [app.slug]);
   const ended = new Promise((resolve) => child.on('exit', resolve));
   try {
     child.stdin.end(body);
-    await new Promise((r) => setTimeout(r, 900));
+    // Until the request is in the store, which it holds storage.lock shared
+    // for while SQLite makes it wait. A fixed 900 ms was less than a busy
+    // machine's PHP took to start; the writer holds its lock for 2.5 s.
+    const until = Date.now() + 2000;
+    while (storageLock(s.dataDir) !== 'shared' && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
     assert.equal(child.exitCode, null, 'the request is waiting for the store: ' + out);
     assert.equal(catalogueFree(s.dataDir), true, 'the whole directory waited behind one app\'s store');
     assert.equal(storageLock(s.dataDir), 'shared', 'and the request is known to be in a store');
