@@ -62,6 +62,7 @@ import {
   documentWrapper,
   htmlAttributeName,
   htmlHandlerEvent,
+  isHtmlElementTag,
   isRemoteReference,
   normalizeTagName,
   sameTagName,
@@ -1429,7 +1430,7 @@ export class Parser {
    * an HTML element is its first, as in HTML.
    */
   private normalizeAttributeNames(element: ElementNode): void {
-    const html = element.tag !== '' && element.tag === element.tag.toLowerCase();
+    const html = this.htmlElement(element.tag);
     if (html) {
       const seen = new Set<string>();
       element.props = element.props.filter((prop) => {
@@ -1453,9 +1454,10 @@ export class Parser {
    * know, and the button did nothing either.
    */
   private takeHandlerAttributes(element: ElementNode): void {
-    if (!element.props.some((prop) => htmlHandlerEvent(element.tag, prop.name))) return;
+    const html = this.htmlElement(element.tag);
+    if (!element.props.some((prop) => htmlHandlerEvent(html, prop.name))) return;
     element.props = element.props.filter((prop) => {
-      const event = htmlHandlerEvent(element.tag, prop.name);
+      const event = htmlHandlerEvent(html, prop.name);
       if (!event) return true;
       if (prop.value.type === 'expression') {
         element.events.push({ type: 'Event', name: event, handler: prop.value.value, loc: prop.loc });
@@ -1532,6 +1534,17 @@ export class Parser {
   private staticPropValue(element: ElementNode, name: string): string | undefined {
     const prop = element.props.find((p) => p.name === name);
     return prop && prop.value.type === 'static' ? prop.value.value : undefined;
+  }
+
+  /**
+   * Whether a tag is an HTML element's, or a drawing's inside an `<svg>` or
+   * `<math>` being read (see isHtmlElementTag): what decides that its
+   * attribute, event and binding names are HTML's, its `on…` attributes
+   * handlers, and its mistakes warnings. A component written in lower case
+   * (`<datatable onRowClick>`) keeps its names and its errors.
+   */
+  private htmlElement(tag: string): boolean {
+    return isHtmlElementTag(tag, this.openTags.includes('svg') || this.openTags.includes('math'));
   }
 
   /**
@@ -1682,7 +1695,7 @@ export class Parser {
     if (!closed && this.diagnostics.length === diagnosticsBefore && !OPTIONAL_END_TAGS.has(parentTag)) {
       // An HTML element still open at the end of the page ends there, as in
       // a browser: a warning. A component's missing end tag is an error.
-      if (isHtmlTag(parentTag)) {
+      if (this.htmlElement(parentTag)) {
         this.diagnostics.push({ message: `<${parentTag}> is not closed, so it ends at the end of the page`, severity: 'warning', loc: openLoc });
       } else {
         this.addDiagnostic(new UnclosedTagError(parentTag, openLoc, this.source));
@@ -1697,7 +1710,7 @@ export class Parser {
 
   /** An element ended by the end tag of one it is inside (see parseChildren). */
   private reportImpliedEnd(open: string, closer: string, loc: SourceLocation): void {
-    if (isHtmlTag(open)) {
+    if (this.htmlElement(open)) {
       this.diagnostics.push({ message: `<${open}> is not closed, so it ends at </${closer}>`, severity: 'warning', loc });
     } else {
       this.addDiagnostic(new MismatchedTagError(open, closer, loc, this.source));
@@ -1706,7 +1719,7 @@ export class Parser {
 
   /** An end tag that closes nothing open: passed over. */
   private reportStrayEnd(open: string, closer: string, loc: SourceLocation): void {
-    if (isHtmlTag(open) && isHtmlTag(closer)) {
+    if (this.htmlElement(open) && this.htmlElement(closer)) {
       this.diagnostics.push({ message: `</${closer}> closes nothing that is open here, so it was passed over`, severity: 'warning', loc });
     } else {
       this.addDiagnostic(new MismatchedTagError(open, closer, loc, this.source));
@@ -1737,7 +1750,7 @@ export class Parser {
    * the element is a component, whose strings are SoftN's.
    */
   private htmlAttributeText(tag: string | undefined): string | undefined {
-    if (!tag || !/^[a-z]/.test(tag)) return undefined;
+    if (!tag || !this.htmlElement(tag)) return undefined;
     const text = this.source.slice(this.curToken.start, this.curToken.end);
     const quote = text[0];
     if ((quote !== '"' && quote !== "'") || !text.includes('\\')) return undefined;
@@ -3538,11 +3551,6 @@ const FORMATTING_ELEMENTS = new Set([
   'a', 'b', 'big', 'code', 'em', 'font', 'i', 'nobr', 's', 'small', 'strike', 'strong', 'tt', 'u',
 ]);
 
-/** Whether a tag is written as an HTML element is (lower case): a capitalised one is a component. */
-function isHtmlTag(tag: string): boolean {
-  return tag !== '' && tag === tag.toLowerCase();
-}
-
 /**
  * A run of `children` that `belongs` says is one group's, each in a new
  * element named `tag` (whitespace between them kept inside it).
@@ -3615,7 +3623,7 @@ function endsBefore(open: string, next: string): boolean {
     case 'caption':
       return ENDS_A_CAPTION.has(next);
     case 'colgroup':
-      return next !== 'col' && next !== 'template' && isHtmlTag(next);
+      return next !== 'col' && next !== 'template' && isHtmlElementTag(next);
     case 'li':
       return next === 'li';
     case 'dt':

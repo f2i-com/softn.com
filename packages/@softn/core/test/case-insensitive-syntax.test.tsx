@@ -112,6 +112,23 @@ describe('names in any case', () => {
     }
   });
 
+  it('keeps the names of a component written in lower case, and its mistakes errors', () => {
+    // Lower case is not HTML's by itself: <datatable> is DataTable's, and its
+    // props, events and bindings are spelt as the component spells them.
+    const table = first('<datatable onRowClick={pick} @rowSelect={pick} :selectedKey={key} Title="t" />');
+    expect(table.props.map((p) => p.name)).toEqual(['onRowClick', 'Title']);
+    expect(table.events.map((e) => e.name)).toEqual(['rowSelect']);
+    expect(table.bindings.map((b) => b.name)).toEqual(['selectedKey']);
+    expect(parse('<stack><p>x</p>').diagnostics).toMatchObject([{ severity: 'error', message: 'Unclosed tag: <stack>' }]);
+    expect(parse('<div><p>x</div>').diagnostics ?? []).toEqual([]);
+    expect(parse('<div><span>x').diagnostics).toMatchObject([{ severity: 'warning' }]);
+  });
+
+  it('reads a handler on a shape in a drawing as its event', () => {
+    const svg = first('<svg><circle onclick="go()" r=1 /><path onClick={go} d="M0 0" /></svg>');
+    expect(elements(svg.children).map((shape) => shape.events.map((e) => e.name))).toEqual([['click'], ['click']]);
+  });
+
   it('keeps an HTML attribute written twice as its first', () => {
     expect(first('<div id=a ID=b>x</div>').props).toMatchObject([{ name: 'id', value: { value: 'a' } }]);
   });

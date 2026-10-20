@@ -72,6 +72,20 @@ export function normalizeTagName(name: string): string {
   return lower !== name && HTML_ELEMENT_NAMES.has(lower) ? lower : name;
 }
 
+/**
+ * Whether a tag is an HTML element's, or a drawing's (`inDrawing`: inside an
+ * `<svg>` or a `<math>`): a name HTML gives an element (as normalizeTagName
+ * keeps it), a custom element's (`my-card`), or, in a drawing, any name that
+ * begins in lower case (`path`, `linearGradient`). Not case alone: a
+ * component may be written in lower case too (`<datatable>`), and its
+ * attributes, events and bindings are the component's, as written.
+ */
+export function isHtmlElementTag(tag: string, inDrawing = false): boolean {
+  if (tag === '') return false;
+  if (HTML_ELEMENT_NAMES.has(tag) || (tag.includes('-') && tag === tag.toLowerCase())) return true;
+  return inDrawing && /^[a-z]/.test(tag);
+}
+
 /** Whether two tag names are one tag's: HTML's close in any case, `<div>…</DIV>`, and so does `<Button>…</button>`. */
 export function sameTagName(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
@@ -184,11 +198,11 @@ export function isRemoteReference(path: string): boolean {
 
 /**
  * The event an HTML handler attribute is for: `onclick` is `click`. Only an
- * all-lower-case name on an HTML element is one, as HTML spells them; on a
- * component, `onSave` is a property like any other.
+ * all-lower-case name on an HTML element (isHtmlElementTag) is one, as HTML
+ * spells them; on a component, `onSave` is a property like any other.
  */
-export function htmlHandlerEvent(tag: string, attribute: string): string | null {
-  if (!/^[a-z]/.test(tag)) return null;
+export function htmlHandlerEvent(onHtmlElement: boolean, attribute: string): string | null {
+  if (!onHtmlElement) return null;
   const match = /^on([a-z]+)$/.exec(attribute);
   return match ? match[1] : null;
 }
