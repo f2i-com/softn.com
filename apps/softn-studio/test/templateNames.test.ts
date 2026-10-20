@@ -291,11 +291,12 @@ describe('the lists the check trusts', () => {
     const context = { state: {}, data: {}, computed: {}, props: {}, functions: {}, setState: () => {} } as never;
     const resolves = (name: string) => core.evaluateExpression({ type: 'Identifier', name, loc: { line: 1, column: 1, start: 0, end: 0 } } as never, context) !== undefined;
     for (const name of TEMPLATE_GLOBALS.filter((n) => n !== 'undefined')) expect(resolves(name), name).toBe(true);
-    for (const name of ['console', 'window', 'WeakMap', 'Promise', 'Intl', 'Function', 'globalThis']) expect(resolves(name), name).toBe(false);
+    for (const name of ['console', 'window', 'WeakMap', 'Promise', 'Function', 'globalThis']) expect(resolves(name), name).toBe(false);
     // And no global the source adds is missing here. An entry is a name, or a
-    // name and what stands in for it (`Object: TEMPLATE_OBJECT`).
-    const source = readFileSync(resolve(process.cwd(), '../../packages/@softn/core/src/renderer/render.tsx'), 'utf8');
-    const block = /const JS_GLOBALS[^{]*\{([\s\S]*?)\};/.exec(source)?.[1] ?? '';
+    // name and what stands in for it (`Object: TEMPLATE_OBJECT`); comments
+    // between them are not entries.
+    const source = readFileSync(resolve(process.cwd(), '../../packages/@softn/core/src/renderer/evaluate.ts'), 'utf8');
+    const block = (/const JS_GLOBALS[^{]*\{([\s\S]*?)\};/.exec(source)?.[1] ?? '').replace(/\/\/.*$/gm, '');
     expect(block.split(',').map((s) => s.split(':')[0].trim()).filter(Boolean).sort()).toEqual([...TEMPLATE_GLOBALS].sort());
   });
 

@@ -308,7 +308,7 @@ describe('where the host JavaScript engine ships', () => {
     // The seam's default is still ZIPP, and nothing in the barrel reaches this
     // engine: a build that does not import @softn/core/host-js cannot contain
     // it. `scripts/checks/host-js-isolation.test.mjs` checks the built bundles.
-    for (const file of ['index.ts', 'runtime/index.ts', 'runtime/vm-adapter.ts', 'loader/SoftNRenderer.tsx']) {
+    for (const file of ['index.ts', 'runtime/index.ts', 'runtime/vm-adapter.ts', 'loader/SoftNRenderer.tsx', 'loader/xdb-bindings.tsx']) {
       expect(read(file), file).not.toMatch(/host-js/);
     }
     expect(read('runtime/vm-adapter.ts')).toMatch(/let engineFactory: LogicEngineFactory = ZippWasmAdapter/);

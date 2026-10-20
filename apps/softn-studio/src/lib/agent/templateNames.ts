@@ -46,6 +46,7 @@ export const TEMPLATE_GLOBALS: readonly string[] = [
   'undefined',
   'encodeURIComponent',
   'decodeURIComponent',
+  'Intl',
 ];
 
 /**
