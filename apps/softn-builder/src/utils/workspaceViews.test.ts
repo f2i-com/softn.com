@@ -8,7 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { viewsFor } from './workspaceViews';
+import { pageInHand, viewsFor } from './workspaceViews';
 import { previewSourceFor } from './previewSource';
 import { useFilesStore } from '../stores/filesStore';
 import { useProjectStore } from '../stores/projectStore';
@@ -23,6 +23,21 @@ describe('the views a file allows', () => {
   it('keeps an asset to Design and a UI file to everything', () => {
     expect(viewsFor('asset')).toEqual(['design']);
     expect(viewsFor('ui')).toEqual(['design', 'data', 'preview', 'code']);
+  });
+});
+
+describe('where Undo and Redo step the page the canvas holds', () => {
+  it('is Design, with the page open or a file that is no page open while the panels hold the page', () => {
+    expect(pageInHand('design', 'ui', true)).toBe(true);
+    // With main.logic open, the Hierarchy and Properties still hold the page: Undo was off.
+    expect(pageInHand('design', 'logic', true)).toBe(true);
+    expect(pageInHand('design', 'asset', true)).toBe(true);
+    // A canvas that holds no page's tree is nothing to step.
+    expect(pageInHand('design', 'logic', false)).toBe(false);
+    // Elsewhere the page is not on the screen.
+    expect(pageInHand('data', 'ui', true)).toBe(false);
+    expect(pageInHand('preview', 'logic', true)).toBe(false);
+    expect(pageInHand('code', 'ui', true)).toBe(false);
   });
 });
 

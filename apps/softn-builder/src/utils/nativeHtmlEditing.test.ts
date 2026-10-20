@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { parseSource } from './sourceParser';
 import { nativeElementMeta } from './nativeHtmlMetadata';
-import { getComponentMeta, getComponentNames } from './componentRegistry';
+import { getComponentMeta, paletteComponents } from './componentRegistry';
 import { useCanvasStore } from '../stores/canvasStore';
 import { useFilesStore } from '../stores/filesStore';
 import { CanvasElement } from '../components/canvas/CanvasElement';
@@ -27,7 +27,7 @@ afterEach(() => {
 
 it('exposes existing native markup in the inspector without adding it to the component palette', () => {
   expect(getComponentMeta('h1')?.propSchema).toContainEqual({ name: 'children', type: 'string' });
-  expect(getComponentNames()).not.toContain('h1');
+  expect(paletteComponents.map((component) => component.name)).not.toContain('h1');
   expect(getComponentMeta('input')?.allowChildren).toBe(false);
   expect(getComponentMeta('UnknownCustomWidget')).toBeUndefined();
 });

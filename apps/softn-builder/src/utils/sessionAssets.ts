@@ -11,6 +11,7 @@
  */
 
 import type { AssetFile } from '../types/builder';
+import { base64ToBytes, bytesToBase64 } from './base64';
 
 export interface SerializedAssetFile {
   bundlePath?: string;
@@ -21,19 +22,9 @@ export interface SerializedAssetFile {
 }
 
 export function encodeAsset(asset: AssetFile): SerializedAssetFile {
-  let binary = '';
-  // Chunked: `String.fromCharCode(...bytes)` exceeds the argument limit on
-  // anything bigger than a small icon.
-  const CHUNK = 0x8000;
-  for (let i = 0; i < asset.data.length; i += CHUNK) {
-    binary += String.fromCharCode(...asset.data.subarray(i, i + CHUNK));
-  }
-  return { ...(asset.bundlePath ? { bundlePath: asset.bundlePath } : {}), name: asset.name, type: asset.type, data: btoa(binary) };
+  return { ...(asset.bundlePath ? { bundlePath: asset.bundlePath } : {}), name: asset.name, type: asset.type, data: bytesToBase64(asset.data) };
 }
 
 export function decodeAsset(asset: SerializedAssetFile): AssetFile {
-  const binary = atob(asset.data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return { ...(asset.bundlePath ? { bundlePath: asset.bundlePath } : {}), name: asset.name, type: asset.type, data: bytes };
+  return { ...(asset.bundlePath ? { bundlePath: asset.bundlePath } : {}), name: asset.name, type: asset.type, data: base64ToBytes(asset.data) };
 }

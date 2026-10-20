@@ -17,6 +17,13 @@ export interface Notification {
   // A toast that asks the user to do something has to stay up, so pair an
   // action with duration 0.
   action?: NotificationAction;
+  /**
+   * The particulars, one line each, behind a control that shows them: what
+   * "Opened with 39 warnings" were. They were written to the console, where
+   * nobody using the Builder looks. A toast with them stays up until it is
+   * dismissed, so there is time to read them.
+   */
+  details?: string[];
 }
 
 interface NotificationStore {
@@ -66,8 +73,10 @@ export const toast = {
     useNotificationStore.getState().addNotification({ type: 'success', message, duration: 3000 }),
   error: (message: string) =>
     useNotificationStore.getState().addNotification({ type: 'error', message, duration: 5000 }),
-  warning: (message: string) =>
-    useNotificationStore.getState().addNotification({ type: 'warning', message, duration: 4000 }),
+  warning: (message: string, details?: string[]) =>
+    useNotificationStore.getState().addNotification(
+      details && details.length > 0 ? { type: 'warning', message, duration: 0, details } : { type: 'warning', message, duration: 4000 }
+    ),
   info: (message: string) =>
     useNotificationStore.getState().addNotification({ type: 'info', message, duration: 3000 }),
 };

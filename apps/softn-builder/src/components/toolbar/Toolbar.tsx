@@ -6,8 +6,9 @@ import React from 'react';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { useProjectStore } from '../../stores/projectStore';
 import { useHistoryStore } from '../../stores/historyStore';
+import { useCanvasStore } from '../../stores/canvasStore';
 import { useInstallPrompt } from './useInstallPrompt';
-import { viewsFor } from '../../utils/workspaceViews';
+import { pageInHand, viewsFor } from '../../utils/workspaceViews';
 import { withMod } from '../../utils/platformKeys';
 import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
 
@@ -177,14 +178,20 @@ export function Toolbar({
   // Hosted, the host's own name for saving back to it, so its button and this one agree.
   const saveLabel = useHostedSaveLabel() ?? 'Save';
 
+  const pageHeld = useCanvasStore((state) => state.pageId !== null);
+
   const views = viewsFor(activeFileType);
   // The history is the canvas's, so the two buttons are offered where the
-  // canvas is. In Data they were live, and took an element off a page that
-  // was not on the screen while the collection just added stayed.
-  const canvasShown = view === 'design' && activeFileType === 'ui';
+  // canvas's page is worked on: in Design, with the page open or a logic
+  // file in the middle while the panels hold the page. In Data they were
+  // live, and took an element off a page that was not on the screen while
+  // the collection just added stayed.
+  const canvasShown = pageInHand(view, activeFileType, pageHeld);
   const undoable = canvasShown && canUndo();
   const redoable = canvasShown && canRedo();
   const elsewhere = view === 'code' ? 'steps the canvas, in Design; the code editor has its own' : 'steps the canvas, in Design';
+  // With a logic file open, the keys in its editor are the editor's.
+  const keys = (key: string) => (activeFileType === 'ui' ? withMod(key) : `${withMod(key)} outside the code editor`);
 
   return (
     <div className="bl-toolbar" data-panel="Toolbar" style={styles.toolbar} role="toolbar" aria-label="Project">
@@ -204,11 +211,11 @@ export function Toolbar({
       {/* The words of these two, and of New and Open, are put out of sight
           where the row is short (data-compact, builder.css); the name each
           has is said either way. */}
-      <button className="bl-tool" data-compact="1" aria-label="Undo" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${withMod('Z')})` : `Undo ${elsewhere}`}>
+      <button className="bl-tool" data-compact="1" aria-label="Undo" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${keys('Z')})` : `Undo ${elsewhere}`}>
         <IconUndo /> <span className="bl-tool-label">Undo</span>
       </button>
 
-      <button className="bl-tool" data-compact="1" aria-label="Redo" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${withMod('Y')})` : `Redo ${elsewhere}`}>
+      <button className="bl-tool" data-compact="1" aria-label="Redo" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${keys('Y')})` : `Redo ${elsewhere}`}>
         <IconRedo /> <span className="bl-tool-label">Redo</span>
       </button>
 

@@ -75,6 +75,22 @@ const closeButtonStyle: React.CSSProperties = {
   lineHeight: 1,
 };
 
+// The particulars of a toast (what "Opened with 39 warnings" were): a list
+// that scrolls inside the toast rather than running off the screen.
+const detailsStyle: React.CSSProperties = {
+  marginTop: 6,
+  fontWeight: 400,
+};
+
+const detailsListStyle: React.CSSProperties = {
+  margin: '6px 0 0',
+  paddingLeft: 18,
+  maxHeight: 220,
+  overflowY: 'auto',
+  fontSize: 12,
+  overflowWrap: 'anywhere',
+};
+
 const typeIcons: Record<Notification['type'], string> = {
   success: '\u2713',
   error: '\u2717',
@@ -99,8 +115,24 @@ export function ToastContainer() {
             role={notif.type === 'error' ? 'alert' : 'status'}
             aria-atomic="true"
           >
-            <span aria-hidden="true" style={{ color: iconColors[notif.type], fontWeight: 700 }}>{typeIcons[notif.type]}</span>
-            <span style={{ flex: 1 }}>{notif.message}</span>
+            <span aria-hidden="true" style={{ color: iconColors[notif.type], fontWeight: 700, alignSelf: notif.details ? 'flex-start' : undefined }}>{typeIcons[notif.type]}</span>
+            {notif.details && notif.details.length > 0 ? (
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {notif.message}
+                <details data-toast-details="" style={detailsStyle}>
+                  <summary style={{ cursor: 'pointer', color: 'var(--dim)' }}>
+                    {notif.details.length === 1 ? 'Show it' : `Show all ${notif.details.length}`}
+                  </summary>
+                  <ul style={detailsListStyle}>
+                    {notif.details.map((line, index) => (
+                      <li key={index}>{line}</li>
+                    ))}
+                  </ul>
+                </details>
+              </div>
+            ) : (
+              <span style={{ flex: 1 }}>{notif.message}</span>
+            )}
             {action && (
               <button
                 type="button"

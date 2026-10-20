@@ -375,3 +375,27 @@ describe('Alt+Shift and an arrow', () => {
     expect(source()).toBe(before);
   });
 });
+
+describe('an element deleted with Delete', () => {
+  const drawn = (text: string) => host.querySelector<HTMLElement>(`[data-canvas-element-id="${byText(text).id}"]`)!;
+  const frame = () => act(async () => void (await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))));
+  /** Delete pressed on the element itself, as it is from the keyboard. */
+  const deleteFrom = (element: HTMLElement) => act(() => {
+    element.focus();
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+  });
+
+  // The focus went to the document's body, and the next key was heard by nothing.
+  it('leaves the focus on the element after it, else the one before it', async () => {
+    act(() => open('<App>\n  <Text>One</Text>\n  <Text>Two</Text>\n  <Text>Three</Text>\n</App>'));
+    act(() => canvas().selectElement(byText('Two').id));
+    deleteFrom(drawn('Two'));
+    await frame();
+    expect(document.activeElement).toBe(drawn('Three'));
+
+    act(() => canvas().selectElement(byText('Three').id));
+    deleteFrom(drawn('Three'));
+    await frame();
+    expect(document.activeElement).toBe(drawn('One'));
+  });
+});

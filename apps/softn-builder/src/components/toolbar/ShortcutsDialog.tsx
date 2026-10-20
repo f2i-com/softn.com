@@ -4,20 +4,15 @@
 
 import React, { useId } from 'react';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
-import { modKeyLabel } from '../../utils/platformKeys';
+import { modKeyLabel, tabFocusKeyLabel } from '../../utils/platformKeys';
+import { dialogStyles } from './dialogStyles';
 
 // The overlay, frame, title and close button are classes in styles/builder.css.
 const styles: Record<string, React.CSSProperties> = {
   dialog: {
     width: 600,
   },
-  header: {
-    padding: '14px 12px 14px 24px',
-    borderBottom: '1px solid var(--line-soft)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
+  header: dialogStyles.header,
   content: {
     padding: '8px 24px 24px',
     overflow: 'auto',
@@ -84,8 +79,8 @@ interface ShortcutEntry {
 }
 
 const MOD = modKeyLabel();
-/** The code editor's own key for handing Tab back (platformKeys.ts, tabFocusKeyLabel), as keys. */
-const TAB_LEAVES = ['Esc'];
+/** The code editor's own key for handing Tab back, as keys. */
+const TAB_LEAVES = [tabFocusKeyLabel()];
 
 const shortcuts: { title: string; entries: ShortcutEntry[] }[] = [
   {

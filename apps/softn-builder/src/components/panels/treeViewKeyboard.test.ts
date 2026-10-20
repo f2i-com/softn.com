@@ -71,4 +71,28 @@ describe('the hierarchy from the keyboard', () => {
     expect(canvas().elements.has(text)).toBe(false);
     expect(useHistoryStore.getState().past.length).toBe(1);
   });
+
+  // The focus went to the document's body, where the next key was heard by nothing.
+  it('puts the focus on the next row after a Delete, else the one before, else the parent', async () => {
+    let after = '';
+    act(() => void (after = canvas().addElement('Button', stack)));
+    const frame = () => act(async () => void (await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))));
+
+    row(text).focus();
+    press(row(text), 'Delete');
+    await frame();
+    expect(document.activeElement).toBe(row(after));
+
+    let before = '';
+    act(() => void (before = canvas().addElement('Badge', stack, 0)));
+    row(after).focus();
+    press(row(after), 'Delete');
+    await frame();
+    expect(document.activeElement).toBe(row(before));
+
+    row(before).focus();
+    press(row(before), 'Delete');
+    await frame();
+    expect(document.activeElement).toBe(row(stack));
+  });
 });

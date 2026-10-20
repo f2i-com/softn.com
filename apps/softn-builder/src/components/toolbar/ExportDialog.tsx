@@ -12,6 +12,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import {
   CAPABILITIES,
   CAPABILITY_INFO,
@@ -38,32 +39,26 @@ import {
   readQuarantinedSession,
   type QuarantinedSession,
 } from '../../utils/openProject';
+import { dialogStyles } from './dialogStyles';
 
 const MAX_ICON_BYTES = 512 * 1024;
 
-/** What Tab moves between inside the dialog. */
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-function focusableIn(root: HTMLElement): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-    (el) => !el.hidden && el.style.display !== 'none' && el.getAttribute('aria-hidden') !== 'true'
-  );
+/**
+ * The hosts typed into the Network field, as the declaration lists them:
+ * separated by commas, spaces or both.
+ */
+function parseHosts(text: string): string[] {
+  return text.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean);
 }
 
 // The overlay, frame, title, close button and buttons are classes in
-// styles/builder.css; these are the form's own layout.
+// styles/builder.css, and what the dialogs share is in dialogStyles.ts;
+// these are the form's own layout.
 const styles: Record<string, React.CSSProperties> = {
   dialog: {
     width: 580,
   },
-  header: {
-    padding: '14px 12px 14px 24px',
-    borderBottom: '1px solid var(--line-soft)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
+  header: dialogStyles.header,
   content: {
     padding: 24,
     overflowY: 'auto' as const,
@@ -73,28 +68,9 @@ const styles: Record<string, React.CSSProperties> = {
   field: {
     marginBottom: 16,
   },
-  label: {
-    display: 'block',
-    fontSize: 13,
-    fontWeight: 600,
-    color: 'var(--paper)',
-    marginBottom: 6,
-  },
-  input: {
-    width: '100%',
-    padding: '9px 12px',
-    borderRadius: 8,
-    fontSize: 14,
-  },
-  textarea: {
-    width: '100%',
-    padding: '9px 12px',
-    borderRadius: 8,
-    fontSize: 14,
-    lineHeight: 1.5,
-    minHeight: 64,
-    resize: 'vertical' as const,
-  },
+  label: dialogStyles.label,
+  input: dialogStyles.input,
+  textarea: dialogStyles.textarea,
   select: {
     padding: '6px 8px',
     borderRadius: 6,
@@ -182,14 +158,10 @@ const styles: Record<string, React.CSSProperties> = {
   reportWarn: { color: 'var(--warn)' },
   reportOk: { color: 'var(--paper)' },
   footer: {
+    ...dialogStyles.footer,
     padding: '12px 24px',
-    borderTop: '1px solid var(--line-soft)',
-    background: 'var(--ink)',
-    display: 'flex',
     alignItems: 'center',
-    justifyContent: 'flex-end',
     flexWrap: 'wrap' as const,
-    gap: 8,
   },
   footerNote: {
     marginRight: 'auto',
@@ -286,64 +258,27 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
   /** A saved session that would not restore, kept for download (utils/openProject.ts). */
   const [quarantine, setQuarantine] = useState<QuarantinedSession | null>(null);
   const iconInput = useRef<HTMLInputElement>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
-  /** What had focus when the dialog opened; focus goes back there on close. */
-  const openerRef = useRef<HTMLElement | null>(null);
+  /**
+   * The Network hosts as typed, and the list they were typed over. The field
+   * shows what is typed while the declaration still holds that list: it used
+   * to show the list joined again on every keystroke, so a space or a comma
+   * typed after a host was gone before the next host could follow it.
+   */
+  const [hostsDraft, setHostsDraft] = useState<{ text: string; over: string } | null>(null);
+  const hostsJoined = permissions.allowedHosts.join(', ');
+  const hostsText = hostsDraft !== null && hostsDraft.over === hostsJoined ? hostsDraft.text : hostsJoined;
 
   // A modal owns focus while it is open: focus moves in when it opens, Tab
-  // wraps inside it, Escape closes it, and focus goes back to the control
-  // that opened it when it closes. The overlay used to be a div with none of
-  // this — Tab left for the toolbar behind it, and closing dropped focus on
-  // the body.
-  // `onClose` is a fresh arrow on every render of the parent; through a ref,
-  // so this effect runs on open and close only and never moves focus out of
-  // the dialog because the parent re-rendered.
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  // wraps inside it, Escape closes it before the window-level shortcuts see
+  // it, and focus goes back to the control that opened it when it closes
+  // (the same hook as the other dialogs). The overlay used to be a div with
+  // none of this — Tab left for the toolbar behind it, and closing dropped
+  // focus on the body.
+  const dialogRef = useModalFocus(isOpen, onClose);
   useEffect(() => {
-    if (!isOpen) return;
-    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setQuarantine(readQuarantinedSession());
-    const dialog = dialogRef.current;
-    if (dialog) {
-      const first = focusableIn(dialog)[0];
-      (first ?? dialog).focus();
-    }
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      e.preventDefault();
-      e.stopPropagation();
-      onCloseRef.current();
-    };
-    // Capture phase, so it runs before the window-level shortcut handler
-    // and stops there: one close per Escape.
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown, true);
-      const opener = openerRef.current;
-      openerRef.current = null;
-      if (opener && opener.isConnected) opener.focus();
-    };
+    if (isOpen) setQuarantine(readQuarantinedSession());
+    else setHostsDraft(null);
   }, [isOpen]);
-
-  const trapTab = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'Tab' || !dialogRef.current) return;
-    const items = focusableIn(dialogRef.current);
-    if (items.length === 0) {
-      e.preventDefault();
-      return;
-    }
-    const first = items[0];
-    const last = items[items.length - 1];
-    const active = document.activeElement;
-    if (e.shiftKey && (active === first || active === dialogRef.current)) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && active === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
 
   // The collections the bundle will carry, for a policy row each.
   const collections = useMemo(() => {
@@ -510,7 +445,6 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
         className="bl-dialog"
         style={styles.dialog}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={trapTab}
       >
         <div style={styles.header}>
           <h2 id="export-dialog-title" className="bl-dialog-title">
@@ -639,16 +573,29 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
                         <div style={styles.sub}>
                           <input
                             type="text"
+                            aria-label="Hosts the app may reach"
+                            aria-describedby="export-net-hosts-note"
+                            data-setting="net-hosts"
                             style={{ ...styles.input, padding: '6px 10px', fontSize: 13 }}
-                            value={permissions.allowedHosts.join(', ')}
-                            onChange={(e) =>
-                              update({ allowedHosts: e.target.value.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean) })
-                            }
-                            placeholder="Hosts it may reach, comma-separated; empty means any host"
+                            value={hostsText}
+                            onChange={(e) => {
+                              const text = e.target.value;
+                              const hosts = parseHosts(text);
+                              setHostsDraft({ text, over: hosts.join(', ') });
+                              // A separator typed after a host changes nothing that is declared.
+                              if (hosts.join(', ') !== hostsJoined) update({ allowedHosts: hosts });
+                            }}
+                            // Left, the field says the list as it is declared.
+                            onBlur={() => setHostsDraft(null)}
+                            placeholder="Hosts it may reach, comma-separated; empty means any internet host"
                           />
+                          <span id="export-net-hosts-note" style={styles.capSummary}>
+                            With none listed it may reach any host on the internet, but not this computer or its local network
+                            (localhost, 192.168.…, .local): list such a host here to reach it.
+                          </span>
                           <label style={{ ...styles.policyRow, fontSize: 12, color: 'var(--dim)' }}>
                             <input type="checkbox" checked={permissions.allowHttp} onChange={(e) => update({ allowHttp: e.target.checked })} />
-                            Allow plain http:// servers (for a development server on localhost)
+                            Allow plain http:// servers (for a development server on localhost, which has to be listed above)
                           </label>
                         </div>
                       )}
@@ -661,6 +608,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
                               <div key={collection} style={styles.policyRow}>
                                 <span style={{ minWidth: 120 }}>{collection}</span>
                                 <select
+                                  aria-label={`Storage policy for ${collection}`}
                                   style={styles.select}
                                   value={permissions.storagePolicies[collection] ?? 'public'}
                                   onChange={(e) => setPolicy(collection, e.target.value as StoragePolicy)}

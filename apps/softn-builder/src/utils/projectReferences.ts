@@ -13,6 +13,7 @@
 
 import type { LogicFileState, UIFileState } from '../types/builder';
 import { logicSrcOf, resolveImportPath } from './logicFiles';
+import { stripSlash } from './values';
 
 export interface DanglingReference {
   /** The page that holds the reference. */
@@ -24,10 +25,6 @@ export interface DanglingReference {
   name?: string;
   /** The path it comes to, which the project does not have. */
   target: string;
-}
-
-function stripSlash(path: string): string {
-  return path.startsWith('/') ? path.slice(1) : path;
 }
 
 /** Every import and logic link of every page that names a file the project does not have, in page order. */

@@ -122,6 +122,41 @@ describe('a project written as HTML', () => {
   });
 });
 
+/**
+ * What one edit on the canvas does to a page, by the way the audit found it:
+ * opened from a bundle, edited, exported. A page with its own `<html>` and
+ * `<body>` came back with a `<div>` for its body and without `</body></html>`,
+ * and a page saved with CR LF came back half in LF.
+ */
+describe('a page opened, edited once on the canvas and exported', () => {
+  const PAGE = '<!DOCTYPE html>\n<html>\n<head>\n  <title>Tasks</title>\n  <script src="main.js"></script>\n</head>\n<body class="app" data-x="1">\n  <h1>Tasks</h1>\n  <p class="lead">Things to do.</p>\n</body>\n</html>\n';
+
+  async function editedAndExported(files: Record<string, string>, main: string, edit: (type: string) => boolean, props: Record<string, unknown>): Promise<string> {
+    const manifest = { name: 'Edited', version: '1.0.0', main, files: { ui: [main], logic: Object.keys(files).filter((path) => path.endsWith('.js') || path.endsWith('.logic')), xdb: [], assets: [] } };
+    const zipped = zipSync({ 'manifest.json': strToU8(JSON.stringify(manifest)), ...Object.fromEntries(Object.entries(files).map(([path, text]) => [path, strToU8(text)])) });
+    commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(zipped)));
+    const canvas = useCanvasStore.getState();
+    const target = [...canvas.elements.values()].find((element) => edit(element.componentType))!;
+    canvas.updateElementProps(target.id, props);
+    return decode(readBundleEntries(await buildProjectBundle()).get(main))!;
+  }
+
+  it('keeps an HTML page’s <body> and its </body></html>', async () => {
+    const index = await editedAndExported({ 'index.html': PAGE, 'main.js': 'let x = 1\n' }, 'index.html', (type) => type === 'h1', { children: 'Chores' });
+    expect(index).toContain('<h1>Chores</h1>');
+    expect(index).toContain('<body class="app" data-x="1">');
+    expect(index).not.toContain('<div class="app"');
+    expect(index.endsWith('</body>\n</html>\n')).toBe(true);
+  });
+
+  it('keeps the CR LF of a page saved with them', async () => {
+    const page = '<logic src="../logic/main.logic" />\r\n\r\n<App>\r\n  <Stack>\r\n    <Text>One</Text>\r\n  </Stack>\r\n</App>\r\n';
+    const main = await editedAndExported({ 'ui/main.ui': page, 'logic/main.logic': 'let x = 1\r\n' }, 'ui/main.ui', (type) => type === 'Text', { children: 'Two' });
+    expect(main).toContain('<Text>Two</Text>');
+    expect(main.replace(/\r\n/g, '')).not.toContain('\n');
+  });
+});
+
 describe('a project written as HTML, its files renamed or moved', () => {
   const idOf = (path: string) => [...useFilesStore.getState().nodes.values()].find((node) => node.path === path)!.id;
   const exported = async (path: string) => decode(readBundleEntries(await buildProjectBundle()).get(path));

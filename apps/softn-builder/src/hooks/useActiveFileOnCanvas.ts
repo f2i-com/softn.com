@@ -74,12 +74,26 @@ export function useActiveFileOnCanvas(): void {
     // holds a page nobody has named is flushed nowhere: the file now open
     // is not the one it holds.
     if (useCanvasStore.getState().pageId !== null) flushCanvasToActiveFile();
-    // The history is a stack of canvas snapshots with no idea which file each
-    // came from, and undo loads one unconditionally. Left in place across a
-    // switch, one Ctrl+Z would drop the previous file's element tree into the
-    // file now open — and the flush above would then write it there.
-    useHistoryStore.getState().clear();
   }, [activeFileId]);
+
+  /** The page the history's steps were taken on; undefined before the effect below has run. */
+  const steppedOn = useRef<string | null | undefined>(undefined);
+
+  // The history is a stack of canvas snapshots with no idea which page each
+  // came from, and undo loads one unconditionally. Left in place when another
+  // page is put on the canvas, one Ctrl+Z would drop the previous page's
+  // element tree into the one now open, and the next flush would write it
+  // there. So it is cleared when the page on the canvas changes, and not when
+  // the file in the middle does: it used to be cleared on every change of
+  // file, and a look at main.logic and back threw away the page's history,
+  // as did an edit made in Properties with the logic open, which then could
+  // not be undone.
+  useEffect(() => {
+    const before = steppedOn.current;
+    steppedOn.current = heldId;
+    if (before === undefined || before === heldId) return;
+    useHistoryStore.getState().clear();
+  }, [heldId]);
 
   // After the flush above, so a file is left with what the canvas held
   // before the next one is put on it. Not when a file that is no page is

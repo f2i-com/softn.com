@@ -95,6 +95,8 @@ describe('adding from the palette', () => {
     act(() => layout.click());
     expect(host.querySelector('[data-palette-item="Stack"]')).toBeNull();
     expect(stops()).toHaveLength(1);
+    // Opened again: the palette keeps its sections as they were left, for the tests that follow too.
+    act(() => layout.click());
 
     // And a search leaves one stop among what it found.
     const search = host.querySelector<HTMLInputElement>('input[type="search"]')!;
@@ -152,6 +154,21 @@ describe('adding from the palette', () => {
       console.error = original;
     }
     expect(errors.filter((message) => message.includes('shorthand'))).toEqual([]);
+  });
+
+  it('keeps the sections opened and closed when it is drawn again, as after a change of view', () => {
+    // It is drawn in Design alone, and each change of view put back the four sections it starts with.
+    act(() => root.render(React.createElement(ComponentPalette)));
+    const header = (name: string) => [...host.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')].find((button) => button.textContent?.startsWith(name))!;
+    const charts = header('Charts');
+    const opened = charts.getAttribute('aria-expanded') === 'false';
+    act(() => charts.click());
+    act(() => root.unmount());
+    root = createRoot(host);
+    act(() => root.render(React.createElement(ComponentPalette)));
+    expect(header('Charts').getAttribute('aria-expanded')).toBe(opened ? 'true' : 'false');
+    // Put back as it was, for what follows.
+    act(() => header('Charts').click());
   });
 
   it('says when a search matches nothing', () => {

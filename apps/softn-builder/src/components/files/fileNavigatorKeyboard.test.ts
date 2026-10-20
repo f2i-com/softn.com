@@ -49,16 +49,62 @@ afterEach(() => {
   host.remove();
 });
 
+/** The rows that are a stop for Tab. */
+const stops = () => [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')].filter((r) => r.tabIndex === 0);
+
 describe('the file tree from the keyboard', () => {
   it('is a tree of focusable rows that says which file is open', () => {
     mount();
     expect(host.querySelector('[role="tree"]')?.getAttribute('aria-label')).toBe('Project files');
     const rows = [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')];
     expect(rows.length).toBeGreaterThan(2);
-    for (const r of rows) expect(r.tabIndex).toBe(0);
+    for (const r of rows) expect(r.tabIndex).toBeGreaterThanOrEqual(-1);
     const folder = row('logic');
     expect(folder.getAttribute('aria-expanded')).toBe('true');
     expect(folder.hasAttribute('aria-selected')).toBe(false);
+  });
+
+  it('is one stop for Tab, on the open file, and the stop moves with the arrows', () => {
+    mount();
+    expect(stops()).toEqual([row('main.ui')]);
+
+    row('main.ui').focus();
+    press(row('main.ui'), 'ArrowDown');
+    expect(document.activeElement).toBe(row('logic'));
+    expect(stops()).toEqual([row('logic')]);
+
+    press(row('logic'), 'End');
+    expect(document.activeElement).toBe(row('assets'));
+    expect(stops()).toEqual([row('assets')]);
+    press(row('assets'), 'Home');
+    expect(document.activeElement).toBe(row('ui'));
+    expect(stops()).toEqual([row('ui')]);
+  });
+
+  it('gives the stop to a file opened elsewhere, and keeps one on a shown row when a folder closes', () => {
+    mount();
+    const logicId = row('main.logic').getAttribute('data-file-row')!;
+    act(() => useFilesStore.getState().openFile(logicId));
+    expect(stops()).toEqual([row('main.logic')]);
+
+    // Closing the folder hides the row that had the stop; the folder, focused to close it, takes it.
+    row('logic').focus();
+    press(row('logic'), 'ArrowLeft');
+    expect(() => row('main.logic')).toThrow();
+    expect(stops()).toEqual([row('logic')]);
+  });
+
+  it('goes up to the folder with Left and into it with Right', () => {
+    mount();
+    row('main.logic').focus();
+    press(row('main.logic'), 'ArrowLeft');
+    expect(document.activeElement).toBe(row('logic'));
+    press(row('logic'), 'ArrowRight');
+    expect(document.activeElement).toBe(row('main.logic'));
+    // An empty folder has nothing to go into.
+    row('assets').focus();
+    press(row('assets'), 'ArrowRight');
+    expect(document.activeElement).toBe(row('assets'));
   });
 
   it('opens a file with Enter and walks the rows with the arrows', () => {
@@ -78,13 +124,20 @@ describe('the file tree from the keyboard', () => {
     expect(row('logic').getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('renames with F2', () => {
+  it('renames with F2, in a box that says what it is for', () => {
     mount();
     const id = row('main.logic').getAttribute('data-file-row');
     press(row('main.logic'), 'F2');
-    const input = host.querySelector(`[data-file-row="${id}"] input`);
+    const input = host.querySelector<HTMLInputElement>(`[data-file-row="${id}"] input`);
     expect(input).not.toBeNull();
-    expect((input as HTMLInputElement).value).toBe('main.logic');
+    expect(input!.value).toBe('main.logic');
+    expect(input!.getAttribute('aria-label')).toBe('New name for main.logic');
+
+    // Escape gives up the rename and leaves the focus on the row, not on the page.
+    input!.focus();
+    press(input!, 'Escape');
+    expect(host.querySelector(`[data-file-row="${id}"] input`)).toBeNull();
+    expect(document.activeElement).toBe(row('main.logic'));
   });
 
   it('opens the menu with the menu key, focuses it, and gives focus back on Escape', () => {

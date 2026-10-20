@@ -276,6 +276,93 @@ describe('the Export button of the dialog', () => {
   });
 });
 
+describe('the hosts the network may reach', () => {
+  // The field showed the declared list joined again on every keystroke, so a
+  // space or a comma typed after a host was gone at once: "a.com b.com"
+  // typed came out "a.comb.com", one host that is nobody's.
+
+  function openWithNet(): HTMLInputElement {
+    const project = useProjectStore.getState();
+    project.setPermissions({ ...project.permissions, capabilities: ['net'] });
+    render(true, () => {});
+    return container.querySelector<HTMLInputElement>('input[data-setting="net-hosts"]')!;
+  }
+
+  /** Type `text` into `input` a character at a time, as a person does. */
+  function type(input: HTMLInputElement, text: string): void {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    for (const ch of text) {
+      act(() => {
+        setValue.call(input, input.value + ch);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    }
+  }
+
+  const hosts = () => useProjectStore.getState().permissions.allowedHosts;
+
+  it('keeps the spaces and commas typed between hosts, and declares each host', () => {
+    const input = openWithNet();
+    expect(input.getAttribute('aria-label')).toBe('Hosts the app may reach');
+    input.focus();
+    type(input, 'a.com b.com');
+    expect(input.value).toBe('a.com b.com');
+    expect(hosts()).toEqual(['a.com', 'b.com']);
+
+    act(() => input.blur());
+    expect(input.value).toBe('a.com, b.com');
+  });
+
+  it('keeps a trailing comma while the next host is still to come', () => {
+    const input = openWithNet();
+    input.focus();
+    type(input, 'x.org,');
+    expect(input.value).toBe('x.org,');
+    expect(hosts()).toEqual(['x.org']);
+    type(input, ' y.org');
+    expect(input.value).toBe('x.org, y.org');
+    expect(hosts()).toEqual(['x.org', 'y.org']);
+  });
+
+  it('takes a list pasted whole, and says the declared list once the field is left', () => {
+    const input = openWithNet();
+    input.focus();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setValue.call(input, 'api.example.com,  cdn.example.com localhost');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(hosts()).toEqual(['api.example.com', 'cdn.example.com', 'localhost']);
+    act(() => input.blur());
+    expect(input.value).toBe('api.example.com, cdn.example.com, localhost');
+  });
+
+  it('shows a list changed elsewhere, not what was typed before it', () => {
+    const input = openWithNet();
+    input.focus();
+    type(input, 'a.com ');
+    const project = useProjectStore.getState();
+    act(() => project.setPermissions({ ...project.permissions, allowedHosts: ['other.org'] }));
+    expect(input.value).toBe('other.org');
+  });
+
+  it('says that with none listed the app reaches no host on this computer or its network', () => {
+    const input = openWithNet();
+    const note = document.getElementById(input.getAttribute('aria-describedby')!);
+    expect(note?.textContent).toMatch(/not this computer or its local network/);
+  });
+
+  it('names each collection’s storage policy', () => {
+    useSchemaStore.getState().addEntity({ x: 0, y: 0 });
+    const name = useSchemaStore.getState().entities[0].name;
+    const project = useProjectStore.getState();
+    project.setPermissions({ ...project.permissions, capabilities: ['storage'] });
+    render(true, () => {});
+    const select = container.querySelector('select')!;
+    expect(select.getAttribute('aria-label')).toBe(`Storage policy for ${name}`);
+  });
+});
+
 describe('what the app may use, for an app with only an older manifest block', () => {
   it('says the boxes ticked are what that block grants, and only then', async () => {
     const { readBundleDeclaration } = await import('../../utils/permissions');

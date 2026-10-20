@@ -40,17 +40,14 @@ export default defineConfig({
       // PwaUpdater registers the worker through `virtual:softn-pwa/react`, so
       // the build writes no registration script of its own.
       injectRegister: false,
-      // The workbox globs below already sweep up everything in dist, icons
-      // included, and listing them twice puts duplicate precache entries in
-      // the service worker.
-      includeManifestIcons: false,
       manifest: {
         name: 'SoftN Builder',
         short_name: 'Builder',
         description: 'Visual editor for SoftN applications',
         display: 'standalone',
-        theme_color: '#0c0a09',
-        background_color: '#0c0a09',
+        // The Builder's own ground, the brand's dark --ink, as index.html paints it.
+        theme_color: '#101317',
+        background_color: '#101317',
         // Relative so the installed app follows whatever sub-path VITE_BASE
         // deployed it under.
         start_url: '.',

@@ -1,11 +1,12 @@
 # Design collections and relationships
 
 Open an app in Builder and choose **Data**. The diagram, collection editor and
-seed-data table describe the data that travels with the exported `.softn` app.
+**Sample records** table describe the data that travels with the exported
+`.softn` app.
 
 ## Connect collections
 
-1. Add your collections with **Add Entity** and give them names and fields.
+1. Add your collections with **+ Add collection** and give them names and fields.
 2. Drag a connector on the right of a collection to the left connector of another
    collection. You can also use **Add relationship** and choose both collections.
 3. Choose the relationship type and save. The **Relationships** panel lets you
@@ -23,19 +24,20 @@ uniqueness or cascading behavior; drawing a line does not enforce those rules.
 
 ## Link real records
 
-For a many-to-one or one-to-one relationship, choose an existing string/reference
+For a many-to-one or one-to-one relationship, choose an existing text or reference
 field or **Create reference field…**. For example, connect `orders` to `customers`
 and create `customerId` on `orders`. Dragging from a field connector preselects
 that field. Choosing **Diagram only** leaves the fields and data unchanged.
 
-Add sample customer records in **Seed Data**, then select a customer from the
-`customerId` dropdown in an order. The stored value is the customer's record ID,
-which stays stable when the app is exported and reopened. Configuring a reference
+Add customer records in **Sample records** with **+ Add record**, then select a
+customer from the `customerId` dropdown in an order. The stored value is the
+customer's record ID, which stays stable when the app is exported and reopened;
+a record added here starts with its `id` field set to that ID. Configuring a reference
 in the collection editor also adds its diagram connection.
 
 ## Save and refine the model
 
-**Save** or **Export .softn** includes the collections, seed records, diagram
+**Save** or **Export .softn** includes the collections, sample records, diagram
 positions and relationships. Reopening that app in Builder restores the model.
 The diagram metadata lives in `manifest.builder.schema`; record references live
 in the collection's fields and values.
@@ -49,3 +51,5 @@ Use **Fit View** to see the whole diagram, or pan and zoom to inspect a larger
 model. **Add relationship** and the **Relationships** panel provide alternatives
 to dragging. Delete or Backspace acts on a selected item only while the diagram
 has focus; it does not act through a relationship dialog or a data-entry control.
+A relationship goes at once; a collection is asked about first, as **Delete
+collection** asks, because its records go with it and cannot be brought back.

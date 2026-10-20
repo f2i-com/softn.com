@@ -105,13 +105,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-/** What each field type is called on its card; the store's names, in words. */
 /** A collection's card, picked or not. */
 export function entityNodeStyle(selected: boolean): React.CSSProperties {
   return { ...styles.node, ...(selected ? styles.nodeSelected : {}) };
 }
 
-const fieldTypeLabels: Record<string, string> = {
+/** What each field type is called on its card; the store's names, in words. */
+export const fieldTypeLabels: Record<string, string> = {
   string: 'text',
   number: 'number',
   boolean: 'yes / no',

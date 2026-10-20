@@ -781,9 +781,11 @@ body {
 }
 
 /* Where the caret is, for a keyboard: the editor's own ring is turned off so
- * the panel keeps its edges, and the brand's focus colour marks the panel. */
+ * the panel keeps its edges, and the ring the rest of the Builder draws (2px
+ * of mint, above) marks the panel, inside them. It was 1px of the strong
+ * line, about 1.7:1 against the panel: not a ring anybody could find. */
 .bl-code-editor:focus-within {
-  box-shadow: inset 0 0 0 1px var(--line-strong) !important;
+  box-shadow: inset 0 0 0 2px var(--mint) !important;
 }
 
 .bl-code-editor textarea::selection {

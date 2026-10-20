@@ -7,6 +7,7 @@ import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { blockHeaderText } from '../../utils/sourceGenerator';
 import { elementLabel } from '../../utils/blocks';
+import { focusCandidatesAfterDelete, focusFirstDrawn } from '../../utils/focusAfterDelete';
 import type { CanvasElement } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -124,15 +125,24 @@ function TreeNode({ element, depth }: TreeNodeProps) {
     setIsExpanded((prev) => !prev);
   }, []);
 
-  const handleDelete = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (element.parentId) {
-        push(elements, rootId);
-        deleteElement(element.id);
-      }
+  /** Delete this element, and put the focus on the row beside it rather than on the document's body. */
+  const deleteRow = useCallback(
+    (row: HTMLElement | null) => {
+      const tree = row?.closest<HTMLElement>('[role="tree"]') ?? null;
+      const candidates = focusCandidatesAfterDelete(elements, [element.id]);
+      push(elements, rootId);
+      deleteElement(element.id);
+      focusFirstDrawn(candidates, (id) => tree?.querySelector<HTMLElement>(`[data-hierarchy-row="${id}"]`) ?? null);
     },
-    [element.id, element.parentId, elements, rootId, push, deleteElement]
+    [element.id, elements, rootId, push, deleteElement]
+  );
+
+  const handleDelete = useCallback(
+    (e: React.MouseEvent<HTMLElement>) => {
+      e.stopPropagation();
+      if (element.parentId) deleteRow(e.currentTarget.closest<HTMLElement>('[data-hierarchy-row]'));
+    },
+    [element.parentId, deleteRow]
   );
 
   // Rows walk like the canvas tree: arrows move, Enter selects (Shift adds),
@@ -155,11 +165,10 @@ function TreeNode({ element, depth }: TreeNodeProps) {
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && element.parentId) {
         e.preventDefault();
         e.stopPropagation();
-        push(elements, rootId);
-        deleteElement(element.id);
+        deleteRow(e.currentTarget);
       }
     },
-    [element.id, element.parentId, hasChildren, isExpanded, selectElement, elements, rootId, push, deleteElement]
+    [element.id, element.parentId, hasChildren, isExpanded, selectElement, deleteRow]
   );
 
   const nodeStyle: React.CSSProperties = {

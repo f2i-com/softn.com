@@ -17,7 +17,9 @@
  */
 
 import { debug } from './debug';
-import { MAX_ZIP_INPUT_BYTES, pageLogicSources, resolveBundlePath } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, classifyAsset, pageLogicSources, resolveBundlePath } from '@softn/core';
+import { bytesToBase64 } from './base64';
+import { countedId } from './ids';
 import { ensureFieldIds } from './schemaFields';
 import { readBuilderSchema } from './builderSchemaMetadata';
 import { parseBundle, startsWithByteOrderMark, type BundleManifest } from './bundleExporter';
@@ -77,22 +79,17 @@ export interface LoadedBundle {
   iconPath: string | null;
 }
 
+/** The kinds of picture a project's icon may be: what the export writes back as one (buildProjectBundle.ts, decodeIconDataUrl). */
+const ICON_TYPES = new Set(['image/svg+xml', 'image/jpeg', 'image/webp', 'image/png']);
+
 /** The icon named by a manifest, as a data URL the project store keeps. */
 function readIcon(bytes: Uint8Array, path: string): string | null {
-  const ext = path.split('.').pop()?.toLowerCase();
-  const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : null;
-  if (!mime) return null;
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return `data:${mime};base64,${btoa(bin)}`;
+  const { mime } = classifyAsset(path);
+  if (!ICON_TYPES.has(mime)) return null;
+  return `data:${mime};base64,${bytesToBase64(bytes)}`;
 }
 
-
-let fileIdCounter = 0;
-
-function generateFileId(): string {
-  return `file_${Date.now()}_${fileIdCounter++}`;
-}
+const generateFileId = (): string => countedId('file_');
 
 function declaredPaths(manifest: BundleManifest, group: FileGroup): string[] {
   const groups = (manifest as { files?: Record<string, unknown> }).files;
@@ -104,8 +101,6 @@ function declaredPaths(manifest: BundleManifest, group: FileGroup): string[] {
  * Load a .softn bundle from Uint8Array data
  */
 export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
-  fileIdCounter = 0;
-
   const { manifest, manifestBytes, files } = parseBundle(data);
   // The manifest as read, before anything here touches the typed view of it.
   const rawManifest = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;

@@ -32,6 +32,7 @@ import { DataEntryPanel } from './DataEntryPanel';
 import { useInitialSchemaFit } from '../../hooks/useInitialSchemaFit';
 import { RelationshipDialog } from './RelationshipDialog';
 import { RelationshipList, relationshipCardinality, relationshipName } from './RelationshipList';
+import { allowSchemaDelete } from './deleteCollections';
 import type { RelationshipDraft } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -266,9 +267,15 @@ export function SchemaDesigner() {
         }
         // Pressing Delete removed the node from the canvas and left the entity
         // in the schema: it vanished from the diagram, kept its seed rows, and
-        // came straight back on the next render from the store.
+        // came straight back on the next render from the store. A removal
+        // arrives here only once it has been agreed to (onBeforeDelete below).
         if (change.type === 'remove') {
           deleteEntity(change.id);
+          // The card that had the focus is gone; the diagram keeps it, so the
+          // next key is still the diagram's rather than the page's.
+          requestAnimationFrame(() => {
+            if (!document.activeElement || document.activeElement === document.body) flowContainer.current?.focus();
+          });
         }
       }
     },
@@ -426,11 +433,15 @@ export function SchemaDesigner() {
             onEdgeClick={onEdgeClick}
             // Keep the listener installed when focus changes: installing it
             // in an effect after SVG focus can miss the very next key press.
-            // The live focus guard below decides whether deletion is allowed.
+            // The live focus guard below decides whether deletion is allowed,
+            // and a collection, which takes its records with it, is asked
+            // about first, as the editor's Delete collection button asks.
             deleteKeyCode={schemaDeleteKeys}
-            onBeforeDelete={async () => {
+            onBeforeDelete={(picked) => {
               const focused = document.activeElement;
-              return !relationshipDialog && !!flowContainer.current?.contains(focused) && !!focused?.closest('.react-flow__node, .react-flow__edge');
+              const ours = !relationshipDialog && !!flowContainer.current?.contains(focused) && !!focused?.closest('.react-flow__node, .react-flow__edge');
+              const nameOf = (id: string) => useSchemaStore.getState().entities.find(entity => entity.id === id)?.name ?? id;
+              return allowSchemaDelete(picked, ours, nameOf);
             }}
             onMoveStart={event => { if (event) { viewportInteracted.current = true; if (addedEntityFit) addedEntityFit.interacted.current = true; } }}
             onNodeDragStart={() => { viewportInteracted.current = true; if (addedEntityFit) addedEntityFit.interacted.current = true; }}

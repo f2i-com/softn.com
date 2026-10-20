@@ -14,7 +14,9 @@
  * offering what it offered until each is fixed on purpose: the test fails
  * on any NEW disagreement, and asks for a re-baseline when one is fixed so
  * the file always says what is still wrong. Regenerate with
- * `npm run generate:component-drift -w @softn/builder`.
+ * `npm run generate:component-drift -w @softn/builder`. A prop's default and
+ * choices are not baselined: they are the components' own, and the checks at
+ * the end fail on any that is not.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -22,9 +24,11 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { componentRegistry } from './componentRegistry';
 import { EDITORIAL_PROPS, PROP_TYPE_FOR_KIND } from './componentRegistryContract';
+import { componentPropsPath, renderComponentProps } from '../../scripts/generate-component-props.mjs';
+import { shownValue, writtenValue } from './propValues';
 
-type ManifestType = { kind: string; options?: string[]; text?: string };
-type ManifestMember = { name: string; optional: boolean; type: ManifestType; doc?: string };
+type ManifestType = { kind: string; options?: string[]; literals?: string[]; text?: string };
+type ManifestMember = { name: string; optional: boolean; type: ManifestType; default?: unknown; defaultUnknown?: boolean; doc?: string };
 type ManifestComponent = { name: string; source: string; props: { interface: string; members: ManifestMember[] } | null };
 type Manifest = { components: ManifestComponent[]; registered: Record<string, string[]> };
 
@@ -95,5 +99,80 @@ describe('the Builder component registry against component-manifest.json', () =>
   it('records only disagreements that still exist (re-baseline after a fix)', () => {
     const stale = baseline.filter((line) => !still.has(line));
     expect(stale, 'fixed: run `npm run generate:component-drift -w @softn/builder` so the baseline says what is still wrong').toEqual([]);
+  });
+});
+
+/**
+ * The panel shows a prop a page has not written as its default and writes
+ * nothing when the default is chosen, so a default that is not the
+ * component's own is a prop that cannot be set: the registry said a chart's
+ * `interactive` was on, and it could never be turned on; that a Card's
+ * `dividers` were off, and they could never be turned off; that a Stack's gap
+ * was `md`, and "Default (md)" gave none. Defaults and choices come from the
+ * components (componentProps.generated.ts). These checks are not baselined:
+ * a disagreement fails.
+ */
+describe('the defaults and choices the property panel offers', () => {
+  it('come from a componentProps.generated.ts made from the current manifest (run `npm run generate:component-props -w @softn/builder`)', () => {
+    expect(readFileSync(componentPropsPath, 'utf8').replace(/\r\n/g, '\n')).toBe(renderComponentProps(manifest));
+  });
+
+  it('are each component’s own default for every prop the manifest can read one of', () => {
+    const wrong: string[] = [];
+    for (const meta of componentRegistry) {
+      const members = new Map((byName.get(meta.name)?.props?.members ?? []).map((m) => [m.name, m]));
+      for (const prop of meta.propSchema) {
+        const member = members.get(prop.name);
+        if (!member || member.defaultUnknown) continue;
+        if (JSON.stringify(prop.default) !== JSON.stringify(member.default)) {
+          wrong.push(`${meta.name}.${prop.name}: panel says ${JSON.stringify(prop.default)}, component ${JSON.stringify(member.default)}`);
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('offer every choice a component’s type names, and no other where its type takes no other', () => {
+    const wrong: string[] = [];
+    for (const meta of componentRegistry) {
+      const members = new Map((byName.get(meta.name)?.props?.members ?? []).map((m) => [m.name, m]));
+      for (const prop of meta.propSchema) {
+        const type = members.get(prop.name)?.type;
+        const named = type?.kind === 'enum' ? type.options : type?.literals;
+        if (prop.type !== 'select' || !named) continue;
+        const offered = prop.options ?? [];
+        const missing = named.filter((option) => !offered.includes(option));
+        if (missing.length) wrong.push(`${meta.name}.${prop.name}: does not offer ${missing.join(', ')}`);
+        if (members.get(prop.name)!.type.kind === 'enum' && offered.length !== named.length) wrong.push(`${meta.name}.${prop.name}: offers more than ${named.join(', ')}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('let every yes-or-no prop be turned away from its default, and back', () => {
+    const stuck: string[] = [];
+    for (const meta of componentRegistry) {
+      for (const prop of meta.propSchema) {
+        if (prop.type !== 'boolean') continue;
+        const unset = { value: undefined, isExpression: false };
+        const shown = shownValue(prop, unset);
+        const turned = writtenValue(prop, unset, !shown);
+        const back = turned && writtenValue(prop, turned, shown);
+        // Away from the default is written; back to it is written as nothing.
+        if (!turned || turned.value === undefined || !back || back.value !== undefined) stuck.push(`${meta.name}.${prop.name}`);
+      }
+    }
+    expect(stuck).toEqual([]);
+  });
+
+  it('are the components’ own where the panel was wrong before', () => {
+    const prop = (component: string, name: string) => componentRegistry.find((c) => c.name === component)!.propSchema.find((p) => p.name === name)!;
+    expect(prop('LineChart', 'interactive').default).toBe(false);
+    expect(prop('BarChart', 'interactive').default).toBe(false);
+    expect(prop('Card', 'dividers').default).toBe(true);
+    expect(prop('Stack', 'gap').default).toBe('none');
+    expect(prop('Box', 'padding').default).toBe('none');
+    // An open type's own list keeps the values it takes beyond the ones it names.
+    expect(prop('App', 'theme').options).toEqual(['light', 'dark', 'system']);
   });
 });

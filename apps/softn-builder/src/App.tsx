@@ -4,6 +4,7 @@
 
 import React, { lazy, Suspense, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ProductBar } from '@softn/brand';
+import { classifyAsset } from '@softn/core';
 import { Toolbar } from './components/toolbar/Toolbar';
 import { NarrowScreenNotice } from './components/NarrowScreenNotice';
 import { ExportDialog } from './components/toolbar/ExportDialog';
@@ -53,7 +54,7 @@ import { PANEL_WIDTHS, useSidePanels } from './hooks/usePanelsThatFit';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
 import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
-import { viewsFor } from './utils/workspaceViews';
+import { pageInHand, viewsFor } from './utils/workspaceViews';
 import { startNewProject } from './utils/newProject';
 import { keepSavedPoint, markUnsaved } from './utils/savedPoint';
 
@@ -177,20 +178,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
   },
-  collapsedRailLeft: {
-    width: PANEL_WIDTHS.rail,
-    minWidth: PANEL_WIDTHS.rail,
-    border: '1px solid var(--line-soft)',
-    borderRadius: 10,
-    background: 'var(--ink-2)',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingTop: 10,
-    gap: 8,
-  },
-  collapsedRailRight: {
+  // A panel put away to its rail, on either side.
+  collapsedRail: {
     width: PANEL_WIDTHS.rail,
     minWidth: PANEL_WIDTHS.rail,
     border: '1px solid var(--line-soft)',
@@ -291,15 +280,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-function mimeTypeFromPath(path: string): string {
-  const ext = path.toLowerCase().split('.').pop() || '';
-  if (ext === 'png') return 'image/png';
-  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
-  if (ext === 'gif') return 'image/gif';
-  if (ext === 'webp') return 'image/webp';
-  if (ext === 'svg') return 'image/svg+xml';
-  if (ext === 'bmp') return 'image/bmp';
-  return 'application/octet-stream';
+/**
+ * What opening a project warned of, where the person can read it: the toast
+ * shows the warnings behind "Show all". They went to the console alone, and
+ * "Opened with 39 warning(s)" said nothing anybody could act on.
+ */
+function sayOpenedWithWarnings(warnings: readonly string[]): void {
+  if (warnings.length === 0) return;
+  console.warn('[App] Opened with warnings:', warnings);
+  toast.warning(`Opened with ${warnings.length} ${warnings.length === 1 ? 'warning' : 'warnings'}`, [...warnings]);
 }
 
 function isPreviewableImage(path: string): boolean {
@@ -355,7 +344,8 @@ function App() {
   const shellRef = useRef<HTMLDivElement | null>(null);
 
   const selectedCount = useCanvasStore((state) => state.selectedIds.length);
-  const elementCount = useCanvasStore((state) => state.elements.size);
+  // The page's own <App> is not one of its elements: an empty page said "1 element".
+  const elementCount = useCanvasStore((state) => state.elements.size - (state.elements.has(state.rootId) ? 1 : 0));
   const handleCreateNewProject = useCallback((config: NewProjectConfig) => {
     fileHandleRef.current = null;
     forgetDesktopFile();
@@ -388,10 +378,7 @@ function App() {
     commitProjectSnapshot(snapshot);
     setView(snapshot.view);
 
-    if (snapshot.warnings.length > 0) {
-      console.warn('[App] Opened with warnings:', snapshot.warnings);
-      toast.warning(`Opened with ${snapshot.warnings.length} warning(s)`);
-    }
+    sayOpenedWithWarnings(snapshot.warnings);
     toast.success(snapshot.origin === 'session' ? 'Restored previous local session' : `Opened: ${snapshot.label}`);
     debug(`[App] Opened: ${snapshot.label}`);
   }, []);
@@ -496,7 +483,7 @@ function App() {
       if (outcome.kind === 'opened') {
         fileHandleRef.current = null;
         setView(outcome.snapshot.view);
-        if (outcome.snapshot.warnings.length > 0) toast.warning(`Opened with ${outcome.snapshot.warnings.length} warning(s)`);
+        sayOpenedWithWarnings(outcome.snapshot.warnings);
         toast.success(`Opened: ${outcome.snapshot.label}`);
       } else if (outcome.kind === 'failed') {
         const e = outcome.error;
@@ -598,10 +585,12 @@ function App() {
   const activeNode = activeFileId ? fileNodes.get(activeFileId) : null;
   const activeFileType = activeNode?.fileType ?? null;
 
+  const pageHeld = useCanvasStore((state) => state.pageId !== null);
+
   useWorkspaceShortcuts({
     blocked: modalOpen, narrow: isNarrow, save: handleSave, open: handleOpen,
     create: handleNew, export: handleExport, shortcuts: () => setShowShortcuts(true),
-    changeView, canvas: view === 'design' && activeFileType === 'ui',
+    changeView, canvas: pageInHand(view, activeFileType, pageHeld),
   });
   const isLogicFileActive = activeFileType === 'logic';
   const isAssetFileActive = activeFileType === 'asset';
@@ -616,7 +605,7 @@ function App() {
     }
     const objectUrl = URL.createObjectURL(
       new Blob([Uint8Array.from(activeAsset.data)], {
-        type: activeAsset.type || mimeTypeFromPath(activeAsset.name),
+        type: activeAsset.type || classifyAsset(activeAsset.name).mime,
       })
     );
     setActiveAssetPreviewUrl(objectUrl);
@@ -645,7 +634,7 @@ function App() {
                   <FileNavigator onToggleDock={() => setDockFiles(false)} />
                 </div>
               ) : (
-                <div data-panel="Files" style={styles.collapsedRailLeft}>
+                <div data-panel="Files" style={styles.collapsedRail}>
                   <button className="bl-rail-btn" onClick={() => setDockFiles(true)} aria-label="Show files panel">
                     Files
                   </button>
@@ -658,7 +647,7 @@ function App() {
                 </div>
               )}
               {!dockComponents && (
-                <div data-panel="Components" style={styles.collapsedRailLeft}>
+                <div data-panel="Components" style={styles.collapsedRail}>
                   <button className="bl-rail-btn" onClick={() => setDockComponents(true)} aria-label="Show components panel">
                     Components
                   </button>
@@ -683,7 +672,7 @@ function App() {
                         <div style={styles.assetPreviewCard}>
                           <div style={styles.assetName}>{activeAsset.name}</div>
                           <div style={styles.assetPreviewMeta}>
-                            {activeAsset.type || mimeTypeFromPath(activeAsset.name)} · {(activeAsset.data.byteLength / 1024).toFixed(1)} KB
+                            {activeAsset.type || classifyAsset(activeAsset.name).mime} · {(activeAsset.data.byteLength / 1024).toFixed(1)} KB
                           </div>
                           {activeAssetPreviewUrl ? (
                             <div style={styles.assetImageWrap}>
@@ -742,7 +731,7 @@ function App() {
                 </div>
               )}
               {!dockInspector && (
-                <div style={styles.collapsedRailRight}>
+                <div style={styles.collapsedRail}>
                   <button className="bl-rail-btn" onClick={() => setDockInspector(true)} aria-label="Show properties panel">
                     Properties
                   </button>

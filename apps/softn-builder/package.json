@@ -14,7 +14,8 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:desktop": "playwright test --config playwright.desktop.config.ts",
-    "generate:component-drift": "node ./scripts/baseline-component-drift.mjs"
+    "generate:component-drift": "node ./scripts/baseline-component-drift.mjs",
+    "generate:component-props": "node ./scripts/generate-component-props.mjs"
   },
   "dependencies": {
     "@fontsource-variable/bricolage-grotesque": "^5.3.0",

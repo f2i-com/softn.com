@@ -218,6 +218,32 @@ function deleteSelection(): boolean {
  */
 let selectionLeftByInsert: readonly string[] | null = null;
 
+/**
+ * A press on a row of the palette: `type` is dragged once the pointer has
+ * moved five pixels with the button down. Less than that is a click, or the
+ * first half of a double-click, and drags nothing.
+ */
+function dragOnceMoved(e: React.MouseEvent, type: string, setDraggedType: (type: string | null) => void): void {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const startX = e.clientX;
+  const startY = e.clientY;
+  let dragActivated = false;
+  const handleMouseMove = (moveEvent: MouseEvent) => {
+    if (dragActivated) return;
+    if (Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) >= 5) {
+      dragActivated = true;
+      setDraggedType(type);
+    }
+  };
+  const handleMouseUp = () => {
+    window.removeEventListener('mousemove', handleMouseMove);
+    window.removeEventListener('mouseup', handleMouseUp);
+  };
+  window.addEventListener('mousemove', handleMouseMove);
+  window.addEventListener('mouseup', handleMouseUp);
+}
+
 function ComponentItem({ component }: ComponentItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const setDraggedType = useCanvasStore((state) => state.setDraggedType);
@@ -226,32 +252,7 @@ function ComponentItem({ component }: ComponentItemProps) {
   const isDragging = draggedType === component.name;
 
   const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-
-      const startX = e.clientX;
-      const startY = e.clientY;
-      let dragActivated = false;
-
-      const handleMouseMove = (moveEvent: MouseEvent) => {
-        if (dragActivated) return;
-        const deltaX = Math.abs(moveEvent.clientX - startX);
-        const deltaY = Math.abs(moveEvent.clientY - startY);
-        if (deltaX + deltaY >= 5) {
-          dragActivated = true;
-          setDraggedType(component.name);
-        }
-      };
-
-      const handleMouseUp = () => {
-        window.removeEventListener('mousemove', handleMouseMove);
-        window.removeEventListener('mouseup', handleMouseUp);
-      };
-
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-    },
+    (e: React.MouseEvent) => dragOnceMoved(e, component.name, setDraggedType),
     [component.name, setDraggedType]
   );
 
@@ -354,24 +355,7 @@ function PageItem({ page }: { page: Importable }) {
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (e.button !== 0 || refused) return;
-      e.preventDefault();
-      const startX = e.clientX;
-      const startY = e.clientY;
-      let dragActivated = false;
-      const handleMouseMove = (moveEvent: MouseEvent) => {
-        if (dragActivated) return;
-        if (Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) >= 5) {
-          dragActivated = true;
-          setDraggedType(type);
-        }
-      };
-      const handleMouseUp = () => {
-        window.removeEventListener('mousemove', handleMouseMove);
-        window.removeEventListener('mouseup', handleMouseUp);
-      };
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+      if (!refused) dragOnceMoved(e, type, setDraggedType);
     },
     [type, refused, setDraggedType]
   );
@@ -428,14 +412,36 @@ interface ComponentPaletteProps {
   onToggleDock?: () => void;
 }
 
+/**
+ * Which sections of the palette are open, kept while the palette is not
+ * drawn. It is drawn in Design alone, and each change of view put back the
+ * four sections it starts with, whatever had been opened or closed.
+ */
+const openSections = {
+  categories: new Set(['Control flow', 'Layout', 'Form', 'Display']),
+  pages: true,
+};
+
 export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['Control flow', 'Layout', 'Form', 'Display'])
-  );
+  const [expandedCategories, setExpandedCategoriesState] = useState<Set<string>>(() => new Set(openSections.categories));
+  const setExpandedCategories = useCallback((update: (previous: Set<string>) => Set<string>) => {
+    setExpandedCategoriesState((previous) => {
+      const next = update(previous);
+      openSections.categories = next;
+      return next;
+    });
+  }, []);
   const componentsByCategory = useMemo(() => getComponentsByCategory(), []);
   const projectPages = useProjectPages();
-  const [pagesExpanded, setPagesExpanded] = useState(true);
+  const [pagesExpanded, setPagesExpandedState] = useState(() => openSections.pages);
+  const setPagesExpanded = useCallback((update: (previous: boolean) => boolean) => {
+    setPagesExpandedState((previous) => {
+      const next = update(previous);
+      openSections.pages = next;
+      return next;
+    });
+  }, []);
   const matchingPages = searchQuery
     ? projectPages.filter((page) => `${page.file.path} ${page.name}`.toLowerCase().includes(searchQuery.toLowerCase()))
     : projectPages;

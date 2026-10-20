@@ -2,7 +2,7 @@
  * FileNavigator - Tree view for project files and folders
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { useFilesStore } from '../../stores/filesStore';
 import { askConfirm } from '../../utils/confirm';
 import { useProjectStore } from '../../stores/projectStore';
@@ -225,14 +225,45 @@ interface MenuPoint {
   viaKeyboard?: boolean;
 }
 
-/** Move focus to the row before or after this one, in the order they are shown. */
-function focusSiblingRow(row: HTMLElement, step: 1 | -1 | 'first' | 'last'): void {
-  const tree = row.closest('[role="tree"]');
-  if (!tree) return;
-  const rows = [...tree.querySelectorAll<HTMLElement>('[data-file-row]')];
-  const index = rows.indexOf(row);
-  const next = step === 'first' ? rows[0] : step === 'last' ? rows[rows.length - 1] : rows[index + step];
-  next?.focus();
+/*
+ * The tree is one stop for Tab, and the arrow keys move within it, as in the
+ * palette and the Hierarchy. Every row was a stop of its own: twenty-six
+ * presses of Tab to get past the files of a project of twenty-six. One row
+ * holds the stop: the one last moved to, or the open file's, or the first.
+ */
+
+/** The tree's rows, in the order they are shown. */
+function rowsOf(tree: Element | null): HTMLElement[] {
+  return [...(tree?.querySelectorAll<HTMLElement>('[data-file-row]') ?? [])];
+}
+
+/** Give the tree's one stop to `holder`, and take it from every other row. */
+function holdStop(rows: HTMLElement[], holder: HTMLElement | undefined): void {
+  for (const row of rows) row.tabIndex = row === holder ? 0 : -1;
+}
+
+/** How deep a row is: 1 for one at the project's root. */
+const levelOf = (row: HTMLElement): number => Number(row.getAttribute('aria-level') ?? 1);
+
+/**
+ * Move the focus, and the stop with it, from a row: to the one before or
+ * after it as they are shown, the first or the last, the folder it is in,
+ * or the first thing in it when it is an open folder.
+ */
+function focusFrom(row: HTMLElement, to: 1 | -1 | 'first' | 'last' | 'parent' | 'child'): void {
+  const rows = rowsOf(row.closest('[role="tree"]'));
+  const at = rows.indexOf(row);
+  const below = rows[at + 1];
+  const next =
+    to === 'first' ? rows[0]
+    : to === 'last' ? rows[rows.length - 1]
+    : to === 'parent' ? rows.slice(0, at).reverse().find((before) => levelOf(before) < levelOf(row))
+    : to === 'child' ? (below && levelOf(below) > levelOf(row) ? below : undefined)
+    : rows[at + to];
+  if (!next) return;
+  holdStop(rows, next);
+  next.focus();
+  next.scrollIntoView?.({ block: 'nearest' });
 }
 
 interface FileNodeProps {
@@ -245,6 +276,8 @@ interface FileNodeProps {
   renamingId: string | null;
   onRename: (id: string, name: string) => void;
   onCancelRename: () => void;
+  /** Called when a folder opens or closes, so the tree's stop is on a row that is shown. */
+  onRowsChanged: () => void;
 }
 
 function FileNode({
@@ -257,16 +290,35 @@ function FileNode({
   renamingId,
   onRename,
   onCancelRename,
+  onRowsChanged,
 }: FileNodeProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
   const [renameValue, setRenameValue] = useState(node.name);
+  const rowRef = useRef<HTMLDivElement>(null);
   const { nodes, activeFileId } = useFilesStore((state) => ({
     nodes: state.nodes,
     activeFileId: state.activeFileId,
   }));
 
   const isRenaming = renamingId === node.id;
+
+  // The rows a folder holds come and go with it; the one that held the stop may be among them.
+  const shownOnce = useRef(false);
+  useLayoutEffect(() => {
+    if (shownOnce.current) onRowsChanged();
+    shownOnce.current = true;
+  }, [isExpanded, onRowsChanged]);
+
+  // A rename ended from the keyboard leaves the focus on the row, not on the
+  // page: the box it was in is gone. One ended by a click elsewhere leaves it
+  // where the click put it.
+  const wasRenaming = useRef(false);
+  useLayoutEffect(() => {
+    const ended = wasRenaming.current && !isRenaming;
+    wasRenaming.current = isRenaming;
+    if (ended && (document.activeElement === null || document.activeElement === document.body)) rowRef.current?.focus();
+  }, [isRenaming]);
 
   // Which editing mode is safe for a .ui file, shown before it is opened.
   // The source view and the canvas carry the badge for the ACTIVE file;
@@ -300,6 +352,8 @@ function FileNode({
   // The tree was mouse-only: rows were plain divs, so no file could be
   // opened, renamed or deleted from the keyboard. Arrows walk the rows,
   // Enter opens, F2 renames, and the menu key (or Shift+F10) opens the menu.
+  // Right opens a folder and then goes into it; Left closes it, and from a
+  // file or a closed folder goes to the folder it is in.
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       if (e.target !== e.currentTarget) return;
@@ -309,17 +363,18 @@ function FileNode({
         handleClick();
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
-        focusSiblingRow(row, e.key === 'ArrowDown' ? 1 : -1);
+        focusFrom(row, e.key === 'ArrowDown' ? 1 : -1);
       } else if (e.key === 'Home' || e.key === 'End') {
         e.preventDefault();
-        focusSiblingRow(row, e.key === 'Home' ? 'first' : 'last');
+        focusFrom(row, e.key === 'Home' ? 'first' : 'last');
       } else if (e.key === 'ArrowRight' && node.type === 'folder') {
         e.preventDefault();
         if (!isExpanded) setIsExpanded(true);
-        else focusSiblingRow(row, 1);
-      } else if (e.key === 'ArrowLeft' && node.type === 'folder' && isExpanded) {
+        else focusFrom(row, 'child');
+      } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        setIsExpanded(false);
+        if (node.type === 'folder' && isExpanded) setIsExpanded(false);
+        else focusFrom(row, 'parent');
       } else if (e.key === 'F2') {
         e.preventDefault();
         onRequestRename(node.id);
@@ -371,9 +426,11 @@ function FileNode({
   return (
     <>
       <div
+        ref={rowRef}
         style={nodeStyle}
         role="treeitem"
-        tabIndex={0}
+        // The tree's one stop is given out by the tree (FileNavigator, holdStop).
+        tabIndex={-1}
         data-file-row={node.id}
         aria-level={depth + 1}
         aria-selected={node.type === 'file' ? isActive : undefined}
@@ -390,6 +447,7 @@ function FileNode({
         {isRenaming ? (
           <input
             type="text"
+            aria-label={`New name for ${node.name}`}
             value={renameValue}
             onChange={(e) => setRenameValue(e.target.value)}
             onBlur={handleRenameSubmit}
@@ -433,6 +491,7 @@ function FileNode({
                 renamingId={renamingId}
                 onRename={onRename}
                 onCancelRename={onCancelRename}
+                onRowsChanged={onRowsChanged}
               />
             );
           })}
@@ -526,6 +585,32 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     },
     [openFile]
   );
+
+  // Which row holds the tree's one stop. The row last moved to keeps it
+  // while it is shown; opening a file gives it to that file's row; failing
+  // both, the first row has it.
+  const treeRef = useRef<HTMLDivElement>(null);
+  const lastFocusedId = useRef<string | null>(null);
+  const openedId = useRef(activeFileId);
+  const syncStop = useCallback(() => {
+    const rows = rowsOf(treeRef.current);
+    const rowFor = (id: string | null) => (id ? rows.find((row) => row.dataset.fileRow === id) : undefined);
+    holdStop(rows, rowFor(lastFocusedId.current) ?? rowFor(openedId.current) ?? rows[0]);
+  }, []);
+  // After every drawing: rows come and go with files made, deleted and renamed.
+  useLayoutEffect(() => {
+    if (openedId.current !== activeFileId) {
+      openedId.current = activeFileId;
+      lastFocusedId.current = null;
+    }
+    syncStop();
+  });
+  const handleTreeFocus = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
+    const row = (event.target as HTMLElement).closest<HTMLElement>('[data-file-row]');
+    if (!row) return;
+    lastFocusedId.current = row.dataset.fileRow ?? null;
+    holdStop(rowsOf(event.currentTarget), row);
+  }, []);
 
   const menuRef = React.useRef<HTMLDivElement | null>(null);
   /** The row a keyboard-opened menu returns focus to. */
@@ -988,7 +1073,14 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
           </button>
         </div>
       )}
-      <div style={styles.tree} key={`tree-${rootFolders.length}-${nodes.size}`} role="tree" aria-label="Project files">
+      <div
+        ref={treeRef}
+        style={styles.tree}
+        key={`tree-${rootFolders.length}-${nodes.size}`}
+        role="tree"
+        aria-label="Project files"
+        onFocus={handleTreeFocus}
+      >
         {[...rootFolders, ...rootFileIds].map((folderId) => {
           const folder = nodes.get(folderId);
           if (!folder) return null;
@@ -1004,6 +1096,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
               renamingId={renamingId}
               onRename={handleRename}
               onCancelRename={() => setRenamingId(null)}
+              onRowsChanged={syncStop}
             />
           );
         })}

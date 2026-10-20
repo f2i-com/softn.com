@@ -7,18 +7,28 @@
  * This script used to re-parse the library's registry source with regular
  * expressions; the manifest is the same fact, already extracted. Builder's
  * side is still read from `componentRegistry.ts` by pattern, because this
- * runs before the TypeScript build (`prebuild`, `check:components`); the
- * prop-level checks, which need the registry evaluated, live in
+ * runs before the TypeScript build (`npm run build` runs `check:components`
+ * first); the prop-level checks, which need the registry evaluated, live in
  * `src/utils/componentRegistry.manifest.test.ts`.
+ *
+ * It also checks that `src/utils/componentProps.generated.ts`, the props'
+ * defaults and choices the registry takes from the manifest, was made from
+ * the manifest as it is now.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { componentPropsPath, renderComponentProps } from './generate-component-props.mjs';
 
 const root = process.cwd();
 const manifestPath = path.resolve(root, '../../packages/@softn/components/component-manifest.json');
 const builderRegistryPath = path.resolve(root, 'src/utils/componentRegistry.ts');
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+
+if (fs.readFileSync(componentPropsPath, 'utf8').replace(/\r\n/g, '\n') !== renderComponentProps(manifest)) {
+  console.error('[component-registry] src/utils/componentProps.generated.ts is stale: run `npm run generate:component-props -w @softn/builder`.');
+  process.exit(1);
+}
 const registeredNames = [...new Set(Object.values(manifest.registered).flat())].sort();
 
 const builderSource = fs.readFileSync(builderRegistryPath, 'utf8');

@@ -9,10 +9,9 @@ import { debug } from '../utils/debug';
 import { branchEnd, canDropInto, defaultBlock, hasTextField, isBlockHead, isContinuationType, wordsOf } from '../utils/blocks';
 import { starterProps } from '../utils/starterProps';
 import { importsLeftUnused } from '../utils/pageImports';
+import { randomId } from '../utils/ids';
 
-function generateId(): string {
-  return `el_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}
+const generateId = (): string => randomId('el_');
 
 /**
  * Before `parentId` is given an element: the words it held as its text

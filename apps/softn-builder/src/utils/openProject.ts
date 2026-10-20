@@ -35,8 +35,10 @@ import { useSchemaStore } from '../stores/schemaStore';
 import { ensureFieldIds } from './schemaFields';
 import { useFilesStore } from '../stores/filesStore';
 import { fetchSameOriginBundle, isAbort } from '@softn/editor-shared/remoteOpen';
-import { readPythonPackages } from '@softn/core';
+import { classifyAsset, readPythonPackages } from '@softn/core';
 import { loadBundle, type LoadedBundle } from './bundleLoader';
+import { base64ToBytes, bytesToBase64 } from './base64';
+import { isObject } from './values';
 import { inferRelationships, validRelationships } from './schemaRelationships';
 import { encodeAsset, decodeAsset, type SerializedAssetFile } from './sessionAssets';
 import { SESSION_ASSETS_HEAD_KEY, SESSION_ASSETS_KEY, captureAssets, joinStoredSession, type AssetRef } from './storedAssets';
@@ -188,17 +190,6 @@ export interface ProjectSnapshot {
   label: string;
 }
 
-function mimeTypeFromPath(path: string): string {
-  const ext = path.toLowerCase().split('.').pop() || '';
-  if (ext === 'png') return 'image/png';
-  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
-  if (ext === 'gif') return 'image/gif';
-  if (ext === 'webp') return 'image/webp';
-  if (ext === 'svg') return 'image/svg+xml';
-  if (ext === 'bmp') return 'image/bmp';
-  return 'application/octet-stream';
-}
-
 /**
  * The candidate for an opened bundle. Throws when the bundle cannot be a
  * whole workspace: no entry file, an entry file whose tree has no root, a
@@ -208,7 +199,7 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
   const assets: AssetFile[] = Array.from(bundle.assets.entries()).map(([path, bytes]) => ({
     bundlePath: path,
     name: path.replace(/^assets\//, ''),
-    type: mimeTypeFromPath(path),
+    type: classifyAsset(path).mime,
     data: bytes,
   }));
   const assetFiles = new Map<string, AssetFile>();
@@ -300,23 +291,12 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
   };
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
 function pairs<V>(value: unknown, what: string): [string, V][] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some((p) => !Array.isArray(p) || p.length !== 2 || typeof p[0] !== 'string')) {
     throw new Error(`${what} is not a list of [id, value] pairs`);
   }
   return value as [string, V][];
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  return btoa(binary);
 }
 
 /**
@@ -349,13 +329,6 @@ function pageOnCanvas(snapshot: ProjectSnapshot): string | null {
     (file) => file.rootId === snapshot.canvas.rootId && elementsEqual(file.elements, snapshot.canvas.elements)
   );
   return holding.length === 1 ? holding[0].id : null;
-}
-
-function base64ToBytes(text: string): Uint8Array {
-  const binary = atob(text);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
 }
 
 /**
@@ -685,8 +658,7 @@ export interface QuarantinedSession {
  * Keep a session that would not restore, with the reason, under its own key.
  * The live key is cleared so the prompt does not recur; the bytes are not
  * deleted, because they may be the only copy of the work.
- */
-/**
+ *
  * `assetsRaw` is the record of the assets the session names. It is set
  * aside with it: left where it was it is the next project's to remove at
  * its first change, and the session kept would be its text alone. Moved,

@@ -10,10 +10,9 @@ import { useFilesStore } from './filesStore';
 import { ensureFieldIds } from '../utils/schemaFields';
 import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from '../utils/xdbFormat';
 import { reidentifyCollection, type RecordsSnapshot, type ReidentifyOutcome } from '../utils/reidentify';
+import { randomId } from '../utils/ids';
 
-function generateId(): string {
-  return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}
+const generateId = (): string => randomId();
 
 interface SchemaStore {
   entities: EntityDef[];
@@ -122,6 +121,45 @@ const awaitingName = new Set<string>();
 /** Whether the collection still has the name and alias it was made with here: `Entity1`, read as `entity1`. */
 function isUnnamed(entity: EntityDef): boolean {
   return awaitingName.has(entity.id) && entity.alias === aliasFor(entity.name);
+}
+
+/**
+ * A collection's key field, when it holds text: its first field called
+ * `id`, the one the collection editor protects and the card marks "key".
+ */
+function keyFieldOf(entity: EntityDef): SchemaField | undefined {
+  const key = entity.fields.find((f) => f.name === 'id');
+  return key?.type === 'string' ? key : undefined;
+}
+
+/**
+ * `next` with each row whose key held its record's id before a re-identify
+ * (a row made in the Data view, addSeedRecord) holding its new id, and that
+ * row's identity taking the row as it now is. A key typed by hand, or one
+ * read with the records, is the author's and is left as it is.
+ */
+function keysFollowIds(next: RecordsSnapshot, entity: EntityDef, before: RecordIdentity[]): RecordsSnapshot {
+  const key = keyFieldOf(entity);
+  const rows = next.seedData.get(entity.id);
+  const identities = next.recordIdentity.get(entity.id);
+  if (!key || !rows || !identities) return next;
+  let moved = false;
+  const nextRows = rows.map((row, i) => {
+    const was = before[i]?.id;
+    const now = identities[i]?.id;
+    if (!was || !now || was === now || row[key.name] !== was) return row;
+    moved = true;
+    return { ...row, [key.name]: now };
+  });
+  if (!moved) return next;
+  return {
+    ...next,
+    seedData: new Map(next.seedData).set(entity.id, nextRows),
+    recordIdentity: new Map(next.recordIdentity).set(
+      entity.id,
+      identities.map((identity, i) => (nextRows[i] === rows[i] ? identity : { ...identity, data: nextRows[i] }))
+    ),
+  };
 }
 
 /** `newField`, or `newField2`, `newField3`… so a new field never shares a name. */
@@ -456,17 +494,23 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
         }
       }
     }
+    // Identified when made, not at export: a new row gets one id and keeps
+    // it through every export and save from here on. Its key field is that
+    // id too. It was left empty, and a required key went out as `""` with
+    // nothing said; what the row is written under (utils/xdbFormat.ts) and
+    // what a reference to it holds is this id, so the key says the same.
+    const created = freshIdentity(record);
+    const key = keyFieldOf(entity);
+    if (key && key.defaultValue === undefined) record[key.name] = created.id;
 
     edit((state) => {
       const newSeedData = new Map(state.seedData);
       const existing = newSeedData.get(entityId) || [];
       newSeedData.set(entityId, [...existing, record]);
-      // Identified when made, not at export: a new row gets one id and keeps
-      // it through every export and save from here on.
       const recordIdentity = new Map(state.recordIdentity);
       const identity = [...(recordIdentity.get(entityId) || [])];
       while (identity.length < existing.length) identity.push(freshIdentity(existing[identity.length]));
-      identity.push(freshIdentity(record));
+      identity.push({ ...created, data: record });
       recordIdentity.set(entityId, identity);
       return { seedData: newSeedData, recordIdentity };
     });
@@ -524,10 +568,12 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
     };
     const result = reidentifyCollection(entityId, state.entities, before, now);
     if (!result) return null;
+    const entity = state.entities.find((e) => e.id === entityId);
+    const next = entity ? keysFollowIds(result.next, entity, state.recordIdentity.get(entityId) ?? []) : result.next;
     // `set`, then markDirty by hand: `edit` would clear the way back it is
     // recording. The maps of untouched collections are the same objects as
     // before, so keeping `before` costs only the re-identified entries.
-    set({ ...result.next, lastReidentify: { entityId, before } });
+    set({ ...next, lastReidentify: { entityId, before } });
     useProjectStore.getState().markDirty();
     return result.outcome;
   },

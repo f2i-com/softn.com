@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
+import { fieldTypeLabels } from './EntityNode';
 import type { EntityDef, RelationshipDraft } from '../../types/builder';
 
 export interface RelationshipDialogProps {
@@ -142,7 +143,7 @@ export function RelationshipDialog({ entities, initial, editing, onSave, onClose
                   </p>
                   <select id={`${id}-reference`} style={styles.input} aria-describedby={`${id}-reference-help`} value={referenceChoice} disabled={!source || !target} onChange={(event) => { setFieldChoice(event.target.value); setError(null); }}>
                     <option value="">Diagram only</option>
-                    {fields.map((field) => <option key={field.id} value={`field:${field.id}`}>{field.name} · {field.type}</option>)}
+                    {fields.map((field) => <option key={field.id} value={`field:${field.id}`}>{field.name} · {fieldTypeLabels[field.type] ?? field.type}</option>)}
                     <option value="new">Create reference field…</option>
                   </select>
                   {referenceChoice === 'new' && (

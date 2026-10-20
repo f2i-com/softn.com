@@ -49,6 +49,12 @@ describe('builder.css', () => {
     expect(builderCss).not.toContain('[data-builder-canvas] {');
   });
 
+  it('marks the code editor with focus as the rest of the Builder marks focus: 2px of mint', () => {
+    // It was 1px of the strong line, about 1.7:1 against the panel.
+    expect(block(builderCss, '#root :focus-visible:not(.bl-code-editor *)')).toMatch(/outline:\s*2px solid var\(--mint\)/);
+    expect(block(builderCss, '.bl-code-editor:focus-within')).toMatch(/box-shadow:\s*inset 0 0 0 2px var\(--mint\)/);
+  });
+
   it('keeps coral and mint to their jobs: no class paints an accent as a background', () => {
     // Coral is the language and mint is the machine; a button, a tab or a
     // selected row filled with either is the drift this file was written to end.

@@ -41,7 +41,6 @@ const count = (type: string) => [...canvas().elements.values()].filter((el) => e
 const search = () => host.querySelector<HTMLInputElement>('input[type="search"]')!;
 const row = (name: string) => host.querySelector<HTMLElement>(`[data-palette-item="${name}"]`)!;
 const key = (target: Element, name: string) => act(() => void target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true })));
-/** The frame after which the new element is on the canvas to be focused. */
 /** The workspace's own keys, heard at the window as in the app: Ctrl+Z, and Alt+Shift with an arrow. */
 function Workspace(): null {
   const nothing = () => undefined;
@@ -49,6 +48,7 @@ function Workspace(): null {
   return null;
 }
 const order = () => canvas().elements.get(canvas().rootId!)!.children.map((id) => canvas().elements.get(id)!.componentType);
+/** The frame after which the new element is on the canvas to be focused. */
 const frame = () => act(async () => void (await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))));
 
 function typeSearch(text: string): void {

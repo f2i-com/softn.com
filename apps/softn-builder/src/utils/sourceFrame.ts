@@ -120,6 +120,25 @@ export interface SourceFrame {
   tailStart: number;
   /** What about the file's layout the three stretches cannot hold. */
   reasons: string[];
+  /**
+   * The template's one root is an HTML page's own `<body>`, which the parser
+   * reads as a `div` with the body's attributes. It is written back as the
+   * `<body>` it is, its closing tag the page's own, in the tail.
+   */
+  bodyRoot?: boolean;
+}
+
+/** `</body>` or `</html>`, the closing tags of an HTML page, by the place each begins. */
+function pageClosers(source: string): Array<{ name: string; at: number }> {
+  const tokens = safeTokenize(source) ?? [];
+  const closers: Array<{ name: string; at: number }> = [];
+  tokens.forEach((token, index) => {
+    const next = tokens[index + 1];
+    if (token.type !== TokenType.TAG_END_OPEN || next?.type !== TokenType.IDENTIFIER) return;
+    const name = source.slice(next.start, next.end).toLowerCase();
+    if (name === 'body' || name === 'html') closers.push({ name, at: token.start });
+  });
+  return closers;
 }
 
 const HEADER_NAMES: Array<[keyof SoftNDocument, string]> = [
@@ -202,6 +221,13 @@ export function frameSource(source: string, doc: SoftNDocument): SourceFrame | n
     if (block.at > lastStart) tailStart = Math.min(tailStart, block.at);
     else reasons.push(`a <${block.name}> block stands between parts of the template (the visual model writes the template as one piece)`);
   }
+  // An HTML page's `</body>` and `</html>` stand after its template and are
+  // the page's, not the template's: in the stretch written from the model,
+  // the first edit on the canvas took them out of the page.
+  for (const closer of pageClosers(source)) {
+    if (closer.at > lastStart) tailStart = Math.min(tailStart, closer.at);
+  }
+  const bodyRoot = roots.length === 1 && roots[0].type === 'Element' && roots[0].tag === 'div' && /^<body[\s/>]/i.test(source.slice(bodyStart));
   // Comments that stand after the template belong to what follows it.
   const comments = commentsOf(source) ?? [];
   for (let i = comments.length - 1; i >= 0; i--) {
@@ -216,12 +242,38 @@ export function frameSource(source: string, doc: SoftNDocument): SourceFrame | n
   // A root that begins its own line: its indentation is not kept before a
   // template that is written from the margin.
   const prefix = source.slice(0, bodyStart).replace(/(^|\n)[ \t]+$/, '$1');
-  return { prefix, trailing, tail: source.slice(tailStart), bodyStart, tailStart, reasons };
+  return { prefix, trailing, tail: source.slice(tailStart), bodyStart, tailStart, reasons, ...(bodyRoot ? { bodyRoot } : {}) };
+}
+
+/**
+ * The template of a page whose root is its `<body>`: that element written as
+ * the `<body>` it is, without its closing tag, which the page's tail holds as
+ * written. What the canvas holds beside it goes inside it, as a browser
+ * would put it. Null when the canvas no longer holds the body as the first
+ * thing of the page.
+ */
+function bodyTemplate(elements: Map<string, CanvasElement>, rootId: string): string | null {
+  const page = elements.get(rootId);
+  const body = page?.children[0] ? elements.get(page.children[0]) : undefined;
+  if (!page || !body || body.componentType !== 'div') return null;
+  const written = new Map(elements).set(body.id, { ...body, componentType: 'body' });
+  const own = generateSource(written, body.id, '');
+  const open = own.endsWith('\n</body>') ? own.slice(0, -'\n</body>'.length) : own.endsWith('</body>') ? own.slice(0, -'</body>'.length) : own.replace(/\s*\/>$/, '>');
+  const beside = page.children.slice(1).map((id) => generateSource(written, id, ''));
+  return [open, ...beside].join('\n');
+}
+
+/** The line ending a file is written with: CR LF where it uses them, LF otherwise. */
+function lineEndingOf(source: string): '\r\n' | '\n' {
+  const crlf = (source.match(/\r\n/g) ?? []).length;
+  return crlf > 0 && crlf * 2 >= (source.match(/\n/g) ?? []).length ? '\r\n' : '\n';
 }
 
 /**
  * `source` with its template written from the canvas elements and the rest
- * of it as it was. `doc` is `source` parsed.
+ * of it as it was. `doc` is `source` parsed. The template is written with
+ * the file's own line endings: a page saved with CR LF came back with its
+ * template in LF and its head and tail in CR LF.
  */
 export function writeBack(
   source: string,
@@ -229,8 +281,13 @@ export function writeBack(
   elements: Map<string, CanvasElement>,
   rootId: string
 ): string {
-  const template = generateSource(elements, rootId, '', [], { skipRootAppWrapper: !hasSingleAppRoot(doc) });
   const frame = frameSource(source, doc);
+  let template = (frame?.bodyRoot ? bodyTemplate(elements, rootId) : null)
+    ?? generateSource(elements, rootId, '', [], { skipRootAppWrapper: !hasSingleAppRoot(doc) });
+  let tail = frame?.tail ?? '';
+  // The body is gone from the canvas: its closing tag goes with it.
+  if (frame?.bodyRoot && !template.startsWith('<body')) tail = tail.replace(/^(\s*(?:<!--[\s\S]*?-->\s*)*)<\/body\s*>/i, '$1');
+  if (lineEndingOf(source) === '\r\n') template = template.replace(/\r?\n/g, '\r\n');
   if (!frame) return template;
-  return `${frame.prefix}${template}${frame.trailing}${frame.tail}`;
+  return `${frame.prefix}${template}${frame.trailing}${tail}`;
 }

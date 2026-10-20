@@ -32,6 +32,7 @@ import { UI_IMPORT_PATTERN } from '@softn/core';
 import type { CanvasElement, UIFileState, UIImport } from '../types/builder';
 import { componentRegistry } from './componentRegistry';
 import { relativeImportPath, resolveImportPath } from './logicFiles';
+import { stripSlash } from './values';
 
 /** What a drag from the palette carries for a page: the file, since its name depends on the page it lands on. */
 const PAGE_DRAG_PREFIX = '@page:';
@@ -45,7 +46,6 @@ export function draggedPageId(type: string | null | undefined): string | null {
   return typeof type === 'string' && type.startsWith(PAGE_DRAG_PREFIX) ? type.slice(PAGE_DRAG_PREFIX.length) : null;
 }
 
-const stripSlash = (path: string): string => (path.startsWith('/') ? path.slice(1) : path);
 const baseName = (path: string): string => path.split('/').pop() ?? path;
 
 /**

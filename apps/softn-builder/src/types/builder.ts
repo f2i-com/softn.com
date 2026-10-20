@@ -48,7 +48,7 @@ export type ComponentCategory =
  * inline `if=` / `each=` attributes on the block's children, which lost a
  * level whenever blocks nested and dropped `#empty` and `#elseif` branches
  * outright. A block is now an element whose `componentType` is the block
- * keyword (see BLOCK_COMPONENT_TYPES), whose branch is its `children`, and
+ * keyword (`#if`, `#elseif`, `#else`, `#each`, `#empty`), whose branch is its `children`, and
  * whose header lives here. The alternate branches of an `#if` — `#elseif`
  * and `#else` — and the `#empty` branch of an `#each` are the last children
  * of their block, each holding its own branch.
@@ -66,9 +66,6 @@ export interface CanvasBlock {
   /** `#each`: the optional `key={…}` expression text. */
   keyExpression?: string;
 }
-
-/** `componentType` values that are control-flow blocks rather than components. */
-export const BLOCK_COMPONENT_TYPES = ['#if', '#elseif', '#else', '#each', '#empty'] as const;
 
 /**
  * The `componentType` of words that stand beside elements.

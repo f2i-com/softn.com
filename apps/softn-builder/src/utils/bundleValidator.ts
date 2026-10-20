@@ -14,6 +14,7 @@
  */
 
 import type { BundleManifest } from './bundleExporter';
+import { isObject } from './values';
 
 export interface ValidationResult {
   valid: boolean;
@@ -70,10 +71,6 @@ export function resolveEntry(
     if (bytes) return { path, bytes, migrated: path !== declared };
   }
   return undefined;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**

@@ -12,6 +12,7 @@ import { AppPage, DrawnThemeProvider } from './DrawnComponent';
 import { DragLayer } from './DragLayer';
 import { canDropInto, isPaletteType } from '../../utils/blocks';
 import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
+import { focusCandidatesAfterDelete, focusFirstDrawn } from '../../utils/focusAfterDelete';
 import { useDragAutoScroll } from '../../utils/dragScroll';
 import { useDrawnTheme } from '../../utils/drawnTheme';
 import { addDropped } from '../../utils/pageDrop';
@@ -297,11 +298,16 @@ export function Canvas({ onShowComponents }: CanvasProps) {
     if (key === 'Delete' || key === 'Backspace') {
       e.preventDefault();
       historyState.push(canvasState.elements, canvasState.rootId);
-      canvasState.selectedIds.forEach((id) => {
-        if (id !== canvasState.rootId) {
-          useCanvasStore.getState().deleteElement(id);
-        }
-      });
+      const deleted = canvasState.selectedIds.filter((id) => id !== canvasState.rootId);
+      // The focus goes to what was beside them, not to the document's body.
+      const candidates = focusCandidatesAfterDelete(canvasState.elements, deleted);
+      deleted.forEach((id) => useCanvasStore.getState().deleteElement(id));
+      const canvasElement = e.currentTarget as HTMLElement;
+      focusFirstDrawn(candidates, (id) =>
+        id === canvasState.rootId
+          ? (canvasElement.tabIndex >= 0 ? canvasElement : null)
+          : canvasElement.querySelector<HTMLElement>(`[data-canvas-element-id="${id}"]`)
+      );
     }
 
     // Copy

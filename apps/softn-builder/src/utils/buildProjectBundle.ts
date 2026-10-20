@@ -24,6 +24,7 @@ import { debug } from './debug';
 import { liveImports } from './pageImports';
 import type { CollectionDef } from '../types/builder';
 import { withBuilderSchema } from './builderSchemaMetadata';
+import { base64ToBytes } from './base64';
 
 /** Bytes and path for a project icon stored as a data URL, or nothing. */
 export function decodeIconDataUrl(icon: string | null): { bytes: Uint8Array; path: string } | null {
@@ -32,10 +33,7 @@ export function decodeIconDataUrl(icon: string | null): { bytes: Uint8Array; pat
   if (!m) return null;
   const ext = m[2] === 'jpeg' ? 'jpg' : m[2] === 'svg+xml' ? 'svg' : m[2];
   try {
-    const bin = atob(m[3]);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return { bytes, path: `assets/icon.${ext}` };
+    return { bytes: base64ToBytes(m[3]), path: `assets/icon.${ext}` };
   } catch {
     return null;
   }

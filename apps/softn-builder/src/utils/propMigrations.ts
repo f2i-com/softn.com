@@ -486,7 +486,7 @@ export const PROP_MIGRATIONS: Record<string, Rule> = {
       // The palette's "Loop" repeated a timer that renders nothing, so the
       // children never appeared. A repeated Box is what was meant.
       el.componentType = 'Box';
-      if (each && !el.loopEach) el.loopEach = each.expression ? String(each.value) : String(each.value);
+      if (each && !el.loopEach) el.loopEach = String(each.value);
       const alias = stringValue(as, 'item');
       const index = stringValue(indexAs, '');
       if (!el.loopAs) el.loopAs = index ? `${alias}, ${index}` : alias;

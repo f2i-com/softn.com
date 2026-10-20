@@ -16,6 +16,7 @@
 import type { LogicFileState, UIFileState } from '../types/builder';
 import type { RetainedSource } from '../stores/projectStore';
 import { editorLanguageFor } from '../components/editor/logicLanguage';
+import { stripSlash } from './values';
 
 export type LogicLanguage = 'javascript' | 'python';
 
@@ -84,10 +85,6 @@ export function blankLogicFile(path: string): string {
   return logicLanguageOf(path) === 'python'
     ? `# ${name}\n# SoftN logic - Python, run in the ZIPP engine\n\n`
     : `// ${name}\n// SoftN logic — JavaScript, run in a sandboxed VM\n\n`;
-}
-
-function stripSlash(path: string): string {
-  return path.startsWith('/') ? path.slice(1) : path;
 }
 
 function parentOf(path: string): string[] {

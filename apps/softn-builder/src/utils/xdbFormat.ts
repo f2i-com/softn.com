@@ -38,6 +38,7 @@
  */
 
 import type { SchemaField } from '../types/builder';
+import { isObject } from './values';
 
 /** A record as the .xdb carries it. Unknown keys are kept and written back. */
 export interface XdbRecordEnvelope {
@@ -186,10 +187,6 @@ export function serializeXdb(collection: XdbCollection): string {
     records: collection.records,
   };
   return JSON.stringify(file, null, 2);
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**

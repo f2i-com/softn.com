@@ -26,9 +26,13 @@ import { CAPABILITIES, extractPermissions, inspectDeclaration, type AppPermissio
 export interface PermissionDeclaration {
   /** Capabilities the app asks for, in schema order. */
   capabilities: Capability[];
-  /** Hosts `net` may reach; empty means any host, after consent. */
+  /**
+   * Hosts `net` may reach. Empty means any host on the internet, after
+   * consent, but not this computer or its local network, which have to be
+   * listed to be reached.
+   */
   allowedHosts: string[];
-  /** Plain-HTTP servers allowed for `net`, for a development server on localhost. */
+  /** Plain-HTTP servers allowed for `net`, for a development server on localhost, which has to be listed too. */
   allowHttp: boolean;
   /** A storage policy per collection (`*` for the rest); absent collections are public. */
   storagePolicies: Record<string, StoragePolicy>;

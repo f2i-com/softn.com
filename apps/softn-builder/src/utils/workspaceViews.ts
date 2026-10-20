@@ -19,3 +19,15 @@ export function viewsFor(fileType: 'ui' | 'logic' | 'asset' | null | undefined):
   if (fileType === 'asset') return DESIGN_ONLY;
   return ALL_VIEWS;
 }
+
+/**
+ * Whether the page the canvas holds is being worked on, which is what Undo
+ * and Redo step: in Design, with the page open, or with a logic file or an
+ * asset open in the middle while the Hierarchy and Properties still hold the
+ * page (hooks/useActiveFileOnCanvas.ts). An edit made there is the page's,
+ * and Undo was offered only with the page itself open.
+ */
+export function pageInHand(view: string, fileType: 'ui' | 'logic' | 'asset' | null | undefined, pageHeld: boolean): boolean {
+  if (view !== 'design') return false;
+  return fileType === 'ui' || (pageHeld && (fileType === 'logic' || fileType === 'asset'));
+}

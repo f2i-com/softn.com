@@ -6,7 +6,7 @@
  * told to export instead, because its files stay on the device.
  */
 
-import { prepareHandoff as prepare, destinationLabel, handoffBase as base, type HandoffDestination, type HandoffOutcome } from '@softn/editor-shared/handoff';
+import { prepareHandoff as prepare, destinationLabel, type HandoffDestination, type HandoffOutcome } from '@softn/editor-shared/handoff';
 import type { stageBundleHandoff } from '@softn/core';
 import { RUNTIME_URL, SITE_URL } from './siteUrls';
 import { isDesktop } from './desktop';
@@ -15,10 +15,6 @@ export type { HandoffDestination, HandoffOutcome, ReadyHandoff } from '@softn/ed
 export { destinationLabel };
 
 const BASES = { runtime: RUNTIME_URL, site: SITE_URL };
-
-export function handoffBase(to: HandoffDestination): string {
-  return base(to, BASES);
-}
 
 /** Stage `bytes` for `to`; resolve with the address to open, or why not. Nothing here navigates. */
 export function prepareHandoff(

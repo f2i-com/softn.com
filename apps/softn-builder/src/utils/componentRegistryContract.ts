@@ -24,9 +24,9 @@ export const EDITORIAL_PROPS: ReadonlySet<string> = new Set([
 
 /**
  * The controls a property of a given declared kind may be edited with. A
- * kind absent here (`other`, `array`, `node`, `unknown`, `function`) may use
- * any control: the registry is where an author decides that a union of
- * literals and string is a select, or that a handler is an event.
+ * kind absent here (`other`, `array`, `node`, `unknown`) may use any
+ * control: the registry is where an author decides that a union of literals
+ * and string is a select.
  */
 export const PROP_TYPE_FOR_KIND: Record<string, ReadonlyArray<PropSchema['type']>> = {
   boolean: ['boolean', 'expression'],

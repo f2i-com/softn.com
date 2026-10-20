@@ -31,10 +31,9 @@ import {
 } from '../utils/logicFiles';
 import { applyInlineLogicMove, planInlineLogicMove, takenPaths, type InlineLogicMove } from '../utils/inlineLogic';
 import { isPythonLogicPath, parse as parseSoftN, pythonModuleName, type SoftNDocument } from '@softn/core';
+import { randomId } from '../utils/ids';
 
-function generateId(): string {
-  return `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}
+const generateId = (): string => randomId('file_');
 
 /**
  * The folder at `path` in `nodes`, made with every folder above it that is
@@ -433,8 +432,7 @@ interface FilesStore {
    * Take the canvas's elements as this file's. A tree equal to the one the
    * file already holds is a flush, not an edit: nothing is regenerated,
    * nothing is marked dirty, and the original source stays as it was.
-   */
-  /**
+   *
    * With `imports`, the page's imports are written with its elements: what
    * the canvas holds for a page that had one dropped on it from the palette
    * (utils/pageImports.ts). `writtenImports` names those the Builder wrote,
@@ -1145,8 +1143,9 @@ export const useFilesStore = create<FilesStore>((set, get) => {
         const hadLogic = /<(logic|script)[\s>]/i.test(nextOriginalSource);
         nextOriginalSource = writeBack(nextOriginalSource, originalDoc, elements, rootId);
         if (!hadLogic && file.logicSrc) {
-          // A logic file linked since the source was written.
-          nextOriginalSource = `<logic src="${file.logicSrc}" />\n\n${nextOriginalSource}`;
+          // A logic file linked since the source was written, in the file's own line endings.
+          const eol = nextOriginalSource.includes('\r\n') ? '\r\n' : '\n';
+          nextOriginalSource = `<logic src="${file.logicSrc}" />${eol}${eol}${nextOriginalSource}`;
         }
         // The lines of the pages it uses: one for each the canvas gave it
         // that the header has not got, and none the Builder wrote for a use

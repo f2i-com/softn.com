@@ -39,6 +39,7 @@ import { buildPermissionJson, type PermissionDeclaration } from './permissions';
 import { envelopeFor, serializeXdb, type XdbRecordEnvelope } from './xdbFormat';
 import { resolveEntry } from './bundleValidator';
 import { isDesktop, saveDesktopFile, type BundleFileHandle } from './desktop';
+import { isObject, stripSlash } from './values';
 
 export const BUNDLE_FORMAT_VERSION = '1.0';
 
@@ -188,14 +189,6 @@ function defaultMain(uiPaths: string[]): string {
   if (uiPaths.includes('ui/main.ui')) return 'ui/main.ui';
   if (uiPaths.length === 1) return uiPaths[0];
   throw new Error('The project has no ui/main.ui to be its entry file. Create one, or name one main.ui.');
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function stripSlash(path: string): string {
-  return path.startsWith('/') ? path.slice(1) : path;
 }
 
 /**

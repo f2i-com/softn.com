@@ -35,6 +35,7 @@ import { printExpressionSafe } from './expressionPrinter';
 import { hasTextField } from './blocks';
 import { computeFidelity } from './sourceFidelity';
 import { anchorOf, commentsOf, frameSource, hasSingleAppRoot, type SourceComment } from './sourceFrame';
+import { countedId } from './ids';
 
 export interface ParseResult {
   elements: Map<string, CanvasElement>;
@@ -64,13 +65,6 @@ interface ParsedNode {
 }
 
 /**
- * Goes on from page to page. It started again at each page read, and the
- * time is in milliseconds: the pages of a bundle read in one millisecond
- * had the same ids, root and all.
- */
-let idCounter = 0;
-
-/**
  * Reasons gathered while the AST is turned into elements — an expression
  * the printer refused, text the tree has no place for. Reset per parse.
  */
@@ -95,9 +89,12 @@ function takeComments(node: { type: string; loc: { start: number } }): CanvasCom
   return found.map(({ form, text }) => ({ form, text }));
 }
 
-function generateId(): string {
-  return `elem_${Date.now()}_${idCounter++}`;
-}
+/**
+ * An element's id. Its count goes on from page to page (utils/ids.ts): it
+ * started again at each page read, and the time is in milliseconds, so the
+ * pages of a bundle read in one millisecond had the same ids, root and all.
+ */
+const generateId = (): string => countedId('elem_');
 
 /**
  * The fidelity verdict for a source on its own — what the store asks for

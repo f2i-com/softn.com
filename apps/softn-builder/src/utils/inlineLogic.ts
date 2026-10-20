@@ -16,6 +16,7 @@
 
 import type { LogicFileState, ProjectFileNode, UIFileState } from '../types/builder';
 import { isPythonLogicPath } from '@softn/core';
+import { stripSlash } from './values';
 import {
   MAIN_LOGIC_PATHS,
   blankLogicFile,
@@ -95,10 +96,6 @@ function fileContentFor(block: InlineLogicBlock, uiPath: string, logicPath: stri
   const code =
     block.language === 'python' ? dedent(block.code) : rehomeImports(block.code.replace(/^\s*\n/, '').replace(/\s+$/, ''), uiPath, logicPath);
   return `${code}\n`;
-}
-
-function stripSlash(path: string): string {
-  return path.startsWith('/') ? path.slice(1) : path;
 }
 
 function logicFileAt(logicFiles: ReadonlyMap<string, LogicFileState>, path: string): LogicFileState | undefined {

@@ -4,7 +4,8 @@
 
 import React, { useEffect, useId, useState } from 'react';
 import { useSchemaStore } from '../../stores/schemaStore';
-import { askConfirm } from '../../utils/confirm';
+import { askDeleteCollections } from './deleteCollections';
+import { fieldTypeLabels } from './EntityNode';
 import type { EntityDef, SchemaField, FieldType } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -232,9 +233,10 @@ function FieldEditor({
           style={styles.select}
           disabled={isIdField}
         >
+          {/* Called what the collection's card calls them; the value is the store's name. */}
           {fieldTypes.map((type) => (
             <option key={type} value={type}>
-              {type}
+              {fieldTypeLabels[type] ?? type}
             </option>
           ))}
         </select>
@@ -267,7 +269,7 @@ function FieldEditor({
             onChange={(e) => onUpdate({ refEntity: e.target.value })}
             style={{ ...styles.select, width: '100%' }}
           >
-            <option value="">Select entity...</option>
+            <option value="">Select collection...</option>
             {entities
               .filter((e) => e.id !== entityId)
               .map((e) => (
@@ -395,9 +397,7 @@ export function EntityEditor() {
           style={styles.dangerBtn}
           onClick={() => {
             const id = entity.id;
-            void askConfirm(`Delete the collection "${entity.name}" and its records?`, {
-              title: 'Delete collection', confirmLabel: 'Delete', danger: true,
-            }).then((yes) => {
+            void askDeleteCollections([entity.name]).then((yes) => {
               // What is deleted is what was asked about, if it is still there.
               if (yes && useSchemaStore.getState().entities.some((e) => e.id === id)) deleteEntity(id);
             });

@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import type { LogicLanguage } from '../../utils/logicFiles';
+import { dialogStyles } from './dialogStyles';
 
 export type StarterTemplate = 'blank' | 'landing' | 'dashboard';
 
@@ -29,17 +30,15 @@ interface NewProjectDialogProps {
 
 
 // Buttons, the overlay, the dialog frame and the choice cards are classes in
-// styles/builder.css; what is left here is this form's own layout.
+// styles/builder.css, and what the dialogs share is in dialogStyles.ts; what
+// is left here is this form's own layout.
 const styles: Record<string, React.CSSProperties> = {
   dialog: {
     width: 620,
   },
   header: {
+    ...dialogStyles.header,
     padding: '14px 12px 14px 20px',
-    borderBottom: '1px solid var(--line-soft)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
   },
   body: {
     padding: 20,
@@ -48,33 +47,16 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'grid',
     gap: 18,
   },
-  label: {
-    display: 'block',
-    fontSize: 13,
-    fontWeight: 600,
-    color: 'var(--paper)',
-    marginBottom: 6,
-  },
+  label: dialogStyles.label,
   fieldset: {
     border: 'none',
     padding: 0,
     margin: 0,
     minWidth: 0,
   },
-  input: {
-    width: '100%',
-    padding: '9px 12px',
-    borderRadius: 8,
-    fontSize: 14,
-  },
+  input: dialogStyles.input,
   textarea: {
-    width: '100%',
-    minHeight: 64,
-    padding: '9px 12px',
-    borderRadius: 8,
-    fontSize: 14,
-    lineHeight: 1.5,
-    resize: 'vertical',
+    ...dialogStyles.textarea,
     maxHeight: 180,
   },
   select: {
@@ -137,12 +119,8 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--dim)',
   },
   footer: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: 8,
+    ...dialogStyles.footer,
     padding: '12px 20px',
-    borderTop: '1px solid var(--line-soft)',
-    background: 'var(--ink)',
   },
 };
 

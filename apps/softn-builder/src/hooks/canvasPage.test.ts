@@ -39,6 +39,7 @@ import { buildProjectBundle, flushCanvasToActiveFile } from '../utils/buildProje
 import { undoCanvas } from '../utils/canvasHistory';
 import { captureSession, commitProjectSnapshot, prepareProjectSnapshot, prepareSessionSnapshot } from '../utils/openProject';
 import { resetPersistedRevisions, saveProject } from '../utils/saveProject';
+import { startNewProject } from '../utils/newProject';
 import { useActiveFileOnCanvas } from './useActiveFileOnCanvas';
 
 declare global {
@@ -156,6 +157,55 @@ describe('an edit made in the panels with a logic file open in the middle', () =
     expect(words()).toEqual(['About']);
     expect(files().uiFiles.get(idOf('ui/main.ui'))!.originalSource).toContain('Typed with the logic open');
     expect(files().uiFiles.get(idOf('ui/about.ui'))!.originalSource).toBe(ABOUT);
+  });
+});
+
+describe('the page’s history, with a logic file looked at in the middle', () => {
+  /** As the Properties panel edits: a step for Undo, then the change (PropertyPanel.tsx). */
+  const typeIntoText = (words: string) => act(() => {
+    useHistoryStore.getState().push(canvas().elements, canvas().rootId);
+    canvas().updateElementProps(text().id, { children: words });
+  });
+
+  it('is kept when main.logic is looked at and the page opened again', async () => {
+    await openBundle();
+    typeIntoText('Typed on the page');
+    act(() => files().openFile(idOf('logic/main.logic')));
+    act(() => files().openFile(idOf('ui/main.ui')));
+    expect(useHistoryStore.getState().canUndo()).toBe(true);
+    act(() => void undoCanvas());
+    expect(words()).toEqual(['First']);
+  });
+
+  it('takes an edit made in Properties with the logic open, which can be undone there', async () => {
+    await openBundle();
+    act(() => files().openFile(idOf('logic/main.logic')));
+    typeIntoText('Typed with the logic open');
+    let undone = false;
+    act(() => void (undone = undoCanvas()));
+    expect(undone).toBe(true);
+    expect(words()).toEqual(['First']);
+  });
+
+  it('is cleared when a new project replaces it, though its page has the same id as the one left', async () => {
+    // Every project made here has its entry at `main_ui`: the page on the
+    // canvas does not change id, and the new project clears the history itself.
+    await openBundle();
+    typeIntoText('Typed on the page');
+    act(() => files().openFile(idOf('logic/main.logic')));
+    act(() => startNewProject({ name: 'Next', description: '', theme: 'dark', template: 'blank', language: 'javascript', pythonPackages: [] }));
+    expect(useHistoryStore.getState().canUndo()).toBe(false);
+    expect(undoCanvas()).toBe(false);
+  });
+
+  it('is cleared when another page is put on the canvas, so Undo cannot put the first page’s tree into it', async () => {
+    await openBundle();
+    typeIntoText('Typed on the page');
+    act(() => files().openFile(idOf('logic/main.logic')));
+    act(() => files().openFile(idOf('ui/about.ui')));
+    expect(useHistoryStore.getState().canUndo()).toBe(false);
+    expect(undoCanvas()).toBe(false);
+    expect(words()).toEqual(['About']);
   });
 });
 

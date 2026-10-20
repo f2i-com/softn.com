@@ -495,12 +495,14 @@ function PropEditor({ id, propDef, state, onChange }: PropEditorProps) {
             value={(shown as string) || '#000000'}
             onChange={(e) => write(e.target.value)}
           />
+          {/* The label names the picker; this is the same colour, typed. */}
           <input
             type="text"
             style={{ ...styles.input, flex: 1 }}
             value={shown as string}
             onChange={(e) => write(e.target.value)}
             placeholder="#000000"
+            aria-label={`${propDef.name}, as text`}
           />
         </div>
       );
