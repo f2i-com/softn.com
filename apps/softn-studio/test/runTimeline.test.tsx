@@ -105,7 +105,9 @@ describe('the run timeline', () => {
     act(() => undo.click());
     expect(useVFSStore.getState().readFile('ui/main.ui')).toBe(APP.ui);
     expect(container.textContent).toContain('undone');
-  });
+    // Its check renders the page, as the next test's two do, and waits out the
+    // time a renderer is given to say it has loaded: over 5 s on a busy machine.
+  }, 20_000);
 
   // A row's verb was the tool's past tense whatever came of the call: an edit that was refused
   // read "Edited ui/main.ui", with "failed" beside it.
