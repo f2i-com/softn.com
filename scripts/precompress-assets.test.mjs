@@ -71,6 +71,8 @@ test('retains size/type/private-directory exclusions and reuses rejected compres
   const skipped = [
     write('small.js', source.subarray(0, 1023)),
     write('archive.softn', source),
+    // A source map is read by a developer's devtools, never by a visitor's page.
+    write('web/assets/index.js.map', source),
     write('api/config.json', source),
     write('data/state.json', source),
   ];

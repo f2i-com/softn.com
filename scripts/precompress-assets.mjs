@@ -5,9 +5,12 @@ import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { compressTwins, WORKER_MARK } from './lib/compress-twins.mjs';
 
+// Not `.map`: a source map is fetched by a developer's devtools and never by a
+// visitor's page, and its twins were 8 MB of the deployment that nothing read.
+// The server serves a file without twins as it is (the rewrite requires one).
 const COMPRESSIBLE = new Set([
   '.html', '.js', '.mjs', '.css', '.json', '.webmanifest',
-  '.wasm', '.svg', '.map', '.txt', '.md', '.xml', '.ui', '.logic',
+  '.wasm', '.svg', '.txt', '.md', '.xml', '.ui', '.logic',
 ]);
 const MIN_COMPRESS_BYTES = 1024;
 
