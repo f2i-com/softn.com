@@ -139,8 +139,15 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   const composed = composePreviewProject(files, page);
   if (!composed.ok) return { composeError: composed.error };
   const { composition } = composed;
-  const [{ createRoot }, components, core] = await Promise.all([import('react-dom/client'), import('@softn/components'), import('@softn/core')]);
-  components.registerAllBuiltins?.();
+  const [{ createRoot }, { registerRuntimeComponents }, core] = await Promise.all([import('react-dom/client'), import('@softn/components/lazy'), import('@softn/core')]);
+  registerRuntimeComponents();
+  // Every component the page names, on every branch, loaded before it is drawn: the check
+  // reads what the page shows, and a component still loading would show nothing.
+  try {
+    await core.getDefaultRegistry().preload(core.collectAllComponentTags(core.parse(stripTemplateComments(composition.source))));
+  } catch {
+    // A page that does not parse is reported by the render below.
+  }
 
   const errors: string[] = [];
   const warnings: string[] = [];

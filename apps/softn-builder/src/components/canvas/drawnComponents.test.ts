@@ -18,8 +18,11 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { builtinComponents } from '@softn/components';
+import { registerRuntimeComponents } from '@softn/components/lazy';
+import { minimalComponents } from '@softn/components/minimal';
+import { getDefaultRegistry } from '@softn/core';
 import type { CanvasElement, ComponentMeta } from '../../types/builder';
 import { componentRegistry, getComponentMeta } from '../../utils/componentRegistry';
 import { drawnProps, neverPassed, WORDS } from '../../utils/drawnProps';
@@ -54,6 +57,14 @@ const members = (type: string): ManifestMember[] => manifest.components.find((co
 
 let host: HTMLDivElement;
 let root: Root;
+
+// The canvas draws the minimal set at once and any other component once the
+// runtime's loader has fetched it, as the Builder registers them (main.tsx).
+// Every name drawn below is fetched first.
+beforeAll(async () => {
+  registerRuntimeComponents();
+  await getDefaultRegistry().preload([...drawn, 'Toast', 'AnimatedNumber', 'Marquee', 'Typewriter']);
+});
 
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -328,7 +339,7 @@ describe('the wrapper a component is drawn in', () => {
   });
 
   it('draws the stand-in when the component throws, and the canvas goes on', () => {
-    const library = builtinComponents as unknown as Record<string, unknown>;
+    const library = minimalComponents as unknown as Record<string, unknown>;
     const real = library.Badge;
     library.Badge = function Throws(): never {
       throw new Error('a component that cannot draw');
@@ -356,7 +367,7 @@ describe('the wrapper a component is drawn in', () => {
   });
 
   it('tries again when what the element is given changes', () => {
-    const library = builtinComponents as unknown as Record<string, unknown>;
+    const library = minimalComponents as unknown as Record<string, unknown>;
     const real = library.Badge as React.ComponentType<Record<string, unknown>>;
     library.Badge = function ThrowsForOne(props: Record<string, unknown>): React.ReactElement {
       if (props.variant === 'bad') throw new Error('one value it cannot draw');
@@ -481,6 +492,27 @@ describe.each(drawn)('<%s> drawn on the canvas', (type) => {
     // An animation is found by its name alone, anywhere in the document: the
     // library's all carry its prefix, and none is one the editor has.
     expect(written.animations.filter((name) => !name.startsWith('softn-') || EDITOR_KEYFRAMES.has(name))).toEqual([]);
+  });
+});
+
+describe('a component whose feature has not been fetched', () => {
+  it('is its stand-in until the feature arrives, and then itself', async () => {
+    const registry = getDefaultRegistry();
+    let arrive: (component: React.ComponentType) => void = () => {};
+    registry.registerLazy('QRCode', () => new Promise((resolve) => { arrive = resolve; }), { feature: 'media' });
+    try {
+      draw(started('QRCode'));
+      expect(host.querySelector('[data-stand-in]')).not.toBeNull();
+      await act(async () => {
+        arrive(function Fetched(): React.ReactElement {
+          return React.createElement('svg', { 'data-fetched': '' });
+        });
+      });
+      expect(host.querySelector('[data-stand-in]')).toBeNull();
+      expect(host.querySelector('[data-softn-drawn] [data-fetched]')).not.toBeNull();
+    } finally {
+      registerRuntimeComponents();
+    }
   });
 });
 

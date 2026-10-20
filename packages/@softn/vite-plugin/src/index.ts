@@ -467,10 +467,12 @@ function generateModule(document: SoftNDocument, id: string, hmr: boolean): stri
   let code = `
 import { useState, useCallback, useMemo } from 'react';
 import { getDefaultEngine } from '@softn/core';
-import { registerAllBuiltins } from '@softn/components';
+import { ensureRuntimeComponents } from '@softn/components/lazy';
 
-// Register built-in components
-registerAllBuiltins();
+// The built-in components, as the runtimes register them: the minimal set
+// now, every other feature (charts, editors, Scene3D with Three.js, media)
+// fetched the first time a page draws it, so an app carries only what it uses.
+ensureRuntimeComponents();
 
 // Parsed SoftN document
 const __softn_document__ = ${serializedDoc};

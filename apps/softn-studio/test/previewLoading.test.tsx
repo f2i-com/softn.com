@@ -9,8 +9,10 @@ import { READING_LIST } from '../src/examples/readingList';
 import { READING_LIST_PYTHON } from '../src/examples/readingListPython';
 
 const { register, rendered, themed } = vi.hoisted(() => ({ register: vi.fn(), rendered: [] as SoftNRendererProps[], themed: [] as Array<Record<string, unknown>> }));
-vi.mock('@softn/components', () => ({
-  registerAllBuiltins: register,
+// The preview registers components as the runtimes do (@softn/components/lazy)
+// and takes the theme provider from the theme entry.
+vi.mock('@softn/components/lazy', () => ({ registerRuntimeComponents: register }));
+vi.mock('@softn/components/theme', () => ({
   ThemeProvider: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => {
     themed.push(props);
     return children;

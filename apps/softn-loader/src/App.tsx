@@ -6,7 +6,9 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { registerAllBuiltins, ThemeProvider } from '@softn/components';
+import { registerRuntimeComponents } from '@softn/components/lazy';
+import { Spinner } from '@softn/components/minimal';
+import { ThemeProvider } from '@softn/components/theme';
 import {
   SoftNWithXDB,
   XDBStorageNotice,
@@ -18,7 +20,6 @@ import {
   type PermissionConfig,
   type AppAssetResolver,
 } from '@softn/core';
-import { Spinner } from '@softn/components';
 import { DesktopShell, DesktopWelcome } from './DesktopShell';
 import { createBundleAssetResolver } from './bundleAssets';
 import { isSoftnPath, resolveServerConfig, type BundleServerConfig } from './runtimeConfig';
@@ -81,8 +82,10 @@ async function restoreFromBackup(dataId: string, backup: string): Promise<void> 
 // Compile-time constant from Vite define
 declare const __ANDROID__: boolean;
 
-// Register all components with the SoftN engine
-registerAllBuiltins();
+// The components, as the browser runtimes register them: the minimal set now,
+// every other feature (charts, editors, Scene3D and Three.js, media) loaded
+// the first time an app draws it.
+registerRuntimeComponents();
 
 // Check if running in Tauri
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;

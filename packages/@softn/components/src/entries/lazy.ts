@@ -114,3 +114,18 @@ export function registerRuntimeComponents(
     registry.registerLazy(name, load, { feature });
   }
 }
+
+const registeredOnce = new WeakSet<ComponentRegistry>();
+
+/**
+ * registerRuntimeComponents(), once per registry: for code that can run more
+ * than once in a page, such as every module @softn/vite-plugin compiles, where
+ * registering again would start every feature's load over.
+ */
+export function ensureRuntimeComponents(
+  registry: ComponentRegistry = getDefaultRegistry()
+): void {
+  if (registeredOnce.has(registry)) return;
+  registeredOnce.add(registry);
+  registerRuntimeComponents(registry);
+}

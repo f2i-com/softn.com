@@ -14,7 +14,7 @@
  * in builder.css, which follows the page's theme by itself).
  */
 
-import { CodeEditor as SoftnCodeEditor, type CodeEditorProps } from '@softn/components';
+import { CodeEditor as SoftnCodeEditor, type CodeEditorProps } from '@softn/components/editors';
 
 interface Props {
   value: string;

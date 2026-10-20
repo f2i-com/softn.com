@@ -334,15 +334,20 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     let mounted = true;
     const loadRenderer = async () => {
       try {
-        const components = await import('@softn/components');
+        // Registered as the runtimes register them: the minimal set now, and
+        // every other component (charts, editors, Scene3D and Three.js, the
+        // QR reader and its decoder) fetched the first time a page draws it,
+        // so a preview loads only what the page uses.
+        const [{ registerRuntimeComponents }, theme] = await Promise.all([
+          import('@softn/components/lazy'),
+          import('@softn/components/theme'),
+        ]);
         if (!mounted) return;
-        if (components.registerAllBuiltins) {
-          components.registerAllBuiltins();
-        }
+        registerRuntimeComponents();
         const core = await import('@softn/core');
         if (!mounted) return;
         if (!core.SoftNWithXDB) throw new Error('The preview renderer is unavailable.');
-        setThemeProviderComponent(() => components.ThemeProvider ?? null);
+        setThemeProviderComponent(() => theme.ThemeProvider ?? null);
         // The renderer a runtime uses: the page's <data> block binds its collections from the
         // preview's store (seeded below), under the names, filters, order and limits it gives
         // them. The plain renderer was handed every record under its collection's name, which

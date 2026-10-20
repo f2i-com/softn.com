@@ -2,9 +2,9 @@
  * SoftN Component Registry
  *
  * Registers all built-in components — eagerly. This is the compatibility
- * path: Studio, the Builder, the desktop loader and the Vite plugin call
- * registerAllBuiltins() and get every component in the chunk that imported
- * it, Three.js included. The browser runtimes boot through
+ * path: a caller of registerAllBuiltins() gets every component in the chunk
+ * that imported it, Three.js included. The runtimes, Studio, the Builder, the
+ * desktop loader and the Vite plugin's modules boot through
  * registerRuntimeComponents() in entries/lazy.ts instead, which registers
  * the same names but fetches each feature on demand; the set here is the
  * union of the entries so the two cannot drift apart by construction.

@@ -4,6 +4,7 @@ import { softnPwa } from '../../scripts/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
+import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -57,9 +58,14 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
         // core-runtime/ holds the workers' files (the script and local-model
         // workers), fetched by the apps that start one rather than by every
-        // first load.
-        globIgnores: ['**/core-runtime/**'],
+        // first load. The preview registers components as the runtimes do,
+        // so a feature (charts, editors, Scene3D with Three.js, the QR
+        // decoder) and core's optional modules are fetched the first time a
+        // previewed page draws or asks for one, and kept by the runtime
+        // routes below for offline use after (scripts/on-demand-chunks.mjs).
+        globIgnores: ['**/core-runtime/**', ...onDemandGlobIgnores],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+        runtimeCaching: onDemandRuntimeCaching,
       },
     }),
   ],
@@ -71,5 +77,14 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: true,
+    // dist/.vite/manifest.json, which test/build-graph.test.ts reads.
+    manifest: true,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [vendorThreeGroup],
+        },
+      },
+    },
   },
 });

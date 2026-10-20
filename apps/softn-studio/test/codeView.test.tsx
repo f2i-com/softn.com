@@ -7,8 +7,8 @@ import { VisualCanvas } from '../src/components/canvas/VisualCanvas';
 import { useVFSStore, useWorkspaceStore } from '../src/stores';
 
 const { mounts, unmounts } = vi.hoisted(() => ({ mounts: vi.fn(), unmounts: vi.fn() }));
-vi.mock('@softn/components', () => ({
-  registerAllBuiltins: () => {},
+vi.mock('@softn/components/lazy', () => ({ registerRuntimeComponents: () => {} }));
+vi.mock('@softn/components/theme', () => ({
   ThemeProvider: ({ children }: PropsWithChildren) => children,
 }));
 vi.mock('@softn/core', async (importOriginal) => ({

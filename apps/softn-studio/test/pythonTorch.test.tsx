@@ -34,8 +34,8 @@ import { useVFSStore, useWorkspaceStore } from '../src/stores';
 import type { ProjectBrief, VFSFile } from '../src/types/studio';
 
 const { rendered } = vi.hoisted(() => ({ rendered: [] as SoftNRendererProps[] }));
-vi.mock('@softn/components', () => ({
-  registerAllBuiltins: () => {},
+vi.mock('@softn/components/lazy', () => ({ registerRuntimeComponents: () => {} }));
+vi.mock('@softn/components/theme', () => ({
   ThemeProvider: ({ children }: PropsWithChildren) => children,
 }));
 vi.mock('@softn/core', async (importOriginal) => ({

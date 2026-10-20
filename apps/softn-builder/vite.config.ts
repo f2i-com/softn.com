@@ -4,6 +4,7 @@ import { softnPwa } from '../../scripts/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
+import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -68,8 +69,13 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
         // core-runtime/ holds the workers' files (the script and local-model
         // workers), fetched by the apps that start one rather than by every
-        // install.
-        globIgnores: ['**/core-runtime/**'],
+        // install. The canvas and preview register components as the runtimes
+        // do, so a feature (charts, editors, Scene3D with Three.js, the QR
+        // decoder) and core's optional modules are fetched the first time a
+        // page draws or asks for one, and kept by the runtime routes below for
+        // offline use after (scripts/on-demand-chunks.mjs).
+        globIgnores: ['**/core-runtime/**', ...onDemandGlobIgnores],
+        runtimeCaching: onDemandRuntimeCaching,
         // Everything left after that ignore fits inside 8 MiB — the largest
         // is the ZIPP engine at ~6.1 MiB (javascript-python-base: torch is a package
         // under core-runtime/, fetched only for apps that declare it). Raise this rather than let
@@ -97,5 +103,14 @@ export default defineConfig({
     }),
     minify: !env.TAURI_ENV_DEBUG,
     sourcemap: !!env.TAURI_ENV_DEBUG,
+    // dist/.vite/manifest.json, which the build-graph test reads.
+    manifest: true,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [vendorThreeGroup],
+        },
+      },
+    },
   },
 });

@@ -37,8 +37,10 @@
  * the editor's type or colour is inherited into the component.
  */
 
-import React, { createContext, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { App, builtinComponents, darkTheme, lightTheme, themeToCssVariables } from '@softn/components';
+import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { App, minimalComponents } from '@softn/components/minimal';
+import { darkTheme, lightTheme, themeToCssVariables } from '@softn/components/theme';
+import { getDefaultRegistry } from '@softn/core';
 import type { CanvasElement, ComponentMeta } from '../../types/builder';
 import { drawnProps, type DrawnHeld } from '../../utils/drawnProps';
 import type { DrawnTheme, ThemeSide } from '../../utils/drawnTheme';
@@ -57,7 +59,33 @@ interface DrawnSurroundings {
 
 const DrawnContext = createContext<DrawnSurroundings>({ theme: { tokens: 'light', page: 'light' }, pages: null });
 
-const components = builtinComponents as unknown as Record<string, React.ComponentType<Record<string, unknown>> | undefined>;
+type Drawable = React.ComponentType<Record<string, unknown>>;
+const minimal = minimalComponents as unknown as Record<string, Drawable | undefined>;
+
+/**
+ * A component the canvas can draw now: one of the minimal set, or another
+ * whose feature the runtime's loader has fetched (registerRuntimeComponents
+ * in main.tsx). A component still on its way is drawn as its stand-in.
+ */
+function drawable(name: string): Drawable | undefined {
+  const eager = minimal[name];
+  if (eager) return eager;
+  const registry = getDefaultRegistry();
+  return registry.isLoaded(name) ? (registry.get(name) as unknown as Drawable) : undefined;
+}
+
+/** {@link drawable}, fetching the component's feature (a QRCode's media) the first time one is drawn. */
+function useDrawable(name: string): Drawable | undefined {
+  const [, arrived] = useState(0);
+  useEffect(() => {
+    const registry = getDefaultRegistry();
+    if (minimal[name] || !registry.has(name) || registry.isLoaded(name)) return;
+    let live = true;
+    registry.load(name).then(() => { if (live) arrived((n) => n + 1); }, () => {});
+    return () => { live = false; };
+  }, [name]);
+  return drawable(name);
+}
 
 function tokensRule(side: ThemeSide): string {
   // themeToCssVariables refuses a name or a value that could close the rule.
@@ -209,14 +237,14 @@ interface DrawnProps {
  */
 export function DrawnComponent({ element, meta, fallback, held, picture }: DrawnProps): React.ReactElement {
   const { theme, pages } = useContext(DrawnContext);
-  const Component = components[element.componentType];
+  const Component = useDrawable(element.componentType);
   const props = useMemo(() => {
     const given = drawnProps(element, meta);
     if (picture) given.src = picture;
     if (held && held.length > 0) {
       given.children = held.map((part, index) => {
         if (typeof part === 'string') return part;
-        const Held = components[part.type];
+        const Held = drawable(part.type);
         return Held ? <Held key={index} {...part.props} /> : null;
       });
     }

@@ -4,64 +4,13 @@ import { softnPwa } from '../../scripts/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
+import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
-// The feature entries of @softn/components, as registerRuntimeComponents()
-// in main.tsx loads them: one dynamic import each, so Rolldown emits one
-// chunk each, named after the facade it starts at — dist/scene3d.js becomes
-// assets/scene3d-<hash>.js. Three.js itself is named vendor-three in `build`
-// below. test/build-graph.test.ts holds these names to what the manifest
-// actually contains.
-const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation'];
-
-// Core's own on-demand modules that only some apps reach, by the name each
-// chunk starts with in dist/assets: `ai-manager-*`, `model-host-*` and
-// `ai-gpu-compute-manager-*` are the AI side (a local model itself runs in
-// core-runtime/runtime/model-worker.js, a worker asset); `xdb-sync-*` the
-// peer sync runtime (yjs) and `xdb-server-sync-*` the
-// directory's server sync; `zipp_torch-*` the loader for the torch Python
-// package (its zipp_torch.wasm is a worker asset). Each is a dynamic import in core, so each is a
-// chunk of its own, and none is fetched until an app asks. `xdb-*` alone —
-// the XDB module every app opens — is not in this list and stays precached.
-// The build-graph test checks both halves against the emitted names.
-const onDemandRuntimeChunks = [
-  'ai-manager',
-  'model-host',
-  'ai-gpu-compute-manager',
-  'xdb-sync',
-  'xdb-server-sync',
-  'zipp_torch',
-];
-
-// The Three addons Scene3D reaches through its own import() — the model
-// loaders, the controls, the room environment, the post-processing set,
-// SkeletonUtils and the Meshopt decoder (docs/engineering/SCENE3D_LOADING.md) — each a
-// chunk named after its module, plus the two modules the post-processing
-// chunks share between them (Pass, CopyShader), which Rolldown emits as
-// chunks of their own. They are separate from vendor-three because the
-// group in `build` below covers three/build/ only; without a name here the
-// glob would precache all fifteen for every visitor — measured: 59 entries
-// where the shell is 45. A scene fetches the ones it uses, and the runtime
-// rule below keeps them. The build-graph test holds each to being emitted,
-// dynamically imported by scene3d and out of the precache.
-const threeAddonChunks = [
-  'GLTFLoader',
-  'OBJLoader',
-  'FBXLoader',
-  'STLLoader',
-  'OrbitControls',
-  'RoomEnvironment',
-  'SkeletonUtils',
-  'EffectComposer',
-  'RenderPass',
-  'UnrealBloomPass',
-  'OutputPass',
-  'ShaderPass',
-  'Pass',
-  'CopyShader',
-  'meshopt_decoder.module',
-];
+// What is fetched the first time a page needs it, the same for Studio and the
+// Builder: scripts/on-demand-chunks.mjs. test/build-graph.test.ts holds the
+// names to what the manifest actually contains.
 
 export default defineConfig({
   // Serving from a subpath such as /web/ is a deployment decision, so the base
@@ -149,67 +98,13 @@ export default defineConfig({
         // docs/engineering/COMPONENT_LOADING.md has the whole policy; the build-graph
         // test holds the precache to it.
         globIgnores: [
-          // The QR decoder (<QRReader>), ~0.9 MB, emitted from the host's
-          // build now rather than fetched from jsDelivr. Only a scanning app
-          // needs it, so it is kept by the runtime rule below, not precached.
-          '**/assets/zxing_reader-*.wasm',
           '**/core-runtime/**',
           '**/demos/**',
-          '**/assets/vendor-three-*.js',
-          ...featureChunks.map((name) => `**/assets/${name}-*.js`),
-          ...threeAddonChunks.map((name) => `**/assets/${name}-*.js`),
-          ...onDemandRuntimeChunks.map((name) => `**/assets/${name}-*.js`),
+          ...onDemandGlobIgnores,
         ],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
-          {
-            // Every script under assets/ is hashed, so a copy is right for as
-            // long as anything references it and a new release references
-            // new names: CacheFirst. The precache route is registered ahead
-            // of this one and keeps answering for the shell's own files; this
-            // answers for the rest — the feature chunks, vendor-three and
-            // the Three addons above. A RegExp route matches a cross-origin URL only from its
-            // first character, and no absolute URL starts with /assets/, so
-            // this is same-origin by construction.
-            urlPattern: /\/assets\/[^/?#]+\.js$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'softn-feature-chunks',
-              expiration: { maxEntries: 80, maxAgeSeconds: 60 * 60 * 24 * 30 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
-          {
-            // The QR decoder, hashed like the chunks above and fetched the
-            // first time an app scans; kept so scanning works offline after.
-            urlPattern: /\/assets\/zxing_reader-[^/?#]+\.wasm$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'softn-qr-decoder',
-              expiration: { maxEntries: 2, maxAgeSeconds: 60 * 60 * 24 * 30 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
-          {
-            // The script worker's files, which the per-app install fetches
-            // for an app whose manifest runs its script in a worker
-            // (src/lib/offlineInstall.ts). The route above cannot hold them:
-            // they sit two directories down. NetworkFirst rather than
-            // CacheFirst because the worker's entry keeps one name across
-            // builds — `runtime/script-worker.js` — and a worker served from
-            // a cache after a deployment would be the previous release's,
-            // talking to this release's main thread. Online it is always the
-            // current one, and the copy is refreshed; offline the copy answers.
-            // Same-origin by the same construction as the route above.
-            urlPattern: /\/assets\/core-runtime\/.+\.(?:js|wasm|json)$/,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'softn-worker-assets',
-              networkTimeoutSeconds: 4,
-              expiration: { maxEntries: 40, maxAgeSeconds: 60 * 60 * 24 * 30 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
+          ...onDemandRuntimeCaching,
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
             handler: 'CacheFirst',
@@ -249,21 +144,7 @@ export default defineConfig({
     rolldownOptions: {
       output: {
         codeSplitting: {
-          groups: [
-            // Three.js itself — `three/build/` — under one name. It is reached
-            // only through the scene3d feature's dynamic import, so this names
-            // a chunk that is already asynchronous; it is not what makes it so
-            // — registerRuntimeComponents() in main.tsx does that at the
-            // source. The addons under `three/examples/jsm/` are deliberately
-            // not in the group: Scene3D reaches each loader, the controls, the
-            // environment and the post-processing set through its own
-            // import(), so each is a chunk of its own, fetched the first time
-            // a scene needs it. A test over `node_modules/three/` swept them
-            // all into this chunk — measured at 740 KB against 712 KB for
-            // Three.js alone — so a scene with one model and no effects
-            // downloaded the bloom pass and three loaders it never used.
-            { name: 'vendor-three', test: /node_modules[\\/]three[\\/]build[\\/]/ },
-          ],
+          groups: [vendorThreeGroup],
         },
       },
     },

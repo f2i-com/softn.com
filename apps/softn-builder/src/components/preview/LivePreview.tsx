@@ -425,10 +425,12 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
 
       if (!active) return;
       try {
-        // Import ThemeProvider from @softn/components
-        const components = await import('@softn/components');
+        // The theme entry alone: the package's root would bring every
+        // component, Three.js included, where main.tsx registers them to be
+        // fetched as a page draws them.
+        const theme = await import('@softn/components/theme');
         debug('[LivePreview] Loaded @softn/components ThemeProvider');
-        if (active) setThemeProviderComponent(() => components.ThemeProvider);
+        if (active) setThemeProviderComponent(() => theme.ThemeProvider);
       } catch (e) {
         console.error('[LivePreview] Failed to load ThemeProvider:', e);
         if (active) setThemeProviderComponent(null);

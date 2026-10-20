@@ -26,6 +26,22 @@ service worker's precache. Both numbers are asserted by
 which read Vite's manifest and print the closure, the feature chunks and the
 addon chunks into the test log.
 
+Studio, the Builder, the desktop loader and the apps `@softn/vite-plugin`
+builds register the same way since 2026-10-20 (`registerRuntimeComponents`,
+or `ensureRuntimeComponents` in the plugin's generated modules): a preview,
+the Builder's canvas or a built app fetches a feature the first time a page
+draws it, so a page with a chart fetches the charts and a page with no
+`Scene3D` never fetches Three.js. Studio's and the Builder's service workers
+leave the same chunks out of their precache and keep them with the same
+runtime routes, from one module the three apps share
+(`scripts/on-demand-chunks.mjs`); `scripts/editor-on-demand.test.mjs` holds
+the two editors' builds to it. Measured on one build: Studio's precache went
+from 10.75 MB to 8.57 MB and the Builder's from 10.57 MB to 8.40 MB, whose
+entry fell from 2.4 MB to 1.1 MB. Studio's agent check, which reads what a
+page shows, preloads every component the page names (on every branch) before
+it renders. The Builder's canvas draws the minimal set at once and any other
+component (a QRCode) as its stand-in until its feature has arrived.
+
 ## The entries of `@softn/components`
 
 `packages/@softn/components/package.json` exports these, each a tsup entry with
@@ -33,9 +49,9 @@ its own `.d.ts` (`packages/@softn/components/tsup.config.ts`):
 
 | Entry | Contents | Minified, dependencies external |
 | --- | --- | --- |
-| `@softn/components` | The legacy barrel: everything, eagerly, plus `registerAllBuiltins()`. The compatibility path for Studio, the Builder, the desktop loader and the Vite plugin. Importing anything from it puts every component, Three.js included, into the importing chunk. | all of the below |
+| `@softn/components` | The legacy barrel: everything, eagerly, plus `registerAllBuiltins()`, for a consumer outside this repository that relies on it. Nothing here imports it at run time any more (tests do, to hold the entries equal to it). Importing anything from it puts every component, Three.js included, into the importing chunk. | all of the below |
 | `@softn/components/minimal` | Layout, form, display, feedback, navigation, the data views and the light utilities (Accordion, Collapse, Tooltip, Loop, PixelGrid, PixelCanvas, DPad). `minimalComponents` and `registerMinimalComponents()`. Nothing beyond React and `@softn/core` in its import graph. | ~270 KB |
-| `@softn/components/lazy` | `registerRuntimeComponents(registry?)`: the minimal set eagerly, every other built-in by loader. `lazyComponentRegistrations` (name → feature + loader) and `runtimeComponentNames`. Imports `minimal` statically and the feature entries only through `import()`. | ~3 KB + minimal |
+| `@softn/components/lazy` | `registerRuntimeComponents(registry?)`: the minimal set eagerly, every other built-in by loader; `ensureRuntimeComponents(registry?)`, the same once per registry, for code that may run more than once (each module `@softn/vite-plugin` compiles). `lazyComponentRegistrations` (name → feature + loader) and `runtimeComponentNames`. Imports `minimal` statically and the feature entries only through `import()`. | ~3 KB + minimal |
 | `@softn/components/theme` | `ThemeProvider`, the token sets, the variant and size scales. No component. | ~16 KB |
 | `@softn/components/scene3d` | `Scene3D`, with Three.js as its one static import. The GLTF/OBJ/FBX/STL loaders, OrbitControls, RoomEnvironment, the post-processing set, SkeletonUtils and the Meshopt decoder are each an `import()` of its own inside it (docs/engineering/SCENE3D_LOADING.md), so each is a further chunk fetched the first time a scene needs it. | ~49 KB + Three.js (~571 KB in the host build); the addons 1–47 KB each |
 | `@softn/components/charts` | LineChart, BarChart, PieChart, AreaChart, RadarChart, GaugeChart (SVG). | ~30 KB |

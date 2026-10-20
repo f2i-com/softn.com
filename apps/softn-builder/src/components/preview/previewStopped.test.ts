@@ -36,7 +36,7 @@ vi.mock('./PreviewRuntime', async () => {
   }
   return { PreviewRuntime, previewRecordsFor: () => ({}) };
 });
-vi.mock('@softn/components', () => ({ ThemeProvider: ({ children }: { children: React.ReactNode }) => children }));
+vi.mock('@softn/components/theme', () => ({ ThemeProvider: ({ children }: { children: React.ReactNode }) => children }));
 
 declare global {
   // eslint-disable-next-line no-var

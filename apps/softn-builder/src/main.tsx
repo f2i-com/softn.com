@@ -2,7 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { registerAllBuiltins } from '@softn/components';
+import { registerRuntimeComponents } from '@softn/components/lazy';
 // The same look as softn.com, the runtime and Studio: one set of tokens, the
 // same faces and the same product bar, from one package — bundled, so the
 // builder still looks like itself offline. It is installable, and a PWA that
@@ -14,8 +14,10 @@ import '@softn/brand/bar.css';
 import './styles/builder.css';
 import App from './App';
 
-// Register all SoftN components
-registerAllBuiltins();
+// The components, registered as the runtimes register them: the minimal set
+// now, and every other feature (charts, editors, Scene3D and Three.js, media)
+// fetched the first time a page draws it.
+registerRuntimeComponents();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

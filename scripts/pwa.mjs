@@ -155,7 +155,8 @@ export function useRegisterSW(options = {}) {
     if (import.meta.env.DEV || !('serviceWorker' in navigator)) return;
     let live = true;
     navigator.serviceWorker.register(SW_URL, { scope: SCOPE }).then((reg) => {
-      if (!live) return;
+      // Nothing to watch where registration is stubbed out (an automated or locked-down browser).
+      if (!live || !reg) return;
       registration.current = reg;
       latest.current.onRegisteredSW?.(SW_URL, reg);
       // Installed with a page already controlled is an update; with none, the first install.

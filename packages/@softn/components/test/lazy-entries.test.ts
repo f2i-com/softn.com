@@ -16,6 +16,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ComponentRegistry } from '@softn/core';
 import {
+  ensureRuntimeComponents,
   lazyComponentRegistrations,
   registerRuntimeComponents,
   runtimeComponentNames,
@@ -79,6 +80,22 @@ describe('registerRuntimeComponents', () => {
     expect(registry.getNames().sort()).toEqual(expected);
     expect([...runtimeComponentNames].sort()).toEqual(expected);
     expect(new Set(runtimeComponentNames).size).toBe(runtimeComponentNames.length);
+  });
+});
+
+describe('ensureRuntimeComponents', () => {
+  it('registers once per registry, so a feature already fetched is not fetched again', async () => {
+    const registry = new ComponentRegistry();
+    ensureRuntimeComponents(registry);
+    await registry.preload(['LineChart']);
+    expect(registry.getLoadState('LineChart')).toBe('loaded');
+    // A second module that registers the components leaves the load as it is.
+    ensureRuntimeComponents(registry);
+    expect(registry.getLoadState('LineChart')).toBe('loaded');
+    // Another registry gets its own.
+    const other = new ComponentRegistry();
+    ensureRuntimeComponents(other);
+    expect(other.getLoadState('LineChart')).toBe('idle');
   });
 });
 

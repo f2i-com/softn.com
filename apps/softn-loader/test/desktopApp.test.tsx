@@ -8,7 +8,9 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: bridge.open }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readFile: bridge.readFile }));
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: bridge.drag }) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: bridge.title }) }));
-vi.mock('@softn/components', () => ({ registerAllBuiltins() {}, ThemeProvider: (props: Record<string, unknown> & { children: React.ReactNode }) => { bridge.theme(props); return props.children; }, Spinner: () => <span>Loading</span> }));
+vi.mock('@softn/components/lazy', () => ({ registerRuntimeComponents() {} }));
+vi.mock('@softn/components/minimal', () => ({ Spinner: () => <span>Loading</span> }));
+vi.mock('@softn/components/theme', () => ({ ThemeProvider: (props: Record<string, unknown> & { children: React.ReactNode }) => { bridge.theme(props); return props.children; } }));
 vi.mock('@softn/core', async (importOriginal) => ({
   // The manifest and permission reads are core's real ones: the loader is
   // what this test exercises, and those are what it reads through. So is
