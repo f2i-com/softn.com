@@ -1,15 +1,25 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Nav } from './components/Nav';
 import { Footer } from './components/Footer';
 import { HomePage } from './pages/HomePage';
 import { DirectoryPage } from './pages/DirectoryPage';
-import { AppPage } from './pages/AppPage';
-import { PublishPage } from './pages/PublishPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { DropAnywhere } from './components/DropAnywhere';
 import { selectPage, useLinkInterception, useRoute } from './lib/router';
 import { getCategories, type Category } from './lib/api';
 import { applyMeta, HOME_TITLE, metaFor } from './lib/meta';
+
+// An app's page and the publish page load the first time they are visited:
+// the landing page and the directory use neither, and the publish page alone
+// is some 70 KB with the bundle checks it runs in the browser.
+const AppPage = lazy(() => import('./pages/AppPage').then((m) => ({ default: m.AppPage })));
+const PublishPage = lazy(() => import('./pages/PublishPage').then((m) => ({ default: m.PublishPage })));
+
+/** Says when a page that loads on demand has arrived, so focus and a fragment can find it. */
+function Arrived({ onArrive, children }: { onArrive: () => void; children: React.ReactNode }): React.ReactElement {
+  useEffect(onArrive, [onArrive]);
+  return <>{children}</>;
+}
 
 /**
  * Four pages on one bundle, and a fifth for paths that are none of them.
@@ -46,6 +56,10 @@ export default function App(): React.ReactElement {
   }, [categoriesAttempt]);
 
   const selected = selectPage(route.path);
+  // Counts the arrivals of on-demand pages: the effects below run again when
+  // one has, as the page they look for was not there when the path changed.
+  const [arrivals, setArrivals] = useState(0);
+  const arrive = useRef(() => setArrivals((n) => n + 1)).current;
 
   useEffect(() => {
     if (route.path === '/') document.title = HOME_TITLE;
@@ -74,7 +88,7 @@ export default function App(): React.ReactElement {
       target.scrollIntoView({ block: 'start' });
     });
     return () => cancelAnimationFrame(frame);
-  }, [route.path, route.hash]);
+  }, [route.path, route.hash, arrivals]);
 
   // A change of page puts focus on its main content, so a keyboard or
   // screen-reader visitor starts where the new page starts instead of on
@@ -85,12 +99,13 @@ export default function App(): React.ReactElement {
   const lastPath = useRef(route.path);
   useEffect(() => {
     if (lastPath.current === route.path) return;
-    lastPath.current = route.path;
     const main = document.querySelector<HTMLElement>('main');
+    // A page still loading has no main yet: this runs again when it arrives.
     if (!main) return;
+    lastPath.current = route.path;
     if (!main.hasAttribute('tabindex')) main.tabIndex = -1;
     main.focus({ preventScroll: true });
-  }, [route.path]);
+  }, [route.path, arrivals]);
 
   let page: React.ReactElement;
   switch (selected.kind) {
@@ -98,10 +113,10 @@ export default function App(): React.ReactElement {
       page = <DirectoryPage route={route} categories={categories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
       break;
     case 'app':
-      page = <AppPage slug={selected.slug} categories={categories} route={route} />;
+      page = <Arrived onArrive={arrive}><AppPage slug={selected.slug} categories={categories} route={route} /></Arrived>;
       break;
     case 'publish':
-      page = <PublishPage route={route} categories={categories} onCategories={setCategories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
+      page = <Arrived onArrive={arrive}><PublishPage route={route} categories={categories} onCategories={setCategories} categoriesError={categoriesError} onRetryCategories={retryCategories} /></Arrived>;
       break;
     case 'not-found':
       page = <NotFoundPage path={route.path} />;
@@ -114,7 +129,7 @@ export default function App(): React.ReactElement {
   return (
     <>
       <Nav />
-      {selected.kind === 'home' ? <main>{page}</main> : page}
+      {selected.kind === 'home' ? <main>{page}</main> : <Suspense fallback={null}>{page}</Suspense>}
       <Footer />
       <DropAnywhere onPublishPage={selected.kind === 'publish'} />
     </>

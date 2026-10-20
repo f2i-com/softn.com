@@ -87,6 +87,18 @@ describe('focus on navigation', () => {
     expect(main?.closest('.directory')).not.toBeNull();
   });
 
+  // The publish page is fetched the first time it is visited, so there is no
+  // main to move to when the path changes; focus goes to it once it arrives.
+  it('moves to the main content of a page fetched on demand, once it has arrived', async () => {
+    await settle();
+    act(() => navigate('/publish'));
+    await vi.waitFor(async () => {
+      await settle();
+      expect(document.activeElement?.tagName).toBe('MAIN');
+    }, { timeout: 10_000 });
+    expect(container.contains(document.activeElement)).toBe(true);
+  });
+
   it('stays put when only the query changes on the same page', async () => {
     act(() => navigate('/apps'));
     await settle();
