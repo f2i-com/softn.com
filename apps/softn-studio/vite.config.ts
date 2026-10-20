@@ -19,12 +19,11 @@ export default defineConfig({
     scriptPolicyPlugin(),
     softnPwa({
       disable: env.VITE_FORMLOGIC_EDITOR === '1',
-      registerType: 'autoUpdate',
-      // PWAPrompt registers the worker itself, so the plugin must not also
-      // inject a registration script. Turning it off additionally keeps
-      // Workbox from adding an unconditional skipWaiting(), which is what
-      // leaves a new worker parked in `waiting` long enough to offer a reload
-      // instead of yanking the canvas out from under an in-progress design.
+      // A new build waits in `waiting` until PWAPrompt's Reload asks it to take
+      // over, rather than yanking the canvas out from under a design in progress.
+      registerType: 'prompt',
+      // PWAPrompt registers the worker itself, through the plugin's hook, so the
+      // plugin must not also inject a registration script.
       injectRegister: false,
       // The workbox globs below already sweep up everything in dist, icons
       // included, and listing them twice puts duplicate precache entries in

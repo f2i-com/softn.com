@@ -159,6 +159,36 @@ describe('a save by hand', () => {
     // Nothing had been typed, so there was nothing to ask about.
     expect(asked).toEqual([]);
   });
+
+  // Ctrl+S worked only in the text box: on Save or Cancel, or with the keyboard on the page
+  // around the editor, the browser offered to save Studio's page as a file instead.
+  it('is saved by Ctrl+S wherever the keyboard is in the editor view, but not from another field', () => {
+    open();
+    act(() => button('Edit')!.click());
+    type(`${PAGE}\n<!-- one -->`);
+    const press = (target: EventTarget) => {
+      const event = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true });
+      act(() => { target.dispatchEvent(event); });
+      return event;
+    };
+    // Typed into another field (the AI's message box): that field's, and nothing is saved.
+    const other = document.createElement('textarea');
+    document.body.append(other);
+    expect(press(other).defaultPrevented).toBe(false);
+    expect(text('ui/main.ui')).toBe(PAGE);
+    other.remove();
+    // On the editor's own Cancel button.
+    expect(press(button('Cancel')!).defaultPrevented).toBe(true);
+    expect(text('ui/main.ui')).toBe(`${PAGE}\n<!-- one -->`);
+    expect(area()).toBeNull();
+    // With the keyboard on the page around it.
+    act(() => button('Edit')!.click());
+    type(`${PAGE}\n<!-- two -->`);
+    expect(press(document.body).defaultPrevented).toBe(true);
+    expect(text('ui/main.ui')).toBe(`${PAGE}\n<!-- two -->`);
+    // And with no file open for editing, Ctrl+S is left to the browser.
+    expect(press(document.body).defaultPrevented).toBe(false);
+  });
 });
 
 describe('a file that changed while it was being edited', () => {

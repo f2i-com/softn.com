@@ -1,8 +1,12 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useAIStore, useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
-import { declarePythonPackage, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
+import { declarePythonPackage, getBundleEntryPath, MAIN_PAGE_PATH, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
 import { getXDB, SoftNWithXDB, type SoftNRendererProps } from '@softn/core';
+import type { DevicePreset, ValidationError, VFSFile } from '../../types/studio';
+import { PreviewError } from './PreviewError';
+import { PAGE_PARSE, pageAndImports, pageParseProblems } from '../../lib/pageDiagnostics';
+import { describeProblem, isSyntaxError, LOGIC_SYNTAX, logicSyntaxProblems } from '../../lib/logicCheck';
 import type { ThemeProviderProps } from '@softn/components';
 import { createPreviewAssetResolver } from '../../lib/previewAssets';
 import { declaredCapabilities } from '../../lib/declaredCapabilities';
@@ -10,9 +14,9 @@ import { CodeFile, FileEditor } from './FileEditor';
 import { useEditStore } from '../../stores/editStore';
 import { confirmLeaveDraft, confirmShowing } from '../../lib/handEdit';
 import { askAgentToFix } from '../../lib/agentOrchestrator';
-import { listenToConsoleErrors, notePreviewFault, readAppFault, readAppLog } from '../../lib/previewFaults';
+import { listenToConsoleErrors, notePreviewFault, readAppFault, readAppLog, type AppFault } from '../../lib/previewFaults';
 import { MediaView, mediaKindFor } from './MediaView';
-import { isPagePath } from '../../lib/sourceKinds';
+import { isLogicPath, isPagePath } from '../../lib/sourceKinds';
 import {
   buildPreviewXDBState,
   clearPreviewXDBCollections,
@@ -84,6 +88,77 @@ function writeCanvasViewMode(mode: CanvasViewMode): void {
   } catch {
     // Storage can be blocked; the choice then lasts as long as the canvas.
   }
+}
+
+/** The widths a page is previewed at: a desktop browser's, a tablet's and a phone's. */
+export const DEVICE_WIDTHS: Record<DevicePreset, number> = {
+  desktop: 1280,
+  tablet: 768,
+  mobile: 375,
+};
+
+const DEVICE_LABELS: Record<DevicePreset, string> = { desktop: 'Desktop', tablet: 'Tablet', mobile: 'Phone' };
+
+/** Desktop | Tablet | Phone: the width the page is previewed at, kept with the project. */
+export function DeviceSwitch({ preset, onChange }: { preset: DevicePreset; onChange: (preset: DevicePreset) => void }): React.ReactElement {
+  return (
+    <div className="st-view-switch st-device-switch" role="group" aria-label="Preview width">
+      {(Object.keys(DEVICE_WIDTHS) as DevicePreset[]).map((id) => (
+        <button
+          key={id}
+          type="button"
+          aria-pressed={preset === id}
+          title={`${DEVICE_LABELS[id]}: ${DEVICE_WIDTHS[id]} px wide`}
+          onClick={() => onChange(id)}
+        >
+          {DEVICE_LABELS[id]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The check's errors that stop the previewed page from being what was written:
+ * logic that does not compile, and a parse error in the page or a page it
+ * imports. The renderer draws such a page as best it can and calls it
+ * loaded, so "Running" would go on over it; the canvas says this instead.
+ */
+export function previewBrokenBy(problems: ValidationError[], files: Map<string, VFSFile>, page: string | null): ValidationError | null {
+  if (!page) return null;
+  const errors = problems.filter((problem) => problem.level === 'error' && (problem.type === LOGIC_SYNTAX || problem.type === PAGE_PARSE));
+  if (errors.length === 0) return null;
+  const placed = new Set(pageAndImports(files, page));
+  return errors.find((problem) => problem.type === LOGIC_SYNTAX || placed.has(problem.file)) ?? null;
+}
+
+/**
+ * A parse diagnostic the renderer printed, at a line of the page it composed (the page with its
+ * imports in place), said at the line of the file it is in, as the problem list says it. Null
+ * when it is not a parse diagnostic, or is in no file of the page.
+ */
+export function placeParseLine(text: string, files: Map<string, VFSFile>, page: string | null): string | null {
+  const parsed = /^Parse (error|warning) at line \d+:\d+:\s*([\s\S]*)$/.exec(text);
+  if (!parsed || !page) return null;
+  const [, severity, message] = parsed;
+  const pages = pageAndImports(files, page);
+  const own = pageParseProblems(new Map(pages.flatMap((path) => {
+    const file = files.get(path);
+    return file ? [[path, file] as const] : [];
+  })));
+  const found = own.find((problem) => problem.level === severity && problem.message.endsWith(message.trim()));
+  return found ? `${found.file}${found.line ? `, line ${found.line}` : ''}: ${found.message}` : null;
+}
+
+/** The files `include` keeps, by path and content (bytes by version and size): equal while none of them has changed. */
+function filesKey(files: Map<string, VFSFile>, include: (path: string) => boolean): string {
+  const parts: string[] = [];
+  for (const [path, file] of files) {
+    if (!include(path)) continue;
+    const content = typeof file.content === 'string' ? file.content : `${file.version}\u0000${file.lastModified}\u0000${file.content.byteLength}`;
+    parts.push(`${path}\u0000${content}`);
+  }
+  return parts.sort().join('\u0001');
 }
 
 /** Preview | Code, for a file that is both a page and source. */
@@ -221,12 +296,13 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   const {
     blueprint,
     devicePreset,
-    zoom,
     activePageId,
     activeFilePath,
     projectId,
     projectName,
     setActiveFilePath,
+    setDevicePreset,
+    errors: checkProblems,
   } = useWorkspaceStore();
   const liveFiles = useVFSStore((s) => s.files);
   const agentWriting = useAIStore((s) => s.agentState === 'building');
@@ -277,13 +353,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     ? (manifest.pages as Array<Record<string, unknown>>)
     : [];
 
-  const deviceWidths: Record<string, number> = {
-    desktop: 1280,
-    tablet: 768,
-    mobile: 375,
-  };
-  const previewWidth = deviceWidths[devicePreset] ?? 1280;
-  const scale = zoom / 100;
+  const previewWidth = DEVICE_WIDTHS[devicePreset] ?? DEVICE_WIDTHS.desktop;
 
   const hasFiles = files.size > 0;
   const selectedSurfaceLabel = activeVFSFile
@@ -429,9 +499,19 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     []
   );
 
+  // An asset is found from the page that names it; with no page open, from the app's main page.
+  //
+  // The asset resolver and the logic's import resolver (below) are made again only when what
+  // they read changes: the files that are neither pages nor logic, and the logic files. A new
+  // asset resolver made every asset's blob URL again on every edit. A new import resolver starts
+  // the app again, and one made beside an edited page made the renderer parse and run the page
+  // as it was before the edit first, then as it is: its parse errors were printed twice, and its
+  // logic loaded twice.
+  const assetKey = useMemo(() => filesKey(files, (path) => !isPagePath(path) && !isLogicPath(path)), [files]);
   const resolveAssetUrl = useMemo(
-    () => createPreviewAssetResolver(files, activeVFSFile ?? 'ui/main.ui'),
-    [files, activeVFSFile]
+    () => createPreviewAssetResolver(files, activeVFSFile ?? getBundleEntryPath(files) ?? MAIN_PAGE_PATH),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `files` is read through assetKey: see above
+    [assetKey, activeVFSFile]
   );
 
   const rendererFunctions = useMemo<Record<string, (...args: unknown[]) => unknown>>(
@@ -458,6 +538,13 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   }, [isSoftNUIFile, activeVFSFile, previewFileContent, files]);
   const softNSource = preview?.ok ? preview.source : null;
   const composition = preview?.ok ? preview.composition : null;
+  const logicKey = useMemo(() => filesKey(files, isLogicPath), [files]);
+  const latestImportResolver = composition?.importResolver;
+  const importResolver = useMemo(
+    () => latestImportResolver,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a new resolver only for new logic files: see resolveAssetUrl
+    [logicKey, activeVFSFile, latestImportResolver === undefined]
+  );
   const compositionError = preview && !preview.ok ? preview.error : null;
   // One refusal has a one-edit fix: a .py file importing a package
   // manifest.json does not declare. The fix is offered where the refusal is
@@ -510,6 +597,15 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     queueMicrotask(() => useWorkspaceStore.getState().addConsoleOutput('[App] ' + line));
   }, [projectId, run]);
 
+  // The files and the page a parse line printed now is about, for the listener below, which is
+  // not made again for every change of them.
+  const placing = useRef({ files, page: activeVFSFile });
+  placing.current = { files, page: activeVFSFile };
+  // The parse lines put in the log, with the files they were about: the same error, printed
+  // again for the same files (by another page that imports the broken one, or a restart), is
+  // in the log once. An edit that leaves it there says it again.
+  const parseLogged = useRef<{ files: Map<string, VFSFile> | null; said: Set<string> }>({ files: null, said: new Set() });
+
   // What the app's logic reports goes to the browser's console and nowhere else, so it is
   // listened for while an app is mounted (lib/previewFaults.ts): each thing it says once to
   // Studio's log and to the agent's next run, and a stop to the frame, which says so.
@@ -525,10 +621,9 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
         if (line !== null) logAppLine(line);
         return;
       }
-      const fault = readAppFault(args);
-      if (!fault) return;
-      // Later, not now: the runtime may be reporting from inside a render, where a store may not be written.
-      queueMicrotask(() => {
+      const raw = readAppFault(args);
+      if (!raw) return;
+      const report = (fault: AppFault) => {
         if (!listening) return;
         if (fault.text && !said.has(fault.text) && said.size < APP_LOG_LINES) {
           said.add(fault.text);
@@ -536,7 +631,31 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           notePreviewFault(projectId, fault);
         }
         if (fault.stopped) setStop((was) => (was && was.run === run ? was : { run, reason: fault.text || 'A call in its logic ran until the engine cut it off.' }));
-      });
+      };
+      const { files: current, page } = placing.current;
+      // Logic that does not compile is said where the check placed it: the engine names no file,
+      // because what it compiles is the app's files joined (lib/logicCheck.ts).
+      if (raw.text && isSyntaxError(raw.text)) {
+        void logicSyntaxProblems(current).then(
+          (problems) => {
+            const problem = problems.find((p) => p.type === LOGIC_SYNTAX);
+            report(problem ? { ...raw, text: describeProblem(problem) } : raw);
+          },
+          () => report(raw),
+        );
+        return;
+      }
+      // A parse error is said at its file's line, as the problem list says it, not at a line of
+      // the composed page; and once for the files it is about.
+      const placed = raw.text ? placeParseLine(raw.text, current, page) : null;
+      const fault = placed ? { ...raw, text: placed } : raw;
+      if (placed) {
+        if (parseLogged.current.files !== current) parseLogged.current = { files: current, said: new Set() };
+        if (parseLogged.current.said.has(placed)) return;
+        parseLogged.current.said.add(placed);
+      }
+      // Later, not now: the runtime may be reporting from inside a render, where a store may not be written.
+      queueMicrotask(() => report(fault));
     });
     return () => {
       listening = false;
@@ -544,8 +663,10 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     };
   }, [appMounted, run, projectId, logAppLine]);
 
-  /** The app is actually rendering in the frame, and answering: the one thing the chrome marks as live. */
-  const isLive = Boolean(appMounted && !showCode && !stoppedBecause);
+  /** A page that does not parse, or logic that does not compile, in what the frame is showing. */
+  const brokenBy = useMemo(() => previewBrokenBy(checkProblems, files, isSoftNUIFile ? activeVFSFile : null), [checkProblems, files, isSoftNUIFile, activeVFSFile]);
+  /** The app is actually rendering in the frame as written, and answering: the one thing the chrome marks as live. */
+  const isLive = Boolean(appMounted && !showCode && !stoppedBecause && !brokenBy);
 
   // Blob URLs are resources, not render calculations. Creating them in
   // useMemo leaks the URL whenever React abandons a render (and on Strict
@@ -735,6 +856,8 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
       // In Code the running app stays mounted, hidden, so switching back
       // finds it as it was rather than restarted.
       const rendererStyle = showCode ? { ...styles.rendererWrap, display: 'none' } : styles.rendererWrap;
+      // What the renderer could not draw, titled by what went wrong and placed by the check.
+      const previewError = (error: Error) => <PreviewError error={error} problems={checkProblems} page={activeVFSFile} />;
       return ThemeProviderComponent ? (
         <>
           {showCode && codeView}
@@ -745,11 +868,11 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           <div data-softn-theme-box={PREVIEW_THEME_BOX} style={styles.themeBox}>
           <ThemeProviderComponent followHost followSystem declaredMode={declaredThemeMode(manifest)} box={PREVIEW_THEME_BOX}>
             <PreviewComponent
-              key={refreshKey}
+              key={`${activeVFSFile}\u0000${refreshKey}`}
               source={softNSource}
               functions={rendererFunctions}
               assetResolver={resolveAssetUrl}
-              importResolver={composition?.importResolver}
+              importResolver={importResolver}
               logicBasePath={composition?.logicBasePath}
               preIncludedLogicPaths={composition?.preIncludedLogicPaths}
               python={composition?.python}
@@ -757,6 +880,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
               scriptExecutionMode="main"
               resumeSavedSyncRoom={false}
               onLink={followPreviewLink}
+              error={previewError}
             />
           </ThemeProviderComponent>
           </div>
@@ -769,11 +893,11 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           {stopNotice}
           {capabilityNote}
           <PreviewComponent
-            key={refreshKey}
+            key={`${activeVFSFile}\u0000${refreshKey}`}
             source={softNSource}
             functions={rendererFunctions}
-              assetResolver={resolveAssetUrl}
-            importResolver={composition?.importResolver}
+            assetResolver={resolveAssetUrl}
+            importResolver={importResolver}
             logicBasePath={composition?.logicBasePath}
             preIncludedLogicPaths={composition?.preIncludedLogicPaths}
             python={composition?.python}
@@ -781,6 +905,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
             scriptExecutionMode="main"
             resumeSavedSyncRoom={false}
             onLink={followPreviewLink}
+            error={previewError}
           />
           </div>
         </>
@@ -852,7 +977,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
             frameStyle={
               isMobile
                 ? { borderRadius: 0, border: 'none', boxShadow: 'none', width: '100%', transition: 'none' }
-                : { width: Math.min(previewWidth * scale, previewWidth), maxWidth: '100%' }
+                : { width: DEVICE_WIDTHS.desktop, maxWidth: '100%' }
             }
             onClose={() => setIsExpandedPreview(false)}
             chrome={
@@ -864,11 +989,16 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
                     )}
                     {selectedSurfaceLabel}
                   </span>
-                  <span className="st-preview-tag">{devicePreset}</span>
                   {isLive && <span className="st-live">Running</span>}
+                  {appMounted && !showCode && !stoppedBecause && brokenBy && (
+                    <span className="st-preview-stopped" title={`${brokenBy.file}${brokenBy.line ? `:${brokenBy.line}` : ''}: ${brokenBy.message}`}>
+                      {brokenBy.type === LOGIC_SYNTAX ? 'Does not compile' : 'Does not parse'}
+                    </span>
+                  )}
                   {stoppedBecause && !showCode && <span className="st-preview-stopped" title={stoppedBecause}>Stopped</span>}
                 </div>
                 <div style={styles.chromeRight}>
+                {(isSoftNUIFile || isHtmlFile) && !showCode && <DeviceSwitch preset={devicePreset} onChange={setDevicePreset} />}
                 {canSwitchView && <ViewSwitch mode={viewMode} onChange={setViewMode} />}
                 <div className="st-preview-tools" role="toolbar" aria-label="Preview controls">
                   {[
@@ -892,7 +1022,12 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
               </div>
             }
           >
-            <div style={styles.surfaceColumn}>
+            {/* The page at the chosen device's width, the header above it at the frame's: a
+                tablet's or a phone's width is the page's, and the controls stay where they are. */}
+            <div
+              style={!isMobile && !isExpandedPreview && devicePreset !== 'desktop' ? { ...styles.surfaceColumn, ...styles.deviceColumn, width: previewWidth } : styles.surfaceColumn}
+              data-device={devicePreset}
+            >
               {/* The frame's header is hidden on a phone, so the switch comes with the content there. */}
               {isMobile && canSwitchView && (
                 <div className="st-view-switch-bar">
@@ -1098,6 +1233,13 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
     display: 'flex',
     flexDirection: 'column',
+  },
+  deviceColumn: {
+    flex: '0 1 auto',
+    maxWidth: '100%',
+    margin: '0 auto',
+    borderLeft: '1px solid var(--studio-border)',
+    borderRight: '1px solid var(--studio-border)',
   },
   manifestSummary: {
     display: 'grid',

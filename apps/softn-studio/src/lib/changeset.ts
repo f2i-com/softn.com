@@ -1,21 +1,14 @@
 /**
- * A reply's file operations as a changeset: staged, resolved, judged, and
- * only then applied — all of it or none of it.
+ * What the model was shown of each file, and whether a write may go ahead
+ * given that: the part of the single-shot turn's changeset the agent's
+ * write_file and edit_file still use (lib/agent/executeTool.ts).
  *
- * Operations used to go into the VFS one by one as they were parsed, so a
- * reply with one refused or malformed block left the project half changed,
- * and the model was never told which half. Here every operation becomes a
- * record with a canonical path, the version it was built on, and a verdict;
- * the records are judged against each other (two spellings of one path,
- * a delete and an update of the same file) and against the project (a path
- * that is not a project path, private editor state, a file the model did
- * not see whole, a file that changed under the request). A changeset with
- * any refused record is not committed. That is the safe default the audit
- * asks for; an explicit reviewed-subset apply can be offered on top of it.
+ * A reply used to be staged here whole as a changeset and applied all or
+ * nothing. The agent writes one file per step instead, each its own undoable
+ * transaction, and each is judged by checkWrite against what the run read.
  */
 
 import type { VFSFile } from '../types/studio';
-import { canonicalKey, resolveProjectPath } from './paths';
 
 /**
  * What the model was shown of one file, and the version it was shown at.
@@ -92,130 +85,4 @@ export function checkWrite(
   if (!record.complete && mode === 'replace') return { kind: 'partial', shown: record.shown, total: record.total };
   if (current.version !== record.version) return { kind: 'stale', suppliedVersion: record.version, currentVersion: current.version };
   return null;
-}
-
-export function describeRefusal(path: string, refusal: WriteRefusal): string {
-  switch (refusal.kind) {
-    case 'partial':
-      return `Refused: ${path} was shown truncated (${refusal.shown} of ${refusal.total} characters), so this reply would have erased the rest of it. Nothing was written. Ask for the file whole, or ask for a smaller change.`;
-    case 'unseen':
-      return `Refused: ${path} exists but was not shown to the model, so this reply could not have preserved its content. Nothing was written.`;
-    case 'stale':
-      return `Refused: ${path} changed while the request was in flight (v${refusal.suppliedVersion} → v${refusal.currentVersion}), so this reply was built on old content. Nothing was written; ask again.`;
-  }
-}
-
-export type ChangeOp = 'create' | 'update' | 'delete';
-
-export type Verdict = { ok: true } | { ok: false; reason: string };
-
-export interface ChangeRecord {
-  /** The path as the reply wrote it. */
-  requestedPath: string;
-  /** The canonical path; the requested one when it did not resolve. */
-  path: string;
-  op: ChangeOp;
-  /** The version the reply was built on, or null for a file the project did not hold when the prompt was made. */
-  baseVersion: number | null;
-  content?: string;
-  verdict: Verdict;
-}
-
-export interface Changeset {
-  /** The transaction/turn id the records commit under. */
-  id: string;
-  records: ChangeRecord[];
-  /** Whether every record may be applied. */
-  ok: boolean;
-}
-
-export interface ChangeRequest {
-  files: Array<{ path: string; content: string }>;
-  deletes: Array<{ path: string }>;
-}
-
-const refuse = (reason: string): Verdict => ({ ok: false, reason });
-
-/**
- * Stage a reply's operations against the project as it is now and the base
- * the reply was built on. Nothing here touches the VFS.
- */
-export function buildChangeset(id: string, request: ChangeRequest, base: TurnBase, files: Map<string, VFSFile>): Changeset {
-  // The project's own spellings, so an alias of an existing file is caught.
-  const existingByKey = new Map<string, string>();
-  for (const path of files.keys()) existingByKey.set(canonicalKey(path), path);
-
-  const records: ChangeRecord[] = [];
-  const staged: Array<{ record: ChangeRecord; key: string | null }> = [];
-
-  const stage = (requestedPath: string, op: 'write' | 'delete', content?: string) => {
-    const verdict = resolveProjectPath(requestedPath);
-    if (!verdict.ok) {
-      const record: ChangeRecord = { requestedPath, path: requestedPath, op: op === 'delete' ? 'delete' : 'create', baseVersion: null, content, verdict: refuse(`Refused: ${verdict.reason}. Nothing was written.`) };
-      records.push(record);
-      staged.push({ record, key: null });
-      return;
-    }
-    const current = files.get(verdict.path);
-    const record: ChangeRecord = {
-      requestedPath,
-      path: verdict.path,
-      op: op === 'delete' ? 'delete' : current ? 'update' : 'create',
-      baseVersion: base.versions.get(verdict.path) ?? null,
-      content,
-      verdict: { ok: true },
-    };
-    if (verdict.private) {
-      record.verdict = refuse(`Refused: ${verdict.path} is private editor state (builder/), which the model does not write. Nothing was written.`);
-    } else {
-      const alias = existingByKey.get(verdict.key);
-      if (alias !== undefined && alias !== verdict.path) {
-        record.verdict = refuse(`Refused: ${requestedPath} is the same file as the project's ${alias} on a case-insensitive disk. Use that path. Nothing was written.`);
-      }
-    }
-    records.push(record);
-    staged.push({ record, key: verdict.key });
-  };
-
-  for (const file of request.files) stage(file.path, 'write', file.content);
-  for (const del of request.deletes) stage(del.path, 'delete');
-
-  // Two records for one file — the same spelling twice, two spellings, or a
-  // write and a delete — cannot both be meant; neither is applied.
-  const byKey = new Map<string, ChangeRecord[]>();
-  for (const { record, key } of staged) {
-    if (key === null) continue;
-    const list = byKey.get(key) ?? [];
-    list.push(record);
-    byKey.set(key, list);
-  }
-  for (const group of byKey.values()) {
-    if (group.length < 2) continue;
-    const spellings = [...new Set(group.map((r) => r.requestedPath))].join(', ');
-    for (const record of group) {
-      if (record.verdict.ok) {
-        record.verdict = refuse(`Refused: this reply names ${record.path} more than once (${spellings}), as ${group.map((r) => r.op).join(' and ')}. Nothing was written.`);
-      }
-    }
-  }
-
-  // Each record against the project: what the model saw, and what is there now.
-  for (const record of records) {
-    if (!record.verdict.ok) continue;
-    const current = files.get(record.path);
-    if (record.op === 'delete') {
-      if (!current) {
-        record.verdict = refuse(`Refused: ${record.path} does not exist, so it cannot be deleted. Nothing was written.`);
-      } else if (record.baseVersion === null) {
-        record.verdict = refuse(`Refused: ${record.path} was created after this request was made, so the reply cannot have meant it. Nothing was written.`);
-      } else if (current.version !== record.baseVersion) {
-        record.verdict = refuse(describeRefusal(record.path, { kind: 'stale', suppliedVersion: record.baseVersion, currentVersion: current.version }));
-      }
-      continue;
-    }
-    const refusal = checkWrite(record.path, base.supplied, current);
-    if (refusal) record.verdict = refuse(describeRefusal(record.path, refusal));
-  }
-
-  return { id, records, ok: records.length > 0 && records.every((r) => r.verdict.ok) };
 }

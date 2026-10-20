@@ -6,8 +6,9 @@ import { APP_ICON_PATH, appIconSvg } from '../lib/studioProject';
  *
  * The same shell, pages and collection as READING_LIST, so the two can be
  * compared file by file: what changes is only what a Python app changes.
- * Its logic is two `.py` files referenced with `<logic src>` — never inline,
- * since Python's indentation is the program — and each is a module named
+ * Its logic is two `.py` files, `index.html` naming `main.py` with
+ * `<script src>` — never inline, since Python's indentation is the program —
+ * and each is a module named
  * after its file, so `main.py` reaches the helper with `from shelf import
  * plural`. The helper is listed first in the manifest's logic group, which is
  * the order the runtime loads helpers in. It is also the fixture Studio's
@@ -26,19 +27,19 @@ export const READING_LIST_PYTHON: ExampleProject = {
           name: 'Reading list (Python)',
           version: '1.0.0',
           description: 'A small example app whose logic is Python: a list of books to read, with a reading goal.',
-          main: 'ui/main.ui',
+          main: 'index.html',
           icon: APP_ICON_PATH,
           target: 'web',
           files: {
-            ui: ['ui/main.ui', 'ui/pages/home.ui', 'ui/pages/about.ui'],
-            logic: ['logic/shelf.py', 'logic/main.py'],
+            ui: ['index.html', 'pages/home.html', 'pages/about.html'],
+            logic: ['shelf.py', 'main.py'],
             xdb: ['xdb/books.xdb'],
             assets: [APP_ICON_PATH],
           },
           config: { theme: { mode: 'light' } },
           pages: [
-            { id: 'home-page', name: 'Home', path: 'ui/pages/home.ui', route: '/' },
-            { id: 'about-page', name: 'About', path: 'ui/pages/about.ui', route: '/about' },
+            { id: 'home-page', name: 'Home', path: 'pages/home.html', route: '/' },
+            { id: 'about-page', name: 'About', path: 'pages/about.html', route: '/about' },
           ],
         },
         null,
@@ -56,15 +57,15 @@ export const READING_LIST_PYTHON: ExampleProject = {
       content: appIconSvg('#2563eb'),
     },
     {
-      path: 'ui/main.ui',
-      content: `<import HomePage from="./pages/home.ui" />
-<import AboutPage from="./pages/about.ui" />
+      path: 'index.html',
+      content: `<import HomePage from="./pages/home.html" />
+<import AboutPage from="./pages/about.html" />
 
 <data>
   <collection name="books" as="books" />
 </data>
 
-<logic src="../logic/main.py" />
+<script src="main.py"></script>
 
 <App theme="light">
   <Container size="lg">
@@ -89,10 +90,10 @@ export const READING_LIST_PYTHON: ExampleProject = {
 `,
     },
     {
-      path: 'ui/pages/home.ui',
+      path: 'pages/home.html',
       content: `<Stack direction="vertical" gap="md">
   <Heading level={2}>Home</Heading>
-  <Text variant="muted">Books to read, from the books collection. The goal below lives in logic/main.py.</Text>
+  <Text variant="muted">Books to read, from the books collection. The goal below lives in main.py.</Text>
   <Card title="Reading goal">
     <Stack direction="horizontal" gap="md" align="center" wrap>
       <Text>{goal_label()}</Text>
@@ -114,13 +115,13 @@ export const READING_LIST_PYTHON: ExampleProject = {
 `,
     },
     {
-      path: 'ui/pages/about.ui',
+      path: 'pages/about.html',
       content: `<Stack direction="vertical" gap="md">
   <Heading level={2}>About</Heading>
   <Text variant="muted">This example is the reading list with its logic written in Python. The markup is the same; the logic is two .py files, each a module named after its file.</Text>
   <Card title="What to try">
     <List>
-      <ListItem>Change the starting goal in logic/main.py and watch the preview.</ListItem>
+      <ListItem>Change the starting goal in main.py and watch the preview.</ListItem>
       <ListItem>Press Run to open the app in the SoftN runtime.</ListItem>
       <ListItem>Press Export bundle to download it as a .softn file.</ListItem>
     </List>
@@ -129,7 +130,7 @@ export const READING_LIST_PYTHON: ExampleProject = {
 `,
     },
     {
-      path: 'logic/shelf.py',
+      path: 'shelf.py',
       content: `# A helper module. Its name is its file name: main.py imports it as \`shelf\`.
 
 
@@ -140,7 +141,7 @@ def plural(count, word):
 `,
     },
     {
-      path: 'logic/main.py',
+      path: 'main.py',
       content: `# The app shell: which page is showing, and the names the shell displays.
 # Every top-level name is state the template reads, and every def is a
 # function it can call.

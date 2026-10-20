@@ -76,6 +76,32 @@ export function FileEditor({ path, onClose }: { path: string; onClose(): void })
     else area.current?.focus();
   }, [onClose]);
 
+  // Ctrl+S (⌘S) saves wherever the keyboard is while the file is open for editing: on Save or
+  // Cancel, on the refusal's buttons, on the canvas around it. It worked only in the text box,
+  // and anywhere else the browser offered to save Studio's page as a file. A key typed into
+  // another field (the AI's message box) is that field's; the text box handles its own.
+  const editorRef = useRef<HTMLDivElement>(null);
+  const saveRef = useRef(save);
+  useEffect(() => {
+    saveRef.current = save;
+  }, [save]);
+  const shown = draft !== null && draft.path === path;
+  useEffect(() => {
+    if (!shown) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 's') return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const inEditor = !!target && !!editorRef.current?.contains(target);
+      const typing = !!target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+      if (typing && !inEditor) return;
+      event.preventDefault();
+      saveRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [shown]);
+
   if (!draft || draft.path !== path) return null;
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -105,7 +131,7 @@ export function FileEditor({ path, onClose }: { path: string; onClose(): void })
   };
 
   return (
-    <div className="st-codeview st-fileedit" data-language={languageForPath(path)}>
+    <div ref={editorRef} className="st-codeview st-fileedit" data-language={languageForPath(path)}>
       <div className="st-codeview-bar">
         <span className="st-codeview-lang">{LANGUAGE_LABEL[languageForPath(path)]}</span>
         <span className="st-codeview-meta" role="status">

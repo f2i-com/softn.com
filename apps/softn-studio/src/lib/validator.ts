@@ -1,6 +1,7 @@
 import { classifyAsset, composeBundleSource, inspectEntries } from '@softn/core';
 import type { ValidationError, VFSFile, Blueprint } from '../types/studio';
 import { planBundle } from './exportBundle';
+import { pageParseProblems } from './pageDiagnostics';
 import { normalizeProjectPath } from './paths';
 import { findPageFile, pageFileCandidates, pageSlugs } from './studioProject';
 
@@ -15,6 +16,11 @@ import { findPageFile, pageFileCandidates, pageSlugs } from './studioProject';
  * `main`. Now it asks the one inspector, and it asks about the exact
  * entries the export will write — the same plan, so a path the export
  * refuses or a manifest entry it prunes is reported here first.
+ *
+ * Every page is parsed as well, by core's parser, each as its own file
+ * (lib/pageDiagnostics.ts). Whether the logic compiles is the engine's to
+ * say, which takes a moment, so it is asked apart from this
+ * (lib/logicCheck.ts, run with this by lib/projectCheck.ts).
  */
 export function validateProject(
   files: Map<string, VFSFile>,
@@ -65,10 +71,13 @@ export function validateProject(
         level: 'error',
         type: 'bundle-refused',
         message: 'Server logic runs as JavaScript on every backend host; this Python file would never run.',
-        suggestion: 'Write server logic as a .logic file in JavaScript. Python can be used for the client logic.',
+        suggestion: 'Write server logic in JavaScript. Python can be used for the logic of the pages.',
       });
     }
   }
+
+  // What core's parser says of each page, at the page's own lines.
+  errors.push(...pageParseProblems(files));
 
   // JSON files must parse; the inspector reads only the manifest and the declaration.
   for (const [path, file] of files) {

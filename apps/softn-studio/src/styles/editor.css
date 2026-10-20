@@ -26,6 +26,46 @@
   min-width: 0;
 }
 
+/* The editor's skip link (App.tsx): off screen until Tab reaches it, then over the product bar. */
+.st-skip-link {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 1100;
+  padding: 0.5rem 0.875rem;
+  border-radius: var(--studio-radius);
+  background: var(--studio-accent);
+  color: var(--studio-on-accent);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+.st-skip-link:focus {
+  transform: none;
+}
+
+/* The work area the skip link focuses is a region, not a control: no ring around all of it. */
+#studio-main:focus {
+  outline: none;
+}
+
+/* The ready link or the failure of Run, Publish or Export: a strip under the bar, in the flow,
+   so it covers nothing (TopBar.tsx). */
+.st-topbar-notice {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.375rem 0.75rem;
+  background: var(--studio-bg);
+  border-bottom: 1px solid var(--studio-border);
+  flex-shrink: 0;
+}
+
+.st-topbar-notice > * {
+  max-width: min(40rem, 100%);
+}
+
 .st-home-btn {
   display: inline-flex;
   align-items: center;
@@ -398,21 +438,18 @@
   color: var(--studio-text-dim);
 }
 
-.st-preview-tag {
-  font-size: 0.75rem;
-  color: var(--studio-text-dim);
-  white-space: nowrap;
-  text-transform: capitalize;
-  min-width: 0;
-  flex-shrink: 100;
-  overflow: hidden;
+/* Desktop | Tablet | Phone: the width the page is drawn at (VisualCanvas's DeviceSwitch). It
+   used to be a word, "Desktop", that no control changed. */
+.st-view-switch.st-device-switch button {
+  padding: 0 0.5rem;
 }
 
 /* In a narrow frame the row says the file by its own name and whether it is running: the
-   device word and the folder go (the name's title has the whole path), where they used to
-   stay and push the name out. */
-@container preview-header (max-width: 28rem) {
-  .st-preview-tag,
+   device switch and the folder go (the name's title has the whole path), where they used to
+   stay and push the name out, and the preview's own buttons off the end of the row. (Scoped to
+   the header, so code.css's `.st-view-switch`, loaded later, does not put the switch back.) */
+@container preview-header (max-width: 40rem) {
+  .st-preview-chrome .st-device-switch,
   .st-preview-file .dir {
     display: none;
   }
@@ -555,6 +592,38 @@
   margin: 0;
   font-size: 0.875rem;
   line-height: 1.55;
+  color: var(--studio-text-muted);
+}
+
+/* Where the check placed what stopped the app (PreviewError.tsx): file and line, then what. */
+.st-preview-error-places {
+  margin: 0;
+  padding: 0.75rem 0.875rem;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  border-radius: var(--studio-radius);
+  border: 1px solid var(--studio-border);
+  border-left: 3px solid var(--studio-error);
+  background: var(--studio-bg-muted);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--studio-text);
+  overflow-wrap: anywhere;
+}
+
+.st-preview-error-places code {
+  font-family: var(--studio-mono);
+  font-weight: 600;
+}
+
+.st-preview-error-said {
+  margin: 0.5rem 0 0;
+  font-family: var(--studio-mono);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--studio-text-muted);
 }
 

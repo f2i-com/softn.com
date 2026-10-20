@@ -26,7 +26,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
   {
     name: 'list_files',
     description: 'List the project\'s files as a tree, each with its size and kind (page, logic, data, config, asset). Private editor state is not listed.',
-    inputSchema: { type: 'object', properties: { prefix: str('Only list files under this folder, e.g. "ui/". Optional.') }, required: [] },
+    inputSchema: { type: 'object', properties: { prefix: str('Only list files under this folder, e.g. "pages/". Optional.') }, required: [] },
   },
   {
     name: 'read_file',
@@ -34,7 +34,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
       'Read a text file, with line numbers. Give start_line/end_line (1-based, inclusive) to read part of a long file. A binary file answers with its type and size. Read a file before you edit it: edit_file needs it read in this run, write_file on an existing file needs it read whole.',
     inputSchema: {
       type: 'object',
-      properties: { path: str('Project path, e.g. "ui/main.ui".'), start_line: int('First line to read. Optional.'), end_line: int('Last line to read. Optional.') },
+      properties: { path: str('Project path, e.g. "index.html".'), start_line: int('First line to read. Optional.'), end_line: int('Last line to read. Optional.') },
       required: ['path'],
     },
   },
@@ -86,13 +86,13 @@ export const AGENT_TOOLS: ToolSpec[] = [
     name: 'check_app',
     description:
       'Check the app the way the runtime will run it: the bundle inspector and composer, then a real render of the main page (or the page given). Reports parse errors, composer refusals, script and Python load errors, runtime exceptions and console errors, and every name the markup uses that nothing defines — a handler calling a function the logic lacks, :bind to a name that is not state, a read of a name that is not state, a function, a computed value, a <data> alias or a loop variable — each with its file and line. Studio also runs it automatically after each step that changes files.',
-    inputSchema: { type: 'object', properties: { page: str('A .ui file to render instead of the manifest\'s main; a page the app imports is rendered with the app\'s logic and <data> around it, as it runs. Optional.') }, required: [] },
+    inputSchema: { type: 'object', properties: { page: str('A page (e.g. "pages/home.html") to render instead of the manifest\'s main; a page the app imports is rendered with the app\'s logic and <data> around it, as it runs. Optional.') }, required: [] },
   },
   {
     name: 'inspect_preview',
     description:
       'Render a page and describe what it shows as text: headings, visible text, and interactive elements (buttons, inputs, checkboxes, links) with their labels and state — like an accessibility tree. Use it to confirm the page looks as intended.',
-    inputSchema: { type: 'object', properties: { page: str('A .ui file; default the manifest\'s main.') }, required: [] },
+    inputSchema: { type: 'object', properties: { page: str('A page (e.g. "pages/home.html"); default the manifest\'s main.') }, required: [] },
   },
   {
     name: 'run_app_function',
@@ -108,7 +108,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
           description: 'Calls to make first, each { "name": "...", "args": [...] } or { "set": "stateName", "value": ... }. Optional.',
           items: { type: 'object' },
         },
-        page: str('The .ui file whose logic to load; default the manifest\'s main.'),
+        page: str('The page whose logic to load; default the manifest\'s main.'),
       },
       required: ['name'],
     },
@@ -194,12 +194,12 @@ export function textProtocolGuide(): string {
 This provider does not carry tool calls natively, so you call tools by writing blocks in your reply. Each block is one call:
 
 <tool_call name="edit_file">
-<arg name="path">ui/main.ui</arg>
+<arg name="path">index.html</arg>
 <arg name="old_string"><Text>Hello</Text></arg>
 <arg name="new_string"><Text>Hello, world</Text></arg>
 </tool_call>
 
-An argument's value is written raw between <arg> and </arg> — file content exactly as it should be, no escaping. Arrays, objects, numbers and booleans are written as JSON (\`<arg name="replace_all">true</arg>\`). You may instead write a JSON object as the block's body: \`<tool_call name="read_file">{"path": "ui/main.ui"}</tool_call>\`.
+An argument's value is written raw between <arg> and </arg> — file content exactly as it should be, no escaping. Arrays, objects, numbers and booleans are written as JSON (\`<arg name="replace_all">true</arg>\`). You may instead write a JSON object as the block's body: \`<tool_call name="read_file">{"path": "index.html"}</tool_call>\`.
 
 You may make several calls in one reply; they run in order. Then stop and wait: the results come back in the next message as <tool_result> blocks. Never write a <tool_result> yourself. A reply with no <tool_call> block ends the run, so when you are done call finish.
 

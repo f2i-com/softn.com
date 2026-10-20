@@ -23,6 +23,24 @@ describe('project import', () => {
     await expect(readProjectFile({ name: 'notes.SOFTN', size: bytes.length, arrayBuffer: async () => bytes.buffer })).resolves.toEqual(bytes);
   });
 
+  // "Could not import notes.softn: Invalid ZIP: missing end-of-central-directory" named the
+  // failure in the parser's terms. It is said in the person's, with the reader's words kept as
+  // the cause.
+  it('says in words that a damaged or cut-off file is not a readable bundle', () => {
+    const whole = zipSync({ 'manifest.json': strToU8('{}') });
+    for (const bytes of [strToU8('just some text, renamed .softn'), whole.slice(0, whole.length - 10)]) {
+      let thrown: Error | null = null;
+      try {
+        readProjectArchive(bytes);
+      } catch (err) {
+        thrown = err as Error;
+      }
+      expect(thrown?.message).toMatch(/^This file is not a readable \.softn bundle or ZIP archive: it may be damaged, or only partly downloaded\./);
+      expect(thrown?.message).not.toMatch(/end-of-central-directory|Invalid ZIP/);
+      expect(String((thrown?.cause as Error | undefined)?.message)).toMatch(/ZIP/);
+    }
+  });
+
   it('recognizes normal and empty ZIP records without treating arbitrary data as an archive', () => {
     expect(hasZipSignature(zipSync({ 'hello.txt': strToU8('hello') }))).toBe(true);
     expect(hasZipSignature(zipSync({}))).toBe(true);

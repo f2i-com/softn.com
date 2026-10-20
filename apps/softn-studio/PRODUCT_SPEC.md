@@ -268,7 +268,7 @@ Must support context-aware editing for:
 Must expose:
 
 - VFS file tree,
-- Monaco editor,
+- a read-only code view with line numbers, and Edit to change a file by hand in a plain text box in the mono face, with Save and Cancel (no editor library),
 - syntax highlighting for SoftN files,
 - inline validation,
 - diff view for AI changes,
@@ -315,19 +315,20 @@ The loop must be task-scoped, budget-aware, and pausable.
 
 ## 10. Validation Requirements
 
-Validation must cover:
+Studio's check runs whenever the files or the blueprint change (`lib/projectCheck.ts`). What it finds is the problem list in the status bar: each finding with its file and, where it has one, its line, errors first. It covers:
 
-- syntax parsing for `.ui`, `.logic`, and manifest files,
-- schema correctness,
-- valid component and prop usage,
-- data binding correctness,
-- logic compilation,
-- runtime mounting errors,
-- bundle policy checks,
-- target capability linting,
-- optional interaction replay tests.
+- the bundle as the directory and the runtime inspect it, on the entries Export bundle would write (core's bundle inspector): the manifest's `main`, its file groups, paths, the icon;
+- composition, by core's composer, as the runtime composes the main page: a `<logic src>` or `<script src>` whose file is missing, JavaScript and Python in one app, inline Python, reserved or duplicate Python module names;
+- every page (`.html`, `.ui`), parsed by core's parser as its own file: a parse error is an error and a parse warning a warning, each at the page's own line, not a line of the page composed with its imports (`lib/pageDiagnostics.ts`);
+- logic compilation, by the engine the preview runs, for JavaScript and Python, a moment after the files settle: logic that does not compile is an error at the file and line where it fails. The engine compiles the app's logic files joined and names no file, so each failure is placed back in its own file (`lib/logicCheck.ts`);
+- JSON and `.xdb` files that do not parse, and server logic written in Python, which no backend host runs;
+- notes that hold nothing back: a blueprint page with no file, an empty file.
 
-Validation output should be clickable from the UI and point the user to the affected page, component, or file.
+Any error holds Run and Publish back; Export bundle never waits. In an editor hosted by FormLogic, where Publish returns the work to the host for review, only an error the directory would refuse the bundle for holds it back, so work part way through an edit can always be handed back. While the previewed page does not parse, or the logic does not compile, the preview does not say "Running", and the panel it shows in place of an app it could not draw is titled by what went wrong and names the file and line. Warnings and notes hold nothing back.
+
+The agent's check (`check_app`, `lib/agent/appCheck.ts`) reads the same validator and the same per-page parse, and also renders the page off-screen with the real renderer (runtime mounting errors), checks the names the markup uses against what the logic defines (data bindings, functions, state), lints templates and a private backend's SQL, and loads the backend as its host would.
+
+Not yet covered: component and prop usage against each component's schema, target capability linting, and interaction replay tests. The problem list names the file and line but does not yet open the file when a finding is chosen.
 
 ## 11. Runtime Targeting
 

@@ -126,6 +126,7 @@ export const HistoryPanel: React.FC = () => {
         {[...units].reverse().slice(0, 50).map((unit) => {
           const { title, detail } = describeUnit(unit);
           const canRevert = unit.transactionId !== undefined;
+          const time = new Date(unit.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           return (
             <li key={unit.key} data-history-unit={unit.key} data-source={unit.source} className="st-history-item">
               <span className="st-history-dot" aria-hidden="true" />
@@ -134,7 +135,7 @@ export const HistoryPanel: React.FC = () => {
                 <span className="st-history-detail" title={detail}>{detail}</span>
               </span>
               <span className="st-history-time">
-                {new Date(unit.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {time}
               </span>
               {canRevert && (
                 <button
@@ -142,7 +143,8 @@ export const HistoryPanel: React.FC = () => {
                   className="st-btn st-btn-sm st-history-revert"
                   onClick={() => revert(unit)}
                   disabled={!unit.revertible}
-                  aria-label={`Revert ${title}`}
+                  // What and when: every single edit's button was "Revert Edited".
+                  aria-label={`Revert ${title}: ${detail}, ${time}`}
                   title={unit.revertible ? 'Put back what this unit changed' : 'A later change touched one of these files. Undo that first, or revert by hand.'}
                 >
                   Revert

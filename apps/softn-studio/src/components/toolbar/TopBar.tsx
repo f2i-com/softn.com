@@ -1,8 +1,8 @@
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import React from 'react';
+import { Mark } from '@softn/brand';
 import { Icon } from '../common/Icon';
-import { Mark } from '../common/Mark';
 import { HandoffReady } from '../common/HandoffReady';
 import { ProjectActionError } from '../common/ProjectActionError';
 import { SaveStatusIndicator } from '../common/SaveStatus';
@@ -28,6 +28,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
   const saveLabel = useHostedSaveLabel() ?? 'Review changes';
 
   return (
+    <>
     <div className="st-topbar">
       <div className="st-topbar-left">
         {!hosted && <button type="button" onClick={onBackToDashboard} className="st-home-btn" title="Back to home" aria-label="Home">
@@ -90,27 +91,22 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
           <span>{preparing === 'runtime' ? 'Preparing…' : 'Run'}</span>
         </button>}
       </div>
-      {(ready || actions.error) && (
-        <div style={styles.readyDock}>
-          {actions.error ? <ProjectActionError message={actions.error} onDismiss={actions.dismissError} />
-            : ready && <HandoffReady ready={ready} onDone={actions.dismissReady} />}
-        </div>
-      )}
     </div>
+    {/* The ready link, or why Run, Publish or Export failed: a strip of its own under the bar, at
+        its right end, by the button that made it, and next after it for the Tab key. It used to
+        hang over the canvas, on the preview's own buttons (Refresh, Reset data, Expand, Code),
+        until it was dismissed; in the flow it moves the work area down instead. */}
+    {(ready || actions.error) && (
+      <div className="st-topbar-notice">
+        {actions.error ? <ProjectActionError message={actions.error} onDismiss={actions.dismissError} />
+          : ready && <HandoffReady ready={ready} onDone={actions.dismissReady} compact />}
+      </div>
+    )}
+    </>
   );
 };
 
 const styles: Record<string, React.CSSProperties> = {
-  // The ready link hangs under the bar's right end, over the panels, so the
-  // bar keeps its height and the link is next to the button that made it.
-  readyDock: {
-    position: 'absolute',
-    top: '100%',
-    right: 14,
-    marginTop: 6,
-    zIndex: 20,
-    maxWidth: 'min(520px, calc(100vw - 28px))',
-  },
   logo: {
     display: 'flex',
     flexShrink: 0,

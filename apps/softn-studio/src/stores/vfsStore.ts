@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { classifyAsset } from '@softn/core';
+import { randomUUID } from '@softn/bundle-format/crypto';
 import type { VFSFile, VFSEvent } from '../types/studio';
 import { findAlias, resolveProjectPath } from '../lib/paths';
 import { beforeImage, boundJournal, fingerprint, planRevert, type UndoEntry } from '../lib/undoJournal';
@@ -48,7 +49,6 @@ interface VFSState {
   hydrateFiles(entries: Array<{ path: string; content: string | Uint8Array }>): void;
   /** Replace a file's content. Throws if the path does not exist: there is no before-image to keep. */
   updateFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
-  patchFile(path: string, search: string, replace: string, source?: 'user' | 'ai'): boolean;
   deleteFile(path: string, source?: 'user' | 'ai'): void;
   /**
    * Apply records as one unit under one id: every record is checked first,
@@ -79,7 +79,6 @@ interface VFSState {
    */
   takeInFiles(changes: Array<{ path: string; content: string | Uint8Array | undefined; lastModifiedBy?: 'user' | 'ai' }>): void;
   readFile(path: string): string | Uint8Array | null;
-  listFiles(prefix?: string): string[];
   getSnapshot(): Map<string, VFSFile>;
   /** Undo the most recent unit, whole. */
   undoLast(): void;
@@ -154,7 +153,7 @@ function nextVersion(floor: Map<string, number>, path: string, existing: VFSFile
 }
 
 function newTransactionId(): string {
-  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return randomUUID();
 }
 
 /** `events` without the units that touch any of `paths`. A unit goes whole or stays whole. */
@@ -282,16 +281,6 @@ export const useVFSStore = create<VFSState>((set, get) => ({
 
   updateFile(path, content, source = 'user') {
     get().applyTransaction([{ op: 'update', path, content }], source);
-  },
-
-  patchFile(path, search, replace, source = 'user') {
-    const existing = get().files.get(path);
-    if (!existing || typeof existing.content !== 'string') return false;
-    const idx = existing.content.indexOf(search);
-    if (idx === -1) return false;
-    const newContent = existing.content.replace(search, replace);
-    get().updateFile(path, newContent, source);
-    return true;
   },
 
   deleteFile(path, source = 'user') {
@@ -433,12 +422,6 @@ export const useVFSStore = create<VFSState>((set, get) => ({
 
   readFile(path) {
     return get().files.get(path)?.content ?? null;
-  },
-
-  listFiles(prefix) {
-    const paths = Array.from(get().files.keys());
-    if (!prefix) return paths;
-    return paths.filter((p) => p.startsWith(prefix));
   },
 
   getSnapshot() {

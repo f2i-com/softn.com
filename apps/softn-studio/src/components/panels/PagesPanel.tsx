@@ -45,11 +45,15 @@ export const PagesPanel: React.FC = () => {
                   <div style={styles.viewerTitle}>Entry page</div>
                   <div style={styles.viewerPath}>{bundleEntry}</div>
                 </div>
+                {/* Named for what it shows: the canvas's own "Preview" switch was a second
+                    control of the same name. */}
                 <button
+                  type="button"
                   onClick={() => {
                     setActiveFilePath(bundleEntry);
                   }}
                   style={styles.viewerButton}
+                  aria-label={`Preview the entry page, ${bundleEntry}`}
                 >
                   Preview
                 </button>

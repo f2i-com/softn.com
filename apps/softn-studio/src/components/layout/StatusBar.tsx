@@ -22,7 +22,7 @@ const AGENT_LABEL: Record<string, string> = {
  * closes it and gives focus back to the count.
  */
 export const StatusBar: React.FC = () => {
-  const { mode, errors, blueprint } = useWorkspaceStore();
+  const { errors, blueprint } = useWorkspaceStore();
   const { agentState } = useAIStore();
   const { files } = useVFSStore();
   const [issuesOpen, setIssuesOpen] = useState(false);
@@ -125,9 +125,8 @@ export const StatusBar: React.FC = () => {
         <span className="st-status-item st-status-hide-narrow">
           {target.charAt(0).toUpperCase() + target.slice(1)} target
         </span>
-        <span className="st-status-item st-status-hide-narrow">
-          {mode.charAt(0).toUpperCase() + mode.slice(1)} mode
-        </span>
+        {/* "Design mode" used to end the row: the editor is only ever in that mode, and nothing
+            the person could do changed the word. */}
       </div>
 
       {issuesOpen && (

@@ -110,7 +110,7 @@ describe('the scaffold as a bundle', () => {
     expect(icon).toMatch(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
     expect(icon.length).toBeLessThan(2_000);
     // Drawn in the style's accent, with nothing the person typed in it.
-    expect(icon).toContain('#14b8a6');
+    expect(icon).toContain('#0f766e');
     expect(icon).not.toContain('Test App');
     const notes = validateProject(toVfs(files), null);
     expect(notes.filter((e) => /icon/i.test(e.message))).toEqual([]);

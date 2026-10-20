@@ -59,10 +59,16 @@ export function hasZipSignature(data: Uint8Array): boolean {
  */
 export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
   const decoder = new TextDecoder();
+  let archive: ReturnType<typeof readBundleEntries>;
+  try {
+    archive = readBundleEntries(data);
+  } catch (err) {
+    throw explainArchiveFailure(err);
+  }
   // Every path is judged before anything is set aside, so an unsafe one refuses the archive
   // wherever it sits, as it always has.
   const safe: Array<{ path: string; rawPath: string; content: Uint8Array }> = [];
-  for (const [rawPath, content] of readBundleEntries(data)) {
+  for (const [rawPath, content] of archive) {
     const path = normalizeProjectPath(rawPath);
     if (!path) throw new Error(`Archive contains an unsafe project path: ${rawPath}`);
     safe.push({ path, rawPath, content });
@@ -88,6 +94,28 @@ export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
     });
   }
   return entries;
+}
+
+/**
+ * Why an archive could not be read, in the person's words. The reader's own ("Invalid ZIP:
+ * missing end-of-central-directory") was shown as it was, after "Could not import": the
+ * parser's terms, which leave the person to work out whether the file, the download or Studio
+ * is at fault. The reader's words are kept as the error's `cause`. Matched as the runtime's
+ * error card matches them (packages/@softn/runtime-shell/src/failure.ts).
+ */
+export function explainArchiveFailure(err: unknown): Error {
+  const said = err instanceof Error ? err.message : String(err);
+  const plain = (message: string) => new Error(message, { cause: err });
+  if (/^(?:Encrypted|ZIP64) bundles are not supported|^Unsupported compression method/.test(said)) {
+    return plain('This archive is of a kind Studio cannot open: a .softn bundle is a plain ZIP, not password-protected and not in the ZIP64 format very large archives use. Export the app again, or zip its folder without a password.');
+  }
+  if (/too large|too many files/i.test(said)) {
+    return plain('This bundle holds more than Studio opens: too many files, or files too large. Take out what the app does not need, such as large media, and export it again.');
+  }
+  if (/Invalid ZIP|end-of-central-directory|Corrupt (?:ZIP|bundle)|not a zip/i.test(said)) {
+    return plain('This file is not a readable .softn bundle or ZIP archive: it may be damaged, or only partly downloaded. Export or download it again, then import the new copy.');
+  }
+  return err instanceof Error ? err : new Error(said);
 }
 
 /**

@@ -14,9 +14,6 @@
     "bench": "vitest run --config bench/vitest.config.ts"
   },
   "dependencies": {
-    "@fontsource-variable/bricolage-grotesque": "^5.3.0",
-    "@fontsource/ibm-plex-mono": "^5.3.0",
-    "@fontsource/ibm-plex-sans": "^5.3.0",
     "@softn/brand": "*",
     "@softn/bundle-format": "*",
     "@softn/components": "*",

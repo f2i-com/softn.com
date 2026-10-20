@@ -1,12 +1,12 @@
 /**
  * The preview's header keeps the name of the file it is showing.
  *
- * The header is one row: the file's name, the device, "Running", then the
- * Preview | Code switch and three buttons. The name was the only part allowed
- * to shrink, and it shrank to nothing: at 900 pixels wide it was 0 pixels,
- * with not even the dots of its ellipsis, and the header said "Desktop,
- * Running" of a file it did not name. The device word gives way first now,
- * and the name keeps a width its ellipsis can stand in.
+ * The header is one row: the file's name, "Running", then the device switch,
+ * the Preview | Code switch and three buttons. The name was the only part
+ * allowed to shrink, and it shrank to nothing: at 900 pixels wide it was 0
+ * pixels, with not even the dots of its ellipsis, and the header said
+ * "Desktop, Running" of a file it did not name. The name keeps a width its
+ * ellipsis can stand in, and in a narrow frame the device switch goes.
  *
  * jsdom lays nothing out, so this holds the rules; the widths (0 before, and
  * after) are measured in Chromium at 900, 1024 and 1440.
@@ -35,17 +35,9 @@ describe('the preview header’s file name', () => {
     expect(file['min-width']).toMatch(/rem$/);
   });
 
-  it('is not what gives way first: the device word is', () => {
-    const file = rule('.st-preview-file');
-    const tag = rule('.st-preview-tag');
-    expect(Number(tag['flex-shrink'])).toBeGreaterThan(Number(file['flex-shrink'] ?? 1));
-    expect(parseFloat(tag['min-width'])).toBe(0);
-    expect(tag.overflow).toBe('hidden');
-  });
-
-  it('is shown without its folder, and without the device word beside it, where the frame is narrow', () => {
+  it('is shown without its folder, and without the device switch beside it, where the frame is narrow', () => {
     expect(rule('.st-preview-chrome').container).toBe('preview-header / inline-size');
     const narrow = /@container preview-header \(max-width: [\d.]+rem\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
-    expect(narrow).toMatch(/\.st-preview-tag,\s*\.st-preview-file \.dir \{\s*display: none;/);
+    expect(narrow).toMatch(/\.st-preview-chrome \.st-device-switch,\s*\.st-preview-file \.dir \{\s*display: none;/);
   });
 });

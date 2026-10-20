@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { useAIStore } from '../../stores';
 import { MAX_ITERATIONS_BOUNDS, TOKEN_BUDGET_BOUNDS, MAX_OUTPUT_TOKENS_BOUNDS, REQUEST_TIMEOUT_BOUNDS_MS, MAX_STEPS_BOUNDS, RUN_TOKEN_BUDGET_BOUNDS } from '../../stores/aiStore';
 import { testProvider } from '../../lib/aiProvider';
@@ -160,6 +160,9 @@ const ProviderTest: React.FC<{ provider: ProviderConfig; label: string }> = ({ p
   );
 };
 
+type SettingsTab = 'ai' | 'general';
+const SETTINGS_TABS: readonly SettingsTab[] = ['ai', 'general'];
+
 export const SettingsPanel: React.FC = () => {
   const {
     providers, removeProvider,
@@ -169,20 +172,44 @@ export const SettingsPanel: React.FC = () => {
     iterationsUsed, tokensUsed, resetBudget,
     agentSettings, updateAgentSettings, openProviderSetup,
   } = useAIStore();
-  const [settingsTab, setSettingsTab] = useState<'ai' | 'general'>('ai');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('ai');
   const active = providers.find((p) => p.id === activeProviderId) ?? null;
+  // A tablist as the pattern has it: each tab names the panel it controls and the panel is named
+  // by its tab, only the selected tab is a tab stop, and the arrow keys, Home and End move between
+  // tabs and select them. The panel had no name and the arrows did nothing.
+  const ids = useId();
+  const tabId = (tab: SettingsTab) => `${ids}-tab-${tab}`;
+  const panelId = `${ids}-panel`;
+  const tabRefs = useRef<Partial<Record<SettingsTab, HTMLButtonElement | null>>>({});
+  const onTabKey = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const at = SETTINGS_TABS.indexOf(settingsTab);
+    const next = event.key === 'ArrowRight' ? SETTINGS_TABS[(at + 1) % SETTINGS_TABS.length]
+      : event.key === 'ArrowLeft' ? SETTINGS_TABS[(at - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length]
+        : event.key === 'Home' ? SETTINGS_TABS[0]
+          : event.key === 'End' ? SETTINGS_TABS[SETTINGS_TABS.length - 1]
+            : null;
+    if (!next) return;
+    event.preventDefault();
+    setSettingsTab(next);
+    tabRefs.current[next]?.focus();
+  };
 
   return (
     <div className="st-settings">
       <div className="st-tabs" role="tablist" aria-label="Settings">
-        {(['ai', 'general'] as const).map((tab) => (
+        {SETTINGS_TABS.map((tab) => (
           <button
             key={tab}
+            ref={(node) => { tabRefs.current[tab] = node; }}
+            id={tabId(tab)}
             type="button"
             role="tab"
             aria-selected={settingsTab === tab}
+            aria-controls={panelId}
+            tabIndex={settingsTab === tab ? 0 : -1}
             className="st-tab"
             onClick={() => setSettingsTab(tab)}
+            onKeyDown={onTabKey}
           >
             <Icon name={tab === 'ai' ? 'ai' : 'settings'} size={14} />
             {tab === 'ai' ? 'AI' : 'General'}
@@ -190,7 +217,8 @@ export const SettingsPanel: React.FC = () => {
         ))}
       </div>
 
-      <div className="st-settings-body" role="tabpanel">
+      {/* General holds no control, so the panel itself is the tab stop after its tab. */}
+      <div className="st-settings-body" role="tabpanel" id={panelId} aria-labelledby={tabId(settingsTab)} tabIndex={settingsTab === 'general' ? 0 : undefined}>
         {settingsTab === 'ai' && (
           <>
             <section className="st-settings-section" aria-labelledby="studio-providers-heading">

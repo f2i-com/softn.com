@@ -183,7 +183,7 @@ describe('autosave', () => {
     const autosave = startProjectAutosave({ save, debounceMs: 50, maxWaitMs: 200, now: () => Date.now() });
 
     // No project id yet: a store change is not a save.
-    useWorkspaceStore.getState().setZoom(120);
+    useWorkspaceStore.getState().setDevicePreset('tablet');
     await vi.advanceTimersByTimeAsync(500);
     expect(save).not.toHaveBeenCalled();
 
@@ -247,7 +247,7 @@ describe('autosave', () => {
     await autosave.flush();
     expect(save).toHaveBeenCalledTimes(1);
 
-    useWorkspaceStore.getState().setZoom(80);
+    useWorkspaceStore.getState().setDevicePreset('mobile');
     await autosave.flush();
     expect(save).toHaveBeenCalledTimes(2);
     autosave.stop();

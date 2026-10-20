@@ -3,7 +3,7 @@ import { useWorkspaceStore, useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import type { LogicLanguage, ProjectBrief, RuntimeTarget, VisualStyle } from '../../types/studio';
-import { generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles } from '../../lib/studioProject';
+import { accentFor, generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles, themeFor } from '../../lib/studioProject';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { AIStatusPill, openSetupFor, useAIReadiness } from '../ai/AIStatusPill';
 
@@ -37,6 +37,16 @@ const hover = (rest: string, over: string) => ({
 // Enter also confirms an input method's candidate (Japanese, Chinese, Korean); that Enter used
 // to add the half-typed name as a page. Safari can report the composition as finished on that
 // keydown but still marks it with the IME key code.
+/**
+ * The grounds an app is drawn on, light and dark (@softn/components' theme tokens: white and
+ * slate 900), the ink of its text, and an edge so a white swatch shows on Studio's light theme.
+ * Fixed values on purpose: a swatch shows the app, not Studio.
+ */
+const APP_THEME_LOOK: Record<'light' | 'dark', { ground: string; ink: string; edge: string }> = {
+  light: { ground: '#ffffff', ink: '#0f172a', edge: 'rgba(15, 23, 42, 0.16)' },
+  dark: { ground: '#0f172a', ink: '#f8fafc', edge: 'rgba(248, 250, 252, 0.14)' },
+};
+
 const addsOnEnter = (e: React.KeyboardEvent): boolean =>
   e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229;
 
@@ -159,24 +169,22 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   ];
 
   /**
-   * The presets used to be five saturated hex swatches — blue, red, zinc,
-   * purple, near-black — which is four accents the palette does not have. They
-   * are now told apart by form instead of hue: bar weight, spacing and corner
-   * radius sketch what each preset feels like, all drawn in --studio-text at
-   * varying opacity. "Dark" is the one that genuinely needs a value change, so
-   * it keeps the same geometry on the darkest ground either theme offers.
+   * Each preset drawn as the app it makes: on its theme's ground (studioProject's themeFor),
+   * with its heading in its accent (accentFor), and its form sketched by bar weight, spacing
+   * and corner radius. They were drawn in Studio's own colours, so every swatch followed
+   * Studio's theme and none showed the app's: Clean, Bold and Playful looked light and made
+   * dark apps. The grounds are the app theme's own, whatever Studio's theme is.
    */
   const styleOptions: {
     id: VisualStyle;
     label: string;
-    ground: string;
     bars: { w: string; h: number; r: number; o: number }[];
   }[] = [
-    { id: 'clean', label: 'Clean', ground: 'var(--studio-surface)', bars: [{ w: '62%', h: 5, r: 3, o: 0.85 }, { w: '40%', h: 4, r: 2, o: 0.38 }, { w: '84%', h: 12, r: 5, o: 0.14 }] },
-    { id: 'bold', label: 'Bold', ground: 'var(--studio-surface)', bars: [{ w: '72%', h: 9, r: 2, o: 1 }, { w: '46%', h: 7, r: 2, o: 0.5 }, { w: '88%', h: 13, r: 2, o: 0.22 }] },
-    { id: 'minimal', label: 'Minimal', ground: 'var(--studio-surface)', bars: [{ w: '38%', h: 2, r: 1, o: 0.6 }, { w: '22%', h: 2, r: 1, o: 0.3 }, { w: '52%', h: 6, r: 1, o: 0.1 }] },
-    { id: 'playful', label: 'Playful', ground: 'var(--studio-surface)', bars: [{ w: '52%', h: 8, r: 99, o: 0.85 }, { w: '32%', h: 8, r: 99, o: 0.42 }, { w: '74%', h: 14, r: 99, o: 0.18 }] },
-    { id: 'dark', label: 'Dark', ground: 'var(--studio-overlay)', bars: [{ w: '62%', h: 5, r: 3, o: 0.95 }, { w: '40%', h: 4, r: 2, o: 0.5 }, { w: '84%', h: 12, r: 5, o: 0.24 }] },
+    { id: 'clean', label: 'Clean', bars: [{ w: '62%', h: 5, r: 3, o: 1 }, { w: '40%', h: 4, r: 2, o: 0.38 }, { w: '84%', h: 12, r: 5, o: 0.14 }] },
+    { id: 'bold', label: 'Bold', bars: [{ w: '72%', h: 9, r: 2, o: 1 }, { w: '46%', h: 7, r: 2, o: 0.5 }, { w: '88%', h: 13, r: 2, o: 0.22 }] },
+    { id: 'minimal', label: 'Minimal', bars: [{ w: '38%', h: 2, r: 1, o: 1 }, { w: '22%', h: 2, r: 1, o: 0.3 }, { w: '52%', h: 6, r: 1, o: 0.1 }] },
+    { id: 'playful', label: 'Playful', bars: [{ w: '52%', h: 8, r: 99, o: 1 }, { w: '32%', h: 8, r: 99, o: 0.42 }, { w: '74%', h: 14, r: 99, o: 0.18 }] },
+    { id: 'dark', label: 'Dark', bars: [{ w: '62%', h: 5, r: 3, o: 1 }, { w: '40%', h: 4, r: 2, o: 0.5 }, { w: '84%', h: 12, r: 5, o: 0.24 }] },
   ];
 
   const m = isMobile;
@@ -422,8 +430,11 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     placeholder="e.g., Dashboard, Settings, Profile..."
                     autoFocus
                   />
+                  {/* Named for what it adds: the step had two buttons called "Add". */}
                   <button
+                    type="button"
                     style={s.tagAddBtn}
+                    aria-label="Add page"
                     onClick={() => { addTag('pages', pageInput); setPageInput(''); }}
                     {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
                   >
@@ -460,7 +471,9 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     placeholder="e.g., Tasks, Users, Categories..."
                   />
                   <button
+                    type="button"
                     style={s.tagAddBtn}
+                    aria-label="Add collection"
                     onClick={() => { addTag('collections', collInput); setCollInput(''); }}
                     {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
                   >
@@ -615,6 +628,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                 >
                   {styleOptions.map((opt) => {
                     const on = brief.style === opt.id;
+                    const look = APP_THEME_LOOK[themeFor(opt.id)];
                     return (
                       <button
                         key={opt.id}
@@ -629,7 +643,10 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                         }}
                       >
                         {on && <span style={s.cardCheck}>{renderCheck(18)}</span>}
-                        <div style={{ ...s.stylePreview, background: opt.ground }}>
+                        <div
+                          data-style-theme={themeFor(opt.id)}
+                          style={{ ...s.stylePreview, background: look.ground, borderColor: look.edge }}
+                        >
                           {opt.bars.map((bar, bi) => (
                             <div
                               key={bi}
@@ -637,7 +654,8 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                                 width: bar.w,
                                 height: bar.h,
                                 borderRadius: bar.r,
-                                background: 'var(--studio-text)',
+                                // The first bar is the app's heading, in the style's accent.
+                                background: bi === 0 ? accentFor(opt.id) : look.ink,
                                 opacity: bar.o,
                                 marginTop: bi === 0 ? 0 : 5,
                               }}
@@ -1271,6 +1289,9 @@ const s: Record<string, React.CSSProperties> = {
     width: '100%',
     height: 58,
     borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    boxSizing: 'border-box',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-start',

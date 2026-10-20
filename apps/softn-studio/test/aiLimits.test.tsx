@@ -93,6 +93,32 @@ describe('editing AI limits', () => {
     expect(input.value).toBe('100');
   });
 
+  // The panel had no name, the tabs controlled nothing, and the arrow keys did nothing.
+  it('is a tablist: the panel is named by its tab, and the arrows, Home and End move between tabs', () => {
+    const tabs = [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const panel = container.querySelector<HTMLElement>('[role="tabpanel"]')!;
+    expect(tabs.map((t) => t.textContent)).toEqual(['AI', 'General']);
+    for (const tab of tabs) expect(tab.getAttribute('aria-controls')).toBe(panel.id);
+    const selected = () => tabs.find((t) => t.getAttribute('aria-selected') === 'true')!;
+    expect(document.getElementById(panel.getAttribute('aria-labelledby')!)).toBe(selected());
+    expect(tabs.map((t) => t.tabIndex)).toEqual([0, -1]);
+    const press = (key: string) => act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); });
+    act(() => tabs[0].focus());
+    press('ArrowRight');
+    expect(selected().textContent).toBe('General');
+    expect(document.activeElement).toBe(tabs[1]);
+    expect(tabs.map((t) => t.tabIndex)).toEqual([-1, 0]);
+    expect(document.getElementById(panel.getAttribute('aria-labelledby')!)).toBe(tabs[1]);
+    expect(panel.textContent).toContain('Keyboard');
+    press('ArrowRight');
+    expect(selected().textContent).toBe('AI');
+    press('End');
+    expect(selected().textContent).toBe('General');
+    press('Home');
+    expect(selected().textContent).toBe('AI');
+    expect(document.activeElement).toBe(tabs[0]);
+  });
+
   it('keeps nonfinite and fractional store updates from invalidating saved providers', () => {
     for (const value of [NaN, Infinity, -Infinity, -10, 1.5, 99_999_999.5]) {
       act(() => { useAIStore.getState().setMaxIterations(value); useAIStore.getState().setTokenBudget(value); });

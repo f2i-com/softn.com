@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { useWorkspaceStore } from '../../stores';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useVFSStore, useWorkspaceStore } from '../../stores';
+import { generateBlueprintFromBrief, generateTaskGraph, pageFileCandidates, pageSlugs, scaffoldProjectFiles } from '../../lib/studioProject';
 import { Icon } from '../common/Icon';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import { useAIReadiness } from '../ai/AIStatusPill';
@@ -19,12 +20,55 @@ const hover = (rest: string, over: string) => ({
 
 const noop = () => {};
 
+/** Words that say "a page" rather than name one: "add another page", "add a new page". */
+const UNNAMED = /^(?:a|an|another|one|one more|more|new|extra|second|third|other)$/i;
+
+/**
+ * The page a note asks to add, or null when it asks for something else: "Add a settings page"
+ * is Settings, "add a page called Team stats" is Team Stats, and "add another page", which names
+ * none, is the next numbered page. `count` is how many pages the plan has.
+ */
+function requestedPageName(note: string, count: number): string | null {
+  const text = note.trim().replace(/[.!]+$/, '');
+  const titled = (raw: string): string | null => {
+    const name = raw.replace(/^["'“‘]|["'”’]$/g, '').replace(/[^\p{L}\p{N}\s&'-]+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (!name || UNNAMED.test(name)) return null;
+    return name.split(' ').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+  };
+  // "add a page called X", "add a screen named X", "add a page for X"
+  const called = /^(?:please\s+)?(?:add|include|create|make)\s+(?:a|an|another|one more|a new)?\s*(?:page|screen|view)\s+(?:called|named|for|titled)\s+(.+)$/i.exec(text);
+  if (called) return titled(called[1]) ?? `Page ${count + 1}`;
+  // "add a settings page", "add another page", "add an about screen"
+  const before = /^(?:please\s+)?(?:add|include|create|make)\s+(?:(?:a|an|another|one more|a new|new)\s+)?(.*?)\s*(?:page|screen|view)$/i.exec(text);
+  if (before) return titled(before[1]) ?? `Page ${count + 1}`;
+  return null;
+}
+
+/**
+ * Where the keyboard goes when the plan is approved: to the AI's message box, where the run the
+ * approval started is followed and the next request is typed, or else to the editor's main area
+ * (App.tsx's `#studio-main`). Only when the focus is nowhere: the brief, sent back for revision,
+ * takes it itself.
+ */
+function focusEditorIfLost(): void {
+  const active = document.activeElement;
+  if (active && active !== document.body && active.isConnected) return;
+  const composer = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message to AI"]');
+  if (composer && !composer.disabled && composer.getClientRects().length > 0) {
+    composer.focus();
+    return;
+  }
+  document.getElementById('studio-main')?.focus();
+}
+
 export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onReviseBrief }) => {
   const {
     blueprint,
     brief,
     taskGraph,
+    setBrief,
     setBlueprint,
+    setTaskGraph,
     setBlueprintApproved,
     addConsoleOutput,
   } = useWorkspaceStore();
@@ -37,6 +81,12 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
   // the focus went there: on a phone the dialog opened scrolled to its end with the keyboard
   // up, and the plan it was showing out of sight above.
   const dialogRef = useModalFocus(true, onReviseBrief ?? noop, '#blueprint-review-title');
+  // The dialog gives the focus back to what opened it, and what opened it is the wizard's
+  // Generate, which has gone by then: the focus fell to the page. Once the dialog has gone, a
+  // focus that is nowhere goes to the editor (the hook is shared with Builder, so this is said here).
+  useEffect(() => () => {
+    setTimeout(focusEditorIfLost, 0);
+  }, []);
 
   const summaryStats = useMemo(() => {
     if (!blueprint) return [];
@@ -49,19 +99,53 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
 
   if (!blueprint || !brief) return null;
 
+  const pageFiles = pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0]);
+
+  /**
+   * A note that asks for a page ("Add a settings page", "add another page") adds it: to the
+   * plan, to the brief the build is asked for, and, while the project is still the scaffold
+   * Generate wrote, to the files as well. It was filed under Risks as "User requested
+   * revision", and the plan still said one page. Any other note is kept with the assumptions,
+   * for the build to read.
+   */
   const applyRevisionHint = () => {
     const text = revisionInput.trim();
     if (!text) return;
+
+    const existing = blueprint.pages.map((page) => page.name);
+    const requested = requestedPageName(text, existing.length);
+    if (requested && existing.some((name) => name.toLowerCase() === requested.toLowerCase())) {
+      addConsoleOutput(`[Architect] The plan already has a page called ${requested}.`);
+      setRevisionInput('');
+      return;
+    }
+    if (requested) {
+      const nextBrief = { ...brief, pages: [...existing, requested] };
+      const planned = generateBlueprintFromBrief(nextBrief);
+      const next = { ...blueprint, pages: planned.pages, navigation: planned.navigation };
+      const vfs = useVFSStore.getState();
+      // Written again only while every file is the one Generate wrote (builder/ holds Studio's
+      // notes, which change with each note): anything else is the person's or the AI's work.
+      const scaffold = scaffoldProjectFiles(brief, blueprint).filter((file) => !file.path.startsWith('builder/'));
+      const current = [...vfs.files.keys()].filter((path) => !path.startsWith('builder/'));
+      const pristine = scaffold.length === current.length && scaffold.every((file) => vfs.readFile(file.path) === file.content);
+      setBrief(nextBrief);
+      setBlueprint(next);
+      setTaskGraph(generateTaskGraph(next));
+      if (pristine) {
+        vfs.reset();
+        vfs.hydrateFiles(scaffoldProjectFiles(nextBrief, next));
+      }
+      addConsoleOutput(`[Architect] Blueprint revised: added the page ${requested}.`);
+      setRevisionInput('');
+      return;
+    }
 
     const next = { ...blueprint };
     if (/auth/i.test(text)) {
       next.assumptions = [...next.assumptions, 'Review authentication flow requirements before export.'];
     }
-    if (/page|screen|view/i.test(text)) {
-      next.risks = [...next.risks, `User requested revision: ${text}`];
-    } else {
-      next.assumptions = [...next.assumptions, `Revision note: ${text}`];
-    }
+    next.assumptions = [...next.assumptions, `Revision note: ${text}`];
 
     setBlueprint(next);
     addConsoleOutput(`[Architect] Blueprint revised: ${text}`);
@@ -122,7 +206,10 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               <div key={page.id} style={{ ...styles.listRow, ...rule(index === blueprint.pages.length - 1) }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={styles.rowTitle}>{page.name}</div>
-                  <div style={styles.rowSub}>{page.route || 'No route'} / {page.layout}</div>
+                  {/* The file the page is written to and how it is laid out. This read "/ / responsive-shell":
+                      the first page's route, then the layout's identifier, with a slash between that looked
+                      like a third path. */}
+                  <div style={styles.rowSub}>{pageFiles[index]} · {page.layout.replace(/[-_]+/g, ' ')} layout</div>
                 </div>
                 <span style={styles.rowBadge}>{page.components.length} component{page.components.length === 1 ? '' : 's'}</span>
               </div>

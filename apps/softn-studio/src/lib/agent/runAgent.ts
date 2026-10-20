@@ -22,16 +22,18 @@
  * the project and shown by the chat.
  */
 
+import { randomUUID } from '@softn/bundle-format/crypto';
 import { AIProviderError, resolveModel } from '../aiProvider';
 import { kindForStatus } from '../providerConnection';
 import { useAIStore } from '../../stores/aiStore';
 import { useVFSStore } from '../../stores/vfsStore';
-import { undoState, undoUnavailableReason, type UndoEntry, type UndoState } from '../undoJournal';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import type { AIFailure, ChatMessage, ProviderConfig } from '../../types/studio';
+import type { AIFailure, ProviderConfig } from '../../types/studio';
 import type { SuppliedFiles } from '../changeset';
 import { browserEnvironment, formatCheckReport, type AgentEnvironment } from './appCheck';
 import { executeTool, type ToolOutcome } from './executeTool';
+import { revertRunFromJournal, undoStepFromJournal, type RevertOutcome } from './runRevert';
+import { compact } from './compaction';
 import { addUsage, cacheWeights, effectiveTokens, runEffective, type CacheWeights } from './budget';
 import { holdPageForRun, releasePageForRun, runInAnotherTab, wasInBackground } from './keepAlive';
 import { buildAgentSystemPrompt, buildProjectContext } from './prompt';
@@ -67,10 +69,6 @@ export const FREE_DELETES = 3;
  * request.
  */
 const COMPACT_EVERY = 8;
-/** How many steps a long read stays in the conversation, at the least, before a compaction may shorten it. */
-const KEEP_READS_FOR = 6;
-/** A reply's text longer than this is shortened once it is old. */
-const LONG_TEXT_CHARS = 1_500;
 /** Past this estimated size, the conversation is compacted now, and harder. */
 const CONTEXT_SOFT_LIMIT_TOKENS = 60_000;
 /** The same failure this many times in a row ends the run. */
@@ -80,8 +78,6 @@ const TRUNCATION_RETRIES = 1;
 const RATE_LIMIT_RETRIES = 3;
 /** How often a streaming reply is shown: often enough to read as live, rarely enough not to re-render per token. */
 const LIVE_FLUSH_MS = 60;
-
-const COMPACTABLE = new Set(['read_file', 'search_files', 'list_files', 'inspect_preview', 'run_app_function', 'lookup_components', 'read_docs']);
 
 let environment: AgentEnvironment = browserEnvironment;
 /** Swap how checks render and functions run (tests). */
@@ -261,7 +257,7 @@ function setStatus(ctl: RunController, status: AgentRunRecord['status'], reason?
 // ---------------------------------------------------------------------------
 
 function newId(): string {
-  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `r-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return randomUUID();
 }
 
 /** The chat so far as the run's opening turns: earlier requests and what came of them, then the new request. */
@@ -675,105 +671,20 @@ export async function answerAgentQuestion(runId: string, answer: string | boolea
   await drive(ctl);
 }
 
-export type RevertOutcome = { ok: true; paths: string[] } | { ok: false; reason: string };
+// Undo and revert work from the journal (runRevert.ts); a run still live here forgets what it
+// had read of the files put back, so its next write of one is judged against the file as it is.
+export { revertChatTurn, runRevertState, stepUndoState, stepUndoUnavailable, turnRevertState, type RevertOutcome } from './runRevert';
 
-/**
- * The steps of a run still to be put back by Revert run, newest first: every
- * transaction it committed but whose step has not been undone on its own.
- */
-function pendingTransactions(run: AgentRunRecord): string[] {
-  const undone = new Set(run.entries.flatMap((e) => (e.kind === 'tool' && e.undone && e.transactionId ? [e.transactionId] : [])));
-  return run.transactions.filter((t) => !undone.has(t)).reverse();
-}
-
-/**
- * Why a step's Undo is not offered, or null when it is. Undo works from the
- * journal saved with the project (lib/undoJournal.ts), so it survives a
- * reload; a step recorded before there was a journal, or whose data was
- * trimmed or was a binary file's, cannot be undone, and says so.
- */
-export function stepUndoUnavailable(entry: RunEntry, journal: UndoEntry[] = useVFSStore.getState().journal): string | null {
-  if (entry.kind !== 'tool' || !entry.transactionId || entry.undone) return null;
-  return undoUnavailableReason(journal, entry.transactionId);
-}
-
-/** The file as the VFS holds it now, for the undo checks. */
-function readNow(path: string): string | Uint8Array | undefined {
-  return useVFSStore.getState().files.get(path)?.content;
-}
-
-/**
- * What a step's Undo would meet now, from the journal and the files: a step
- * whose files already are what it found — undone with Ctrl+Z or the History
- * panel — is `undone`, so the timeline shows it as undone instead of a
- * button that would only say so when pressed. Derived, not recorded: a redo
- * brings the button back.
- */
-export function stepUndoState(
-  entry: RunEntry,
-  journal: UndoEntry[] = useVFSStore.getState().journal,
-  read: (path: string) => string | Uint8Array | undefined = readNow,
-): UndoState | null {
-  if (entry.kind !== 'tool' || !entry.transactionId) return null;
-  if (entry.undone) return { kind: 'undone' };
-  return undoState(journal, [entry.transactionId], read);
-}
-
-/**
- * Whether Revert run has anything to do, and if it cannot, why. With `read`,
- * a run whose every pending step is already undone (by Ctrl+Z, say) has
- * nothing to do either.
- */
-export function runRevertState(
-  run: AgentRunRecord,
-  journal: UndoEntry[] = useVFSStore.getState().journal,
-  read?: (path: string) => string | Uint8Array | undefined,
-): { available: boolean; reason: string | null } {
-  if (run.reverted) return { available: false, reason: null };
-  const pending = pendingTransactions(run);
-  if (pending.length === 0) return { available: false, reason: null };
-  for (const id of pending) {
-    const reason = undoUnavailableReason(journal, id);
-    if (reason) return { available: false, reason: `Revert run isn't available: one of its steps ${reason.charAt(0).toLowerCase()}${reason.slice(1)}` };
-  }
-  if (read && undoState(journal, pending, read).kind === 'undone') return { available: false, reason: null };
-  return { available: true, reason: null };
-}
-
-/**
- * "Revert this turn" on a chat message that committed files as one
- * transaction (the single-shot turns before agent runs). It works from the
- * journal, as Undo and Revert run do, so it holds after a reload, and it
- * follows their rule: a file edited after the turn refuses the revert.
- */
-export function turnRevertState(message: ChatMessage, journal: UndoEntry[] = useVFSStore.getState().journal, read = readNow): UndoState | null {
-  if (message.role !== 'assistant' || !message.transactionId || message.run) return null;
-  return undoState(journal, [message.transactionId], read);
-}
-
-export function revertChatTurn(messageId: string): RevertOutcome {
-  const message = useAIStore.getState().messages.find((m) => m.id === messageId);
-  if (!message?.transactionId || message.run) return { ok: false, reason: 'This turn changed no files.' };
-  const result = useVFSStore.getState().revertJournaled([message.transactionId], 'this turn');
-  if (!result.ok) return { ok: false, reason: /was edited after/.test(result.reason) ? `${result.reason} Undo that edit first, or revert by hand.` : result.reason };
-  useWorkspaceStore.getState().setDirty(true);
-  return result;
+/** Forget, in a run still live in this tab, what it had read of these files. */
+function forgetRead(runId: string, paths: string[]): void {
+  const ctl = controllers.get(runId);
+  if (ctl) for (const path of paths) ctl.seen.delete(path);
 }
 
 /** Undo one step of a run by its transaction — before or after a reload. */
 export function undoAgentStep(runId: string, messageId: string, entryId: string): RevertOutcome {
-  const message = useAIStore.getState().messages.find((m) => m.id === messageId);
-  const entry = message?.run?.entries.find((e) => e.id === entryId);
-  if (!message?.run || !entry || entry.kind !== 'tool' || !entry.transactionId) return { ok: false, reason: 'That step changed no files.' };
-  if (entry.undone) return { ok: false, reason: 'That step is undone already.' };
-  const result = useVFSStore.getState().revertJournaled([entry.transactionId], 'this step');
-  if (!result.ok) return { ok: false, reason: /was edited after/.test(result.reason) ? `${result.reason} Undo that edit first, or revert by hand.` : result.reason };
-  useAIStore.getState().replaceMessage(messageId, (m) =>
-    m.run ? { ...m, run: { ...m.run, entries: m.run.entries.map((e) => (e.id === entryId && e.kind === 'tool' ? { ...e, undone: true } : e)) } } : m,
-  );
-  const ctl = controllers.get(runId);
-  if (ctl) for (const path of result.paths) ctl.seen.delete(path);
-  useWorkspaceStore.getState().setDirty(true);
+  const result = undoStepFromJournal(messageId, entryId);
+  if (result.ok) forgetRead(runId, result.paths);
   return result;
 }
 
@@ -784,20 +695,9 @@ export function undoAgentStep(runId: string, messageId: string, entryId: string)
  * person, or another run) refuses it.
  */
 export function revertAgentRun(messageId: string): RevertOutcome {
-  const message = useAIStore.getState().messages.find((m) => m.id === messageId);
-  const run = message?.run;
-  if (!run) return { ok: false, reason: 'There is no run here.' };
-  if (run.reverted) return { ok: false, reason: 'This run was reverted already.' };
-  const pending = pendingTransactions(run);
-  if (pending.length === 0) return { ok: false, reason: 'Nothing from this run is left to revert.' };
-  const state = runRevertState(run);
-  if (!state.available) return { ok: false, reason: state.reason ?? 'Nothing from this run is left to revert.' };
-  const result = useVFSStore.getState().revertJournaled(pending, 'this run');
-  if (!result.ok) return { ok: false, reason: /was edited after/.test(result.reason) ? `${result.reason} Undo that edit first, or revert steps one by one.` : result.reason };
-  useAIStore.getState().replaceMessage(messageId, (m) => (m.run ? { ...m, run: { ...m.run, reverted: true, entries: m.run.entries.map((e) => (e.kind === 'tool' && e.transactionId ? { ...e, undone: true } : e)) } } : m));
-  const ctl = controllers.get(run.id);
-  if (ctl) for (const path of result.paths) ctl.seen.delete(path);
-  useWorkspaceStore.getState().setDirty(true);
+  const runId = useAIStore.getState().messages.find((m) => m.id === messageId)?.run?.id;
+  const result = revertRunFromJournal(messageId);
+  if (result.ok && runId) forgetRead(runId, result.paths);
   return result;
 }
 
@@ -814,109 +714,6 @@ function end(ctl: RunController, status: 'finished' | 'failed', reason: string |
   setStatus(ctl, status, reason, summary !== undefined ? { summary } : {});
   if (status === 'failed' && reason) useAIStore.getState().setLastFailure({ kind: 'provider', message: reason, at: Date.now() });
   ctl.abort = null;
-}
-
-/** The file a call reads or changes. */
-function callPaths(call: AgentToolCall): string[] {
-  const paths = [call.input.path, call.input.from, call.input.to].filter((p): p is string => typeof p === 'string' && p.length > 0);
-  return paths.map((p) => p.trim().replace(/^\.\//, ''));
-}
-
-const lineTotal = (text: unknown) => (typeof text === 'string' ? text.split('\n').length : 0);
-
-/**
- * Shorten what the model no longer needs, all at once (see COMPACT_EVERY):
- * - a long read, search, lookup or render older than `keep` steps, and a read
- *   of a file that has been read again or changed since;
- * - every check report but the latest;
- * - a write or edit of a file that a later write or edit replaced — the call
- *   keeps its path and a one-line record, not the old content;
- * - an old reply's long text.
- * The latest check, the latest version of each file the model wrote, the
- * newest turns and the person's own messages are left as they are.
- */
-function compact(ctl: RunController, step: number, aggressive: boolean): void {
-  const keep = aggressive ? 2 : KEEP_READS_FOR;
-  // The latest check report is never compacted, wherever it is.
-  let latestCheck: string | null = null;
-  for (const [id, meta] of ctl.resultSteps) if (meta.check) latestCheck = id;
-
-  // In conversation order: the last call that changed each file, and the last that read it.
-  const lastChange = new Map<string, number>();
-  const lastRead = new Map<string, number>();
-  const order = new Map<string, number>();
-  let n = 0;
-  for (const turn of ctl.turns) {
-    if (turn.role !== 'assistant') continue;
-    for (const call of turn.calls) {
-      order.set(call.id, ++n);
-      for (const path of callPaths(call)) {
-        if (WRITE_TOOLS.has(call.name)) lastChange.set(path, n);
-        else if (call.name === 'read_file') lastRead.set(path, n);
-      }
-    }
-  }
-  const lastIndexOf = (role: AgentTurn['role']) => ctl.turns.map((t) => t.role).lastIndexOf(role);
-  const lastAssistant = lastIndexOf('assistant');
-  const lastTool = lastIndexOf('tool');
-  const callOf = new Map<string, AgentToolCall>();
-  for (const turn of ctl.turns) if (turn.role === 'assistant') for (const call of turn.calls) callOf.set(call.id, call);
-
-  ctl.turns.forEach((turn, index) => {
-    if (turn.role === 'tool') {
-      if (index === lastTool) return;
-      turn.results = turn.results.map((r) => {
-        const meta = ctl.resultSteps.get(r.id);
-        if (!meta || r.id === latestCheck || r.content.startsWith('[')) return r;
-        const old = step - meta.step >= keep;
-        if (meta.check && r.content.includes('[Automatic check]')) {
-          return { ...r, content: r.content.replace(/\n\n\[Automatic check\][\s\S]*$/, '\n\n[Automatic check: superseded by a later check.]') };
-        }
-        if (meta.name === 'check_app' && r.content.length > 200) {
-          return { ...r, content: `[check_app result from step ${meta.step}, superseded by a later check.]` };
-        }
-        if (COMPACTABLE.has(meta.name) && r.content.length > 600) {
-          const call = callOf.get(r.id);
-          const at = order.get(r.id) ?? 0;
-          const path = call ? callPaths(call)[0] : undefined;
-          const since = meta.name === 'read_file' && path !== undefined && ((lastChange.get(path) ?? 0) > at || (lastRead.get(path) ?? 0) > at);
-          if (old || since) {
-            const lines = r.content.split('\n').length;
-            const why = since ? `${path} has been ${(lastChange.get(path) ?? 0) > at ? 'changed' : 'read again'} since` : 'removed to save context';
-            return { ...r, content: `[${meta.name} result from step ${meta.step}, ${lines} lines; ${why}. Call ${meta.name} again if you still need it.]` };
-          }
-        }
-        return r;
-      });
-      return;
-    }
-    if (turn.role !== 'assistant' || index === lastAssistant) return;
-    let changed = false;
-    const calls = turn.calls.map((call) => {
-      if (call.name !== 'write_file' && call.name !== 'edit_file') return call;
-      const [path] = callPaths(call);
-      const at = order.get(call.id) ?? 0;
-      if (path === undefined || (lastChange.get(path) ?? 0) <= at) return call;
-      const meta = ctl.resultSteps.get(call.id);
-      const when = meta ? ` at step ${meta.step}` : '';
-      if (call.name === 'write_file' && typeof call.input.content === 'string' && call.input.content.length > 200) {
-        changed = true;
-        return { ...call, input: { path: call.input.path, content: `[${lineTotal(call.input.content)} lines written${when}; the file has been changed since — read_file shows it now]` } };
-      }
-      const size = String(call.input.old_string ?? '').length + String(call.input.new_string ?? '').length;
-      if (call.name === 'edit_file' && size > 200) {
-        changed = true;
-        return { ...call, input: { path: call.input.path, old_string: `[${lineTotal(call.input.old_string)} lines]`, new_string: `[${lineTotal(call.input.new_string)} lines, applied${when}; the file has been changed since — read_file shows it now]` } };
-      }
-      return call;
-    });
-    const firstStep = turn.calls.map((c) => ctl.resultSteps.get(c.id)?.step).find((s) => s !== undefined);
-    const oldText = firstStep !== undefined && step - firstStep >= keep && turn.text.length > LONG_TEXT_CHARS;
-    const text = oldText ? `${turn.text.slice(0, 400).trimEnd()} […shortened to save context]` : turn.text;
-    if (!changed && !oldText) return;
-    // An echoed reply is re-encoded from what is left: an old turn's reasoning is not needed again.
-    ctl.turns[index] = { role: 'assistant', text, calls };
-  });
 }
 
 function contextSize(ctl: RunController, system: string): number {
@@ -1573,7 +1370,7 @@ async function drive(ctl: RunController): Promise<void> {
         ctl.turns.push({
           role: 'user',
           text: unreadable
-            ? 'Your <tool_call> could not be read, so nothing was run. Write each call as a block with a closing tag, e.g.\n<tool_call name="read_file">\n<arg name="path">ui/main.ui</arg>\n</tool_call>'
+            ? 'Your <tool_call> could not be read, so nothing was run. Write each call as a block with a closing tag, e.g.\n<tool_call name="read_file">\n<arg name="path">index.html</arg>\n</tool_call>'
             : 'If the request is done, call finish with a short summary. Otherwise carry on with the tools.',
         });
         continue;

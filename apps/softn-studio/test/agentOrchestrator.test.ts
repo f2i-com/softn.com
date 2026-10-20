@@ -12,12 +12,12 @@
  *   - a budget is checked before a request is sent, and timeouts and rate
  *     limits are distinct, recoverable failures.
  *
- * The unit tests of the single-shot helpers that remain (the file-block
- * parser, the budgeted file view, checkWrite) are kept as they were.
+ * The unit tests of the single-shot helper that remains (checkWrite) are
+ * kept as they were.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { abortAgentTurn, buildFileContents, checkWrite, parseAIResponse, runAgentTurn } from '../src/lib/agentOrchestrator';
+import { abortAgentTurn, checkWrite, runAgentTurn } from '../src/lib/agentOrchestrator';
 import { continueAgentRun } from '../src/lib/agent/runAgent';
 import { useAIStore } from '../src/stores/aiStore';
 import { useVFSStore } from '../src/stores/vfsStore';
@@ -294,44 +294,8 @@ describe('each write as a transaction', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The single-shot helpers that remain
+// The single-shot helper that remains
 // ---------------------------------------------------------------------------
-
-describe('the budgeted file view', () => {
-  it('marks a long file truncated and a short one complete, with the version each was shown at', () => {
-    const files = new Map<string, VFSFile>([
-      ['logic/app.logic', { path: 'logic/app.logic', content: LONG, mimeType: 'text/x-softn-logic', lastModified: 1, lastModifiedBy: 'user', version: 3 }],
-      ['ui/main.ui', { path: 'ui/main.ui', content: '<App/>', mimeType: 'text/x-softn-ui', lastModified: 1, lastModifiedBy: 'user', version: 1 }],
-    ]);
-    expect(LONG.length).toBeGreaterThan(12000);
-    const { text, supplied } = buildFileContents(files);
-    expect(supplied.get('logic/app.logic')).toMatchObject({ complete: false, version: 3, shown: 6000, total: LONG.length });
-    expect(supplied.get('ui/main.ui')).toMatchObject({ complete: true, version: 1 });
-    expect(text).toContain('TRUNCATED: first 6000 of');
-    expect(text).not.toContain('SENTINEL-TAIL-7f3a');
-    const whole = buildFileContents(files, 6000, 80000, new Set(['logic/app.logic']));
-    expect(whole.supplied.get('logic/app.logic')?.complete).toBe(true);
-    expect(whole.text).toContain('SENTINEL-TAIL-7f3a');
-  });
-
-  it('names each binary file as present but not shown, and never private state', () => {
-    const files = new Map<string, VFSFile>([
-      ['ui/main.ui', { path: 'ui/main.ui', content: '<App/>', mimeType: 'text/plain', lastModified: 1, lastModifiedBy: 'user', version: 1 }],
-      ['assets/logo.png', { path: 'assets/logo.png', content: new Uint8Array([137, 80, 78, 71]), mimeType: 'image/png', lastModified: 1, lastModifiedBy: 'user', version: 1 }],
-      ['builder/thumb.png', { path: 'builder/thumb.png', content: new Uint8Array([1]), mimeType: 'image/png', lastModified: 1, lastModifiedBy: 'user', version: 1 }],
-    ]);
-    const { text, supplied } = buildFileContents(files);
-    expect(text).toContain('assets/logo.png (4 bytes)');
-    expect(text).not.toContain('builder/thumb.png');
-    expect([...supplied.keys()]).toEqual(['ui/main.ui']);
-  });
-
-  it('parses the old file-block format and strips it from the text', () => {
-    const parsed = parseAIResponse('I need to see it first.\n<softn-read path="logic/app.logic" />\n<softn-read path="logic/app.logic" />');
-    expect(parsed.reads).toEqual([{ path: 'logic/app.logic' }]);
-    expect(parsed.text).toBe('I need to see it first.');
-  });
-});
 
 describe('checkWrite', () => {
   const file = (version: number): VFSFile => ({ path: 'a', content: 'c', mimeType: 't', lastModified: 1, lastModifiedBy: 'user', version });

@@ -139,6 +139,8 @@ describe('renaming from the project header', () => {
     expect(useWorkspaceStore.getState().projectName).toBe('Field notes');
     expect(container.querySelector('input[aria-label="Project name"]')).toBeNull();
     expect(container.querySelector('.st-project-name')?.textContent).toBe('Field notes');
+    // The field went with the focus in it: the focus goes back to the name, not to the page.
+    expect(document.activeElement).toBe(button('Rename Field notes'));
   });
 
   it('keeps the name on Escape, and says why an empty one is not taken', async () => {
@@ -147,6 +149,7 @@ describe('renaming from the project header', () => {
     type(input, 'Something else');
     key(input, 'Escape');
     expect(useWorkspaceStore.getState().projectName).toBe('Notes');
+    expect(document.activeElement).toBe(button('Rename Notes'));
     act(() => button('Rename Notes')!.click());
     input = container.querySelector<HTMLInputElement>('input[aria-label="Project name"]')!;
     type(input, '  ');
@@ -171,6 +174,13 @@ describe('renaming from the list of projects', () => {
     await flush();
     expect(onRenameProject).toHaveBeenCalledWith('a', 'Beta');
     expect(container.querySelector('input[aria-label="New name for Alpha"]')).toBeNull();
+    // Back on the row's Rename, not on the page.
+    expect(document.activeElement).toBe(button('Rename Alpha'));
+
+    act(() => button('Rename Alpha')!.click());
+    key(container.querySelector<HTMLInputElement>('input[aria-label="New name for Alpha"]')!, 'Escape');
+    expect(container.querySelector('input[aria-label="New name for Alpha"]')).toBeNull();
+    expect(document.activeElement).toBe(button('Rename Alpha'));
 
     act(() => button('Rename Alpha')!.click());
     input = container.querySelector<HTMLInputElement>('input[aria-label="New name for Alpha"]')!;

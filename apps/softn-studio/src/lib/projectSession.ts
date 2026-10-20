@@ -1,6 +1,7 @@
 import { useAIStore, useEditStore, useVFSStore, useWorkspaceStore } from '../stores';
 import { DEFAULT_TOKEN_BUDGET } from '../stores/aiStore';
 import { bundleNameFromUrl, resolveBundleUrl } from '@softn/bundle-format/url';
+import { randomUUID } from '@softn/bundle-format/crypto';
 import { fetchSameOriginBundle } from '@softn/editor-shared/remoteOpen';
 import {
   clearLegacySnapshots,
@@ -137,17 +138,9 @@ export function touchRevision(): number {
   return revision;
 }
 
-export function isHydrating(): boolean {
-  return hydrating;
-}
-
 /** Whether the revision in the stores is the one last written for this project. */
 export function isSavedAt(projectId: string, rev: number): boolean {
   return lastSaved !== null && lastSaved.projectId === projectId && lastSaved.revision === rev;
-}
-
-export function markSaved(projectId: string, rev: number): void {
-  lastSaved = { projectId, revision: rev };
 }
 
 // --- Save status ------------------------------------------------------------
@@ -193,9 +186,7 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 // --- Sessions ---------------------------------------------------------------
 
 function newProjectId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return randomUUID();
 }
 
 /**

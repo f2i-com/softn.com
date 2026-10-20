@@ -16,19 +16,18 @@ import {
   builtinHelpers,
   collectAllComponentTags,
   createEphemeralXDBScope,
-  createMockNavModule,
-  createMockXDBModule,
   createScriptRuntime,
   getDefaultRegistry,
   parse,
   parseXDBFile,
   resolveBundlePath,
   SoftNWithXDB,
-  UI_IMPORT_PATTERN,
 } from '@softn/core';
 import { resolveProjectRelativePath } from '../projectImport';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { validateProject } from '../validator';
+import { blankTemplateComments, ownParseErrors, PAGE_PARSE, parseDiagnostics, UI_IMPORT } from '../pageDiagnostics';
+import { formatConsoleArgs, loadPageLogic, LOGIC_SYNTAX, quietContext, withTimeout } from '../logicCheck';
 import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } from '../previewProject';
 import { getBundleEntryPath } from '../studioProject';
 import { isPrivatePath, normalizeProjectPath } from '../paths';
@@ -76,26 +75,6 @@ interface RenderOutcome {
   warnings: string[];
   text: string;
   snapshot: string;
-}
-
-function formatConsoleArgs(args: unknown[]): string {
-  const show = (a: unknown) => (a instanceof Error ? a.message : typeof a === 'string' ? a : (() => { try { return JSON.stringify(a); } catch { return String(a); } })());
-  let rest = [...args];
-  let head = '';
-  // printf-style messages (React's warnings) with their arguments put in place.
-  if (typeof rest[0] === 'string' && /%[sdoO]/.test(rest[0])) {
-    const format = rest.shift() as string;
-    head = format.replace(/%[sdoO]/g, () => (rest.length > 0 ? show(rest.shift()) : ''));
-  }
-  rest = rest.filter((a) => !(typeof a === 'string' && /^\s*at /.test(a)));
-  return [head, ...rest.map(show)]
-    .filter(Boolean)
-    .join(' ')
-    // A component stack says where in React, not where in the app.
-    .replace(/\n\s+at [\s\S]*$/, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 400);
 }
 
 /** The text a person would see: no style sheets or scripts, whitespace collapsed. */
@@ -354,21 +333,6 @@ export function describeDom(root: Element): string {
   return out.slice(0, 150).join('\n') + (out.length > 150 ? `\n… ${out.length - 150} more line(s)` : '');
 }
 
-async function parseDiagnostics(source: string): Promise<{ errors: string[]; warnings: string[] }> {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  try {
-    const doc = parse(source);
-    for (const d of doc.diagnostics ?? []) {
-      const line = `Parse ${d.severity} at line ${d.loc.line}:${d.loc.column}: ${d.message}`;
-      (d.severity === 'error' ? errors : warnings).push(line);
-    }
-  } catch (err) {
-    errors.push(`Parse error: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  return { errors, warnings };
-}
-
 /**
  * Template mistakes that parse and render without a word, found in the
  * source: `:value` on a text field is one-way, so typing never reaches the
@@ -395,31 +359,6 @@ export function lintTemplates(files: Map<string, VFSFile>): { errors: string[]; 
   }
   return { errors, warnings };
 }
-
-/**
- * A `.ui` file as the parser should read it for line numbers that match the
- * file: `//` template comment lines blanked, not removed, and nothing
- * collapsed or trimmed (stripTemplateComments does both, for the preview).
- */
-function blankTemplateComments(source: string): string {
-  const spans: Array<[number, number]> = [];
-  for (const match of source.matchAll(/<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi)) spans.push([match.index, match.index + match[0].length]);
-  let out = '';
-  let cursor = 0;
-  for (const [start, end] of [...spans, [source.length, source.length] as [number, number]]) {
-    out += source.slice(cursor, start).replace(/^\/\/.*$/gm, '');
-    out += source.slice(start, end);
-    cursor = end;
-  }
-  return out;
-}
-
-/**
- * What the composer does with `<import Name from="./x.ui" />`: core's own pattern, so the
- * files checked are the files placed. The check had a copy that took only `from="…"`; the
- * composer also places `from "…"`, and a page imported that way was placed and never checked.
- */
-const UI_IMPORT = new RegExp(UI_IMPORT_PATTERN.source, 'g');
 
 /** An opening tag read from just after its name: where it ends, whether it closes itself, and the attributes written on it. */
 function readOpeningTag(template: string, from: number): { end: number; selfClosing: boolean; attributes: string[] } {
@@ -487,55 +426,6 @@ function emitUses(path: string, source: string): string[] {
   return [...source.matchAll(/(^|[^\w$])\$emit\s*\(/g)].map((match) =>
     `${path} line ${source.slice(0, match.index + match[1].length).split('\n').length}: $emit does not exist in SoftN: an imported page has no events to send. It is placed in the page's scope, so call the page's function, or set its state, directly.`,
   );
-}
-
-/** A fresh script runtime for a composed page — the engine the preview uses — with its logic loaded. */
-async function loadPageLogic(
-  composition: Extract<ReturnType<typeof composePreviewProject>, { ok: true }>['composition'],
-  block: { type: string; code: string } | undefined,
-  context: Parameters<typeof createScriptRuntime>[0],
-): Promise<{ runtime: ReturnType<typeof createScriptRuntime>; loaded: Awaited<ReturnType<ReturnType<typeof createScriptRuntime>['loadScript']>> }> {
-  const runtime = createScriptRuntime(
-    context,
-    undefined,
-    `studio-agent-run-${Date.now().toString(36)}`,
-    composition.importResolver,
-    composition.logicBasePath,
-    { mode: 'main', preIncludedLogicPaths: composition.preIncludedLogicPaths, pythonProject: composition.python },
-  );
-  try {
-    const loaded = await withTimeout(runtime.loadScript((block ?? { type: 'logic', code: '' }) as never), composition.python ? 30_000 : 10_000, 'Loading the logic');
-    return { runtime, loaded };
-  } catch (err) {
-    runtime.cleanup();
-    throw err;
-  }
-}
-
-function quietContext(files: Map<string, VFSFile>, logs: string[]) {
-  const state: Record<string, unknown> = {};
-  return {
-    state,
-    setState: (path: string, value: unknown) => {
-      const parts = path.split('.');
-      let target: Record<string, unknown> = state;
-      for (const part of parts.slice(0, -1)) {
-        const next = target[part];
-        if (!next || typeof next !== 'object') target[part] = {};
-        target = target[part] as Record<string, unknown>;
-      }
-      target[parts[parts.length - 1]] = value;
-    },
-    batchSetState: (changes: Record<string, unknown>) => Object.assign(state, changes),
-    data: buildPreviewXDBState(files).initialData as Record<string, never[]>,
-    xdb: createMockXDBModule(),
-    nav: createMockNavModule(),
-    console: {
-      log: (...args: unknown[]) => logs.push(`log: ${formatConsoleArgs(args)}`),
-      error: (...args: unknown[]) => logs.push(`error: ${formatConsoleArgs(args)}`),
-      warn: (...args: unknown[]) => logs.push(`warn: ${formatConsoleArgs(args)}`),
-    },
-  };
 }
 
 const NONE = { errors: [] as string[], warnings: [] as string[] };
@@ -719,37 +609,6 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
   });
 }
 
-/**
- * Parse errors in the page and the pages it imports, each against its own
- * file and lines. The composed page inlines its imports, so an error in an
- * imported page used to be reported against the main page at a line of the
- * composed source — a line the model could not find in either file (a real
- * run spent a step "fixing" the wrong file). Empty when no file fails on its
- * own, and the composed report is kept.
- */
-async function ownParseErrors(files: Map<string, VFSFile>, page: string): Promise<string[]> {
-  const errors: string[] = [];
-  const queue = [page];
-  const visited = new Set<string>();
-  while (queue.length > 0) {
-    const path = queue.shift()!;
-    if (visited.has(path)) continue;
-    visited.add(path);
-    const file = files.get(path);
-    if (!file || typeof file.content !== 'string') continue;
-    for (const match of file.content.matchAll(UI_IMPORT)) {
-      try {
-        queue.push(resolveBundlePath(path, match[2]));
-      } catch {
-        // An unsafe path is the composer's to report.
-      }
-    }
-    const own = await parseDiagnostics(blankTemplateComments(file.content));
-    errors.push(...own.errors.map((e) => `${path}: ${e}`));
-  }
-  return errors;
-}
-
 /** The checks themselves: validator and composer everywhere, the render wherever there is a document. */
 const checks: AgentEnvironment = {
   async checkApp(files, { page, blueprint }) {
@@ -757,6 +616,9 @@ const checks: AgentEnvironment = {
     const warnings: string[] = [];
     for (const problem of validateProject(files, blueprint)) {
       if (problem.level === 'info') continue;
+      // What the parser says of the page is reported below, page by page as the model has
+      // always read it (ownParseErrors), and what the engine says of the logic by the render.
+      if (problem.type === PAGE_PARSE || problem.type === LOGIC_SYNTAX) continue;
       const line = `${problem.file}: ${problem.message}`;
       (problem.level === 'error' ? errors : warnings).push(line);
     }
@@ -778,8 +640,8 @@ const checks: AgentEnvironment = {
       if (!errors.some((e) => e.includes(composed.error))) errors.push(line);
       return { ok: false, errors: dedupe(errors), warnings: dedupe(warnings), page: target, renderedHeadless: false };
     }
-    const diagnostics = await parseDiagnostics(stripTemplateComments(composed.composition.source));
-    const own = diagnostics.errors.length > 0 ? await ownParseErrors(files, target) : [];
+    const diagnostics = parseDiagnostics(stripTemplateComments(composed.composition.source));
+    const own = diagnostics.errors.length > 0 ? ownParseErrors(files, target) : [];
     errors.push(...(own.length > 0 ? own : diagnostics.errors.map((e) => `${target}: ${e}`)));
     warnings.push(...diagnostics.warnings.map((w) => `${target}: ${w}`));
     if (diagnostics.errors.length === 0) {
@@ -868,22 +730,6 @@ function describeChange(key: string, before: unknown, after: unknown): string {
     return `${key}: ${parts.join('; ')}`;
   }
   return `${key}: ${preview(before)} → ${preview(after)}`;
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${what} did not finish within ${Math.round(ms / 1000)} s`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err: unknown) => {
-        clearTimeout(timer);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      },
-    );
-  });
 }
 
 function snapshotState(state: Record<string, unknown>): Record<string, unknown> {

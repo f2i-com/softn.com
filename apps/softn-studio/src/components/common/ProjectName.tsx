@@ -120,6 +120,17 @@ export function ProjectNameControl({
   textStyle?: React.CSSProperties;
 }): React.ReactElement {
   const [renaming, setRenaming] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const closed = useRef(false);
+  // A rename kept with Enter or left with Escape takes the field away with the focus in it, and
+  // the focus fell to the page. It goes back to the name's button, unless the field closed
+  // because the focus went somewhere else (a click away keeps the name and the click).
+  useEffect(() => {
+    if (renaming || !closed.current) return;
+    closed.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body || !active.isConnected) buttonRef.current?.focus();
+  }, [renaming]);
   const shown = name || fallback;
   const text = (
     <span className={textClassName} style={textStyle}>
@@ -128,10 +139,21 @@ export function ProjectNameControl({
   );
   if (hosted) return text;
   if (renaming) {
-    return <RenameField name={name} label="Project name" commitOnBlur onRename={renameProject} onClose={() => setRenaming(false)} />;
+    return (
+      <RenameField
+        name={name}
+        label="Project name"
+        commitOnBlur
+        onRename={renameProject}
+        onClose={() => {
+          closed.current = true;
+          setRenaming(false);
+        }}
+      />
+    );
   }
   return (
-    <button type="button" className="st-project-name-btn" aria-label={`Rename ${shown}`} title="Rename the project" onClick={() => setRenaming(true)}>
+    <button ref={buttonRef} type="button" className="st-project-name-btn" aria-label={`Rename ${shown}`} title="Rename the project" onClick={() => setRenaming(true)}>
       {text}
       <Icon name="edit" size={13} />
     </button>

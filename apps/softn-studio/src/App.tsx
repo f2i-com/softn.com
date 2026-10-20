@@ -22,7 +22,7 @@ import { Deferred } from './components/Deferred';
 import { openImportedInStores } from './lib/importedProject';
 import { confirmLeaveDraft } from './lib/handEdit';
 import { beginReplacingProject } from './lib/replaceProject';
-import { validateProject } from './lib/validator';
+import { useProjectCheck } from './lib/projectCheck';
 import { openExampleInStores, type ExampleProject } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
 import { buildFromBrief } from './lib/agent/buildFromBrief';
@@ -73,6 +73,41 @@ const BlueprintReview = lazy(() => import('./components/blueprint/BlueprintRevie
 
 type View = 'dashboard' | 'brief' | 'editor';
 
+/** What a phone shows: the panels take turns with the preview, one at a time. */
+type MobilePanel = 'chat' | 'canvas' | 'files' | 'pages' | 'history' | 'settings';
+
+const MOBILE_TABS: Array<{ id: MobilePanel; label: string; icon: Parameters<typeof Icon>[0]['name'] }> = [
+  { id: 'chat', label: 'AI Chat', icon: 'ai' },
+  { id: 'canvas', label: 'Preview', icon: 'eye' },
+  { id: 'files', label: 'Files', icon: 'folder' },
+  { id: 'pages', label: 'Pages', icon: 'pages' },
+  { id: 'history', label: 'History', icon: 'clock' },
+  { id: 'settings', label: 'Settings', icon: 'settings' },
+];
+
+/** The editor's work area: what the skip link goes to, and where focus lands when what had it is gone. */
+const MAIN_ID = 'studio-main';
+
+/**
+ * The first thing Tab reaches in the editor: past the product bar, the top bar and the rail
+ * to the work area (the canvas, on a phone the panel showing). Hidden until it has focus.
+ */
+function SkipToMain(): React.ReactElement {
+  return (
+    <a
+      href={`#${MAIN_ID}`}
+      className="st-skip-link"
+      onClick={(event) => {
+        // Focus moves; the address does not change.
+        event.preventDefault();
+        document.getElementById(MAIN_ID)?.focus();
+      }}
+    >
+      Skip to the work area
+    </a>
+  );
+}
+
 const App: React.FC = () => {
   const [view, setView] = useState<View>('dashboard');
   const [isHydrated, setIsHydrated] = useState(false);
@@ -82,11 +117,19 @@ const App: React.FC = () => {
     blueprint,
     blueprintApproved,
   } = useWorkspaceStore();
-  const { files } = useVFSStore();
   const providerCount = useAIStore((s) => s.providers.length);
   const setupSkipped = useAIStore((s) => s.setupSkipped);
   const [isMobile, setIsMobile] = useState(false);
-  const [mobilePanel, setMobilePanel] = useState<'chat' | 'canvas' | 'settings'>('canvas');
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>('canvas');
+  // On a phone the canvas and the panels take turns: a file or page chosen in Files or Pages is
+  // shown, as choosing one on a desktop shows it beside the panel.
+  const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
+  const shownPath = useRef(activeFilePath);
+  useEffect(() => {
+    if (activeFilePath === shownPath.current) return;
+    shownPath.current = activeFilePath;
+    if (activeFilePath) setMobilePanel((panel) => (panel === 'files' || panel === 'pages' ? 'canvas' : panel));
+  }, [activeFilePath]);
   const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
   /** The project store did not answer when the list was last made: said on the dashboard, with Try again. */
   const [storeSilent, setStoreSilent] = useState(false);
@@ -388,16 +431,9 @@ const App: React.FC = () => {
     };
   }, [isHydrated]);
 
-  // Run validation when files or blueprint change
-  useEffect(() => {
-    if (!isHydrated || files.size === 0) return;
-    const ws = useWorkspaceStore.getState();
-    const validationErrors = validateProject(files, ws.blueprint);
-    ws.clearErrors();
-    for (const err of validationErrors) {
-      ws.addError(err);
-    }
-  }, [isHydrated, files, blueprint]);
+  // The check: the validator when files or the blueprint change, the engine on the logic a
+  // moment later (lib/projectCheck.ts).
+  useProjectCheck(isHydrated);
 
   // --- Dashboard actions, each about one project id -------------------------
 
@@ -557,6 +593,7 @@ const App: React.FC = () => {
   if (isMobile) {
     return (
       <div style={styles.mobileRoot}>
+        <SkipToMain />
         {bar}
         {/* Compact mobile top bar */}
         <div style={styles.mobileTopBar}>
@@ -577,7 +614,7 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        <div style={styles.mobileContent}>
+        <div style={styles.mobileContent} id={MAIN_ID} tabIndex={-1} aria-label="Work area">
           {mobilePanel === 'chat' && (
             <div style={styles.mobilePanel}>
               <AIChat />
@@ -586,7 +623,24 @@ const App: React.FC = () => {
           {mobilePanel === 'canvas' && (
             <div style={styles.mobilePanel}>
               <VisualCanvas onStartBrief={handleNewProject} onShowChat={() => setMobilePanel('chat')} />
+              {/* The log, under the preview as it is on a desktop: what the app and Studio said. */}
+              <BottomDrawer />
             </div>
+          )}
+          {mobilePanel === 'files' && (
+            <section style={styles.mobilePanel} className="st-panel-body" aria-label="Files">
+              <FilesPanel />
+            </section>
+          )}
+          {mobilePanel === 'pages' && (
+            <section style={styles.mobilePanel} className="st-panel-body" aria-label="Pages">
+              <PagesPanel />
+            </section>
+          )}
+          {mobilePanel === 'history' && (
+            <section style={styles.mobilePanel} className="st-panel-body" aria-label="History">
+              <HistoryPanel />
+            </section>
           )}
           {mobilePanel === 'settings' && (
             <div style={styles.mobilePanel}>
@@ -594,14 +648,13 @@ const App: React.FC = () => {
             </div>
           )}
         </div>
-        <div style={styles.mobileNav}>
-          {[
-            { id: 'chat' as const, label: 'AI Chat', icon: 'ai' as const },
-            { id: 'canvas' as const, label: 'Preview', icon: 'eye' as const },
-            { id: 'settings' as const, label: 'Settings', icon: 'settings' as const },
-          ].map((tab) => (
+        {/* Every panel the desktop's rail has, so a phone can reach every file, and undo any
+            change from History: the bar used to offer the chat, the preview and the settings. */}
+        <div style={styles.mobileNav} role="group" aria-label="Panels">
+          {MOBILE_TABS.map((tab) => (
             <button
               key={tab.id}
+              type="button"
               onClick={() => setMobilePanel(tab.id)}
               aria-pressed={mobilePanel === tab.id}
               style={{
@@ -639,11 +692,12 @@ const App: React.FC = () => {
   // Desktop editor
   return (
     <div style={styles.root}>
+      <SkipToMain />
       {bar}
       <TopBar onBackToDashboard={handleBackToDashboard} />
       <div style={styles.main}>
         <LeftRail>{renderLeftPanelContent()}</LeftRail>
-        <div style={styles.centerColumn}>
+        <div style={styles.centerColumn} id={MAIN_ID} tabIndex={-1} aria-label="Work area">
           <VisualCanvas onStartBrief={handleNewProject} />
           <BottomDrawer />
         </div>

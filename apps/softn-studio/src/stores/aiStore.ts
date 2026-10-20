@@ -116,7 +116,6 @@ interface AIState {
   addProvider(provider: ProviderConfig): void;
   /** Add a provider, or replace the one with the same id. */
   saveProvider(provider: ProviderConfig): void;
-  updateProvider(id: string, patch: Partial<Omit<ProviderConfig, 'id'>>): void;
   setSetupSkipped(skipped: boolean): void;
   openProviderSetup(providerId?: string | null): void;
   closeProviderSetup(): void;
@@ -143,8 +142,6 @@ interface AIState {
   /** Replace one message by id, if it is still there. */
   replaceMessage(id: string, update: (message: ChatMessage) => ChatMessage): void;
   setDraftMessage(message: string): void;
-  updateLastMessage(content: string): void;
-  clearMessages(): void;
   resetBudget(): void;
   resetSession(): void;
 }
@@ -188,8 +185,6 @@ export const useAIStore = create<AIState>((set) => ({
         ? s.providers.map((p) => (p.id === provider.id ? provider : p))
         : [...s.providers, provider],
     })),
-  updateProvider: (id, patch) =>
-    set((s) => ({ providers: s.providers.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
   setSetupSkipped: (setupSkipped) => set({ setupSkipped }),
   openProviderSetup: (providerId = null) => set({ setupDialog: { providerId } }),
   closeProviderSetup: () => set({ setupDialog: null }),
@@ -263,14 +258,6 @@ export const useAIStore = create<AIState>((set) => ({
       messages[index] = update(messages[index]);
       return { messages };
     }),
-  updateLastMessage: (content) =>
-    set((s) => {
-      if (s.messages.length === 0) return s;
-      const msgs = [...s.messages];
-      msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content };
-      return { messages: msgs };
-    }),
-  clearMessages: () => set({ messages: [] }),
   resetBudget: () =>
     set({ iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 }),
   resetSession: () =>

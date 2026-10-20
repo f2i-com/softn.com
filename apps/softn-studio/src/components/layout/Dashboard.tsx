@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { Icon } from '../common/Icon';
 import { RenameField } from '../common/ProjectName';
 import { EXAMPLES, type ExampleProject } from '../../examples';
@@ -57,9 +57,9 @@ interface DashboardProps {
 
 const TARGET_LABEL: Record<string, string> = { web: 'Web app', desktop: 'Desktop app', dual: 'Web and desktop' };
 
-/** Which language an example's logic is in, read from its files. */
+/** Which language an example's logic is in, read from its files: a `.py` file outside assets/ is Python. */
 function exampleLanguage(example: ExampleProject): 'Python' | 'JavaScript' {
-  return example.files.some((file) => /^logic\/.+\.py$/.test(file.path)) ? 'Python' : 'JavaScript';
+  return example.files.some((file) => /\.py$/i.test(file.path) && !/^assets\//i.test(file.path)) ? 'Python' : 'JavaScript';
 }
 
 /**
@@ -69,7 +69,9 @@ function exampleLanguage(example: ExampleProject): 'Python' | 'JavaScript' {
  * the shape of the code, not its explanation.
  */
 function exampleExcerpt(example: ExampleProject): { path: string; lines: string[] } | null {
-  const logic = example.files.find((file) => /^logic\/main\.(logic|py)$/.test(file.path));
+  // `main.js` or `main.py` beside index.html, as Studio lays a project out now; `logic/main.logic`
+  // or `logic/main.py` in a project laid out before.
+  const logic = example.files.find((file) => /^(logic\/)?main\.(logic|js|py)$/.test(file.path));
   if (!logic) return null;
   const all = logic.content.split('\n');
   const isComment = (line: string) => /^\s*(#|\/\/)/.test(line);
@@ -101,6 +103,27 @@ function highlight(line: string): React.ReactNode[] {
   }
   if (last < line.length) out.push(line.slice(last));
   return out;
+}
+
+/**
+ * How each row of the recent list is named to assistive technology: by its project's name,
+ * and, where two rows share a name (a bundle exported and imported again is a second project
+ * of the same name), by when it was saved as well, and then by its place among them. Two rows
+ * both called "Open Tea Log" could not be told apart without looking.
+ */
+function distinctRowNames(entries: readonly RecentEntry[]): Map<string, string> {
+  const key = (name: string) => name.trim().toLowerCase();
+  const byName = new Map<string, RecentEntry[]>();
+  for (const entry of entries) byName.set(key(entry.name), [...(byName.get(key(entry.name)) ?? []), entry]);
+  const names = new Map<string, string>();
+  for (const entry of entries) {
+    const same = byName.get(key(entry.name)) ?? [];
+    if (same.length < 2) continue;
+    const sameTime = same.filter((other) => other.lastModified === entry.lastModified);
+    const when = entry.lastModified === 'in memory' ? 'in memory' : `saved ${entry.lastModified}`;
+    names.set(entry.id, sameTime.length < 2 ? `${entry.name} (${when})` : `${entry.name} (${when}, ${sameTime.indexOf(entry) + 1} of ${sameTime.length})`);
+  }
+  return names;
 }
 
 /** The first letter of a project's name, for its tile in the list. */
@@ -216,20 +239,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [onExportProject]);
 
+  /**
+   * Where the keyboard goes when the control it was on leaves the page: a rename that is kept or
+   * cancelled, a delete that is confirmed. It fell to the page, and the next Tab started from the
+   * top. Applied after the render that removes the control, and only when nothing else has taken
+   * the focus meanwhile (a click elsewhere keeps it where it went).
+   */
+  const pendingFocus = useRef<{ row: string; control: 'open' | 'rename' | 'delete' } | 'start' | null>(null);
+
   const handleDelete = useCallback(async (project: RecentEntry) => {
     if (!onDeleteProject) return;
     setNotice(null);
     setBusyId(project.id);
+    // The row the keyboard goes to once this one is gone: the next, else the one before, else
+    // the way to start a new app.
+    const at = recentProjects.findIndex((entry) => entry.id === project.id);
+    const neighbour = recentProjects[at + 1] ?? recentProjects[at - 1];
     try {
       const outcome = await onDeleteProject(project.id);
       setNotice(outcome.ok ? { kind: 'info', text: `Deleted ${project.name} from this browser.` } : { kind: 'error', text: `Could not delete ${project.name}: ${outcome.message}` });
+      pendingFocus.current = !outcome.ok ? { row: project.id, control: 'delete' } : neighbour ? { row: neighbour.id, control: 'open' } : 'start';
     } catch (err) {
       setNotice({ kind: 'error', text: `Could not delete ${project.name}: ${err instanceof Error ? err.message : String(err)}` });
+      pendingFocus.current = { row: project.id, control: 'delete' };
     } finally {
       setBusyId(null);
       setConfirmingId(null);
     }
-  }, [onDeleteProject]);
+  }, [onDeleteProject, recentProjects]);
 
   const gated = !!ai?.gate;
   // React 18 has no `inert` prop; the attribute takes the locked part out
@@ -249,7 +286,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
     wasGated.current = gated;
     if (lifted && (!document.activeElement || document.activeElement === document.body)) startRef.current?.focus();
   }, [gated]);
+  // pendingFocus, after the render that took the focused control away.
+  useEffect(() => {
+    const target = pendingFocus.current;
+    if (!target) return;
+    pendingFocus.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const element = target === 'start'
+      ? startRef.current
+      : Array.from(homeRef.current?.querySelectorAll<HTMLElement>('[data-row]') ?? []).find((node) => node.dataset.row === target.row && node.dataset.control === target.control);
+    element?.focus();
+  });
   const aiReady = useAIReadiness().state === 'ready';
+  const rowNames = useMemo(() => distinctRowNames(recentProjects), [recentProjects]);
 
   const onboarding = gated && (
     <section className="st-onboard" aria-labelledby="studio-onboard-title">
@@ -402,6 +452,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             ) : (
               <ul aria-labelledby="studio-recent-heading" className="st-recent-list">
                 {recentProjects.map((project) => {
+                  const who = rowNames.get(project.id) ?? project.name;
                   const openable = project.saved || project.active;
                   const isBusy = busyId === project.id;
                   const state = project.active && !project.saved ? 'unsaved' : project.saved ? 'saved' : 'missing';
@@ -426,9 +477,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         <button
                           type="button"
                           className="st-recent-open"
+                          data-row={project.id}
+                          data-control="open"
                           aria-disabled={openable && !isBusy ? undefined : true}
                           aria-busy={isBusy || undefined}
-                          aria-label={`Open ${project.name}`}
+                          aria-label={`Open ${who}`}
                           title={stateTitle}
                           onClick={() => {
                             if (openable && !isBusy) void handleOpen(project);
@@ -448,9 +501,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
                             <button
                               type="button"
                               className="st-icon-btn"
+                              data-row={project.id}
+                              data-control="rename"
                               onClick={() => setRenamingId(renamingId === project.id ? null : project.id)}
                               aria-expanded={renamingId === project.id}
-                              aria-label={`Rename ${project.name}`}
+                              aria-label={`Rename ${who}`}
                               title="Rename…"
                             >
                               <Icon name="edit" size={15} />
@@ -461,7 +516,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                               type="button"
                               className="st-icon-btn"
                               onClick={() => void handleExport(project)}
-                              aria-label={`Export ${project.name} as a bundle`}
+                              aria-label={`Export ${who} as a bundle`}
                               title="Export bundle"
                             >
                               <Icon name="export" size={15} />
@@ -471,7 +526,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                             type="button"
                             className="st-icon-btn"
                             onClick={() => onRemoveRecent?.(project.id)}
-                            aria-label={`Remove ${project.name} from the recent list`}
+                            aria-label={`Remove ${who} from the recent list`}
                             title="Remove from list (keeps the saved copy)"
                           >
                             <Icon name="x" size={15} />
@@ -480,9 +535,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
                             <button
                               type="button"
                               className="st-icon-btn"
+                              data-row={project.id}
+                              data-control="delete"
                               onClick={() => setConfirmingId(confirmingId === project.id ? null : project.id)}
                               aria-expanded={confirmingId === project.id}
-                              aria-label={`Delete ${project.name} from this browser`}
+                              aria-label={`Delete ${who} from this browser`}
                               title="Delete project…"
                             >
                               <Icon name="trash" size={15} />
@@ -491,12 +548,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         </div>
                       </div>
                       {renamingId === project.id && onRenameProject && (
-                        <div role="group" aria-label={`Rename ${project.name}`} className="st-confirm">
+                        <div role="group" aria-label={`Rename ${who}`} className="st-confirm">
                           <RenameField
                             name={project.name}
-                            label={`New name for ${project.name}`}
+                            label={`New name for ${who}`}
                             actions
-                            onClose={() => setRenamingId(null)}
+                            onClose={() => {
+                              // Kept or cancelled, the keyboard goes back to the row's Rename.
+                              pendingFocus.current = { row: project.id, control: 'rename' };
+                              setRenamingId(null);
+                            }}
                             onRename={async (next) => {
                               try {
                                 const outcome = await onRenameProject(project.id, next);
@@ -511,7 +572,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         </div>
                       )}
                       {confirmingId === project.id && (
-                        <div role="group" aria-label={`Delete ${project.name}`} className="st-confirm">
+                        <div role="group" aria-label={`Delete ${who}`} className="st-confirm">
                           <p>
                             Delete the saved copy of <strong>{project.name}</strong> from this browser? This cannot be undone. Export a bundle first if you want to keep it.
                           </p>
@@ -524,7 +585,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
                             <button type="button" className="st-btn st-btn-sm st-btn-danger" onClick={() => void handleDelete(project)} disabled={isBusy}>
                               Delete project
                             </button>
-                            <button type="button" className="st-btn st-btn-sm st-btn-ghost" onClick={() => setConfirmingId(null)}>
+                            <button
+                              type="button"
+                              className="st-btn st-btn-sm st-btn-ghost"
+                              onClick={() => {
+                                pendingFocus.current = { row: project.id, control: 'delete' };
+                                setConfirmingId(null);
+                              }}
+                            >
                               Cancel
                             </button>
                           </div>

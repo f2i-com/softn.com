@@ -215,7 +215,7 @@ describe('the export and Python logic', () => {
   it('files the Python example under logic, helpers first as declared, and not under assets', () => {
     const vfs = toVfs(READING_LIST_PYTHON.files);
     const manifest = JSON.parse(normalizeManifestForBundle(vfs)!) as { files: Record<string, string[]> };
-    expect(manifest.files.logic).toEqual(['logic/shelf.py', 'logic/main.py']);
+    expect(manifest.files.logic).toEqual(['shelf.py', 'main.py']);
     // The example's icon is its one asset; no .py file is filed beside it.
     expect(manifest.files.assets).toEqual(['assets/icon.svg']);
   });
@@ -236,7 +236,7 @@ describe('the export and Python logic', () => {
     const manifest = JSON.parse(new TextDecoder().decode(entries['manifest.json'])) as { main: string; files: { logic: string[] } };
     const text = new Map(
       Object.entries(entries)
-        .filter(([path]) => /\.(ui|py)$/.test(path))
+        .filter(([path]) => /\.(ui|html|py)$/.test(path))
         .map(([path, bytes]) => [path, new TextDecoder().decode(bytes)]),
     );
     const composed = composeBundleSource(text, manifest.main, manifest.files.logic);

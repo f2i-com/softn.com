@@ -2,6 +2,10 @@ import React, { useEffect, useRef } from 'react';
 import { useWorkspaceStore } from '../../stores';
 import { Icon } from '../common/Icon';
 
+const LOG_ID = 'studio-log';
+const LOG_TITLE_ID = 'studio-log-title';
+const LOG_COUNT_ID = 'studio-log-count';
+
 export const BottomDrawer: React.FC = () => {
   const {
     bottomDrawerOpen, toggleBottomDrawer,
@@ -17,32 +21,50 @@ export const BottomDrawer: React.FC = () => {
   }, [bottomDrawerOpen, consoleOutput.length]);
 
   const logCount = consoleOutput.length;
+  const countLabel = `${logCount} ${logCount === 1 ? 'entry' : 'entries'}`;
 
+  // The toggle is named "Log" whatever its count: the count was read into its name ("Log4"),
+  // which a voice user could not say. It says whether the log is open, and which region it opens.
   if (!bottomDrawerOpen) {
     return (
       <div style={s.collapsed}>
-        <button onClick={toggleBottomDrawer} style={s.collapsedBtn}>
+        <button
+          type="button"
+          onClick={toggleBottomDrawer}
+          style={s.collapsedBtn}
+          aria-label="Log"
+          aria-expanded={false}
+          aria-describedby={logCount > 0 ? LOG_COUNT_ID : undefined}
+        >
           <Icon name="terminal" size={13} />
           Log
-          {logCount > 0 && <span style={s.badge}>{logCount}</span>}
+          {logCount > 0 && <span id={LOG_COUNT_ID} style={s.badge} title={countLabel}>{logCount}<span className="st-visually-hidden"> {logCount === 1 ? 'entry' : 'entries'}</span></span>}
         </button>
       </div>
     );
   }
 
   return (
-    <div style={s.container}>
+    <div id={LOG_ID} role="region" aria-labelledby={LOG_TITLE_ID} style={s.container}>
       <div style={s.header}>
         <div style={s.headerLeft}>
           <Icon name="terminal" size={13} color="var(--studio-text-muted)" />
-          <span style={s.title}>Log</span>
-          <span style={s.count}>{logCount} entries</span>
+          <span id={LOG_TITLE_ID} style={s.title}>Log</span>
+          <span style={s.count}>{countLabel}</span>
         </div>
         <div style={s.headerRight}>
           {logCount > 0 && (
-            <button onClick={clearConsole} style={s.clearBtn}>Clear</button>
+            <button type="button" onClick={clearConsole} style={s.clearBtn}>Clear</button>
           )}
-          <button onClick={toggleBottomDrawer} style={s.closeBtn} title="Minimize">
+          <button
+            type="button"
+            onClick={toggleBottomDrawer}
+            style={s.closeBtn}
+            title="Minimize"
+            aria-label="Minimize the log"
+            aria-expanded={true}
+            aria-controls={LOG_ID}
+          >
             <Icon name="minimize" size={14} />
           </button>
         </div>

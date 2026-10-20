@@ -9,6 +9,7 @@ import type {
   RecentProjectRecord,
   VFSFile,
 } from '../types/studio';
+import { randomUUID } from '@softn/bundle-format/crypto';
 import { normalizeProjectPath } from './projectImport';
 import type { PersistedUndoJournal } from './undoJournal';
 
@@ -1234,9 +1235,7 @@ export function loadLegacyProject(): LegacyProject | null {
 }
 
 function newProjectId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return randomUUID();
 }
 
 /** A record built from the legacy keys. The provider settings are left out; see `saveGlobalSettings`. */

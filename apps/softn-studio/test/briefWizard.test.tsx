@@ -18,6 +18,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BriefWizard } from '../src/components/brief/BriefWizard';
+import { generateBlueprintFromBrief, scaffoldProjectFiles } from '../src/lib/studioProject';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../src/stores';
 import type { ProjectBrief } from '../src/types/studio';
 
@@ -105,5 +106,38 @@ describe('the brief wizard', () => {
       expect(added(), kind).toEqual(['予約一覧']);
       expect(input.value).toBe('');
     }
+  });
+
+  // The step had two buttons called "Add", one beside each field.
+  it('names each Add button for what it adds', () => {
+    useWorkspaceStore.setState({ brief: BRIEF });
+    act(() => root.render(<BriefWizard onBack={() => {}} onSubmit={() => {}} />));
+    act(() => button('Next').click());
+    const adds = [...host.querySelectorAll('button')].filter((b) => b.textContent?.trim() === 'Add').map((b) => b.getAttribute('aria-label'));
+    expect(adds).toEqual(['Add page', 'Add collection']);
+  });
+
+  // Clean, Bold and Playful were drawn light and made dark apps, and every swatch was drawn in
+  // Studio's colours, whichever theme Studio was in. Each is drawn now on the ground of the
+  // theme its style writes into the manifest, with its heading in the style's accent.
+  it('draws each style swatch on the theme the style makes, with its accent', () => {
+    useWorkspaceStore.setState({ brief: BRIEF });
+    act(() => root.render(<BriefWizard onBack={() => {}} onSubmit={() => {}} />));
+    act(() => button('Next').click());
+    act(() => button('Next').click());
+    for (const style of ['clean', 'bold', 'minimal', 'playful', 'dark'] as const) {
+      const label = style.charAt(0).toUpperCase() + style.slice(1);
+      const swatch = button(label).querySelector<HTMLElement>('[data-style-theme]')!;
+      const brief = { ...BRIEF, style };
+      const manifest = JSON.parse(scaffoldProjectFiles(brief, generateBlueprintFromBrief(brief)).find((f) => f.path === 'manifest.json')!.content) as { config: { theme: { mode: string } } };
+      expect(swatch.dataset.styleTheme, style).toBe(manifest.config.theme.mode);
+      expect(swatch.style.background, style).toBe(manifest.config.theme.mode === 'dark' ? 'rgb(15, 23, 42)' : 'rgb(255, 255, 255)');
+      const icon = scaffoldProjectFiles(brief, generateBlueprintFromBrief(brief)).find((f) => f.path === 'assets/icon.svg')!.content;
+      const accent = /fill="(#[0-9a-f]{6})"/.exec(icon)![1];
+      const hex = (rgb: string) => `#${rgb.match(/\d+/g)!.map((n) => Number(n).toString(16).padStart(2, '0')).join('')}`;
+      expect(hex((swatch.firstElementChild as HTMLElement).style.background), style).toBe(accent);
+    }
+    // Dark is the one dark style; the others are light.
+    expect([...host.querySelectorAll<HTMLElement>('[data-style-theme="dark"]')]).toHaveLength(1);
   });
 });

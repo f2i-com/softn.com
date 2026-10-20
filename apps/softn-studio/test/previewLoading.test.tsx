@@ -80,11 +80,13 @@ describe('Studio preview initialization', () => {
   });
 });
 
-/** Replace the fixture's single file with a whole project, previewing its main. */
+/** Replace the fixture's single file with a whole project, previewing its main (ui/main.ui when it names none). */
 function openProject(files: Array<{ path: string; content: string }>): void {
   useVFSStore.getState().reset();
   useVFSStore.getState().batchCreateFiles(files, 'user');
-  useWorkspaceStore.getState().setActiveFilePath('ui/main.ui');
+  const manifest = files.find((f) => f.path === 'manifest.json');
+  const main = manifest ? (JSON.parse(manifest.content) as { main?: string }).main : undefined;
+  useWorkspaceStore.getState().setActiveFilePath(main ?? 'ui/main.ui');
 }
 
 describe('what the Studio preview hands the renderer', () => {
@@ -94,7 +96,7 @@ describe('what the Studio preview hands the renderer', () => {
     expect(container.querySelector('[data-testid="ready-preview"]')).toBeTruthy();
     const props = rendered.at(-1)!;
     expect(props.python?.modules).toEqual(['shelf', 'main']);
-    expect(props.logicBasePath).toBe('logic/main.py');
+    expect(props.logicBasePath).toBe('main.py');
     expect(props.source).toMatch(/<logic>\n<\/logic>$/);
   });
 
@@ -103,7 +105,7 @@ describe('what the Studio preview hands the renderer', () => {
     await act(async () => { root.render(<VisualCanvas />); await vi.dynamicImportSettled(); });
     const props = rendered.at(-1)!;
     expect(props.python).toBeUndefined();
-    expect(props.logicBasePath).toBe('logic/main.logic');
+    expect(props.logicBasePath).toBe('main.js');
     expect(props.source).toContain('let appName = "Reading list"');
   });
 

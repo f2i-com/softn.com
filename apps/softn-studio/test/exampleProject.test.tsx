@@ -86,7 +86,7 @@ describe('the bundled example', () => {
     const bytes = buildBundle(useVFSStore.getState().files);
     const inspection = inspectBundle(bytes);
     expect(inspection.problem).toBeNull();
-    expect(inspection.main).toBe('ui/main.ui');
+    expect(inspection.main).toBe('index.html');
     expect(inspection.name).toBe('Reading list');
     expect(inspection.files).toBe(DEFAULT_EXAMPLE.files.length);
   });
@@ -128,8 +128,8 @@ describe('the dashboard offers the examples', () => {
     expect(javascript).not.toBeNull();
     expect(python).not.toBeNull();
     // Each shows a few lines of its own logic file, so the difference is visible.
-    expect(javascript.textContent).toContain('logic/main.logic');
-    expect(python.textContent).toContain('logic/main.py');
+    expect(javascript.textContent).toContain('main.js');
+    expect(python.textContent).toContain('main.py');
     act(() => python.click());
     expect(onOpenExample).toHaveBeenCalledWith(EXAMPLES[1]);
     act(() => javascript.click());

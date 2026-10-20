@@ -55,7 +55,7 @@ describe('the Python example in the renderer', () => {
         { path: f.path, content: f.content, mimeType: 'text/plain', lastModified: 0, lastModifiedBy: 'user', version: 1 },
       ]),
     );
-    const result = composePreviewProject(files, 'ui/main.ui');
+    const result = composePreviewProject(files, 'index.html');
     if (!result.ok) throw new Error(result.error);
     const { composition } = result;
 

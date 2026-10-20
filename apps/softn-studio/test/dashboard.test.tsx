@@ -157,6 +157,49 @@ describe('Dashboard recent projects', () => {
     expect(container.querySelector('[role="status"]')?.textContent).toMatch(/Deleted Alpha/);
   });
 
+  // Delete project leaves the page with the focus on it, which fell to the page: the next
+  // Tab started from the top. It goes to the next project in the list, else the one before it,
+  // else to Start a new app; and back to the row's Delete when the delete failed or was cancelled.
+  it('puts the keyboard on the next project after a delete, and back on Delete after a cancel', async () => {
+    const onDeleteProject = vi.fn(async () => ({ ok: true as const }));
+    mount({ onDeleteProject });
+    const press = (button: HTMLButtonElement) => act(() => { button.focus(); button.click(); });
+    const confirm = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Delete Alpha"] button')).find((b) => b.textContent === label)!;
+    press(container.querySelector<HTMLButtonElement>('button[aria-label="Delete Alpha from this browser"]')!);
+    press(confirm('Cancel'));
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Delete Alpha from this browser');
+    press(container.querySelector<HTMLButtonElement>('button[aria-label="Delete Alpha from this browser"]')!);
+    press(confirm('Delete project'));
+    await flush();
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Open Ghost');
+  });
+
+  it('puts the keyboard on Start a new app when the last project is deleted', async () => {
+    const onDeleteProject = vi.fn(async () => ({ ok: true as const }));
+    mount({ onDeleteProject, recentProjects: [entries[0]] });
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Delete Alpha from this browser"]')!.click());
+    const del = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="group"] button')).find((b) => b.textContent === 'Delete project')!;
+    act(() => { del.focus(); del.click(); });
+    await flush();
+    expect(document.activeElement?.textContent).toContain('Start a new app');
+  });
+
+  // A bundle exported and imported again is a second project with the same name, and the list
+  // read "Open Tea Log", "Open Tea Log": the two could not be told apart without looking.
+  it('tells two projects of the same name apart by when they were saved', () => {
+    mount({
+      recentProjects: [
+        { id: 't1', name: 'Tea Log', target: 'web', lastModified: '21/10/2026, 09:00:00', saved: true, active: false },
+        { id: 't2', name: 'Tea Log', target: 'web', lastModified: '20/10/2026, 17:30:00', saved: true, active: false },
+        { id: 'a', name: 'Alpha', target: 'web', lastModified: 'today', saved: true, active: false },
+      ],
+    });
+    const opens = Array.from(container.querySelectorAll('button.st-recent-open')).map((b) => b.getAttribute('aria-label'));
+    expect(opens).toEqual(['Open Tea Log (saved 21/10/2026, 09:00:00)', 'Open Tea Log (saved 20/10/2026, 17:30:00)', 'Open Alpha']);
+    expect(new Set(Array.from(container.querySelectorAll('button[aria-label]')).map((b) => b.getAttribute('aria-label'))).size)
+      .toBe(container.querySelectorAll('button[aria-label]').length);
+  });
+
   it('an entry with no saved copy says so and does not open', async () => {
     const onOpenRecent = vi.fn(async () => ({ ok: true as const }));
     mount({ onOpenRecent });

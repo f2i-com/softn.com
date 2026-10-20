@@ -145,7 +145,7 @@ describe('the pages Studio writes itself', () => {
       // One page on its own has what the shell gives it when the app runs: its collections, and
       // its logic. The Python example's page calls the shell's functions, and was told they were
       // not defined when it was checked on its own.
-      const home = await browserEnvironment.checkApp(files, { blueprint: null, page: 'ui/pages/home.ui' });
+      const home = await browserEnvironment.checkApp(files, { blueprint: null, page: 'pages/home.html' });
       expect(home.errors, example.id).toEqual([]);
       expect(home.rendered, example.id).toMatch(/Piranesi/);
       if (example.files.some((file) => file.content.includes('def goal_label'))) expect(home.rendered, example.id).toMatch(/Goal: 12 books this year/);

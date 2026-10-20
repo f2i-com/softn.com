@@ -97,11 +97,11 @@ describe('the pages Studio writes', () => {
     const files = vfs(scaffoldProjectFiles(BRIEF, generateBlueprintFromBrief(BRIEF)));
     const heading = await mainHeading(files, 'scaffold-brand');
     expect(heading.textContent).toBe('Counter Club');
-    expect(heading.style.color).toBe('rgb(20, 184, 166)');
+    expect(heading.style.color).toBe('rgb(15, 118, 110)');
   });
 
   it('draws the JavaScript example’s name in its brand colour', async () => {
-    const example = EXAMPLES.find((e) => e.files.some((f) => f.path.endsWith('.logic')))!;
+    const example = EXAMPLES.find((e) => e.files.some((f) => /\.(logic|js)$/.test(f.path)))!;
     const heading = await mainHeading(vfs(example.files), 'example-brand');
     expect(heading.style.color).toBe('rgb(37, 99, 235)');
   });

@@ -45,20 +45,20 @@ function composed(files: Map<string, VFSFile>, main = 'ui/main.ui'): PreviewComp
  */
 describe('Studio preview composition', () => {
   it('previews a Python app with its modules, in the language the runtime will run it in', () => {
-    const composition = composed(project(READING_LIST_PYTHON.files));
+    const composition = composed(project(READING_LIST_PYTHON.files), 'index.html');
     expect(composition.languages).toContain('python');
     expect(composition.python?.modules).toEqual(['shelf', 'main']);
     expect(composition.python?.files.main).toContain('def go(page_id):');
-    expect(composition.logicBasePath).toBe('logic/main.py');
+    expect(composition.logicBasePath).toBe('main.py');
     // The markup keeps an empty logic block: the Python project is the code.
     expect(composition.source).toMatch(/<logic>\n<\/logic>$/);
   });
 
   it('previews a JavaScript app as before: its logic inlined, no Python project', () => {
-    const composition = composed(project(READING_LIST.files));
+    const composition = composed(project(READING_LIST.files), 'index.html');
     expect(composition.languages).toEqual(['javascript']);
     expect(composition.python).toBeUndefined();
-    expect(composition.logicBasePath).toBe('logic/main.logic');
+    expect(composition.logicBasePath).toBe('main.js');
     expect(composition.source).toContain('let appName = "Reading list"');
     expect(composition.source).toContain('<Heading level={2}>Home</Heading>');
     expect(composition.source.match(/<logic>/g)).toHaveLength(1);
@@ -186,7 +186,7 @@ describe('a page the app imports, shown on its own', () => {
   });
 
   it('has the Python modules of an app whose logic is Python', () => {
-    const composition = composed(project(READING_LIST_PYTHON.files), 'ui/pages/home.ui');
+    const composition = composed(project(READING_LIST_PYTHON.files), 'pages/home.html');
     expect(composition.languages).toContain('python');
     expect(composition.python?.modules).toEqual(['shelf', 'main']);
     expect(composition.python?.files.main).toContain('def goal_label():');

@@ -1,4 +1,4 @@
-import { requestHostedSave } from '@softn/editor-shared/hostedEditor';
+import { isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { exportAsBundle } from '../../lib/exportBundle';
@@ -13,8 +13,14 @@ import { prepareHandoff, type HandoffDestination, type ReadyHandoff } from '../.
  * the bundle in the runtime, *Save project* is this browser's storage,
  * *Export bundle* is a .softn file on disk, *Publish* is the directory.
  *
- * Run and Publish wait while the validator holds an error the directory
- * would refuse the bundle for. Export never waits: a file on disk can be
+ * Run and Publish wait while the check holds an error: one the directory
+ * would refuse the bundle for, a page that does not parse, logic that does
+ * not compile (lib/projectCheck.ts). They used to wait for the first kind
+ * only, and handed the runtime an app that could not start. Warnings never
+ * hold them back. In an editor hosted by FormLogic, Publish is the way the
+ * work goes back to the host, which reviews it there: it still waits only for
+ * what the directory would refuse, so a person part way through an edit can
+ * always hand their work back. Export never waits: a file on disk can be
  * looked at, and it is the way out when storage has failed or a bundle
  * cannot be staged. It builds from the files in memory and touches no
  * storage, so it works after every kind of save failure.
@@ -23,9 +29,9 @@ export interface ProjectActions {
   projectName: string;
   hasFiles: boolean;
   fileCount: number;
-  /** Validator errors at level `error`. */
+  /** The check's findings at level `error`. */
   problemCount: number;
-  /** An error the directory would refuse the bundle for: Run and Publish wait. */
+  /** The check holds an error (a refusal, a page that does not parse, logic that does not compile; hosted, a refusal only): Run and Publish wait. */
   refused: boolean;
   preparing: HandoffDestination | null;
   ready: ReadyHandoff | null;
@@ -63,8 +69,11 @@ export function useProjectActions(): ProjectActions {
   const { projectId, projectName, errors } = useWorkspaceStore();
   const { files } = useVFSStore();
   const hasFiles = files.size > 0;
-  const refused = errors.some((e) => e.level === 'error' && e.type === 'bundle-refused');
   const problemCount = errors.filter((e) => e.level === 'error').length;
+  const blocking = isHostedEditor()
+    ? errors.filter((e) => e.level === 'error' && e.type === 'bundle-refused').length
+    : problemCount;
+  const refused = blocking > 0;
   const scope = useMemo(() => ({ projectId, projectName, files }), [projectId, projectName, files]);
   const activeScope = useRef<typeof scope | null>(scope);
   const pending = useRef<object | null>(null);
@@ -147,8 +156,12 @@ export function useProjectActions(): ProjectActions {
   );
 
   const describe = useCallback(
-    (to: HandoffDestination, idle: string) => (preparing === to ? 'Preparing the bundle…' : refused ? 'Fix what the validator found first' : hasFiles ? idle : 'No files'),
-    [hasFiles, preparing, refused],
+    (to: HandoffDestination, idle: string) => (preparing === to
+      ? 'Preparing the bundle…'
+      : refused
+        ? `Fix ${blocking === 1 ? 'the error' : `the ${blocking} errors`} in the problem list first`
+        : hasFiles ? idle : 'No files'),
+    [blocking, hasFiles, preparing, refused],
   );
 
   return {

@@ -8,8 +8,8 @@
  * visitor would come out of a no-op round trip pinned to one side. Pinned
  * here for every way a manifest passes through Studio: an import, the plan
  * worked out from it, and the export. (The scaffold of a new app does choose a
- * side, from the style the person picked in the brief: light for Minimal,
- * dark for Clean, Bold, Playful and Dark.)
+ * side, from the style the person picked in the brief: dark for Dark, light
+ * for Clean, Bold, Minimal and Playful, as the wizard's swatches show them.)
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -66,6 +66,8 @@ describe('a project’s declared theme, through Studio', () => {
       const manifest = scaffoldProjectFiles(brief, generateBlueprintFromBrief(brief)).find((f) => f.path === 'manifest.json')!;
       return [style, (JSON.parse(manifest.content) as { config: { theme: { mode: string } } }).config.theme.mode];
     }));
-    expect(modes).toEqual({ clean: 'dark', bold: 'dark', minimal: 'light', playful: 'dark', dark: 'dark' });
+    // Dark is the dark one. Only Minimal used to be light, so Clean, Bold and Playful, drawn
+    // light in the wizard, made dark apps, and Dark differed from them in its accent alone.
+    expect(modes).toEqual({ clean: 'light', bold: 'light', minimal: 'light', playful: 'light', dark: 'dark' });
   });
 });

@@ -1,6 +1,12 @@
+/**
+ * The bounded download Studio opens a remote bundle with (lib/projectSession.ts's
+ * openRemoteBundle, through @softn/editor-shared). Kept here, beside the
+ * shared module's own tests, for the cases those do not cover: a stream that
+ * lies about its length, one that stalls, and an abort.
+ */
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_ZIP_INPUT_BYTES } from '@softn/core';
-import { readRemoteBundle } from '../src/lib/remoteBundle';
+import { readRemoteBundle } from '@softn/editor-shared/remoteOpen';
 
 describe('bounded Studio downloads', () => {
   it('refuses a declared oversized bundle before reading any body bytes', async () => {

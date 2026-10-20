@@ -11,7 +11,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BriefWizard } from '../src/components/brief/BriefWizard';
 import { BlueprintReview } from '../src/components/blueprint/BlueprintReview';
-import { useWorkspaceStore } from '../src/stores';
+import { generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles } from '../src/lib/studioProject';
+import { useVFSStore, useWorkspaceStore } from '../src/stores';
 import type { Blueprint, ProjectBrief } from '../src/types/studio';
 
 let root: Root;
@@ -180,5 +181,91 @@ describe('BlueprintReview', () => {
     act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     expect(useWorkspaceStore.getState().blueprint?.assumptions).toEqual(['Revision note: ログインを追加']);
     expect(input.value).toBe('');
+  });
+
+  /** The plan Generate makes for `pages`, with its scaffold in the project, as the wizard leaves it. */
+  function generated(pages: string[]) {
+    const brief: ProjectBrief = { appName: 'Notes', description: 'A notes app', target: 'web', style: 'clean', pages, collections: [], authNeeded: false, referenceImages: [], logicLanguage: 'javascript' };
+    const blueprint = generateBlueprintFromBrief(brief);
+    useVFSStore.getState().reset();
+    useVFSStore.getState().hydrateFiles(scaffoldProjectFiles(brief, blueprint));
+    useWorkspaceStore.setState({ blueprint, brief, taskGraph: generateTaskGraph(blueprint), blueprintApproved: false });
+  }
+
+  function note(text: string) {
+    const input = document.getElementById('blueprint-revision-note') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    act(() => { setter.call(input, text); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+  }
+
+  const stat = (label: string) => [...host.querySelectorAll('strong')].find((s) => s.previousElementSibling?.textContent === label)?.textContent;
+
+  // "Add a settings page" was filed under Risks as "User requested revision", and the plan
+  // still said one page. It adds the page: to the plan, to the brief the build is asked for,
+  // and, while the project is the scaffold Generate wrote, to its files.
+  it('adds the page a note asks for, to the plan, the brief and the scaffold', () => {
+    generated(['Home']);
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    expect(stat('Pages')).toBe('1');
+    note('Add a settings page');
+    const { blueprint, brief } = useWorkspaceStore.getState();
+    expect(blueprint!.pages.map((p) => p.name)).toEqual(['Home', 'Settings']);
+    expect(brief!.pages).toEqual(['Home', 'Settings']);
+    expect(blueprint!.risks.join(' ')).not.toMatch(/settings/i);
+    expect(stat('Pages')).toBe('2');
+    expect(useVFSStore.getState().readFile('pages/settings.html')).toContain('Settings');
+    expect(String(useVFSStore.getState().readFile('index.html'))).toContain('./pages/settings.html');
+    // A page that names none is the next numbered one; one the plan has is not added twice.
+    note('add another page');
+    expect(useWorkspaceStore.getState().blueprint!.pages.map((p) => p.name)).toEqual(['Home', 'Settings', 'Page 3']);
+    note('Add a Settings page');
+    expect(useWorkspaceStore.getState().blueprint!.pages).toHaveLength(3);
+    // Anything else is a note for the build, with the assumptions.
+    note('The home page lists notes newest first');
+    expect(useWorkspaceStore.getState().blueprint!.assumptions.at(-1)).toBe('Revision note: The home page lists notes newest first');
+    expect(useWorkspaceStore.getState().blueprint!.pages).toHaveLength(3);
+  });
+
+  it('leaves the files alone once they are not the scaffold Generate wrote', () => {
+    generated(['Home']);
+    useVFSStore.getState().updateFile('pages/home.html', '<Text>Mine</Text>', 'user');
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    note('Add an about page');
+    expect(useWorkspaceStore.getState().blueprint!.pages.map((p) => p.name)).toEqual(['Home', 'About']);
+    expect(useVFSStore.getState().readFile('pages/about.html')).toBeNull();
+    expect(useVFSStore.getState().readFile('pages/home.html')).toBe('<Text>Mine</Text>');
+  });
+
+  // Each page row read "/ / responsive-shell": the first page's route, then the layout's
+  // identifier, with a slash between that looked like a third path.
+  it('says each page’s file and its layout in words', () => {
+    generated(['Home', 'Team stats']);
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    const text = expectDialog().textContent ?? '';
+    expect(text).toContain('pages/home.html · responsive shell layout');
+    expect(text).toContain('pages/team-stats.html · responsive shell layout');
+    expect(text).not.toContain('/ / ');
+  });
+
+  // The dialog gives the focus back to what opened it: the wizard's Generate, gone by then, so
+  // the focus fell to the page. It goes to the editor's main area.
+  it('puts the keyboard in the editor once the plan is approved', async () => {
+    generated(['Home']);
+    function Editor() {
+      const approved = useWorkspaceStore((s) => s.blueprintApproved);
+      return (
+        <>
+          <main id="studio-main" tabIndex={-1}>Editor</main>
+          {!approved && <BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />}
+        </>
+      );
+    }
+    act(() => root.render(<Editor />));
+    const approve = [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Approve blueprint')!;
+    act(() => { approve.focus(); approve.click(); });
+    expect(host.querySelector('[role="dialog"]')).toBeNull();
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    expect(document.activeElement?.id).toBe('studio-main');
   });
 });

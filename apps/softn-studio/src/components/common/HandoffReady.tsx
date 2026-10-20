@@ -24,7 +24,7 @@ export function HandoffReady({ ready, onDone, compact = false }: { ready: ReadyH
         <a href={ready.url} style={styles.secondary} title="Leave Studio and open it in this tab">
           Open here
         </a>
-        <button type="button" onClick={onDone} style={styles.dismiss} aria-label="Dismiss">
+        <button type="button" onClick={onDone} style={styles.dismiss} aria-label={`Dismiss: ${ready.name} is ready for ${label}`}>
           ×
         </button>
       </span>

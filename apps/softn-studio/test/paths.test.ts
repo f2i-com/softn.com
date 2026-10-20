@@ -8,8 +8,9 @@
  * to the model, could not be written back, and vanished from the archive
  * without a word, while the four stages could disagree about what a path
  * even was. SHR-05: every stage asks src/lib/paths.ts, and this table
- * (fixture F10) asserts that import, the VFS/changeset check, validation and
- * export return the same verdict and the same canonical identity for each.
+ * (fixture F10) asserts that import, the VFS-side check the agent's writes go
+ * through, validation and export return the same verdict and the same
+ * canonical identity for each.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -17,7 +18,6 @@ import { normalizeProjectPath, readJsonProject } from '../src/lib/projectImport'
 import { isPrivatePath, resolveProjectPath } from '../src/lib/paths';
 import { planBundle } from '../src/lib/exportBundle';
 import { validateProject } from '../src/lib/validator';
-import { buildChangeset } from '../src/lib/changeset';
 import type { VFSFile } from '../src/types/studio';
 
 interface Fixture {
@@ -99,40 +99,17 @@ describe('every stage agrees on each fixture path', () => {
         expect(plan.problems.filter((p) => p.level === 'error')).toEqual([]);
         expect(errors).toEqual([]);
       }
-
-      // The changeset a reply naming this path becomes.
-      const changeset = buildChangeset(
-        'turn',
-        { files: [{ path: fx.raw, content: 'y' }], deletes: [] },
-        { supplied: new Map(), versions: new Map() },
-        new Map(),
-      );
-      expect(changeset.records).toHaveLength(1);
-      const record = changeset.records[0];
-      expect(record.verdict.ok).toBe(fx.canonical !== null && !fx.isPrivate);
-      if (fx.canonical !== null) expect(record.path).toBe(fx.canonical);
     });
   }
 });
 
 describe('collisions', () => {
-  it('are refused at import, in a changeset, in validation and at export alike', () => {
+  it('are refused at import, in validation and at export alike', () => {
     expect(readJsonProject(JSON.stringify({ files: { 'ui/main.ui': 'a', 'UI/Main.ui': 'b' } }))).toEqual([]);
 
     const files = project(file('UI/Main.ui', 'other'));
     const plan = planBundle(files);
     expect(plan.problems.filter((p) => p.type === 'path-collision').map((p) => p.file).sort()).toEqual(['UI/Main.ui', 'ui/main.ui']);
     expect(validateProject(files, null).filter((e) => e.type === 'path-collision')).toHaveLength(2);
-
-    // A reply that writes an alias of a file the project already holds.
-    const changeset = buildChangeset(
-      'turn',
-      { files: [{ path: 'UI/Main.ui', content: 'y' }], deletes: [] },
-      { supplied: new Map(), versions: new Map([['ui/main.ui', 1]]) },
-      project(),
-    );
-    expect(changeset.ok).toBe(false);
-    expect(changeset.records[0].verdict).toMatchObject({ ok: false });
-    expect((changeset.records[0].verdict as { reason: string }).reason).toContain('ui/main.ui');
   });
 });

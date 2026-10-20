@@ -251,20 +251,31 @@ export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
   ];
 }
 
-/** The App theme for a brief's style; the minimal style is the light one. */
-function themeFor(style: ProjectBrief['style']): 'light' | 'dark' {
-  return style === 'minimal' ? 'light' : 'dark';
+/**
+ * The App theme for a brief's style: Dark is the dark one, and every other style is light.
+ *
+ * Only Minimal used to be light, so Clean, Bold and Playful, drawn light in the wizard, made
+ * dark apps, and Dark differed from them in its accent alone. The wizard draws each style's
+ * swatch from this and accentFor, so the two cannot disagree again (test/themeModeKept.test.ts).
+ */
+export function themeFor(style: ProjectBrief['style']): 'light' | 'dark' {
+  return style === 'dark' ? 'dark' : 'light';
 }
 
-/** The accent a style's headings wear. */
-function accentFor(style: ProjectBrief['style']): string {
+/**
+ * The accent a style's headings wear, on its theme's ground. The light styles' accents are the
+ * deep shade of their hue (4.5:1 or more on white): the bright ones they had (teal, orange,
+ * amber at 2.1 to 2.8:1) were chosen for a dark ground, and are unreadable as heading text on
+ * a light one.
+ */
+export function accentFor(style: ProjectBrief['style']): string {
   switch (style) {
-    case 'bold': return '#f97316';
+    case 'bold': return '#c2410c';
     case 'minimal': return '#0f172a';
-    case 'playful': return '#f59e0b';
+    case 'playful': return '#b45309';
     case 'dark': return '#38bdf8';
     case 'clean':
-    default: return '#14b8a6';
+    default: return '#0f766e';
   }
 }
 
