@@ -5,6 +5,7 @@ import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mj
 import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
+import { devOnlyPublicPlugin } from '../../scripts/build/dev-only-public.mjs';
 import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
@@ -23,6 +24,8 @@ export default defineConfig({
     coreWorkerAssetPlugin(),
     // What runs as script: this deployment's files only (scripts/build/script-policy.mjs).
     scriptPolicyPlugin(),
+    // public/demos/ is the dev server's launcher catalogue; a build carries none.
+    devOnlyPublicPlugin(['demos']),
     softnPwa({
       registerType: 'autoUpdate',
       // Nothing is named here on purpose. Everything in public/ is copied into
@@ -93,9 +96,10 @@ export default defineConfig({
         // (softn-feature-chunks), and the per-app offline install in
         // src/lib/offlineInstall.ts, which fetches exactly the features an
         // app's documents can reach — every branch — plus the sync runtime
-        // when the app asked for it and the worker's files when its script
-        // runs in one, and only then calls the app offline-ready. The AI
-        // runtime stays online by design: its models are downloads.
+        // when the app asked for it, the worker's files when its script
+        // runs in one and the AI runtime when it asked for `ai`, and only
+        // then calls the app offline-ready. The models themselves stay
+        // downloads, fetched when the app asks for one.
         // docs/engineering/COMPONENT_LOADING.md has the whole policy; the build-graph
         // test holds the precache to it.
         globIgnores: [

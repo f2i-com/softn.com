@@ -6,7 +6,7 @@
  *   dist/demos/      the example .softn bundles — only with --with-demos, at the
  *                    root so `?open=/demos/x.softn`
  *                    resolves the same way from the site and from the runtime
- *   dist/softn-files/ a clearly named copy of those bundles — only with --with-demos
+ *   dist/softn-files/ a download page for those bundles — only with --with-demos
  *   dist/web/        the web runtime
  *   dist/builder/    the visual builder
  *   dist/studio/     the AI studio
@@ -36,15 +36,16 @@ import { precompressTreeInParallel } from './precompress-assets.mjs';
 import { dropMachineMaps, dropSourceMaps } from '../lib/build-paths.mjs';
 import { buildSite as buildDocs } from '../../docs/scripts/build-docs.mjs';
 import { repoRoot as root } from '../lib/paths.mjs';
+import { npmCommand } from '../lib/npm.mjs';
 
 const outDir = path.join(root, 'dist');
 
 // By default the site ships without the example apps: the directory starts
 // empty and fills with what its visitors publish, which keeps the release
 // archive to the site itself. `--with-demos` (or SOFTN_WITH_DEMOS=1) fetches
-// the pinned softn-Examples release, ships the bundles under /demos/ and
-// /softn-files/, and lets the API seed the directory with them on first
-// use — the shape softn.com itself deploys.
+// the pinned softn-Examples release, ships the bundles under /demos/ with a
+// download page for them at /softn-files/, and lets the API seed the
+// directory with them on first use — the shape softn.com itself deploys.
 // `--demos-dir <folder>` ships a folder of that shape instead — an index.json
 // beside its bundles and a thumbs/ of screenshots, the shape the softn-apps
 // folder produces — without fetching anything.
@@ -219,6 +220,10 @@ ErrorDocument 404 /index.html
   # Canonical app roots keep relative assets and service-worker scopes correct.
   RewriteRule ^(web|builder|studio)$ $1/ [R=308,L,NE]
 
+  # /softn-files/ is a page of links to the bundles under /demos/; a bundle
+  # linked at its old address there is found where it is.
+  RewriteRule ^softn-files/([^/]+\.softn)$ /demos/$1 [R=301,L]
+
   # Real files and directories always win.
   RewriteCond %{REQUEST_FILENAME} -f [OR]
   RewriteCond %{REQUEST_FILENAME} -d
@@ -353,6 +358,11 @@ server {
     location = /web { return 308 /web/$is_args$args; }
     location = /builder { return 308 /builder/$is_args$args; }
     location = /studio { return 308 /studio/$is_args$args; }
+
+    # /softn-files/ is a page of links to the bundles under /demos/; a bundle
+    # linked at its old address there is found where it is. Before the .softn
+    # location below, which would otherwise answer 404.
+    location ~ ^/softn-files/([^/]+\.softn)$ { return 301 /demos/$1; }
 
     # nginx does not protect Apache control files automatically.
     location ~ /\.(?!well-known(?:/|$)) { return 404; }
@@ -555,7 +565,7 @@ workers and browser permissions outside localhost.
 - \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
-${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — the same bundles, clearly separated, as `.softn` downloads\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
+${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — a page of download links for those bundles\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
 - \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
 \`BUILD-INFO.json\` records the exact SoftN revision, whether the source tree had
@@ -572,12 +582,8 @@ website and browser apps themselves are static.
 
 function run(args, env) {
   console.log(`\n> npm ${args.join(' ')}`);
-  execFileSync('npm', args, {
-    cwd: root,
-    stdio: 'inherit',
-    shell: true,
-    env: { ...process.env, ...env },
-  });
+  const [command, commandArgs, options] = npmCommand(args);
+  execFileSync(command, commandArgs, { cwd: root, stdio: 'inherit', env: { ...process.env, ...env }, ...options });
 }
 
 function copyDir(from, to) {
@@ -604,12 +610,14 @@ function escapeHtml(value) {
 }
 
 /**
- * Put the public catalogue's exact bundle set in an unmistakable directory for
- * people who want the portable application files, rather than the website.
- * The catalogue is authoritative: stale sizes, unsafe names and unlisted files
- * fail the build instead of silently producing an ambiguous release.
+ * A download page for the public catalogue's exact bundle set, at
+ * /softn-files/, for people who want the portable application files rather
+ * than the website. It links to the bundles under /demos/: a copy of them
+ * here was another 21 MB of every deployment. The catalogue is
+ * authoritative: stale sizes, unsafe names and unlisted files fail the build
+ * instead of silently producing an ambiguous release.
  */
-function copyCanonicalBundles(from) {
+function writeBundleDownloads(from) {
   const cataloguePath = path.join(from, 'index.json');
   const catalogue = JSON.parse(fs.readFileSync(cataloguePath, 'utf8'));
   if (!Array.isArray(catalogue) || catalogue.length === 0) {
@@ -640,7 +648,6 @@ function copyCanonicalBundles(from) {
     if (item.size !== actualSize) {
       throw new Error(`${name} is ${actualSize} bytes but demos/index.json declares ${item.size}`);
     }
-    fs.copyFileSync(source, path.join(destination, name));
   }
 
   const unlisted = fs
@@ -652,14 +659,13 @@ function copyCanonicalBundles(from) {
     throw new Error(`Unlisted .softn bundles in the public demo directory: ${unlisted.join(', ')}`);
   }
 
-  fs.copyFileSync(cataloguePath, path.join(destination, 'index.json'));
   const downloadLinks = catalogue
     .map((item) => {
       const file = escapeHtml(item.file);
       const label = escapeHtml(typeof item.name === 'string' ? item.name : item.file);
       const description = escapeHtml(typeof item.description === 'string' ? item.description : 'SoftN application bundle');
       const size = `${(item.size / (1024 * 1024)).toFixed(2)} MiB`;
-      return `      <li><a href="./${file}" download>${label}</a><span>${description} · ${size}</span></li>`;
+      return `      <li><a href="../demos/${file}" download>${label}</a><span>${description} · ${size}</span></li>`;
     })
     .join('\n');
   fs.writeFileSync(
@@ -695,10 +701,10 @@ ${downloadLinks}
     path.join(destination, 'README.txt'),
     `SoftN application bundles\n` +
       `=========================\n\n` +
-      `Each .softn file in this directory is one complete, portable SoftN app.\n` +
-      `index.html is a download page and index.json is the canonical catalogue.\n` +
-      `The website also serves these same\n` +
-      `bundles from /demos/ for its live launcher and shared links.\n`
+      `index.html links to every bundle of the site's catalogue, each one a\n` +
+      `complete, portable SoftN app. The bundles and the catalogue\n` +
+      `(index.json) are under /demos/, where the launcher and shared links\n` +
+      `open them from.\n`
   );
 
   return catalogue.length;
@@ -816,27 +822,18 @@ for (const app of APPS) {
   if (!fs.existsSync(path.join(outDir, PLAY.into, 'index.html'))) throw new Error('The play shell has no index.html');
 }
 
-// With the examples: a second copy of the bundles at the root. The runtime
-// serves its own set from /web/demos/ for its launcher, but every `?open=`
-// link on the landing page is root-relative so that one path works from both
-// places. Without them: the runtime's public copy, which the app build carried
-// into dist/web/demos, is removed as well, so the archive holds no bundle —
-// the launcher treats a missing catalogue as "nothing to offer", not an error.
+// With the examples: the bundles, once, at the root, where every `?open=`
+// link on the landing page points and the directory API seeds from. The
+// runtime's build carries none (its public/demos/ is the dev server's
+// launcher catalogue), and the download page at /softn-files/ links here.
+// Without them the archive holds no bundle.
 const demos = demosDirArg ?? path.join(root, 'apps/softn-web/public/demos');
 if (withDemos) {
   requireDir(demos, demosDirArg ? 'The --demos-dir folder' : 'The runtime');
   if (!fs.existsSync(path.join(demos, 'index.json'))) throw new Error(`${demos} has no index.json`);
   copyDir(demos, path.join(outDir, 'demos'));
-  // The runtime's own copy under /web/demos/ is the pinned set; with a
-  // folder of someone else's apps the root copy is the one the site links
-  // to, so the runtime's launcher list follows it.
-  if (demosDirArg) {
-    fs.rmSync(path.join(outDir, 'web', 'demos'), { recursive: true, force: true });
-    copyDir(demos, path.join(outDir, 'web', 'demos'));
-  }
-} else {
-  fs.rmSync(path.join(outDir, 'web', 'demos'), { recursive: true, force: true });
 }
+if (fs.existsSync(path.join(outDir, 'web', 'demos'))) throw new Error('dist/web/demos/ exists: the runtime build is meant to leave out its dev catalogue');
 
 // The directory API travels with the site: the PHP under apps/softn-api goes
 // to dist/api, and dist/data — its state — starts out holding only the rules
@@ -965,7 +962,7 @@ function countFiles(dir) {
 
 copyProjectLicences();
 copyDirectoryApi();
-const bundleCount = withDemos ? copyCanonicalBundles(demos) : 0;
+const bundleCount = withDemos ? writeBundleDownloads(demos) : 0;
 writeDeepLinkFallbacks();
 writeDeploymentFiles();
 const docsResult = await writeDocumentation();
@@ -991,7 +988,7 @@ console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
 console.log('  dist/           landing page');
 if (withDemos) {
   console.log(`  dist/demos/     the example .softn bundles (${bundleCount} apps)`);
-  console.log('  dist/softn-files/ the same bundles, as downloads');
+  console.log('  dist/softn-files/ a download page for them');
 } else {
   console.log('  (no example bundles: the directory starts empty; --with-demos ships them)');
 }

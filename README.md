@@ -769,7 +769,7 @@ subdomains or cross-origin configuration are required:
 ```
 dist/             landing page and app directory
 dist/demos/       the example .softn bundles — only with --with-demos
-dist/softn-files/ the same bundles with a download page — only with --with-demos
+dist/softn-files/ a download page for those bundles — only with --with-demos
 dist/web/         web runtime
 dist/play/        the single-app shell; /play/<slug> is an app's play page, rendered by the API
 dist/builder/     visual builder
@@ -850,9 +850,9 @@ file served with the isolation headers. By default the build ships no example
 apps and the directory starts empty: drop `.softn` files on any page to publish
 them (a folder at once, with the admin key from `data/config.json` for the site
 owner). `npm run build:site -- --with-demos` fetches the pinned softn-Examples
-release, ships the bundles under `/demos/` and `/softn-files/`, and has the
-directory seed itself from them on the first request — the shape softn.com
-itself deploys. Demo changes are refreshed while `seedDemos` is enabled.
+release, ships the bundles under `/demos/` with a download page at
+`/softn-files/`, and has the directory seed itself from them on the first
+request — the shape softn.com itself deploys. Demo changes are refreshed while `seedDemos` is enabled.
 You can also copy a folder containing `v1.softn` directly into
 `data/apps/<slug>/`: the API discovers it and maintains an `app.json` for its
 metadata and social history, with locked atomic updates. Existing SQLite

@@ -6,6 +6,9 @@ dist/
 dist-desktop/
 release/
 build/
+# Source that only shares those names: a new file in either was ignored.
+!scripts/build/
+!scripts/release/
 *.tsbuildinfo
 
 # IDE
