@@ -127,6 +127,9 @@ describe('XDBServerSync', () => {
       socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
       xdb.updateInCollection('notes', record.id, { text: 'after' });
       xdb.deleteFromCollection('notes', record.id);
+      // One op of a record at a time: the delete goes once the update is answered.
+      const [update] = socket.ofType('sync_push').flatMap((push) => push.ops as Array<{ id: string }>);
+      socket.receive({ type: 'sync_ack', opIds: [update.id] });
       const operations = socket
         .ofType('sync_push')
         .flatMap((push) => push.ops as Array<Record<string, unknown>>);
@@ -487,6 +490,9 @@ describe("an edit is stamped in the host's time", () => {
     for (const serverTime of [later(device, 400), 'soon', undefined]) {
       vi.useFakeTimers({ now: new Date(device) });
       FakeSocket.made = [];
+      // A store of its own each time: the op left unanswered by the one
+      // before would otherwise be taken up and sent again.
+      xdb = new XDBService(createTestStorage(), 'server-sync-test');
       const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
       sync.connect();
       const socket = FakeSocket.made[0];
@@ -622,10 +628,12 @@ describe('a record removed for good here', () => {
       const made = xdb.create('notes', { title: 'c' });
       xdb.hardDelete('notes', made.id);
       xdb.hardDelete('notes', 'a');
+      // The delete of the record just made waits for its create to be answered.
+      first.receive({ type: 'sync_ack', opIds: [pushedOps(first)[0].id] });
       expect(pushedOps(first).map((op) => [op.operation, op.recordId])).toEqual([
         ['create', made.id],
-        ['delete', made.id],
         ['delete', 'a'],
+        ['delete', made.id],
       ]);
       // Not yet answered: a pull still has it, and it stays gone.
       first.receive({ type: 'sync_state', collection: 'notes', records: [row('a'), row('b')] });
@@ -703,6 +711,469 @@ describe('a server write that fails', () => {
       socket.receive({ type: 'sync_delta', ops: [{ ...op, id: 'd2', operation: 'delete' }] });
       xdb.create('notes', { text: 'after a failed delete' });
       expect(pushedOps(socket).map((o) => o.data?.text)).toEqual(['after a failed write', 'after a failed delete']);
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
+const WS_URL = 'wss://sync.example.test/sync';
+
+/** A store on `storage` with its sync connected and authenticated. */
+function visit(storage: ReturnType<typeof createTestStorage>, prefix = 'xdb:app', url = WS_URL) {
+  const store = new XDBService(storage, prefix, undefined, { backend: 'storage' });
+  const sync = new XDBServerSync(store, { wsUrl: url, appVersion: '1', collections: ['notes'], reconnectDelay: 10 });
+  sync.connect();
+  const socket = FakeSocket.made[FakeSocket.made.length - 1];
+  socket.open();
+  authOk(socket);
+  return { store, sync, socket };
+}
+
+/**
+ * Changes made offline, with the app then closed before it reconnected.
+ *
+ * The changes the server had not answered were held in memory alone, so
+ * closing the app lost them. The host never heard of them, and the first
+ * pull of the next visit wrote the host's copy over the edit and brought the
+ * deleted record back, and a record created offline stayed on this device
+ * alone. The queue is kept in the store's own storage, under the app's own
+ * prefix, and the next sync of that store takes it up.
+ */
+describe('changes made offline, and the app closed before it reconnected', () => {
+  const stamp = '2026-01-02T00:00:00Z';
+  const row = { id: 'n1', collection: 'notes', data: { title: 'v1' }, createdAt: stamp, updatedAt: stamp };
+  const shown = (store: XDBService) => store.query('notes').map((r) => `${r.id}:${r.data.title}`);
+  const cases: Array<[string, (store: XDBService) => unknown, string[], string[][]]> = [
+    ['an edit', (store) => store.updateInCollection('notes', 'n1', { title: 'v2' }), ['n1:v2'], [['update', 'n1']]],
+    ['a delete', (store) => store.deleteFromCollection('notes', 'n1'), [], [['delete', 'n1']]],
+    ['a removal for good', (store) => store.hardDelete('notes', 'n1'), [], [['delete', 'n1']]],
+    ['a new record', (store) => store.create('notes', { title: 'new' }, { id: 'n2' }), ['n1:v1', 'n2:new'], [['create', 'n2']]],
+  ];
+
+  for (const [what, change, expected, sent] of cases) {
+    it(`${what} reaches the server on the next visit, and its pull does not undo it`, () => {
+      const storage = createTestStorage();
+      const first = visit(storage);
+      first.socket.receive({ type: 'sync_state', collection: 'notes', records: [row] });
+      first.socket.drop();
+      change(first.store);
+      // The page closes.
+      first.sync.disconnect();
+      first.store.destroy();
+
+      const second = visit(storage);
+      // The host still has the record as it was.
+      second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row] });
+      try {
+        expect(shown(second.store)).toEqual(expected);
+        expect(pushedOps(second.socket).map((op) => [op.operation, op.recordId])).toEqual(sent);
+      } finally {
+        second.sync.disconnect();
+      }
+    });
+  }
+
+  it('is sent until answered and not after, and belongs to its own app', () => {
+    const storage = createTestStorage();
+    const first = visit(storage);
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    first.socket.drop();
+    first.store.create('notes', { title: 'offline' }, { id: 'n2' });
+    first.sync.disconnect();
+
+    // Another app on the same storage has a queue of its own, and this is not in it.
+    const other = visit(storage, 'xdb:other');
+    other.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    expect(pushedOps(other.socket)).toEqual([]);
+    other.sync.disconnect();
+
+    const second = visit(storage);
+    second.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    const [op] = pushedOps(second.socket);
+    expect([op.operation, op.recordId]).toEqual(['create', 'n2']);
+    second.socket.receive({ type: 'sync_ack', opIds: [op.id] });
+    second.sync.disconnect();
+
+    const third = visit(storage);
+    third.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    expect(pushedOps(third.socket)).toEqual([]);
+    third.sync.disconnect();
+  });
+});
+
+/**
+ * A change to a record whose earlier change the host has not answered.
+ *
+ * Every op went out as soon as it was made. The host answers each op of a
+ * push on its own, and may ask for one to be sent again (`sync_retry`, or a
+ * push it could not take at all: "Server busy"). A create it asked for again,
+ * with an update of the same record already on its way, left the update
+ * refused ("not found") and dropped, and the record stored as first created;
+ * a delete was undone the same way. A record has one op in flight now, and
+ * the next goes once that one is answered.
+ */
+describe('a change to a record whose earlier change is unanswered', () => {
+  for (const answer of ['sync_retry', 'error'] as const) {
+    it(`goes once the earlier one is stored, when the host asks for that again (${answer})`, () => {
+      vi.useFakeTimers();
+      const sync = new XDBServerSync(xdb, { wsUrl: WS_URL, appVersion: '1', reconnectDelay: 10 });
+      sync.connect();
+      const socket = FakeSocket.made[0];
+      try {
+        socket.open();
+        authOk(socket);
+        xdb.create('notes', { title: 'draft' }, { id: 'n1' });
+        xdb.update('n1', { title: 'final' });
+        const [create] = pushedOps(socket);
+        expect(pushedOps(socket).map((op) => op.operation)).toEqual(['create']);
+        socket.receive(
+          answer === 'sync_retry'
+            ? { type: 'sync_retry', opIds: [create.id], reason: 'Database transaction failed — retry later' }
+            : { type: 'error', message: 'Server busy' }
+        );
+        vi.advanceTimersByTime(100);
+        expect(pushedOps(socket).map((op) => [op.operation, op.data?.title])).toEqual([
+          ['create', 'draft'],
+          ['create', 'draft'],
+        ]);
+        socket.receive({ type: 'sync_ack', opIds: [create.id] });
+        expect(pushedOps(socket).map((op) => [op.operation, op.data?.title]).at(-1)).toEqual(['update', 'final']);
+      } finally {
+        sync.disconnect();
+      }
+    });
+  }
+
+  it('goes as the newest of the changes made while it waited, one op for them all', () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: WS_URL, appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      socket.open();
+      authOk(socket);
+      xdb.create('notes', { title: 'a' }, { id: 'n1' });
+      xdb.update('n1', { title: 'b' });
+      xdb.update('n1', { title: 'c' });
+      xdb.create('notes', { title: 'other' }, { id: 'n2' });
+      // Another record is not held back by this one.
+      expect(pushedOps(socket).map((op) => [op.operation, op.recordId])).toEqual([['create', 'n1'], ['create', 'n2']]);
+      socket.receive({ type: 'sync_ack', opIds: [pushedOps(socket)[0].id] });
+      expect(pushedOps(socket).slice(2).map((op) => [op.operation, op.data?.title])).toEqual([['update', 'c']]);
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
+/**
+ * A record deleted on another device while this one was away.
+ *
+ * A pull asked for whole collections, and a whole pull lists live records
+ * only: a record deleted while this device was offline was in no pull and in
+ * no delta it heard, and stayed here for good. The host answers a pull that
+ * names a point (`lastSync` and `lastId`: the receipt time and id of the
+ * newest record received) with what it received after it, deleted records
+ * included. The point is kept per collection and per host, and a host that
+ * does not read it answers with the whole collection, as before.
+ */
+describe('a pull from where the last one ended', () => {
+  const at = (n: number) => `2026-01-0${n}T00:00:00.000Z`;
+  const row = (id: string, n: number, extra: Record<string, unknown> = {}) => ({
+    id, collection: 'notes', data: { title: id }, createdAt: at(1), updatedAt: at(n), serverReceivedAt: at(n), ...extra,
+  });
+  const ids = (store: XDBService) => store.query('notes').map((r) => r.id);
+  // A pull asks from the millisecond before its place (see the last test here).
+  const before = (iso: string) => new Date(Date.parse(iso) - 1).toISOString();
+
+  it('removes a record deleted on the host while this device was away', () => {
+    const storage = createTestStorage();
+    const first = visit(storage);
+    expect(first.socket.ofType('sync_pull')).toEqual([{ type: 'sync_pull', collections: ['notes'] }]);
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a', 1), row('b', 2)] });
+    first.socket.drop();
+    first.sync.disconnect();
+
+    const second = visit(storage);
+    try {
+      expect(second.socket.ofType('sync_pull')).toEqual([
+        { type: 'sync_pull', collections: ['notes'], lastSync: before(at(2)), lastId: '' },
+      ]);
+      second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a', 3, { deleted: true }), row('c', 4)] });
+      expect(ids(second.store)).toEqual(['b', 'c']);
+    } finally {
+      second.sync.disconnect();
+    }
+  });
+
+  /** A store on `storage` connected to a host whose clock (`auth_ok`) reads `serverTime`. */
+  const open = (storage: ReturnType<typeof createTestStorage>, serverTime: string) => {
+    const store = new XDBService(storage, 'xdb:app', undefined, { backend: 'storage' });
+    const sync = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c1', serverTime });
+    return { store, sync, socket };
+  };
+  const delta = (recordId: string, n: number) => ({
+    type: 'sync_delta',
+    ops: [{ id: `op_${n}_1`, collection: 'notes', operation: 'create', recordId, data: { title: 'theirs' }, timestamp: at(n), clientId: 'c9' }],
+  });
+
+  it('starts from the host\'s clock when the collection was empty, so a record that came by a delta can go too', () => {
+    const storage = createTestStorage();
+    const first = open(storage, '2026-01-05T00:00:00.000Z');
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    first.socket.receive(delta('n1', 6));
+    expect(ids(first.store)).toEqual(['n1']);
+    first.sync.disconnect();
+
+    const second = open(storage, '2026-01-08T00:00:00.000Z');
+    try {
+      expect(second.socket.ofType('sync_pull')).toEqual([
+        { type: 'sync_pull', collections: ['notes'], lastSync: '2026-01-04T23:59:59.999Z', lastId: '' },
+      ]);
+      second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 7, { deleted: true })] });
+      expect(ids(second.store)).toEqual([]);
+    } finally {
+      second.sync.disconnect();
+    }
+  });
+
+  it('places a whole pull no later than the first connection that asked for one, so a record from before it was answered can go too', () => {
+    const storage = createTestStorage();
+    // A record comes by a delta before the pull is answered, and the connection drops.
+    const first = open(storage, '2026-01-05T00:00:00.000Z');
+    first.socket.receive(delta('n1', 5));
+    first.socket.drop();
+    first.sync.disconnect();
+
+    // n1 was deleted meanwhile; the whole pull lists live records alone, one
+    // of them received after the deletion, and cannot say n1 went. What
+    // changed since the first connection is asked for with it.
+    const second = open(storage, '2026-01-08T00:00:00.000Z');
+    expect(second.socket.ofType('sync_pull')).toEqual([
+      { type: 'sync_pull', collections: ['notes'] },
+      { type: 'sync_pull', collections: ['notes'], lastSync: '2026-01-04T23:59:59.999Z', lastId: '' },
+    ]);
+    second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n2', 7)] });
+    expect(ids(second.store)).toEqual(['n1', 'n2']);
+    // The connection drops before the second answer.
+    second.sync.disconnect();
+
+    const third = open(storage, '2026-01-09T00:00:00.000Z');
+    try {
+      expect(third.socket.ofType('sync_pull')).toEqual([
+        { type: 'sync_pull', collections: ['notes'], lastSync: '2026-01-04T23:59:59.999Z', lastId: '' },
+      ]);
+      third.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 6, { deleted: true }), row('n2', 7)] });
+      expect(ids(third.store)).toEqual(['n2']);
+    } finally {
+      third.sync.disconnect();
+    }
+  });
+
+  it('starts over with another host, and works with one that answers it as a whole pull', () => {
+    const storage = createTestStorage();
+    const first = visit(storage);
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a', 1), row('b', 2)] });
+    first.sync.disconnect();
+
+    const elsewhere = visit(storage, 'xdb:app', 'wss://other.example.test/sync');
+    expect(elsewhere.socket.ofType('sync_pull')).toEqual([{ type: 'sync_pull', collections: ['notes'] }]);
+    elsewhere.sync.disconnect();
+
+    // A host that does not read the point sends every live record, and no
+    // deletions: everything is written, nothing is removed.
+    const second = visit(storage);
+    try {
+      expect(second.socket.ofType('sync_pull')[0]).toMatchObject({ lastSync: before(at(2)), lastId: '' });
+      second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a', 1), { ...row('b', 2), data: { title: 'b2' } }] });
+      expect(second.store.query('notes').map((r) => [r.id, r.data.title])).toEqual([['a', 'a'], ['b', 'b2']]);
+    } finally {
+      second.sync.disconnect();
+    }
+  });
+
+  it('does not go past a record that could not be saved here, so the next pull brings it again', () => {
+    const storage = createTestStorage();
+    const setItem = storage.setItem;
+    storage.setItem = (key: string, value: string) => {
+      if (value.includes('"too big"')) throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+      return setItem(key, value);
+    };
+    const first = visit(storage);
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a', 1), { ...row('b', 2), data: { title: 'too big' } }, row('c', 3)] });
+    expect(ids(first.store)).toEqual(['a', 'c']);
+    first.sync.disconnect();
+
+    const second = visit(storage);
+    try {
+      expect(second.socket.ofType('sync_pull')).toEqual([
+        { type: 'sync_pull', collections: ['notes'], lastSync: before(at(1)), lastId: '' },
+      ]);
+    } finally {
+      second.sync.disconnect();
+    }
+  });
+
+  /**
+   * The host marks when it received a record to the millisecond, and orders
+   * records of one millisecond by id. One it received later in the same
+   * millisecond as the last record a pull read, with an id that sorts before
+   * that one's, is behind the place: asked for from the place itself, it came
+   * in no pull. A connection asks from the millisecond before.
+   */
+  it('asks again for the millisecond its place is in, where the host may have received more since', () => {
+    const storage = createTestStorage();
+    const first = visit(storage);
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('r9', 2)] });
+    first.sync.disconnect();
+
+    // r10 was received in that millisecond after the pull was read; it sorts before r9.
+    const second = visit(storage);
+    try {
+      expect(second.socket.ofType('sync_pull')).toEqual([
+        { type: 'sync_pull', collections: ['notes'], lastSync: before(at(2)), lastId: '' },
+      ]);
+      second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('r10', 2), row('r9', 2)] });
+      expect(ids(second.store).sort()).toEqual(['r10', 'r9']);
+    } finally {
+      second.sync.disconnect();
+    }
+  });
+});
+
+/**
+ * `clear(collection)` on a synced device. It told the page and nobody else:
+ * the server kept every record, and the next pull brought them all back.
+ */
+describe('a collection cleared here', () => {
+  it('is deleted on the server record by record, and a pull answered before that does not bring it back', () => {
+    const stamp = '2026-01-02T00:00:00Z';
+    const row = (id: string) => ({ id, collection: 'notes', data: { title: id }, createdAt: stamp, updatedAt: stamp });
+    const { store, sync, socket } = visit(createTestStorage());
+    try {
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a'), row('b')] });
+      store.clear('notes');
+      expect(pushedOps(socket).map((op) => [op.operation, op.recordId])).toEqual([['delete', 'a'], ['delete', 'b']]);
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a'), row('b')] });
+      expect(store.query('notes')).toEqual([]);
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
+/**
+ * A store opened again, with records, and a sync told no collections. The
+ * pull named the collections the page had touched since it opened, which on
+ * a fresh page was none: nothing the store held was ever pulled.
+ */
+describe('a sync that names no collections', () => {
+  it('pulls the collections the store holds: only names the host takes, and at most a hundred a pull', () => {
+    const storage = createTestStorage();
+    const before = new XDBService(storage, 'xdb:app', undefined, { backend: 'storage' });
+    const names = ['notes', ...Array.from({ length: 120 }, (_, i) => `c${i}`)];
+    for (const name of names) before.create(name, { n: 1 });
+    // The host takes [A-Za-z0-9_-] alone, and answers a pull naming another with an error.
+    before.create('with space', { n: 1 });
+
+    const store = new XDBService(storage, 'xdb:app', undefined, { backend: 'storage' });
+    const sync = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      socket.open();
+      authOk(socket);
+      const pulls = socket.ofType('sync_pull') as Array<{ collections: string[] }>;
+      expect(pulls.flatMap((pull) => pull.collections).sort()).toEqual([...names].sort());
+      expect(pulls.every((pull) => pull.collections.length <= 100)).toBe(true);
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
+/**
+ * A record from a pull that cannot be saved here (a nearly full store).
+ *
+ * It threw out of the pull: the records after it were never written, and
+ * the first pull never counted as done, so nothing made on this device was
+ * pushed from then on. It is passed over, and the pull goes on.
+ */
+describe('a pulled record that cannot be saved here', () => {
+  it('leaves the rest of the pull written, and the changes made here pushed', () => {
+    const storage = createTestStorage();
+    const setItem = storage.setItem;
+    storage.setItem = (key: string, value: string) => {
+      if (value.length > 2000) throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+      return setItem(key, value);
+    };
+    const store = new XDBService(storage, 'xdb:app', undefined, { backend: 'storage' });
+    const sync = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    const stamp = '2026-01-02T00:00:00Z';
+    const row = (id: string, data: Record<string, unknown>) => ({ id, collection: 'notes', data, createdAt: stamp, updatedAt: stamp });
+    try {
+      // Made before the socket is up: it waits for the first pull.
+      store.create('tasks', { mine: true }, { id: 't1' });
+      socket.open();
+      authOk(socket);
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('big', { body: 'x'.repeat(3000) }), row('small', { n: 1 })] });
+      expect(store.query('notes').map((r) => r.id)).toEqual(['small']);
+      expect(pushedOps(socket).map((op) => [op.operation, op.recordId])).toEqual([['create', 't1']]);
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
+/**
+ * A change too large for any message the host takes: it closes the socket
+ * on a message over 4 MiB, counted in UTF-8 bytes, where the client counted
+ * characters. The change was sent alone, the socket closed, the change went
+ * first again on the next connection, and nothing queued behind it reached
+ * the host. It is reported as refused, and the rest go.
+ */
+describe('a change larger than the host takes in one message', () => {
+  it('is refused and reported, and the changes after it are pushed', () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: WS_URL, appVersion: '1' });
+    const refused: string[] = [];
+    sync.on('reject', (opId) => refused.push(String(opId)));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      socket.open();
+      authOk(socket);
+      // 1.5 million characters, 4.5 MB as UTF-8.
+      xdb.create('notes', { blob: '日'.repeat(1_500_000) }, { id: 'huge' });
+      xdb.create('notes', { title: 'small' }, { id: 'n2' });
+      expect(pushedOps(socket).map((op) => op.recordId)).toEqual(['n2']);
+      expect(refused).toHaveLength(1);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      sync.disconnect();
+    }
+  });
+
+  it('packs a queue of such text into pushes by its UTF-8 size', () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: WS_URL, appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      // 90 KB each as UTF-8, a third of that in characters; queued offline.
+      for (let i = 0; i < 40; i++) xdb.create('notes', { body: '日'.repeat(30_000) });
+      socket.open();
+      authOk(socket);
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+      const pushes = socket.ofType('sync_push');
+      expect(pushedOps(socket)).toHaveLength(40);
+      for (const push of pushes) expect(new TextEncoder().encode(JSON.stringify(push)).length).toBeLessThanOrEqual(1024 * 1024);
     } finally {
       sync.disconnect();
     }

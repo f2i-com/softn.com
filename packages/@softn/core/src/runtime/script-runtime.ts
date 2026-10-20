@@ -4340,18 +4340,14 @@ export function createDBNamespace(
         (a.created_at || '').localeCompare(b.created_at || '')
       );
       const toRemove = sorted.slice(0, records.length - maxRecords);
-      for (const rec of toRemove) {
-        xdb.hardDelete(collection, rec.id);
-      }
-      return toRemove.length;
+      // In one write: one hardDelete each rewrote the whole collection, so
+      // pruning grew with the square of its size.
+      return xdb.hardDeleteMany(collection, toRemove.map((rec) => rec.id));
     },
 
     clearCollection: (collection: string) => {
       const xdb = getXDBSync();
-      const records = xdb.query(collection);
-      for (const rec of records) {
-        xdb.hardDelete(collection, rec.id);
-      }
+      xdb.hardDeleteMany(collection, xdb.query(collection).map((rec) => rec.id));
     },
 
     ready: () => initXDB().then(() => {}),

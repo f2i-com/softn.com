@@ -817,3 +817,112 @@ describe('a malformed value from a peer', () => {
     remote.destroy();
   });
 });
+
+/** Forward each document's own updates to the other, as a connected room does. */
+function link(a: XDBSyncAdapter, b: XDBSyncAdapter): void {
+  a.doc.on('update', (update: Uint8Array, origin: unknown) => {
+    if (origin !== 'peer') Y.applyUpdate(b.doc, update, 'peer');
+  });
+  b.doc.on('update', (update: Uint8Array, origin: unknown) => {
+    if (origin !== 'peer') Y.applyUpdate(a.doc, update, 'peer');
+  });
+}
+
+function peers(room: string) {
+  const xa = new XDBService(createTestStorage(), `${room}-a`, undefined, { backend: 'storage' });
+  const xb = new XDBService(createTestStorage(), `${room}-b`, undefined, { backend: 'storage' });
+  const a = new XDBSyncAdapter(xa, { room, signaling: [], persist: false });
+  const b = new XDBSyncAdapter(xb, { room, signaling: [], persist: false });
+  return { xa, xb, a, b };
+}
+
+/**
+ * A `Date` in a record. The create announced the caller's own object, and
+ * the adapter put that object into the document, where a Date is `{}`: the
+ * author read back the date as text, and every peer an empty object.
+ */
+describe('a record with a Date in it', () => {
+  it('reaches a peer as the date its author reads back', () => {
+    const { xa, xb, a, b } = peers('date-room');
+    link(a, b);
+    a.attachLocal();
+    b.attachLocal();
+    const record = xa.create('events', { when: new Date('2026-03-04T05:06:07.000Z') });
+    expect(xb.get('events', record.id)?.data.when).toBe('2026-03-04T05:06:07.000Z');
+    a.close();
+    b.close();
+  });
+});
+
+/**
+ * A record deleted, then removed for good ("empty the trash"). The removal
+ * was announced with the record as it was, deleted, and the adapter took
+ * that for a soft delete: the record stayed in the room as a tombstone, its
+ * data with it, and on every peer.
+ */
+describe('a record deleted and then removed for good', () => {
+  it('leaves the room and the peers', () => {
+    const { xa, xb, a, b } = peers('trash-room');
+    link(a, b);
+    a.attachLocal();
+    b.attachLocal();
+    xa.create('notes', { secret: 'card 4111' }, { id: 'n1' });
+    xa.delete('n1');
+    expect(a.doc.getMap('notes').get('n1')).toMatchObject({ deleted: true });
+    xa.hardDelete('notes', 'n1');
+    expect(a.doc.getMap('notes').has('n1')).toBe(false);
+    expect(xb.getAllRaw('notes')).toEqual([]);
+    a.close();
+    b.close();
+  });
+});
+
+/**
+ * A peer that rejoins with no room cache and an older copy of a record. Its
+ * empty document takes its own copy, and two copies set at once are ordered
+ * by the document (by client id), not by time. Where the older one came out
+ * ahead, every peer wrote it over its newer copy, and a record the room had
+ * deleted came back. A peer keeps its newer copy and puts it back into the
+ * document, and the room settles on it.
+ */
+describe('a peer rejoining with an empty document and an older copy', () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
+  const base = { id: 'n1', collection: 'notes', created_at: at(0) };
+
+  for (const [order, idA, idB] of [['lower', 1, 2], ['higher', 2, 1]] as const) {
+    it(`does not take the older copy over the newer one (room peer's client id ${order})`, () => {
+      const { xa, xb, a, b } = peers(`rejoin-edit-${order}`);
+      xa.writeRecord('notes', { ...base, data: { title: 'newer' }, updated_at: at(20), deleted: false });
+      xb.writeRecord('notes', { ...base, data: { title: 'stale' }, updated_at: at(10), deleted: false });
+      a.doc.clientID = idA;
+      b.doc.clientID = idB;
+      a.attachLocal();
+      b.attachLocal();
+      // They meet: each takes the other's whole state, then each other's updates.
+      link(a, b);
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc), 'peer');
+      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc), 'peer');
+      expect([xa.get('notes', 'n1')?.data.title, xb.get('notes', 'n1')?.data.title]).toEqual(['newer', 'newer']);
+      expect((a.doc.getMap('notes').get('n1') as { data: unknown }).data).toEqual({ title: 'newer' });
+      expect((b.doc.getMap('notes').get('n1') as { data: unknown }).data).toEqual({ title: 'newer' });
+      a.close();
+      b.close();
+    });
+
+    it(`does not bring back a record the room deleted after that copy (room peer's client id ${order})`, () => {
+      const { xa, xb, a, b } = peers(`rejoin-delete-${order}`);
+      xa.writeRecord('notes', { ...base, data: { title: 't' }, updated_at: at(20), deleted: true });
+      xb.writeRecord('notes', { ...base, data: { title: 't' }, updated_at: at(10), deleted: false });
+      a.doc.clientID = idA;
+      b.doc.clientID = idB;
+      a.attachLocal();
+      b.attachLocal();
+      link(a, b);
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc), 'peer');
+      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc), 'peer');
+      expect([xa.get('notes', 'n1'), xb.get('notes', 'n1')]).toEqual([null, null]);
+      a.close();
+      b.close();
+    });
+  }
+});

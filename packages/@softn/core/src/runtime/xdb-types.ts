@@ -19,6 +19,12 @@ export interface XDBEvent {
   collection: string;
   record?: XDBRecord;
   records?: XDBRecord[];
+  /**
+   * On a `delete`: the record was removed for good (`hardDelete`), not
+   * marked deleted. `record` is the record as it was, which may itself be a
+   * deleted one: a record moved to the trash first, then emptied from it.
+   */
+  removed?: boolean;
 }
 
 /**
@@ -150,10 +156,14 @@ export interface XDBStorageStatus {
   issues: XDBStorageIssue[];
 }
 
-/** Thrown instead of silently replacing damaged or unloaded data. */
+/**
+ * Thrown instead of silently replacing damaged or unloaded data. `invalid-data`
+ * is a record whose data JSON cannot hold (a cycle, a BigInt, nesting too
+ * deep): refused before anything is written, and no fault of the storage.
+ */
 export class XDBStorageError extends Error {
   constructor(
-    public readonly kind: XDBStorageIssueKind | 'unhydrated',
+    public readonly kind: XDBStorageIssueKind | 'unhydrated' | 'invalid-data',
     message: string,
     public readonly collection?: string
   ) {

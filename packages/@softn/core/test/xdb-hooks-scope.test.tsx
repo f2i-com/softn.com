@@ -137,6 +137,28 @@ describe('useCollection', () => {
     await act(async () => xdb.writeRecord('items', { ...record('never-here', 'never here'), deleted: true }));
     expect(labels(container)).toEqual(['kept']);
   });
+
+  /**
+   * A record that comes back: a delete the server or a peer overruled, or a
+   * restore. It arrives as an update of a record the list had dropped, and
+   * the list only patched records it held, so it never showed it again.
+   */
+  it('shows a record that comes back after it was deleted', async () => {
+    const xdb = getXDB('hooks-a');
+    xdb.writeRecord('items', record('kept', 'kept'));
+    xdb.writeRecord('items', record('back', 'back'));
+    await mount(
+      <AppScopeProvider value={scopeFor('hooks-a')}>
+        <Items />
+      </AppScopeProvider>
+    );
+    await act(async () => {
+      xdb.deleteFromCollection('items', 'back');
+    });
+    expect(labels(container)).toEqual(['kept']);
+    await act(async () => xdb.writeRecord('items', { ...record('back', 'back again'), updated_at: '2026-09-09T00:00:00.000Z' }));
+    expect(labels(container)).toEqual(['kept', 'back again']);
+  });
 });
 
 describe('useRecord', () => {

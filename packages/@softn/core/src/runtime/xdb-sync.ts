@@ -393,6 +393,8 @@ export class XDBSyncAdapter {
   private projectCollection(collName: string, ymap: Y.Map<unknown>): void {
     if (ymap.size === 0) return;
     this.isSyncing = true;
+    // Local records newer than the document's copy, which go back into it.
+    const newer: XDBRecord[] = [];
     try {
       // Build a map of local records once (avoids O(n*m) re-reads from storage)
       const local = new Map(this.xdb.getAllRaw(collName).map((r) => [r.id, r]));
@@ -409,7 +411,9 @@ export class XDBSyncAdapter {
           const mine = local.get(recordId);
           // The document wins a tie: two copies stamped alike but different are
           // one record the room has already agreed on and one it has not.
-          if (!mine || isNewer(record, mine) || (!isNewer(mine, record) && !deepEqual(recordToJSON(mine), val))) {
+          if (mine && isNewer(mine, record)) {
+            newer.push(mine);
+          } else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), val)) {
             this.xdb.writeRecord(collName, record);
           }
         } catch (err) {
@@ -418,6 +422,11 @@ export class XDBSyncAdapter {
       });
     } finally {
       this.isSyncing = false;
+    }
+    if (newer.length > 0) {
+      this.ydoc.transact(() => {
+        for (const record of newer) ymap.set(record.id, recordToJSON(record));
+      });
     }
   }
 
@@ -449,11 +458,14 @@ export class XDBSyncAdapter {
 
           case 'delete':
             if (event.record) {
-              if (event.record.deleted) {
+              if (event.record.deleted && !event.removed) {
                 // Soft delete: update the record in Y.Map with deleted flag
                 ymap.set(event.record.id, recordToJSON(event.record));
               } else {
-                // Hard delete: remove from Y.Map entirely
+                // Hard delete: remove from Y.Map entirely. Told by `removed`,
+                // not by the record: one deleted first and then removed for
+                // good is announced as it was, deleted, and was kept in the
+                // room as a tombstone, its data still in it.
                 ymap.delete(event.record.id);
               }
             }
@@ -534,7 +546,10 @@ export class XDBSyncAdapter {
       }
 
       this.isSyncing = true;
+      // Local records newer than what the document now holds for them.
+      const newer: XDBRecord[] = [];
       try {
+        let local: Map<string, XDBRecord> | null = null;
         for (const [recordId, change] of event.changes.keys) {
           try {
             if (change.action === 'add' || change.action === 'update') {
@@ -545,7 +560,17 @@ export class XDBSyncAdapter {
                 if (val !== undefined) this.warnMalformed(collName, recordId);
                 continue;
               }
-              this.xdb.writeRecord(collName, jsonToRecord(val));
+              // Weighed as projectCollection weighs it. Two peers that set
+              // one record at once are ordered by the document, not by time:
+              // a peer rejoining with no room cache puts its own copy back
+              // in, and where that copy won, a stale edit overwrote every
+              // newer one and a deleted record came back. A newer local copy
+              // stays, and goes back into the document for the room.
+              if (!local) local = new Map(this.xdb.getAllRaw(collName).map((r) => [r.id, r]));
+              const record = jsonToRecord(val);
+              const mine = local.get(recordId);
+              if (mine && isNewer(mine, record)) newer.push(mine);
+              else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), val)) this.xdb.writeRecord(collName, record);
             } else if (change.action === 'delete') {
               // Remote hard-delete
               this.xdb.removeRecord(collName, recordId);
@@ -556,6 +581,12 @@ export class XDBSyncAdapter {
         }
       } finally {
         this.isSyncing = false;
+      }
+      // A transaction of our own (origin null), which this observer passes over.
+      if (newer.length > 0) {
+        this.ydoc.transact(() => {
+          for (const record of newer) ymap.set(record.id, recordToJSON(record));
+        });
       }
     };
 

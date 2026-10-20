@@ -268,6 +268,34 @@ describe('XDB Service (Tauri mode)', () => {
     }
   });
 
+  /**
+   * `delete(id)` announced the delete when the cache took it and again when
+   * SQLite answered: every listener heard of each delete twice. And `clear`
+   * told server sync nothing, so the next pull brought every record back.
+   */
+  it('announces a delete once, and tells server sync of each record a clear removes', async () => {
+    backend.set('tasks', [makeRecord('t1', 'tasks', { title: 'A' }), makeRecord('t2', 'tasks', { title: 'B' })]);
+    const xdb = new XDBService(undefined, 'delete-once', 'delete-once-app');
+    await xdb.isReady;
+    const events: string[] = [];
+    const mutations: string[] = [];
+    xdb.subscribe('tasks', (event) => events.push(`${event.type}:${event.record?.id ?? ''}`));
+    const unsubscribe = xdb.onMutation((event) => mutations.push(`${event.type}:${event.recordId}`));
+    try {
+      expect(xdb.delete('t1')).toBe(true);
+      await flushPromises();
+      await flushPromises();
+      expect(events).toEqual(['delete:t1']);
+      expect(mutations).toEqual(['delete:t1']);
+
+      xdb.clear('tasks');
+      await flushPromises();
+      expect(mutations).toEqual(['delete:t1', 'delete:t2']);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('rehydrates collection on sync event', async () => {
     backend.set('tasks', [makeRecord('1', 'tasks', { title: 'A' })]);
     const xdb = new XDBService(undefined, 'test-xdb');

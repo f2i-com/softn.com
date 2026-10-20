@@ -41,6 +41,10 @@ function exportOf(collections: Record<string, unknown>): XDBExportData {
 
 const values = (records: XDBRecord[]) => records.map((r) => [r.id, r.data.value]);
 
+// This storage cannot list its keys, so the store also keeps the list of its
+// collections, under `<prefix>::collections`; these tests count record writes.
+const isRecordsKey = (key: string) => !key.includes('::');
+
 describe('XDB import merge (browser storage)', () => {
   let storage: ReturnType<typeof createTestStorage>;
   let xdb: XDBService;
@@ -115,7 +119,7 @@ describe('XDB import merge (browser storage)', () => {
     );
 
     expect(result).toMatchObject({ imported: 1, skipped: 1, collections: ['notes'] });
-    expect(storage.keys()).toEqual(['test-xdb:notes']);
+    expect(storage.keys().filter(isRecordsKey)).toEqual(['test-xdb:notes']);
   });
 
   it('merge: false writes one row for a duplicated id and drops what was there', () => {
@@ -156,7 +160,7 @@ describe('XDB import merge (browser storage)', () => {
       ['a', 2],
       ['b', 3],
     ]);
-    expect(setItem.mock.calls.map(([key]) => key)).toEqual(['test-xdb:notes', 'test-xdb:tags']);
+    expect(setItem.mock.calls.map(([key]) => key).filter(isRecordsKey)).toEqual(['test-xdb:notes', 'test-xdb:tags']);
   });
 
   it('importFromJSON reports the same counts', () => {

@@ -65,9 +65,15 @@ interface PullCursor {
 
 // ── Client → Server messages ─────────────────────────────
 
+/**
+ * A pull asks for the whole of each collection (with `cursor`, the page
+ * after one), or, with `lastSync` and `lastId`, for what the host received
+ * after that point, the records deleted since included. A host that does not
+ * read the two answers as it does a whole pull.
+ */
 type ClientMessage =
   | { type: 'auth'; appVersion: string }
-  | { type: 'sync_pull'; collections: string[]; cursor?: PullCursor }
+  | { type: 'sync_pull'; collections: string[]; cursor?: PullCursor; lastSync?: string; lastId?: string }
   | { type: 'sync_push'; ops: SyncOp[] }
   | { type: 'subscribe'; collections: string[] };
 
@@ -89,9 +95,30 @@ const MAX_RETRY_DELAY = 60_000;
  * Ops and serialized bytes per `sync_push`. The host refuses a push of more
  * than 1,000 ops and closes the socket on a message over 4 MiB, so a queue
  * that grew while offline has to go out in pieces or never go out at all.
+ * Bytes are UTF-8 bytes, as the host counts them: counted in characters, a
+ * push of Chinese text was three times the size it was taken for.
  */
 const MAX_OPS_PER_PUSH = 500;
 const MAX_PUSH_BYTES = 1024 * 1024;
+/** The host closes the socket on a message larger than this (http.rs). */
+const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
+/** `{"type":"sync_push","ops":[...]}` around the ops, with room to spare. */
+const PUSH_ENVELOPE_BYTES = 64;
+/** Distinct collections the host reads in one `sync_pull`; more and it refuses the pull. */
+const MAX_PULL_COLLECTIONS = 100;
+/**
+ * The most records the host sends for one collection of a pull that names a
+ * point to start from. Such an answer carries no `more`: one that comes this
+ * full may have stopped short, and is asked again from where it ended.
+ */
+const INCREMENTAL_PULL_ROWS = 10_000;
+/** How the host writes its clock, in `auth_ok` and in each record's receipt time. */
+const HOST_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+/** What the host takes as a collection name; a pull naming anything else is answered with an error. */
+const SYNCABLE_COLLECTION = /^[A-Za-z0-9_-]{1,64}$/;
+/** Names under which the queue and the pull positions are kept (`XDBService.readSyncMeta`). */
+const QUEUE_META = 'sync-queue';
+const PULLED_META = 'sync-pulled';
 
 /**
  * Exponential backoff with "equal jitter": between half and all of
@@ -134,6 +161,77 @@ interface ServerRecord {
   data: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  /** When the host received the record's last change, by its own clock: where a pull goes on from. */
+  serverReceivedAt?: string;
+  /** Set on a record deleted since the point a pull named. */
+  deleted?: boolean;
+}
+
+/** One record's ops go to the host one at a time (see `flushPendingOps`). */
+function recordKey(op: SyncOp): string {
+  return `${op.collection}\u0000${op.recordId}`;
+}
+
+/** The length of `text` in UTF-8, which is what the host's limits count. */
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      bytes += 4;
+      i++;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+/** Whether (at, id) comes after `place` in the host's order of receipt. */
+function receivedAfter(at: string, id: string, place: PullCursor | undefined): boolean {
+  return !place || at > place.at || (at === place.at && id > place.id);
+}
+
+/**
+ * Where a connection's pull starts: a millisecond before the place, which
+ * the host's clock marks to the millisecond. A record the host received
+ * later in the place's own millisecond, with an id that sorts before the
+ * last one read, came after it and sorts before it: asked for from the place
+ * itself, it was in no pull, ever. The millisecond is read again instead.
+ */
+function askFrom(place: PullCursor): PullCursor {
+  const at = HOST_TIME.test(place.at) ? Date.parse(place.at) : NaN;
+  return Number.isFinite(at) ? { at: new Date(at - 1).toISOString(), id: '' } : place;
+}
+
+function isPullCursor(value: unknown): value is PullCursor {
+  const cursor = value as PullCursor | null;
+  return !!cursor && typeof cursor.at === 'string' && typeof cursor.id === 'string';
+}
+
+/** An op read back from storage, if it still has the shape of one. */
+function savedOp(value: unknown): SyncOp | null {
+  const op = value as Partial<SyncOp> | null;
+  if (!op || typeof op !== 'object') return null;
+  if (typeof op.id !== 'string' || typeof op.collection !== 'string' || typeof op.recordId !== 'string') return null;
+  if (op.operation !== 'create' && op.operation !== 'update' && op.operation !== 'delete') return null;
+  if (typeof op.timestamp !== 'string') return null;
+  if (op.data !== undefined && (typeof op.data !== 'object' || op.data === null || Array.isArray(op.data))) return null;
+  return {
+    id: op.id,
+    collection: op.collection,
+    operation: op.operation,
+    recordId: op.recordId,
+    ...(op.data !== undefined ? { data: op.data } : {}),
+    timestamp: op.timestamp,
+    clientId: typeof op.clientId === 'string' ? op.clientId : 'unknown',
+  };
+}
+
+/** What the store offers for keeping sync state between page loads, if it offers it. */
+interface SyncMetaStore {
+  readSyncMeta(name: string): string | null;
+  writeSyncMeta(name: string, value: string | null): void;
 }
 
 // ── Tickets ──────────────────────────────────────────────
@@ -190,6 +288,44 @@ export class XDBServerSync {
    * a device whose clock was behind lost to any such write made in the gap.
    */
   private madeAt = new Map<string, number>();
+  /**
+   * The newest op queued for each record, by `recordKey`: an update not yet
+   * sent is replaced by the next update or delete of its record, rather than
+   * waiting its turn behind it (one op per record at a time).
+   */
+  private lastOpFor = new Map<string, string>();
+  /**
+   * Where the last pull of each collection ended on this host: the receipt
+   * time and id of the newest record it brought. The next pull asks for what
+   * came after, which includes the records deleted since; a pull of the whole
+   * collection lists live records only, so a record deleted while this device
+   * was away stayed here for good.
+   */
+  private pulled = new Map<string, PullCursor>();
+  /**
+   * For a collection with no place yet, the host's time when the first
+   * connection that pulled it whole was authenticated (`auth_ok`). A whole
+   * pull lists live records only: a record this device has from a delta, or
+   * from a connection whose pull never finished, may have been deleted
+   * before the newest record such a pull brings, and a place set there
+   * passed over its deletion for good. A whole pull places the collection no
+   * later than this, and every change since, deletions included, comes in
+   * the next pull; when the floor is older than the connection, it is asked
+   * for with the whole pull as well.
+   */
+  private floors = new Map<string, string>();
+  /**
+   * Collections a record of which could not be written here during this
+   * connection's pull (a full store): where they were pulled to stays put, so
+   * the next pull brings that record again instead of going on past it.
+   */
+  private pullStuck = new Set<string>();
+  /** Records received per collection of a pull that named a point to start from. */
+  private sincePulled = new Map<string, number>();
+  /** Whether the queue or the pull positions changed since they were last saved. */
+  private queueDirty = false;
+  private pulledDirty = false;
+  private saveScheduled = false;
   private connected = false;
   private destroyed = false;
   private xdbUnsubscribe: (() => void) | null = null;
@@ -212,6 +348,7 @@ export class XDBServerSync {
   constructor(xdb: XDBService, config: ServerSyncConfig) {
     this.xdb = xdb;
     this.config = config;
+    this.restore();
   }
 
   /** Start the sync connection. */
@@ -241,6 +378,9 @@ export class XDBServerSync {
       this.xdbUnsubscribe();
       this.xdbUnsubscribe = null;
     }
+    // Saved now, not at the end of the task: whoever opens the store next
+    // (a remount, a reload) reads what this one leaves.
+    this.save();
     const wasConnected = this.connected;
     this.ticketAttempt++;
     this.ticketPending = false;
@@ -438,8 +578,12 @@ export class XDBServerSync {
         break;
 
       case 'sync_ack':
-        for (const id of Array.isArray(msg.opIds) ? msg.opIds : []) this.inflightOps.delete(id);
+        for (const id of Array.isArray(msg.opIds) ? msg.opIds : []) {
+          if (this.inflightOps.delete(id)) this.queueChanged();
+        }
         this.retryAttempts = 0;
+        // A record's next op waited for this answer.
+        this.flushPendingOps();
         break;
 
       case 'sync_reject':
@@ -471,7 +615,11 @@ export class XDBServerSync {
     this.inflightOps.clear();
   }
 
-  /** The host did not store these ops this time: queue them and try later. */
+  /**
+   * The host did not store these ops this time: queue them and try later.
+   * Back at the front of the queue they are still ahead of every later op of
+   * their records, none of which has been sent (see `flushPendingOps`).
+   */
   private handleSyncRetry(opIds: string[]): void {
     const retry = new Map<string, SyncOp>();
     for (const id of opIds) {
@@ -505,7 +653,9 @@ export class XDBServerSync {
       this.send({ type: 'subscribe', collections });
 
       // Pull initial state
-      this.send({ type: 'sync_pull', collections });
+      this.pullStuck.clear();
+      this.sincePulled.clear();
+      for (const pull of this.pullsFor(collections)) this.send(pull);
     } else {
       // Nothing to pull is a pull that is done. Left false, no local
       // mutation was ever pushed for an app whose first record is still to
@@ -522,16 +672,67 @@ export class XDBServerSync {
   }
 
   /**
+   * The pulls that bring each collection up to date: from where its last
+   * pull ended when there was one, else the whole of it, never more
+   * collections in one than the host reads (it refuses the whole pull).
+   * Names the host would refuse are left out when they come from storage
+   * rather than the app's own list.
+   */
+  private pullsFor(collections: string[]): ClientMessage[] {
+    const pulls: ClientMessage[] = [];
+    const whole: string[] = [];
+    const since: ClientMessage[] = [];
+    const now = typeof this.serverTime === 'string' && HOST_TIME.test(this.serverTime) ? this.serverTime : null;
+    for (const collection of new Set(collections)) {
+      const place = this.pulled.get(collection);
+      if (place) {
+        const from = askFrom(place);
+        since.push({ type: 'sync_pull', collections: [collection], lastSync: from.at, lastId: from.id });
+        this.sincePulled.set(collection, 0);
+        if (this.floors.delete(collection)) this.pulledDirty = true;
+      } else {
+        whole.push(collection);
+        const floor = this.floors.get(collection);
+        if (now !== null && (floor === undefined || now < floor)) {
+          this.floors.set(collection, now);
+          this.pulledDirty = true;
+        } else if (floor !== undefined && now !== null && floor < now) {
+          // An earlier connection asked for it whole and had no answer, and
+          // may have brought records by deltas: what changed since then,
+          // deletions included, comes with the whole pull.
+          const from = askFrom({ at: floor, id: '' });
+          since.push({ type: 'sync_pull', collections: [collection], lastSync: from.at, lastId: from.id });
+          this.sincePulled.set(collection, 0);
+        }
+      }
+    }
+    if (this.pulledDirty) this.saveSoon();
+    for (let i = 0; i < whole.length; i += MAX_PULL_COLLECTIONS) {
+      pulls.push({ type: 'sync_pull', collections: whole.slice(i, i + MAX_PULL_COLLECTIONS) });
+    }
+    return [...pulls, ...since];
+  }
+
+  /**
    * Push every queued op, in pieces the host accepts, and hold each until
    * the host answers it (see `inflightOps`). An acknowledged op is done, so a
    * reconnect replays only what was never answered, not the session.
+   *
+   * A record has one op in flight at a time; its next op goes once the host
+   * has answered the one before. The host answers each op of a push on its
+   * own, and may ask for one to be sent again while it applies the next: a
+   * create it could not store this time, followed by an update of the same
+   * record, left the update refused ("not found") and lost once the create
+   * was stored on the retry, or a delete undone the same way.
    */
   private flushPendingOps(): void {
     if (!this.connected || !this.initialPullDone || this.pendingOps.size === 0) return;
     // A retry is waiting out a backoff; new ops go with it.
     if (this.retryTimer) return;
+    const busy = new Set<string>();
+    for (const op of this.inflightOps.values()) busy.add(recordKey(op));
     let batch: SyncOp[] = [];
-    let bytes = 0;
+    let bytes = PUSH_ENVELOPE_BYTES;
     const sendBatch = (): boolean => {
       if (batch.length === 0) return true;
       if (!this.send({ type: 'sync_push', ops: batch })) return false;
@@ -539,11 +740,14 @@ export class XDBServerSync {
         this.pendingOps.delete(op.id);
         this.inflightOps.set(op.id, op);
       }
+      this.queueChanged();
       batch = [];
-      bytes = 0;
+      bytes = PUSH_ENVELOPE_BYTES;
       return true;
     };
     for (const op of Array.from(this.pendingOps.values())) {
+      const key = recordKey(op);
+      if (busy.has(key)) continue;
       // Stamped now: an op queued before auth knew no client id, nor the
       // host's time. An op sent before keeps the time it was sent with.
       op.clientId = this.clientId ?? op.clientId;
@@ -552,12 +756,17 @@ export class XDBServerSync {
         op.timestamp = new Date(made + this.clockOffset).toISOString();
         this.madeAt.delete(op.id);
       }
-      const size = JSON.stringify(op).length + 1;
+      const size = utf8Length(JSON.stringify(op)) + 1;
+      if (PUSH_ENVELOPE_BYTES + size > MAX_MESSAGE_BYTES) {
+        this.refuseOp(op, size);
+        continue;
+      }
       if (batch.length > 0 && (batch.length >= MAX_OPS_PER_PUSH || bytes + size > MAX_PUSH_BYTES)) {
         if (!sendBatch()) return;
       }
       batch.push(op);
       bytes += size;
+      busy.add(key);
     }
     sendBatch();
   }
@@ -590,35 +799,101 @@ export class XDBServerSync {
     return changed;
   }
 
-  /** Replace local collection data with the server's authoritative state. */
+  /**
+   * Apply one message of a pull: each record upserted, each one the host
+   * says was deleted since the point the pull named removed, and that
+   * point moved on to the newest record written here.
+   */
   private handleSyncState(collection: string, records: ServerRecord[], more?: PullCursor): void {
-    // Apply each record from the server to the local XDB.
-    // We use a batch approach: clear local data and re-insert.
-    // For Phase 2, we use a simpler approach: upsert each record.
     const changed = this.unansweredChanges();
-    for (const record of records) {
-      const here = changed.get(`${collection}\u0000${record.id}`);
-      if (here === 'update') continue;
-      this.xdb.upsertFromServer(
-        collection,
-        {
-          id: record.id,
-          collection: record.collection,
-          data: record.data,
-          createdAt: record.createdAt,
-          updatedAt: record.updatedAt,
-        },
-        here === 'delete'
-      );
+    const list = Array.isArray(records) ? records : [];
+    let place = this.pulled.get(collection);
+    let moved = false;
+    // A collection pulled whole on this connection is placed no later than
+    // its floor (`floors`), whichever pull this message answers.
+    const floor = this.floors.get(collection);
+    for (const record of list) {
+      if (!record || typeof record.id !== 'string') continue;
+      // One record that could not be written here (a full store) threw out
+      // of this loop: the rest of the pull was never written, and the first
+      // pull never counted as done, so nothing made here was pushed again.
+      // It is passed over, and the pull goes on.
+      try {
+        this.applyPulled(collection, record, changed.get(`${collection}\u0000${record.id}`));
+      } catch (err) {
+        if (!this.pullStuck.has(collection)) {
+          console.warn(`[XDBServerSync] A record of "${collection}" from the server could not be saved here; the next pull brings it again:`, err);
+        }
+        this.pullStuck.add(collection);
+        continue;
+      }
+      // Records the host has no receipt time for come first in a whole pull
+      // and are not in a pull from a point; they mark no place.
+      const at = record.serverReceivedAt;
+      if (typeof at !== 'string' || at === '' || this.pullStuck.has(collection)) continue;
+      const mark = floor !== undefined && receivedAfter(at, record.id, { at: floor, id: '' }) ? { at: floor, id: '' } : { at, id: record.id };
+      if (receivedAfter(mark.at, mark.id, place)) {
+        place = mark;
+        moved = true;
+      }
     }
-    // The page was full, so the collection goes on: ask for the rest. A
-    // collection past one page used to stop here, at its oldest ten
-    // thousand records, on every device that ever pulled it.
-    if (more && typeof more.at === 'string' && typeof more.id === 'string') {
+    // A whole pull that found nothing marks no place, and every later pull
+    // was whole again, so a record that came by a delta and was deleted
+    // while this device was away stayed here. The floor marks it instead.
+    if (!place && list.length === 0 && !isPullCursor(more) && floor !== undefined) {
+      place = { at: floor, id: '' };
+      moved = true;
+    }
+    if (moved && place) {
+      this.pulled.set(collection, place);
+      this.pulledDirty = true;
+      this.saveSoon();
+    }
+    if (isPullCursor(more)) {
+      // The page was full, so the collection goes on: ask for the rest. A
+      // collection past one page used to stop here, at its oldest ten
+      // thousand records, on every device that ever pulled it. (A whole
+      // pull, so not one the count below is for.)
+      this.sincePulled.delete(collection);
       this.send({ type: 'sync_pull', collections: [collection], cursor: { at: more.at, id: more.id } });
+    } else {
+      const counted = this.sincePulled.get(collection);
+      if (counted !== undefined) {
+        const total = counted + list.length;
+        if (total >= INCREMENTAL_PULL_ROWS && moved && place && !this.pullStuck.has(collection)) {
+          this.sincePulled.set(collection, 0);
+          this.send({ type: 'sync_pull', collections: [collection], lastSync: place.at, lastId: place.id });
+        } else {
+          this.sincePulled.set(collection, total);
+        }
+      }
     }
     this.initialPullDone = true;
     this.flushPendingOps();
+  }
+
+  /** One record of a pull, written here unless a change made here is still waiting on it. */
+  private applyPulled(collection: string, record: ServerRecord, here: 'update' | 'delete' | undefined): void {
+    if (record.deleted === true) {
+      // Deleted on the host since this device last pulled. A change made
+      // here to it is answered by the host with the record as it stands,
+      // deleted, so there is nothing here to wait for.
+      this.xdb.deleteFromServer(collection, record.id);
+      return;
+    }
+    if (here === 'update') return;
+    if (typeof record.data !== 'object' || record.data === null || Array.isArray(record.data)) return;
+    this.xdb.upsertFromServer(
+      collection,
+      {
+        id: record.id,
+        collection: record.collection,
+        data: record.data,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      },
+      here === 'delete'
+    );
   }
 
   /** Apply live deltas from other clients. */
@@ -628,50 +903,64 @@ export class XDBServerSync {
     // delete answered so is answered, whether its acknowledgement comes
     // before the record or after it: kept hidden until the acknowledgement,
     // a record sent first stayed hidden until the next full pull.
-    const answered = new Set(ops.filter((op) => op.clientId === 'server').map((op) => op.id));
+    const list = (Array.isArray(ops) ? ops : []).filter(
+      (op): op is SyncOp => !!op && typeof op.recordId === 'string' && typeof op.collection === 'string'
+    );
+    const answered = new Set(list.filter((op) => op.clientId === 'server').map((op) => op.id));
     const changed = this.unansweredChanges(answered);
-    for (const op of ops) {
+    for (const op of list) {
       const here = changed.get(`${op.collection}\u0000${op.recordId}`);
       const deletedHere = here === 'delete';
       // Another device's edit to a record edited here is left to the answer
       // to this device's edit: the host weighs the two, and sends the record
       // as it stands if the edit made here lost.
       if (here === 'update' && op.operation !== 'delete') continue;
-      switch (op.operation) {
-        case 'create':
-          if (op.data) {
-            this.xdb.upsertFromServer(
-              op.collection,
-              {
-                id: op.recordId,
-                collection: op.collection,
-                data: op.data,
-                createdAt: op.timestamp,
-                updatedAt: op.timestamp,
-              },
-              deletedHere
-            );
-          }
-          break;
-        case 'update':
-          if (op.data) {
-            this.xdb.upsertFromServer(
-              op.collection,
-              {
-                id: op.recordId,
-                collection: op.collection,
-                data: op.data,
-                createdAt: '',
-                updatedAt: op.timestamp,
-              },
-              deletedHere
-            );
-          }
-          break;
-        case 'delete':
-          this.xdb.deleteFromServer(op.collection, op.recordId);
-          break;
+      // One op that cannot be written here (a full store) no longer takes
+      // the rest of the delta with it.
+      try {
+        this.applyDelta(op, deletedHere);
+      } catch (err) {
+        console.warn(`[XDBServerSync] A change to "${op.collection}" from the server could not be saved here:`, err);
       }
+    }
+  }
+
+  /** One op of a delta, written here. */
+  private applyDelta(op: SyncOp, deletedHere: boolean): void {
+    switch (op.operation) {
+      case 'create':
+        if (op.data) {
+          this.xdb.upsertFromServer(
+            op.collection,
+            {
+              id: op.recordId,
+              collection: op.collection,
+              data: op.data,
+              createdAt: op.timestamp,
+              updatedAt: op.timestamp,
+            },
+            deletedHere
+          );
+        }
+        break;
+      case 'update':
+        if (op.data) {
+          this.xdb.upsertFromServer(
+            op.collection,
+            {
+              id: op.recordId,
+              collection: op.collection,
+              data: op.data,
+              createdAt: '',
+              updatedAt: op.timestamp,
+            },
+            deletedHere
+          );
+        }
+        break;
+      case 'delete':
+        this.xdb.deleteFromServer(op.collection, op.recordId);
+        break;
     }
   }
 
@@ -679,8 +968,28 @@ export class XDBServerSync {
   private handleSyncReject(opId: string, reason: string): void {
     this.pendingOps.delete(opId);
     this.inflightOps.delete(opId);
+    this.madeAt.delete(opId);
+    this.queueChanged();
     this.listeners.reject.forEach((fn) => fn(opId, reason));
     // TODO: rollback optimistic update
+    // The record's next op, if there is one, was waiting for this answer.
+    this.flushPendingOps();
+  }
+
+  /**
+   * An op the host can never take: a push of it alone is larger than the
+   * host lets a message be, and it closes the socket on one. Sent anyway, it
+   * went first after every reconnect and closed that socket too, and nothing
+   * queued behind it ever reached the host. It is dropped and reported as
+   * the host reports an op it refuses for good.
+   */
+  private refuseOp(op: SyncOp, bytes: number): void {
+    this.pendingOps.delete(op.id);
+    this.madeAt.delete(op.id);
+    this.queueChanged();
+    const reason = `This change to "${op.collection}" is ${bytes} bytes, more than the sync host takes in one message (${MAX_MESSAGE_BYTES}); it was not sent.`;
+    console.warn(`[XDBServerSync] ${reason}`);
+    this.listeners.reject.forEach((fn) => fn(op.id, reason));
   }
 
   /** Listen for local XDB mutations and push them to the server. */
@@ -694,7 +1003,12 @@ export class XDBServerSync {
       if (event.source === 'server') return;
 
       const made = Date.now();
-      const opId = `op_${made}_${++this.opCounter}`;
+      // The counter starts again with each page, and ops restored from the
+      // last one are in the queue: an id one of them has is not given again.
+      let opId: string;
+      do {
+        opId = `op_${made}_${++this.opCounter}`;
+      } while (this.pendingOps.has(opId) || this.inflightOps.has(opId));
       const op: SyncOp = {
         id: opId,
         collection: event.collection,
@@ -706,13 +1020,124 @@ export class XDBServerSync {
         clientId: this.clientId ?? 'unknown',
       };
 
+      // An update of this record still waiting to be sent says nothing the
+      // newer change does not: an update carries the record's whole data,
+      // and a delete ends it. The newer one takes its place.
+      const key = recordKey(op);
+      const before = this.pendingOps.get(this.lastOpFor.get(key) ?? '');
+      if (before && before.operation === 'update' && this.madeAt.has(before.id) && op.operation !== 'create') {
+        this.pendingOps.delete(before.id);
+        this.madeAt.delete(before.id);
+      }
+
       // Queued whether or not the socket is up. The connected check used to
       // come first, so a mutation made offline was never queued at all and
       // the "flush on reconnect" step had nothing to flush.
       this.pendingOps.set(opId, op);
       this.madeAt.set(opId, made);
+      this.lastOpFor.set(key, opId);
+      this.queueChanged();
       this.flushPendingOps();
     });
+  }
+
+  // ── Kept between page loads ────────────────────────────
+
+  /**
+   * The store's own storage for the queue and the pull positions, when it
+   * offers one. A queue held in memory alone was lost with the page: an
+   * edit made offline and the app then closed never reached the host, and
+   * the next pull wrote the host's copy over it.
+   */
+  private meta(): SyncMetaStore | null {
+    const store = this.xdb as Partial<SyncMetaStore>;
+    return typeof store.readSyncMeta === 'function' && typeof store.writeSyncMeta === 'function'
+      ? (store as SyncMetaStore)
+      : null;
+  }
+
+  /** Take up what the last page left: its unanswered ops, and where its pulls ended on this host. */
+  private restore(): void {
+    const meta = this.meta();
+    if (!meta) return;
+    try {
+      const saved = JSON.parse(meta.readSyncMeta(QUEUE_META) ?? 'null') as { ops?: unknown } | null;
+      const ops = saved?.ops;
+      for (const entry of Array.isArray(ops) ? ops : []) {
+        const op = savedOp(entry);
+        if (!op || this.pendingOps.has(op.id)) continue;
+        this.pendingOps.set(op.id, op);
+        // Not sent yet: stamped in the host's time when it is (flushPendingOps).
+        const made = (entry as { made?: unknown }).made;
+        if (typeof made === 'number' && Number.isFinite(made)) this.madeAt.set(op.id, made);
+        this.lastOpFor.set(recordKey(op), op.id);
+      }
+    } catch {
+      // Unreadable: there is nothing it can be trusted to say.
+    }
+    try {
+      const saved = JSON.parse(meta.readSyncMeta(PULLED_META) ?? 'null') as { url?: unknown; collections?: unknown; floors?: unknown } | null;
+      // Positions are the host's own times: another host's mean nothing here.
+      if (saved?.url === this.config.wsUrl && saved.collections && typeof saved.collections === 'object') {
+        for (const [collection, place] of Object.entries(saved.collections as Record<string, unknown>)) {
+          if (isPullCursor(place)) this.pulled.set(collection, { at: place.at, id: place.id });
+        }
+        for (const [collection, floor] of Object.entries((saved.floors ?? {}) as Record<string, unknown>)) {
+          if (typeof floor === 'string' && HOST_TIME.test(floor)) this.floors.set(collection, floor);
+        }
+      }
+    } catch {
+      // Unreadable: every collection is pulled whole, as on a first visit.
+    }
+  }
+
+  /** The queue changed: saved at the end of this task, once however many changes it made. */
+  private queueChanged(): void {
+    this.queueDirty = true;
+    this.saveSoon();
+  }
+
+  private saveSoon(): void {
+    if (this.saveScheduled) return;
+    this.saveScheduled = true;
+    const run = () => {
+      if (this.saveScheduled) this.save();
+    };
+    if (typeof queueMicrotask === 'function') queueMicrotask(run);
+    else void Promise.resolve().then(run);
+  }
+
+  /** Write what changed. A write the storage refuses is tried again with the next change. */
+  private save(): void {
+    this.saveScheduled = false;
+    const meta = this.meta();
+    if (!meta) return;
+    if (this.queueDirty) {
+      // Every op not yet answered, in the order it would go: those sent first.
+      const ops = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
+        const made = this.madeAt.get(op.id);
+        return made === undefined ? op : { ...op, made };
+      });
+      try {
+        meta.writeSyncMeta(QUEUE_META, ops.length > 0 ? JSON.stringify({ v: 1, ops }) : null);
+        this.queueDirty = false;
+      } catch (err) {
+        console.warn('[XDBServerSync] Changes waiting for the server could not be saved for the next visit:', err);
+      }
+    }
+    if (this.pulledDirty) {
+      try {
+        meta.writeSyncMeta(PULLED_META, JSON.stringify({
+          v: 1,
+          url: this.config.wsUrl,
+          collections: Object.fromEntries(this.pulled),
+          floors: Object.fromEntries(this.floors),
+        }));
+        this.pulledDirty = false;
+      } catch {
+        // The next pull is whole instead; nothing is lost.
+      }
+    }
   }
 
   /** Get known collection names from the local XDB. */
@@ -723,7 +1148,9 @@ export class XDBServerSync {
     // rather than assumes.
     const listing = this.xdb as { getCollections?: () => string[] };
     if (typeof listing.getCollections === 'function') {
-      return listing.getCollections();
+      // Only names the host takes: it answers a pull naming any other with
+      // an error, and the store may hold collections that were never synced.
+      return listing.getCollections().filter((name) => SYNCABLE_COLLECTION.test(name));
     }
     return [];
   }

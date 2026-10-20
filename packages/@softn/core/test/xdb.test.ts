@@ -2,8 +2,9 @@
  * XDB Service Tests
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { XDBService, createXDBModule } from '../src/runtime/xdb';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { XDBService, XDBStorageError, createXDBModule, createEphemeralXDBScope } from '../src/runtime/xdb';
+import { createDBNamespace } from '../src/runtime/script-runtime';
 
 // Create an in-memory storage for testing
 function createTestStorage() {
@@ -300,5 +301,231 @@ describe('XDB with collection-specific operations', () => {
 
     expect(result).toBe(true);
     expect(xdb.getAll('tasks')).toHaveLength(0);
+  });
+});
+
+/**
+ * `delete(id)` of a record that is deleted already. It found the tombstone,
+ * stamped it again, announced the delete again (to the page and to server
+ * sync) and answered true, where `deleteFromCollection` answers false.
+ */
+describe('deleting a record twice', () => {
+  it('answers false the second time and announces nothing', () => {
+    const xdb = new XDBService(createTestStorage(), 'test-xdb');
+    const record = xdb.create('tasks', { title: 'once' });
+    expect(xdb.delete(record.id)).toBe(true);
+    const stamp = xdb.getAllRaw('tasks')[0].updated_at;
+    const events: string[] = [];
+    xdb.subscribe('tasks', (event) => events.push(event.type));
+    xdb.onMutation((event) => events.push(`mutation:${event.type}`));
+
+    expect(xdb.delete(record.id)).toBe(false);
+    expect(events).toEqual([]);
+    expect(xdb.getAllRaw('tasks')[0].updated_at).toBe(stamp);
+  });
+});
+
+/**
+ * A store opened again on a storage that has getItem, setItem and removeItem
+ * and nothing else, which is all XDBStorage asks for. It knew only the
+ * collections the page had touched since it opened, so a record could not be
+ * found by id, updated, deleted or exported, and a server pull named none of
+ * them. The store keeps a list of its collections on such a storage.
+ */
+describe('a store reopened on a storage that cannot list its keys', () => {
+  it('finds its records by id, exports them and names their collections', () => {
+    const storage = createTestStorage();
+    const first = new XDBService(storage, 'test-xdb');
+    const record = first.create('notes', { n: 1 });
+    first.create('tags', { n: 2 });
+
+    const again = new XDBService(storage, 'test-xdb');
+    expect(again.getCollections().sort()).toEqual(['notes', 'tags']);
+    expect(again.update(record.id, { n: 3 })?.data).toEqual({ n: 3 });
+    expect(Object.keys(again.export().collections).sort()).toEqual(['notes', 'tags']);
+    expect(again.delete(record.id)).toBe(true);
+
+    // A cleared collection is no longer listed.
+    again.clear('tags');
+    expect(new XDBService(storage, 'test-xdb').getCollections()).toEqual(['notes']);
+  });
+
+  it('names the collections a listing storage holds, not only those this page touched', () => {
+    const store = new Map<string, string>();
+    const storage = {
+      get length() { return store.size; },
+      key: (i: number) => [...store.keys()][i] ?? null,
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key),
+    };
+    new XDBService(storage as unknown as Storage, 'test-xdb').create('notes', { n: 1 });
+    expect(new XDBService(storage as unknown as Storage, 'test-xdb').getCollections()).toEqual(['notes']);
+    // Nothing else is written beside the records on such a storage.
+    expect([...store.keys()]).toEqual(['test-xdb:notes']);
+  });
+});
+
+/**
+ * A collection name with a colon. The colon separates an app's prefix from
+ * its collections in a storage key, so the default store's "A:notes" was app
+ * A's "notes": a create there wrote into app A's records, and a lookup by id
+ * passed it over. Such a name is refused, as an import already refused it.
+ */
+describe('a collection name with a colon', () => {
+  it('is refused, and the default store can neither write nor read another app\'s records with it', () => {
+    const storage = window.localStorage;
+    storage.clear();
+    const shared = new XDBService(storage, 'xdb');
+    const app = new XDBService(storage, 'xdb:A', 'A');
+    app.create('notes', { mine: true }, { id: 'a1' });
+
+    expect(() => shared.create('A:notes', { injected: true })).toThrow(/not a valid collection name/);
+    expect(() => shared.writeRecord('A:notes', { id: 'x', collection: 'A:notes', data: {}, created_at: '', updated_at: '', deleted: false })).toThrow(/not a valid collection name/);
+    expect(() => shared.clear('A:notes')).toThrow(/not a valid collection name/);
+    expect(shared.query('A:notes')).toEqual([]);
+    expect(() => shared.create('', {})).toThrow(/not a valid collection name/);
+    expect(app.query('notes').map((r) => r.id)).toEqual(['a1']);
+    storage.clear();
+  });
+});
+
+/**
+ * What a record holds is what JSON makes of it, from the start. `create`
+ * returned the caller's own object, so a `Date` came back as a Date from
+ * `create` and as a string from `get`, and went to peers as `{}`. A value
+ * JSON cannot hold was refused by the write as a full disk, and the store
+ * then reported itself degraded.
+ */
+describe('record data JSON cannot hold, or holds differently', () => {
+  it('is returned and announced as it is read back', () => {
+    const xdb = new XDBService(createTestStorage(), 'test-xdb');
+    const announced: unknown[] = [];
+    xdb.subscribe('events', (event) => announced.push(event.record?.data.when));
+    const when = new Date('2026-03-04T05:06:07.000Z');
+    const record = xdb.create('events', { when, gone: undefined });
+    expect(record.data).toEqual({ when: '2026-03-04T05:06:07.000Z' });
+    expect(xdb.update(record.id, { when })?.data.when).toBe('2026-03-04T05:06:07.000Z');
+    expect(announced).toEqual(['2026-03-04T05:06:07.000Z', '2026-03-04T05:06:07.000Z']);
+    expect(xdb.get('events', record.id)?.data.when).toBe('2026-03-04T05:06:07.000Z');
+  });
+
+  it('is refused as what it is, and the store stays ready', () => {
+    const xdb = new XDBService(createTestStorage(), 'test-xdb');
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic.self = cyclic;
+    let deep: Record<string, unknown> = {};
+    const deepest = deep;
+    for (let i = 0; i < 20_000; i++) {
+      const next = {};
+      deep.n = next;
+      deep = next;
+    }
+    for (const data of [cyclic, { big: BigInt(1) }, deepest]) {
+      let error: unknown;
+      try {
+        xdb.create('notes', data);
+      } catch (err) {
+        error = err;
+      }
+      expect(error).toBeInstanceOf(XDBStorageError);
+      expect((error as XDBStorageError).kind).toBe('invalid-data');
+    }
+    const kept = xdb.create('notes', { fine: true });
+    expect(() => xdb.update(kept.id, { big: BigInt(2) })).toThrow(XDBStorageError);
+    expect(xdb.query('notes').map((r) => r.data)).toEqual([{ fine: true }]);
+    expect(xdb.getStorageStatus()).toMatchObject({ state: 'ready', issues: [] });
+  });
+});
+
+/**
+ * A filter or sort on a field every object inherits. `data.constructor` read
+ * Object's constructor for a record without the field, so sorting on it put
+ * those records first, and a filter on it matched records that had no such
+ * field. And an imported row whose `data` is not an object (an export file
+ * is user JSON) made every filtered or sorted query of its collection throw.
+ */
+describe('reading a field of a record', () => {
+  for (const field of ['constructor', 'toString', 'valueOf']) {
+    it(`sorts records without "${field}" last, as for any missing field`, () => {
+      const xdb = new XDBService(createTestStorage(), 'test-xdb');
+      xdb.create('notes', { [field]: 'b' }, { id: 'has-b' });
+      xdb.create('notes', {}, { id: 'missing' });
+      xdb.create('notes', { [field]: 'a' }, { id: 'has-a' });
+      expect(xdb.query('notes', { sort: { field, order: 'asc' } }).map((r) => r.id)).toEqual(['has-a', 'has-b', 'missing']);
+      expect(xdb.query('notes', { sort: { field, order: 'desc' } }).map((r) => r.id)).toEqual(['has-b', 'has-a', 'missing']);
+    });
+  }
+
+  it('matches a filter on an inherited name only where the record has it', () => {
+    const xdb = new XDBService(createTestStorage(), 'test-xdb');
+    xdb.create('notes', {}, { id: 'missing' });
+    expect(xdb.query('notes', { filter: { constructor: Object } })).toEqual([]);
+  });
+
+  for (const row of [{ id: 'x' }, { id: 'x', data: null }, { id: 'x', data: 'text' }, { id: 'x', data: [1] }]) {
+    it(`does not throw for an imported row like ${JSON.stringify(row)}`, () => {
+      const xdb = new XDBService(createTestStorage(), 'test-xdb');
+      xdb.create('notes', { status: 'open' }, { id: 'open' });
+      xdb.import({ version: 1, exportedAt: '', collections: { notes: [row as never] } });
+      expect(xdb.query('notes', { filter: { status: 'open' } }).map((r) => r.id)).toEqual(['open']);
+      expect(xdb.query('notes', { sort: { field: 'status', order: 'asc' } }).map((r) => r.id)).toEqual(['open', 'x']);
+      expect(xdb.update('x', { a: 1 })?.data).toEqual({ a: 1 });
+    });
+  }
+});
+
+/**
+ * `db.prune` and `db.clearCollection` removed records one `hardDelete` at a
+ * time, and each read and rewrote the whole collection: pruning grew with
+ * the square of its size. They remove in one write, still telling server
+ * sync of every record, and listeners hear of it as of a script's call.
+ */
+describe('removing many records for good', () => {
+  function counting() {
+    const storage = createTestStorage();
+    const writes: string[] = [];
+    const setItem = storage.setItem;
+    storage.setItem = (key: string, value: string) => {
+      writes.push(key);
+      return setItem(key, value);
+    };
+    return { storage, writes };
+  }
+
+  it('writes the collection once, and tells server sync of each record', () => {
+    const { storage, writes } = counting();
+    const xdb = new XDBService(storage, 'test-xdb');
+    for (let i = 0; i < 50; i++) xdb.create('log', { i }, { id: `r${i}` });
+    const events: string[] = [];
+    const mutations: string[] = [];
+    xdb.subscribe('log', (event) => events.push(event.type));
+    xdb.onMutation((event) => mutations.push(`${event.type}:${event.recordId}`));
+    writes.length = 0;
+
+    expect(xdb.hardDeleteMany('log', ['r0', 'r1', 'r2', 'missing'])).toBe(3);
+    expect(writes).toEqual(['test-xdb:log']);
+    expect(events).toEqual(['refresh']);
+    expect(mutations).toEqual(['delete:r0', 'delete:r1', 'delete:r2']);
+    expect(xdb.count('log')).toBe(47);
+  });
+
+  it('is how db.prune and db.clearCollection remove', async () => {
+    const scope = createEphemeralXDBScope();
+    try {
+      for (let i = 0; i < 20; i++) scope.xdb.create('log', { i }, { id: `r${i}` });
+      const one = vi.spyOn(scope.xdb, 'hardDelete');
+      const many = vi.spyOn(scope.xdb, 'hardDeleteMany');
+      const db = createDBNamespace(undefined, scope.appId);
+      await db.ready();
+      expect(db.prune('log', 5)).toBe(15);
+      expect(scope.xdb.query('log').map((r) => r.id)).toEqual(['r15', 'r16', 'r17', 'r18', 'r19']);
+      db.clearCollection('log');
+      expect(scope.xdb.count('log')).toBe(0);
+      expect(one).not.toHaveBeenCalled();
+      expect(many).toHaveBeenCalledTimes(2);
+    } finally {
+      scope.dispose();
+    }
   });
 });

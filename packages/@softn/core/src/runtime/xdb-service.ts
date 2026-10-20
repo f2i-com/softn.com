@@ -51,6 +51,84 @@ const QUARANTINE_COPY = /\.corrupt\.[0-9a-z]+$/;
 
 const OFFLINE_NETWORK_STATUS: XDBNetworkStatus = { peer_id: '', connected_peers: [], is_running: false, mode: 'local-only', enabled: false, discovery: false, listening: false, sync_paused: false };
 
+/**
+ * Whether a name can be a collection's. A colon is what separates an app's
+ * prefix from its collections in a key: the default store's "A:notes" was
+ * app A's "notes", and a record created there was written into app A's
+ * records, while every lookup by id here passed it over. An import refused
+ * such names already; a create took them.
+ */
+function isCollectionName(collection: unknown): collection is string {
+  return typeof collection === 'string' && collection.length > 0 && !collection.includes(':');
+}
+
+function assertCollectionName(collection: string): void {
+  if (!isCollectionName(collection)) {
+    throw new TypeError(`"${String(collection)}" is not a valid collection name: a name is not empty and has no ":".`);
+  }
+}
+
+/**
+ * Record data as it is stored and read back: what JSON makes of it. A record
+ * is returned and announced as `get` will read it, not as the caller's own
+ * object; a `Date` went to peers as `{}`, because the announcement carried
+ * the object itself into the shared document. A value JSON cannot hold (a
+ * cycle, a BigInt, nesting deeper than it goes) is refused as what it is,
+ * before anything is written; it used to be reported as a full disk.
+ */
+function storedData<T>(data: T): T {
+  const text = storableText(data);
+  return text === undefined ? data : (JSON.parse(text) as T);
+}
+
+/**
+ * `data` as JSON, or the refusal. An update's patch is checked with this
+ * before anything is sent, and normalised only once merged: a field the
+ * patch sets to undefined is a field removed, as JSON drops it.
+ */
+function storableText(data: unknown): string | undefined {
+  try {
+    return JSON.stringify(data);
+  } catch (err) {
+    throw new XDBStorageError('invalid-data', `This record cannot be saved: its data is not something JSON can hold (${err instanceof Error ? err.message : String(err)}).`);
+  }
+}
+
+/** A record's data when it is an object, else nothing: an imported row's `data` may be anything. */
+function objectData(record: XDBRecord): Record<string, unknown> {
+  const data = record.data as unknown;
+  return typeof data === 'object' && data !== null && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
+}
+
+/**
+ * A field of a record's data as a filter or a sort reads it: its own, never
+ * one every object inherits. Sorting on "constructor" read each record's
+ * Object constructor, and a filter on it matched records that had no such
+ * field.
+ */
+function fieldOf(record: XDBRecord, field: string): unknown {
+  const data = objectData(record);
+  return Object.prototype.hasOwnProperty.call(data, field) ? data[field] : undefined;
+}
+
+function matchesFilter(record: XDBRecord, filter: Record<string, unknown>): boolean {
+  const data = objectData(record);
+  return Object.entries(filter).every(([key, value]) => Object.prototype.hasOwnProperty.call(data, key) && data[key] === value);
+}
+
+/** Records with the field missing (or null) last, in either order. */
+function byField(field: string, order: 'asc' | 'desc'): (a: XDBRecord, b: XDBRecord) => number {
+  return (a, b) => {
+    const aVal = fieldOf(a, field);
+    const bVal = fieldOf(b, field);
+    if (aVal === bVal) return 0;
+    if (aVal === undefined || aVal === null) return 1;
+    if (bVal === undefined || bVal === null) return -1;
+    const comparison = (aVal as number) < (bVal as number) ? -1 : 1;
+    return order === 'desc' ? -comparison : comparison;
+  };
+}
+
 // ============================================================================
 // XDB Service Class
 // ============================================================================
@@ -645,6 +723,8 @@ export class XDBService {
     }
 
     if (this.corrupt.has(collection)) return [];
+    // A name with a colon names another app's key (isCollectionName).
+    if (!isCollectionName(collection)) return [];
     const key = this.collectionKey(collection);
     const data = this.storage.getItem(key);
     if (!data) return [];
@@ -691,10 +771,17 @@ export class XDBService {
       return;
     }
 
+    assertCollectionName(collection);
     const key = this.collectionKey(collection);
     let persisted: Promise<void> | undefined;
+    // A value JSON cannot hold is not a full disk, and the store is not degraded by it.
+    let value: string;
     try {
-      const value = JSON.stringify(records);
+      value = JSON.stringify(records);
+    } catch (err) {
+      throw new XDBStorageError('invalid-data', `"${collection}" cannot be saved: a record's data is not something JSON can hold (${err instanceof Error ? err.message : String(err)}).`, collection);
+    }
+    try {
       if (this.storagePersistence?.protocol === 1) persisted = this.hostedWrite(this.storagePersistence.setItem(key, value), [collection]);
       else {
         this.budget?.admit(key, value);
@@ -711,7 +798,51 @@ export class XDBService {
       throw new XDBStorageError('quota', `Could not save "${collection}": ${message}`, collection);
     }
     this.knownCollections.add(collection);
+    this.indexCollection(collection, true);
     return persisted;
+  }
+
+  /** Whether the storage can list its keys, as localStorage can; one that cannot keeps a list of its collections. */
+  private canListKeys(): boolean {
+    return 'length' in this.storage && typeof (this.storage as Storage).key === 'function';
+  }
+
+  private collectionIndex: Set<string> | null = null;
+
+  /**
+   * The collections stored here, for a storage that cannot list its keys
+   * (one with getItem, setItem and removeItem alone, which is all XDBStorage
+   * asks). Such a store reopened knew only the collections the page had
+   * touched since: a record could not be found by id, updated, deleted or
+   * exported until its collection was read by name.
+   */
+  private storedIndex(): Set<string> {
+    if (!this.collectionIndex) {
+      this.collectionIndex = new Set();
+      try {
+        const saved: unknown = JSON.parse(this.storage.getItem(this.metaKey('collections')) ?? '[]');
+        if (Array.isArray(saved)) for (const name of saved) if (isCollectionName(name)) this.collectionIndex.add(name);
+      } catch {
+        // Unreadable: the collections this page touches are still found.
+      }
+    }
+    return this.collectionIndex;
+  }
+
+  private indexCollection(collection: string, stored: boolean): void {
+    // A hosted parent's storage lists its keys (formlogic-host's storage.ts),
+    // and each write to it is a save the parent acknowledges: none is added.
+    if (this.useTauri || this.storagePersistence || this.canListKeys()) return;
+    const index = this.storedIndex();
+    if (index.has(collection) === stored) return;
+    if (stored) index.add(collection);
+    else index.delete(collection);
+    try {
+      this.writeMeta('collections', JSON.stringify([...index]));
+    } catch {
+      // The records were saved; only finding them after a reopen depends on
+      // this, and the next new collection writes the list again.
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -818,6 +949,8 @@ export class XDBService {
    * When running in Tauri, uses native backend with P2P broadcast
    */
   create(collection: string, data: Record<string, unknown>, options: XDBCreateOptions = {}): XDBRecord {
+    assertCollectionName(collection);
+    data = storedData(data);
     if (this.useTauri) {
       this.knownCollections.add(collection);
       // Async create via Tauri - fire and forget, return optimistic result.
@@ -933,6 +1066,8 @@ export class XDBService {
    * Create a record asynchronously (returns the actual server record)
    */
   async createAsync(collection: string, data: Record<string, unknown>): Promise<XDBRecord> {
+    assertCollectionName(collection);
+    data = storedData(data);
     if (this.useTauri) {
       const record = await this.native<XDBRecord>('create_record', {
         payload: { collection, data },
@@ -995,27 +1130,13 @@ export class XDBService {
 
     // Apply filter (restricted to record.data to prevent access to internal metadata)
     if (options?.filter) {
-      records = records.filter((record) => {
-        return Object.entries(options.filter!).every(([key, value]) => {
-          return key in record.data && record.data[key] === value;
-        });
-      });
+      const filter = options.filter;
+      records = records.filter((record) => matchesFilter(record, filter));
     }
 
     // Apply sort (restricted to record.data fields)
     if (options?.sort) {
-      const { field, order } = options.sort;
-      records.sort((a, b) => {
-        const aVal = a.data[field];
-        const bVal = b.data[field];
-
-        if (aVal === bVal) return 0;
-        if (aVal === undefined || aVal === null) return 1;
-        if (bVal === undefined || bVal === null) return -1;
-
-        const comparison = aVal < bVal ? -1 : 1;
-        return order === 'desc' ? -comparison : comparison;
-      });
+      records.sort(byField(options.sort.field, options.sort.order));
     }
 
     // Apply offset
@@ -1087,28 +1208,13 @@ export class XDBService {
 
       // Apply filter
       if (options?.filter) {
-        records = records.filter((record) => {
-          return Object.entries(options.filter!).every(([key, value]) => {
-            if (key in record.data) {
-              return record.data[key] === value;
-            }
-            return false;
-          });
-        });
+        const filter = options.filter;
+        records = records.filter((record) => matchesFilter(record, filter));
       }
 
       // Apply sort
       if (options?.sort) {
-        const { field, order } = options.sort;
-        records.sort((a, b) => {
-          const aVal = a.data[field];
-          const bVal = b.data[field];
-          if (aVal === bVal) return 0;
-          if (aVal === undefined || aVal === null) return 1;
-          if (bVal === undefined || bVal === null) return -1;
-          const comparison = aVal < bVal ? -1 : 1;
-          return order === 'desc' ? -comparison : comparison;
-        });
+        records.sort(byField(options.sort.field, options.sort.order));
       }
 
       // Apply offset and limit
@@ -1130,6 +1236,7 @@ export class XDBService {
    * When running in Tauri, broadcasts update to P2P network
    */
   update(id: string, data: Partial<Record<string, unknown>>): XDBRecord | null {
+    storableText(data);
     if (this.useTauri) {
       // Resolve optimistic ID → server ID if the create callback has already fired
       const resolvedId = this.optimisticIdMap.get(id) || id;
@@ -1177,7 +1284,7 @@ export class XDBService {
           touched = collection;
           const updatedRecord: XDBRecord = {
             ...record,
-            data: { ...record.data, ...data },
+            data: storedData({ ...objectData(record), ...data }),
             updated_at: new Date().toISOString(),
           };
           coll.set(record.id, updatedRecord);
@@ -1208,7 +1315,7 @@ export class XDBService {
         const record = records[index];
         const updatedRecord: XDBRecord = {
           ...record,
-          data: { ...record.data, ...data },
+          data: storedData({ ...objectData(record), ...data }),
           updated_at: new Date().toISOString(),
         };
 
@@ -1229,6 +1336,7 @@ export class XDBService {
    * Update a record asynchronously
    */
   async updateAsync(id: string, data: Partial<Record<string, unknown>>): Promise<XDBRecord | null> {
+    storableText(data);
     if (this.useTauri) {
       try {
         const record = await this.native<XDBRecord>('update_record', {
@@ -1257,6 +1365,7 @@ export class XDBService {
     id: string,
     data: Partial<Record<string, unknown>>
   ): XDBRecord | null {
+    storableText(data);
     if (this.useTauri) {
       const coll = this.memoryStore.get(collection);
       if (!coll) return null;
@@ -1269,7 +1378,7 @@ export class XDBService {
       if (!record || record.deleted) return null;
       const updatedRecord: XDBRecord = {
         ...record,
-        data: { ...record.data, ...data },
+        data: storedData({ ...objectData(record), ...data }),
         updated_at: new Date().toISOString(),
       };
       coll.set(record.id, updatedRecord);
@@ -1301,7 +1410,7 @@ export class XDBService {
     const record = records[index];
     const updatedRecord: XDBRecord = {
       ...record,
-      data: { ...record.data, ...data },
+      data: storedData({ ...objectData(record), ...data }),
       updated_at: new Date().toISOString(),
     };
 
@@ -1334,13 +1443,8 @@ export class XDBService {
         this.native<boolean>('delete_record', { id: resolvedId })
           .then(() => {
             this.nativeWriteLanded(touched);
-            for (const [collection, coll] of this.memoryStore) {
-              const record = coll.get(resolvedId);
-              if (record) {
-                this.emit({ type: 'delete', collection, record });
-                break;
-              }
-            }
+            // Announced once, below, when the cache took the delete: told
+            // again here, every listener heard of each delete twice.
             // Clean up ID mapping
             if (id !== resolvedId) this.optimisticIdMap.delete(id);
           })
@@ -1382,7 +1486,10 @@ export class XDBService {
 
     for (const collection of allKeys) {
       const records = this.getAllCollectionData(collection);
-      const index = records.findIndex((r) => r.id === id);
+      // A record deleted already is not there to delete, as for
+      // `deleteFromCollection`: it was stamped again, announced again and
+      // answered with success.
+      const index = records.findIndex((r) => r.id === id && !r.deleted);
 
       if (index !== -1) {
         const record = records[index];
@@ -1496,32 +1603,70 @@ export class XDBService {
           .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
       }
 
-      this.emit({ type: 'delete', collection, record });
+      // `removed`: a record deleted first and then removed is announced as
+      // it was, deleted, and peer sync took that for a soft delete and kept
+      // it in the room.
+      this.emit({ type: 'delete', collection, record, removed: true });
       if (!stillBeingCreated) this.notifyMutation('delete', collection, id);
       return true;
     }
 
+    return this.hardDeleteMany(collection, [id]) > 0;
+  }
+
+  /**
+   * Remove several records of one collection for good, in one write.
+   * `db.prune` and `db.clearCollection` removed records one `hardDelete` at
+   * a time, and each read and wrote the whole collection again: a thousand
+   * records cost a thousand rewrites of what was left. Each record is
+   * announced and told to server sync as `hardDelete` does; announced
+   * together, listeners hear of a batch as they do of a script's call: one
+   * refresh. Returns how many were removed.
+   */
+  hardDeleteMany(collection: string, ids: Iterable<string>): number {
+    this.assertWritable(collection, true);
+    if (this.useTauri) {
+      let removed = 0;
+      this.suppressNotifications();
+      try {
+        for (const id of ids) if (this.hardDelete(collection, id)) removed++;
+      } finally {
+        this.resumeNotifications();
+      }
+      return removed;
+    }
+
+    const wanted = new Set(ids);
     const records = this.getAllCollectionData(collection);
-    const index = records.findIndex((r) => r.id === id);
+    const found = new Map(records.filter((r) => wanted.has(r.id)).map((r) => [r.id, r]));
+    if (found.size === 0) return 0;
+    this.setCollectionData(collection, records.filter((r) => !wanted.has(r.id)));
+    // Announced in the order asked for (oldest first, for a prune).
+    const gone = [...wanted].flatMap((id) => found.get(id) ?? []);
 
-    if (index === -1) return false;
-
-    const record = records[index];
-    records.splice(index, 1);
-    this.setCollectionData(collection, records);
-
-    this.emit({ type: 'delete', collection, record });
-    this.notifyMutation('delete', collection, id);
-
-    return true;
+    const together = gone.length > 1;
+    if (together) this.suppressNotifications();
+    try {
+      for (const record of gone) this.emit({ type: 'delete', collection, record, removed: true });
+    } finally {
+      if (together) this.resumeNotifications();
+    }
+    for (const record of gone) this.notifyMutation('delete', collection, record.id);
+    return gone.length;
   }
 
   // --------------------------------------------------------------------------
   // Sync Adapter API
   // --------------------------------------------------------------------------
 
+  /**
+   * The collections this store holds, and any this page has touched. It
+   * listed only the latter: a server pull named no collection the app had
+   * not read since it opened, and peer sync shared none of them.
+   */
   getCollections(): string[] {
-    return Array.from(this.knownCollections);
+    if (this.useTauri) return Array.from(this.knownCollections);
+    return [...new Set([...this.knownCollections, ...this.getAllCollectionKeys()])];
   }
 
   getAllRaw(collection: string): XDBRecord[] {
@@ -1559,7 +1704,7 @@ export class XDBService {
       const removed = coll?.get(id);
       if (removed) {
         coll!.delete(id);
-        this.emit({ type: 'delete', collection, record: removed });
+        this.emit({ type: 'delete', collection, record: removed, removed: true });
       }
       this.native<boolean>('delete_record', { id })
         .then(() => this.nativeWriteLanded(collection))
@@ -1572,7 +1717,7 @@ export class XDBService {
       const removed = records[index];
       records.splice(index, 1);
       this.setCollectionData(collection, records);
-      this.emit({ type: 'delete', collection, record: removed });
+      this.emit({ type: 'delete', collection, record: removed, removed: true });
     }
   }
 
@@ -1685,6 +1830,48 @@ export class XDBService {
     }
   }
 
+  /**
+   * What server sync keeps beside the records between page loads: the
+   * changes made here that the server has not answered yet, and where its
+   * last pull of each collection ended. Kept in this store's own storage,
+   * so each app has its own and it goes wherever the app's records go, under
+   * a key no collection can have (a collection name has no colon).
+   */
+  readSyncMeta(name: string): string | null {
+    try {
+      return this.storage.getItem(this.metaKey(name));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Save (or, with null, remove) what `readSyncMeta` reads. Throws when the storage refuses it. */
+  writeSyncMeta(name: string, value: string | null): void {
+    this.writeMeta(name, value);
+  }
+
+  private metaKey(name: string): string {
+    return `${this.prefix}::${name}`;
+  }
+
+  /** A write beside the records, by the path record writes take and counted against the same budget. */
+  private writeMeta(name: string, value: string | null): void {
+    if (this.destroyed && this.storagePersistence) return;
+    const key = this.metaKey(name);
+    if (this.storagePersistence?.protocol === 1) {
+      this.hostedWrite(value === null ? this.storagePersistence.removeItem(key) : this.storagePersistence.setItem(key, value), []);
+      return;
+    }
+    if (value === null) {
+      this.storage.removeItem(key);
+      this.budget?.removed(key);
+      return;
+    }
+    this.budget?.admit(key, value);
+    this.storage.setItem(key, value);
+    this.budget?.wrote(key, value);
+  }
+
   // --------------------------------------------------------------------------
   // Utility Methods
   // --------------------------------------------------------------------------
@@ -1720,16 +1907,26 @@ export class XDBService {
       return keys;
     }
 
-    // Fallback to tracked collections (for memory storage and other implementations)
-    return Array.from(this.knownCollections);
+    // A storage that cannot list its keys: the collections it has stored
+    // (storedIndex), and any this page has touched.
+    if (this.useTauri) return Array.from(this.knownCollections);
+    return [...new Set([...this.knownCollections, ...this.storedIndex()])];
   }
 
   /**
    * Clear all data in a collection
    */
   clear(collection: string): void {
+    assertCollectionName(collection);
     this.assertWritable(collection, true);
+    // Server sync is told of each record this removes, as of any delete. It
+    // heard nothing: the server kept the records, and the next pull brought
+    // every one of them back.
+    let gone: string[];
     if (this.useTauri) {
+      gone = [...(this.memoryStore.get(collection)?.values() ?? [])]
+        .filter((r) => !r.deleted && !this.pendingCreateIds.has(r.id))
+        .map((r) => r.id);
       this.memoryStore.delete(collection);
       this.knownCollections.delete(collection);
       this.emit({ type: 'refresh', collection, records: [] });
@@ -1737,22 +1934,25 @@ export class XDBService {
       this.native<boolean>('clear_collection', { collection })
         .then(() => this.nativeWriteLanded(collection))
         .catch((err) => this.nativeWriteFailed('clear a collection', collection, err));
-      return;
+    } else {
+      gone = this.getAllCollectionData(collection).filter((r) => !r.deleted).map((r) => r.id);
+      if (this.storagePersistence?.protocol === 1) this.hostedWrite(this.storagePersistence.removeItem(this.collectionKey(collection)), [collection]);
+      else {
+        this.storage.removeItem(this.collectionKey(collection));
+        this.budget?.removed(this.collectionKey(collection));
+        if (this.storagePersistence) this.unsupportedPersistence(collection);
+      }
+      this.indexCollection(collection, false);
+      this.emit({ type: 'refresh', collection, records: [] });
     }
-    if (this.storagePersistence?.protocol === 1) this.hostedWrite(this.storagePersistence.removeItem(this.collectionKey(collection)), [collection]);
-    else {
-      this.storage.removeItem(this.collectionKey(collection));
-      this.budget?.removed(this.collectionKey(collection));
-      if (this.storagePersistence) this.unsupportedPersistence(collection);
-    }
-    this.emit({ type: 'refresh', collection, records: [] });
+    for (const id of gone) this.notifyMutation('delete', collection, id);
   }
 
   /**
    * Clear all XDB data
    */
   clearAll(): void {
-    const collections = this.getAllCollectionKeys();
+    const collections = this.getAllCollectionKeys().filter(isCollectionName);
     for (const collection of collections) {
       this.clear(collection);
     }

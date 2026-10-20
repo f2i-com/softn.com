@@ -112,12 +112,15 @@ export function useCollection(
         // this device never had). Patched in, it stayed on the list.
         const gone = event.record.id;
         setRecords((prev) => prev.filter((r) => r.id !== gone));
-      } else if (event.type === 'create' && event.record) {
-        // Append new record directly
-        setRecords((prev) => [...prev, event.record!]);
-      } else if (event.type === 'update' && event.record) {
-        // Patch updated record in place
-        setRecords((prev) => prev.map((r) => r.id === event.record!.id ? event.record! : r));
+      } else if ((event.type === 'create' || event.type === 'update') && event.record) {
+        // Patched in place, or added when it is not on the list. A record
+        // that comes back (a delete the server or a peer overruled, a
+        // restore) arrives as an update of one the list had dropped, and a
+        // patch in place alone never showed it again.
+        const record = event.record;
+        setRecords((prev) =>
+          prev.some((r) => r.id === record.id) ? prev.map((r) => (r.id === record.id ? record : r)) : [...prev, record]
+        );
       } else if (event.type === 'delete' && event.record) {
         // Remove deleted record
         setRecords((prev) => prev.filter((r) => r.id !== event.record!.id));
