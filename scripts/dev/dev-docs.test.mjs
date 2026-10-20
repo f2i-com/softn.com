@@ -15,7 +15,6 @@ import { docsDevPlugin } from './dev-docs.mjs';
 
 async function startPlugin(t) {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-dev-docs-'));
-  t.after(() => fs.rmSync(outDir, { recursive: true, force: true }));
   const middlewares = [];
   const server = {
     config: { server: { port: 1420 }, logger: { info() {}, error() {} } },
@@ -36,6 +35,14 @@ async function startPlugin(t) {
       // it is a rejection nobody handles. Here it fails the request instead.
       Promise.resolve(middlewares[0]({ url, method }, response, () => resolve({ next: true }))).catch(reject);
     });
+  // The build the plugin starts with the server writes into outDir until it
+  // ends; a test that asks for no guide never waits for it, and removing the
+  // folder under it left the rest of the build behind, a megabyte a run. A
+  // guide's request waits for the build, so the folder goes after it.
+  t.after(async () => {
+    await request('/docs/').catch(() => {});
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
   return { outDir, request };
 }
 

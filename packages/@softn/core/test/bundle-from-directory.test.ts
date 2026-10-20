@@ -9,7 +9,7 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { existsSync, readFileSync, unlinkSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -65,11 +65,15 @@ describe('createBundleFromDirectory', () => {
   });
 
   it('writes to outputPath when one is given', async () => {
-    const out = join(mkdtempSync(join(tmpdir(), 'softn-bundle-')), 'demo.softn');
-    const bytes = await createBundleFromDirectory({ sourceDir: 'demo-bundle', outputPath: out });
-    expect(existsSync(out)).toBe(true);
-    expect(sameBytes(new Uint8Array(readFileSync(out)), bytes)).toBe(true);
-    unlinkSync(out);
+    const dir = mkdtempSync(join(tmpdir(), 'softn-bundle-'));
+    const out = join(dir, 'demo.softn');
+    try {
+      const bytes = await createBundleFromDirectory({ sourceDir: 'demo-bundle', outputPath: out });
+      expect(existsSync(out)).toBe(true);
+      expect(sameBytes(new Uint8Array(readFileSync(out)), bytes)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('honours exclude', async () => {
@@ -97,11 +101,15 @@ describe('createBundleFromDirectory', () => {
     ).rejects.toThrow(/Source directory not found/);
 
     const empty = mkdtempSync(join(tmpdir(), 'softn-empty-'));
-    mkdirSync(join(empty, 'sub'), { recursive: true });
-    writeFileSync(join(empty, 'sub', 'a.logic'), 'let a = 1\n');
-    await expect(createBundleFromDirectory({ sourceDir: empty, outputPath: '' })).rejects.toThrow(
-      /manifest\.json not found/
-    );
+    try {
+      mkdirSync(join(empty, 'sub'), { recursive: true });
+      writeFileSync(join(empty, 'sub', 'a.logic'), 'let a = 1\n');
+      await expect(createBundleFromDirectory({ sourceDir: empty, outputPath: '' })).rejects.toThrow(
+        /manifest\.json not found/
+      );
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
   });
 });
 

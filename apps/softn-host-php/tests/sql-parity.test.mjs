@@ -13,7 +13,7 @@
  */
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync,mkdtempSync} from 'node:fs';
+import {readFileSync,mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -92,7 +92,8 @@ test('the request connection refuses a new statement at each of its limits, and 
   const values=Array.from({length:50_000},(_,i)=>i).join(',');
   const wide=Array.from({length:250},(_,i)=>`c${i} INTEGER`).join(',');
   const deep=Array.from({length:150},(_,i)=>`a = ${i}`).join(' OR ');
-  const file=join(mkdtempSync(join(tmpdir(),'softn-limits-')),'old.sqlite');
+  const dir=mkdtempSync(join(tmpdir(),'softn-limits-'));
+  const file=join(dir,'old.sqlite');
   const old=new DatabaseSync(file);
   old.exec(`CREATE TABLE big(v TEXT); INSERT INTO big VALUES (printf('%.*c', ${3*1024*1024}, 'x'));
     CREATE TABLE wide(${wide}); INSERT INTO wide(c0) VALUES (1);
@@ -105,7 +106,7 @@ test('the request connection refuses a new statement at each of its limits, and 
     assert.equal(now.prepare('SELECT c0 FROM wide').get().c0,1);
     assert.equal(now.prepare('SELECT a FROM deep').get().a,3);
     assert.equal(now.prepare('SELECT a FROM listed').get().a,7);
-  } finally {now.close();}
+  } finally {now.close(); rmSync(dir,{recursive:true,force:true});}
 });
 
 test('a migration may be 1,000,000 bytes and no more, which the Rust host takes too',()=>{
