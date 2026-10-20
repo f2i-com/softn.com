@@ -134,6 +134,10 @@ const JS_GLOBALS: Record<string, unknown> = {
   undefined,
   encodeURIComponent,
   decodeURIComponent,
+  // `new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })`:
+  // formatters, which read and write nothing. It was undefined, so such a
+  // price showed nothing.
+  Intl,
 };
 
 /**
@@ -143,7 +147,15 @@ const JS_GLOBALS: Record<string, unknown> = {
  * on whatever a name evaluates to would be a way to run a constructor the
  * author was never handed. These build values and nothing else.
  */
-const CONSTRUCTIBLE: ReadonlySet<unknown> = new Set([Date, Array, Map, Set]);
+const CONSTRUCTIBLE: ReadonlySet<unknown> = new Set([
+  Date,
+  Array,
+  Map,
+  Set,
+  ...Object.values(Object.getOwnPropertyDescriptors(Intl))
+    .map((descriptor) => descriptor.value as unknown)
+    .filter((value) => typeof value === 'function' && /^[A-Z]/.test((value as { name: string }).name)),
+]);
 
 const BLOCKED_MEMBER_KEYS = new Set(['constructor', '__proto__', 'prototype']);
 
@@ -180,6 +192,42 @@ function stateWriteAllowed(expr: Expression, what: string): boolean {
     );
   }
   return false;
+}
+
+/**
+ * `left operator right` for an operator on numbers: `-`, `*`, `/`, `%`,
+ * `**`, the bitwise ones and the shifts, as in a template and as the
+ * compound assignment (`-=`, `|=`) without its `=`.
+ */
+function arithmetic(operator: string, left: unknown, right: unknown): unknown {
+  const a = left as number;
+  const b = right as number;
+  switch (operator) {
+    case '-':
+      return a - b;
+    case '*':
+      return a * b;
+    case '/':
+      return a / b;
+    case '%':
+      return a % b;
+    case '**':
+      return a ** b;
+    case '&':
+      return a & b;
+    case '|':
+      return a | b;
+    case '^':
+      return a ^ b;
+    case '<<':
+      return a << b;
+    case '>>':
+      return a >> b;
+    case '>>>':
+      return a >>> b;
+    default:
+      return undefined;
+  }
 }
 
 function getSafeMemberKey(value: unknown): string | null {
@@ -2748,15 +2796,17 @@ function evaluate(
           }
           return (left as number) + (right as number);
         case '-':
-          return (left as number) - (right as number);
         case '*':
-          return (left as number) * (right as number);
         case '/':
-          return (left as number) / (right as number);
         case '%':
-          return (left as number) % (right as number);
         case '**':
-          return (left as number) ** (right as number);
+        case '&':
+        case '|':
+        case '^':
+        case '<<':
+        case '>>':
+        case '>>>':
+          return arithmetic(expr.operator, left, right);
         case 'in': {
           // JavaScript throws for a right side that is not an object; a
           // template asks this of data that has not loaded yet.
@@ -2805,6 +2855,8 @@ function evaluate(
           return typeof arg;
         case 'void':
           return void arg;
+        case '~':
+          return ~(arg as number);
         default:
           return undefined;
       }
@@ -2925,7 +2977,7 @@ function evaluate(
       const ctor = evaluate(expr.callee, context, locals, depth + 1);
       if (!CONSTRUCTIBLE.has(ctor)) {
         if (isDevelopment) {
-          console.error('[SoftN] "new" in a template constructs Date, Array, Map or Set only; build anything else in a logic function.');
+          console.error('[SoftN] "new" in a template constructs Date, Array, Map, Set or an Intl formatter only; build anything else in a logic function.');
         }
         return undefined;
       }
@@ -2972,25 +3024,16 @@ function evaluate(
           value = right;
           break;
         }
-        default: {
+        case '+=': {
           const current = evaluate(expr.left, context, locals, depth + 1);
-          const a = current as number;
-          const b = right as number;
           value =
-            expr.operator === '+='
-              ? typeof current === 'string' || typeof right === 'string'
-                ? String(current) + String(right)
-                : a + b
-              : expr.operator === '-='
-                ? a - b
-                : expr.operator === '*='
-                  ? a * b
-                  : expr.operator === '/='
-                    ? a / b
-                    : expr.operator === '**='
-                      ? a ** b
-                      : a % b;
+            typeof current === 'string' || typeof right === 'string'
+              ? String(current) + String(right)
+              : (current as number) + (right as number);
+          break;
         }
+        default:
+          value = arithmetic(expr.operator.slice(0, -1), evaluate(expr.left, context, locals, depth + 1), right);
       }
       if (stateWriteAllowed(expr, `The assignment "${expr.operator}"`)) context.setState(path, value);
       return value;

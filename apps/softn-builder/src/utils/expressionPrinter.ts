@@ -68,22 +68,34 @@ enum Prec {
   Nullish = 3,
   Or = 4,
   And = 5,
-  Equality = 6,
-  Comparison = 7,
-  Additive = 8,
-  Multiplicative = 9,
-  Exponent = 10,
-  Unary = 11,
-  Postfix = 12,
-  Primary = 13,
+  BitOr = 6,
+  BitXor = 7,
+  BitAnd = 8,
+  Equality = 9,
+  Comparison = 10,
+  Shift = 11,
+  Additive = 12,
+  Multiplicative = 13,
+  Exponent = 14,
+  Unary = 15,
+  Postfix = 16,
+  Primary = 17,
 }
 
-const ASSIGNMENT_OPERATORS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '??=', '||=', '&&=']);
+const ASSIGNMENT_OPERATORS = new Set([
+  '=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '??=', '||=', '&&=',
+]);
 
 const BINARY_PRECEDENCE: Record<string, Prec> = {
   '??': Prec.Nullish,
   '||': Prec.Or,
   '&&': Prec.And,
+  '|': Prec.BitOr,
+  '^': Prec.BitXor,
+  '&': Prec.BitAnd,
+  '<<': Prec.Shift,
+  '>>': Prec.Shift,
+  '>>>': Prec.Shift,
   '==': Prec.Equality,
   '!=': Prec.Equality,
   '===': Prec.Equality,
@@ -102,7 +114,7 @@ const BINARY_PRECEDENCE: Record<string, Prec> = {
   '**': Prec.Exponent,
 };
 
-const UNARY_OPERATORS = new Set(['!', '-', '+', 'typeof', 'void']);
+const UNARY_OPERATORS = new Set(['!', '-', '+', '~', 'typeof', 'void']);
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -244,8 +256,9 @@ function printArrow(expr: ArrowFunctionExpression): string {
 
 function printTemplateChunk(raw: string): string {
   // The lexer hands the cooked text back as `raw`, so the characters that
-  // end or interrupt a template have to be escaped again.
-  return raw.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+  // end or interrupt a template have to be escaped again, and a carriage
+  // return too: written as itself it would be read back as a line feed.
+  return raw.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${').replace(/\r/g, '\\r');
 }
 
 /**

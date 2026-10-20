@@ -196,6 +196,30 @@ describe('operators', () => {
     ]);
   });
 
+  it('reads the bitwise operators and shifts at their levels', () => {
+    expect(expr('a | b ^ c & d')).toMatchObject({
+      operator: '|',
+      right: { operator: '^', right: { operator: '&' } },
+    });
+    expect(expr('a && b | c')).toMatchObject({ operator: '&&', right: { operator: '|' } });
+    expect(expr('a & b == c')).toMatchObject({ operator: '&', right: { operator: '==' } });
+    expect(expr('a < b << c')).toMatchObject({ operator: '<', right: { operator: '<<' } });
+    expect(expr('a >>> b + c')).toMatchObject({ operator: '>>>', right: { operator: '+' } });
+    expect(expr('~a')).toMatchObject({ type: 'UnaryExpression', operator: '~' });
+    for (const operator of ['&=', '|=', '^=', '<<=', '>>=', '>>>=']) {
+      expect(expr(`flags ${operator} 2`)).toMatchObject({ type: 'AssignmentExpression', operator });
+    }
+  });
+
+  it('keeps & and | in text and tags as they were', () => {
+    const doc = parse('<p title="a | b & c">Tom & Jerry | 1 << 2</p>');
+    expect(doc.diagnostics ?? []).toEqual([]);
+    expect(doc.template[0]).toMatchObject({
+      props: [{ value: { type: 'static', value: 'a | b & c' } }],
+      children: [{ type: 'Text', content: 'Tom & Jerry | 1 << 2' }],
+    });
+  });
+
   it('reads **= as an assignment', () => {
     expect(expr('scale **= 2')).toMatchObject({ type: 'AssignmentExpression', operator: '**=' });
   });

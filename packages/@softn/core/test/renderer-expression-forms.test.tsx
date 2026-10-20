@@ -168,6 +168,34 @@ describe('operators', () => {
     expect(run('() => scale **= 3', { scale: 2 }).writes).toEqual([['scale', 8]]);
   });
 
+  it('work on bits, as JavaScript does', () => {
+    // Each was an "unexpected token" that cut the expression short.
+    expect(evaluate('flags & 4', { flags: 6 })).toBe(4);
+    expect(evaluate('flags | 1', { flags: 6 })).toBe(7);
+    expect(evaluate('flags ^ 2', { flags: 6 })).toBe(4);
+    expect(evaluate('~flags', { flags: 6 })).toBe(-7);
+    expect(evaluate('1 << 4')).toBe(16);
+    expect(evaluate('-16 >> 2')).toBe(-4);
+    expect(evaluate('-1 >>> 28')).toBe(15);
+    expect(evaluate('n & 1 ? "odd" : "even"', { n: 3 })).toBe('odd');
+    expect(evaluate('1 | 2 & 3 ^ 4 << 1')).toBe(11);
+    expect(run('() => flags |= 8', { flags: 6 }).writes).toEqual([['flags', 14]]);
+    expect(run('() => flags >>>= 1', { flags: 6 }).writes).toEqual([['flags', 3]]);
+  });
+
+  it('read `?.` before a digit as a choice, as JavaScript does', () => {
+    expect(evaluate('hidden?.3:1', { hidden: true })).toBe(0.3);
+    expect(evaluate('hidden?.3:1', { hidden: false })).toBe(1);
+    expect(evaluate('user?.name', { user: { name: 'Ada' } })).toBe('Ada');
+  });
+
+  it('format with Intl', () => {
+    expect(evaluate('new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(1234.5)')).toBe('$1,234.50');
+    expect(evaluate('Intl.NumberFormat("en-US").format(n)', { n: 1e6 })).toBe('1,000,000');
+    expect(evaluate('new Intl.DateTimeFormat("en-US", { timeZone: "UTC" }).format(new Date(0))')).toBe('1/1/1970');
+    expect(evaluate('new Intl.PluralRules("en-US").select(1)')).toBe('one');
+  });
+
   it('answer in for an object and its keys', () => {
     expect(evaluate('"email" in errors', { errors: { email: 'Required' } })).toBe(true);
     expect(evaluate('"name" in errors', { errors: { email: 'Required' } })).toBe(false);

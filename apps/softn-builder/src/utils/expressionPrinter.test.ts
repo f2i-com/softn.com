@@ -231,6 +231,22 @@ const fixtures: Array<[string, unknown]> = [
   ['-(a ** b)', -8],
   ['a ** -b', 0.125],
   ['a **= b', 8],
+  // the bitwise operators and the shifts, each at JavaScript's level
+  ['a | b & c', 3],
+  ['(a | b) & c', 1],
+  ['a ^ b | c', 5],
+  ['a & b === 3', 0],
+  ['(a & b) === 2', true],
+  ['a << b + 1', 32],
+  ['(a << b) + 1', 17],
+  ['-c >>> 28', 15],
+  ['-c >> a', -2],
+  ['~a', -3],
+  ['~~(c / a)', 2],
+  ['a < b << 1', true],
+  ['a |= b', 3],
+  ['a >>>= 1', 1],
+  ['x ? .5 : 1', 0.5],
   // `in` and `instanceof` sit with the comparisons
   ['"first" in user.profile', true],
   ['("z" in user.profile) === y', true],
@@ -351,12 +367,12 @@ describe('an unsupported AST node', () => {
   it('refuses a binary operator the grammar does not have', () => {
     const op = {
       type: 'BinaryExpression',
-      operator: '>>>',
+      operator: '<=>',
       left: exprOf('a'),
       right: exprOf('b'),
       loc: bogus.loc,
     } as Expression;
-    expect(() => printExpression(op)).toThrow(/>>>/);
+    expect(() => printExpression(op)).toThrow(/<=>/);
   });
 
   it('refuses a construction whose class is not a name and a member path', () => {

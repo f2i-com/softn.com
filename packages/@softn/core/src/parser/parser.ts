@@ -85,6 +85,12 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<TokenType, AssignmentOperator> = new Map
   [TokenType.SLASH_ASSIGN, '/='],
   [TokenType.PERCENT_ASSIGN, '%='],
   [TokenType.EXPONENT_ASSIGN, '**='],
+  [TokenType.BIT_AND_ASSIGN, '&='],
+  [TokenType.BIT_OR_ASSIGN, '|='],
+  [TokenType.BIT_XOR_ASSIGN, '^='],
+  [TokenType.SHIFT_LEFT_ASSIGN, '<<='],
+  [TokenType.SHIFT_RIGHT_ASSIGN, '>>='],
+  [TokenType.SHIFT_RIGHT_UNSIGNED_ASSIGN, '>>>='],
   [TokenType.NULLISH_ASSIGN, '??='],
   [TokenType.OR_ASSIGN, '||='],
   [TokenType.AND_ASSIGN, '&&='],
@@ -142,6 +148,12 @@ const NEEDS_LEFT_OPERAND: ReadonlySet<TokenType> = new Set([
   TokenType.OPTIONAL_CHAIN,
   TokenType.IN,
   TokenType.INSTANCEOF,
+  TokenType.BIT_AND,
+  TokenType.BIT_OR,
+  TokenType.BIT_XOR,
+  TokenType.SHIFT_LEFT,
+  TokenType.SHIFT_RIGHT,
+  TokenType.SHIFT_RIGHT_UNSIGNED,
   ...ASSIGNMENT_OPERATORS.keys(),
 ]);
 
@@ -178,6 +190,13 @@ const NEEDS_RIGHT_OPERAND: ReadonlySet<TokenType> = new Set([
   TokenType.COLON,
   TokenType.ARROW,
   TokenType.SPREAD,
+  TokenType.BIT_AND,
+  TokenType.BIT_OR,
+  TokenType.BIT_XOR,
+  TokenType.BIT_NOT,
+  TokenType.SHIFT_LEFT,
+  TokenType.SHIFT_RIGHT,
+  TokenType.SHIFT_RIGHT_UNSIGNED,
   ...ASSIGNMENT_OPERATORS.keys(),
 ]);
 
@@ -190,8 +209,6 @@ const CLOSES_EXPRESSION: ReadonlySet<TokenType> = new Set([
   TokenType.TEMPLATE_EXPR_END,
 ]);
 
-/** A short name for what an expression is, for a diagnostic about it. */
-/** What `{ name = value }` is told when it is a record being made and not a pattern. */
 /**
  * Statements markup does not read in the body of an arrow: a block of them
  * is reported and not run (see parseArrowBody). Each is a word that cannot
@@ -202,6 +219,7 @@ const NOT_READ_STATEMENTS: ReadonlySet<string> = new Set([
   'function', 'class', 'async', 'await', 'break', 'continue',
 ]);
 
+/** What `{ name = value }` is told when it is a record being made and not a pattern. */
 const COVER_DEFAULT_MESSAGE =
   'A name with a default (name = value) inside { } is only read where a record is taken apart: ' +
   'as the parameter of an arrow, ({ name = value }) => …. In a record that is being made, write name: value';
@@ -245,6 +263,7 @@ function joinStyleBlocks(first: StyleBlock, next: StyleBlock): StyleBlock {
   return { type: 'StyleBlock', content, loc: first.loc };
 }
 
+/** A short name for what an expression is, for a diagnostic about it. */
 function describeExpression(expr: Expression): string {
   switch (expr.type) {
     case 'Literal':
@@ -2787,15 +2806,54 @@ export class Parser {
   }
 
   private parseAnd(): Expression {
-    let left = this.parseEquality();
+    let left = this.parseBitOr();
 
     while (this.curTokenIs(TokenType.AND)) {
       const loc = this.currentLoc();
       this.nextToken();
-      const right = this.parseEquality();
+      const right = this.parseBitOr();
       left = { type: 'BinaryExpression', operator: '&&', left, right, loc };
     }
 
+    return left;
+  }
+
+  /**
+   * `a | b`, `a ^ b` and `a & b`, between `&&` and the equalities as in
+   * JavaScript, and `a << b`, `a >> b` and `a >>> b` between the comparisons
+   * and `+`. Each was an "unexpected token" that cut the expression short.
+   */
+  private parseBitOr(): Expression {
+    return this.parseLeftAssociative(() => this.parseBitXor(), TokenType.BIT_OR);
+  }
+
+  private parseBitXor(): Expression {
+    return this.parseLeftAssociative(() => this.parseBitAnd(), TokenType.BIT_XOR);
+  }
+
+  private parseBitAnd(): Expression {
+    return this.parseLeftAssociative(() => this.parseEquality(), TokenType.BIT_AND);
+  }
+
+  private parseShift(): Expression {
+    return this.parseLeftAssociative(
+      () => this.parseAdditive(),
+      TokenType.SHIFT_LEFT,
+      TokenType.SHIFT_RIGHT,
+      TokenType.SHIFT_RIGHT_UNSIGNED
+    );
+  }
+
+  /** Operands read by `operand`, joined left to right by any of `operators`. */
+  private parseLeftAssociative(operand: () => Expression, ...operators: TokenType[]): Expression {
+    let left = operand();
+    while (operators.includes(this.curToken.type)) {
+      const loc = this.currentLoc();
+      const operator = this.curToken.literal;
+      this.nextToken();
+      const right = operand();
+      left = { type: 'BinaryExpression', operator, left, right, loc };
+    }
     return left;
   }
 
@@ -2819,7 +2877,7 @@ export class Parser {
   }
 
   private parseComparison(): Expression {
-    let left = this.parseAdditive();
+    let left = this.parseShift();
 
     // `in` and `instanceof` sit with the comparisons, as in JavaScript. The
     // renderer has always evaluated `instanceof`; nothing ever parsed it.
@@ -2834,7 +2892,7 @@ export class Parser {
       const loc = this.currentLoc();
       const operator = this.curToken.literal;
       this.nextToken();
-      const right = this.parseAdditive();
+      const right = this.parseShift();
       left = { type: 'BinaryExpression', operator, left, right, loc };
     }
 
@@ -2914,7 +2972,8 @@ export class Parser {
       this.curTokenIs(TokenType.MINUS) ||
       this.curTokenIs(TokenType.PLUS) ||
       this.curTokenIs(TokenType.TYPEOF) ||
-      this.curTokenIs(TokenType.VOID)
+      this.curTokenIs(TokenType.VOID) ||
+      this.curTokenIs(TokenType.BIT_NOT)
     ) {
       const loc = this.currentLoc();
       const operator = this.curToken.literal;
@@ -4024,7 +4083,8 @@ export function parse(source: string): SoftNDocument {
 //    first line break and the element lost its children. Text and template
 //    literals read CR LF and CR as LF; strings and templates read every
 //    escape JavaScript does (`\x41`, `\u{43}`, a line continuation); a
-//    byte-order mark is passed over.
+//    byte-order mark is passed over. The bitwise operators and shifts are
+//    read at JavaScript's levels, and `?.` before a digit is `?` and a number.
 export const PARSER_VERSION = 14;
 
 /**

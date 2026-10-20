@@ -107,6 +107,21 @@ export enum TokenType {
   DECREMENT = 'DECREMENT', // --
   EXPONENT = 'EXPONENT', // **
   EXPONENT_ASSIGN = 'EXPONENT_ASSIGN', // **=
+  // Bitwise operators, inside an expression only: in text `&` begins an
+  // entity, and in a tag `<` and `>` are the tag's.
+  BIT_AND = 'BIT_AND', // &
+  BIT_OR = 'BIT_OR', // |
+  BIT_XOR = 'BIT_XOR', // ^
+  BIT_NOT = 'BIT_NOT', // ~
+  SHIFT_LEFT = 'SHIFT_LEFT', // <<
+  SHIFT_RIGHT = 'SHIFT_RIGHT', // >>
+  SHIFT_RIGHT_UNSIGNED = 'SHIFT_RIGHT_UNSIGNED', // >>>
+  BIT_AND_ASSIGN = 'BIT_AND_ASSIGN', // &=
+  BIT_OR_ASSIGN = 'BIT_OR_ASSIGN', // |=
+  BIT_XOR_ASSIGN = 'BIT_XOR_ASSIGN', // ^=
+  SHIFT_LEFT_ASSIGN = 'SHIFT_LEFT_ASSIGN', // <<=
+  SHIFT_RIGHT_ASSIGN = 'SHIFT_RIGHT_ASSIGN', // >>=
+  SHIFT_RIGHT_UNSIGNED_ASSIGN = 'SHIFT_RIGHT_UNSIGNED_ASSIGN', // >>>=
   ARROW = 'ARROW', // =>
   DOLLAR = 'DOLLAR', // $ (for $:)
   SEMICOLON = 'SEMICOLON', // ;

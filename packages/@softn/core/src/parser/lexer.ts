@@ -58,6 +58,29 @@ const ENDS_AN_OPERAND: ReadonlySet<TokenType> = new Set([
   TokenType.THIS,
 ]);
 
+/**
+ * The operators that begin with one character, inside an expression, each
+ * list longest first: what `readOperator` reads at that character.
+ */
+type Operators = ReadonlyArray<readonly [string, TokenType]>;
+const GREATER_THAN_OPERATORS: Operators = [
+  ['>>>=', TokenType.SHIFT_RIGHT_UNSIGNED_ASSIGN],
+  ['>>>', TokenType.SHIFT_RIGHT_UNSIGNED],
+  ['>>=', TokenType.SHIFT_RIGHT_ASSIGN],
+  ['>>', TokenType.SHIFT_RIGHT],
+  ['>=', TokenType.GTE],
+  ['>', TokenType.GT],
+];
+const LESS_THAN_OPERATORS: Operators = [
+  ['<<=', TokenType.SHIFT_LEFT_ASSIGN],
+  ['<<', TokenType.SHIFT_LEFT],
+  ['<', TokenType.LT],
+];
+const BIT_AND_OPERATORS: Operators = [['&=', TokenType.BIT_AND_ASSIGN], ['&', TokenType.BIT_AND]];
+const BIT_OR_OPERATORS: Operators = [['|=', TokenType.BIT_OR_ASSIGN], ['|', TokenType.BIT_OR]];
+const BIT_XOR_OPERATORS: Operators = [['^=', TokenType.BIT_XOR_ASSIGN], ['^', TokenType.BIT_XOR]];
+const BIT_NOT_OPERATORS: Operators = [['~', TokenType.BIT_NOT]];
+
 /** What a backslash and one letter stand for in a string; any other character stands for itself. */
 const SINGLE_ESCAPES: Readonly<Record<string, string>> = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
 
@@ -358,13 +381,7 @@ export class Lexer {
       case '>':
         // Inside an expression or control flow, > is a comparison operator, not a tag close
         if (this.inExpression > 0 || this.inControlFlow > 0) {
-          if (this.peekChar() === '=') {
-            this.readChar();
-            this.readChar();
-            return createToken(TokenType.GTE, '>=', startLine, startColumn, startPos, this.position);
-          }
-          this.readChar();
-          return createToken(TokenType.GT, '>', startLine, startColumn, startPos, this.position);
+          return this.readOperator(GREATER_THAN_OPERATORS, startLine, startColumn, startPos);
         }
         this.readChar();
         this.inTag = false;
@@ -692,8 +709,7 @@ export class Lexer {
         }
         // Inside an expression or control flow, < is a comparison operator
         if (this.inExpression > 0 || this.inControlFlow > 0) {
-          this.readChar();
-          return createToken(TokenType.LT, '<', startLine, startColumn, startPos, this.position);
+          return this.readOperator(LESS_THAN_OPERATORS, startLine, startColumn, startPos);
         }
         // Could be another tag - let readTagStart handle it
         return this.readTagStart();
@@ -716,6 +732,9 @@ export class Lexer {
           }
           return createToken(TokenType.AND, '&&', startLine, startColumn, startPos, this.position);
         }
+        if (this.inExpression > 0 || this.inControlFlow > 0) {
+          return this.readOperator(BIT_AND_OPERATORS, startLine, startColumn, startPos);
+        }
         break;
 
       case '|':
@@ -736,10 +755,22 @@ export class Lexer {
           }
           return createToken(TokenType.OR, '||', startLine, startColumn, startPos, this.position);
         }
+        if (this.inExpression > 0 || this.inControlFlow > 0) {
+          return this.readOperator(BIT_OR_OPERATORS, startLine, startColumn, startPos);
+        }
+        break;
+
+      case '^':
+      case '~':
+        if (this.inExpression > 0 || this.inControlFlow > 0) {
+          return this.readOperator(this.ch === '^' ? BIT_XOR_OPERATORS : BIT_NOT_OPERATORS, startLine, startColumn, startPos);
+        }
         break;
 
       case '?':
-        if (this.peekChar() === '.') {
+        // `?.` followed by a digit is a `?` and a number, as JavaScript
+        // reads it: `{hidden?.3:1}` is a choice of .3 or 1.
+        if (this.peekChar() === '.' && !this.isDigit(this.peekCharAt(2))) {
           this.readChar();
           this.readChar();
           return createToken(
@@ -1059,6 +1090,13 @@ export class Lexer {
     }
 
     return createToken(TokenType.STRING, value, startLine, startColumn, startPos, this.position);
+  }
+
+  /** The first of `operators` written at the current character, read as its token. */
+  private readOperator(operators: Operators, line: number, column: number, start: number): Token {
+    const [text, type] = operators.find(([written]) => this.source.startsWith(written, this.position)) ?? operators[operators.length - 1];
+    for (let i = 0; i < text.length; i++) this.readChar();
+    return createToken(type, text, line, column, start, this.position);
   }
 
   /**
@@ -1567,9 +1605,6 @@ export class Lexer {
   }
 
   /**
-   * Read the next character
-   */
-  /**
    * Does the `#` under the cursor open a control-flow block?
    *
    * Reads the whole word after it and requires an exact keyword. `#endpoint` is
@@ -1588,6 +1623,7 @@ export class Lexer {
     return CONTROL_FLOW_WORDS.has(word.toLowerCase());
   }
 
+  /** Move to the next character, counting lines and columns. */
   private readChar(): void {
     if (this.readPosition >= this.source.length) {
       this.ch = '';
