@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react';
+import React, { lazy, useState, useCallback, useEffect, useRef } from 'react';
 import { ProductBar, currentTheme, subscribeTheme } from '@softn/brand';
 import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
 import { TopBar } from './components/toolbar/TopBar';
@@ -18,6 +18,7 @@ import { MobileProjectMenu } from './components/mobile/MobileProjectMenu';
 import { SaveStatusIndicator } from './components/common/SaveStatus';
 import { ProjectNameControl } from './components/common/ProjectName';
 import { exportCurrentProject } from './components/common/ProjectActions';
+import { Deferred } from './components/Deferred';
 import { openImportedInStores } from './lib/importedProject';
 import { confirmLeaveDraft } from './lib/handEdit';
 import { beginReplacingProject } from './lib/replaceProject';
@@ -64,7 +65,8 @@ import {
 
 // Screens shown after something is chosen — a new app's brief, its blueprint,
 // the settings — load the first time they open (about 50 KB), not with the
-// dashboard. Studio's service worker installs them with everything else.
+// dashboard. Studio's service worker installs them with everything else; each
+// is drawn inside a Deferred, which says so if its file could not be fetched.
 const BriefWizard = lazy(() => import('./components/brief/BriefWizard').then((m) => ({ default: m.BriefWizard })));
 const SettingsPanel = lazy(() => import('./components/panels/SettingsPanel').then((m) => ({ default: m.SettingsPanel })));
 const BlueprintReview = lazy(() => import('./components/blueprint/BlueprintReview').then((m) => ({ default: m.BlueprintReview })));
@@ -470,7 +472,7 @@ const App: React.FC = () => {
       case 'history':
         return <HistoryPanel />;
       case 'settings':
-        return <Suspense fallback={null}><SettingsPanel /></Suspense>;
+        return <Deferred><SettingsPanel /></Deferred>;
       case 'files':
         return <FilesPanel />;
       default:
@@ -533,7 +535,7 @@ const App: React.FC = () => {
       <div style={styles.root}>
         {bar}
         <div style={styles.fill}>
-          <Suspense fallback={null}><BriefWizard onBack={handleBackToDashboard} onSubmit={() => setView('editor')} /></Suspense>
+          <Deferred><BriefWizard onBack={handleBackToDashboard} onSubmit={() => setView('editor')} /></Deferred>
         </div>
         {setupDialog}
       </div>
@@ -588,7 +590,7 @@ const App: React.FC = () => {
           )}
           {mobilePanel === 'settings' && (
             <div style={styles.mobilePanel}>
-              <Suspense fallback={null}><SettingsPanel /></Suspense>
+              <Deferred><SettingsPanel /></Deferred>
             </div>
           )}
         </div>
@@ -618,7 +620,7 @@ const App: React.FC = () => {
         </div>
 
         {!blueprintApproved && blueprint && view === 'editor' && (
-          <Suspense fallback={null}>
+          <Deferred>
             <BlueprintReview
               onApprove={() => {
                 useWorkspaceStore.getState().setMode('design');
@@ -627,7 +629,7 @@ const App: React.FC = () => {
               }}
               onReviseBrief={() => setView('brief')}
             />
-          </Suspense>
+          </Deferred>
         )}
         {setupDialog}
       </div>
@@ -648,7 +650,7 @@ const App: React.FC = () => {
       </div>
       <StatusBar />
       {!blueprintApproved && blueprint && view === 'editor' && (
-        <Suspense fallback={null}>
+        <Deferred>
           <BlueprintReview
             onApprove={() => {
               useWorkspaceStore.getState().setMode('design');
@@ -656,7 +658,7 @@ const App: React.FC = () => {
             }}
             onReviseBrief={() => setView('brief')}
           />
-        </Suspense>
+        </Deferred>
       )}
       {setupDialog}
     </div>
