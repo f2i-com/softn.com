@@ -10,7 +10,8 @@ import {
 
 interface QRRuntimeInternals {
   setPermissionConfig(config: PermissionConfig): void;
-  handleQrDecode(call: { id: number; kind: string; args: string[] }): Promise<unknown>;
+  /** The routing table every `softn.*` call goes through. */
+  executeHostCall(call: { id: number; kind: string; args: string[] }): Promise<unknown>;
 }
 
 function makeRuntime() {
@@ -30,7 +31,7 @@ function makeRuntime() {
 }
 
 function decode(runtime: ReturnType<typeof makeRuntime>) {
-  return (runtime as unknown as QRRuntimeInternals).handleQrDecode({
+  return (runtime as unknown as QRRuntimeInternals).executeHostCall({
     id: 1,
     kind: 'qr.decode',
     args: ['data:image/png;base64,not-an-image'],
@@ -165,7 +166,7 @@ describe('softn.qr.decode egress', () => {
   // host on the bundle's behalf. `qr` says nothing about the network; the
   // same gate as softn.net.fetch and softn.audio.play stands in front of it.
   function decodeUrl(runtime: ReturnType<typeof makeRuntime>, url: string) {
-    return (runtime as unknown as QRRuntimeInternals).handleQrDecode({
+    return (runtime as unknown as QRRuntimeInternals).executeHostCall({
       id: 2,
       kind: 'qr.decode',
       args: [url],

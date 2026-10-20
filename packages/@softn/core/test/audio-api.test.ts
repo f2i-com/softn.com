@@ -496,7 +496,7 @@ describe('softn.audio.play with a remote source', () => {
   });
 
   it('is not fooled by a protocol-relative URL', async () => {
-    // `//host/x` matches no scheme, so it fell through resolveAudioSrc
+    // `//host/x` matches no scheme, so it fell through AppAudio.resolveSrc
     // untouched — and the browser resolves it against the page's own https.
     expect(await play('//attacker.example/beacon.wav', WITHHELD)).toMatch(/DENIED/);
     expect(built).toHaveLength(0);

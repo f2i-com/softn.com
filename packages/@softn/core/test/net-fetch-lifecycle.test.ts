@@ -10,7 +10,8 @@ import {
 
 interface NetworkRuntimeInternals {
   setPermissionConfig(config: PermissionConfig): void;
-  handleNetFetch(call: { id: number; kind: string; args: string[] }): Promise<unknown>;
+  /** The routing table every `softn.*` call goes through. */
+  executeHostCall(call: { id: number; kind: string; args: string[] }): Promise<unknown>;
 }
 
 function makeRuntime() {
@@ -55,7 +56,7 @@ describe('softn.net.fetch lifecycle', () => {
     );
 
     const runtime = makeRuntime();
-    const request = (runtime as unknown as NetworkRuntimeInternals).handleNetFetch(fetchCall());
+    const request = (runtime as unknown as NetworkRuntimeInternals).executeHostCall(fetchCall());
     await Promise.resolve();
 
     expect(requestSignal?.aborted).toBe(false);
@@ -94,7 +95,7 @@ describe('softn.net.fetch lifecycle', () => {
 
     const runtime = makeRuntime();
     await expect(
-      (runtime as unknown as NetworkRuntimeInternals).handleNetFetch(fetchCall())
+      (runtime as unknown as NetworkRuntimeInternals).executeHostCall(fetchCall())
     ).rejects.toThrow('Network response is too large');
     expect(cancel).toHaveBeenCalledOnce();
     expect(releaseLock).toHaveBeenCalledOnce();
@@ -126,7 +127,7 @@ describe('softn.net.fetch request body', () => {
   }
 
   function post(runtime: ReturnType<typeof makeRuntime>, options: Record<string, unknown>) {
-    return (runtime as unknown as NetworkRuntimeInternals).handleNetFetch({
+    return (runtime as unknown as NetworkRuntimeInternals).executeHostCall({
       id: 1,
       kind: 'net.fetch',
       args: ['https://api.test/data', JSON.stringify({ method: 'POST', ...options })],

