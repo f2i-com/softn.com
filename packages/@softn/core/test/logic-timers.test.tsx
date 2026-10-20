@@ -28,6 +28,7 @@ import {
   type ScriptRuntimeHandle,
 } from '../src/runtime/script-runtime';
 import { WorkerScriptRuntime } from '../src/runtime/script-worker-runtime';
+import { withInProcessWorker } from './helpers/in-process-worker';
 import { VmAdapter, createLogicEngine } from '../src/runtime/vm-adapter';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -458,43 +459,9 @@ function start() { setInterval(function () { n = n + 1 }, 10) }
 
 // ── Worker mode ─────────────────────────────────────────────────────────────
 
-const workerScope = self as unknown as {
-  postMessage: (message: unknown) => void;
-  onmessage: ((event: { data: unknown }) => unknown) | null;
-};
-
-/**
- * A Worker that runs the real worker script in this realm: what the runtime
- * posts is handed to the script's `onmessage`, and what the script posts comes
- * back as the worker's messages. The engine in it is the real one.
- */
-class InProcessWorker {
-  static current: InProcessWorker | null = null;
-  onmessage: ((evt: MessageEvent) => void) | null = null;
-  onerror: ((evt: ErrorEvent) => void) | null = null;
-  onmessageerror: ((evt: MessageEvent) => void) | null = null;
-  terminated = false;
-  constructor() {
-    InProcessWorker.current = this;
-    workerScope.postMessage = (message: unknown) => {
-      if (!this.terminated) setTimeout(() => this.onmessage?.({ data: message } as MessageEvent), 0);
-    };
-  }
-  postMessage(message: unknown): void {
-    if (this.terminated) return;
-    setTimeout(() => void workerScope.onmessage?.({ data: message }), 0);
-  }
-  terminate(): void {
-    this.terminated = true;
-  }
-}
-
 describe('a timer in logic run by the worker', () => {
   it('runs its callback there, and what it writes reaches the page', async () => {
-    const realPostMessage = workerScope.postMessage;
-    vi.stubGlobal('Worker', InProcessWorker);
-    await import('../src/runtime/script-worker');
-    try {
+    await withInProcessWorker(async () => {
       const { context, state } = makeContext();
       const runtime = new WorkerScriptRuntime(context, undefined, 'logic-timers-worker');
       runtimes.push(runtime);
@@ -515,9 +482,6 @@ describe('a timer in logic run by the worker', () => {
       await sleep(40);
       expect(state.n).toBe(3);
       runtime.cleanup();
-    } finally {
-      vi.unstubAllGlobals();
-      workerScope.postMessage = realPostMessage;
-    }
+    });
   });
 });

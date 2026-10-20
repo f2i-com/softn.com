@@ -10,6 +10,8 @@ import {
   createScriptRuntime,
   type ScriptContext,
 } from '../src/runtime/script-runtime';
+import { WorkerScriptRuntime } from '../src/runtime/script-worker-runtime';
+import { withInProcessWorker } from './helpers/in-process-worker';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -108,4 +110,35 @@ describe('live external functions', () => {
     await act(async () => root.unmount());
     container.remove();
   }, 30_000);
+});
+
+describe('host functions as state', () => {
+  // The table the declarations read is the runtime's, not the app's. The
+  // worker's list of the runtime's own names left it out, so with no list of
+  // the names a page shows, it was handed to the page as state.
+  const externalFunctions = { walletAddress: () => 'alpha' };
+
+  it('are not the app\'s state on the main thread', async () => {
+    const runtime = createScriptRuntime(makeContext(), undefined, 'external-main', undefined, undefined, { mode: 'main' }, undefined, externalFunctions);
+    try {
+      const result = await runtime.loadScript(SCRIPT);
+      expect(await result.functions.readWallet()).toBe('alpha');
+      expect(Object.keys(result.state)).toEqual(['runtimeLoads']);
+    } finally {
+      runtime.cleanup();
+    }
+  });
+
+  it('are not the app\'s state in the worker either', async () => {
+    await withInProcessWorker(async () => {
+      const runtime = new WorkerScriptRuntime(makeContext(), undefined, 'external-worker', undefined, undefined, { externalFunctions });
+      try {
+        const result = await runtime.loadScript(SCRIPT);
+        expect(await result.functions.readWallet()).toBe('alpha');
+        expect(Object.keys(result.state)).toEqual(['runtimeLoads']);
+      } finally {
+        runtime.cleanup();
+      }
+    });
+  });
 });

@@ -17,9 +17,11 @@ import {
 } from './script-worker-bridges';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { adoptZippWasmSource } from './zipp-wasm-loader';
-import { TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from './logic-timers';
+import { TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { deepEqual } from './vm-state';
 import { moduleSyntaxAsScript } from './module-syntax';
+import { inlineLogicImports } from './logic-imports';
+import { BRIDGE_VARS } from './external-values';
 import { setEngineFaultSink } from './engine-output';
 import { readsOfDrawnFunctions } from './drawn-functions';
 
@@ -46,10 +48,11 @@ let stateVarIndices: number[] = [];
 let functionNames: string[] = [];
 const workerState: Record<string, unknown> = {};
 
-// Engine-provided bindings, not script state. `host` is in the symbol map
-// because the engine exposes it for two-way syncing, but syncing it as a state
-// variable would round-trip its methods through the host and back.
-const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn', ...TIMER_PREAMBLE_NAMES]);
+// Engine-provided bindings are not script state, and they are the main
+// thread's list (external-values.ts): `host` is in the symbol map because the
+// engine exposes it for two-way syncing, but syncing it as a state variable
+// would round-trip its methods through the host and back, and the table the
+// host's functions read their values from is the runtime's, not the app's.
 
 /**
  * The runtime's own lines about a failed call ("[SoftN] ..."), which the
@@ -107,62 +110,6 @@ const workerImportResolver: ImportResolver = (path: string) => {
     self.postMessage({ type: 'import_request', id, path });
   });
 };
-
-// ============================================================================
-// Import resolution utility (mirrors SoftNScriptRuntime.resolveImports)
-// ============================================================================
-
-/** Every path inlined so far in this script; reset per `init`. */
-let includedPaths = new Set<string>();
-
-async function resolveImports(
-  code: string,
-  visited: Set<string>,
-  basePath?: string
-): Promise<string> {
-  const importRegex = /^import\s+["']([^"']+)["']\s*;?\s*$/gm;
-  let result = code;
-  const replacements: { full: string; source: string }[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = importRegex.exec(code)) !== null) {
-    replacements.push({ full: match[0], source: match[1] });
-  }
-
-  for (const { full, source } of replacements) {
-    let resolvedPath = source;
-    if (basePath && source.startsWith('./')) {
-      const baseDir = basePath.replace(/\/[^/]+$/, '');
-      resolvedPath = baseDir + '/' + source.slice(2);
-    }
-    if (visited.has(resolvedPath)) {
-      throw new Error(
-        `Circular import detected: "${resolvedPath}" is already in the import chain: ${[...visited].join(' → ')} → ${resolvedPath}`
-      );
-    }
-    // Once only, wherever it is imported from — the second inclusion of a file
-    // is a redeclaration of everything in it.
-    if (includedPaths.has(resolvedPath)) {
-      result = result.replace(full, () => `// [import already included: ${source}]`);
-      continue;
-    }
-    includedPaths.add(resolvedPath);
-    visited.add(resolvedPath);
-    const importedSource = await workerImportResolver(resolvedPath);
-    // The replacement is a function on purpose: a string replacement expands
-    // `$&`, `$'` and friends, and a source file with a `$'` in a comment came
-    // back spliced together with the code around the import — every
-    // declaration after it twice.
-    if (importedSource) {
-      const nested = await resolveImports(moduleSyntaxAsScript(importedSource), visited, resolvedPath);
-      result = result.replace(full, () => nested);
-    } else {
-      result = result.replace(full, () => `// [import not found: ${source}]`);
-    }
-    visited.delete(resolvedPath);
-  }
-  return result;
-}
 
 // ============================================================================
 // State sync helpers
@@ -311,16 +258,23 @@ self.onmessage = async (evt: MessageEvent) => {
         await wasmAdapter.registerAccelBridge();
       }
 
-      // Resolve imports. The shell may already have inlined some of the logic
-      // files and left their `import` lines in place; those paths arrive as
-      // pre-included and are skipped, as the main-thread runtime skips them.
+      // Resolve imports, by the main-thread runtime's own rules (logic-imports.ts),
+      // when the page has a resolver to ask. The shell may already have
+      // inlined some of the logic files and left their `import` lines in
+      // place; those paths arrive as pre-included and are skipped. A page from
+      // before `resolveImports` was sent resolved when it named an entry file.
       let resolvedCode = moduleSyntaxAsScript(script.code);
-      const preIncluded = payload.preIncludedLogicPaths;
-      includedPaths = new Set<string>(Array.isArray(preIncluded) ? (preIncluded as string[]) : []);
-      if (logicBasePath) {
-        resolvedCode = await resolveImports(
+      const resolves = typeof payload.resolveImports === 'boolean' ? payload.resolveImports : Boolean(logicBasePath);
+      if (resolves) {
+        const preIncluded = payload.preIncludedLogicPaths;
+        const included = new Set<string>(Array.isArray(preIncluded) ? (preIncluded as string[]) : []);
+        // The entry file is already in the code, so it counts as included as
+        // well as being the root of the chain.
+        if (logicBasePath) included.add(logicBasePath);
+        resolvedCode = await inlineLogicImports(
           resolvedCode,
-          new Set([logicBasePath]),
+          { resolver: workerImportResolver, included },
+          new Set(logicBasePath ? [logicBasePath] : []),
           logicBasePath
         );
       }

@@ -17,6 +17,7 @@ import { SoftNRenderer, type SoftNRendererProps } from '../src/loader/SoftNRende
 import { registerComponent, type SoftNComponent } from '../src/renderer/registry';
 import { logicEngineRunsPython } from '../src/runtime/vm-adapter';
 import { Input } from '../../components/src/form/Input';
+import { withInProcessWorker } from './helpers/in-process-worker';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -111,36 +112,9 @@ describe('a number field bound with :bind', () => {
 
 // ── The worker, with the real worker script run in this realm ───────────────
 
-const workerScope = self as unknown as {
-  postMessage: (message: unknown) => void;
-  onmessage: ((event: { data: unknown }) => unknown) | null;
-};
-
-class InProcessWorker {
-  onmessage: ((evt: MessageEvent) => void) | null = null;
-  onerror: ((evt: ErrorEvent) => void) | null = null;
-  onmessageerror: ((evt: MessageEvent) => void) | null = null;
-  terminated = false;
-  constructor() {
-    workerScope.postMessage = (message: unknown) => {
-      if (!this.terminated) setTimeout(() => this.onmessage?.({ data: message } as MessageEvent), 0);
-    };
-  }
-  postMessage(message: unknown): void {
-    if (this.terminated) return;
-    setTimeout(() => void workerScope.onmessage?.({ data: message }), 0);
-  }
-  terminate(): void {
-    this.terminated = true;
-  }
-}
-
 describe('a number field bound with :bind, with the logic in the worker', () => {
   it('hands the worker a number', async () => {
-    const realPostMessage = workerScope.postMessage;
-    vi.stubGlobal('Worker', InProcessWorker);
-    await import('../src/runtime/script-worker');
-    try {
+    await withInProcessWorker(async () => {
       await mount({
         source: page('<input type="number" :bind={qty} />'),
         appId: 'bind-number-worker',
@@ -153,9 +127,7 @@ describe('a number field bound with :bind, with the logic in the worker', () => 
         await sleep(60);
       });
       expect(shown()).toBe('number:6');
-    } finally {
-      workerScope.postMessage = realPostMessage;
-    }
+    });
   });
 });
 

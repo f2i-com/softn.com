@@ -30,6 +30,7 @@ import {
 } from '../src/runtime/script-runtime';
 import { WorkerScriptRuntime } from '../src/runtime/script-worker-runtime';
 import { logicEngineRunsPython } from '../src/runtime/vm-adapter';
+import { withInProcessWorker } from './helpers/in-process-worker';
 import type { ScriptBlock } from '../src/parser/ast';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -148,38 +149,11 @@ describe('a handler that throws, on the main thread', () => {
 
 // ── Worker mode, with the real worker script run in this realm ──────────────
 
-const workerScope = self as unknown as {
-  postMessage: (message: unknown) => void;
-  onmessage: ((event: { data: unknown }) => unknown) | null;
-};
-
-class InProcessWorker {
-  onmessage: ((evt: MessageEvent) => void) | null = null;
-  onerror: ((evt: ErrorEvent) => void) | null = null;
-  onmessageerror: ((evt: MessageEvent) => void) | null = null;
-  terminated = false;
-  constructor() {
-    workerScope.postMessage = (message: unknown) => {
-      if (!this.terminated) setTimeout(() => this.onmessage?.({ data: message } as MessageEvent), 0);
-    };
-  }
-  postMessage(message: unknown): void {
-    if (this.terminated) return;
-    setTimeout(() => void workerScope.onmessage?.({ data: message }), 0);
-  }
-  terminate(): void {
-    this.terminated = true;
-  }
-}
-
 describe('a handler that throws, in the worker', () => {
   it('is said on the page with the function it was in, and the app keeps running', async () => {
-    const realPostMessage = workerScope.postMessage;
-    vi.stubGlobal('Worker', InProcessWorker);
-    await import('../src/runtime/script-worker');
-    const uncaught = uncaughtErrors();
-    const lines = errorLines();
-    try {
+    await withInProcessWorker(async () => {
+      const uncaught = uncaughtErrors();
+      const lines = errorLines();
       const { context, state } = makeContext();
       const runtime = new WorkerScriptRuntime(context, undefined, 'handler-errors-worker');
       runtimes.push(runtime);
@@ -198,10 +172,7 @@ describe('a handler that throws, in the worker', () => {
       await loaded.functions.fine();
       await sleep(20);
       expect(state.saved).toBe(5);
-    } finally {
-      vi.unstubAllGlobals();
-      workerScope.postMessage = realPostMessage;
-    }
+    });
   });
 });
 

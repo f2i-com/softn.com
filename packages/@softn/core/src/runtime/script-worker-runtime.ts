@@ -794,6 +794,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       accel: this.accelGranted,
       appId: this.appId,
       logicBasePath: this.logicBasePath,
+      // Imports are placed when there is a resolver to ask, as on the main thread.
+      resolveImports: typeof this.importResolver === 'function',
       observedStateNames: this.observedStateNames ? [...this.observedStateNames] : null,
       drawnNames: this.drawnNames ? [...this.drawnNames] : null,
       preIncludedLogicPaths: this.preIncludedLogicPaths,
