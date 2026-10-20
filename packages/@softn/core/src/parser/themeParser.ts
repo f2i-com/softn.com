@@ -172,11 +172,18 @@ export function themeConfigToCssVariables(theme: ThemeConfig): Record<string, st
 }
 
 /**
- * Generate CSS from theme config
+ * Generate CSS from theme config.
+ *
+ * A value is written only when it is a value and nothing more: one holding
+ * `;`, a brace, `<`, a backslash, a line break, `@` or `url(` is left out, as
+ * is a name that is not a custom property's. Written as they came, a colour of
+ * `red; } body { display: none } :root {` ended the rule and styled the whole
+ * page, and `url(…)` loaded whatever it named.
  */
 export function themeConfigToCss(theme: ThemeConfig, selector: string = ':root'): string {
   const vars = themeConfigToCssVariables(theme);
   const rules = Object.entries(vars)
+    .filter(([key, value]) => /^--[A-Za-z0-9_-]+$/.test(key) && !/[;{}<>\\\r\n@]|url\s*\(/i.test(value))
     .map(([key, value]) => `  ${key}: ${value};`)
     .join('\n');
 
@@ -242,7 +249,8 @@ export function generateThemeCss(source: string): string {
       cssBlocks.push(themeConfigToCss(theme, ':root'));
     } else if (theme.name === 'dark') {
       cssBlocks.push(themeConfigToCss(theme, ':root.dark, [data-theme="dark"]'));
-    } else {
+    } else if (/^[A-Za-z0-9_-]+$/.test(theme.name)) {
+      // A name goes into the selector, so only a name's characters: `x"] , body {` is none.
       cssBlocks.push(themeConfigToCss(theme, `[data-theme="${theme.name}"]`));
     }
   }
