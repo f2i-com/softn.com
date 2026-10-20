@@ -11,7 +11,6 @@
  * what each component declares, generated from the props interfaces.
  */
 
-import React from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ComponentRegistry, parse, renderDocument, getDefaultRegistry, type SoftNProps, type SoftNRenderContext } from '@softn/core';
