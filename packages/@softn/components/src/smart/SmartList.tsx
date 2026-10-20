@@ -17,6 +17,7 @@
 
 import React, { useState, useMemo, useCallback } from 'react';
 import { recordRows } from '../utils/rows';
+import { outlineIcon } from '../utils/icons';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -84,130 +85,6 @@ const statusColors: Record<string, { bg: string; text: string }> = {
   offline: { bg: 'rgba(156, 163, 175, 0.15)', text: '#9ca3af' },
   cancelled: { bg: 'rgba(239, 68, 68, 0.15)', text: '#ef4444' },
   error: { bg: 'rgba(239, 68, 68, 0.15)', text: '#ef4444' },
-};
-
-// Icon map for common icons
-const iconMap: Record<string, React.ReactNode> = {
-  calendar: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-      <line x1="16" y1="2" x2="16" y2="6" />
-      <line x1="8" y1="2" x2="8" y2="6" />
-      <line x1="3" y1="10" x2="21" y2="10" />
-    </svg>
-  ),
-  user: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-      <circle cx="12" cy="7" r="4" />
-    </svg>
-  ),
-  check: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  ),
-  clock: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <polyline points="12 6 12 12 16 14" />
-    </svg>
-  ),
-  star: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-    </svg>
-  ),
-  bell: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-    </svg>
-  ),
-  mail: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
-      <polyline points="22,6 12,13 2,6" />
-    </svg>
-  ),
-  scissors: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <circle cx="6" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <line x1="20" y1="4" x2="8.12" y2="15.88" />
-      <line x1="14.47" y1="14.48" x2="20" y2="20" />
-      <line x1="8.12" y1="8.12" x2="12" y2="12" />
-    </svg>
-  ),
-  dollar: (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <line x1="12" y1="1" x2="12" y2="23" />
-      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-    </svg>
-  ),
 };
 
 // Get initials from name
@@ -344,6 +221,7 @@ export function SmartList<T extends Record<string, unknown>>({
             const badgeValue = badge ? getFieldValue(item, badge) : null;
             const avatarValue = avatar ? getFieldValue(item, avatar) : null;
             const iconValue = icon ? getFieldValue(item, icon) : icon;
+            const rowIcon = outlineIcon(iconValue, 18);
 
             const strBadge = badgeValue ? String(badgeValue).toLowerCase() : '';
             const badgeColors = statusColors[strBadge] || {
@@ -369,18 +247,18 @@ export function SmartList<T extends Record<string, unknown>>({
                       width: variant === 'compact' ? '2rem' : '2.5rem',
                       height: variant === 'compact' ? '2rem' : '2.5rem',
                       borderRadius:
-                        iconValue && iconMap[iconValue as string]
+                        rowIcon
                           ? 'var(--radius-md, 0.5rem)'
                           : 'var(--radius-full, 9999px)',
                       background:
-                        iconValue && iconMap[iconValue as string]
+                        rowIcon
                           ? 'var(--color-gray-100, #3f3f46)'
                           : avatarGradients[index % avatarGradients.length],
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       color:
-                        iconValue && iconMap[iconValue as string]
+                        rowIcon
                           ? 'var(--color-text-muted, #a1a1aa)'
                           : 'white',
                       fontWeight: 600,
@@ -388,8 +266,8 @@ export function SmartList<T extends Record<string, unknown>>({
                       flexShrink: 0,
                     }}
                   >
-                    {iconValue != null && iconMap[iconValue as string]
-                      ? iconMap[iconValue as string]
+                    {rowIcon
+                      ? rowIcon
                       : avatarValue != null
                         ? getInitials(String(avatarValue))
                         : primaryValue != null
