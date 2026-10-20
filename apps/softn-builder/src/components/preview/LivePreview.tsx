@@ -16,7 +16,11 @@ import type { PermissionConfig } from '@softn/core';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
 import { PreviewProblems } from './PreviewProblems';
-import { previewThemeProps, type PreviewThemeProps } from '../../utils/previewTheme';
+import { previewThemeProps } from '../../utils/previewTheme';
+// The theme entry alone: the package's root would bring every component,
+// Three.js included, where main.tsx registers them to be fetched as a page
+// draws them.
+import { ThemeProvider } from '@softn/components/theme';
 
 // Error boundary to catch rendering errors in the preview
 interface ErrorBoundaryProps {
@@ -334,9 +338,6 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   const [forceRender, setForceRender] = useState(false);
   const [PreviewComponent, setPreviewComponent] = useState<React.ComponentType<PreviewRuntimeProps> | null>(null);
   const [previewRecordsFor, setPreviewRecordsFor] = useState<typeof import('./PreviewRuntime').previewRecordsFor | null>(null);
-  const [ThemeProviderComponent, setThemeProviderComponent] = useState<React.ComponentType<
-    PreviewThemeProps & { children: React.ReactNode }
-  > | null>(null);
   const [sourceInfo, setSourceInfo] = useState<string | null>(null);
   // Which start of the app this is. A new one is a new engine and the
   // records the app began with: the way out of a logic that has stopped,
@@ -423,18 +424,6 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
         if (active) setPreviewComponent(null);
       }
 
-      if (!active) return;
-      try {
-        // The theme entry alone: the package's root would bring every
-        // component, Three.js included, where main.tsx registers them to be
-        // fetched as a page draws them.
-        const theme = await import('@softn/components/theme');
-        debug('[LivePreview] Loaded @softn/components ThemeProvider');
-        if (active) setThemeProviderComponent(() => theme.ThemeProvider);
-      } catch (e) {
-        console.error('[LivePreview] Failed to load ThemeProvider:', e);
-        if (active) setThemeProviderComponent(null);
-      }
       if (active) setIsLoading(false);
     };
     loadRenderer();
@@ -467,7 +456,6 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
     debug('[LivePreview] renderContent called:', {
       hasError: !!error,
       hasPreviewComponent: !!PreviewComponent,
-      hasThemeProvider: !!ThemeProviderComponent,
       sourceLength: source.length,
       elementsCount: elements.size,
       isLoading,
@@ -610,24 +598,13 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
         </PreviewErrorBoundary>
       );
 
-      // Wrap with ThemeProvider if available
-      if (ThemeProviderComponent) {
-        return (
-          <DeviceViewport width={dimensions.width} height={dimensions.height}>
-            <PreviewErrorBoundary key={run} fallback={renderError}>
-              {/* The project's theme as its declaration, as a runtime is
-                  handed it, and not as an editor's switch (utils/previewTheme.ts). */}
-              <ThemeProviderComponent {...previewThemeProps(themeMode)}>
-                {preview}
-              </ThemeProviderComponent>
-            </PreviewErrorBoundary>
-          </DeviceViewport>
-        );
-      }
-
       return (
         <DeviceViewport width={dimensions.width} height={dimensions.height}>
-          {preview}
+          <PreviewErrorBoundary key={run} fallback={renderError}>
+            {/* The project's theme as its declaration, as a runtime is
+                handed it, and not as an editor's switch (utils/previewTheme.ts). */}
+            <ThemeProvider {...previewThemeProps(themeMode)}>{preview}</ThemeProvider>
+          </PreviewErrorBoundary>
         </DeviceViewport>
       );
     }

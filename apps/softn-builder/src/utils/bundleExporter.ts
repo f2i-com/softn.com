@@ -38,6 +38,7 @@ import { debug } from './debug';
 import { buildPermissionJson, type PermissionDeclaration } from './permissions';
 import { envelopeFor, serializeXdb, type XdbRecordEnvelope } from './xdbFormat';
 import { resolveEntry } from './bundleValidator';
+import { isDesktop, saveDesktopFile, type BundleFileHandle } from './desktop';
 
 export const BUNDLE_FORMAT_VERSION = '1.0';
 
@@ -608,8 +609,7 @@ export function parseBundle(data: Uint8Array): {
 export async function exportBundleToFile(
   bundleData: Uint8Array,
   fileName: string,
-): Promise<import('./desktop').BundleFileHandle | null> {
-  const { isDesktop, saveDesktopFile } = await import('./desktop');
+): Promise<BundleFileHandle | null> {
   if (isDesktop()) return saveDesktopFile(bundleData, fileName, undefined, 'export');
   const blob = new Blob([new Uint8Array(bundleData)], { type: 'application/zip' });
   const url = URL.createObjectURL(blob);
@@ -633,9 +633,8 @@ export async function exportBundleToFile(
 export async function saveBundleToFile(
   bundleData: Uint8Array,
   suggestedName: string,
-  existingHandle?: import('./desktop').BundleFileHandle | null,
-): Promise<import('./desktop').BundleFileHandle | null> {
-  const { isDesktop, saveDesktopFile } = await import('./desktop');
+  existingHandle?: BundleFileHandle | null,
+): Promise<BundleFileHandle | null> {
   if (isDesktop()) {
     return saveDesktopFile(bundleData, `${suggestedName}.softn`,
       existingHandle?.kind === 'desktop-file' ? existingHandle : undefined);

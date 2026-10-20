@@ -107,6 +107,7 @@ import {
   type ZipResult,
 } from './lib/bundleProcessor';
 import { installAppOffline } from './lib/offlineInstall';
+import { whenIdle } from './lib/idle';
 import { warmFirstScreen, type FirstScreenWarmup } from './lib/zipWarmup';
 import {
   getCachedApp,
@@ -564,12 +565,21 @@ function App(): React.ReactElement {
       installAbortsRef.current.get(tabId)?.abort();
       installAbortsRef.current.set(tabId, controller);
       setInstalling((prev) => new Set(prev).add(record.id));
-      void installAppOffline(
-        { id: record.id, source, execution, capabilities, pythonPackages },
-        { signal: controller.signal }
-      )
+      // Background work, started once the browser is idle after the app
+      // opens: the modules it imports (every loader a scene may ask for, the
+      // QR decoder) are parsed and run after the app's own opening work
+      // rather than between its steps.
+      void whenIdle(controller.signal)
+        .then(() =>
+          controller.signal.aborted
+            ? null
+            : installAppOffline(
+                { id: record.id, source, execution, capabilities, pythonPackages },
+                { signal: controller.signal }
+              )
+        )
         .then(async (result) => {
-          if (controller.signal.aborted) return;
+          if (!result || controller.signal.aborted) return;
           const why = result.ready
             ? undefined
             : result.error ??

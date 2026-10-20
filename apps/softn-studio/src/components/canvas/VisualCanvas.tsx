@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useAIStore, useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { declarePythonPackage, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
-import { getXDB, type SoftNRendererProps } from '@softn/core';
+import { getXDB, SoftNWithXDB, type SoftNRendererProps } from '@softn/core';
 import type { ThemeProviderProps } from '@softn/components';
 import { createPreviewAssetResolver } from '../../lib/previewAssets';
 import { declaredCapabilities } from '../../lib/declaredCapabilities';
@@ -344,15 +344,12 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
         ]);
         if (!mounted) return;
         registerRuntimeComponents();
-        const core = await import('@softn/core');
-        if (!mounted) return;
-        if (!core.SoftNWithXDB) throw new Error('The preview renderer is unavailable.');
         setThemeProviderComponent(() => theme.ThemeProvider ?? null);
         // The renderer a runtime uses: the page's <data> block binds its collections from the
         // preview's store (seeded below), under the names, filters, order and limits it gives
         // them. The plain renderer was handed every record under its collection's name, which
         // showed a collection read as another name as empty, and ignored filter, sort and limit.
-        setPreviewComponent(() => core.SoftNWithXDB);
+        setPreviewComponent(() => SoftNWithXDB);
       } catch (error) {
         if (mounted) setRendererError(error instanceof Error ? error.message : 'The preview renderer could not load.');
       }

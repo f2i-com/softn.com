@@ -27,6 +27,8 @@ import { duringCheck, explainEngineStops, heardByPreview } from '../previewFault
 import { bareAssetPaths } from '../previewAssets';
 import { isLogicPath, isPagePath } from '../sourceKinds';
 import { explainUngrantedCalls } from '../declaredCapabilities';
+import * as core from '@softn/core';
+import { createRoot } from 'react-dom/client';
 
 export interface RunFunctionRequest {
   name: string;
@@ -139,7 +141,7 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   const composed = composePreviewProject(files, page);
   if (!composed.ok) return { composeError: composed.error };
   const { composition } = composed;
-  const [{ createRoot }, { registerRuntimeComponents }, core] = await Promise.all([import('react-dom/client'), import('@softn/components/lazy'), import('@softn/core')]);
+  const { registerRuntimeComponents } = await import('@softn/components/lazy');
   registerRuntimeComponents();
   // Every component the page names, on every branch, loaded before it is drawn: the check
   // reads what the page shows, and a component still loading would show nothing.
@@ -341,7 +343,6 @@ export function describeDom(root: Element): string {
 }
 
 async function parseDiagnostics(source: string): Promise<{ errors: string[]; warnings: string[] }> {
-  const core = await import('@softn/core');
   const errors: string[] = [];
   const warnings: string[] = [];
   try {
@@ -596,7 +597,6 @@ async function backendProblems(files: Map<string, VFSFile>): Promise<{ errors: s
     if (/^server\/migrations\/[^/]+\.sql$/.test(path) && !migrations.includes(path) && !appliedMigrationPaths().includes(path)) warnings.push(`${path} is not listed in manifest.json's server.database.migrations, so the host never runs it.`);
   }
   // Loaded as its host loads it: a backend's top level only defines functions (a host refuses SQL outside a request).
-  const core = await import('@softn/core');
   const logs: string[] = [];
   const runtime = core.createScriptRuntime(quietContext(core, files, logs) as never, undefined, `studio-agent-backend-${Date.now().toString(36)}`, undefined, undefined, { mode: 'main' } as never);
   try {
@@ -624,7 +624,6 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
   const composed = composePreviewProject(files, page);
   if (!composed.ok) return NONE;
   const { composition } = composed;
-  const core = await import('@softn/core');
 
   // The page and what it imports, parsed as their own files so lines match.
   const templates: TemplateFile[] = [];
@@ -720,7 +719,6 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
  * own, and the composed report is kept.
  */
 async function ownParseErrors(files: Map<string, VFSFile>, page: string): Promise<string[]> {
-  const core = await import('@softn/core');
   const errors: string[] = [];
   const queue = [page];
   const visited = new Set<string>();
@@ -929,7 +927,6 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
   const composed = composePreviewProject(files, target);
   if (!composed.ok) return { ok: false, text: `${target} cannot be composed: ${composed.error}` };
   const { composition } = composed;
-  const core = await import('@softn/core');
   let doc;
   try {
     doc = core.parse(stripTemplateComments(composition.source));

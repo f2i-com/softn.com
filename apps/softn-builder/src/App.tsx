@@ -2,7 +2,7 @@
  * SoftN Builder - Main Application
  */
 
-import React, { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { lazy, Suspense, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ProductBar } from '@softn/brand';
 import { Toolbar } from './components/toolbar/Toolbar';
 import { NarrowScreenNotice } from './components/NarrowScreenNotice';
@@ -17,7 +17,6 @@ import { Canvas } from './components/canvas/Canvas';
 import { LogicEditor } from './components/editor/LogicEditor';
 import { SourceView } from './components/editor/SourceView';
 import { LivePreview } from './components/preview/LivePreview';
-import { SchemaDesigner } from './components/schema';
 import { FileNavigator, FileTabs } from './components/files';
 import { useCanvasStore } from './stores/canvasStore';
 import { useProjectStore } from './stores/projectStore';
@@ -57,6 +56,10 @@ import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { viewsFor } from './utils/workspaceViews';
 import { startNewProject } from './utils/newProject';
 import { keepSavedPoint, markUnsaved } from './utils/savedPoint';
+
+// The data designer and its diagram library (@xyflow with d3, about 160 KB)
+// load the first time the Data view opens, not with the editor.
+const SchemaDesigner = lazy(() => import('./components/schema').then((m) => ({ default: m.SchemaDesigner })));
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -779,7 +782,9 @@ function App() {
         return (
           <div style={styles.main}>
             <div data-panel="Data" style={{ flex: 1 }}>
-              <SchemaDesigner />
+              <Suspense fallback={<div role="status" style={{ padding: 24, color: 'var(--dim)' }}>Opening the data designer…</div>}>
+                <SchemaDesigner />
+              </Suspense>
             </div>
           </div>
         );

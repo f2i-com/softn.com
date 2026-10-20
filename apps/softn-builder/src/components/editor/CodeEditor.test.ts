@@ -8,8 +8,13 @@
 
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { CodeEditor, highlightLanguage } from './CodeEditor';
+
+// The editor is a chunk of its own, fetched the first time one is drawn; it is here before the tests draw one.
+beforeAll(async () => {
+  await import('@softn/components/editors');
+});
 
 declare global {
   // eslint-disable-next-line no-var
@@ -26,13 +31,14 @@ describe('the code editor', () => {
     expect(highlightLanguage(undefined)).toBe('plain');
   });
 
-  it('shows the value it is given, follows a new one, and hands edits back', () => {
+  it('shows the value it is given, follows a new one, and hands edits back', async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     const host = document.createElement('div');
     document.body.append(host);
     const root = createRoot(host);
     const onChange = vi.fn();
-    act(() => root.render(React.createElement(CodeEditor, { value: 'let count = 0', onChange, language: 'javascript' })));
+    // The editor is fetched the first time one is drawn.
+    await act(async () => root.render(React.createElement(CodeEditor, { value: 'let count = 0', onChange, language: 'javascript' })));
     const field = host.querySelector('textarea')!;
     expect(field.value).toBe('let count = 0');
     expect(host.querySelector('.bl-code-editor')).not.toBeNull();
@@ -51,11 +57,11 @@ describe('the code editor', () => {
     host.remove();
   });
 
-  it('can be read only, and names a page\'s source for a screen reader', () => {
+  it('can be read only, and names a page\'s source for a screen reader', async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     const host = document.createElement('div');
     const root = createRoot(host);
-    act(() => root.render(React.createElement(CodeEditor, { value: '<App />', language: 'xml', readOnly: true })));
+    await act(async () => root.render(React.createElement(CodeEditor, { value: '<App />', language: 'xml', readOnly: true })));
     const field = host.querySelector('textarea')!;
     expect(field.readOnly).toBe(true);
     expect(field.getAttribute('aria-label')).toBe('Page source');

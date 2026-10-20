@@ -52,6 +52,7 @@ import { askConfirm } from './confirm';
 import { gatherCollections, gatherRecords } from './buildProjectBundle';
 import { xdbText, type KeptXdb } from './bundleExporter';
 import { elementsEqual } from './elementsEqual';
+import { isDesktop, saveDesktopFile } from './desktop';
 import type {
   AssetFile,
   CanvasElement,
@@ -746,7 +747,6 @@ export async function exportQuarantinedSession(): Promise<boolean> {
   // Whole: the session with the assets that were set aside with it put back into it.
   const assets = readLocalStorage(QUARANTINE_ASSETS_KEY);
   const payload = assets === null ? record.payload : joinStoredSession(record.payload, assets).raw;
-  const { isDesktop, saveDesktopFile } = await import('./desktop');
   if (isDesktop()) {
     await saveDesktopFile(new TextEncoder().encode(payload), name, undefined, 'recovery');
     return true;

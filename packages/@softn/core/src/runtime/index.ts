@@ -9,7 +9,9 @@ export * from './script-runtime';
 export * from './reactivity';
 export * from './xdb';
 export * from './xdb-storage-notice';
-export * from './xdb-server-sync';
+// Types only: the server sync itself is a chunk of its own, fetched by the
+// renderer for an app that configured a server (SoftNRenderer imports it).
+export type { ServerSyncConfig, ServerSyncStatus, SyncOp } from './xdb-server-sync';
 export * from './helpers';
 export * from './form-binding';
 export * from './file-registry';

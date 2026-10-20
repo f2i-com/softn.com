@@ -26,6 +26,7 @@ import { describeMigrations, migrateElements } from './propMigrations';
 import { validateBundle as validateBundleIntegrity, resolveEntry, FILE_GROUPS, type FileGroup } from './bundleValidator';
 import { readBundleDeclaration, type PermissionDeclaration } from './permissions';
 import { identityOf, parseXdb, type RecordIdentity, type XdbRecordEnvelope } from './xdbFormat';
+import { isDesktop, selectDesktopBundle, selectDesktopBundleFile, type DesktopFileHandle } from './desktop';
 import type {
   CollectionDef,
   UIFileState,
@@ -38,7 +39,7 @@ import type {
 
 export interface LoadedBundle {
   /** A dialog-granted native file, retained only until this workspace closes. */
-  sourceHandle?: import('./desktop').DesktopFileHandle;
+  sourceHandle?: DesktopFileHandle;
   manifest: BundleManifest;
   /** The manifest.json as it was in the archive, which an untouched export writes back as it came. */
   manifestBytes: Uint8Array;
@@ -459,7 +460,6 @@ function inferFieldType(
  * closed without a choice; rejects when the chosen file could not be read.
  */
 export async function selectBundleFile(): Promise<Uint8Array | null> {
-  const { isDesktop, selectDesktopBundle } = await import('./desktop');
   if (isDesktop()) return selectDesktopBundle();
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
@@ -495,7 +495,6 @@ export async function selectBundleFile(): Promise<Uint8Array | null> {
  * Load a bundle file and return parsed result
  */
 export async function openBundleFile(): Promise<LoadedBundle | null> {
-  const { isDesktop, selectDesktopBundleFile } = await import('./desktop');
   const selected = isDesktop() ? await selectDesktopBundleFile() : null;
   const data = isDesktop() ? selected?.bytes : await selectBundleFile();
   if (!data) return null;
