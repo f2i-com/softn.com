@@ -21,9 +21,9 @@ import { discardAgentRuns, startAgentRun } from './agent/runAgent';
 
 // The write checks live with the changeset that uses them; they are still
 // reachable from here, where they were first written.
-export { checkWrite, describeRefusal } from './changeset';
-export type { SuppliedFile, SuppliedFiles, TurnBase, WriteRefusal } from './changeset';
-export { JAVASCRIPT_APP_EXAMPLE, PYTHON_APP_EXAMPLE, PYTHON_TORCH_SECTION, PYTHON_TORCH_UNDECLARED } from './agent/guide';
+export { checkWrite } from './changeset';
+export type { SuppliedFiles, TurnBase } from './changeset';
+export { PYTHON_APP_EXAMPLE, PYTHON_TORCH_SECTION, PYTHON_TORCH_UNDECLARED } from './agent/guide';
 
 // ---------------------------------------------------------------------------
 // The single-shot reply format, still parsed: a model that falls back to it is

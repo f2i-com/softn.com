@@ -636,15 +636,6 @@ export function decodePersistedVFS(
   return decoded;
 }
 
-/** Whether any of the three legacy keys is present at all. */
-export function hasLegacySnapshots(): boolean {
-  return (
-    readItem(STORAGE_KEYS.workspace) !== null ||
-    readItem(STORAGE_KEYS.vfs) !== null ||
-    readItem(STORAGE_KEYS.ai) !== null
-  );
-}
-
 export function clearLegacySnapshots(): void {
   removeItem(STORAGE_KEYS.workspace);
   removeItem(STORAGE_KEYS.vfs);

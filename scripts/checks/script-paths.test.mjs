@@ -33,6 +33,8 @@ test('no file names a script by a path it has left', () => {
   for (const file of tracked) {
     if (!/\.(mjs|js|cjs|ts|tsx|mts|json|md|yml|yaml|py|html)$|(^|\/)\.gitignore$/.test(file)) continue;
     if (file.startsWith('vendor/') || file === 'package-lock.json') continue;
+    // Listed by git until its deletion is staged, but no longer there to name anything.
+    if (!fs.existsSync(path.join(repoRoot, file))) continue;
     let text = fs.readFileSync(path.join(repoRoot, file), 'utf8');
     if (file === 'CHANGELOG.md') {
       const start = text.indexOf('## Unreleased');

@@ -4,5 +4,5 @@
  * accepts is what the runtime will open. The local type names are kept for
  * the page that uses them.
  */
-export { inspectBundle, inspectEntries } from '@softn/bundle-format/inspect';
-export type { BundleInspection as Inspection, BundleReportLine as ReportLine } from '@softn/bundle-format/inspect';
+export { inspectBundle } from '@softn/bundle-format/inspect';
+export type { BundleInspection as Inspection } from '@softn/bundle-format/inspect';

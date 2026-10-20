@@ -686,23 +686,3 @@ export async function saveBundleToFile(
   URL.revokeObjectURL(url);
   return null;
 }
-
-/**
- * Validate a bundle manifest
- */
-export function validateManifest(manifest: unknown): manifest is BundleManifest {
-  if (typeof manifest !== 'object' || manifest === null) return false;
-
-  const m = manifest as Record<string, unknown>;
-
-  if (typeof m.name !== 'string') return false;
-  if (typeof m.version !== 'string') return false;
-  if (typeof m.main !== 'string') return false;
-
-  if (typeof m.files !== 'object' || m.files === null) return false;
-
-  const files = m.files as Record<string, unknown>;
-  if (!Array.isArray(files.ui)) return false;
-
-  return true;
-}

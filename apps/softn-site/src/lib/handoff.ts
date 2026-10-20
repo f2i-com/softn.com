@@ -16,14 +16,12 @@ import {
 
 export {
   HANDOFF_DB,
-  HANDOFF_DB_VERSION,
   HANDOFF_STORE,
   HANDOFF_TTL_MS,
   HANDOFF_PARAM,
   resetHandoffClaims,
-  sha256Hex,
 } from '@softn/bundle-format/handoff';
-export type { BundleHandoff, HandoffDestination, HandoffFailure, HandoffResult, HandoffSource } from '@softn/bundle-format/handoff';
+export type { HandoffFailure, HandoffResult } from '@softn/bundle-format/handoff';
 
 /** Claim the hand-off `id` for the publish page: once, and only if it was staged for it. */
 export function takeBundleHandoff(id: string | null, now = Date.now()): Promise<HandoffResult> {

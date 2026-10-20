@@ -36,9 +36,6 @@ export type { SymbolScope, SymbolInfo } from './zipp-wasm-adapter';
 import { ZippWasmAdapter, type SymbolInfo } from './zipp-wasm-adapter';
 import type { DBNamespace } from './script-runtime';
 
-/** The concrete adapter type, for callers that need to name it. */
-export type VmAdapterInstance = ZippWasmAdapter;
-
 // ============================================================================
 // The engine seam
 // ============================================================================

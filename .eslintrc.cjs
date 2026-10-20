@@ -68,11 +68,6 @@ module.exports = {
       },
     },
     {
-      // A command-line tool talks through the console; that is its output.
-      files: ['packages/@softn/core/src/bundle/cli.ts'],
-      rules: { 'no-console': 'off' },
-    },
-    {
       // In the desktop Builder, Tauri's dialog plugin makes these async: they
       // return a Promise at once, which reads as yes, and asked nothing.
       // The Builder asks with utils/confirm.ts.

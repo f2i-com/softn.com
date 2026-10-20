@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
 
 /**
  * The site's routes, on the history API and nothing else.
@@ -118,12 +118,4 @@ export function useLinkInterception(): void {
     document.addEventListener('click', onClick);
     return () => document.removeEventListener('click', onClick);
   }, []);
-}
-
-export function Link({ to, children, ...rest }: { to: string; children: React.ReactNode } & React.AnchorHTMLAttributes<HTMLAnchorElement>): React.ReactElement {
-  return (
-    <a href={to} {...rest}>
-      {children}
-    </a>
-  );
 }

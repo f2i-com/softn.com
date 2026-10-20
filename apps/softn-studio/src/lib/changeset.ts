@@ -14,7 +14,6 @@
  * asks for; an explicit reviewed-subset apply can be offered on top of it.
  */
 
-import type { VFSChangeRecord } from '../stores/vfsStore';
 import type { VFSFile } from '../types/studio';
 import { canonicalKey, resolveProjectPath } from './paths';
 
@@ -219,33 +218,4 @@ export function buildChangeset(id: string, request: ChangeRequest, base: TurnBas
   }
 
   return { id, records, ok: records.length > 0 && records.every((r) => r.verdict.ok) };
-}
-
-/** The store records of a changeset that passed, in reply order. */
-export function toStoreRecords(changeset: Changeset): VFSChangeRecord[] {
-  return changeset.records.map((r) => (r.op === 'delete' ? { op: 'delete', path: r.path } : { op: r.op, path: r.path, content: r.content ?? '' }));
-}
-
-/**
- * Lines added and removed between two texts, as a multiset difference by
- * line: enough for a card to say how big a change was, without the cost of
- * a full alignment on a long file. Binary content counts as no lines.
- */
-export function diffSummary(before: string | Uint8Array | null | undefined, after: string | Uint8Array | null | undefined): { added: number; removed: number } {
-  const linesOf = (text: string | Uint8Array | null | undefined): string[] => (typeof text === 'string' ? (text.length === 0 ? [] : text.split('\n')) : []);
-  const counts = new Map<string, number>();
-  for (const line of linesOf(before)) counts.set(line, (counts.get(line) ?? 0) + 1);
-  let added = 0;
-  for (const line of linesOf(after)) {
-    const left = counts.get(line) ?? 0;
-    if (left > 0) counts.set(line, left - 1);
-    else added++;
-  }
-  let removed = 0;
-  for (const left of counts.values()) removed += left;
-  return { added, removed };
-}
-
-export function describeDiff(summary: { added: number; removed: number }): string {
-  return `+${summary.added} −${summary.removed} line${summary.added + summary.removed === 1 ? '' : 's'}`;
 }

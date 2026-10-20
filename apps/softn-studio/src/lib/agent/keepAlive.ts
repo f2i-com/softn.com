@@ -115,11 +115,6 @@ export function releasePageForRun(runId?: string): void {
   noteHidden(current.runId, false);
 }
 
-/** The run the page is held for, if any. */
-export function heldForRun(): string | null {
-  return hold?.runId ?? null;
-}
-
 /** Whether `runId` was running in a background tab when the page went away. */
 export function wasInBackground(runId: string): boolean {
   const store = storage();

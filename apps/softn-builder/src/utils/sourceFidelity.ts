@@ -40,8 +40,6 @@ import type { CanvasElement, SourceFidelity } from '../types/builder';
 import { commentsOf, frameSource, writeBack } from './sourceFrame';
 
 export type { SourceFidelity } from '../types/builder';
-export { hasSingleAppRoot } from './sourceFrame';
-
 function safeTokenize(source: string): Token[] | null {
   try {
     return tokenize(source);

@@ -51,4 +51,4 @@ export function useJudgedBackground(value: string | undefined): string | undefin
 // @softn/core; they live in css-values.ts so the theme entry can use them
 // without pulling the runtime in. Re-exported for the components that import
 // them from here.
-export { cssPaint, cssColumnCount, cssThemeValue, cssThemeKey } from './css-values';
+export { cssPaint, cssColumnCount } from './css-values';

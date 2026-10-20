@@ -13,7 +13,7 @@
 import type { CachedApp } from './appCache';
 
 export { diffCapabilities } from '@softn/runtime-shell/consent';
-export type { CapabilityChange, PreviousBuild } from '@softn/runtime-shell/consent';
+export type { PreviousBuild } from '@softn/runtime-shell/consent';
 
 /**
  * The build of this app the user opened most recently before this one: same

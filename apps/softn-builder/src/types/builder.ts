@@ -205,20 +205,6 @@ export interface AssetFile {
   data: Uint8Array;
 }
 
-// Project state
-export interface ProjectState {
-  name: string;
-  version: string;
-  description: string;
-  icon?: string;
-  themeMode: 'light' | 'dark' | 'system';
-  elements: Map<string, CanvasElement>;
-  rootId: string;
-  logicSource: string;
-  collections: CollectionDef[];
-  assets: AssetFile[];
-}
-
 /**
  * Where a drag would land: at `index` among what `parentId` holds. With a
  * `side`, it is into an element whose content is its words, before or after
@@ -279,28 +265,6 @@ export interface LogicSnapshot {
   content: string;
   /** What the step left the file as. Absent, the file is put back whatever it holds. */
   expects?: string;
-}
-
-export interface HistoryState {
-  past: HistoryEntry[];
-  future: HistoryEntry[];
-  maxSize: number;
-}
-
-// Drag item for react-dnd
-export interface DragItem {
-  type: 'PALETTE_COMPONENT' | 'CANVAS_ELEMENT';
-  componentType?: string;
-  elementId?: string;
-}
-
-// Preview state
-export interface PreviewState {
-  mode: 'split' | 'preview' | 'code';
-  scale: number;
-  devicePreset: 'desktop' | 'tablet' | 'mobile' | 'custom';
-  customWidth?: number;
-  customHeight?: number;
 }
 
 // ============================================
