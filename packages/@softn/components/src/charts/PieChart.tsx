@@ -6,7 +6,7 @@
  */
 
 import * as React from 'react';
-import { describeChart, finiteNumber, formatterOr, normaliseArray } from './series';
+import { describeChart, finiteNumber, formatterOr, normaliseArray, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface PieDataPoint {
@@ -131,8 +131,8 @@ function describeArc(
 
 export function PieChart({
   data: rawData,
-  width = 300,
-  height = 300,
+  width: givenWidth,
+  height: givenHeight,
   innerRadius = 0,
   showLabels = true,
   showLegend = true,
@@ -145,6 +145,9 @@ export function PieChart({
   className = '',
   style,
 }: PieChartProps) {
+  // A size that is no positive number (`width="100%"`) is the chart's own: see chartSize.
+  const width = chartSize(givenWidth, 300);
+  const height = chartSize(givenHeight, 300);
   const formatValue = formatterOr<NonNullable<PieChartProps['formatValue']>>(givenFormatValue, (v) => String(v));
   const formatPercent = formatterOr<NonNullable<PieChartProps['formatPercent']>>(givenFormatPercent, (v) => `${v.toFixed(1)}%`);
   // Data that has not arrived yet is an empty chart, not a throw.

@@ -483,7 +483,8 @@ export function SortableList({
               )}
               {!primaryText && !secondaryText && (
                 <div style={{ fontSize: '14px', lineHeight: '20px' }}>
-                  {String(item)}
+                  {/* A hole in the list, or a record with nothing to show, shows nothing: it drew "null" and "[object Object]". */}
+                  {item === null || item === undefined || typeof item === 'object' ? '' : String(item)}
                 </div>
               )}
             </div>

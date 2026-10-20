@@ -11,6 +11,7 @@
  */
 
 import * as React from 'react';
+import { keySet } from '../utils/lists';
 
 export interface TreeNode {
   id: string;
@@ -239,7 +240,7 @@ function visibleNodes(nodes: TreeNode[], expandedIds: Set<string>): VisibleNode[
 
 export function TreeView({
   nodes: nodesProp,
-  expandedIds: controlledExpandedIds,
+  expandedIds: givenExpandedIds,
   selectedId,
   onExpand,
   onSelect,
@@ -256,6 +257,8 @@ export function TreeView({
     [nodesProp]
   );
   const allIds = React.useMemo(() => getAllNodeIds(nodes), [nodes]);
+  // A page writes the ids as a list (keySet); made into a Set once per list given.
+  const controlledExpandedIds = React.useMemo(() => keySet<string>(givenExpandedIds), [givenExpandedIds]);
   const [internalExpandedIds, setInternalExpandedIds] = React.useState<Set<string>>(() => {
     if (defaultExpandAll) {
       return new Set(allIds);

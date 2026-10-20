@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { nameList } from '../utils/lists';
 
 export interface AccordionItem {
   /** Unique key */
@@ -90,8 +91,20 @@ export function Accordion({
   className,
   style,
 }: AccordionProps): React.ReactElement {
-  const items = React.useMemo(() => (Array.isArray(rawItems) ? rawItems.filter(Boolean) : []), [rawItems]);
-  const [internalOpenKeys, setInternalOpenKeys] = React.useState<string[]>(defaultOpenKeys);
+  // An item with no key is keyed by its place, as Steps and Timeline key
+  // theirs: without, every item was `undefined`, one click opened them all,
+  // and their ids were the same. Keys are text, as the open keys are read.
+  const items = React.useMemo(
+    () =>
+      (Array.isArray(rawItems) ? rawItems.filter(Boolean) : []).map((item, index) => ({
+        ...item,
+        key: item.key === undefined || item.key === null || item.key === '' ? String(index) : String(item.key),
+      })),
+    [rawItems]
+  );
+  // Open keys as a list or as text (nameList): text was searched as text, so
+  // `defaultOpenKeys="ab"` opened `a` and `b` too, and a number threw.
+  const [internalOpenKeys, setInternalOpenKeys] = React.useState<string[]>(() => nameList(defaultOpenKeys));
   // Ids per instance, and headers found by ref: ids built from the item keys
   // alone collided between two accordions with the same keys, and ArrowDown
   // (which looked the next header up by id) could focus a header in the
@@ -99,7 +112,7 @@ export function Accordion({
   const idPrefix = React.useId();
   const buttonRefs = React.useRef(new Map<string, HTMLButtonElement>());
 
-  const currentOpenKeys = openKeys ?? internalOpenKeys;
+  const currentOpenKeys = openKeys === undefined || openKeys === null ? internalOpenKeys : nameList(openKeys);
 
   const handleToggle = (key: string) => {
     let newKeys: string[];
@@ -202,7 +215,8 @@ export function Accordion({
     overflowWrap: 'anywhere',
   };
 
-  const Heading = `h${headingLevel}` as 'h3';
+  // A level HTML has a heading for, below the page's own: `<h7>` and `<h0>` are none.
+  const Heading = `h${[2, 3, 4, 5, 6].includes(Number(headingLevel)) ? Number(headingLevel) : 3}` as 'h3';
 
   return (
     <div className={className} style={containerStyle}>

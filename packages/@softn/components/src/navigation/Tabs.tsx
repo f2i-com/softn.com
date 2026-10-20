@@ -62,7 +62,15 @@ export function Tabs({
   className,
   style,
 }: TabsProps): React.ReactElement {
-  const tabs = useMemo(() => (Array.isArray(rawTabs) ? rawTabs.filter(Boolean) : []), [rawTabs]);
+  // A tab with no key is keyed by its place: without, every tab was
+  // `undefined`, all of them were selected at once and shared one id.
+  const tabs = useMemo(
+    () =>
+      (Array.isArray(rawTabs) ? rawTabs.filter(Boolean) : []).map((tab, index) =>
+        tab.key === undefined || tab.key === null || tab.key === '' ? { ...tab, key: String(index) } : tab
+      ),
+    [rawTabs]
+  );
   // Per instance: two Tabs with a `general` tab each gave two elements the id
   // `tab-general`, and each tablist's aria-controls pointed into the other.
   const idPrefix = useId();

@@ -5,8 +5,10 @@
  */
 
 import * as React from 'react';
+import { keySet } from '../utils/lists';
 import { presentRows } from '../utils/rows';
 import { sortOrder } from '../utils/sort';
+import { numberOrText } from '../utils/css-values';
 
 /**
  * A row, when nothing more specific is known about it. The grid is usually fed
@@ -185,7 +187,7 @@ export function DataGrid<T = Row>({
   columns: rawColumns,
   data: rawData,
   keyField = 'id' as keyof T,
-  height = 400,
+  height: givenHeight = 400,
   rowHeight = 40,
   headerHeight = 44,
   virtualized = true,
@@ -197,7 +199,7 @@ export function DataGrid<T = Row>({
   onSort,
   filters: rawFilters,
   onFilterChange,
-  selectedKeys: controlledSelectedKeys,
+  selectedKeys: givenSelectedKeys,
   onSelectionChange,
   selectionMode = 'none',
   onCellEdit,
@@ -216,7 +218,8 @@ export function DataGrid<T = Row>({
   // from the sort the page names and follows it when the page changes it.
   const [ownSort, setOwnSort] = React.useState({ key: givenSortKey, direction: givenSortDirection });
   const [seenSort, setSeenSort] = React.useState({ key: givenSortKey, direction: givenSortDirection });
-  if (seenSort.key !== givenSortKey || seenSort.direction !== givenSortDirection) {
+  // As Object.is compares: a NaN sort key re-rendered without end.
+  if (!Object.is(seenSort.key, givenSortKey) || !Object.is(seenSort.direction, givenSortDirection)) {
     setSeenSort({ key: givenSortKey, direction: givenSortDirection });
     setOwnSort({ key: givenSortKey, direction: givenSortDirection });
   }
@@ -260,6 +263,10 @@ export function DataGrid<T = Row>({
   const [showFilters, setShowFilters] = React.useState(false);
   // Without `selectedKeys` the grid keeps its own selection, so a caller that
   // only listens through `onSelectionChange` still sees rows select.
+  // `height="300"`, as a page writes it, is 300 pixels (numberOrText).
+  const height = numberOrText(givenHeight);
+  // A page writes the keys as a list (keySet); made into a Set once per list given.
+  const controlledSelectedKeys = React.useMemo(() => keySet<string | number>(givenSelectedKeys), [givenSelectedKeys]);
   const [internalSelectedKeys, setInternalSelectedKeys] = React.useState<Set<string | number>>(() => new Set());
   const selectedKeys = controlledSelectedKeys ?? internalSelectedKeys;
   const setSelection = (next: Set<string | number>) => {

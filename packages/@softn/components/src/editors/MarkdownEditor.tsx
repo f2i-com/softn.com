@@ -235,9 +235,10 @@ export function MarkdownEditor({
   const [content, setContent] = useState(() => asText(value ?? defaultValue));
   // The view mode follows the prop when it changes, and the toolbar switches
   // it in between: it used to take the prop once, at mount.
-  const [viewMode, setViewModeState] = useState(viewModeProp);
-  const [seenViewMode, setSeenViewMode] = useState(viewModeProp);
-  if (viewModeProp !== seenViewMode) {
+  // Compared as Object.is compares, and kept as given: see CodeEditor.
+  const [viewMode, setViewModeState] = useState(() => viewModeProp);
+  const [seenViewMode, setSeenViewMode] = useState(() => viewModeProp);
+  if (!Object.is(viewModeProp, seenViewMode)) {
     setSeenViewMode(viewModeProp);
     setViewModeState(viewModeProp);
   }

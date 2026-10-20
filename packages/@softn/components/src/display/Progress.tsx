@@ -134,7 +134,8 @@ export function Progress({
   const sizeConfig = choice(sizeValues, size, 'md');
   const labelId = React.useId();
 
-  const defaultLabel = formatLabel ? formatLabel(safeValue, safeMax) : `${Math.round(percentage)}%`;
+  // Only a function formats: `formatLabel="{value}%"`, text, threw "is not a function".
+  const defaultLabel = typeof formatLabel === 'function' ? formatLabel(safeValue, safeMax) : `${Math.round(percentage)}%`;
 
   const wrapperStyle: React.CSSProperties = {
     width: '100%',

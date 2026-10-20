@@ -10,6 +10,7 @@ import { domAttributes } from '../utils/domAttributes';
 import { getVariantColors, getStyleForVariantStyle } from '../theme/variants';
 import { badgeSizeConfig } from '../theme/sizes';
 import { choice } from '../utils/choice';
+import { numberOrText } from '../utils/css-values';
 
 export interface BadgeProps {
   /** Badge variant */
@@ -64,7 +65,9 @@ export function Badge({
   const colors = getVariantColors(variant);
   const sizeStyles = choice(badgeSizeConfig, size, 'md');
 
-  if (typeof displayContent === 'number' && max !== undefined && displayContent > max) {
+  // A count written as text (`content="12"`) is counted too.
+  const count = numberOrText(displayContent);
+  if (typeof count === 'number' && max !== undefined && count > max) {
     displayContent = `${max}+`;
   }
 

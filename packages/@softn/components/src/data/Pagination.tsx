@@ -42,7 +42,7 @@ export function Pagination({
   totalPages: rawTotalPages,
   totalItems,
   pageSize = 10,
-  onPageChange,
+  onPageChange: givenOnPageChange,
   onPageSizeChange,
   pageSizeOptions = [10, 20, 50, 100],
   showPageSize = false,
@@ -54,6 +54,10 @@ export function Pagination({
   className = '',
   style,
 }: PaginationProps) {
+  // Without a handler the buttons do nothing rather than throw on every press.
+  const onPageChange = (page: number) => {
+    if (typeof givenOnPageChange === 'function') givenOnPageChange(page);
+  };
   const sizes = choice(sizeStyles, size, 'md');
   // Page counts arrive from data: zero, negative, fractional or not a number
   // at all. Read them as a whole count and a page inside it, so Next is not

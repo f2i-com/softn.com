@@ -54,11 +54,16 @@ function normaliseOptions(options: unknown): RadioOption[] {
   if (!Array.isArray(options)) return [];
   return options
     .filter((option) => option !== null && option !== undefined)
-    .map((option) =>
-      typeof option === 'object'
-        ? (option as RadioOption)
-        : { value: option as string, label: String(option) }
-    );
+    .map((option, index) => {
+      if (typeof option !== 'object') return { value: option as string, label: String(option) };
+      // An option written with no value answers to its label, else its
+      // place: every one was "undefined", so choosing one chose another.
+      // (`value: null` is a value: a "Nobody" choice.)
+      const given = option as RadioOption;
+      return given.value === undefined
+        ? { ...given, value: given.label !== undefined && given.label !== null ? String(given.label) : String(index) }
+        : given;
+    });
 }
 
 /** Text, a number or a yes/no: a value that says what it is when read as text. */

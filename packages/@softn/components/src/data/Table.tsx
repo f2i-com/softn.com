@@ -180,7 +180,8 @@ export function Table<T extends Record<string, unknown>>({
   // the rows are drawn in the order it gives them.
   const [ownSort, setOwnSort] = React.useState({ column: sortColumn, direction: sortDirection });
   const [seenSort, setSeenSort] = React.useState({ column: sortColumn, direction: sortDirection });
-  if (seenSort.column !== sortColumn || seenSort.direction !== sortDirection) {
+  // As Object.is compares: a NaN sort column re-rendered without end.
+  if (!Object.is(seenSort.column, sortColumn) || !Object.is(seenSort.direction, sortDirection)) {
     setSeenSort({ column: sortColumn, direction: sortDirection });
     setOwnSort({ column: sortColumn, direction: sortDirection });
   }

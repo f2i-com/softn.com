@@ -9,6 +9,7 @@
  */
 
 import React from 'react';
+import { nameList } from '../utils/lists';
 import { recordDate } from './record-dates';
 
 export interface SmartViewProps {
@@ -395,9 +396,9 @@ export function SmartView({
   }
 
   // Determine which fields to show
-  const fields = fieldsProp
-    ? fieldsProp.split(',').map((f) => f.trim())
-    : Object.keys(data).filter((key) => !hideFields.includes(key));
+  // Either written as a list or as text (nameList): `fields={["name"]}` threw.
+  const hidden = nameList(hideFields);
+  const fields = fieldsProp ? nameList(fieldsProp) : Object.keys(data).filter((key) => !hidden.includes(key));
 
   // Filter out empty values if needed
   const visibleFields = showEmpty

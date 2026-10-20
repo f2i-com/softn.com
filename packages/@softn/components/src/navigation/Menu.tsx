@@ -10,6 +10,7 @@
  */
 
 import React from 'react';
+import { cssLength } from '../utils/css-values';
 
 export interface MenuItem {
   /** Unique key */
@@ -208,7 +209,7 @@ export function Menu({
     const base: React.CSSProperties = {
       position: 'absolute',
       zIndex: 1000,
-      minWidth: typeof width === 'number' ? `${width}px` : width,
+      minWidth: cssLength(width),
       maxWidth: 'min(24rem, calc(100vw - 2rem))',
       backgroundColor: 'var(--color-surface, #16161a)',
       borderRadius: '0.5rem',

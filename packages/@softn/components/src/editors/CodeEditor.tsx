@@ -187,8 +187,10 @@ export function CodeEditor({
   // A value bound from app state may arrive as null or a number; it is text here.
   const isControlled = value !== undefined && onChange !== undefined;
   const [internal, setInternal] = useState(() => asText(value ?? defaultValue));
-  const [seenValue, setSeenValue] = useState(value);
-  if (value !== seenValue) {
+  // Kept as given (`useState(value)` ran a function as its initialiser) and
+  // compared as Object.is compares: NaN !== NaN re-rendered without end.
+  const [seenValue, setSeenValue] = useState(() => value);
+  if (!Object.is(value, seenValue)) {
     setSeenValue(value);
     if (value !== undefined) setInternal(asText(value));
   }

@@ -7,7 +7,7 @@
 
 import * as React from 'react';
 import type { ChartPadding } from './series';
-import { chartPadding, describeChart, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints } from './series';
+import { chartPadding, describeChart, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface DataPoint {
@@ -56,8 +56,8 @@ const defaultColors = chartPalette();
 
 export function LineChart({
   series: rawSeries,
-  width = 600,
-  height = 300,
+  width: givenWidth,
+  height: givenHeight,
   padding: givenPadding,
   showGrid = true,
   showXAxis = true,
@@ -74,6 +74,9 @@ export function LineChart({
   className = '',
   style,
 }: LineChartProps) {
+  // A size that is no positive number (`width="100%"`) is the chart's own: see chartSize.
+  const width = chartSize(givenWidth, 600);
+  const height = chartSize(givenHeight, 300);
   const padding = chartPadding(givenPadding, { top: 20, right: 20, bottom: 40, left: 50 });
   const formatXLabel = formatterOr<NonNullable<LineChartProps['formatXLabel']>>(givenFormatXLabel, (v) => String(v));
   const formatYLabel = formatterOr<NonNullable<LineChartProps['formatYLabel']>>(givenFormatYLabel, formatAxisValue);

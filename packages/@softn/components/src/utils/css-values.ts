@@ -34,6 +34,28 @@ const PAINT_FUNCTIONS = new Set([
 ]);
 
 /**
+ * A number written as text, as an HTML page writes every attribute, as the
+ * number (`"3"` is 3), for a prop that takes a number or text of its own;
+ * other text as written (`"50%"`, `"1fr 2fr"`). An Input's value or a key
+ * is not one of these: `"007"` stays text there.
+ */
+export function numberOrText<T>(value: T): T | number {
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+  return value;
+}
+
+/**
+ * A length as CSS takes it: a number, or a number written as text (`"300"`),
+ * in pixels; other text as written (`"50%"`, `"2rem"`). Written as it came,
+ * `width="300"` was the CSS `width: 300`, which the browser drops.
+ */
+export function cssLength<T>(value: T): T | string | undefined {
+  const number = numberOrText(value);
+  if (typeof number !== 'number') return value;
+  return Number.isFinite(number) ? `${number}px` : undefined;
+}
+
+/**
  * A colour prop as the component may paint it: the value when it is a colour
  * (or a gradient of colours), `undefined` otherwise.
  *
@@ -52,6 +74,7 @@ const PAINT_FUNCTIONS = new Set([
  * later CSS adds. That also stops a value that closes the gradient it is
  * interpolated into and opens an image layer after it.
  */
+
 export function cssPaint(value: string | undefined | null): string | undefined {
   if (typeof value !== 'string') return undefined;
   if (value.length > 512 || !/^[A-Za-z0-9_\s#%.,()/+-]*$/.test(value)) return undefined;

@@ -41,7 +41,7 @@ export function Drawer({
   open,
   onClose,
   children,
-  position = 'right',
+  position: givenPosition,
   size = '320px',
   title,
   ariaLabel,
@@ -52,6 +52,8 @@ export function Drawer({
   className,
   style,
 }: DrawerProps): React.ReactElement | null {
+  // A side that is not one of the four is the usual one: "center" opened a sheet from the top.
+  const position = givenPosition === 'left' || givenPosition === 'top' || givenPosition === 'bottom' ? givenPosition : 'right';
   const drawerRef = useRef<HTMLDivElement>(null);
 
   const titleId = useId();

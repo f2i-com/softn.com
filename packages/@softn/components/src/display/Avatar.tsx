@@ -10,6 +10,7 @@ import { isSafeUrl } from '@softn/core';
 import { cssPaint } from '../utils/egress';
 import { usePrefersReducedMotion } from '../utils/motion';
 import { named } from '../utils/choice';
+import { numberOrText } from '../utils/css-values';
 
 export interface AvatarProps {
   /** Image source */
@@ -153,7 +154,9 @@ function getSizeValue(size: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | number): number {
   // A size that is not one of the names, or not a size at all (state that
   // has not loaded), is the middle one: a group works its own width out of
   // this, and NaN is not a width.
-  if (typeof size === 'number') return Number.isFinite(size) && size > 0 ? size : sizeValues.md;
+  // A number written as text (`size="64"`) is the number: see numberOrText.
+  const given = numberOrText(size as unknown);
+  if (typeof given === 'number') return Number.isFinite(given) && given > 0 ? given : sizeValues.md;
   return sizeValues[size] ?? sizeValues.md;
 }
 

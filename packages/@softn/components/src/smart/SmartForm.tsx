@@ -324,8 +324,9 @@ export function SmartForm({
   // The same record written again is not another record: `data={{ status:
   // 'new' }}` is a new object each time the page is drawn, and reseeding on
   // each one put back what was written over every keystroke.
-  const [seededFrom, setSeededFrom] = useState(initialData);
-  if (initialData !== seededFrom && !sameRecord(initialData, seededFrom)) {
+  // Kept as given and compared as Object.is compares: see CodeEditor.
+  const [seededFrom, setSeededFrom] = useState(() => initialData);
+  if (!Object.is(initialData, seededFrom) && !sameRecord(initialData, seededFrom)) {
     setSeededFrom(initialData);
     setFormData(seedForm(initialData));
   }

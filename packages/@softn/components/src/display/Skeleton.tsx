@@ -8,6 +8,8 @@
 
 import React from 'react';
 import { cssPaint } from '../utils/egress';
+import { cssLength } from '../utils/css-values';
+import { choice } from '../utils/choice';
 
 export interface SkeletonProps {
   /** Variant of skeleton */
@@ -82,19 +84,15 @@ export function Skeleton({
     return <>{children ?? null}</>;
   }
 
-  const computedWidth = typeof width === 'number' ? `${width}px` : width;
-  const computedHeight =
-    typeof height === 'number' ? `${height}px` : height || defaultHeights[variant];
-  const computedRadius = borderRadius
-    ? typeof borderRadius === 'number'
-      ? `${borderRadius}px`
-      : borderRadius
-    : defaultRadii[variant];
+  const computedWidth = cssLength(width);
+  const computedHeight = cssLength(height) || defaultHeights[variant];
+  const computedRadius = borderRadius ? cssLength(borderRadius) : defaultRadii[variant];
 
   // For circular, make width equal height if not specified
   const finalWidth = variant === 'circular' && !width ? computedHeight : computedWidth;
 
-  const duration = speedDurations[speed];
+  // A speed that is not one of the three is the usual one: "medium" wrote `undefined` into the animation.
+  const duration = choice(speedDurations, speed, 'normal');
   const bgColor = baseColor || 'var(--color-skeleton-base, var(--color-gray-200, #3f3f46))';
   // Interpolated into `background`, so only a colour may come through.
   const hlColor = cssPaint(highlightColor) || 'var(--color-skeleton-highlight, rgba(255, 255, 255, 0.5))';

@@ -288,7 +288,15 @@ export function Slider({
       markItems.push({ value: markValue, label: String(Math.round(markValue)) });
     }
   } else if (Array.isArray(marks)) {
-    markItems.push(...marks);
+    // As written: a number is a mark at that value (`marks={[0, 50, 100]}`
+    // drew every mark at `left: NaN%`), and a hole or a mark with no value is
+    // none (`null` threw).
+    for (const mark of marks as unknown[]) {
+      const given = typeof mark === 'number' || typeof mark === 'string' ? { value: mark } : mark;
+      if (!given || typeof given !== 'object') continue;
+      const value = Number((given as { value?: unknown }).value);
+      if (Number.isFinite(value)) markItems.push({ ...(given as { label?: string }), value });
+    }
   }
 
   const containerStyle: React.CSSProperties = {
@@ -378,7 +386,8 @@ export function Slider({
     borderTop: '4px solid var(--color-text, #1f2937)',
   };
 
-  const formatValue = formatTooltip ?? ((v) => String(v));
+  // Only a function formats: text written there threw "is not a function".
+  const formatValue = typeof formatTooltip === 'function' ? formatTooltip : (v: number) => String(v);
 
   return (
     <div

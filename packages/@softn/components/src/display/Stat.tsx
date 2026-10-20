@@ -10,6 +10,7 @@
 import React from 'react';
 import { getVariantColors } from '../theme/variants';
 import { choice } from '../utils/choice';
+import { numberOrText } from '../utils/css-values';
 
 export interface StatProps {
   /** What the figure is */
@@ -70,7 +71,9 @@ function directionOf(change: number | string | undefined): 'up' | 'down' | 'flat
 }
 
 /** A numeric change as a percentage without its sign; text as it was written. */
-function changeText(change: number | string): string {
+function changeText(given: number | string): string {
+  // A number written as text (`change="5"`) is the number, and a percentage like one.
+  const change = numberOrText(given);
   if (typeof change !== 'number') return String(change);
   const magnitude = Math.abs(change);
   return `${Number.isInteger(magnitude) ? magnitude : magnitude.toFixed(1)}%`;

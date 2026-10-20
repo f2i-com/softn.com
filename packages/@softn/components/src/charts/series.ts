@@ -44,6 +44,17 @@ export function chartPadding(given: unknown, fallback: ChartPadding): ChartPaddi
   return all === null || all < 0 ? fallback : { top: all, right: all, bottom: all, left: all };
 }
 
+/**
+ * A chart's drawing size: the one given when it is a positive number (`"400"`
+ * as written text too), else the chart's own. The drawing always fills its
+ * box, its `<svg>` being `width="100%"`, so the size is only its shape; a
+ * `width="100%"` made every coordinate NaN and nothing was drawn.
+ */
+export function chartSize(given: unknown, own: number): number {
+  const size = finiteNumber(given);
+  return size !== null && size > 0 ? size : own;
+}
+
 /** The formatter a chart was given, or its own when that is not a function (`formatValue={null}`). */
 export function formatterOr<F extends (...args: never[]) => string>(given: unknown, own: F): F {
   return typeof given === 'function' ? (given as F) : own;

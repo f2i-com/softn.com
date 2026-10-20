@@ -7,7 +7,7 @@
 
 import * as React from 'react';
 import type { ChartPadding } from './series';
-import { chartPadding, describeChart, formatAxisValue, formatterOr, normaliseSeries, numericPoints } from './series';
+import { chartPadding, describeChart, formatAxisValue, formatterOr, normaliseSeries, numericPoints, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface BarDataPoint {
@@ -49,8 +49,8 @@ const defaultColors = chartPalette();
 
 export function BarChart({
   series: rawSeries,
-  width = 600,
-  height = 300,
+  width: givenWidth,
+  height: givenHeight,
   padding: givenPadding,
   orientation = 'vertical',
   grouped = true,
@@ -66,6 +66,9 @@ export function BarChart({
   className = '',
   style,
 }: BarChartProps) {
+  // A size that is no positive number (`width="100%"`) is the chart's own: see chartSize.
+  const width = chartSize(givenWidth, 600);
+  const height = chartSize(givenHeight, 300);
   const padding = chartPadding(givenPadding, { top: 20, right: 20, bottom: 50, left: 50 });
   const formatValue = formatterOr<NonNullable<BarChartProps['formatValue']>>(givenFormatValue, formatAxisValue);
   // Data that has not arrived yet is an empty chart, not a throw.

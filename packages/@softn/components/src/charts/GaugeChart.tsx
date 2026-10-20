@@ -7,7 +7,7 @@
 import * as React from 'react';
 import { chartColor } from '../theme/chart-palette';
 import { usePrefersReducedMotion } from '../utils/motion';
-import { formatterOr } from './series';
+import { formatterOr, chartSize } from './series';
 
 export interface GaugeThreshold {
   value: number;
@@ -138,15 +138,19 @@ export function GaugeChart({
   max = 100,
   label,
   thresholds,
-  variant = 'semicircle',
+  variant: givenVariant,
   animated = true,
-  width = 200,
+  width: givenWidth,
   height,
   formatValue: givenFormatValue,
   ariaLabel,
   className = '',
   style,
 }: GaugeChartProps) {
+  // A size that is no positive number (`width="100%"`) is the chart's own: see chartSize.
+  const width = chartSize(givenWidth, 200);
+  // A shape that is not one of the three is the first: `variant="half"` drew every arc at NaN.
+  const variant = givenVariant === 'arc' || givenVariant === 'full' ? givenVariant : 'semicircle';
   const formatValue = formatterOr<NonNullable<GaugeChartProps['formatValue']>>(givenFormatValue, (v) => String(Math.round(v)));
   const reducedMotion = usePrefersReducedMotion();
   const animate = animated && !reducedMotion;

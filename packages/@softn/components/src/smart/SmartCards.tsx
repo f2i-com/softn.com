@@ -331,7 +331,8 @@ export function SmartCards<T extends Record<string, unknown>>({
                 ? String((item as Record<string, unknown>).id)
                 : index;
             // Custom render
-            if (renderCard) {
+            // Only a function draws a card: text written there threw "is not a function".
+            if (typeof renderCard === 'function') {
               return (
                 <div
                   key={itemKey}

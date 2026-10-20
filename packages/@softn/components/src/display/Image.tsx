@@ -7,6 +7,7 @@
 import React from 'react';
 import { domAttributes } from '../utils/domAttributes';
 import { isSafeUrl, useConsentPending } from '@softn/core';
+import { cssLength } from '../utils/css-values';
 
 export interface ImageProps {
   /** Image source URL */
@@ -98,8 +99,8 @@ export function Image({
   const containerStyle: React.CSSProperties = {
     position: 'relative',
     display: 'inline-block',
-    width: typeof width === 'number' ? `${width}px` : width,
-    height: typeof height === 'number' ? `${height}px` : height,
+    width: cssLength(width),
+    height: cssLength(height),
     borderRadius: radius,
     overflow: 'hidden',
     backgroundColor: showPlaceholder && isLoading ? placeholderColor : undefined,

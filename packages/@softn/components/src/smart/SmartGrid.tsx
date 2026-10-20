@@ -9,6 +9,7 @@
  */
 
 import React, { useState, useMemo, useCallback, useEffect, useId, useRef } from 'react';
+import { nameList } from '../utils/lists';
 import { commaList, recordRows } from '../utils/rows';
 import { recordDate } from './record-dates';
 
@@ -309,7 +310,8 @@ export function SmartGrid<T extends Record<string, unknown>>({
     const allKeys = [...new Set([...directKeys, ...dataKeys])];
 
     return allKeys
-      .filter((key) => !hideColumns.includes(key))
+      // Whole names (nameList): `hideColumns="nameLong"` hid `name` and `e` too.
+      .filter((key) => !nameList(hideColumns).includes(key))
       .map((key) => ({
         key,
         label: columnLabels?.[key] ?? humanize(key),

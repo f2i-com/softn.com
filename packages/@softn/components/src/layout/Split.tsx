@@ -6,6 +6,7 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { cssPaint } from '../utils/egress';
+import { cssLength } from '../utils/css-values';
 
 export interface SplitProps {
   /** First pane content */
@@ -175,7 +176,7 @@ export function Split({
   };
 
   const firstPaneStyle: React.CSSProperties = {
-    [isHorizontal ? 'width' : 'height']: size !== null ? `${size}px` : initialSize,
+    [isHorizontal ? 'width' : 'height']: size !== null ? `${size}px` : cssLength(initialSize),
     [isHorizontal ? 'minWidth' : 'minHeight']: `${minSize}px`,
     overflow: 'auto',
     flexShrink: 0,

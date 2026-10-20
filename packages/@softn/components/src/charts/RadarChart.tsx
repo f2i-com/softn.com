@@ -5,7 +5,7 @@
  */
 
 import * as React from 'react';
-import { describeChart, finiteNumber, normaliseArray, normaliseSeries } from './series';
+import { describeChart, finiteNumber, normaliseArray, normaliseSeries, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
 
 export interface RadarDataPoint {
@@ -65,19 +65,25 @@ function polygonPoints(
     .join(' ');
 }
 
+/** The most grid rings a radar chart draws, whatever `levels` says. */
+const MAX_LEVELS = 20;
+
 export function RadarChart({
   series: rawSeries,
   axes: rawAxes,
   maxValue: propMaxValue,
-  levels = 5,
-  width = 300,
-  height = 300,
+  levels: givenLevels,
+  width: givenWidth,
+  height: givenHeight,
   showLegend = true,
   interactive = false,
   ariaLabel,
   className = '',
   style,
 }: RadarChartProps) {
+  // A size that is no positive number (`width="100%"`) is the chart's own: see chartSize.
+  const width = chartSize(givenWidth, 300);
+  const height = chartSize(givenHeight, 300);
   // Data that has not arrived yet is an empty chart, not a throw.
   const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
   const axes = React.useMemo(() => normaliseArray(rawAxes), [rawAxes]);
@@ -110,7 +116,9 @@ export function RadarChart({
     return max || 1;
   }, [propMaxValue, series]);
 
-  // Build grid level polygons (concentric rings)
+  // Build grid level polygons (concentric rings). As many as a chart can
+  // show: `levels={1e7}` drew a ring each, until the page's memory ran out.
+  const levels = Math.min(MAX_LEVELS, Math.max(1, Math.floor(finiteNumber(givenLevels) ?? 5)));
   const gridLevels: React.ReactNode[] = [];
   for (let level = 1; level <= levels; level++) {
     const levelRadius = (chartRadius / levels) * level;

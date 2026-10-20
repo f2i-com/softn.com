@@ -7,6 +7,7 @@
 
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { choice } from '../utils/choice';
+import { cssLength } from '../utils/css-values';
 
 export interface TooltipProps {
   /** Tooltip content */
@@ -536,7 +537,7 @@ export function Tooltip({
         ? '0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.04)'
         : '0 8px 16px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.1)',
     display: 'block',
-    maxWidth: typeof maxWidth === 'number' ? `${maxWidth}px` : maxWidth,
+    maxWidth: cssLength(maxWidth),
     whiteSpace: maxWidth ? 'normal' : 'nowrap',
     wordWrap: 'break-word',
     pointerEvents: interactive && isOpen ? 'auto' : 'none',

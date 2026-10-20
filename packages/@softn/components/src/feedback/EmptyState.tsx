@@ -251,7 +251,7 @@ export function EmptyState({
  * Preset empty states for common use cases
  */
 export function EmptySearch(props: Omit<EmptyStateProps, 'icon' | 'title'>): React.ReactElement {
-  const config = sizeConfig[props.size ?? 'md'];
+  const config = choice(sizeConfig, props.size, 'md');
   return (
     <EmptyState
       icon={DefaultIcons.search(
@@ -266,7 +266,7 @@ export function EmptySearch(props: Omit<EmptyStateProps, 'icon' | 'title'>): Rea
 }
 
 export function EmptyFolder(props: Omit<EmptyStateProps, 'icon' | 'title'>): React.ReactElement {
-  const config = sizeConfig[props.size ?? 'md'];
+  const config = choice(sizeConfig, props.size, 'md');
   return (
     <EmptyState
       icon={DefaultIcons.folder(
@@ -281,7 +281,7 @@ export function EmptyFolder(props: Omit<EmptyStateProps, 'icon' | 'title'>): Rea
 }
 
 export function EmptyList(props: Omit<EmptyStateProps, 'icon' | 'title'>): React.ReactElement {
-  const config = sizeConfig[props.size ?? 'md'];
+  const config = choice(sizeConfig, props.size, 'md');
   return (
     <EmptyState
       icon={DefaultIcons.file(

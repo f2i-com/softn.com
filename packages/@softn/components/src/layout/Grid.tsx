@@ -8,6 +8,7 @@
 import React, { useId } from 'react';
 import { domAttributes } from '../utils/domAttributes';
 import { cssColumnCount } from '../utils/egress';
+import { numberOrText } from '../utils/css-values';
 
 export interface ResponsiveColumns {
   /** Columns on mobile (< 640px) */
@@ -81,8 +82,8 @@ function isResponsiveColumns(columns: unknown): columns is ResponsiveColumns {
 }
 
 export function Grid({
-  columns,
-  rows,
+  columns: givenColumns,
+  rows: givenRows,
   gap = 'md',
   columnGap,
   rowGap,
@@ -97,6 +98,9 @@ export function Grid({
   children,
   ...rest
 }: GridProps): React.ReactElement {
+  // `columns="3"`, as a page writes it, is three columns (numberOrText), not the CSS `3`.
+  const columns = numberOrText(givenColumns);
+  const rows = numberOrText(givenRows);
   const uniqueId = useId();
   const gridId = `softn-grid-${uniqueId.replace(/:/g, '')}`;
 
