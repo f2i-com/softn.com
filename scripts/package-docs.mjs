@@ -44,7 +44,8 @@ try {
   fail('This is not a git checkout, so what dist/ was built from cannot be checked against it.');
 }
 const info = JSON.parse(fs.readFileSync(path.join(dist, 'BUILD-INFO.json'), 'utf8'));
-const stale = buildInfoProblem(info, head, { allowDirty: process.argv.includes('--allow-dirty') });
+// The docs carry no source maps either way, so a development build's docs package as they are.
+const stale = buildInfoProblem(info, head, { allowDirty: process.argv.includes('--allow-dirty'), development: true });
 if (stale) fail(stale);
 
 const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;

@@ -34,7 +34,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { precompressTreeInParallel } from './precompress-assets.mjs';
-import { dropMachineMaps } from './lib/build-paths.mjs';
+import { dropMachineMaps, dropSourceMaps } from './lib/build-paths.mjs';
 import { buildSite as buildDocs } from '../docs/scripts/build-docs.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -60,6 +60,14 @@ const withDemos = demosDirArg !== null || process.argv.includes('--with-demos') 
 // site build's time. BUILD-INFO.json says so, and the packagers refuse such a
 // dist (lib/build-info.mjs): what is deployed always has them.
 const precompress = !process.argv.includes('--no-precompress') && process.env.SOFTN_NO_PRECOMPRESS !== '1';
+// `--sourcemaps` (or SOFTN_SOURCEMAPS=1, `npm run build:site:dev`) builds the
+// apps with source maps, for a development deployment whose stack traces read
+// as the source. A production build has none (scripts/sourcemaps.mjs);
+// BUILD-INFO.json says which, and the packagers refuse a build with maps
+// unless asked for a development package.
+const sourcemaps = process.argv.includes('--sourcemaps') || process.env.SOFTN_SOURCEMAPS === '1';
+if (sourcemaps) process.env.SOFTN_SOURCEMAPS = '1';
+else delete process.env.SOFTN_SOURCEMAPS;
 
 const APPS = [
   { workspace: '@softn/web', dir: 'apps/softn-web', base: '/web/', into: 'web' },
@@ -749,6 +757,7 @@ function writeBuildInfo() {
         // release shape, and the smoke test reads it to know what to expect.
         examples: { bundled: bundleCount },
         precompressed: precompress,
+        sourcemaps,
         zipp,
       },
       null,
@@ -969,7 +978,13 @@ writeBuildInfo();
 // file workbox bundled each worker from and the checkout's own path in every
 // import; the apps' maps, relative to the build, stay for reading error
 // reports (lib/build-paths.mjs, and package-site.mjs refuses what is left).
-for (const map of dropMachineMaps(outDir, root)) console.log(`Left out ${map}: it names paths on this machine`);
+if (sourcemaps) {
+  for (const map of dropMachineMaps(outDir, root)) console.log(`Left out ${map}: it names paths on this machine`);
+} else {
+  // Nothing the apps build writes a map without --sourcemaps; this keeps a
+  // map anything else left (a copied tree, a stale output) out of production.
+  for (const map of dropSourceMaps(outDir)) console.log(`Left out ${map}: a production build carries no source maps`);
+}
 if (precompress) await precompressAssets();
 else console.log('\nNo .br/.gz twins (--no-precompress): this dist is for tests, and the packagers refuse it.');
 

@@ -4,7 +4,8 @@ import { softnPwa } from '../../scripts/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
-import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
+import { buildSourcemaps } from '../../scripts/sourcemaps.mjs';
+import { vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -56,16 +57,13 @@ export default defineConfig({
         // it nothing the studio generates runs offline. It is also larger than
         // Workbox's 2 MiB default cap, which would silently skip the file.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
-        // core-runtime/ holds the workers' files (the script and local-model
-        // workers), fetched by the apps that start one rather than by every
-        // first load. The preview registers components as the runtimes do,
-        // so a feature (charts, editors, Scene3D with Three.js, the QR
-        // decoder) and core's optional modules are fetched the first time a
-        // previewed page draws or asks for one, and kept by the runtime
-        // routes below for offline use after (scripts/on-demand-chunks.mjs).
-        globIgnores: ['**/core-runtime/**', ...onDemandGlobIgnores],
+        // A complete install: everything Studio ships, so an installed Studio
+        // works offline with every feature. The preview still loads each one
+        // (charts, editors, Scene3D with Three.js, the QR decoder, the workers'
+        // files under core-runtime/) only when a page draws or asks for it, so
+        // this is what installing downloads, not what a page loads.
+        globIgnores: [],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
-        runtimeCaching: onDemandRuntimeCaching,
       },
     }),
   ],
@@ -76,8 +74,9 @@ export default defineConfig({
   },
   build: {
     target: 'es2022',
-    sourcemap: true,
-    // dist/.vite/manifest.json, which test/build-graph.test.ts reads.
+    // In a development build only (scripts/sourcemaps.mjs).
+    sourcemap: buildSourcemaps(),
+    // dist/.vite/manifest.json, which scripts/editor-offline.test.mjs reads.
     manifest: true,
     rolldownOptions: {
       output: {

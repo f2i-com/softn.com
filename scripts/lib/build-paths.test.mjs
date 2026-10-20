@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildMachinePaths, dropMachineMaps, machinePathIn, pathSpellings } from './build-paths.mjs';
+import { buildMachinePaths, dropMachineMaps, dropSourceMaps, machinePathIn, pathSpellings } from './build-paths.mjs';
 import { buildInfoProblem } from './build-info.mjs';
 
 function scratch(t) {
@@ -98,11 +98,30 @@ test('a checkout too short to tell from ordinary text is not looked for', (t) =>
   assert.deepEqual(buildMachinePaths(dir, ['guide.md'], '/srv/build/softn'), ['guide.md names the checkout this was built in']);
 });
 
-test('build-site leaves the machine maps out before the twins are made', () => {
+test('a production build leaves every map out, with its twins and the comment that names it', (t) => {
+  const dir = scratch(t);
+  const write = (name, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    fs.writeFileSync(path.join(dir, name), text);
+  };
+  write('web/assets/index.js', 'a();\n//# sourceMappingURL=index.js.map\n');
+  write('web/assets/index.js.map', JSON.stringify({ version: 3, sources: ['../../src/index.ts'], mappings: 'AAAA' }));
+  write('web/assets/index.js.map.br', 'twin');
+  write('studio/sw.js.map', '{not json');
+  write('web/assets/other.js', 'b();\n');
+  assert.deepEqual(dropSourceMaps(dir), ['studio/sw.js.map', 'web/assets/index.js.map']);
+  assert.equal(fs.readFileSync(path.join(dir, 'web/assets/index.js'), 'utf8'), 'a();\n');
+  assert.ok(!fs.existsSync(path.join(dir, 'web/assets/index.js.map.br')));
+  assert.equal(fs.readFileSync(path.join(dir, 'web/assets/other.js'), 'utf8'), 'b();\n');
+});
+
+test('build-site leaves the maps out before the twins are made: every map in production, the machine maps in development', () => {
   const source = fs.readFileSync(new URL('../build-site.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
-  const dropped = source.indexOf('dropMachineMaps(outDir, root)');
-  assert.ok(dropped > 0, 'build-site calls dropMachineMaps(outDir, root): the checkout is looked for as well');
-  assert.ok(dropped < source.lastIndexOf('precompressAssets();'), 'and before precompressAssets()');
+  const machine = source.indexOf('dropMachineMaps(outDir, root)');
+  const all = source.indexOf('dropSourceMaps(outDir)');
+  assert.ok(machine > 0, 'build-site calls dropMachineMaps(outDir, root): the checkout is looked for as well');
+  assert.ok(all > 0, 'and dropSourceMaps(outDir) for a production build');
+  for (const at of [machine, all]) assert.ok(at < source.lastIndexOf('precompressAssets();'), 'before precompressAssets()');
 });
 
 test('a build is packaged only from the commit it was built from', () => {
@@ -112,4 +131,8 @@ test('a build is packaged only from the commit it was built from', () => {
   assert.match(buildInfoProblem({ softn: { revision: head, dirty: true } }, head), /dirty/);
   assert.equal(buildInfoProblem({ softn: { revision: head, dirty: true } }, head, { allowDirty: true }), null);
   for (const info of [{}, null, { softn: { revision: 'HEAD' } }]) assert.match(buildInfoProblem(info, head), /names no SoftN revision/);
+  // A development build, with source maps, is packaged only as a development package.
+  const withMaps = { softn: { revision: head, dirty: false }, sourcemaps: true };
+  assert.match(buildInfoProblem(withMaps, head), /source maps.*--development/);
+  assert.equal(buildInfoProblem(withMaps, head, { development: true }), null);
 });

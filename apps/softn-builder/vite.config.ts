@@ -4,7 +4,8 @@ import { softnPwa } from '../../scripts/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
-import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
+import { buildSourcemaps } from '../../scripts/sourcemaps.mjs';
+import { vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -67,20 +68,17 @@ export default defineConfig({
         // `wasm` matters here: @softn/core runs bundles through a wasm engine,
         // so leaving it out would break preview offline.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
-        // core-runtime/ holds the workers' files (the script and local-model
-        // workers), fetched by the apps that start one rather than by every
-        // install. The canvas and preview register components as the runtimes
-        // do, so a feature (charts, editors, Scene3D with Three.js, the QR
-        // decoder) and core's optional modules are fetched the first time a
-        // page draws or asks for one, and kept by the runtime routes below for
-        // offline use after (scripts/on-demand-chunks.mjs).
-        globIgnores: ['**/core-runtime/**', ...onDemandGlobIgnores],
-        runtimeCaching: onDemandRuntimeCaching,
-        // Everything left after that ignore fits inside 8 MiB — the largest
-        // is the ZIPP engine at ~6.1 MiB (javascript-python-base: torch is a package
-        // under core-runtime/, fetched only for apps that declare it). Raise this rather than let
-        // Workbox skip a file, because a skipped precache entry fails only
-        // offline.
+        // A complete install: everything the Builder ships, so an installed
+        // Builder works offline with every feature. The canvas and preview
+        // still load each one (charts, editors, Scene3D with Three.js, the QR
+        // decoder, the workers' files under core-runtime/) only when a page
+        // draws or asks for it, so this is what installing downloads, not what
+        // a page loads.
+        globIgnores: [],
+        // Every file fits inside 8 MiB — the largest is the ZIPP engine at
+        // ~6.1 MiB (javascript-python-base; torch is a package of ~2 MiB under
+        // core-runtime/). Raise this rather than let Workbox skip a file,
+        // because a skipped precache entry fails only offline.
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
       },
     }),
@@ -102,8 +100,9 @@ export default defineConfig({
       target: env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari15',
     }),
     minify: !env.TAURI_ENV_DEBUG,
-    sourcemap: !!env.TAURI_ENV_DEBUG,
-    // dist/.vite/manifest.json, which the build-graph test reads.
+    // A debug desktop build, or a development build (scripts/sourcemaps.mjs).
+    sourcemap: !!env.TAURI_ENV_DEBUG || buildSourcemaps(),
+    // dist/.vite/manifest.json, which scripts/editor-offline.test.mjs reads.
     manifest: true,
     rolldownOptions: {
       output: {

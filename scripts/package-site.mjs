@@ -3,7 +3,7 @@
  * Package `dist/` — the complete static release that `build:site` writes — as
  * one archive ready to upload to a web host, and prove the archive is right.
  *
- *   node scripts/package-site.mjs --tag v0.0.1 [--out release] [--allow-dirty]
+ *   node scripts/package-site.mjs --tag v0.0.1 [--out release] [--allow-dirty] [--development]
  *
  * The archive is `softn-website-<tag>-zipp-<engine release>.zip`, the engine
  * release taken from BUILD-INFO.json so the name says what is inside. Every
@@ -15,7 +15,10 @@
  *
  * dist/ is packaged only when BUILD-INFO.json says it was built from HEAD
  * (from a clean tree, unless --allow-dirty), and when nothing in it names a
- * path on the build machine (lib/build-info.mjs, lib/build-paths.mjs).
+ * path on the build machine (lib/build-info.mjs, lib/build-paths.mjs). A
+ * development build, with source maps (`npm run build:site:dev`), is packaged
+ * only with --development, as `softn-website-<tag>-zipp-<engine>-development.zip`;
+ * a production deployment carries no maps.
  *
  * The writing itself — store the already-compressed files, deflate the rest,
  * refuse zip64, read the finished file back and compare every entry byte for
@@ -46,6 +49,7 @@ const opt = (name) => {
   return i === -1 ? undefined : args[i + 1];
 };
 const allowDirty = args.includes('--allow-dirty');
+const development = args.includes('--development');
 const outDir = path.resolve(root, opt('--out') ?? 'release');
 let tag = opt('--tag');
 if (!tag) {
@@ -85,7 +89,7 @@ try {
 } catch {
   fail('This is not a git checkout, so what dist/ was built from cannot be checked against it.');
 }
-const stale = buildInfoProblem(info, head, { allowDirty });
+const stale = buildInfoProblem(info, head, { allowDirty, development });
 if (stale) fail(stale);
 if (!fs.existsSync(path.join(distDir, '.htaccess'))) {
   fail('dist/.htaccess is missing; the archive would deploy without its server rules.');
@@ -93,7 +97,7 @@ if (!fs.existsSync(path.join(distDir, '.htaccess'))) {
 // The engine's release tag, version or short commit, as release-packages.mjs
 // spells it: it goes into the file name, and the explainers name that file.
 const engine = engineLabel(info.zipp ?? {});
-const archiveName = `softn-website-${tag}-zipp-${engine}.zip`;
+const archiveName = `softn-website-${tag}-zipp-${engine}${development ? '-development' : ''}.zip`;
 // The plain-language explainer at the root of the archive, written into
 // dist/ first so the archive and the directory it is verified against agree.
 fs.writeFileSync(path.join(distDir, FRONT_DOOR), startHere('site', { tag, engine }));
@@ -123,8 +127,9 @@ for (const required of DATA_KEEP) {
 for (const name of files) {
   if (/\.sqlite$/.test(name) || name === 'data/config.json' || name === 'data/seeded') fail(`${name}: the directory's state must not ship`);
 }
-// Source maps ship, for reading an error report against this build; the
-// build machine's paths do not (lib/build-paths.mjs).
+// A development build's source maps ship in a development package, for
+// reading an error report against it; the build machine's paths never do
+// (lib/build-paths.mjs).
 const machine = buildMachinePaths(distDir, files, root);
 if (machine.length > 0) {
   fail(`${machine.slice(0, 10).join('; ')}${machine.length > 10 ? `; and ${machine.length - 10} more` : ''}. Build the site again (npm run build:site), which leaves such maps out.`);

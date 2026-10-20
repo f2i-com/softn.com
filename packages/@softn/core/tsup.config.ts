@@ -1,32 +1,7 @@
 import { defineConfig } from 'tsup';
-import { cpSync, existsSync, mkdirSync, readdirSync, copyFileSync } from 'fs';
-import path from 'path';
+import { cpSync, existsSync, rmSync } from 'fs';
 import { execFileSync } from 'node:child_process';
-
-function copyDirRecursive(src: string, dest: string) {
-  if (!existsSync(dest)) mkdirSync(dest, { recursive: true });
-  for (const entry of readdirSync(src, { withFileTypes: true })) {
-    if (entry.name === 'core-runtime') continue;
-    // The mirror exists for the script and model Workers. The host-JavaScript
-    // engine is main-thread-only and no worker can reach it, and a copy here
-    // would end up in every app's assets/core-runtime/ — in the editors, which
-    // stay on ZIPP, and in the ZIPP entry document, which must not contain it.
-    if (entry.name === 'host-js') continue;
-    // Source maps are for reading dist/ itself; a Worker never loads one, and
-    // they were 3.1 MB of the mirror and of every app's copy of it.
-    if (entry.name.endsWith('.map')) continue;
-    // The engine is the page's: it posts its compiled module to every worker
-    // it starts, so no worker fetches one from beside its own chunk.
-    if (entry.name === 'zipp_wasm_bg.wasm') continue;
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
-    } else if (entry.isFile()) {
-      copyFileSync(srcPath, destPath);
-    }
-  }
-}
+import { copyWorkerFiles } from './scripts/worker-files.mjs';
 
 export default defineConfig({
   entry: [
@@ -75,8 +50,14 @@ export default defineConfig({
     // vendor/zipp-models/, at dist/runtime/model-worker.js with its two
     // modules in dist/runtime/models/, mirrored below like the script worker.
     execFileSync(process.execPath,['scripts/build-model-worker.mjs'],{stdio:'inherit'});
-    // Mirror dist/ into dist/core-runtime/ so static worker URL resolution (./core-runtime/runtime/script-worker.js) succeeds on disk
-    copyDirRecursive('dist', 'dist/core-runtime');
-    console.log('[tsup] Mirrored dist/ to dist/core-runtime/ for worker resolution');
+    // dist/core-runtime/: what the Workers reach, so the worker URLs a chunk
+    // names (./core-runtime/runtime/script-worker.js) resolve on disk for a
+    // consumer that loads dist/ directly, and the dev servers. Only what they
+    // reach (scripts/worker-files.mjs): not the engine, which the page posts
+    // them, not the host-JavaScript engine, no worker's, not core's own entry
+    // chunks, declarations or source maps.
+    rmSync('dist/core-runtime', { recursive: true, force: true });
+    const mirrored = copyWorkerFiles('dist', 'dist/core-runtime');
+    console.log(`[tsup] Mirrored the workers' ${mirrored.length} files to dist/core-runtime/`);
   },
 });

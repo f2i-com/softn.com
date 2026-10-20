@@ -30,7 +30,7 @@ function fixture(t) {
   return { temp, core, files };
 }
 
-test('every browser runtime consumer registers assets before its PWA and excludes optional downloads', () => {
+test('every browser runtime consumer registers assets before its PWA; the runtime leaves the workers\' files to the apps that need them, the editors install them', () => {
   for (const name of ['web', 'builder', 'studio']) {
     const source = fs.readFileSync(path.join(root, `apps/softn-${name}/vite.config.ts`), 'utf8');
     assert.ok(source.includes("from '../../scripts/core-worker-assets.mjs'"), name);
@@ -39,7 +39,8 @@ test('every browser runtime consumer registers assets before its PWA and exclude
     const ignores = source.indexOf('globIgnores:');
     assert.ok(ignores >= 0, name);
     const block = source.slice(ignores, source.indexOf(']', ignores));
-    assert.ok(block.includes("'**/core-runtime/**'"), name);
+    if (name === 'web') assert.ok(block.includes("'**/core-runtime/**'"), name);
+    else assert.match(block, /^globIgnores:\s*\[$/, `${name} installs everything it ships`);
   }
 });
 

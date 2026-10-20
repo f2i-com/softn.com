@@ -4,6 +4,7 @@ import { softnPwa } from '../../scripts/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
+import { buildSourcemaps } from '../../scripts/sourcemaps.mjs';
 import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
@@ -136,7 +137,8 @@ export default defineConfig({
   },
   build: {
     target: 'es2020',
-    sourcemap: true,
+    // In a development build only (scripts/sourcemaps.mjs).
+    sourcemap: buildSourcemaps(),
     // dist/.vite/manifest.json: the entry's static import closure, which
     // test/build-graph.test.ts holds free of Three.js and the model loaders,
     // and which the service-worker policy above is defined against.

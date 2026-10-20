@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 import { docsDevPlugin } from '../../scripts/dev-docs.mjs';
 import { scriptPolicyPlugin } from '../../scripts/script-policy.mjs';
+import { buildSourcemaps } from '../../scripts/sourcemaps.mjs';
 
 const appDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -52,7 +53,8 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       target: 'es2022',
-      sourcemap: true,
+      // In a development build only (scripts/sourcemaps.mjs).
+      sourcemap: buildSourcemaps(),
     },
   };
 });

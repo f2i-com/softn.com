@@ -41,6 +41,13 @@ test('the precache takes what the globs take, revisions what its name does not, 
   assert.match(entries[1].revision, /^[0-9a-f]{32}$/);
   assert.equal(warned.length, 1);
   assert.match(warned[0], /big\.wasm/);
+
+  // An editor installs the workers' files too. Under assets/ as they are, their
+  // names do not change with their content, so each is revisioned.
+  const complete = precacheEntries(dir, { globPatterns: ['**/*.{js,html,wasm}'], maximumFileSizeToCacheInBytes: 32 });
+  const worker = complete.find((e) => e.url === 'assets/core-runtime/zipp_wasm_bg.wasm');
+  assert.match(worker.revision, /^[0-9a-f]{32}$/);
+  assert.equal(complete.find((e) => e.url === 'assets/scene3d-Zz99Yy88.js').revision, null);
 });
 
 test('the manifest is written as the plugin it replaces wrote it', () => {

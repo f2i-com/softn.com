@@ -6,9 +6,11 @@
  * module, bindings included, is about 6.1 MiB under today's 8 MiB caps, so a larger release has to raise the caps
  * first, or every PWA silently loses its engine offline.
  *
- * The torch package (zipp_torch.wasm, about 2 MiB) is deliberately NOT in the
- * precache: the runtime fetches it from assets/core-runtime/ — which every
- * PWA's globIgnores leaves out — only for an app that declares torch.
+ * The torch package (zipp_torch.wasm, about 2 MiB) is deliberately NOT in
+ * softn-web's precache: the runtime fetches it from assets/core-runtime/ —
+ * which its globIgnores leaves out — only for an app that declares torch.
+ * Studio and the Builder install everything they ship, torch included, so an
+ * installed editor works offline with every feature.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,7 +46,7 @@ test('the ZIPP engine fits under the smallest Workbox precache cap of every PWA'
   );
 });
 
-test('the torch package stays out of every PWA\'s startup precache', () => {
+test('the torch package stays out of the runtime\'s startup precache, and is in the editors\' complete install', () => {
   // The runtime resolves it as ./core-runtime/zipp_torch.wasm from core's chunk
   // (packages/@softn/core/src/runtime/zipp-wasm-loader.ts), through a variable
   // so Vite does not emit a hashed copy under assets/ for the glob to sweep.
@@ -52,8 +54,9 @@ test('the torch package stays out of every PWA\'s startup precache', () => {
   assert.match(loader, /const TORCH_WASM_PATH = '\.\/core-runtime\/zipp_torch\.wasm';/);
   assert.match(loader, /new URL\(TORCH_WASM_PATH, import\.meta\.url\)/);
   assert.doesNotMatch(loader, /new URL\(\s*['"`][^'"`]*zipp_torch\.wasm['"`]/, 'a literal URL would be emitted into assets/ and precached');
-  for (const file of CONFIGS) {
-    const text = fs.readFileSync(path.join(root, file), 'utf8');
-    assert.match(text, /globIgnores:[^\]]*'\*\*\/core-runtime\/\*\*'/s, `${file} leaves assets/core-runtime/ out of the precache`);
+  const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
+  assert.match(read('apps/softn-web/vite.config.ts'), /globIgnores:[^\]]*'\*\*\/core-runtime\/\*\*'/s, 'softn-web leaves assets/core-runtime/ out of the precache');
+  for (const file of ['apps/softn-builder/vite.config.ts', 'apps/softn-studio/vite.config.ts']) {
+    assert.match(read(file), /globIgnores:\s*\[\]/, `${file} installs everything it ships`);
   }
 });

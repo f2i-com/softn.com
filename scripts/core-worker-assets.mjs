@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyWorkerFiles } from '../packages/@softn/core/scripts/worker-files.mjs';
 
 const defaultCoreRoot = fileURLToPath(new URL('../packages/@softn/core/dist/', import.meta.url));
 const MIME_TYPES = new Map([
@@ -14,35 +15,6 @@ const MIME_TYPES = new Map([
 
 function inside(root, candidate) {
   return candidate.startsWith(root + path.sep);
-}
-
-function copyDirectory(source, destination, skipRuntimeMirror = false) {
-  fs.mkdirSync(destination, { recursive: true });
-  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-    // Core keeps an adjacent mirror for consumers loading dist directly. The
-    // browser app is already copying that tree to assets/core-runtime, so a
-    // second nested copy only duplicates engines, model assets and chunks.
-    if (skipRuntimeMirror && entry.name === 'core-runtime') continue;
-    // The host-JavaScript engine is the one part of core no worker can reach:
-    // it runs the app author's code as the document's own JavaScript, on the
-    // main thread only. Copying it here would put it in every consumer's
-    // assets — the editors and the ZIPP app runtime among them, which must be
-    // able to prove they do not contain it (scripts/host-js-isolation.test.mjs).
-    if (entry.name === 'host-js') continue;
-    // Source maps stay with core's dist, where the dev server still serves
-    // them; a deployed Worker never loads one, and they were 3.1 MB of every
-    // app's copy.
-    if (entry.name.endsWith('.map')) continue;
-    // Nor the ZIPP engine: the page compiles its own copy, the app's one
-    // hashed and precached asset, and posts the module to every worker it
-    // starts (zippEngineForWorker in core). A copy here was a second 6 MB
-    // engine in every deployment that nothing fetched.
-    if (entry.name === 'zipp_wasm_bg.wasm') continue;
-    const from = path.join(source, entry.name);
-    const to = path.join(destination, entry.name);
-    if (entry.isDirectory()) copyDirectory(from, to);
-    else if (entry.isFile()) fs.copyFileSync(from, to);
-  }
 }
 
 /** Serve/copy the adjacent assets required by the script and local-model workers. */
@@ -81,7 +53,17 @@ export function coreWorkerAssetPlugin({ coreDistRoot = defaultCoreRoot } = {}) {
       const destination = options.dir || outputRoot;
       if (!destination) throw new Error('Core runtime assets need a Vite output directory');
       if (!fs.existsSync(sourceRoot)) throw new Error('Build @softn/core before building runtime consumers');
-      copyDirectory(sourceRoot, path.join(destination, 'assets', 'core-runtime'), true);
+      // What the workers reach and nothing else (packages/@softn/core/scripts/worker-files.mjs):
+      // their modules, the local-model worker's modules and licences, and the torch
+      // package. Not core's mirror, its entry chunks, its declarations or its source
+      // maps; not the host-JavaScript engine, which runs only on the main thread and
+      // which the editors and the ZIPP runtime must be able to prove they do not
+      // carry (scripts/host-js-isolation.test.mjs); not the ZIPP engine, which the
+      // page posts to every worker it starts. A copy of the whole dist was 4.1 MB per
+      // app, of which the workers reach 2.8 MB.
+      const target = path.join(destination, 'assets', 'core-runtime');
+      fs.rmSync(target, { recursive: true, force: true });
+      copyWorkerFiles(sourceRoot, target);
     },
   };
 }

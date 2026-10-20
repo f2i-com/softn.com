@@ -20,9 +20,10 @@ export function headRevision(root) {
  * Why a `dist/` whose BUILD-INFO.json says `info` is not to be packaged at
  * `head`, or null. A tree that was dirty when it was built is refused unless
  * `allowDirty`, as package-site has always refused it, and so is a build made
- * without its precompressed twins.
+ * without its precompressed twins, and one made with source maps unless it
+ * is packaged as a `development` deployment.
  */
-export function buildInfoProblem(info, head, { allowDirty = false } = {}) {
+export function buildInfoProblem(info, head, { allowDirty = false, development = false } = {}) {
   const revision = info?.softn?.revision;
   if (typeof revision !== 'string' || !/^[0-9a-f]{40}$/.test(revision)) {
     return 'BUILD-INFO.json names no SoftN revision. Build the site again (npm run build:site).';
@@ -36,6 +37,10 @@ export function buildInfoProblem(info, head, { allowDirty = false } = {}) {
   // A test build: no .br/.gz twins, which the deployment rules prefer.
   if (info.precompressed === false) {
     return 'BUILD-INFO.json says dist/ was built with --no-precompress, for tests: it has no .br/.gz twins. Build it again without that (npm run build:site).';
+  }
+  // A development build: source maps, which a production deployment does not carry.
+  if (info.sourcemaps === true && !development) {
+    return 'BUILD-INFO.json says dist/ was built with source maps (npm run build:site:dev), which production does not ship. Build it again with npm run build:site, or pass --development to package it as a development deployment.';
   }
   return null;
 }

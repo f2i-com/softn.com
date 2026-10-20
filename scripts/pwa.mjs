@@ -69,8 +69,9 @@ function walk(dir, prefix = '') {
 /**
  * What the worker precaches: the files the globs take and the ignores leave,
  * under the size cap, each with a revision unless its name already changes
- * with its content (Vite's hashed assets/). The manifest is added, as it is
- * written outside the globs' extensions.
+ * with its content (Vite's hashed assets/, but not the workers' files in
+ * assets/core-runtime/). The manifest is added, as it is written outside the
+ * globs' extensions.
  */
 export function precacheEntries(outDir, { globPatterns = [], globIgnores = [], maximumFileSizeToCacheInBytes = 2 * 1024 * 1024 } = {}, { warn = () => {} } = {}) {
   const take = globPatterns.map(globToRegExp);
@@ -85,7 +86,10 @@ export function precacheEntries(outDir, { globPatterns = [], globIgnores = [], m
       warn(`${file} is ${bytes.length} bytes, past maximumFileSizeToCacheInBytes, and is not precached`);
       continue;
     }
-    entries.push({ url: file, revision: file.startsWith('assets/') ? null : createHash('md5').update(bytes).digest('hex') });
+    // Vite's own assets/ are hashed; the workers' files it copies to
+    // assets/core-runtime/ keep their names from build to build.
+    const hashed = file.startsWith('assets/') && !file.startsWith('assets/core-runtime/');
+    entries.push({ url: file, revision: hashed ? null : createHash('md5').update(bytes).digest('hex') });
   }
   return entries;
 }

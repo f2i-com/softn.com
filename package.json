@@ -16,6 +16,7 @@
     "build:core": "npm run build -w @softn/core",
     "build:components": "npm run build -w @softn/components",
     "build:site": "node scripts/build-site.mjs",
+    "build:site:dev": "node scripts/build-site.mjs --sourcemaps",
     "docs:validate": "node docs/scripts/validate.mjs",
     "docs:build": "node docs/scripts/build-docs.mjs",
     "docs:test": "node --test docs/tests/*.test.mjs",

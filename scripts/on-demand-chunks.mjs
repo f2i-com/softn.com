@@ -1,16 +1,18 @@
 /**
  * What a SoftN host fetches the first time a page needs it rather than on its
- * first load: one policy for softn-web, Studio and the Builder, whose Vite
- * configs spread these into their PWA's `globIgnores` and `runtimeCaching`
- * and their build's chunk groups. docs/engineering/COMPONENT_LOADING.md has
- * the whole policy; each app's build-graph test holds its manifest to it.
+ * first load. softn-web spreads these into its PWA's `globIgnores` and
+ * `runtimeCaching`, so its precache is the shell and each app it opens is
+ * installed by itself (apps/softn-web/src/lib/offlineInstall.ts); Studio and
+ * the Builder take only the chunk group, and install everything they ship.
+ * docs/engineering/COMPONENT_LOADING.md has the whole policy; the build-graph
+ * tests hold each app's manifest to it.
  *
  * A host registers the built-in components through
  * registerRuntimeComponents() (@softn/components/lazy): the minimal set
  * eagerly, every other feature as a loader, so a feature is a chunk of its
- * own that nothing imports statically. What is left in the precache is the
- * shell: the entry, what it imports statically, the engine and the XDB module
- * every app opens.
+ * own that nothing imports statically. What is left in softn-web's precache
+ * is the shell: the entry, what it imports statically, the engine and the
+ * XDB module every app opens.
  */
 
 /**

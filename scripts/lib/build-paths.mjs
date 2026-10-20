@@ -103,15 +103,40 @@ export function dropMachineMaps(dir, checkout = null) {
       }
       const lower = spellings.length ? text.toLowerCase() : '';
       if (!machinePathIn(map) && !spellings.some((spelling) => lower.includes(spelling))) continue;
-      for (const twin of [file, `${file}.br`, `${file}.gz`]) fs.rmSync(twin, { force: true });
-      const mapped = file.slice(0, -'.map'.length);
-      if (fs.existsSync(mapped)) {
-        const comment = `//# sourceMappingURL=${entry.name}`;
-        const text = fs.readFileSync(mapped, 'utf8');
-        const kept = text.split('\n').filter((line) => line.trim() !== comment);
-        if (kept.length !== text.split('\n').length) fs.writeFileSync(mapped, kept.join('\n'));
-      }
+      removeMap(file);
       removed.push(path.relative(dir, file).split(path.sep).join('/'));
+    }
+  };
+  walk(dir);
+  return removed.sort();
+}
+
+/** A map, its compressed twins, and the `sourceMappingURL` comment that names it in the file it maps. */
+function removeMap(file) {
+  for (const twin of [file, `${file}.br`, `${file}.gz`]) fs.rmSync(twin, { force: true });
+  const mapped = file.slice(0, -'.map'.length);
+  if (!fs.existsSync(mapped)) return;
+  const comment = `//# sourceMappingURL=${path.basename(file)}`;
+  const text = fs.readFileSync(mapped, 'utf8');
+  const kept = text.split('\n').filter((line) => line.trim() !== comment);
+  if (kept.length !== text.split('\n').length) fs.writeFileSync(mapped, kept.join('\n'));
+}
+
+/**
+ * Remove every source map under `dir` the way dropMachineMaps removes one:
+ * a production build carries none (scripts/sourcemaps.mjs). The paths
+ * removed, relative to `dir`.
+ */
+export function dropSourceMaps(dir) {
+  const removed = [];
+  const walk = (folder) => {
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      const file = path.join(folder, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.isFile() && entry.name.endsWith('.map')) {
+        removeMap(file);
+        removed.push(path.relative(dir, file).split(path.sep).join('/'));
+      }
     }
   };
   walk(dir);
