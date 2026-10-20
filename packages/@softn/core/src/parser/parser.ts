@@ -298,13 +298,40 @@ export class Parser {
   /** The elements being read, outermost first: what an end tag an HTML element leaves out may end. */
   private openTags: string[] = [];
   /**
-   * Formatting elements an end tag closed out of order (`</b>` with an `<i>`
-   * open in it), innermost last, with the end tag that closed them: opened
-   * again after that tag's element (see parseChildren).
+   * HTML's list of active formatting elements: each `<b>`, `<i>`, `<a>`…
+   * opened and not yet ended by its own end tag, oldest first, with a marker
+   * where a cell, a caption or the like begins. One that something else
+   * ended (an `<em>` inside a `</ul>`, an `<i>` inside a `</b>`) is opened
+   * again, with its attributes, before the next text or inline element, as a
+   * browser does (reconstructFormatting): `<b><i>x</b>y</i>` is
+   * `<b><i>x</i></b><i>y</i>`.
    */
-  private reopenFormatting: Array<{ closer: string; element: ElementNode }> = [];
+  private activeFormatting: Array<ElementNode | 'marker'> = [];
+  /** The elements being read, as openTags names them, where there is an element. */
+  private openElements: Array<ElementNode | undefined> = [];
+  /** The same elements, to ask whether one is open in one step. */
+  private openSet = new Set<ElementNode>();
+  /** Each formatting element's attributes as Noah's Ark compares them, worked out once (attributesKey). */
+  private attributeKeys = new WeakMap<ElementNode, string>();
+  /**
+   * What an element does when `next`, the element open inside it on the way
+   * to the block a formatting element's end tag was read in, returns (see
+   * adoptBlock and takeAdoption). What `next` moved out of itself, or `next`
+   * itself where it moved nothing, is what moves on: the formatting element
+   * and an inline element move it after them and end (`hoist`); a block
+   * wraps what it held before it in a copy of the formatting element
+   * (`split`); a formatting element on the way moves it into a copy of
+   * itself, after it, and reads on into the copy (`wrap`).
+   */
+  private adoptions = new Map<ElementNode, { next: ElementNode; kind: 'hoist' | 'split' | 'wrap'; formatting: ElementNode }>();
+  /** The blocks moved out of the formatting element just read, to stand after it (see adoptBlock). */
+  private adoptedAfter: TemplateNode[] = [];
   /** The formatting elements still to open inside the one being opened again (reopenElements). */
   private reopenInside: ElementNode[] = [];
+  /** Whether the page has been said to nest too deep (MAX_TREE_DEPTH). */
+  private reportedTooDeep = false;
+  /** What the table just read moved out of itself, to stand before it (see parseElement). */
+  private fostered: TemplateNode[] = [];
   /** Whether the top-level elements being read are inside a document's `<head>`. */
   private inHead: boolean = false;
   /** The text of a document's `<title>`. */
@@ -433,22 +460,24 @@ export class Parser {
       if (this.curTokenIs(TokenType.EOF)) break;
 
       try {
-        // Parse top-level elements
-        if (this.curTokenIs(TokenType.TAG_OPEN)) {
+        if (this.curTokenIs(TokenType.TAG_OPEN)) this.endsLikeFormatting(this.tagNameAhead(), undefined, '', []);
+        // Formatting elements something else ended, opened again around what follows.
+        const before = this.curToken.start;
+        for (const reopened of this.reconstructFormatting()) pushTemplate(reopened);
+        if (this.curToken.start !== before) {
+          // What followed was read into them: read on from there.
+        } else if (this.curTokenIs(TokenType.TAG_OPEN)) {
           const element = this.parseTopLevelElement();
           if (element && !isTemplateNode(element)) {
             heldSpace = null;
             afterTemplateNode = false;
           }
+          // What a table moved out of itself stands before it.
+          for (const moved of this.fostered.splice(0)) pushTemplate(moved);
           if (element) place(element);
+          for (const moved of this.adoptedAfter.splice(0)) pushTemplate(moved);
           // Blocks written inside it come after it, in the order written.
           for (const block of this.nestedBlocks.splice(0)) place(block);
-          // Formatting elements its end tag closed out of order, opened again (see parseChildren).
-          if (element && isTemplateNode(element) && element.type === 'Element' && this.reopenFormatting[0]?.closer === element.tag) {
-            const templates = this.reopenFormatting.map((entry) => entry.element);
-            this.reopenFormatting = [];
-            pushTemplate(this.reopenElements(templates, this.currentLoc()));
-          }
         } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
           // A closing tag with nothing open: the `</head>`, `</body>` and
           // `</html>` of a page written as a whole document, or a stray one,
@@ -458,6 +487,7 @@ export class Parser {
           this.nextToken();
           const closing = normalizeTagName(this.readTagName());
           if (closing === 'head') this.inHead = false;
+          if (FORMATTING_ELEMENTS.has(closing)) this.deactivateClosed(closing);
           if (closing === 'p' || closing === 'br') pushTemplate(createElementNode(closing, at, { selfClosing: closing === 'br' }));
           while (!this.curTokenIs(TokenType.TAG_CLOSE) && !this.curTokenIs(TokenType.EOF)) {
             this.nextToken();
@@ -1347,13 +1377,34 @@ export class Parser {
     // `<br>`, `<img …>` and `<input …>` end where their tag ends, as in HTML.
     element.selfClosing =
       this.curTokenIs(TokenType.TAG_SELF_CLOSE) ||
-      (this.curTokenIs(TokenType.TAG_CLOSE) && VOID_ELEMENTS.has(tagName));
+      (this.curTokenIs(TokenType.TAG_CLOSE) && VOID_ELEMENTS.has(tagName) && !this.inDrawing());
     this.nextToken(); // consume > or />
 
+    // Past MAX_TREE_DEPTH open elements an element holds nothing, and what it
+    // would hold is placed beside it, as a browser places it (Chromium's
+    // parser stops nesting at 512). Deeper, reading the page ran out of
+    // stack, and each level reported it.
+    const tooDeep = !element.selfClosing && this.openTags.length >= MAX_TREE_DEPTH - 1;
+    if (tooDeep && !this.reportedTooDeep) {
+      this.reportedTooDeep = true;
+      this.diagnostics.push({
+        message: `This page nests more than ${MAX_TREE_DEPTH} elements deep, so what is deeper is placed beside the ${MAX_TREE_DEPTH}th, as a browser places it`,
+        severity: 'warning',
+        loc,
+      });
+    }
+
     // Parse children if not self-closing
-    if (!element.selfClosing) {
+    if (!element.selfClosing && !tooDeep) {
+      if (FORMATTING_ELEMENTS.has(tagName) && !this.inDrawing()) this.activate(element);
       element.children = this.parseChildren(tagName, loc, element);
-      if (tagName === 'table') element.children = wrapTableRows(element.children);
+      if (tagName === 'table') {
+        // What has no place in a table goes before it (see TABLE_CONTENT),
+        // where the reader of this element places it.
+        const placed = wrapTableRows(element.children);
+        element.children = placed.filter((child) => !this.fostersOut(child));
+        this.fostered.push(...placed.filter((child) => this.fostersOut(child)));
+      }
     }
 
     // `<slot>` and `<template slot="…">` are the Slot / TemplateSlot nodes the
@@ -1419,7 +1470,10 @@ export class Parser {
       if (parsed) this.nestedBlocks.push(parsed);
       return [];
     }
-    return [this.parseElement()];
+    const element = this.parseElement();
+    // What a table moved out of itself stands before it; a block a formatting
+    // element's end tag was read in stands after it (adoptBlock).
+    return [...this.fostered.splice(0), element, ...this.adoptedAfter.splice(0)];
   }
 
   /**
@@ -1548,6 +1602,332 @@ export class Parser {
   }
 
   /**
+   * The formatting elements to open again before the current token, opened,
+   * with what follows read into the innermost; none when there are none or
+   * the token is not one HTML opens them for. Those are the active ones after
+   * the last that is still open (or the last marker), in the order they were
+   * opened; the token is text, an expression or an inline HTML element (not a
+   * block, `<b><i>x</b><h2>`, a ruby's annotation, nor a component, which
+   * keeps its own content).
+   * Unlike HTML, space alone (a page's layout between tags) opens none.
+   */
+  private reconstructFormatting(): TemplateNode[] {
+    if (this.activeFormatting.length === 0 || this.inDrawing()) return [];
+    if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
+      // A `</br>` is a `<br>` (see parseChildren).
+      if (this.tagNameAhead() !== 'br') return [];
+    } else if (this.curTokenIs(TokenType.TAG_OPEN)) {
+      const next = this.tagNameAhead();
+      if (!isHtmlElementTag(next) || RUBY_ANNOTATIONS.has(next) || (SPECIAL_ELEMENTS.has(next) && !REOPENS_FORMATTING.has(next))) return [];
+    } else if (!this.curTokenIs(TokenType.EXPR_START) && !(this.curTokenIs(TokenType.TEXT) && this.curToken.literal.trim() !== '')) {
+      return [];
+    }
+    let first = this.activeFormatting.length;
+    while (first > 0) {
+      const entry = this.activeFormatting[first - 1];
+      if (entry === 'marker' || this.openSet.has(entry)) break;
+      first--;
+    }
+    // As many as fit under MAX_TREE_DEPTH, each copy holding what follows.
+    const room = MAX_TREE_DEPTH - 1 - this.openTags.length;
+    if (first === this.activeFormatting.length || room <= 0) return [];
+    return this.reopenElements(this.activeFormatting.slice(first, first + room) as ElementNode[], this.currentLoc());
+  }
+
+  /** Where the innermost open element the end tag `closer` ends is, in openTags; -1 for none. */
+  private openTagIndex(closer: string): number {
+    for (let at = this.openTags.length - 1; at >= 0; at--) {
+      if (closesElement(closer, this.openTags[at])) return at;
+    }
+    return -1;
+  }
+
+  /**
+   * Whether HTML passes over the end tag `closer` of the element open at
+   * `match`, for what is open inside it: an end tag of an element it gives no
+   * structure (a `</span>`, a `</ruby>`) does not reach past one it does (a
+   * div, a list item), so `<span><div>x</span>y` keeps y in the div; and no
+   * end tag reaches past a table, a cell or a caption (HTML's scopes), but a
+   * table's own. A component's end tag closes all that is open inside it.
+   */
+  private endTagStopped(closer: string, match: number): boolean {
+    if (!isHtmlElementTag(closer)) return false;
+    const between = this.openTags.slice(match + 1);
+    if (!SPECIAL_ELEMENTS.has(closer) && !FORMATTING_ELEMENTS.has(closer)) return between.some((open) => SPECIAL_ELEMENTS.has(open));
+    const boundaries = TABLE_PARTS.has(closer)
+      ? TABLE_SCOPE_BOUNDARIES
+      : closer === 'p'
+        ? BUTTON_SCOPE_BOUNDARIES
+        : closer === 'li'
+          ? LIST_ITEM_SCOPE_BOUNDARIES
+          : DEFAULT_SCOPE_BOUNDARIES;
+    return between.some((open) => boundaries.has(open));
+  }
+
+  /**
+   * A formatting element's end tag read inside a block it holds
+   * (`<b><div>a</b>c</div>`), read as HTML's adoption agency reads it: the
+   * block leaves the formatting element to stand after it, what the block
+   * holds so far is wrapped in a copy of the formatting element, and what
+   * follows the end tag is read on into the block, unformatted:
+   * `<b></b><div><b>a</b>c</div>`. Through blocks in blocks, each is split
+   * so. Whether it was read so; the end tag is then read (`endTag`; an
+   * `<a>` or `<nobr>` start tag is left to be read, see endsLikeFormatting),
+   * and the elements the blocks are in move them when they return (adoptions).
+   */
+  private adoptBlock(closer: string, match: number, blockTag: string, children: TemplateNode[], endTag = true): boolean {
+    const formatting = this.openElements[match];
+    if (!formatting || !FORMATTING_ELEMENTS.has(closer) || !SPECIAL_ELEMENTS.has(blockTag) || this.inDrawing()) return false;
+    // What is open from the formatting element in: blocks, each an HTML
+    // element HTML gives structure but no scope of its own (a cell's, a
+    // caption's); formatting elements still active, which are copied around
+    // the block; and inline elements, which a block inside them leaves. One
+    // whose formatting element's end tag was read already is passed over; a
+    // component is not read through.
+    const open: Array<{ element: ElementNode; kind: 'block' | 'formatting' | 'inline' }> = [];
+    for (let at = match + 1; at < this.openTags.length; at++) {
+      const tag = this.openTags[at];
+      if (tag === ADOPTED) continue;
+      const element = this.openElements[at];
+      if (!element || this.adoptions.has(element) || !isHtmlElementTag(tag) || DEFAULT_SCOPE_BOUNDARIES.has(tag)) return false;
+      const active = FORMATTING_ELEMENTS.has(tag) && this.activeFormatting.includes(element);
+      open.push({ element, kind: SPECIAL_ELEMENTS.has(tag) ? 'block' : active ? 'formatting' : 'inline' });
+    }
+    if (!open.some((entry) => entry.kind === 'block') || this.adoptions.has(formatting)) return false;
+    // Only one the formatting elements' list still holds, in this cell or branch.
+    const listed = this.activeFormatting.lastIndexOf(formatting);
+    if (listed < 0 || listed < this.activeFormatting.lastIndexOf('marker')) return false;
+    // As in HTML, three formatting elements above a block are copied; one
+    // further out is ended as an inline element is, and is no longer active.
+    let above = 0;
+    for (let at = open.length - 1; at >= 0; at--) {
+      const entry = open[at];
+      above = entry.kind === 'block' ? 0 : above + 1;
+      if (above > 3 && entry.kind === 'formatting') {
+        this.deactivate(entry.element);
+        entry.kind = 'inline';
+      }
+    }
+    const loc = this.currentLoc();
+    if (endTag) {
+      this.nextToken(); // </
+      this.readTagName();
+      if (this.curTokenIs(TokenType.TAG_CLOSE)) this.nextToken();
+    }
+    const copy = copyElement(formatting, loc);
+    copy.children = children.splice(0);
+    children.push(copy);
+    this.deactivate(formatting);
+    // Its end tag has been read: no later end tag ends it.
+    this.openTags[match] = ADOPTED;
+    // Each moves on what the element inside it on the way gives it (adoptions).
+    this.adoptions.set(formatting, { next: open[0].element, kind: 'hoist', formatting });
+    for (let at = 0; at < open.length - 1; at++) {
+      const { element, kind } = open[at];
+      this.adoptions.set(element, { next: open[at + 1].element, kind: kind === 'block' ? 'split' : kind === 'formatting' ? 'wrap' : 'hoist', formatting });
+    }
+    this.diagnostics.push({
+      message: endTag
+        ? `</${closer}> is inside the <${blockTag}> it holds, so the <${blockTag}> is moved after it and what follows stays in the <${blockTag}>, as HTML reads it`
+        : `<${closer}> is inside a <${blockTag}> another <${closer}> holds, which ends there, so the <${blockTag}> is moved after it, as HTML reads it`,
+      severity: 'warning',
+      loc,
+    });
+    return true;
+  }
+
+  /**
+   * HTML's rule for an `<a>` or `<nobr>` start tag: one still active (in
+   * this cell, component or branch) is ended first, as its end tag would end
+   * it, so a link never holds a link: `<a href=1><span><a href=2>` ends the
+   * span and the first link. One something else ended is only no longer
+   * active, so it is not opened again around what follows the new one.
+   * Inside a block in it, the block is moved out of it (adoptBlock) and the
+   * new one is read in the block. Whether the current element ends here.
+   */
+  private endsLikeFormatting(next: string, parent: ElementNode | undefined, parentTag: string, children: TemplateNode[]): boolean {
+    if (next !== 'a' && next !== 'nobr') return false;
+    let active: ElementNode | undefined;
+    for (let at = this.activeFormatting.length - 1; at >= 0 && !active; at--) {
+      const entry = this.activeFormatting[at];
+      if (entry === 'marker') return false;
+      if (entry.tag === next) active = entry;
+    }
+    if (!active) return false;
+    const match = this.openElements.lastIndexOf(active);
+    if (match < 0 || parent === active) {
+      this.deactivate(active);
+      return match >= 0;
+    }
+    // Past a table, a cell or the like it is out of reach: only no longer active.
+    if (this.openTags.slice(match + 1).some((open) => DEFAULT_SCOPE_BOUNDARIES.has(open))) {
+      this.deactivate(active);
+      return false;
+    }
+    // An inline element inside it ends with it; a formatting one is opened again after.
+    if (!SPECIAL_ELEMENTS.has(parentTag)) return true;
+    if (!this.adoptBlock(next, match, parentTag, children, false)) this.deactivate(active);
+    return false;
+  }
+
+  /**
+   * Whether what is being read is inside an element a table will move
+   * before itself (fostersOut): one written straight in a table, its body
+   * or a row, and not in a cell or caption since.
+   */
+  private inFosteredElement(): boolean {
+    for (let at = this.openTags.length - 1; at > 0; at--) {
+      const tag = this.openTags[at];
+      if (tag === 'td' || tag === 'th' || tag === 'caption' || !isHtmlElementTag(tag)) return false;
+      if (ROW_PARENTS.has(this.openTags[at - 1]) && !TABLE_CONTENT.has(tag) && tag !== ADOPTED) return true;
+    }
+    return false;
+  }
+
+  /**
+   * What an element on the way to a block a formatting element's end tag was
+   * read in does when the next one on the way returns (adoptions): `added`
+   * is what was just read into `children`. Whether the element ends here.
+   */
+  private takeAdoption(parent: ElementNode | undefined, added: TemplateNode[], children: TemplateNode[], loc: SourceLocation): boolean {
+    const adoption = parent && this.adoptions.get(parent);
+    if (!parent || !adoption) return false;
+    const at = added.indexOf(adoption.next);
+    if (at < 0) return false;
+    this.adoptions.delete(parent);
+    const after = added.slice(at + 1);
+    const moved = children.splice(children.length - (after.length > 0 ? after.length : added.length - at));
+    if (adoption.kind === 'split') {
+      const copy = copyElement(adoption.formatting, loc);
+      copy.children = children.splice(0);
+      children.push(copy, ...moved);
+      return false;
+    }
+    if (adoption.kind === 'wrap') {
+      // A copy of this element, active in its place, holds what moved, and
+      // what follows is read on into it; this element's own end tag ends the copy.
+      const copy = copyElement(parent, loc);
+      this.attributeKeys.set(copy, this.attributesKey(parent));
+      const listed = this.activeFormatting.indexOf(parent);
+      if (listed >= 0) this.activeFormatting[listed] = copy;
+      this.openTags[this.openTags.length - 1] = ADOPTED;
+      copy.children = [...moved, ...this.parseChildren(copy.tag, loc, copy)];
+      this.adoptedAfter.unshift(copy);
+      return true;
+    }
+    this.adoptedAfter.push(...moved);
+    return true;
+  }
+
+  /** A formatting element is no longer active: it was ended by its own end tag. */
+  private deactivate(element: ElementNode): void {
+    const at = this.activeFormatting.lastIndexOf(element);
+    if (at >= 0) this.activeFormatting.splice(at, 1);
+  }
+
+  /** The last active formatting element of this name that is no longer open, after the last marker, is no longer active. */
+  private deactivateClosed(tag: string): void {
+    for (let at = this.activeFormatting.length - 1; at >= 0; at--) {
+      const entry = this.activeFormatting[at];
+      if (entry === 'marker') return;
+      if (entry.tag === tag && !this.openSet.has(entry)) {
+        this.activeFormatting.splice(at, 1);
+        return;
+      }
+    }
+  }
+
+  /**
+   * A formatting element opened (parseElement): active until its own end tag.
+   * As in HTML, no more than three of one name and attributes are active
+   * after the last marker; the oldest goes (Noah's Ark). Without the bound,
+   * page after page of unclosed `<b><i>` opened copies of copies. Unlike
+   * HTML, no more than MAX_ACTIVE_FORMATTING of any kind either: a thousand
+   * paragraphs each leaving open a `<b>` with attributes of its own opened
+   * every earlier one again in each, a million elements in all.
+   */
+  private activate(element: ElementNode): void {
+    const key = this.attributesKey(element);
+    const marker = this.activeFormatting.lastIndexOf('marker');
+    const matching: number[] = [];
+    for (let at = marker + 1; at < this.activeFormatting.length; at++) {
+      const entry = this.activeFormatting[at];
+      if (entry !== 'marker' && entry.tag === element.tag && this.attributesKey(entry) === key) matching.push(at);
+    }
+    if (matching.length >= 3) this.activeFormatting.splice(matching[0], 1);
+    else if (this.activeFormatting.length - marker - 1 >= MAX_ACTIVE_FORMATTING) this.activeFormatting.splice(marker + 1, 1);
+    this.activeFormatting.push(element);
+  }
+
+  /** attributesKey, worked out once for each element: a copy shares its original's. */
+  private attributesKey(element: ElementNode): string {
+    let key = this.attributeKeys.get(element);
+    if (key === undefined) {
+      key = attributesKey(element);
+      this.attributeKeys.set(element, key);
+    }
+    return key;
+  }
+
+  /** Whether a child written straight in a table goes before it (TABLE_CONTENT; an input only when hidden). */
+  private fostersOut(child: TemplateNode): boolean {
+    if (child.type === 'Text') return child.content.trim() !== '';
+    if (child.type !== 'Element' || !this.htmlElement(child.tag)) return false;
+    if (child.tag === 'input') return (this.staticPropValue(child, 'type') ?? '').toLowerCase() !== 'hidden';
+    return !TABLE_CONTENT.has(child.tag);
+  }
+
+  /**
+   * Whether the start tag `next` ends an element open around the current one,
+   * which then ends too, as HTML ends it. A tag that ends a paragraph ends
+   * one open through inline elements (HTML's "button scope": not past a
+   * button, a table or a cell); an `<li>`, `<dt>` or `<dd>` ends its like
+   * through any element but HTML's own structural ones (an address, a div
+   * or a paragraph excepted). Only through HTML elements: a component is
+   * never ended by what is written in it.
+   */
+  private endsAnAncestor(next: string): boolean {
+    const target = next === 'li' ? ['li'] : next === 'dt' || next === 'dd' ? ['dt', 'dd'] : null;
+    if (target && this.findsOpen((open) => target.includes(open), (open) => SPECIAL_ELEMENTS.has(open) && open !== 'address' && open !== 'div' && open !== 'p')) {
+      return true;
+    }
+    // A paragraph open through inline elements (HTML's button scope).
+    if (ENDS_A_PARAGRAPH.has(next) && this.findsOpen((open) => open === 'p', (open) => BUTTON_SCOPE_BOUNDARIES.has(open))) return true;
+    // A button cannot hold a button, through any element (HTML's default scope).
+    return next === 'button' && this.findsOpen((open) => open === 'button', (open) => DEFAULT_SCOPE_BOUNDARIES.has(open));
+  }
+
+  /**
+   * Whether an element `matches` is open around the current one, walking
+   * from the current element outwards, as HTML walks its stack of open
+   * elements, and stopping at one that `stops` or at a component.
+   */
+  private findsOpen(matches: (open: string) => boolean, stops: (open: string) => boolean): boolean {
+    for (let at = this.openTags.length - 1; at >= 0; at--) {
+      const open = this.openTags[at];
+      if (open === ADOPTED) continue;
+      if (!isHtmlElementTag(open)) return false;
+      if (at < this.openTags.length - 1 && matches(open)) return true;
+      if (stops(open)) return false;
+    }
+    return false;
+  }
+
+  /**
+   * Whether what is being read is inside a drawing (an `<svg>` or `<math>`)
+   * and not in one of the places in it that hold HTML again
+   * (`<foreignObject>`, `<desc>`, a MathML token's text…).
+   */
+  private inDrawing(): boolean {
+    for (let at = this.openTags.length - 1; at >= 0; at--) {
+      const tag = this.openTags[at].toLowerCase();
+      if (HOLDS_HTML_IN_DRAWING.has(tag)) return false;
+      if (tag === 'svg' || tag === 'math') return true;
+    }
+    return false;
+  }
+
+  /**
    * The name of the tag whose `<` or `</` is the current token, as the parser
    * keeps tag names (see normalizeTagName), hyphens included (`my-card`);
    * '' when no name follows.
@@ -1559,33 +1939,74 @@ export class Parser {
 
   /**
    * Parse children until closing tag. `parent` is the element they belong
-   * to, when there is one to open again (see reopenFormatting).
+   * to, when there is one (see activeFormatting and adoptions).
    */
   private parseChildren(parentTag: string, openLoc: SourceLocation, parent?: ElementNode): TemplateNode[] {
     const children: TemplateNode[] = [];
     let closed = false;
     const diagnosticsBefore = this.diagnostics.length;
     this.openTags.push(parentTag);
+    this.openElements.push(parent);
+    if (parent) this.openSet.add(parent);
+    const marks = FORMATTING_MARKERS.has(parentTag) || !this.htmlElement(parentTag);
+    if (marks) this.activeFormatting.push('marker');
     try {
-    // Formatting elements a misnested end tag closed, opened again inside this one.
+    // Formatting elements opened again inside this one (reopenElements).
     if (this.reopenInside.length > 0) {
       const inner = this.reopenInside;
       this.reopenInside = [];
-      children.push(this.reopenElements(inner, openLoc));
+      const added = this.reopenElements(inner, openLoc);
+      children.push(...added);
+      closed = this.takeAdoption(parent, added, children, openLoc);
     }
 
-    while (!this.curTokenIs(TokenType.EOF)) {
+    while (!closed && !this.curTokenIs(TokenType.EOF)) {
       this.skipComments();
       const passStart = this.curToken.start;
 
-      // A start tag HTML ends this element before: an `<li>` at the next
-      // `<li>`, a `<p>` at a `<div>`, a cell at the next cell or row, a
-      // heading at another heading, a caption at the table's rows. Read as
-      // needing its end tag, an unclosed `<li>` held everything after it,
-      // and the rest of the page was inside the list item.
-      if (this.curTokenIs(TokenType.TAG_OPEN) && endsBefore(parentTag, this.tagNameAhead())) {
-        closed = true;
-        break;
+      // An HTML element that has no place in a drawing ends the `<svg>` or
+      // `<math>` it is written in, and everything open inside it, as HTML ends
+      // them: `<svg><p>x` is `<svg></svg><p>x`. So does a `</p>` or a `</br>`.
+      if (this.inDrawing()) {
+        const next = this.tagNameAhead();
+        if (
+          (this.curTokenIs(TokenType.TAG_OPEN) && BREAKS_OUT_OF_DRAWING.has(next)) ||
+          (this.curTokenIs(TokenType.TAG_END_OPEN) && (next === 'p' || next === 'br'))
+        ) {
+          closed = true;
+          break;
+        }
+      }
+
+      // HTML's rules for a start tag, where HTML is read (in a drawing, every
+      // tag but those above is the drawing's).
+      if (this.curTokenIs(TokenType.TAG_OPEN) && !this.inDrawing()) {
+        const next = this.tagNameAhead();
+        if (
+          // An `<a>` or `<nobr>` ends one still open around it (endsLikeFormatting).
+          this.endsLikeFormatting(next, parent, parentTag, children) ||
+          // A start tag HTML ends this element before: an `<li>` at the next
+          // `<li>`, a `<p>` at a `<div>`, a cell at the next cell or row, a
+          // heading at another heading, a caption at the table's rows. Read as
+          // needing its end tag, an unclosed `<li>` held everything after it,
+          // and the rest of the page was inside the list item.
+          endsBefore(parentTag, next, this.openTags) ||
+          // Or an element this one is inside: `<p><b><div>` ends the b and the
+          // paragraph, `<li><span>a<li>` the span and the item (see endsAnAncestor).
+          this.endsAnAncestor(next) ||
+          // In what a table moves before itself, the table's own tags are still
+          // the table's: `<table><nav><tr>` is an empty nav and a row.
+          (TABLE_PARTS.has(next) && this.inFosteredElement()) ||
+          // In a ruby, an annotation ends the paragraph, item or annotation
+          // left open before it (HTML's implied end tags): `<ruby><p>漢<rt>`.
+          (RUBY_ANNOTATIONS.has(next) &&
+            IMPLIED_END_TAGS.has(parentTag) &&
+            !(parentTag === 'rtc' && (next === 'rt' || next === 'rp')) &&
+            this.findsOpen((open) => open === 'ruby', (open) => DEFAULT_SCOPE_BOUNDARIES.has(open)))
+        ) {
+          closed = true;
+          break;
+        }
       }
 
       // The end tag of an element this one is inside ends this one too, as
@@ -1595,14 +2016,11 @@ export class Parser {
       // browser takes it in its stride; a component's is still an error.
       if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
         const next = this.tagNameAhead();
-        if (!sameTagName(next, parentTag) && this.openTags.slice(0, -1).some((open) => sameTagName(open, next))) {
+        const match = closesElement(next, parentTag) ? -1 : this.openTagIndex(next);
+        if (match >= 0 && parent && this.adoptBlock(next, match, parentTag, children)) continue;
+        if (match >= 0 && !this.endTagStopped(next, match)) {
           if (!OPTIONAL_END_TAGS.has(parentTag)) this.reportImpliedEnd(parentTag, next, openLoc);
-          // `</b>` with an `<i>` still open in it ends the `<i>` and opens it
-          // again after, as HTML's adoption agency does: `<b><i>x</b>y</i>`
-          // is `<b><i>x</i></b><i>y</i>`.
-          if (parent && FORMATTING_ELEMENTS.has(next) && FORMATTING_ELEMENTS.has(parentTag)) {
-            this.reopenFormatting.unshift({ closer: next, element: parent });
-          }
+          // A formatting element ended this way stays active (activeFormatting).
           closed = true;
           break;
         }
@@ -1615,14 +2033,19 @@ export class Parser {
         if (this.isPropertyName()) {
           const nameLoc = this.currentLoc();
           const closeTagName = normalizeTagName(this.readTagName());
-          // In any case: `<div>…</DIV>`, `<Button>…</button>`.
-          if (sameTagName(closeTagName, parentTag)) {
+          // In any case: `<div>…</DIV>`, `<Button>…</button>`; and any heading's
+          // end tag ends a heading, as HTML reads `<h1>…</h2>`.
+          if (closesElement(closeTagName, parentTag)) {
             if (this.curTokenIs(TokenType.TAG_CLOSE)) {
               this.nextToken(); // consume >
             }
+            if (parent) this.deactivate(parent);
             closed = true;
             break;
           }
+          // The end tag of a formatting element that is active but no longer
+          // open (one a `</ul>` ended) ends it there, as HTML's adoption agency does.
+          if (FORMATTING_ELEMENTS.has(closeTagName)) this.deactivateClosed(closeTagName);
           // `</input>` and `</img>` close nothing: their elements ended with
           // their tags, and HTML passes over them, so they are passed over
           // here too; as are the `</body>` and `</html>` a document's page
@@ -1644,18 +2067,24 @@ export class Parser {
       }
 
       try {
-        if (this.curTokenIs(TokenType.TAG_OPEN)) {
+        // Formatting elements something else ended, opened again around what follows.
+        const reopened = this.reconstructFormatting();
+        children.push(...reopened);
+        if (this.takeAdoption(parent, reopened, children, this.currentLoc())) {
+          closed = true;
+          break;
+        }
+        if (this.curToken.start !== passStart) {
+          // What followed was read into them: read on from there.
+        } else if (this.curTokenIs(TokenType.TAG_OPEN)) {
           // Child element
           this.nextToken();
           const added = this.parseChildElement();
           children.push(...added);
-          // Formatting elements the end tag of the one just read closed
-          // inside it are opened again here, around what follows.
-          const last = added[added.length - 1];
-          if (last?.type === 'Element' && this.reopenFormatting[0]?.closer === last.tag) {
-            const templates = this.reopenFormatting.map((entry) => entry.element);
-            this.reopenFormatting = [];
-            children.push(this.reopenElements(templates, this.currentLoc()));
+          // On the way to a block a formatting element's end tag was read in (takeAdoption).
+          if (this.takeAdoption(parent, added, children, this.currentLoc())) {
+            closed = true;
+            break;
           }
         } else if (this.curTokenIs(TokenType.HASH)) {
           // Control flow
@@ -1705,6 +2134,10 @@ export class Parser {
     return children;
     } finally {
       this.openTags.pop();
+      this.openElements.pop();
+      if (parent) this.openSet.delete(parent);
+      // What was opened inside a cell, a caption and the like stays in it.
+      if (marks) this.activeFormatting.splice(this.activeFormatting.lastIndexOf('marker'));
     }
   }
 
@@ -1727,19 +2160,25 @@ export class Parser {
   }
 
   /**
-   * Formatting elements (`<b>`, `<i>`, `<a>`…) opened again after an end tag
-   * closed them out of order, each inside the one before, with the
-   * attributes they were written with; what follows is read into the
-   * innermost, up to its own end tag or its parent's.
+   * Formatting elements (`<b>`, `<i>`, `<a>`…) opened again after something
+   * other than their own end tag ended them (reconstructFormatting), each
+   * inside the one before, with the attributes they were written with; what
+   * follows is read into the innermost, up to its own end tag or its parent's.
+   * Each copy takes its element's place in activeFormatting.
    */
-  private reopenElements(templates: ElementNode[], loc: SourceLocation): ElementNode {
+  private reopenElements(templates: ElementNode[], loc: SourceLocation): TemplateNode[] {
     const [first, ...rest] = templates;
-    const clone = createElementNode(first.tag, loc);
-    clone.props = first.props.map((prop) => ({ ...prop }));
-    clone.events = first.events.map((event) => ({ ...event }));
+    const clone = copyElement(first, loc);
+    this.attributeKeys.set(clone, this.attributesKey(first));
+    const at = this.activeFormatting.indexOf(first);
+    if (at >= 0) this.activeFormatting[at] = clone;
     this.reopenInside = rest;
     clone.children = this.parseChildren(clone.tag, loc, clone);
-    return clone;
+    // Opened again for what follows; with nothing following, there is none
+    // (as in HTML), unless it is on the way to a block that moves (adoptions).
+    // What it moved out of itself follows it.
+    const onTheWay = [...this.adoptions.values()].some((adoption) => adoption.next === clone);
+    return [...(clone.children.length > 0 || onTheWay ? [clone] : []), ...this.adoptedAfter.splice(0)];
   }
 
   /**
@@ -2050,6 +2489,9 @@ export class Parser {
    */
   private parseBranch(stops: readonly TokenType[]): TemplateNode[] {
     const nodes: TemplateNode[] = [];
+    // Formatting opened in a branch stays in it (activeFormatting).
+    this.activeFormatting.push('marker');
+    try {
     while (!this.curTokenIs(TokenType.EOF)) {
       // Comments first, so the `#` of a stop after one is seen.
       this.skipComments();
@@ -2072,6 +2514,9 @@ export class Parser {
       }
     }
     return nodes;
+    } finally {
+      this.activeFormatting.splice(this.activeFormatting.lastIndexOf('marker'));
+    }
   }
 
   /**
@@ -3526,7 +3971,100 @@ export function parse(source: string): SoftNDocument {
 //    again after it); `</p>` and `</br>` as elements; `<image>` as `<img>`;
 //    references without `;` and HTML5's other names. `as=` is a prop unless
 //    the element has `each=`.
-export const PARSER_VERSION = 11;
+// 12: Misnested HTML read as HTML5's tree builder reads it: its list of
+//    active formatting elements (opened again before text and inline
+//    elements, not space alone; three of a kind and 64 in all at most; not
+//    out of a cell, a component or a block's branch) and its adoption agency
+//    (`<b><div>a</b>c` moves the div out of the b, inside copies of the
+//    formatting elements between); an `<a>` or `<nobr>` ending its like;
+//    end tags that stop at a block or a table's scope; what ends an `<svg>`
+//    or `<math>`, inside which HTML's start-tag rules do not hold; what a
+//    table moves before itself, and its own tags inside that; a table at a
+//    table; `<rt>` and `<optgroup>` ending their like only in a ruby or a
+//    select, and a ruby's annotation ending a paragraph left open. Nesting
+//    deeper than 512 elements is placed beside the 512th.
+export const PARSER_VERSION = 12;
+
+/**
+ * An element's attributes as HTML compares them for Noah's Ark: names and
+ * values, an expression's by what it is, not where it was written.
+ */
+function attributesKey(element: ElementNode): string {
+  return JSON.stringify(element.props.map((prop) => [prop.name, prop.value]), (key, value: unknown) => (key === 'loc' ? undefined : value));
+}
+
+/** A formatting element's copy: its tag, attributes and events, holding nothing yet. */
+function copyElement(element: ElementNode, loc: SourceLocation): ElementNode {
+  const copy = createElementNode(element.tag, loc);
+  copy.props = element.props.map((prop) => ({ ...prop }));
+  copy.events = element.events.map((event) => ({ ...event }));
+  return copy;
+}
+
+/** Whether the end tag `closer` ends the open element `open`: its own, in any case, and any heading's a heading. */
+function closesElement(closer: string, open: string): boolean {
+  return sameTagName(closer, open) || (HEADINGS.has(closer) && HEADINGS.has(open));
+}
+
+/** How many elements deep a page is read before what is deeper is placed beside them, as browsers cap it. */
+const MAX_TREE_DEPTH = 512;
+/** How many formatting elements may be active at once after the last marker (see activate). */
+const MAX_ACTIVE_FORMATTING = 64;
+/** Where a marker goes in the list of active formatting elements: what is opened inside stays inside. */
+const FORMATTING_MARKERS = new Set(['td', 'th', 'caption', 'applet', 'object', 'marquee', 'template']);
+/** HTML's special elements before which the active formatting elements are opened again all the same. */
+const REOPENS_FORMATTING = new Set(['area', 'br', 'embed', 'img', 'keygen', 'wbr', 'input', 'applet', 'marquee', 'object', 'math', 'svg', 'button', 'select', 'xmp']);
+/** A ruby's annotations and their containers. */
+const RUBY_ANNOTATIONS = new Set(['rb', 'rp', 'rt', 'rtc']);
+/** What HTML ends without its end tag before an annotation in a ruby ("generate implied end tags"). */
+const IMPLIED_END_TAGS = new Set(['dd', 'dt', 'li', 'optgroup', 'option', 'p', 'rb', 'rp', 'rt', 'rtc']);
+
+/** The HTML elements that end a drawing they are written in (HTML's "breakout" start tags in foreign content). */
+const BREAKS_OUT_OF_DRAWING = new Set([
+  'b', 'big', 'blockquote', 'body', 'br', 'center', 'code', 'dd', 'div', 'dl', 'dt', 'em', 'embed', 'h1', 'h2', 'h3',
+  'h4', 'h5', 'h6', 'head', 'hr', 'i', 'img', 'li', 'listing', 'menu', 'meta', 'nobr', 'ol', 'p', 'pre', 'ruby', 's',
+  'small', 'span', 'strong', 'strike', 'sub', 'sup', 'table', 'tt', 'u', 'ul', 'var',
+]);
+/**
+ * HTML's "special" elements, the ones it gives structure: what an `<li>`,
+ * `<dt>` or `<dd>` does not end its like through, what an inline element's
+ * end tag does not reach past (endTagStopped), and the blocks a formatting
+ * element's end tag moves out of it (adoptBlock).
+ */
+const SPECIAL_ELEMENTS = new Set([
+  'address', 'applet', 'area', 'article', 'aside', 'base', 'basefont', 'bgsound', 'blockquote', 'body', 'br', 'button',
+  'caption', 'center', 'col', 'colgroup', 'dd', 'details', 'dir', 'div', 'dl', 'dt', 'embed', 'fieldset', 'figcaption',
+  'figure', 'footer', 'form', 'frame', 'frameset', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'header', 'hgroup', 'hr',
+  'html', 'iframe', 'img', 'input', 'keygen', 'li', 'link', 'listing', 'main', 'marquee', 'menu', 'meta', 'nav',
+  'noembed', 'noframes', 'noscript', 'object', 'ol', 'p', 'param', 'plaintext', 'pre', 'script', 'search', 'section',
+  'select', 'source', 'style', 'summary', 'table', 'tbody', 'td', 'template', 'textarea', 'tfoot', 'th', 'thead',
+  'title', 'tr', 'track', 'ul', 'wbr', 'xmp', 'svg', 'math',
+]);
+/** What an element is not found open through (HTML's default scope), and the drawings' places that hold HTML. */
+const DEFAULT_SCOPE_BOUNDARIES = new Set([
+  'applet', 'caption', 'html', 'marquee', 'object', 'table', 'td', 'th', 'template',
+  'mi', 'mo', 'mn', 'ms', 'mtext', 'annotation-xml', 'foreignObject', 'desc', 'title',
+]);
+/** What a paragraph is not ended through (HTML's "button scope"). */
+const BUTTON_SCOPE_BOUNDARIES = new Set([...DEFAULT_SCOPE_BOUNDARIES, 'button']);
+/** What a list item is not ended through (HTML's "list item scope"). */
+const LIST_ITEM_SCOPE_BOUNDARIES = new Set([...DEFAULT_SCOPE_BOUNDARIES, 'ol', 'ul']);
+/** What a table's own end tags are not read through (HTML's "table scope"). */
+const TABLE_SCOPE_BOUNDARIES = new Set(['html', 'table', 'template']);
+/** What holds a table's rows: an element written straight in one is moved before the table (fostersOut). */
+const ROW_PARENTS = new Set(['table', 'tbody', 'thead', 'tfoot', 'tr']);
+/** A table and its parts, whose end tags reach through its cells. */
+const TABLE_PARTS = new Set(['table', 'caption', 'colgroup', 'tbody', 'thead', 'tfoot', 'tr', 'td', 'th']);
+/** In openTags, a formatting element whose end tag has been read inside a block it holds (adoptBlock). */
+const ADOPTED = '#adopted';
+/** The places in a drawing that hold HTML (HTML's integration points), in lower case. */
+const HOLDS_HTML_IN_DRAWING = new Set(['foreignobject', 'desc', 'title', 'mi', 'mo', 'mn', 'ms', 'mtext', 'annotation-xml']);
+/**
+ * What may stand straight in a `<table>`. Anything else HTML gives an
+ * element, and text, goes before the table (HTML's "foster parenting"); a
+ * component, a block and an expression stay, as each may draw rows.
+ */
+const TABLE_CONTENT = new Set(['caption', 'colgroup', 'col', 'thead', 'tbody', 'tfoot', 'tr', 'script', 'style', 'template', 'form', 'input']);
 
 /**
  * HTML elements whose end tag may be left out (the HTML standard's "optional
@@ -3611,7 +4149,7 @@ function isTableRow(node: TemplateNode): boolean {
   return false;
 }
 
-function endsBefore(open: string, next: string): boolean {
+function endsBefore(open: string, next: string, within: readonly string[]): boolean {
   if (HEADINGS.has(open)) return HEADINGS.has(next);
   switch (open) {
     // A link, a button or a no-break run cannot hold another of itself: the
@@ -3634,18 +4172,22 @@ function endsBefore(open: string, next: string): boolean {
     case 'option':
       return next === 'option' || next === 'optgroup';
     case 'optgroup':
-      return next === 'optgroup';
+      return next === 'optgroup' && within.includes('select');
+    case 'table':
+      return next === 'table';
     case 'tr':
-      return next === 'tr' || next === 'tbody' || next === 'thead' || next === 'tfoot';
+      return next === 'tr' || next === 'tbody' || next === 'thead' || next === 'tfoot' || next === 'table';
     case 'td':
     case 'th':
       return next === 'td' || next === 'th' || next === 'tr' || next === 'tbody' || next === 'thead' || next === 'tfoot';
     case 'thead':
     case 'tbody':
-      return next === 'tbody' || next === 'tfoot';
+      return next === 'tbody' || next === 'tfoot' || next === 'table';
+    case 'tfoot':
+      return next === 'table';
     case 'rt':
     case 'rp':
-      return next === 'rt' || next === 'rp';
+      return (next === 'rt' || next === 'rp') && within.includes('ruby');
     default:
       return false;
   }

@@ -538,7 +538,7 @@ describe('the parser version', () => {
   it('moved with what parse returns', () => {
     // parseCached keys on it; a document parsed under the old rules must not
     // be served to a renderer written for these.
-    expect(PARSER_VERSION).toBe(11);
+    expect(PARSER_VERSION).toBe(12);
   });
 });
 
