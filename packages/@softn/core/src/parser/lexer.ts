@@ -58,6 +58,9 @@ const ENDS_AN_OPERAND: ReadonlySet<TokenType> = new Set([
   TokenType.THIS,
 ]);
 
+/** What a backslash and one letter stand for in a string; any other character stands for itself. */
+const SINGLE_ESCAPES: Readonly<Record<string, string>> = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
+
 /** A number's `0x`, `0b` or `0o`, in either case, and the digits each takes. */
 const RADIX_PREFIXES: Readonly<Record<string, { prefix: string; digit: (ch: string) => boolean }>> = (() => {
   const hex = { prefix: 'x', digit: (ch: string) => /^[0-9a-fA-F]$/.test(ch) };
@@ -146,6 +149,14 @@ export class Lexer {
   constructor(source: string) {
     this.source = source;
     this.readChar();
+    // A byte-order mark an editor saved first is no part of the page, as HTML
+    // reads one: it was text before the first tag. Passed over in place, so
+    // every offset is still the file's, and not counted as a column, as no
+    // editor shows it as one.
+    if (this.ch === '\uFEFF') {
+      this.column = 0;
+      this.readChar();
+    }
   }
 
   /**
@@ -879,19 +890,16 @@ export class Lexer {
         );
       }
 
-      // Handle escape sequences
       if (this.ch === '\\') {
+        content += this.readEscape();
+        continue;
+      }
+
+      // A line break in a template is a LF, however the page was saved.
+      if (this.ch === '\r') {
+        if (this.peekChar() === '\n') this.readChar();
         this.readChar();
-        const escaped = this.currentChar();
-        if (escaped === 'n') content += '\n';
-        else if (escaped === 't') content += '\t';
-        else if (escaped === 'r') content += '\r';
-        else if (escaped === '\\') content += '\\';
-        else if (escaped === '`') content += '`';
-        else if (escaped === '$') content += '$';
-        else if (escaped === '0') content += '\0';
-        else content += escaped;
-        this.readChar();
+        content += '\n';
         continue;
       }
 
@@ -1015,6 +1023,10 @@ export class Lexer {
     const startColumn = this.column;
     const startPos = this.position;
     const quote = this.ch;
+    // An attribute's value, `title="…"`, may run over lines, as in HTML; a
+    // string in code may not, as in JavaScript. A value cut at its first line
+    // break read the rest as attributes, and lost the element's children.
+    const attribute = this.inTag && this.inExpression === 0 && this.inControlFlow === 0;
 
     this.readChar(); // consume opening quote
 
@@ -1022,111 +1034,23 @@ export class Lexer {
     let unterminated = false;
 
     while (this.ch !== '' && this.ch !== quote) {
-      // Check for newline in string (not allowed in regular strings)
       if (this.ch === '\n' || this.ch === '\r') {
-        unterminated = true;
-        break;
-      }
-
-      if (this.ch === '\\') {
-        this.readChar();
-        if (this.currentChar() === '') {
+        if (!attribute) {
           unterminated = true;
           break;
         }
-        const escaped: string = this.currentChar();
-        switch (escaped) {
-          case 'n':
-            value += '\n';
-            break;
-          case 't':
-            value += '\t';
-            break;
-          case 'r':
-            value += '\r';
-            break;
-          case 'b':
-            value += '\b';
-            break;
-          case 'f':
-            value += '\f';
-            break;
-          case 'v':
-            value += '\v';
-            break;
-          case '0':
-            value += '\0';
-            break;
-          case '\\':
-            value += '\\';
-            break;
-          case '"':
-            value += '"';
-            break;
-          case "'":
-            value += "'";
-            break;
-          case 'x':
-            // Hex escape \xNN
-            this.readChar();
-            if (this.isHexDigit(this.currentChar()) && this.isHexDigit(this.peekChar())) {
-              const hex = this.currentChar() + this.peekChar();
-              this.readChar();
-              value += String.fromCharCode(parseInt(hex, 16));
-            } else {
-              value += 'x';
-              continue; // Don't consume another char
-            }
-            break;
-          case 'u':
-            // Unicode escape \uNNNN or \u{NNNN}
-            this.readChar();
-            if (this.currentChar() === '{') {
-              // \u{NNNN} format
-              this.readChar();
-              let hex = '';
-              while (
-                this.currentChar() !== '' &&
-                this.currentChar() !== '}' &&
-                this.isHexDigit(this.currentChar())
-              ) {
-                hex += this.currentChar();
-                this.readChar();
-              }
-              if (this.currentChar() === '}' && hex.length > 0) {
-                const codePoint = parseInt(hex, 16);
-                if (codePoint <= 0x10ffff) {
-                  value += String.fromCodePoint(codePoint);
-                } else {
-                  value += '?'; // Invalid code point
-                }
-              } else {
-                value += 'u{' + hex;
-                continue;
-              }
-            } else if (this.isHexDigit(this.currentChar())) {
-              // \uNNNN format
-              let hex = this.currentChar();
-              for (let i = 0; i < 3 && this.isHexDigit(this.peekChar()); i++) {
-                this.readChar();
-                hex += this.currentChar();
-              }
-              if (hex.length === 4) {
-                value += String.fromCharCode(parseInt(hex, 16));
-              } else {
-                value += 'u' + hex;
-              }
-            } else {
-              value += 'u';
-              continue;
-            }
-            break;
-          default:
-            value += escaped;
-        }
-      } else {
-        value += this.currentChar();
+        if (this.ch === '\r' && this.peekChar() === '\n') this.readChar();
+        this.readChar();
+        value += '\n';
+        continue;
       }
+
+      if (this.ch === '\\') {
+        value += this.readEscape();
+        continue;
+      }
+
+      value += this.ch;
       this.readChar();
     }
 
@@ -1135,6 +1059,50 @@ export class Lexer {
     }
 
     return createToken(TokenType.STRING, value, startLine, startColumn, startPos, this.position);
+  }
+
+  /**
+   * An escape in a string or a template literal, from its `\` (the current
+   * character) to the character after it, read as JavaScript reads one: what
+   * it stands for. `\x41`, `B` and `\u{43}` are characters; a line
+   * break after the `\` continues the line and stands for nothing. Templates
+   * read only `\n`, `\t`, `\r` and `\0` and kept `\x41` as "x41".
+   */
+  private readEscape(): string {
+    this.readChar(); // the backslash
+    const escaped = this.ch;
+    if (escaped === '') return '';
+    if (escaped === '\r' || escaped === '\n' || escaped === ' ' || escaped === ' ') {
+      if (escaped === '\r' && this.peekChar() === '\n') this.readChar();
+      this.readChar();
+      return '';
+    }
+    if (escaped === 'x') {
+      const hex = this.peekCharAt(1) + this.peekCharAt(2);
+      if (!/^[0-9a-fA-F]{2}$/.test(hex)) {
+        this.readChar();
+        return 'x';
+      }
+      for (let i = 0; i < 3; i++) this.readChar();
+      return String.fromCharCode(parseInt(hex, 16));
+    }
+    if (escaped === 'u') {
+      const braced = /^\{([0-9a-fA-F]+)\}/.exec(this.source.slice(this.position + 1, this.position + 16));
+      const code = braced ? parseInt(braced[1], 16) : NaN;
+      if (braced && code <= 0x10ffff) {
+        for (let i = 0; i <= braced[0].length; i++) this.readChar();
+        return String.fromCodePoint(code);
+      }
+      const hex = this.source.slice(this.position + 1, this.position + 5);
+      if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+        for (let i = 0; i < 5; i++) this.readChar();
+        return String.fromCharCode(parseInt(hex, 16));
+      }
+      this.readChar();
+      return 'u';
+    }
+    this.readChar();
+    return Object.hasOwn(SINGLE_ESCAPES, escaped) ? SINGLE_ESCAPES[escaped] : escaped;
   }
 
   /**
@@ -1797,10 +1765,6 @@ export class Lexer {
 
   private isDigit(ch: string): boolean {
     return ch >= '0' && ch <= '9';
-  }
-
-  private isHexDigit(ch: string): boolean {
-    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
   }
 
   /** Digits as JavaScript writes them, a `_` allowed between two (`1_000`), returned without it. */

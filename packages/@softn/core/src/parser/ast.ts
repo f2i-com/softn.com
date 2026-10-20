@@ -704,8 +704,13 @@ function referencedCharacter(code: number): string {
  * `?a=1&copy=2` stays as written. A name with its `;` is read from
  * HTML_ENTITIES, and else from the browser's own table of HTML's 2,231,
  * where there is a browser (namedEntityFromBrowser); else it is left as written.
+ *
+ * Its line breaks are read as HTML reads them too, a CR LF or a lone CR as
+ * LF: a page saved with Windows line endings kept a `\r` in every text, a
+ * `<textarea>`'s and a `<pre>`'s among them.
  */
 export function decodeHtmlEntities(text: string, inAttribute = false): string {
+  if (text.includes('\r')) text = text.replace(/\r\n?/g, '\n');
   if (!text.includes('&')) return text;
   return text.replace(
     /&(?:#(\d+);?|#[xX]([0-9a-fA-F]+);?|([A-Za-z][A-Za-z0-9]*)(;?))/g,

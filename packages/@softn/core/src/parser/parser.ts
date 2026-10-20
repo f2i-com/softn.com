@@ -4020,7 +4020,12 @@ export function parse(source: string): SoftNDocument {
 //    as if there; `??` beside a bare `||` or `&&` is a warning. `<!-->`,
 //    `<!--->` and `--!>` end a comment as HTML ends one, and `<xmp>`,
 //    `<iframe>`, `<noembed>` and `<noframes>` hold text, as `<textarea>` does.
-export const PARSER_VERSION = 13;
+// 14: A quoted attribute's value may run over lines, where it ended at the
+//    first line break and the element lost its children. Text and template
+//    literals read CR LF and CR as LF; strings and templates read every
+//    escape JavaScript does (`\x41`, `\u{43}`, a line continuation); a
+//    byte-order mark is passed over.
+export const PARSER_VERSION = 14;
 
 /**
  * An element's attributes as HTML compares them for Noah's Ark: names and
