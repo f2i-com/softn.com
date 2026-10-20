@@ -124,11 +124,14 @@ describe('a deflate stream longer than its entry declares', () => {
 
   it('reads a large honest stream in slices to the same bytes', () => {
     const plain = noise(300 * 1024);
+    // Compared as bytes: toEqual walks 700 KB an element at a time, four
+    // seconds of the five a test is given, and failed on a busy machine.
+    const same = (a: Uint8Array | undefined, b: Uint8Array) => a !== undefined && a.length === b.length && a.every((byte, i) => byte === b[i]);
     for (const level of [0, 6] as const) {
       const zip = zipSync({ 'big.bin': plain, 'zeros.bin': new Uint8Array(400 * 1024) }, { level });
       const files = readBundleEntries(zip);
-      expect(files.get('big.bin')).toEqual(plain);
-      expect(files.get('zeros.bin')).toEqual(new Uint8Array(400 * 1024));
+      expect(same(files.get('big.bin'), plain)).toBe(true);
+      expect(same(files.get('zeros.bin'), new Uint8Array(400 * 1024))).toBe(true);
       // A worker transfers each entry's buffer; it has to be the entry and nothing more.
       for (const bytes of files.values()) expect(bytes.buffer.byteLength).toBe(bytes.byteLength);
     }
