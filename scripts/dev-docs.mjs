@@ -11,9 +11,8 @@
 // generator change.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const docsDir = path.join(root, 'docs');
 const defaultOutDir = path.join(docsDir, 'dist');
 const WATCHED = ['content', 'assets', 'scripts'].map((dir) => path.join(docsDir, dir));

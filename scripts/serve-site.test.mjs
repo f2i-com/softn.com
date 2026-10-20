@@ -56,6 +56,9 @@ async function startPreview(t) {
   }
   fs.mkdirSync(path.join(root, 'scripts'));
   fs.copyFileSync(new URL('./serve-site.mjs', import.meta.url), path.join(root, 'scripts/serve-site.mjs'));
+  // It finds the checkout's root through scripts/lib/paths.mjs, which comes along.
+  fs.mkdirSync(path.join(root, 'scripts/lib'), { recursive: true });
+  fs.copyFileSync(new URL('./lib/paths.mjs', import.meta.url), path.join(root, 'scripts/lib/paths.mjs'));
 
   const port = await freePort();
   const child = spawn(process.execPath, [path.join(root, 'scripts/serve-site.mjs')], {

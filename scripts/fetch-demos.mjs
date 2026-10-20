@@ -47,8 +47,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const demosDir = path.join(root, 'apps/softn-web/public/demos');
 const indexPath = path.join(demosDir, 'index.json');
 const DEFAULT_REPO = 'f2i-com/softn-Examples';

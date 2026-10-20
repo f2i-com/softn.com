@@ -2,13 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { inflateSync } from 'node:zlib';
 import { markSvg } from './brand-mark.mjs';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const normalizeNewlines = text => text.replace(/\r\n/g, '\n');
 
 // The generator draws with @napi-rs/canvas, which a checkout does not install

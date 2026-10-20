@@ -63,6 +63,9 @@ function pinnedRoot(t) {
   fs.mkdirSync(demos, { recursive: true });
   fs.mkdirSync(path.join(root, 'scripts'));
   fs.copyFileSync(new URL('./fetch-demos.mjs', import.meta.url), path.join(root, 'scripts/fetch-demos.mjs'));
+  // It finds the checkout's root through scripts/lib/paths.mjs, which comes along.
+  fs.mkdirSync(path.join(root, 'scripts/lib'), { recursive: true });
+  fs.copyFileSync(new URL('./lib/paths.mjs', import.meta.url), path.join(root, 'scripts/lib/paths.mjs'));
   const bundle = Buffer.from('PK a pinned bundle');
   fs.writeFileSync(path.join(demos, 'Notes.softn'), bundle);
   fs.writeFileSync(

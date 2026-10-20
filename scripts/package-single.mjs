@@ -5,12 +5,12 @@
 // packages the variant with the PHP/WASM server backend.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 import { writeArchive } from './lib/archive.mjs';
 import { requireStandaloneBuild } from './single-backend-inputs.mjs';
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { repoRoot as root } from './lib/paths.mjs';
+
 const dist = path.join(root, 'apps/softn-single/dist');
 for (const name of ['index.html', 'runtime.config.json'])
   if (!fs.existsSync(path.join(dist, name))) throw Error('Build the single-app runtime first.');

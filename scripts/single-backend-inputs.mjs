@@ -5,13 +5,14 @@
 // a backend) and package-private-single-php.mjs (the PHP-served runtime with
 // a backend), so the two archives cannot disagree about a version or a hash.
 import {readFileSync,writeFileSync,mkdirSync,existsSync,copyFileSync,rmSync} from 'node:fs';
-import {resolve,join,dirname} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import { join } from 'node:path';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {unzipSync} from 'fflate';
 import {startHere} from './release-explainers.mjs';
-export const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+import { repoRoot as root } from './lib/paths.mjs';
+
+export { root };
 const cache=join(root,'.cache/single-backend');
 const sha=b=>createHash('sha256').update(b).digest('hex');
 export const nodeVersion='24.20.0';

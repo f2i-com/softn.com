@@ -17,10 +17,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { repoRoot as root } from './lib/paths.mjs';
 
-export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
+export { root };
 /**
  * The engine's label for a file name: its release tag when SOURCE.json or
  * BUILD-INFO.json has one that reads as a version, else its version, else the

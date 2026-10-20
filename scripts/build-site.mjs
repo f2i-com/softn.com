@@ -32,12 +32,11 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { precompressTreeInParallel } from './precompress-assets.mjs';
 import { dropMachineMaps, dropSourceMaps } from './lib/build-paths.mjs';
 import { buildSite as buildDocs } from '../docs/scripts/build-docs.mjs';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'dist');
 
 // By default the site ships without the example apps: the directory starts

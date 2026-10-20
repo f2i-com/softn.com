@@ -30,14 +30,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { engineLabel } from './release-packages.mjs';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 import { writeArchive } from './lib/archive.mjs';
 import { buildInfoProblem, headRevision } from './lib/build-info.mjs';
 import { buildMachinePaths } from './lib/build-paths.mjs';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = path.join(root, 'dist');
 
 // ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GRID, CORAL, MINT, CORNER, STROKE, DOT_R, BRACKETS, markSvg } from './brand-mark.mjs';
+import { repoRoot } from './lib/paths.mjs';
 
 // The PNGs are drawn with @napi-rs/canvas, which is 38 MB of native code for a
 // job done when the mark changes, so a checkout does not install it; the PNGs
@@ -50,7 +51,6 @@ if (wantsPng) {
 
 // fileURLToPath, not URL.pathname: the pathname keeps percent-encoding, so a
 // checkout under a directory with a space could not find its own node_modules.
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // The mark, on the 32x32 grid it is authored on. Coral brackets because they
 // are the language, a mint dot because it is the thing that runs — the same

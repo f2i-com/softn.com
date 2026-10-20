@@ -28,8 +28,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { repoRoot as root } from './lib/paths.mjs';
 
 /**
  * Seconds on an ubuntu-latest runner (the v0.0.19 release's verify job; the

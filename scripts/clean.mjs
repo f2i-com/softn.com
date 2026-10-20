@@ -18,9 +18,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const withDeps = process.argv.includes('--deps');
 
 /** Expand the workspace globs in package.json into real directories. */

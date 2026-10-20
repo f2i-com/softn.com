@@ -11,9 +11,8 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = path.join(root, 'dist');
 const port = Number(process.env.SOFTN_SITE_PORT || 1420);
 const host = process.env.SOFTN_SITE_HOST || '127.0.0.1';

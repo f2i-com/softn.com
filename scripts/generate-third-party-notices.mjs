@@ -15,11 +15,10 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { checkZippProvenance } from './lib/zipp-provenance.mjs';
 import { checkVendored } from '../packages/@softn/core/scripts/vendor-zipp-models.mjs';
+import { repoRoot as ROOT } from './lib/paths.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_FILE = path.join(ROOT, 'package-lock.json');
 const OVERRIDES_FILE = path.join(ROOT, 'scripts', 'third-party-license-overrides.json');
 const ZIPP_SOURCE_FILE = path.join(ROOT, 'packages', '@softn', 'core', 'wasm-zipp', 'SOURCE.json');

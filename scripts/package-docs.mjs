@@ -19,12 +19,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { readArchive, writeArchive } from './lib/archive.mjs';
 import { buildInfoProblem, headRevision } from './lib/build-info.mjs';
 import { buildMachinePaths } from './lib/build-paths.mjs';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, 'dist');
 const docs = path.join(dist, 'docs');
 const outDir = path.resolve(root, process.argv.includes('--out') ? process.argv[process.argv.indexOf('--out') + 1] : 'release');

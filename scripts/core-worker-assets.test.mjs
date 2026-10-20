@@ -2,11 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { coreWorkerAssetPlugin } from './core-worker-assets.mjs';
-
-const root = fileURLToPath(new URL('../', import.meta.url));
+import { repoRoot as root } from './lib/paths.mjs';
 
 function fixture(t) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-worker-assets-'));

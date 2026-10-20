@@ -9,11 +9,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { markSvg } from './brand-mark.mjs';
+import { repoRoot } from './lib/paths.mjs';
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.join(repoRoot, 'node_modules/@tauri-apps/cli/tauri.js');
 const ground = '#101317';
 const currentIsNative = fs.existsSync(path.join(process.cwd(), 'src-tauri/tauri.conf.json'));

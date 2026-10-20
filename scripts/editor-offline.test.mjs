@@ -11,9 +11,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { repoRoot as root } from './lib/paths.mjs';
 
-const root = fileURLToPath(new URL('../', import.meta.url));
 const HEAVY = /three|scene3d|gltf|fbx|stl|postprocessing|zxing/i;
 /** A built file's name without the hash Vite gives it, which can spell anything. */
 const unhashed = (file) => file.replace(/-[\w-]{8}(\.[a-z0-9]+)$/i, '$1');
