@@ -286,17 +286,23 @@ function anyCase(word: string): string {
 }
 
 /**
+ * A tag's attribute text, as one group: quoted values whole, so a `>` in one
+ * (`title="a>b"`, `onload="if (a > b) go()"`) does not end the tag. Read up
+ * to the first `>`, such a tag lost its `src` or `href`, and the page its
+ * code or its stylesheet, with nothing said.
+ */
+const TAG_ATTRIBUTES = String.raw`((?:[^>"']|"[^"]*"|'[^']*')*?)`;
+
+/**
  * A `<link>` tag: group 1 is its attributes. Written in lower case or all in
  * capitals, as HTML is; `<Link>` is a component.
  */
-const LINK_TAG = /<(?:link|LINK)\b([^>]*?)\/?>/;
+const LINK_TAG = new RegExp(String.raw`<(?:link|LINK)(?=[\s/>])${TAG_ATTRIBUTES}\/?>`);
 
 /** The app's stylesheets a page links with `<link rel="stylesheet" href>`, as written, in order. */
 export function pageStylesheetHrefs(source: string): string[] {
   const hrefs: string[] = [];
-  const comments = htmlCommentSpans(source);
-  for (const match of source.matchAll(new RegExp(LINK_TAG.source, 'g'))) {
-    if (within(comments, match.index)) continue;
+  for (const match of matchesOutside(source, LINK_TAG, textSpans(source, true))) {
     const href = stylesheetHref(match[1]);
     if (href !== null) hrefs.push(href);
   }
@@ -345,7 +351,7 @@ export const UI_IMPORT_DECLARATION_PATTERN = new RegExp(
  * tag's name, group 2 its attributes, group 3 its content. Build a global
  * pattern from `.source` to go through a page.
  */
-export const LOGIC_TAG_PATTERN = /<(logic|script)\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/\1\s*>)/i;
+export const LOGIC_TAG_PATTERN = new RegExp(String.raw`<(logic|script)(?=[\s/>])${TAG_ATTRIBUTES}(?:\/\s*>|>([\s\S]*?)<\/\1\s*>)`, 'i');
 
 /**
  * What a `<logic>` or `<script>` tag is to the composer: `code` when it holds
@@ -378,24 +384,92 @@ export function logicTagReference(
 const RUNTIME_LOADER = /(?:^|\/)softn\.js$/i;
 
 /**
- * Where a page's HTML comments are, from `<!--` to just past `-->`. A tag
- * written in one is commented out: a `<script>` there is not run and its file
- * not wanted, nor a stylesheet `<link>` there placed.
+ * The HTML elements whose content the parser reads as text, in lower case or
+ * all in capitals as HTML writes them (the lexer's RAW_TEXT_ELEMENTS).
  */
-function htmlCommentSpans(source: string): Array<[number, number]> {
+const RAW_TEXT_NAMES = ['textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes'].flatMap((name) => [name, name.toUpperCase()]).join('|');
+
+/**
+ * Where a page holds text the parser reads no tag in, read from the start as
+ * the parser reads it: its HTML comments (to `-->` or `--!>`, and `<!-->`
+ * and `<!--->` whole, as HTML ends them), CDATA, and what a `<textarea>`, a
+ * `<title>`, an `<iframe>` or another of RAW_TEXT_NAMES and a `<style>` hold;
+ * and, with `code`, what a `<script>` or a
+ * `<logic>` holds. A tag written there is no tag: a `<script src>` shown in a
+ * textarea is not run nor its file wanted, nor a `<link>` a script writes
+ * placed. Only comments counted before, and `<!-->` hid the rest of the page.
+ */
+function textSpans(source: string, code = false): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
-  for (let at = source.indexOf('<!--'); at !== -1; at = source.indexOf('<!--', at)) {
-    const end = source.indexOf('-->', at + 4);
-    const past = end === -1 ? source.length : end + 3;
-    spans.push([at, past]);
-    at = past;
+  const opener = new RegExp(
+    String.raw`<!--|<!\[CDATA\[|<(${RAW_TEXT_NAMES}|${anyCase('style')}|${anyCase('script')}|${anyCase('logic')})(?=[\s/>])`,
+    'g'
+  );
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(source)) !== null) {
+    const start = match.index;
+    let from = start;
+    let past: number;
+    if (match[0] === '<!--') {
+      const end = /-?>|[^]*?--!?>/y;
+      end.lastIndex = start + 4;
+      past = end.exec(source) ? end.lastIndex : source.length;
+    } else if (match[1] === undefined) {
+      const end = source.indexOf(']]>', start + 9);
+      past = end === -1 ? source.length : end + 3;
+    } else {
+      // An element whose content is text: from its start tag's end to its end tag.
+      const startTag = new RegExp(String.raw`${TAG_ATTRIBUTES}(\/?)>`, 'y');
+      startTag.lastIndex = opener.lastIndex;
+      const tag = startTag.exec(source);
+      // Ended by its own `/>`, or never: it holds nothing.
+      if (!tag || tag[2] === '/') continue;
+      from = startTag.lastIndex;
+      const endTag = new RegExp(String.raw`<\/${match[1]}(?=[\s/>])`, 'gi');
+      endTag.lastIndex = from;
+      past = endTag.exec(source)?.index ?? source.length;
+      opener.lastIndex = past;
+      if (!code && /^(?:script|logic)$/i.test(match[1])) continue;
+    }
+    if (past > from) spans.push([from, past]);
+    opener.lastIndex = Math.max(past, opener.lastIndex);
   }
   return spans;
 }
 
-/** Whether `at` is inside one of `spans`. */
-function within(spans: ReadonlyArray<[number, number]>, at: number): boolean {
-  return spans.some(([start, past]) => at >= start && at < past);
+/**
+ * Each match of `pattern` in `source` that does not begin in one of `spans`.
+ * One that would is looked for again past the span, so a tag in one (a
+ * `<script>` shown in a textarea) cannot run on and swallow a real one.
+ */
+function* matchesOutside(source: string, pattern: RegExp, spans: ReadonlyArray<[number, number]>): Generator<RegExpExecArray> {
+  const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(source)) !== null) {
+    const at = match.index;
+    const span = spans.find(([start, past]) => at >= start && at < past);
+    if (span) {
+      re.lastIndex = span[1];
+      continue;
+    }
+    yield match;
+  }
+}
+
+/** `source` with each match of `pattern` outside `spans` replaced by what `replace` makes of it. */
+function replaceOutside(
+  source: string,
+  pattern: RegExp,
+  spans: ReadonlyArray<[number, number]>,
+  replace: (match: RegExpExecArray) => string
+): string {
+  let out = '';
+  let last = 0;
+  for (const match of matchesOutside(source, pattern, spans)) {
+    out += source.slice(last, match.index) + replace(match);
+    last = match.index + match[0].length;
+  }
+  return out + source.slice(last);
 }
 
 /**
@@ -419,9 +493,7 @@ function stylesheetFromRoot(rules: string, stylesheetPath: string): string {
 /** The files of code a page names, `<script src>` and `<logic src>`, as written, in order. */
 export function pageLogicSources(source: string): string[] {
   const sources: string[] = [];
-  const comments = htmlCommentSpans(source);
-  for (const match of source.matchAll(new RegExp(LOGIC_TAG_PATTERN.source, 'gi'))) {
-    if (within(comments, match.index)) continue;
+  for (const match of matchesOutside(source, LOGIC_TAG_PATTERN, textSpans(source))) {
     const reference = logicTagReference(match[1], match[2]);
     if (reference.kind === 'code' && reference.src) sources.push(reference.src);
   }
@@ -473,10 +545,8 @@ export function composeBundleSource(
   const collectLogic = (source: string, uiPath: string, main: boolean): string => {
     // See logicTagReference: what is left alone stays in the page, for the
     // parser.
-    const logicTag = new RegExp(LOGIC_TAG_PATTERN.source, 'gi');
-    const comments = htmlCommentSpans(source);
-    return source.replace(logicTag, (fullTag, tag: string, attributes: string, inlineCode: string | undefined, at: number) => {
-      if (within(comments, at)) return fullTag;
+    return replaceOutside(source, LOGIC_TAG_PATTERN, textSpans(source), (match) => {
+      const [fullTag, tag, attributes, inlineCode] = match as unknown as [string, string, string, string | undefined];
       const reference = logicTagReference(tag, attributes);
       if (reference.kind === 'ignored') return fullTag;
       const { src, language } = reference;
@@ -543,9 +613,9 @@ export function composeBundleSource(
    * left in the page, which does not load it; so is one the bundle does not
    * carry, said here. Lower case only: `<Link>` is a component.
    */
-  const inlineStylesheets = (source: string, pagePath: string, comments = htmlCommentSpans(source)): string =>
-    source.replace(new RegExp(LINK_TAG.source, 'g'), (fullTag, attributes: string, at: number) => {
-      if (within(comments, at)) return fullTag;
+  const inlineStylesheets = (source: string, pagePath: string): string =>
+    replaceOutside(source, LINK_TAG, textSpans(source, true), (match) => {
+      const [fullTag, attributes] = match as unknown as [string, string];
       const href = stylesheetHref(attributes);
       if (href === null) return fullTag;
       const stylesheetPath = resolveBundlePath(pagePath, href);

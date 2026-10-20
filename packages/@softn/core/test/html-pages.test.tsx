@@ -577,6 +577,35 @@ describe('a bundle written as HTML files', () => {
     expect(doc.logic?.code).toBe('let count = 1');
   });
 
+  it('reads a tag whose attribute holds a ">"', () => {
+    // Read up to the first ">", each lost its src or href, and the page its code or its rules.
+    const page = '<script data-note="1>2" src="main.js"></script><link title="a>b" rel="stylesheet" href="site.css"><p>x</p>';
+    expect(pageLogicSources(page)).toEqual(['main.js']);
+    expect(pageStylesheetHrefs(page)).toEqual(['site.css']);
+  });
+
+  it('takes no tag from text the parser shows as text, and reads on past it', () => {
+    // A script shown in a textarea ran on to the next real `</script>`, which it swallowed.
+    const page =
+      '<textarea><script src="shown.js"></script><link rel="stylesheet" href="shown.css"></textarea>' +
+      '<title><script src="title.js"></script></title><style>/* <script src="css.js"></script> */</style>' +
+      '<xmp><script src="xmp.js"></script></xmp><![CDATA[<script src="cdata.js"></script>]]>' +
+      '<script>document.write(\'<link rel="stylesheet" href="written.css">\')</script>' +
+      '<script src="main.js"></script><link rel="stylesheet" href="site.css"><p>x</p>';
+    expect(pageLogicSources(page)).toEqual(['main.js']);
+    expect(pageStylesheetHrefs(page)).toEqual(['site.css']);
+  });
+
+  it('ends a comment where HTML ends one', () => {
+    // `<!-->` is a whole comment, empty; read as opening one, it hid the rest of the page.
+    for (const comment of ['<!-->', '<!--->', '<!-- x --!>']) {
+      const page = `${comment}<script src="main.js"></script><link rel="stylesheet" href="site.css"><p>after</p>`;
+      expect(pageLogicSources(page), comment).toEqual(['main.js']);
+      expect(pageStylesheetHrefs(page), comment).toEqual(['site.css']);
+      expect(parsed({ 'index.html': page, 'main.js': 'let n = 1', 'site.css': 'p { color: teal; }' }).template.length, comment).toBeGreaterThan(0);
+    }
+  });
+
   it('places a stylesheet’s files from its own folder, as its rules name them', () => {
     const composed = compose({
       'index.html': '<link rel="stylesheet" href="css/site.css"><p>x</p>',
