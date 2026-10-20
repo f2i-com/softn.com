@@ -83,6 +83,7 @@ import { KNOWN_TORCH_COPIES, PACKAGE_TREES, VARIANT_ENGINE_COPIES, archiveEngine
 import { archiveName, root } from './release-packages.mjs';
 import { TORCH_PACKAGE, WEB_VARIANT, ensureReleaseEngine, packageDir, releaseOptions, variantDir } from '../../packages/@softn/core/scripts/fetch-zipp-release.mjs';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
+import { npmCommand } from '../lib/npm.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name) => {
@@ -218,13 +219,9 @@ const run = (label, cmd, cmdArgs, options = {}) => {
   const r = spawnSync(cmd, cmdArgs, { stdio: 'inherit', ...options });
   if (r.status !== 0) fail(`${label} failed (exit ${r.status ?? r.signal})`);
 };
-// npm without a shell: the npm-cli.js that `npm run` names, else the one
-// beside the node binary (a plain install), else whatever `npm` is on PATH.
-const npmCli = [process.env.npm_execpath, path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'), path.join(path.dirname(process.execPath), 'lib/node_modules/npm/bin/npm-cli.js')].find((p) => p && fs.existsSync(p));
 if (buildPackages) {
-  const npmArgs = ['run', 'build', '-w', '@softn/core', '-w', '@softn/components'];
-  if (npmCli) run('build @softn/core and @softn/components', process.execPath, [npmCli, ...npmArgs], { cwd: root });
-  else run('build @softn/core and @softn/components', 'npm', npmArgs, { cwd: root, shell: true });
+  const [command, commandArgs, options] = npmCommand(['run', 'build', '-w', '@softn/core', '-w', '@softn/components']);
+  run('build @softn/core and @softn/components', command, commandArgs, { cwd: root, ...options });
 }
 
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-formlogic-runtime-'));

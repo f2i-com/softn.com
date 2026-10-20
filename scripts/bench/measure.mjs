@@ -37,6 +37,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCENARIOS, SCENARIO_NAMES, buildBundle } from './scenarios.mjs';
+import { npmCommand } from '../lib/npm.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '../..');
@@ -1382,11 +1383,8 @@ async function main() {
   if (options.build) {
     const [cmd, cmdArgs] = hostDef.build;
     console.log(`Building ${options.host}: ${cmd} ${cmdArgs.join(' ')}`);
-    const r = spawnSync(cmd, cmdArgs, {
-      cwd: root,
-      stdio: 'inherit',
-      shell: process.platform === 'win32',
-    });
+    const [command, commandArgs, spawnOptions] = cmd === 'npm' ? npmCommand(cmdArgs) : [cmd, cmdArgs, {}];
+    const r = spawnSync(command, commandArgs, { cwd: root, stdio: 'inherit', ...spawnOptions });
     if (r.status !== 0) throw new Error(`The ${options.host} build failed`);
   }
   if (!fs.existsSync(path.join(distDir, 'index.html'))) {

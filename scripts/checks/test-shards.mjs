@@ -29,6 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { repoRoot as root } from '../lib/paths.mjs';
+import { npmCommand } from '../lib/npm.mjs';
 
 /**
  * Seconds on an ubuntu-latest runner (the v0.0.19 release's verify job; the
@@ -156,8 +157,8 @@ function main(args) {
   for (const unit of shard.units) {
     console.log(`\n=== ${unit.name}: ${unit.command.join(' ')}`);
     const started = Date.now();
-    // npm is npm.cmd on Windows, which only a shell runs.
-    const result = spawnSync(unit.command[0], unit.command.slice(1), { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' && unit.command[0] === 'npm' });
+    const [command, commandArgs, options] = unit.command[0] === 'npm' ? npmCommand(unit.command.slice(1)) : [unit.command[0], unit.command.slice(1), {}];
+    const result = spawnSync(command, commandArgs, { cwd: root, stdio: 'inherit', ...options });
     const seconds = Math.round((Date.now() - started) / 1000);
     timings.push(`${unit.name} ${seconds}s${result.status === 0 ? '' : ' FAILED'}`);
     if (result.status !== 0) failed.push(unit.name);
