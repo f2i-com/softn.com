@@ -244,6 +244,9 @@ export const PROP_MIGRATIONS: Record<string, Rule> = {
   },
   Modal: { rename: { closeOnOverlay: 'closeOnOverlayClick' } },
   Toast: { values: { position: { top: 'top-center', bottom: 'bottom-center' } } },
+  // The palette offered these four names, which the component never had: each
+  // fell back to a fade.
+  AnimatedBox: { values: { animation: { fade: 'fadeIn', 'slide-up': 'slideUp', 'slide-down': 'slideDown', scale: 'scaleIn' } } },
   Popover: {
     rename: { position: 'placement' },
     drop: { title: 'the popover shows its children; put a heading inside' },
