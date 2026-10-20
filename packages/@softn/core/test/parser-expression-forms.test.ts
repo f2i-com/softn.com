@@ -326,13 +326,14 @@ describe('names that markup also uses', () => {
 
   it('do not end a control-flow header they appear inside', () => {
     // `end`, `else` and `empty` close the header only as the word after `#`.
-    const doc = parse('#if (end > start && !empty)\n<A />\n#else\n<B />\n#end\n<C />');
+    // (Not `<A />` and `<B />`: written in capitals those are HTML's a and b.)
+    const doc = parse('#if (end > start && !empty)\n<First />\n#else\n<Second />\n#end\n<Third />');
     expect(doc.diagnostics ?? []).toEqual([]);
     expect(doc.template).toHaveLength(2);
     const block = doc.template[0] as IfBlock;
     expect(shape(block.condition)).toMatchObject({ operator: '&&', left: { operator: '>', left: id('end') } });
-    expect(block.consequent).toMatchObject([{ tag: 'A' }]);
-    expect(block.alternate).toMatchObject([{ tag: 'B' }]);
+    expect(block.consequent).toMatchObject([{ tag: 'First' }]);
+    expect(block.alternate).toMatchObject([{ tag: 'Second' }]);
   });
 
   it('keep their meaning in markup', () => {
@@ -537,7 +538,7 @@ describe('the parser version', () => {
   it('moved with what parse returns', () => {
     // parseCached keys on it; a document parsed under the old rules must not
     // be served to a renderer written for these.
-    expect(PARSER_VERSION).toBe(10);
+    expect(PARSER_VERSION).toBe(11);
   });
 });
 

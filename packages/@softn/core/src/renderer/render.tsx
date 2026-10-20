@@ -22,6 +22,7 @@ import type {
   PropNode,
 } from '../parser/ast';
 import { EVENT_MODIFIERS, isIdentifierName, patternNames } from '../parser/ast';
+import { VOID_ELEMENTS } from '../parser/html';
 import type { SoftNLocalScope, SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent } from './registry';
 import {
@@ -716,23 +717,6 @@ const HTML_BOOLEAN_ATTRIBUTES = new Set([
   'allowfullscreen', 'async', 'autofocus', 'autoplay', 'checked', 'controls', 'default', 'defer', 'disabled',
   'formnovalidate', 'hidden', 'inert', 'ismap', 'itemscope', 'loop', 'multiple', 'muted', 'nomodule',
   'novalidate', 'open', 'playsinline', 'readonly', 'required', 'reversed', 'selected',
-]);
-
-const VOID_ELEMENTS = new Set([
-  'area',
-  'base',
-  'br',
-  'col',
-  'embed',
-  'hr',
-  'img',
-  'input',
-  'link',
-  'meta',
-  'param',
-  'source',
-  'track',
-  'wbr',
 ]);
 
 /**
@@ -1464,6 +1448,10 @@ function renderElement(
       // A shape inside an `<svg>`, by the name SVG gives it. Only `svg` was
       // allowed, so an icon drew "Unknown component" for each of its paths.
       Component = svgChildElement(node.tag) as keyof JSX.IntrinsicElements;
+    } else if (registry.resolveName(node.tag) !== undefined) {
+      // A component's name written in another case: `<datatable>` is
+      // DataTable, `<STACK>` is Stack (see ComponentRegistry.resolveName).
+      Component = registry.get(registry.resolveName(node.tag)!) as SoftNComponent;
     } else {
       if (isDevelopment) {
         console.warn(
@@ -3246,6 +3234,10 @@ const REACT_EVENT_PROPS: Readonly<Record<string, string>> = {
   keypress: 'onKeyPress',
   dblclick: 'onDoubleClick',
   doubleclick: 'onDoubleClick',
+  // React's onFocus and onBlur are the bubbling focus events, focusin and focusout.
+  focusin: 'onFocus',
+  focusout: 'onBlur',
+  beforeinput: 'onBeforeInput',
   mousedown: 'onMouseDown',
   mouseup: 'onMouseUp',
   mouseenter: 'onMouseEnter',

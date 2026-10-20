@@ -7,7 +7,10 @@
 import { Token, TokenType, lookupKeyword, createToken } from './token';
 import { SoftNParseError } from './errors';
 
-/** The words that may follow `#` to open a control-flow block. */
+/**
+ * The words that may follow `#` to open a control-flow block, in lower case:
+ * they are read in any case, as `#IF`, `#Else` and `#End` are.
+ */
 const CONTROL_FLOW_WORDS: ReadonlySet<string> = new Set([
   'if',
   'elseif',
@@ -15,6 +18,22 @@ const CONTROL_FLOW_WORDS: ReadonlySet<string> = new Set([
   'each',
   'empty',
   'end',
+]);
+
+/**
+ * The SoftN blocks a tag can open, in lower case: read in any case as the
+ * tag's name, as `<IMPORT>`, `<Logic>` and `<DATA>` are. Only there; as a
+ * word in an expression, `Data` is a name like any other.
+ */
+const TAG_KEYWORDS: ReadonlySet<string> = new Set([
+  'script',
+  'logic',
+  'style',
+  'data',
+  'component',
+  'import',
+  'prop',
+  'collection',
 ]);
 
 export class Lexer {
@@ -45,6 +64,20 @@ export class Lexer {
   private readingClosingTag: boolean = false;
   /** Whether the `>` just read ended a closing tag. */
   private closedAnElement: boolean = false;
+  /** Whether the next word is the one after `#` (or after `#else` in `#else if`): SoftN's, in any case. */
+  private wordAfterHash: boolean = false;
+  /** Whether the next word is a tag's name: a SoftN block's in any case (TAG_KEYWORDS). */
+  private tagNameNext: boolean = false;
+  /** Whether the token after the `=` just read is an attribute's value, which may be unquoted. */
+  private unquotedValueNext: boolean = false;
+  /** The `textarea` or `title` whose opening tag is being read. */
+  private sawRawTextTag: string | null = null;
+  /**
+   * The `textarea` or `title` whose text is being read, as HTML reads it: a
+   * `<` in it is a character, and only its own end tag ends it. Braces are
+   * still SoftN's expressions there, as everywhere in a page's text.
+   */
+  private rawTextEnd: string | null = null;
 
   // Context tracking for different parsing modes
   private inTag: boolean = false;
@@ -116,6 +149,9 @@ export class Lexer {
       );
     }
     this.lastTokenStart = token.start;
+    // The word after `#`, and the `if` of `#else if`, are read in any case.
+    this.wordAfterHash = token.type === TokenType.HASH || (token.type === TokenType.ELSE && this.inControlFlow > 0);
+    this.tagNameNext = token.type === TokenType.TAG_OPEN || token.type === TokenType.TAG_END_OPEN;
     const inContent = !this.inTag && this.inExpression === 0 && this.inControlFlow === 0;
     this.afterContentExpression = token.type === TokenType.EXPR_END && inContent;
     this.afterContentElement =
@@ -171,14 +207,27 @@ export class Lexer {
       return createToken(TokenType.EOF, '', startLine, startColumn, startPos, startPos);
     }
 
+    if (this.unquotedValueNext) {
+      this.unquotedValueNext = false;
+      const value = this.readUnquotedValue();
+      if (value) return value;
+    }
+
+    // `<![CDATA[ … ]]>`, as SVG and MathML write text that holds `<` and `&`:
+    // the text as written. Read as a declaration it was dropped.
+    if (this.ch === '<' && !this.inTag && this.inExpression === 0 && !this.rawTextEnd && this.source.startsWith('<![CDATA[', this.position)) {
+      return this.readCdata();
+    }
+
     // Comments: // ...
     if (this.ch === '/' && this.peekChar() === '/') {
       return this.readLineComment();
     }
 
-    // HTML comments: <!-- ... -->
+    // HTML comments: <!-- ... --> (not in a textarea's or title's text, where they are text).
     if (
       this.ch === '<' &&
+      !this.rawTextEnd &&
       this.peekCharAt(1) === '!' &&
       this.peekCharAt(2) === '-' &&
       this.peekCharAt(3) === '-'
@@ -190,7 +239,7 @@ export class Lexer {
     // with. It says what the page is, not what to draw, so it reads as a
     // comment. Read as a tag it became an element named "" and the page drew
     // "Unknown component: <>" above everything else.
-    if (this.ch === '<' && this.peekCharAt(1) === '!' && !this.inTag && this.inExpression === 0) {
+    if (this.ch === '<' && !this.rawTextEnd && this.peekCharAt(1) === '!' && !this.inTag && this.inExpression === 0) {
       return this.readDeclaration();
     }
 
@@ -277,6 +326,10 @@ export class Lexer {
         this.inTag = false;
         this.closedAnElement = this.readingClosingTag;
         this.readingClosingTag = false;
+        if (this.sawRawTextTag) {
+          this.rawTextEnd = this.sawRawTextTag;
+          this.sawRawTextTag = null;
+        }
         // If we just closed a script/logic/style tag, enable content mode for next token
         if (this.sawScriptKeyword) {
           this.inScriptBlock = true;
@@ -313,6 +366,7 @@ export class Lexer {
           this.sawLogicKeyword = false;
           this.sawStyleKeyword = false;
           this.sawPreformattedTag = false;
+          this.sawRawTextTag = null;
           return createToken(
             TokenType.TAG_SELF_CLOSE,
             '/>',
@@ -367,6 +421,9 @@ export class Lexer {
           );
         }
         this.readChar();
+        // In a tag, what follows is the attribute's value, which HTML lets
+        // a page leave unquoted (see readUnquotedValue).
+        this.unquotedValueNext = this.inTag && this.inExpression === 0 && this.inControlFlow === 0;
         return createToken(TokenType.EQUALS, '=', startLine, startColumn, startPos, this.position);
 
       case '{':
@@ -837,6 +894,8 @@ export class Lexer {
       this.inTag = true;
       this.readingClosingTag = true;
       if (this.preformatted > 0 && this.preformattedTagAhead()) this.preformatted--;
+      // Inside a textarea's or title's text only its own end tag opens a tag.
+      this.rawTextEnd = null;
       return createToken(
         TokenType.TAG_END_OPEN,
         '</',
@@ -861,6 +920,8 @@ export class Lexer {
     } else if (this.preformattedTagAhead()) {
       this.sawPreformattedTag = true;
     }
+    const raw = this.htmlTagWordAhead();
+    if (raw === 'textarea' || raw === 'title') this.sawRawTextTag = raw;
 
     return createToken(TokenType.TAG_OPEN, '<', startLine, startColumn, startPos, this.position);
   }
@@ -874,7 +935,14 @@ export class Lexer {
     const startPos = this.position;
 
     const ident = this.readWhile((ch) => this.isIdentifierPart(ch));
-    const type = lookupKeyword(ident);
+    let type = lookupKeyword(ident);
+    // SoftN's own words are read in any case where only they can stand: the
+    // word after `#` (`#IF`, `#Else If`, `#END`) and a block's tag name
+    // (`<IMPORT>`, `<Logic>`). In an expression the case is JavaScript's.
+    if (this.wordAfterHash || this.tagNameNext) {
+      const lower = ident.toLowerCase();
+      if (this.wordAfterHash ? CONTROL_FLOW_WORDS.has(lower) : TAG_KEYWORDS.has(lower)) type = lookupKeyword(lower);
+    }
 
     // Reset control flow mode after keywords that don't use parentheses
     // #end and #else terminate control flow mode immediately
@@ -1112,7 +1180,7 @@ export class Lexer {
       next !== '#' &&
       !(next === '/' && after === '/');
     if (startsText) return this.readTextContent();
-    const opensTag = next === '<' && /[A-Za-z_$]/.test(after);
+    const opensTag = next === '<' && /[A-Za-z_$]/.test(after) && this.ltOpensMarkup(i);
     if ((next === '{' || opensTag) && !sawNewline) {
       const startLine = this.line;
       const startColumn = this.column;
@@ -1330,7 +1398,7 @@ export class Lexer {
   private elseIsFollowedByIf(): boolean {
     let i = this.position;
     while (this.source[i] === ' ' || this.source[i] === '\t') i++;
-    if (i === this.position || this.source.slice(i, i + 2) !== 'if') return false;
+    if (i === this.position || this.source.slice(i, i + 2).toLowerCase() !== 'if') return false;
     i += 2;
     while (this.source[i] === ' ' || this.source[i] === '\t') i++;
     return this.source[i] === '(';
@@ -1467,6 +1535,14 @@ export class Lexer {
    * under a diagnostic about spreading attributes.
    */
   private ltOpensMarkup(at: number): boolean {
+    if (this.rawTextEnd) {
+      // In a textarea's or title's text, only its own end tag.
+      const name = this.rawTextEnd;
+      return (
+        this.source.slice(at + 1, at + 2 + name.length).toLowerCase() === `/${name}` &&
+        /^[\s/>]?$/.test(this.source[at + 2 + name.length] ?? '')
+      );
+    }
     return /[A-Za-z_$/!>]/.test(this.source[at + 1] ?? '');
   }
 
@@ -1489,7 +1565,7 @@ export class Lexer {
       word += this.source[i];
       i++;
     }
-    return CONTROL_FLOW_WORDS.has(word);
+    return CONTROL_FLOW_WORDS.has(word.toLowerCase());
   }
 
   private readChar(): void {
@@ -1553,13 +1629,62 @@ export class Lexer {
    * whitespace rules of any other.
    */
   private preformattedTagAhead(): boolean {
+    const word = this.htmlTagWordAhead();
+    return word === 'pre' || word === 'textarea';
+  }
+
+  /**
+   * The tag name under the cursor in lower case when it is written as HTML
+   * writes one, in lower case or all in capitals (`textarea`, `TEXTAREA`);
+   * null for a capitalised name (`Textarea`), which is a component's.
+   */
+  private htmlTagWordAhead(): string | null {
     let pos = this.position;
     let word = '';
     while (pos < this.source.length && this.isIdentifierPart(this.source[pos])) {
       word += this.source[pos];
       pos++;
     }
-    return word === 'pre' || word === 'textarea';
+    const lower = word.toLowerCase();
+    return word === lower || word === word.toUpperCase() ? lower : null;
+  }
+
+  /**
+   * An attribute's value written without quotes, as HTML allows: everything
+   * up to the next space or `>` (`src=a.png`, `href=/docs/`, `type=datetime-local`,
+   * `color=#fff`). A value that is a plain number or a single word is left to
+   * the usual tokens, so `columns=2` is still a number, `open=true` a
+   * boolean and `variant=primary` a word. Anything else used to be cut at its
+   * first `.`, `/`, `-` or `#`, and the rest became attributes of their own.
+   * A `/` just before `>` closes the tag, as in `<img src=a.png/>`.
+   */
+  private readUnquotedValue(): Token | null {
+    if (!this.inTag || this.inExpression > 0 || this.inControlFlow > 0) return null;
+    let end = this.position;
+    while (end < this.source.length && !/[\s"'<>`]/.test(this.source[end])) end++;
+    let value = this.source.slice(this.position, end);
+    if (value.length > 1 && value.endsWith('/') && this.source[end] === '>') value = value.slice(0, -1);
+    if (value === '' || value.startsWith('{') || /^\d+(?:\.\d+)?$/.test(value) || /^[A-Za-z_$][\w$]*$/.test(value)) {
+      return null;
+    }
+    const startLine = this.line;
+    const startColumn = this.column;
+    const startPos = this.position;
+    for (let i = 0; i < value.length; i++) this.readChar();
+    return createToken(TokenType.STRING, value, startLine, startColumn, startPos, this.position);
+  }
+
+  /** `<![CDATA[ … ]]>`: its text as written (the parser reads entities, so `&` is escaped for it). */
+  private readCdata(): Token {
+    const startLine = this.line;
+    const startColumn = this.column;
+    const startPos = this.position;
+    const close = this.source.indexOf(']]>', this.position + 9);
+    const end = close === -1 ? this.source.length : close;
+    const text = this.source.slice(this.position + 9, end);
+    const target = close === -1 ? end : end + 3;
+    while (this.position < target && this.ch !== '') this.readChar();
+    return createToken(TokenType.TEXT, text.replaceAll('&', '&amp;'), startLine, startColumn, startPos, this.position);
   }
 
   /**

@@ -15,6 +15,8 @@
 
 import React from 'react';
 import type { SoftNProps } from '../types';
+import { HTML_ELEMENT_NAMES } from '../parser/html';
+import { svgChildElement } from './html-elements';
 import {
   LazyComponentEntry,
   type LazyComponentOptions,
@@ -33,6 +35,8 @@ export type ComponentLoadState = 'eager' | LazyLoadState;
 export class ComponentRegistry {
   private components: Map<string, SoftNComponent> = new Map();
   private lazyEntries: Map<string, LazyComponentEntry> = new Map();
+  /** Each registered name by its lower-case spelling, made when first asked for (see resolveName). */
+  private namesByLowerCase: Map<string, string> | null = null;
 
   /**
    * Register a component
@@ -41,6 +45,32 @@ export class ComponentRegistry {
     // Last registration wins, whichever kind it is.
     this.lazyEntries.delete(name);
     this.components.set(name, component);
+    this.namesByLowerCase = null;
+  }
+
+  /**
+   * The registered name a tag means, or undefined when it means none: the
+   * name as written, when it is registered; else nothing when it is an
+   * element HTML or SVG names and is written as one is (`<button>`,
+   * `<BUTTON>`, `<text>` in a drawing), which the page draws as that
+   * element; else the registered name it spells in another case, as
+   * `<datatable>` spells DataTable. Every place that turns a tag into a
+   * component asks this, so a name that draws is also one that is fetched,
+   * installed and checked. Two names that differ only in case are resolved
+   * to the first of them in sorting order, every time.
+   */
+  public resolveName(tag: string): string | undefined {
+    if (this.has(tag)) return tag;
+    const lower = tag.toLowerCase();
+    const writtenAsHtml = tag === lower || tag === tag.toUpperCase();
+    if (writtenAsHtml && (HTML_ELEMENT_NAMES.has(lower) || svgChildElement(lower) !== undefined)) return undefined;
+    if (!this.namesByLowerCase) {
+      this.namesByLowerCase = new Map();
+      for (const name of this.getNames().sort()) {
+        if (!this.namesByLowerCase.has(name.toLowerCase())) this.namesByLowerCase.set(name.toLowerCase(), name);
+      }
+    }
+    return this.namesByLowerCase.get(lower);
   }
 
   /**
@@ -63,6 +93,7 @@ export class ComponentRegistry {
   ): void {
     this.components.delete(name);
     this.lazyEntries.set(name, new LazyComponentEntry(name, load, options));
+    this.namesByLowerCase = null;
   }
 
   /**
@@ -104,6 +135,7 @@ export class ComponentRegistry {
   public unregister(name: string): boolean {
     const eager = this.components.delete(name);
     const lazy = this.lazyEntries.delete(name);
+    this.namesByLowerCase = null;
     return eager || lazy;
   }
 
@@ -113,6 +145,7 @@ export class ComponentRegistry {
   public clear(): void {
     this.components.clear();
     this.lazyEntries.clear();
+    this.namesByLowerCase = null;
   }
 
   /**
@@ -161,7 +194,8 @@ export class ComponentRegistry {
    */
   public preload(names: Iterable<string>): Promise<void> {
     const started: Promise<unknown>[] = [];
-    for (const name of new Set(names)) {
+    // Tags as a page writes them: `<datatable>` loads DataTable (resolveName).
+    for (const name of new Set([...names].map((tag) => this.resolveName(tag) ?? tag))) {
       const entry = this.lazyEntries.get(name);
       if (!entry || entry.getState() !== 'idle') continue;
       started.push(entry.load().catch(() => undefined));

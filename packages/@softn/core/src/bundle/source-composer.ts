@@ -260,16 +260,36 @@ export function logicImportPaths(source: string, basePath: string): string[] {
  * includes `stylesheet` and `href` is not on another site. Null otherwise.
  */
 function stylesheetHref(attributes: string): string | null {
-  const rel =
-    attributes.match(/\brel\s*=\s*(["'])([^"']*)\1/i)?.[2] ??
-    attributes.match(/\brel\s*=\s*([^\s"'>/]+)/i)?.[1];
+  const rel = attributeValue(attributes, 'rel');
   if (!rel || !rel.toLowerCase().split(/\s+/).includes('stylesheet')) return null;
-  const href = attributes.match(/\bhref\s*=\s*(["'])([^"']+)\1/i)?.[2];
+  const href = attributeValue(attributes, 'href');
   return href && !isRemoteReference(href) ? href : null;
 }
 
-/** A lower-case `<link>` tag: group 1 is its attributes. `<Link>` is a component. */
-const LINK_TAG = /<link\b([^>]*?)\/?>/;
+/**
+ * An attribute's value in a tag's attribute text, quoted or not, as HTML
+ * writes it (`href="a.css"`, `href='a.css'`, `href=a.css`); undefined when the
+ * attribute is not written or has no value. The name is read in any case.
+ */
+function attributeValue(attributes: string, name: string): string | undefined {
+  const match = new RegExp(String.raw`(?:^|\s)${name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+))`, 'i').exec(attributes);
+  return match ? (match[1] ?? match[2] ?? match[3]) : undefined;
+}
+
+/**
+ * Each letter of a word as a class of both its cases: a pattern built on it
+ * reads the word in any case whatever flags its users rebuild it with (most
+ * add only `g`).
+ */
+function anyCase(word: string): string {
+  return word.replace(/[a-z]/gi, (letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
+}
+
+/**
+ * A `<link>` tag: group 1 is its attributes. Written in lower case or all in
+ * capitals, as HTML is; `<Link>` is a component.
+ */
+const LINK_TAG = /<(?:link|LINK)\b([^>]*?)\/?>/;
 
 /** The app's stylesheets a page links with `<link rel="stylesheet" href>`, as written, in order. */
 export function pageStylesheetHrefs(source: string): string[] {
@@ -292,7 +312,7 @@ function escapeRegex(value: string): string {
  * The `from` of an import, as the text of a pattern: the word, an `=` or
  * none, and the quoted path, which is its one group.
  */
-const IMPORT_FROM = String.raw`from\s*=?\s*["']([^"']+)["']`;
+const IMPORT_FROM = String.raw`${anyCase('from')}\s*=?\s*["']([^"']+)["']`;
 
 /**
  * How a page imports another: `<import Header from="./header.ui" />`. Group 1
@@ -304,7 +324,7 @@ const IMPORT_FROM = String.raw`from\s*=?\s*["']([^"']+)["']`;
  * imports placed. Every place that looks for an import builds on this one
  * pattern, so the two cannot come apart again.
  */
-export const UI_IMPORT_PATTERN = new RegExp(String.raw`<import\s+(\w+)\s+${IMPORT_FROM}\s*\/>`);
+export const UI_IMPORT_PATTERN = new RegExp(String.raw`<${anyCase('import')}\s+(\w+)\s+${IMPORT_FROM}\s*\/>`);
 
 /**
  * Any import a page writes, whatever it names: `<import Header from=…>`,
@@ -317,7 +337,7 @@ export const UI_IMPORT_PATTERN = new RegExp(String.raw`<import\s+(\w+)\s+${IMPOR
  * Both are built on the same reading of `from` now.
  */
 export const UI_IMPORT_DECLARATION_PATTERN = new RegExp(
-  String.raw`<import\s+(?:(\w+)\s+)?(?:\{([^}]+)\}\s*)?${IMPORT_FROM}\s*\/>`
+  String.raw`<${anyCase('import')}\s+(?:(\w+)\s+)?(?:\{([^}]+)\}\s*)?${IMPORT_FROM}\s*\/>`
 );
 
 /**
@@ -343,10 +363,10 @@ export function logicTagReference(
   attributes: string
 ): { kind: 'code'; src: string | null; language: 'javascript' | 'python' } | { kind: 'ignored' } {
   const script = tag.toLowerCase() === 'script';
-  const type = attributes.match(/\btype\s*=\s*(["'])([^"']*)\1/i)?.[2];
+  const type = attributeValue(attributes, 'type');
   const language = script ? scriptLanguage(type) : 'javascript';
   if (language === 'other') return { kind: 'ignored' };
-  const src = attributes.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i)?.[2] ?? null;
+  const src = attributeValue(attributes, 'src') || null;
   if (src && script && isRemoteReference(src)) return { kind: 'ignored' };
   // The runtime's own loader, which a page of a site names to run as the app
   // (apps/softn-single/public/softn.js): it is no part of the app's code.
@@ -460,7 +480,7 @@ export function composeBundleSource(
       const reference = logicTagReference(tag, attributes);
       if (reference.kind === 'ignored') return fullTag;
       const { src, language } = reference;
-      const type = attributes.match(/\btype\s*=\s*(["'])([^"']*)\1/i)?.[2];
+      const type = attributeValue(attributes, 'type');
       if (src) {
         sawExternalLogic = true;
         const externalPath = resolveBundlePath(uiPath, src);
@@ -494,7 +514,7 @@ export function composeBundleSource(
       // a block and change what the code means. So Python lives in a file the
       // bundle carries verbatim, and saying otherwise inline is refused rather
       // than silently mis-indented.
-      const lang = attributes.match(/\blang(?:uage)?\s*=\s*(["'])([^"']*)\1/i)?.[2];
+      const lang = attributeValue(attributes, 'lang') ?? attributeValue(attributes, 'language');
       if (lang && lang.trim().toLowerCase() === 'python') {
         throw new Error(
           `${uiPath} has an inline <logic lang="python"> block: put Python in a .py file and reference it with <logic src="...">`

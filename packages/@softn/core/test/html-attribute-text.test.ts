@@ -28,7 +28,8 @@ describe('an end tag HTML lets a page leave out', () => {
   it('is where HTML puts it', () => {
     expect(shape(parse('<ul><li>a<li>b</ul><p>after</p>').template)).toBe('ul(li(a) li(b)) p(after)');
     expect(shape(parse('<p>one<p>two<div>block</div>').template)).toBe('p(one) p(two) div(block)');
-    expect(shape(parse('<table><tr><td>a<td>b<tr><td>c</table>').template)).toBe('table(tr(td(a) td(b)) tr(td(c)))');
+    // Rows written straight into a table are in the <tbody> HTML gives them.
+    expect(shape(parse('<table><tr><td>a<td>b<tr><td>c</table>').template)).toBe('table(tbody(tr(td(a) td(b)) tr(td(c))))');
     expect(shape(parse('<dl><dt>term<dd>meaning<dt>next</dl>').template)).toBe('dl(dt(term) dd(meaning) dt(next))');
     expect(shape(parse('<select><option>a<option>b</select>').template)).toBe('select(option(a) option(b))');
   });

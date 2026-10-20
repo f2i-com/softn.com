@@ -136,10 +136,11 @@ describe('void elements', () => {
     expect(html('<p>one<br/>two<br />three</p>')).toBe('<p>one<br/>two<br/>three</p>');
   });
 
-  it('pass over the closing tags pages wrote while they needed one', () => {
-    expect(html('<div>a<br></br>b<input type="text"></input><p>c</p></div>')).toBe(
-      '<div>a<br/>b<input type="text"/><p>c</p></div>'
+  it('pass over the closing tags pages write for them, as HTML does, but read </br> as a <br> as HTML does', () => {
+    expect(html('<div>a<br>b<input type="text"></input><img src="x.png"></img><p>c</p></div>')).toBe(
+      '<div>a<br/>b<input type="text"/><img src="x.png"/><p>c</p></div>'
     );
+    expect(html('<div>a<br></br>b</div>')).toBe('<div>a<br/><br/>b</div>');
   });
 
   it('are the lower-case HTML elements only: a component of the same name has children', () => {
@@ -172,7 +173,7 @@ describe('names HTML spells its own way', () => {
     expect(
       html('<label for="n">Name</label><input id="n" readonly maxlength="5" tabindex="0" value="Ada"><table><tr><td colspan="2"></td></tr></table>')
     ).toBe(
-      '<label for="n">Name</label><input id="n" readonly="" maxLength="5" tabindex="0" value="Ada"/><table><tr><td colSpan="2"></td></tr></table>'
+      '<label for="n">Name</label><input id="n" readonly="" maxLength="5" tabindex="0" value="Ada"/><table><tbody><tr><td colSpan="2"></td></tr></tbody></table>'
     );
   });
 });

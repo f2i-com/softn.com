@@ -131,8 +131,10 @@ export function requiredFeatures(
 ): string[] {
   const names: string[] = [];
   for (const tag of collectAllComponentTags(parse(source))) {
-    const state = registry.getLoadState(tag);
-    if (state !== undefined && state !== 'eager') names.push(tag);
+    // As the renderer resolves it: `<datatable>` needs DataTable's chunk.
+    const name = registry.resolveName(tag);
+    const state = name === undefined ? undefined : registry.getLoadState(name);
+    if (state !== undefined && state !== 'eager' && !names.includes(name!)) names.push(name!);
   }
   return names.sort();
 }

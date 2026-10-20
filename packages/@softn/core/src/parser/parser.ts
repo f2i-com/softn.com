@@ -58,9 +58,13 @@ import {
   VOID_ELEMENTS,
   HEAD_ELEMENTS,
   DocumentWrapper,
+  callbackName,
   documentWrapper,
+  htmlAttributeName,
   htmlHandlerEvent,
   isRemoteReference,
+  normalizeTagName,
+  sameTagName,
   scriptLanguage,
 } from './html';
 import {
@@ -292,6 +296,14 @@ export class Parser {
   private nestedBlocks: Array<ScriptBlock | LogicBlock | StyleBlock> = [];
   /** The elements being read, outermost first: what an end tag an HTML element leaves out may end. */
   private openTags: string[] = [];
+  /**
+   * Formatting elements an end tag closed out of order (`</b>` with an `<i>`
+   * open in it), innermost last, with the end tag that closed them: opened
+   * again after that tag's element (see parseChildren).
+   */
+  private reopenFormatting: Array<{ closer: string; element: ElementNode }> = [];
+  /** The formatting elements still to open inside the one being opened again (reopenElements). */
+  private reopenInside: ElementNode[] = [];
   /** Whether the top-level elements being read are inside a document's `<head>`. */
   private inHead: boolean = false;
   /** The text of a document's `<title>`. */
@@ -430,12 +442,22 @@ export class Parser {
           if (element) place(element);
           // Blocks written inside it come after it, in the order written.
           for (const block of this.nestedBlocks.splice(0)) place(block);
+          // Formatting elements its end tag closed out of order, opened again (see parseChildren).
+          if (element && isTemplateNode(element) && element.type === 'Element' && this.reopenFormatting[0]?.closer === element.tag) {
+            const templates = this.reopenFormatting.map((entry) => entry.element);
+            this.reopenFormatting = [];
+            pushTemplate(this.reopenElements(templates, this.currentLoc()));
+          }
         } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
           // A closing tag with nothing open: the `</head>`, `</body>` and
           // `</html>` of a page written as a whole document, or a stray one,
-          // which was always passed over.
+          // which was always passed over; but a `</p>`, which is an empty
+          // paragraph, as in HTML.
+          const at = this.currentLoc();
           this.nextToken();
-          if (this.readTagName() === 'head') this.inHead = false;
+          const closing = normalizeTagName(this.readTagName());
+          if (closing === 'head') this.inHead = false;
+          if (closing === 'p' || closing === 'br') pushTemplate(createElementNode(closing, at, { selfClosing: closing === 'br' }));
           while (!this.curTokenIs(TokenType.TAG_CLOSE) && !this.curTokenIs(TokenType.EOF)) {
             this.nextToken();
           }
@@ -486,17 +508,14 @@ export class Parser {
     this.expectToken(TokenType.TAG_OPEN);
 
     // A page written as a whole HTML document.
-    const wrapper = this.isPropertyName() ? documentWrapper(this.curToken.literal) : null;
+    const name = this.isPropertyName() ? normalizeTagName(this.curToken.literal) : '';
+    const wrapper = documentWrapper(name);
     if (wrapper) {
       return this.parseDocumentWrapper(wrapper);
     }
     // At the top of a page, `<title>`, `<meta>` and `<link>` are the head's
     // wherever they stand, as a browser reads them.
-    if (
-      this.isPropertyName() &&
-      HEAD_ELEMENTS.has(this.curToken.literal) &&
-      (this.inHead || this.curToken.literal !== 'noscript')
-    ) {
+    if (HEAD_ELEMENTS.has(name) && (this.inHead || name !== 'noscript')) {
       this.readHeadElement();
       return null;
     }
@@ -621,7 +640,7 @@ export class Parser {
           // `{ Card as C }` names one import, not three. Without this the list
           // came back as ["Card", "as", "C"] — with an import literally called
           // "as" — and nothing said so.
-          if (this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal === 'as') {
+          if (this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal.toLowerCase() === 'as') {
             this.nextToken();
             if (this.curTokenIs(TokenType.IDENTIFIER)) {
               namedImports.push(this.curToken.literal);
@@ -645,8 +664,9 @@ export class Parser {
       this.nextToken();
     }
 
-    // Expect 'from'
-    this.expectToken(TokenType.FROM);
+    // Expect 'from', in any case (`<IMPORT Header FROM="…">`).
+    if (this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal.toLowerCase() === 'from') this.nextToken();
+    else this.expectToken(TokenType.FROM);
 
     // `from="./Header.ui"` is how an import is written; the `=` was not
     // stepped over, so the path that follows it was never read and every
@@ -695,7 +715,7 @@ export class Parser {
       !this.curTokenIs(TokenType.TAG_SELF_CLOSE) &&
       !this.curTokenIs(TokenType.EOF)
     ) {
-      if (this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal === 'name') {
+      if (this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal.toLowerCase() === 'name') {
         this.nextToken(); // consume 'name'
         this.expectToken(TokenType.EQUALS);
         if (this.curTokenIs(TokenType.STRING)) {
@@ -772,7 +792,7 @@ export class Parser {
       !this.curTokenIs(TokenType.EOF)
     ) {
       if (this.curTokenIs(TokenType.IDENTIFIER)) {
-        const attrName = this.curToken.literal;
+        const attrName = this.curToken.literal.toLowerCase();
         this.nextToken();
 
         if (attrName === 'required') {
@@ -832,7 +852,7 @@ export class Parser {
         this.nextToken(); // name
         this.nextToken(); // =
         if (this.curTokenIs(TokenType.STRING) || this.curTokenIs(TokenType.IDENTIFIER)) {
-          attributes[name] = decodeHtmlEntities(this.curToken.literal);
+          attributes[name] = decodeHtmlEntities(this.curToken.literal, true);
         } else {
           continue;
         }
@@ -1059,7 +1079,7 @@ export class Parser {
       !this.curTokenIs(TokenType.EOF)
     ) {
       if (this.curTokenIs(TokenType.IDENTIFIER)) {
-        const attrName = this.curToken.literal;
+        const attrName = this.curToken.literal.toLowerCase();
         this.nextToken();
 
         if (this.curTokenIs(TokenType.EQUALS)) {
@@ -1210,7 +1230,11 @@ export class Parser {
     // "attribute". Its close tag then never matched the empty name, so the
     // element swallowed every sibling after it — `<Card><slot/></Card><Text>`
     // lost the Text — with only a "expected </>" diagnostic to go on.
-    const tagName = this.readTagName();
+    // `<DIV>` and `<BR>` are HTML's, in lower case (see normalizeTagName).
+    // `<image>` is HTML's old name for `<img>`, and HTML reads it so outside
+    // an `<svg>`, where it is SVG's own element.
+    const written = normalizeTagName(this.readTagName());
+    const tagName = written === 'image' && !this.openTags.includes('svg') ? 'img' : written;
 
     const element = createElementNode(tagName, loc);
 
@@ -1232,7 +1256,10 @@ export class Parser {
         // Binding
         element.bindings.push(this.parseBinding());
       } else if (this.curTokenIs(TokenType.IDENTIFIER) || this.isAttributeKeyword()) {
-        const attrName = this.curToken.literal;
+        // `if=` and `each=` are SoftN's, in any case.
+        const attrName = this.curToken.literal.toLowerCase() === 'if' || this.curToken.literal.toLowerCase() === 'each'
+          ? this.curToken.literal.toLowerCase()
+          : this.curToken.literal;
 
         // Check for special inline control flow attributes
         if (attrName === 'if') {
@@ -1255,26 +1282,6 @@ export class Parser {
               this.nextToken();
               eachIterable = this.parseExpression();
               this.closeExpression();
-            }
-          }
-        } else if (attrName === 'as') {
-          // Loop variable name: as="item" or as="item, index"
-          this.nextToken(); // consume 'as'
-          if (this.curTokenIs(TokenType.EQUALS)) {
-            this.nextToken();
-            if (this.curTokenIs(TokenType.STRING)) {
-              const asValue = this.curToken.literal;
-              // Support "item" or "item, index" format
-              const parts = asValue.split(',').map((s) => s.trim());
-              asName = parts[0];
-              if (parts.length > 1) {
-                indexName = parts[1];
-              }
-              this.nextToken();
-            } else if (this.curTokenIs(TokenType.IDENTIFIER)) {
-              // Shorthand: as=item
-              asName = this.curToken.literal;
-              this.nextToken();
             }
           }
         } else {
@@ -1313,8 +1320,19 @@ export class Parser {
       }
     }
 
-    // Set up inline loop if configured
+    // Set up inline loop if configured. `as="item"` (or `"item, index"`)
+    // names its variable, and only beside `each=`: on any other element it is
+    // a prop like the rest, so `<Text as="h2">` keeps Text's own `as`. It was
+    // taken for a loop's variable on every element, and that prop never
+    // reached the component.
     if (eachIterable) {
+      const at = element.props.findIndex((prop) => prop.name === 'as' && prop.value.type === 'static');
+      if (at >= 0) {
+        const parts = String((element.props[at].value as { value: string }).value).split(',').map((s) => s.trim());
+        asName = parts[0];
+        if (parts.length > 1) indexName = parts[1];
+        element.props.splice(at, 1);
+      }
       element.inlineEach = {
         iterable: eachIterable,
         itemName: asName || 'item',
@@ -1322,6 +1340,7 @@ export class Parser {
       };
     }
 
+    this.normalizeAttributeNames(element);
     this.takeHandlerAttributes(element);
 
     // `<br>`, `<img …>` and `<input …>` end where their tag ends, as in HTML.
@@ -1332,7 +1351,8 @@ export class Parser {
 
     // Parse children if not self-closing
     if (!element.selfClosing) {
-      element.children = this.parseChildren(tagName, loc);
+      element.children = this.parseChildren(tagName, loc, element);
+      if (tagName === 'table') element.children = wrapTableRows(element.children);
     }
 
     // `<slot>` and `<template slot="…">` are the Slot / TemplateSlot nodes the
@@ -1402,16 +1422,46 @@ export class Parser {
   }
 
   /**
+   * The names an element's attributes, events and bindings are read by, in
+   * the case HTML reads them (see htmlAttributeName and callbackName): an HTML
+   * element's `CLASS`, `TabIndex` and `ONCLICK` are `class`, `tabindex` and
+   * `onclick`, and its `@KeyDown` is `keydown`. An attribute written twice on
+   * an HTML element is its first, as in HTML.
+   */
+  private normalizeAttributeNames(element: ElementNode): void {
+    const html = element.tag !== '' && element.tag === element.tag.toLowerCase();
+    if (html) {
+      const seen = new Set<string>();
+      element.props = element.props.filter((prop) => {
+        prop.name = htmlAttributeName(prop.name);
+        if (seen.has(prop.name)) return false;
+        seen.add(prop.name);
+        return true;
+      });
+    }
+    for (const event of element.events) event.name = callbackName(event.name, html);
+    for (const binding of element.bindings) binding.name = callbackName(binding.name, html);
+  }
+
+  /**
    * `<button onclick="save()">`: a handler written as HTML writes one, as the
    * attribute named for its event, holding code. It is read as the quoted
    * `@click="save()"` is (see `quotedHandler`). Left as an attribute, it was
    * dropped from the element with nothing said, and the button did nothing.
+   * One holding an expression, `onclick={save}` or React's `onClick={save}`,
+   * is `@click={save}`: in lower case it reached React as a name React does not
+   * know, and the button did nothing either.
    */
   private takeHandlerAttributes(element: ElementNode): void {
     if (!element.props.some((prop) => htmlHandlerEvent(element.tag, prop.name))) return;
     element.props = element.props.filter((prop) => {
       const event = htmlHandlerEvent(element.tag, prop.name);
-      if (!event || prop.value.type !== 'static') return true;
+      if (!event) return true;
+      if (prop.value.type === 'expression') {
+        element.events.push({ type: 'Event', name: event, handler: prop.value.value, loc: prop.loc });
+        return false;
+      }
+      if (prop.value.type !== 'static') return true;
       const handler = this.quotedHandler(event, [], prop.value.value, prop.loc, prop.name);
       if (handler) element.events.push(handler);
       // Code SoftN does not read (`this.classList.toggle('on')`) stays the
@@ -1485,31 +1535,61 @@ export class Parser {
   }
 
   /**
-   * Parse children until closing tag
+   * The name of the tag whose `<` or `</` is the current token, as the parser
+   * keeps tag names (see normalizeTagName), hyphens included (`my-card`);
+   * '' when no name follows.
    */
-  private parseChildren(parentTag: string, openLoc: SourceLocation): TemplateNode[] {
+  private tagNameAhead(): string {
+    const written = /^[A-Za-z_$][\w$]*(?:-[\w$]+)*/.exec(this.source.slice(this.peekToken.start, this.peekToken.start + 64));
+    return written ? normalizeTagName(written[0]) : '';
+  }
+
+  /**
+   * Parse children until closing tag. `parent` is the element they belong
+   * to, when there is one to open again (see reopenFormatting).
+   */
+  private parseChildren(parentTag: string, openLoc: SourceLocation, parent?: ElementNode): TemplateNode[] {
     const children: TemplateNode[] = [];
     let closed = false;
     const diagnosticsBefore = this.diagnostics.length;
     this.openTags.push(parentTag);
     try {
+    // Formatting elements a misnested end tag closed, opened again inside this one.
+    if (this.reopenInside.length > 0) {
+      const inner = this.reopenInside;
+      this.reopenInside = [];
+      children.push(this.reopenElements(inner, openLoc));
+    }
 
     while (!this.curTokenIs(TokenType.EOF)) {
       this.skipComments();
       const passStart = this.curToken.start;
 
-      // An HTML element whose end tag may be left out ends where HTML ends
-      // it: an `<li>` at the next `<li>`, a `<p>` at a `<div>`, a cell at the
-      // next cell or row, and any of them at the end tag of an element it is
-      // in. Read as needing its end tag, an unclosed `<li>` held everything
-      // after it, and the rest of the page was inside the list item.
-      if (OPTIONAL_END_TAGS.has(parentTag)) {
-        const next = this.peekToken.literal;
-        if (this.curTokenIs(TokenType.TAG_OPEN) && endsBefore(parentTag, next)) {
-          closed = true;
-          break;
-        }
-        if (this.curTokenIs(TokenType.TAG_END_OPEN) && next !== parentTag && this.openTags.slice(0, -1).includes(next)) {
+      // A start tag HTML ends this element before: an `<li>` at the next
+      // `<li>`, a `<p>` at a `<div>`, a cell at the next cell or row, a
+      // heading at another heading, a caption at the table's rows. Read as
+      // needing its end tag, an unclosed `<li>` held everything after it,
+      // and the rest of the page was inside the list item.
+      if (this.curTokenIs(TokenType.TAG_OPEN) && endsBefore(parentTag, this.tagNameAhead())) {
+        closed = true;
+        break;
+      }
+
+      // The end tag of an element this one is inside ends this one too, as
+      // HTML ends it: `<div><span>text</div>` closes the span and the div. It
+      // used to be a mismatch that left the span open, so the rest of the
+      // page was inside it. An HTML element left open is a warning, as a
+      // browser takes it in its stride; a component's is still an error.
+      if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
+        const next = this.tagNameAhead();
+        if (!sameTagName(next, parentTag) && this.openTags.slice(0, -1).some((open) => sameTagName(open, next))) {
+          if (!OPTIONAL_END_TAGS.has(parentTag)) this.reportImpliedEnd(parentTag, next, openLoc);
+          // `</b>` with an `<i>` still open in it ends the `<i>` and opens it
+          // again after, as HTML's adoption agency does: `<b><i>x</b>y</i>`
+          // is `<b><i>x</i></b><i>y</i>`.
+          if (parent && FORMATTING_ELEMENTS.has(next) && FORMATTING_ELEMENTS.has(parentTag)) {
+            this.reopenFormatting.unshift({ closer: next, element: parent });
+          }
           closed = true;
           break;
         }
@@ -1521,25 +1601,25 @@ export class Parser {
         // Keyword tags (`</slot>`) close like any other — see parseElement.
         if (this.isPropertyName()) {
           const nameLoc = this.currentLoc();
-          const closeTagName = this.readTagName();
-          if (closeTagName === parentTag) {
+          const closeTagName = normalizeTagName(this.readTagName());
+          // In any case: `<div>…</DIV>`, `<Button>…</button>`.
+          if (sameTagName(closeTagName, parentTag)) {
             if (this.curTokenIs(TokenType.TAG_CLOSE)) {
               this.nextToken(); // consume >
             }
             closed = true;
             break;
           }
-          // `</br>` and `</input>` close nothing: their elements ended with
-          // their tags. Pages wrote `<br></br>` while `<br>` needed closing,
-          // and HTML passes over them, so they are passed over here too; as
-          // are the `</body>` and `</html>` a document's page ends with.
+          // `</input>` and `</img>` close nothing: their elements ended with
+          // their tags, and HTML passes over them, so they are passed over
+          // here too; as are the `</body>` and `</html>` a document's page
+          // ends with. HTML reads two end tags as elements: a `</p>` with no
+          // paragraph open is an empty one, and a `</br>` is a `<br>`.
           const passedOver = VOID_ELEMENTS.has(closeTagName) || documentWrapper(closeTagName) !== null;
-          if (!passedOver) {
-            // Mismatched tag - record diagnostic and skip it, then continue
-            // parsing children so the parent's actual close tag is consumed
-            this.addDiagnostic(
-              new MismatchedTagError(parentTag, closeTagName, nameLoc, this.source)
-            );
+          if (closeTagName === 'p' || closeTagName === 'br') {
+            children.push(createElementNode(closeTagName, nameLoc, { selfClosing: closeTagName === 'br' }));
+          } else if (!passedOver) {
+            this.reportStrayEnd(parentTag, closeTagName, nameLoc);
           }
           // Consume the rest of the closing tag
           if (this.curTokenIs(TokenType.TAG_CLOSE)) {
@@ -1554,7 +1634,16 @@ export class Parser {
         if (this.curTokenIs(TokenType.TAG_OPEN)) {
           // Child element
           this.nextToken();
-          children.push(...this.parseChildElement());
+          const added = this.parseChildElement();
+          children.push(...added);
+          // Formatting elements the end tag of the one just read closed
+          // inside it are opened again here, around what follows.
+          const last = added[added.length - 1];
+          if (last?.type === 'Element' && this.reopenFormatting[0]?.closer === last.tag) {
+            const templates = this.reopenFormatting.map((entry) => entry.element);
+            this.reopenFormatting = [];
+            children.push(this.reopenElements(templates, this.currentLoc()));
+          }
         } else if (this.curTokenIs(TokenType.HASH)) {
           // Control flow
           const controlFlow = this.parseControlFlow();
@@ -1591,13 +1680,53 @@ export class Parser {
     // a mismatched tag or an unterminated template literal already explains
     // the truncation, and every ancestor would otherwise repeat it.
     if (!closed && this.diagnostics.length === diagnosticsBefore && !OPTIONAL_END_TAGS.has(parentTag)) {
-      this.addDiagnostic(new UnclosedTagError(parentTag, openLoc, this.source));
+      // An HTML element still open at the end of the page ends there, as in
+      // a browser: a warning. A component's missing end tag is an error.
+      if (isHtmlTag(parentTag)) {
+        this.diagnostics.push({ message: `<${parentTag}> is not closed, so it ends at the end of the page`, severity: 'warning', loc: openLoc });
+      } else {
+        this.addDiagnostic(new UnclosedTagError(parentTag, openLoc, this.source));
+      }
     }
 
     return children;
     } finally {
       this.openTags.pop();
     }
+  }
+
+  /** An element ended by the end tag of one it is inside (see parseChildren). */
+  private reportImpliedEnd(open: string, closer: string, loc: SourceLocation): void {
+    if (isHtmlTag(open)) {
+      this.diagnostics.push({ message: `<${open}> is not closed, so it ends at </${closer}>`, severity: 'warning', loc });
+    } else {
+      this.addDiagnostic(new MismatchedTagError(open, closer, loc, this.source));
+    }
+  }
+
+  /** An end tag that closes nothing open: passed over. */
+  private reportStrayEnd(open: string, closer: string, loc: SourceLocation): void {
+    if (isHtmlTag(open) && isHtmlTag(closer)) {
+      this.diagnostics.push({ message: `</${closer}> closes nothing that is open here, so it was passed over`, severity: 'warning', loc });
+    } else {
+      this.addDiagnostic(new MismatchedTagError(open, closer, loc, this.source));
+    }
+  }
+
+  /**
+   * Formatting elements (`<b>`, `<i>`, `<a>`…) opened again after an end tag
+   * closed them out of order, each inside the one before, with the
+   * attributes they were written with; what follows is read into the
+   * innermost, up to its own end tag or its parent's.
+   */
+  private reopenElements(templates: ElementNode[], loc: SourceLocation): ElementNode {
+    const [first, ...rest] = templates;
+    const clone = createElementNode(first.tag, loc);
+    clone.props = first.props.map((prop) => ({ ...prop }));
+    clone.events = first.events.map((event) => ({ ...event }));
+    this.reopenInside = rest;
+    clone.children = this.parseChildren(clone.tag, loc, clone);
+    return clone;
   }
 
   /**
@@ -1689,7 +1818,7 @@ export class Parser {
         // Quoted string: prop="value". Its entities are read as text's are:
         // `&quot;` is the only way to write the quote the value is closed
         // by, and it used to arrive as six characters.
-        value = { type: 'static', value: decodeHtmlEntities(this.htmlAttributeText(tag) ?? this.curToken.literal) };
+        value = { type: 'static', value: decodeHtmlEntities(this.htmlAttributeText(tag) ?? this.curToken.literal, true) };
         this.nextToken();
       } else if (this.curTokenIs(TokenType.EXPR_START)) {
         // Expression: prop={expression}
@@ -1751,7 +1880,8 @@ export class Parser {
       if (!this.isPropertyName()) {
         throw new UnexpectedTokenError(this.curToken, TokenType.IDENTIFIER, this.source);
       }
-      const modifier = this.curToken.literal;
+      // In any case: every modifier is a lower-case word (`.PREVENT` is `.prevent`).
+      const modifier = this.curToken.literal.toLowerCase();
       if (!isEventModifier(modifier)) {
         this.diagnostics.push({
           message:
@@ -1791,7 +1921,7 @@ export class Parser {
       // Builder, which takes an error for a page it cannot write back as
       // written, could write it and still can.
       if (this.curTokenIs(TokenType.STRING)) {
-        const written = decodeHtmlEntities(this.curToken.literal);
+        const written = decodeHtmlEntities(this.curToken.literal, true);
         const event = `@${name}${modifiers.map((modifier) => `.${modifier}`).join('')}`;
         this.nextToken();
         const quoted = written.trim() === '' ? null : this.quotedHandler(name, modifiers, written, loc, event);
@@ -2048,7 +2178,9 @@ export class Parser {
       }
     }
 
-    this.expectToken(TokenType.IN);
+    // `in` in any case, as the rest of the header's words are (`#EACH (x IN xs)`).
+    if (this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal.toLowerCase() === 'in') this.nextToken();
+    else this.expectToken(TokenType.IN);
 
     const iterable = this.parseExpression();
 
@@ -2065,7 +2197,7 @@ export class Parser {
     let keyExpression: Expression | undefined;
     if (
       this.curTokenIs(TokenType.TEXT) &&
-      this.curToken.literal.trim() === 'key=' &&
+      this.curToken.literal.trim().toLowerCase() === 'key=' &&
       this.peekToken.type === TokenType.EXPR_START
     ) {
       this.nextToken(); // consume `key=`
@@ -3465,20 +3597,121 @@ export function parse(source: string): SoftNDocument {
 //    (`pattern="\d{3}"`), not the start of an escape; and an HTML element
 //    whose end tag may be left out (`<li>`, `<p>`, `<td>`…) ends where HTML
 //    ends it, where it held the rest of the page.
-export const PARSER_VERSION = 10;
+// 11: HTML5's reading, and SoftN's syntax in any case. `#IF`/`#Else If`/
+//    `#END`, `IN` and `KEY=`, `<IMPORT … FROM>`, `<DATA>`/`<COLLECTION>`, event
+//    and binding names and modifiers; end tags in any case; `<DIV>` and `<BR>`
+//    lowered, and an HTML element's attribute names (`ONCLICK`, `TabIndex`),
+//    its first of a name written twice kept, and `onClick={…}` an event.
+//    Unquoted values read whole (`src=a.png`); `<textarea>`/`<title>` text
+//    and CDATA read as text; a table's implied `<tbody>` and a row around
+//    cells; a heading, link or button ending one still open; an end tag
+//    closing what is open inside its element (formatting elements opened
+//    again after it); `</p>` and `</br>` as elements; `<image>` as `<img>`;
+//    references without `;` and HTML5's other names. `as=` is a prop unless
+//    the element has `each=`.
+export const PARSER_VERSION = 11;
 
 /**
  * HTML elements whose end tag may be left out (the HTML standard's "optional
  * end tags"), and what ends one when it is.
  */
-const OPTIONAL_END_TAGS = new Set(['li', 'dt', 'dd', 'p', 'option', 'optgroup', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'rt', 'rp']);
-const ENDS_A_PARAGRAPH = new Set([
-  'address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'div', 'dl', 'fieldset', 'figcaption', 'figure',
-  'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav', 'ol', 'p',
-  'pre', 'section', 'table', 'ul',
+const OPTIONAL_END_TAGS = new Set([
+  'li', 'dt', 'dd', 'p', 'option', 'optgroup', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'colgroup', 'rb', 'rt',
+  'rtc', 'rp',
 ]);
+/** The start tags that close an open `<p>`, as HTML's parser closes one. */
+const ENDS_A_PARAGRAPH = new Set([
+  'address', 'article', 'aside', 'blockquote', 'center', 'details', 'dialog', 'dir', 'div', 'dl', 'dd', 'dt',
+  'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr',
+  'li', 'listing', 'main', 'menu', 'nav', 'ol', 'p', 'plaintext', 'pre', 'search', 'section', 'summary', 'table',
+  'ul', 'xmp',
+]);
+const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+/** What a table's caption ends at, unclosed: the table's structure. */
+const ENDS_A_CAPTION = new Set(['caption', 'col', 'colgroup', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr']);
+/** HTML's formatting elements: an end tag out of order opens them again (see parseChildren). */
+const FORMATTING_ELEMENTS = new Set([
+  'a', 'b', 'big', 'code', 'em', 'font', 'i', 'nobr', 's', 'small', 'strike', 'strong', 'tt', 'u',
+]);
+
+/** Whether a tag is written as an HTML element is (lower case): a capitalised one is a component. */
+function isHtmlTag(tag: string): boolean {
+  return tag !== '' && tag === tag.toLowerCase();
+}
+
+/**
+ * A run of `children` that `belongs` says is one group's, each in a new
+ * element named `tag` (whitespace between them kept inside it).
+ */
+function wrapRuns(children: TemplateNode[], tag: string, belongs: (node: TemplateNode) => boolean): TemplateNode[] {
+  if (!children.some(belongs)) return children;
+  const out: TemplateNode[] = [];
+  let group: ElementNode | null = null;
+  let space: TemplateNode[] = [];
+  for (const child of children) {
+    if (belongs(child)) {
+      if (!group) {
+        out.push(...space);
+        space = [];
+        group = createElementNode(tag, child.loc);
+        out.push(group);
+      }
+      group.children.push(...space, child);
+      space = [];
+    } else if (child.type === 'Text' && child.content.trim() === '') {
+      space.push(child);
+    } else {
+      out.push(...space, child);
+      space = [];
+      group = null;
+    }
+  }
+  out.push(...space);
+  return out;
+}
+
+/**
+ * A table's rows, written straight into it, inside the `<tbody>` HTML gives
+ * them: `<table><tr>…` is `<table><tbody><tr>…`, as every browser reads it,
+ * and React warns of a row straight in a table. Cells written straight in
+ * are in a row of their own first. A `#each` or `#if` that draws nothing but
+ * rows counts as rows.
+ */
+function wrapTableRows(children: TemplateNode[]): TemplateNode[] {
+  const isCell = (node: TemplateNode): boolean => node.type === 'Element' && (node.tag === 'td' || node.tag === 'th');
+  return wrapRuns(wrapRuns(children, 'tr', isCell), 'tbody', isTableRow);
+}
+
+/** Whether a node draws table rows and nothing else: a `<tr>`, or a `#each` or `#if` of them. */
+function isTableRow(node: TemplateNode): boolean {
+  const onlyRows = (nodes: TemplateNode[]): boolean => {
+    const drawn = nodes.filter((child) => !(child.type === 'Text' && child.content.trim() === ''));
+    return drawn.length > 0 && drawn.every(isTableRow);
+  };
+  if (node.type === 'Element') return node.tag === 'tr';
+  if (node.type === 'EachBlock') {
+    return onlyRows(node.body) && (!node.emptyFallback || node.emptyFallback.length === 0 || onlyRows(node.emptyFallback));
+  }
+  if (node.type === 'IfBlock') {
+    const otherwise = node.alternate === undefined ? [] : Array.isArray(node.alternate) ? node.alternate : [node.alternate];
+    return onlyRows(node.consequent) && (otherwise.length === 0 || onlyRows(otherwise));
+  }
+  return false;
+}
+
 function endsBefore(open: string, next: string): boolean {
+  if (HEADINGS.has(open)) return HEADINGS.has(next);
   switch (open) {
+    // A link, a button or a no-break run cannot hold another of itself: the
+    // second ends the first, as HTML reads `<a>one<a>two`.
+    case 'a':
+    case 'button':
+    case 'nobr':
+      return next === open;
+    case 'caption':
+      return ENDS_A_CAPTION.has(next);
+    case 'colgroup':
+      return next !== 'col' && next !== 'template' && isHtmlTag(next);
     case 'li':
       return next === 'li';
     case 'dt':

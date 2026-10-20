@@ -5,7 +5,7 @@
  */
 
 import type { SourceLocation } from './token';
-import { HTML_ENTITIES } from './html-entities';
+import { HTML_ENTITIES, LEGACY_ENTITIES } from './html-entities';
 
 // ============================================================================
 // Document Structure
@@ -693,15 +693,73 @@ function referencedCharacter(code: number): string {
   return String.fromCodePoint(code);
 }
 
-/** `text` with its entities read: in text between tags, and in a quoted attribute. */
-export function decodeHtmlEntities(text: string): string {
+/**
+ * `text` with its character references read, as HTML reads them: in text
+ * between tags and in an attribute's value (`inAttribute`).
+ *
+ * A numeric reference may leave out its `;`, and so may the old names HTML
+ * still reads without one (`&copy 2026`, `&amp`, LEGACY_ENTITIES): in text
+ * the longest such name that begins the word is read (`&notit;` is `¬it;`);
+ * in an attribute not when a letter, digit or `=` follows, so a link's
+ * `?a=1&copy=2` stays as written. A name with its `;` is read from
+ * HTML_ENTITIES, and else from the browser's own table of HTML's 2,231,
+ * where there is a browser (namedEntityFromBrowser); else it is left as written.
+ */
+export function decodeHtmlEntities(text: string, inAttribute = false): string {
   if (!text.includes('&')) return text;
-  return text.replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|(\w+));/g, (match, decimal, hex, named) => {
-    if (decimal) return referencedCharacter(parseInt(decimal, 10));
-    if (hex) return referencedCharacter(parseInt(hex, 16));
-    if (named) return Object.hasOwn(HTML_ENTITIES, named) ? HTML_ENTITIES[named] : match;
-    return match;
-  });
+  return text.replace(
+    /&(?:#(\d+);?|#[xX]([0-9a-fA-F]+);?|([A-Za-z][A-Za-z0-9]*)(;?))/g,
+    (match: string, decimal: string | undefined, hex: string | undefined, named: string | undefined, semicolon: string, offset: number) => {
+      if (decimal) return referencedCharacter(parseInt(decimal, 10));
+      if (hex) return referencedCharacter(parseInt(hex, 16));
+      if (!named) return match;
+      if (semicolon) {
+        const whole = Object.hasOwn(HTML_ENTITIES, named) ? HTML_ENTITIES[named] : namedEntityFromBrowser(named);
+        if (whole !== null) return whole;
+      }
+      // An old name that begins the word, read without a `;` of its own.
+      for (let length = Math.min(named.length, 6); length >= 2; length--) {
+        const name = named.slice(0, length);
+        if (!LEGACY_ENTITIES.has(name)) continue;
+        const rest = named.slice(length);
+        if (inAttribute && (rest !== '' || (!semicolon && text[offset + match.length] === '='))) return match;
+        return HTML_ENTITIES[name] + rest + semicolon;
+      }
+      return match;
+    }
+  );
+}
+
+let entityProbe: { innerHTML: string; value: string } | null | undefined;
+const browserEntities = new Map<string, string | null>();
+
+/**
+ * A named reference HTML_ENTITIES does not hold (`&lbrace;`, `&check;`),
+ * read by the browser's own table where there is one: a detached
+ * `<textarea>` reads what it is given as text, so nothing in it is an
+ * element and nothing runs, and only a name of letters and digits is given
+ * it. Null where there is no document (a worker, a server) or the page's
+ * policy refuses the assignment, and for a name the browser does not know.
+ */
+function namedEntityFromBrowser(name: string): string | null {
+  const known = browserEntities.get(name);
+  if (known !== undefined) return known;
+  let value: string | null = null;
+  try {
+    if (entityProbe === undefined) {
+      entityProbe = typeof document !== 'undefined' && typeof document.createElement === 'function'
+        ? (document.createElement('textarea') as unknown as { innerHTML: string; value: string })
+        : null;
+    }
+    if (entityProbe) {
+      entityProbe.innerHTML = `&${name};`;
+      value = entityProbe.value === `&${name};` ? null : entityProbe.value;
+    }
+  } catch {
+    entityProbe = null;
+  }
+  browserEntities.set(name, value);
+  return value;
 }
 
 export function createTextNode(content: string, loc: SourceLocation): TextNode {
