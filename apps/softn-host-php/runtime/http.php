@@ -15,7 +15,7 @@ header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'");
 function reply(int $status, array $body): never { http_response_code($status); echo json_encode($body, JSON_INVALID_UTF8_SUBSTITUTE); exit; }
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-if (!is_string($path) || !str_starts_with($path, '/api/') || strlen($path)>256) reply(404, ['error'=>'Not found.']);
+if (!is_string($path) || !str_starts_with($path, '/api/') || strlen($path)>256) reply(404, ['error'=>'Not found.','code'=>'not_found']);
 $manifest=json_decode(@file_get_contents($backend.'/app/manifest.json')?:'null',true);
 if(!is_array($manifest))reply(503,['error'=>'Application bundle is unavailable.']);
 // Operator settings, read before any request data is believed: trustedProxies
@@ -59,7 +59,7 @@ foreach(is_array($routes)?$routes:[] as $r) {
     $declared[]=$r['method'];
     if($route===null&&$r['method']===$method)$route=$r;
 }
-if($declared===[])reply(404,['error'=>'Endpoint not found.']);
+if($declared===[])reply(404,['error'=>'Endpoint not found.','code'=>'not_found']);
 if(!in_array($method,['GET','POST','PUT','DELETE'],true)||($route===null&&!($path==='/api/meta'&&$method==='GET'))) {
     $allow=softn_allowed_methods($declared);if($allow!=='')header('Allow: '.$allow);
     reply(405,['error'=>'Method not allowed.','code'=>'method_not_allowed']);

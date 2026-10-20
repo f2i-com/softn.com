@@ -227,6 +227,9 @@ nodeTest('a method a path does not declare is 405, a path nobody declared is 404
   assert.equal(ask('POST','/api/meta').status,405);
   // A path nobody declared is not found, whatever the method: PATCH there was 405.
   for(const method of ['GET','POST','PATCH','HEAD'])assert.equal(ask(method,'/api/nothing').status,404,method);
+  // With the Rust host's code (http.rs not_found); it had none here.
+  assert.deepEqual(JSON.parse(ask('GET','/api/nothing').body),{error:'Endpoint not found.',code:'not_found'});
+  assert.deepEqual(JSON.parse(ask('GET','/elsewhere').body),{error:'Not found.',code:'not_found'});
   // HEAD on a GET route goes where its GET goes (to the runner, of which
   // there is none here) and was 405; on a path with no GET it still is.
   const get=ask('GET','/api/ping'),head=ask('HEAD','/api/ping');

@@ -1,7 +1,9 @@
+use crate::limiter::{limiter_key, AddressLimiter};
 use crate::pool::{self, ServerDb};
 use crate::runtime::ServerRuntime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -29,9 +31,6 @@ const MAX_PENDING_TICKETS: usize = 1000;
 /// run of 429s, and the refill still holds a single address to 30 a minute.
 const TICKET_BURST: f64 = 20.0;
 const TICKET_REFILL_PER_SEC: f64 = 0.5;
-/// Addresses the limiter remembers. A full bucket is the same as no entry,
-/// so those are dropped first; past this, a new address waits.
-const MAX_LIMITER_KEYS: usize = 10_000;
 
 /// Default ceiling on open sync sockets per app (`config.server.maxSyncConnections`).
 pub const DEFAULT_MAX_SYNC_CONNECTIONS: usize = 1024;
@@ -51,74 +50,6 @@ pub enum TicketError {
     RateLimited(std::time::Duration),
     /// The host is holding too many unredeemed tickets: transient.
     Busy,
-}
-
-/// The key a client address is limited under. An IPv6 client usually holds a
-/// whole /64 and can rotate through it freely, so one /64 is one client.
-fn limiter_key(ip: std::net::IpAddr) -> std::net::IpAddr {
-    match ip {
-        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => std::net::IpAddr::V4(v4),
-            None => std::net::IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6) & !((1u128 << 64) - 1))),
-        },
-        v4 => v4,
-    }
-}
-
-struct Bucket {
-    tokens: f64,
-    updated: std::time::Instant,
-}
-
-/// A token bucket per client address (an IPv6 /64 counting as one), per app:
-/// one tenant's visitors do not spend another's allowance.
-pub struct AddressLimiter {
-    burst: f64,
-    refill_per_sec: f64,
-    buckets: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, Bucket>>,
-}
-
-impl AddressLimiter {
-    pub fn new(burst: f64, refill_per_sec: f64) -> Self {
-        Self { burst, refill_per_sec, buckets: std::sync::Mutex::new(std::collections::HashMap::new()) }
-    }
-
-    /// `per_minute` requests a minute, all of which may come at once (the
-    /// PHP host's per-minute count, without its cliff at the minute's edge).
-    pub fn per_minute(per_minute: u32) -> Self {
-        Self::new(f64::from(per_minute), f64::from(per_minute) / 60.0)
-    }
-
-    fn refill(&self, bucket: &mut Bucket, now: std::time::Instant) {
-        let elapsed = now.duration_since(bucket.updated).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(self.burst);
-        bucket.updated = now;
-    }
-
-    /// Spend one request of `ip`'s allowance, or say how long to wait.
-    pub fn check(&self, ip: std::net::IpAddr) -> Result<(), std::time::Duration> {
-        let now = std::time::Instant::now();
-        let key = limiter_key(ip);
-        let mut buckets = self.buckets.lock().unwrap_or_else(|p| p.into_inner());
-        if !buckets.contains_key(&key) && buckets.len() >= MAX_LIMITER_KEYS {
-            buckets.retain(|_, b| {
-                self.refill(b, now);
-                b.tokens < self.burst
-            });
-            if buckets.len() >= MAX_LIMITER_KEYS {
-                return Err(std::time::Duration::from_secs(60));
-            }
-        }
-        let bucket = buckets.entry(key).or_insert(Bucket { tokens: self.burst, updated: now });
-        self.refill(bucket, now);
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
-            Ok(())
-        } else {
-            let wait = ((1.0 - bucket.tokens) / self.refill_per_sec).ceil().max(1.0);
-            Err(std::time::Duration::from_secs(wait as u64))
-        }
-    }
 }
 
 /// Open sync sockets: in all, and per visitor (keyed as [`limiter_key`] keys
@@ -207,19 +138,21 @@ impl SyncSettings {
 /// Valid operations for sync ops.
 const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 
-/// Maximum byte size of an individual SyncOp's `data` field (512KB).
-/// Without this, a client could submit 1000 ops each with a 500KB JSON object,
-/// forcing the server to parse ~500MB of payload data in memory. The 4MB
-/// MAX_WS_MESSAGE_SIZE provides outer bounds, but this inner limit prevents
-/// memory amplification from serde_json::Value's overhead (5-10x input size).
-const MAX_OP_DATA_BYTES: usize = 512 * 1024;
+/// Maximum byte size of an individual SyncOp's `data` field (512KB), and of
+/// the record an update merges into (see the "update" arm of
+/// `store_sync_push`). The 4 MiB message limit (http.rs MAX_WS_MESSAGE_SIZE)
+/// already bounds what one push carries; this bounds one record. Without it
+/// one op could be the whole 4 MiB, a record could grow past any message the
+/// client takes by merged updates of new keys, and the hooks, the CRDT
+/// document and every pull would carry it.
+pub(crate) const MAX_OP_DATA_BYTES: usize = 512 * 1024;
 
 /// Maximum total bytes of all op data payloads in a single sync_push batch.
 /// Bounds the total memory consumed during the DB write transaction to prevent
 /// excessive SQLite WAL writer lock hold times. Individual ops are capped by
 /// MAX_OP_DATA_BYTES; this caps the aggregate. Defense-in-depth alongside the
 /// 4MB MAX_WS_MESSAGE_SIZE WebSocket frame limit.
-const MAX_BATCH_DATA_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_BATCH_DATA_BYTES: usize = 4 * 1024 * 1024;
 
 /// Maximum records per SyncState message to prevent oversized WebSocket frames
 /// and server-side RAM spikes. With ~200-500 bytes per JSON record, 500 records
@@ -228,17 +161,32 @@ const MAX_BATCH_DATA_BYTES: usize = 4 * 1024 * 1024;
 /// more records than this limit.
 const SYNC_PULL_CHUNK_SIZE: usize = 500;
 
-/// Serialized bytes per SyncState message. The client discards any message
-/// over 2 MB (`xdb-server-sync.ts` MAX_MESSAGE_SIZE), so a chunk bounded by
-/// count alone — 500 records of up to 512 KB each — could be a 256 MB frame
-/// the client drops, leaving that collection never synced. One record larger
-/// than this still travels alone.
-const SYNC_PULL_CHUNK_BYTES: usize = 1024 * 1024;
+/// Serialized bytes per `sync_state` and per `sync_delta` message. The client
+/// discards any message over the 4 MiB both sides hold messages to
+/// (`sync-protocol.json`, `xdb-server-sync.ts` MAX_MESSAGE_BYTES), so a chunk
+/// bounded by count alone — 500 records of up to 512 KB each — could be a
+/// 256 MB frame the client drops, leaving that collection never synced. One
+/// record larger than this still travels alone; only a record written by the
+/// server itself (a route's `db.update`, which is not held to
+/// MAX_OP_DATA_BYTES) can be larger than a client takes.
+pub(crate) const SYNC_PULL_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Distinct collections one sync_pull may name. Each is a query of up to
 /// 10,000 rows held in memory; the names are deduplicated first, since one
 /// 4 MB message could otherwise repeat a collection a hundred thousand times.
-const MAX_PULL_COLLECTIONS: usize = 100;
+pub(crate) const MAX_PULL_COLLECTIONS: usize = 100;
+
+/// How long a client is asked to wait before it asks again for something
+/// the host refused for now (a busy host, a step that timed out), in
+/// seconds: `retryAfter` on a typed refusal.
+const RETRY_AFTER_SECS: u64 = 2;
+
+/// Ops a push stored that the host remembers, so that one sent again (its
+/// acknowledgement lost, or a refusal of something else taken for its own)
+/// is acknowledged and not applied, broadcast and hooked a second time.
+/// Remembered for RECENT_OPS_TTL, at most RECENT_OPS of them.
+const RECENT_OPS: usize = 10_000;
+const RECENT_OPS_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// Maximum allowed clock drift from clients into the future (in seconds).
 /// Timestamps further ahead than this are clamped to server time to prevent
@@ -280,6 +228,28 @@ fn as_it_stands(record: xdb::Record, answering: String) -> SyncOp {
     }
 }
 
+/// An update or a delete refused for good, by the record it names. Its pusher
+/// has applied it to its own copy already, and is sent the record as it
+/// stands, which puts that copy right: a refused edit used to stay on the
+/// device that made it, since no later pull brings a record that has not
+/// changed. A refused create is left alone: the server has no record to send,
+/// and a delete would take away what the person made, which the app is told
+/// was refused (`sync_reject`).
+struct Refused {
+    op_id: String,
+    collection: String,
+    record_id: String,
+}
+
+impl Refused {
+    fn of(op: &SyncOp) -> Option<Self> {
+        let names_a_record = matches!(op.operation.as_str(), "update" | "delete")
+            && is_valid_collection_name(&op.collection)
+            && !op.record_id.is_empty();
+        names_a_record.then(|| Refused { op_id: op.id.clone(), collection: op.collection.clone(), record_id: op.record_id.clone() })
+    }
+}
+
 /// An update's fields laid over the record's, as xdb's `update_record`
 /// merges them: one name at a time, the update's winning; anything but an
 /// object on either side, and the update's data replaces the record's.
@@ -297,7 +267,9 @@ fn merged(existing: serde_json::Value, incoming: serde_json::Value) -> serde_jso
 
 /// Validate a collection name: must be non-empty, alphanumeric + dash/underscore,
 /// and at most 64 characters. Rejects names that could cause issues in queries.
-fn is_valid_collection_name(name: &str) -> bool {
+/// The client holds the names it asks for to the same rule
+/// (`sync-protocol.json` `collectionName`).
+pub(crate) fn is_valid_collection_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
@@ -359,8 +331,47 @@ pub enum ServerMessage {
         op_ids: Vec<String>,
         reason: String,
     },
+    /// Something the host could not do. A refused pull says so (`for:
+    /// "pull"`), names the collections it did not finish and, when asking
+    /// again later may work, how many seconds to wait (`retryAfter`): a
+    /// client that knows them asks again for those collections and leaves
+    /// its pushes alone. A client from before reads the message alone, as
+    /// it always has. A push that could not be taken is answered
+    /// `sync_retry` with its op ids instead (see ws.rs), which every client
+    /// already reads.
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        message: String,
+        #[serde(rename = "for", skip_serializing_if = "Option::is_none")]
+        refused: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        collections: Option<Vec<String>>,
+        #[serde(rename = "retryAfter", skip_serializing_if = "Option::is_none")]
+        retry_after: Option<u64>,
+    },
+}
+
+impl ServerMessage {
+    /// An error that answers nothing in particular.
+    pub fn error(message: impl Into<String>) -> Self {
+        ServerMessage::Error { message: message.into(), refused: None, collections: None, retry_after: None }
+    }
+
+    /// A pull, or the rest of one, refused: `collections` were not (all)
+    /// sent. `retry` says whether asking again later may work.
+    pub fn pull_refused(message: impl Into<String>, collections: Vec<String>, retry: bool) -> Self {
+        ServerMessage::Error {
+            message: message.into(),
+            refused: Some("pull"),
+            collections: Some(collections),
+            retry_after: retry.then_some(RETRY_AFTER_SECS),
+        }
+    }
+
+    /// A push of these ops not taken this time, for the client to send again.
+    pub fn push_retry(op_ids: Vec<String>, reason: impl Into<String>) -> Self {
+        ServerMessage::SyncRetry { op_ids, reason: reason.into() }
+    }
 }
 
 /// Which connections a message in the sync stream is for. Every connection
@@ -372,6 +383,9 @@ pub enum Audience {
     Others(String),
     /// That one connection alone: what the store says of its push.
     Only(String),
+    /// Every connection: a write the server made itself (a route's or a
+    /// hook's `db.*`, bridges/db.rs).
+    All,
 }
 
 impl Audience {
@@ -379,6 +393,92 @@ impl Audience {
         match self {
             Audience::Others(sender) => sender != client_id,
             Audience::Only(target) => target == client_id,
+            Audience::All => true,
+        }
+    }
+}
+
+/// The sync stream: what every connection reads, in the order the store
+/// wrote it. Made before the script runtime, whose `db` bridge writes into
+/// it, and handed to the [`SyncManager`].
+pub type SyncStream = broadcast::Sender<(Audience, Arc<ServerMessage>)>;
+
+/// A new, empty sync stream.
+pub fn sync_stream() -> SyncStream {
+    broadcast::channel(256).0
+}
+
+/// `ops` as `sync_delta` messages in order, each at most
+/// SYNC_PULL_CHUNK_BYTES serialized, as a pull's messages are: one op larger
+/// than that goes alone. A push of up to 4 MiB of data, or the records as
+/// they stand for every op of one, used to be one message, which a client
+/// that takes messages of a few megabytes at most dropped whole.
+pub fn delta_pieces(ops: Vec<SyncOp>) -> Vec<ServerMessage> {
+    let mut pieces = Vec::new();
+    let mut piece: Vec<SyncOp> = Vec::new();
+    let mut bytes = 0usize;
+    for op in ops {
+        let size = serde_json::to_vec(&op).map(|b| b.len() + 1).unwrap_or(0);
+        if !piece.is_empty() && bytes + size > SYNC_PULL_CHUNK_BYTES {
+            pieces.push(ServerMessage::SyncDelta { ops: std::mem::take(&mut piece) });
+            bytes = 0;
+        }
+        bytes += size;
+        piece.push(op);
+    }
+    if !piece.is_empty() {
+        pieces.push(ServerMessage::SyncDelta { ops: piece });
+    }
+    pieces
+}
+
+/// Send each of `messages` to `audience` on the stream, in order.
+pub fn send_all(stream: &SyncStream, audience: &Audience, messages: Vec<ServerMessage>) {
+    for message in messages {
+        let _ = stream.send((audience.clone(), Arc::new(message)));
+    }
+}
+
+/// The ops a push stored, by (op id, collection, record id), for a while
+/// (RECENT_OPS, RECENT_OPS_TTL). Client op ids are only unique per device,
+/// hence the record in the key.
+#[derive(Default)]
+struct RecentOps {
+    seen: std::collections::HashMap<(String, String, String), std::time::Instant>,
+    order: std::collections::VecDeque<((String, String, String), std::time::Instant)>,
+}
+
+impl RecentOps {
+    fn key(op: &SyncOp) -> (String, String, String) {
+        (op.id.clone(), op.collection.clone(), op.record_id.clone())
+    }
+
+    fn contains(&mut self, op: &SyncOp, now: std::time::Instant) -> bool {
+        self.expire(now);
+        self.seen.contains_key(&Self::key(op))
+    }
+
+    fn remember(&mut self, op: &SyncOp, now: std::time::Instant) {
+        let key = Self::key(op);
+        self.seen.insert(key.clone(), now);
+        self.order.push_back((key, now));
+        while self.order.len() > RECENT_OPS {
+            self.forget_oldest();
+        }
+    }
+
+    fn expire(&mut self, now: std::time::Instant) {
+        while self.order.front().is_some_and(|(_, at)| now.duration_since(*at) > RECENT_OPS_TTL) {
+            self.forget_oldest();
+        }
+    }
+
+    fn forget_oldest(&mut self) {
+        if let Some((key, at)) = self.order.pop_front() {
+            // Remembered again since: that later entry keeps it.
+            if self.seen.get(&key) == Some(&at) {
+                self.seen.remove(&key);
+            }
         }
     }
 }
@@ -405,6 +505,12 @@ pub struct Pull {
 }
 
 impl Pull {
+    /// The collections this pull has not finished sending: what a refusal
+    /// part-way names, for the client to ask for again.
+    pub fn remaining(&self) -> Vec<String> {
+        self.collections.get(self.next..).map(<[String]>::to_vec).unwrap_or_default()
+    }
+
     fn next_collection(&mut self) {
         self.next += 1;
         self.position = None;
@@ -470,7 +576,9 @@ pub struct SyncManager {
     /// The sync stream: each item once per connection, which lets through
     /// what is for it ([`Audience`]). Shared, so a message meant for one
     /// connection is not copied for every other.
-    broadcast_tx: broadcast::Sender<(Audience, Arc<ServerMessage>)>,
+    broadcast_tx: SyncStream,
+    /// Ops recently stored, so that one sent again is not applied again.
+    recent_ops: std::sync::Mutex<RecentOps>,
     runtime: Option<Arc<ServerRuntime>>,
     /// Batch hook: validates all ops in a single RPC call (preferred).
     has_before_sync_batch: bool,
@@ -505,6 +613,9 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
+    /// A manager with a stream of its own: for a host whose script cannot
+    /// write records (none, or tests).
+    #[cfg(test)]
     pub fn new(
         db: ServerDb,
         runtime: Option<Arc<ServerRuntime>>,
@@ -512,8 +623,20 @@ impl SyncManager {
         db_path: PathBuf,
         settings: SyncSettings,
     ) -> Arc<Self> {
+        Self::with_stream(db, runtime, auth_token, db_path, settings, sync_stream())
+    }
+
+    /// A manager whose connections read `stream`, which the script's `db`
+    /// bridge also writes the server's own writes into.
+    pub fn with_stream(
+        db: ServerDb,
+        runtime: Option<Arc<ServerRuntime>>,
+        auth_token: Option<String>,
+        db_path: PathBuf,
+        settings: SyncSettings,
+        broadcast_tx: SyncStream,
+    ) -> Arc<Self> {
         let SyncSettings { max_storage_bytes, sync_permits: max_sync_permits, force_server_timestamps, max_connections, max_connections_per_visitor } = settings;
-        let (broadcast_tx, _) = broadcast::channel(256);
 
         let has_before_sync_batch = runtime
             .as_ref()
@@ -568,6 +691,7 @@ impl SyncManager {
             after_hook_budget_ms: std::sync::atomic::AtomicU64::new(AFTER_HOOK_BUDGET.as_millis() as u64),
             max_storage_bytes,
             broadcast_tx,
+            recent_ops: std::sync::Mutex::new(RecentOps::default()),
             runtime,
             has_before_sync_batch,
             has_before_sync,
@@ -617,11 +741,8 @@ impl SyncManager {
         self.broadcast_tx.subscribe()
     }
 
-    pub fn handle_auth(
-        &self,
-        token: Option<&str>,
-        _app_version: Option<&str>,
-    ) -> Result<String, String> {
+    /// Check `token` against the host's own, if it has one, and name the new client.
+    pub fn handle_auth(&self, token: Option<&str>) -> Result<String, String> {
         // Check auth token if configured.
         // Hash both tokens to SHA-256 before comparing so ct_eq always operates
         // on 32-byte inputs. Raw ct_eq on variable-length slices leaks the
@@ -657,7 +778,7 @@ impl SyncManager {
     /// switch every client's sync off.
     pub fn issue_ticket(&self, token: Option<&str>, client_ip: std::net::IpAddr) -> Result<String, TicketError> {
         self.ticket_limiter.check(client_ip).map_err(TicketError::RateLimited)?;
-        let client_id = self.handle_auth(token, None).map_err(|_| TicketError::Unauthorized)?;
+        let client_id = self.handle_auth(token).map_err(|_| TicketError::Unauthorized)?;
 
         let mut tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -721,12 +842,16 @@ impl SyncManager {
     }
 
     /// Pull collection state. If `last_sync` is provided, returns only records
-    /// updated after that timestamp (incremental sync, including soft-deleted
-    /// records so the client can remove them locally). Otherwise returns all
-    /// non-deleted records (full sync for first-time connections).
-    /// `last_id` forms a compound cursor with `last_sync` to handle timestamp
-    /// ties — without it, bulk updates sharing a timestamp could be permanently
-    /// missed by the `updated_at > ?` cursor.
+    /// the host received after that point (incremental sync, including
+    /// soft-deleted records so the client can remove them locally), at most
+    /// a page of each collection. Otherwise returns all non-deleted records
+    /// (full sync for first-time connections), a page at a time.
+    /// The point is the host's own receipt time, `server_received_at`, which
+    /// every record a pull sends carries as `serverReceivedAt` (pool.rs
+    /// [`pool::SyncFrom`]), never `updated_at`, which is the edit's time and
+    /// may be long before the host saw it. `last_id` forms a compound cursor
+    /// with `last_sync` to handle ties: records received in one millisecond
+    /// are read in id order, and one a page ended among is not passed over.
     /// `cursor` continues a full pull of one collection from where a page
     /// that was full left off (the `more` of its last `sync_state`).
     ///
@@ -762,9 +887,11 @@ impl SyncManager {
         let mut seen = std::collections::HashSet::new();
         let collections: Vec<String> = collections.iter().filter(|c| seen.insert(c.as_str())).cloned().collect();
         if collections.len() > MAX_PULL_COLLECTIONS {
-            return Err(ServerMessage::Error {
-                message: format!("Too many collections in one sync_pull ({}, max {})", collections.len(), MAX_PULL_COLLECTIONS),
-            });
+            return Err(ServerMessage::pull_refused(
+                format!("Too many collections in one sync_pull ({}, max {})", collections.len(), MAX_PULL_COLLECTIONS),
+                collections,
+                false,
+            ));
         }
         Ok(Pull {
             collections,
@@ -806,9 +933,7 @@ impl SyncManager {
             let collection = pull.collections.get(pull.next)?.clone();
             if !is_valid_collection_name(&collection) {
                 pull.next_collection();
-                return Some(ServerMessage::Error {
-                    message: format!("Invalid collection name: {}", collection),
-                });
+                return Some(ServerMessage::pull_refused(format!("Invalid collection name: {}", collection), vec![collection], false));
             }
 
             // Read from the pool — concurrent with other reads and writes.
@@ -816,9 +941,7 @@ impl SyncManager {
                 Ok(c) => c,
                 Err(e) => {
                     pull.next_collection();
-                    return Some(ServerMessage::Error {
-                        message: format!("Read pool error: {}", e),
-                    });
+                    return Some(ServerMessage::pull_refused(format!("Read pool error: {}", e), vec![collection], true));
                 }
             };
 
@@ -1007,6 +1130,12 @@ impl SyncManager {
         }
 
         let mut responses = Vec::new();
+        // Ops refused for good that name a record the pusher has applied
+        // them to: it is sent the record as it stands (see below).
+        let mut refused: Vec<Refused> = Vec::new();
+        // Ops whose data a before-hook changed: their pusher is sent the
+        // record as stored.
+        let mut hook_changed: HashSet<String> = HashSet::new();
 
         // Phase 1: Validate and run onBeforeSync hooks (no DB lock held).
         // This ensures hooks don't block the database and all validation
@@ -1060,9 +1189,8 @@ impl SyncManager {
                 op.timestamp = server_time.clone();
             }
 
-            // Reject oversized data payloads before any further processing.
-            // Without this, 1000 ops × 500KB each = 500MB parsed into serde Values
-            // (which use 5-10x RAM vs input), causing memory spikes.
+            // Reject oversized data payloads before any further processing
+            // (MAX_OP_DATA_BYTES says why).
             if let Some(ref data) = op.data {
                 let data_size = data.to_string().len();
                 if data_size > MAX_OP_DATA_BYTES {
@@ -1073,6 +1201,7 @@ impl SyncManager {
                             data_size, MAX_OP_DATA_BYTES
                         ),
                     });
+                    refused.extend(Refused::of(&op));
                     continue;
                 }
                 batch_data_bytes += data_size;
@@ -1124,7 +1253,7 @@ impl SyncManager {
 
         // Second pass: run hooks — batch mode (1 RPC) preferred over per-op (N RPCs)
         let validated_ops = if self.has_before_sync_batch {
-            self.call_before_sync_batch(basic_valid_ops, &mut responses)
+            self.call_before_sync_batch(basic_valid_ops, &mut responses, &mut refused, &mut hook_changed)
         } else if self.has_before_sync {
             let mut accepted = Vec::new();
             // One call an op: a few hundred ops against a slow hook could
@@ -1151,9 +1280,11 @@ impl SyncManager {
                             op_id: op.id.clone(),
                             reason: "Rejected by onBeforeSync hook".into(),
                         });
+                        refused.extend(Refused::of(&op));
                     }
                     Ok((true, Some(new_data))) => {
                         op.data = Some(new_data);
+                        hook_changed.insert(op.id.clone());
                         accepted.push(op);
                     }
                     Ok((true, None)) => accepted.push(op),
@@ -1191,14 +1322,19 @@ impl SyncManager {
         // the time spent holding db.write() is exclusively I/O. Never add RPC
         // calls, network requests, or expensive computation inside this block.
         let mut accepted_ops = Vec::new();
-        // The acknowledgement of overtaken ops and the records they were
-        // overtaken on, for the pusher alone.
+        // The acknowledgement of ops answered with their records, and those
+        // records as they stand, for the pusher alone.
         let mut to_pusher: Option<(Vec<String>, Vec<SyncOp>)> = None;
-        if !validated_ops.is_empty() {
+        let mut acked_in_stream: HashSet<String> = HashSet::new();
+        if !validated_ops.is_empty() || !refused.is_empty() {
             // Collect op IDs before moving ops into the transaction closure,
             // so we can reference them in error paths after the move.
             let all_op_ids: Vec<String> = validated_ops.iter().map(|op| op.id.clone()).collect();
             let mut db = self.db.write();
+            // Taken under the writer lock, so a push stored and remembered
+            // here is remembered before the next push is weighed.
+            let mut recent = self.recent_ops.lock().unwrap_or_else(|p| p.into_inner());
+            let now = std::time::Instant::now();
 
             // Wrap the entire batch in a single SQLite transaction.
             // Without this, each operation auto-commits individually, causing
@@ -1221,8 +1357,11 @@ impl SyncManager {
                 // an overtaken delete of it): their pusher is sent them as
                 // they stand.
                 let mut batch_overtaken: Vec<(String, String)> = Vec::new();
+                // Ops stored as a before-hook changed them, by record: their
+                // pusher is sent the record as stored.
+                let mut batch_hooked: Vec<(String, String)> = Vec::new();
 
-                for mut op in validated_ops {
+                for op in validated_ops {
                     // xdb finds a record by id alone. An op names a collection,
                     // and that is what a before-sync hook authorized; an id that
                     // lives in another collection would otherwise let an op
@@ -1284,7 +1423,19 @@ impl SyncManager {
                             continue;
                         }
                     }
-                    let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
+                    // Stored already, and nothing newer since: sent again
+                    // after its acknowledgement was lost, or after a refusal
+                    // of something else (an older client takes any `error`
+                    // for its pushes). An update or a delete applied again
+                    // was broadcast and hooked again. Asked only here, once
+                    // the op would otherwise be applied: one overtaken since
+                    // is answered above with the record as it stands, which
+                    // its pusher, holding its own edit, needs.
+                    if recent.contains(&op, now) {
+                        batch_replayed.push(op.id.clone());
+                        continue;
+                    }
+                    let result: Result<(), xdb::DbError> = match op.operation.as_str() {
                         "create" => {
                             let data = op.data.clone().unwrap_or(serde_json::json!({}));
                             let now = &op.timestamp;
@@ -1296,7 +1447,7 @@ impl SyncManager {
                                 updated_at: now.clone(),
                                 deleted: false,
                             };
-                            db.upsert_record(record).map(|_| None)
+                            db.upsert_record(record).map(|_| ())
                         }
                         // The record keeps the time its edit was made, as a
                         // create always has: that is what the next edit is
@@ -1318,26 +1469,26 @@ impl SyncManager {
                                         "Record too large after this update ({} bytes, max {})",
                                         after, MAX_OP_DATA_BYTES
                                     )));
+                                    refused.extend(Refused::of(&op));
                                     continue;
                                 }
-                                db.upsert_record(xdb::Record { data, updated_at: op.timestamp.clone(), ..record }).map(|_| None)
+                                db.upsert_record(xdb::Record { data, updated_at: op.timestamp.clone(), ..record }).map(|_| ())
                             }
                             _ => Err(xdb::DbError::NotFound(op.record_id.clone())),
                         },
                         "delete" => match existing {
-                            Some(record) => db.upsert_record(xdb::Record { updated_at: op.timestamp.clone(), deleted: true, ..record }).map(|_| None),
+                            Some(record) => db.upsert_record(xdb::Record { updated_at: op.timestamp.clone(), deleted: true, ..record }).map(|_| ()),
                             None => Err(xdb::DbError::NotFound(op.record_id.clone())),
                         },
-                        other => Err(xdb::DbError::NotFound(format!(
-                            "Unknown operation: {}",
-                            other
-                        ))),
+                        // Checked against VALID_OPERATIONS before the hooks,
+                        // which change an op's data and nothing else.
+                        _ => unreachable!("an op's operation is checked before it is stored"),
                     };
 
                     match result {
-                        Ok(generated_id) => {
-                            if let Some(id) = generated_id {
-                                op.record_id = id;
+                        Ok(()) => {
+                            if hook_changed.contains(&op.id) {
+                                batch_hooked.push((op.record_id.clone(), op.id.clone()));
                             }
                             batch_accepted.push(op);
                         }
@@ -1349,12 +1500,30 @@ impl SyncManager {
                 }
 
                 // Read once the whole push is in, so a later op of the same
-                // push for the same record is part of what is sent.
-                let mut batch_current = Vec::new();
-                for (id, answering) in batch_overtaken {
-                    if let Ok(record) = db.get_record(&id) {
-                        batch_current.push(as_it_stands(record, answering));
+                // push for the same record is part of what is sent. A record
+                // is sent once, under the first op that asks for it.
+                let mut batch_current: Vec<SyncOp> = Vec::new();
+                let mut sent = HashSet::new();
+                let mut send = |db: &xdb::XdbDatabase, id: &str, collection: Option<&str>, answering: String, current: &mut Vec<SyncOp>| {
+                    if !sent.insert(id.to_string()) {
+                        return;
                     }
+                    if let Ok(record) = db.get_record(id) {
+                        // A refused op names its collection; a record of
+                        // another is not this client's to be sent.
+                        if collection.is_none_or(|c| c == record.collection) {
+                            current.push(as_it_stands(record, answering));
+                        }
+                    }
+                };
+                for (id, answering) in batch_overtaken {
+                    send(db, &id, None, answering, &mut batch_current);
+                }
+                for (id, answering) in batch_hooked {
+                    send(db, &id, None, answering, &mut batch_current);
+                }
+                for Refused { op_id, collection, record_id } in refused {
+                    send(db, &record_id, Some(&collection), op_id, &mut batch_current);
                 }
 
                 Ok((batch_accepted, batch_rejected, batch_replayed, batch_current))
@@ -1362,6 +1531,9 @@ impl SyncManager {
 
             match batch_result {
                 Ok((batch_accepted, batch_rejected, batch_replayed, batch_current)) => {
+                    for op in &batch_accepted {
+                        recent.remember(op, now);
+                    }
                     for (op_id, reason) in batch_rejected {
                         responses.push(ServerMessage::SyncReject {
                             op_id,
@@ -1376,8 +1548,13 @@ impl SyncManager {
                             responses.push(ServerMessage::SyncAck { op_ids: batch_replayed });
                         }
                     } else {
-                        // Sent below, with the stream of other clients' edits.
-                        to_pusher = Some((batch_replayed, batch_current));
+                        // Sent below, with the stream of other clients' edits,
+                        // and so is the acknowledgement of the ops a hook
+                        // changed: the record answers them.
+                        acked_in_stream.extend(batch_accepted.iter().filter(|op| hook_changed.contains(&op.id)).map(|op| op.id.clone()));
+                        let mut acked = batch_replayed;
+                        acked.extend(acked_in_stream.iter().cloned());
+                        to_pusher = Some((acked, batch_current));
                     }
                     accepted_ops = batch_accepted;
                 }
@@ -1390,6 +1567,7 @@ impl SyncManager {
                     });
                 }
             }
+            drop(recent);
             // The pusher had applied its overtaken edits to its own copy,
             // and would go on showing them: it is sent each record as it
             // stands, a delta like any other, and only it. Sent here, in the
@@ -1406,11 +1584,19 @@ impl SyncManager {
             // unanswered, so a skipped op's record comes back on the device
             // that pushed it (`XDBServerSync.unansweredChanges` in
             // @softn/core).
-            if let Some((replayed, current)) = to_pusher {
-                if !replayed.is_empty() {
-                    let _ = self.broadcast_tx.send((Audience::Only(client_id.to_string()), Arc::new(ServerMessage::SyncAck { op_ids: replayed })));
+            //
+            // The same goes for an op a before-hook changed (the pusher
+            // holds what it sent, not what was stored) and for an update or
+            // a delete refused for good (see `Refused`). The records go in
+            // pieces a client takes (`delta_pieces`): all of them in one
+            // message could be several megabytes, which the client dropped,
+            // keeping the edits the host had overruled.
+            if let Some((acked, current)) = to_pusher {
+                let pusher = Audience::Only(client_id.to_string());
+                if !acked.is_empty() {
+                    let _ = self.broadcast_tx.send((pusher.clone(), Arc::new(ServerMessage::SyncAck { op_ids: acked })));
                 }
-                let _ = self.broadcast_tx.send((Audience::Only(client_id.to_string()), Arc::new(ServerMessage::SyncDelta { ops: current })));
+                send_all(&self.broadcast_tx, &pusher, delta_pieces(current));
             }
             // Broadcast to the other clients while the writer lock is still
             // held, so that pushes are sent on in the order they were stored.
@@ -1418,23 +1604,22 @@ impl SyncManager {
             // copied: a push stored second could be sent first, and a client,
             // which applies what it is sent as it comes, was left with the
             // older of two edits to one record. Sending waits for nobody.
+            // In pieces, as above: a push may carry 4 MiB of data.
             if !accepted_ops.is_empty() {
-                let delta = ServerMessage::SyncDelta {
-                    ops: accepted_ops.clone(),
-                };
-                let _ = self
-                    .broadcast_tx
-                    .send((Audience::Others(client_id.to_string()), Arc::new(delta)));
+                send_all(&self.broadcast_tx, &Audience::Others(client_id.to_string()), delta_pieces(accepted_ops.clone()));
             }
             drop(db);
         }
 
         // Acknowledge accepted ops to the pushing client. Phase 3, the
         // after-hooks, is the caller's to run once this answer is on its way
-        // (run_after_sync).
+        // (run_after_sync). An op a hook changed was acknowledged above,
+        // just before its record, when the record could be read.
         if !accepted_ops.is_empty() {
-            let ack_ids: Vec<String> = accepted_ops.iter().map(|op| op.id.clone()).collect();
-            responses.push(ServerMessage::SyncAck { op_ids: ack_ids });
+            let ack_ids: Vec<String> = accepted_ops.iter().filter(|op| !acked_in_stream.contains(&op.id)).map(|op| op.id.clone()).collect();
+            if !ack_ids.is_empty() {
+                responses.push(ServerMessage::SyncAck { op_ids: ack_ids });
+            }
             *stored = accepted_ops;
         }
 
@@ -1452,10 +1637,15 @@ impl SyncManager {
     /// When `ops` is present, each entry's `data` field overrides the original
     /// op's data before DB insertion, enabling hooks to sanitize, transform,
     /// or enrich data (e.g. trimming strings, adding server-computed fields).
+    ///
+    /// The ops it refuses are added to `refused`, and those whose data it
+    /// changed to `changed`.
     fn call_before_sync_batch(
         &self,
         ops: Vec<SyncOp>,
         responses: &mut Vec<ServerMessage>,
+        refused: &mut Vec<Refused>,
+        changed: &mut HashSet<String>,
     ) -> Vec<SyncOp> {
         let rt = match self.runtime.as_ref() {
             Some(r) => r,
@@ -1509,6 +1699,7 @@ impl SyncManager {
                             op_id: op.id.clone(),
                             reason: "Hook returned unrecognized schema (expected { rejected: [...] })".into(),
                         });
+                        refused.extend(Refused::of(op));
                     }
                     return Vec::new();
                 }
@@ -1524,6 +1715,7 @@ impl SyncManager {
                     op_id: op.id.clone(),
                     reason: "Rejected by onBeforeSyncBatch hook".into(),
                 });
+                refused.extend(Refused::of(&op));
             } else {
                 accepted.push(op);
             }
@@ -1557,7 +1749,7 @@ impl SyncManager {
                     .collect();
 
                 if !mutations.is_empty() {
-                    let mut refused = std::collections::HashSet::new();
+                    let mut retried = HashSet::new();
                     for op in &mut accepted {
                         if let Some(&new_data) = mutations.get(op.id.as_str()) {
                             if op.data.as_ref() == Some(new_data) {
@@ -1570,13 +1762,14 @@ impl SyncManager {
                                     op_ids: vec![op.id.clone()],
                                     reason: "Transient hook error — retry later".into(),
                                 });
-                                refused.insert(op.id.clone());
+                                retried.insert(op.id.clone());
                                 continue;
                             }
                             op.data = Some(new_data.clone());
+                            changed.insert(op.id.clone());
                         }
                     }
-                    accepted.retain(|op| !refused.contains(&op.id));
+                    accepted.retain(|op| !retried.contains(&op.id));
                     tracing::info!(
                         "onBeforeSyncBatch mutated data for {} op(s)",
                         mutations.len()
@@ -1702,1149 +1895,5 @@ impl SyncManager {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn manager(script: Option<&str>) -> (Arc<SyncManager>, ServerDb) {
-        manager_with(script, 1)
-    }
-
-    fn manager_with(script: Option<&str>, workers: usize) -> (Arc<SyncManager>, ServerDb) {
-        let dir = crate::test_dirs::temp_path("softn-sync", "");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("xdb.sqlite");
-        let shared = xdb::create_shared_db(path.clone()).unwrap();
-        let db = ServerDb::new(shared, &path, 2).unwrap();
-        let runtime = script.map(|source| {
-            let rt = ServerRuntime::new(|| crate::host::BridgeSet {
-                db: None, http: None, fs: None, env: None, sql: None, crypto: None,
-                allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
-            }, Some(workers)).unwrap();
-            rt.init(source.to_string()).unwrap();
-            rt
-        });
-        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2, max_connections_per_visitor: 2 };
-        (SyncManager::new(db.clone(), runtime, None, path, settings), db)
-    }
-
-    #[test]
-    fn tickets_are_limited_per_address_with_a_burst_and_a_retry_hint() {
-        let limiter = AddressLimiter::new(TICKET_BURST, TICKET_REFILL_PER_SEC);
-        let a: std::net::IpAddr = "203.0.113.7".parse().unwrap();
-        for _ in 0..TICKET_BURST as usize {
-            assert!(limiter.check(a).is_ok());
-        }
-        let wait = limiter.check(a).unwrap_err();
-        assert!(wait >= std::time::Duration::from_secs(1) && wait <= std::time::Duration::from_secs(2), "{wait:?}");
-        assert!(limiter.check("203.0.113.8".parse().unwrap()).is_ok(), "another address has its own allowance");
-        // One IPv6 /64 is one client; the next /64 is another.
-        let v6 = AddressLimiter::new(TICKET_BURST, TICKET_REFILL_PER_SEC);
-        for i in 0..TICKET_BURST as usize {
-            assert!(v6.check(format!("2001:db8:0:1::{:x}", i + 1).parse().unwrap()).is_ok());
-        }
-        assert!(v6.check("2001:db8:0:1:ffff::1".parse().unwrap()).is_err());
-        assert!(v6.check("2001:db8:0:2::1".parse().unwrap()).is_ok());
-        assert_eq!(limiter_key("::ffff:10.0.0.1".parse().unwrap()), "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
-    }
-
-    #[test]
-    fn a_full_ticket_table_is_busy_and_a_wrong_token_unauthorized() {
-        let (sync, _) = manager(None);
-        let mut ip = 0u32;
-        for _ in 0..MAX_PENDING_TICKETS {
-            ip += 1;
-            sync.issue_ticket(None, std::net::IpAddr::V4(ip.into())).unwrap();
-        }
-        assert_eq!(sync.issue_ticket(None, "198.51.100.1".parse().unwrap()), Err(TicketError::Busy));
-        let dir = crate::test_dirs::temp_path("softn-sync", "");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("xdb.sqlite");
-        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
-        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2, max_connections_per_visitor: 2 };
-        let guarded = SyncManager::new(db, None, Some("s3cret".into()), path, settings);
-        let ip: std::net::IpAddr = "198.51.100.2".parse().unwrap();
-        assert_eq!(guarded.issue_ticket(Some("wrong"), ip), Err(TicketError::Unauthorized));
-        assert!(guarded.issue_ticket(Some("s3cret"), ip).is_ok());
-    }
-
-    #[test]
-    fn connection_slots_are_bounded_and_returned() {
-        let (sync, _) = manager(None);
-        let a: std::net::IpAddr = "203.0.113.7".parse().unwrap();
-        let b: std::net::IpAddr = "203.0.113.8".parse().unwrap();
-        let first = sync.try_open_connection(a).unwrap();
-        let _second = sync.try_open_connection(b).unwrap();
-        assert_eq!(sync.try_open_connection("203.0.113.9".parse().unwrap()).err(), Some(ConnectionRefused::Full));
-        drop(first);
-        assert!(sync.try_open_connection(a).is_ok());
-    }
-
-    /// One visitor cannot take every place: an address, or an IPv6 /64, is
-    /// held to `maxSyncConnectionsPerVisitor`, and its places come back.
-    #[test]
-    fn one_visitor_cannot_take_every_connection() {
-        let dir = crate::test_dirs::temp_path("softn-sync", "");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("xdb.sqlite");
-        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
-        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 10, max_connections_per_visitor: 2 };
-        let sync = SyncManager::new(db, None, None, path, settings);
-        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
-        let first = sync.try_open_connection(ip("2001:db8:0:1::1")).unwrap();
-        let _second = sync.try_open_connection(ip("2001:db8:0:1::2")).unwrap();
-        // Another address in the same /64 is the same visitor.
-        assert_eq!(sync.try_open_connection(ip("2001:db8:0:1:ffff::9")).err(), Some(ConnectionRefused::VisitorFull));
-        // The next /64, and an IPv4 visitor, are others.
-        assert!(sync.try_open_connection(ip("2001:db8:0:2::1")).is_ok());
-        assert!(sync.try_open_connection(ip("198.51.100.1")).is_ok());
-        drop(first);
-        assert!(sync.try_open_connection(ip("2001:db8:0:1::3")).is_ok());
-    }
-
-    #[test]
-    fn the_per_visitor_cap_defaults_small_and_never_exceeds_the_total() {
-        let settings = |server: serde_json::Value| {
-            let manifest: crate::bundle::ServerManifest = serde_json::from_value(serde_json::json!({
-                "name": "x", "version": "1", "config": {"server": server}})).unwrap();
-            SyncSettings::from_manifest(&manifest, false)
-        };
-        assert_eq!(settings(serde_json::json!({})).max_connections_per_visitor, DEFAULT_MAX_SYNC_CONNECTIONS_PER_VISITOR);
-        assert_eq!(settings(serde_json::json!({"maxSyncConnectionsPerVisitor": 3})).max_connections_per_visitor, 3);
-        assert_eq!(settings(serde_json::json!({"maxSyncConnectionsPerVisitor": 0})).max_connections_per_visitor, 1);
-        assert_eq!(settings(serde_json::json!({"maxSyncConnections": 4})).max_connections_per_visitor, 4);
-    }
-
-    fn op(id: &str, collection: &str, operation: &str, record: &str, data: serde_json::Value) -> SyncOp {
-        SyncOp {
-            id: id.into(), collection: collection.into(), operation: operation.into(),
-            record_id: record.into(), data: Some(data), timestamp: String::new(), client_id: String::new(),
-        }
-    }
-
-    fn rejected(responses: &[ServerMessage]) -> Vec<String> {
-        responses.iter().filter_map(|m| match m {
-            ServerMessage::SyncReject { op_id, .. } => Some(op_id.clone()),
-            _ => None,
-        }).collect()
-    }
-
-    /// A hook that guards a collection is the app's authorization for sync.
-    /// An op naming an allowed collection must not reach a record that lives
-    /// in a guarded one: xdb looks a record up by id alone.
-    #[test]
-    fn an_op_cannot_reach_a_record_in_another_collection() {
-        let (sync, db) = manager(Some("function onBeforeSyncBatch(ops) { return ops.filter(function (o) { return o.collection === 'admin'; }).map(function (o) { return o.id; }); }"));
-        db.write().upsert_record(xdb::Record {
-            id: "root".into(), collection: "admin".into(), data: serde_json::json!({"role":"owner"}),
-            created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
-        }).unwrap();
-        let responses = sync.handle_sync_push(vec![
-            op("u1", "notes", "update", "root", serde_json::json!({"role":"guest"})),
-            op("d1", "notes", "delete", "root", serde_json::json!({})),
-            op("c1", "notes", "create", "root", serde_json::json!({"title":"moved"})),
-            op("ok", "notes", "create", "n1", serde_json::json!({"title":"fine"})),
-        ], "client");
-        let mut refused = rejected(&responses);
-        refused.sort();
-        assert_eq!(refused, vec!["c1", "d1", "u1"], "{responses:?}");
-        let root = db.write().get_record("root").unwrap();
-        assert_eq!(root.collection, "admin");
-        assert_eq!(root.data, serde_json::json!({"role":"owner"}));
-        assert!(!root.deleted);
-        assert_eq!(db.write().get_record("n1").unwrap().collection, "notes");
-    }
-
-    fn acked(responses: &[ServerMessage]) -> Vec<String> {
-        responses.iter().flat_map(|m| match m {
-            ServerMessage::SyncAck { op_ids } => op_ids.clone(),
-            _ => Vec::new(),
-        }).collect()
-    }
-
-    /// The client sends an op again until it is acknowledged, and an
-    /// acknowledgement can be lost after the commit. A create that comes back
-    /// must not undo what happened to the record in between.
-    #[test]
-    fn a_create_sent_again_does_not_overwrite_what_changed_since() {
-        let (sync, db) = manager(None);
-        let first = sync.handle_sync_push(vec![
-            op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"})),
-        ], "a");
-        assert_eq!(acked(&first), vec!["c1"]);
-        // Another client edits the note.
-        let edit = sync.handle_sync_push(vec![
-            op("u1", "notes", "update", "n1", serde_json::json!({"title":"final"})),
-        ], "b");
-        assert_eq!(acked(&edit), vec!["u1"]);
-
-        let mut deltas = sync.broadcast_tx.subscribe();
-        let again = sync.handle_sync_push(vec![
-            op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"})),
-        ], "a");
-        // Acknowledged, so the client stops sending it; not refused.
-        assert_eq!(acked(&again), vec!["c1"], "{again:?}");
-        assert!(rejected(&again).is_empty(), "{again:?}");
-        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
-        // And no peer is told to apply the stale payload.
-        assert!(deltas.try_recv().is_err(), "a replayed create was broadcast");
-    }
-
-    /// An op as a client stamps it, `minutes` before now.
-    fn stamped(mut op: SyncOp, minutes: i64) -> SyncOp {
-        op.timestamp = (chrono::Utc::now() - chrono::Duration::minutes(minutes))
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        op
-    }
-
-    /// Last writer wins, by the times the clients stamped their edits: an
-    /// edit made offline before another client's, and pushed after it, is
-    /// acknowledged, so the client stops sending it, and not applied.
-    #[test]
-    fn a_stale_offline_update_does_not_overwrite_a_newer_one() {
-        let (sync, db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
-        let newer = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10)], "b");
-        assert_eq!(acked(&newer), vec!["u2"]);
-
-        let mut deltas = sync.broadcast_tx.subscribe();
-        let offline = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30)], "a");
-        assert_eq!(acked(&offline), vec!["u1"], "{offline:?}");
-        assert!(rejected(&offline).is_empty(), "{offline:?}");
-        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
-        assert!(!reaches_another(&drained(&mut deltas), "a"), "an overtaken update was broadcast");
-    }
-
-    /// The ops of the `sync_delta` messages in a push's answer: what the
-    /// pushing client alone is sent.
-    fn told(responses: &[ServerMessage]) -> Vec<SyncOp> {
-        responses.iter().flat_map(|m| match m {
-            ServerMessage::SyncDelta { ops } => ops.clone(),
-            _ => Vec::new(),
-        }).collect()
-    }
-
-    /// The client that pushed an overtaken edit had applied it to its own
-    /// copy already. It is sent the record as it stands, in a `sync_delta`
-    /// it applies as it applies any other, so it does not go on showing an
-    /// edit the server dropped. Nobody else is sent anything.
-    #[test]
-    fn the_pusher_of_an_overtaken_edit_is_sent_the_record_as_it_stands() {
-        let (sync, _db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first", "body":"b"})), 60)], "a");
-        let newer = stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10);
-        sync.handle_sync_push(vec![newer.clone()], "b");
-        // An edit in time is answered as ever: acknowledged, nothing sent back.
-        assert!(told(&sync.handle_sync_push(vec![stamped(op("c2", "notes", "create", "n2", serde_json::json!({"title":"x"})), 5)], "a")).is_empty());
-
-        let mut others = sync.broadcast_tx.subscribe();
-        for stale in [
-            stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30),
-            stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 20),
-        ] {
-            let answer = sync.handle_sync_push(vec![stale.clone()], "a");
-            assert_eq!(acked(&answer), vec![stale.id.clone()], "{answer:?}");
-            let current = told(&answer);
-            assert_eq!(current.len(), 1, "{answer:?}");
-            assert_eq!((current[0].operation.as_str(), current[0].collection.as_str(), current[0].record_id.as_str()), ("update", "notes", "n1"));
-            assert_eq!(current[0].data, Some(serde_json::json!({"title":"final", "body":"b"})));
-            assert_eq!(current[0].timestamp, newer.timestamp);
-        }
-        assert!(!reaches_another(&drained(&mut others), "a"), "another client was sent something");
-        // A record deleted since is told as deleted.
-        sync.handle_sync_push(vec![stamped(op("d2", "notes", "delete", "n1", serde_json::json!({})), 3)], "b");
-        let mut others = sync.broadcast_tx.subscribe();
-        let answer = sync.handle_sync_push(vec![stamped(op("d0", "notes", "delete", "n1", serde_json::json!({})), 40)], "a");
-        let current = told(&answer);
-        assert_eq!(current.len(), 1, "{answer:?}");
-        assert_eq!((current[0].operation.as_str(), current[0].record_id.as_str()), ("delete", "n1"));
-        assert!(!reaches_another(&drained(&mut others), "a"), "another client was sent something");
-    }
-
-    /// Everything the sync stream holds now.
-    fn drained(stream: &mut broadcast::Receiver<(Audience, Arc<ServerMessage>)>) -> Vec<(Audience, Arc<ServerMessage>)> {
-        let mut out = Vec::new();
-        while let Ok(item) = stream.try_recv() {
-            out.push(item);
-        }
-        out
-    }
-
-    /// Of what the stream held, what `client`'s connection lets through, in order.
-    fn reaching(items: &[(Audience, Arc<ServerMessage>)], client: &str) -> Vec<ServerMessage> {
-        items.iter().filter(|(audience, _)| audience.reaches(client)).map(|(_, message)| (**message).clone()).collect()
-    }
-
-    /// Whether anything the stream held reaches a connection other than `client`'s.
-    fn reaches_another(items: &[(Audience, Arc<ServerMessage>)], client: &str) -> bool {
-        items.iter().any(|(audience, _)| *audience != Audience::Only(client.to_string()))
-    }
-
-    /// The record as it stands, sent to the pusher of an overtaken edit,
-    /// reaches it in the order the store saw it among the other clients'
-    /// edits. It went with the push's answer, on the connection's own queue,
-    /// which the connection's writer interleaves with the stream of other
-    /// clients' edits in whatever order the two are ready: an edit stored
-    /// after it could reach the pusher first and then be undone there by
-    /// the older record, which the device went on showing.
-    #[test]
-    fn the_record_as_it_stands_reaches_its_pusher_in_the_order_it_was_read() {
-        let (sync, _db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
-        sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"second"})), 10)], "b");
-        let mut stream = sync.subscribe();
-        // a's edit was made offline before b's: overtaken. Then c edits.
-        let answer = sync.apply_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30)], "a").0;
-        sync.handle_sync_push(vec![stamped(op("u3", "notes", "update", "n1", serde_json::json!({"title":"third"})), 1)], "c");
-
-        let to_a = reaching(&drained(&mut stream), "a");
-        let shape: Vec<(&str, Vec<String>)> = to_a.iter().map(|message| match message {
-            ServerMessage::SyncAck { op_ids } => ("ack", op_ids.clone()),
-            ServerMessage::SyncDelta { ops } => ("delta", ops.iter().map(|op| format!("{} {}", op.id, op.data.as_ref().unwrap()["title"])).collect()),
-            other => panic!("{other:?}"),
-        }).collect();
-        assert_eq!(shape, vec![
-            ("ack", vec!["u1".to_string()]),
-            ("delta", vec!["u1 \"second\"".to_string()]),
-            ("delta", vec!["u3 \"third\"".to_string()]),
-        ], "{answer:?}");
-        // Said once: the answer itself carries neither.
-        assert!(acked(&answer).is_empty() && told(&answer).is_empty(), "{answer:?}");
-        // And nobody else is sent a's.
-        sync.apply_sync_push(vec![stamped(op("u0", "notes", "update", "n1", serde_json::json!({"title":"older"})), 40)], "a");
-        let held = drained(&mut stream);
-        assert!(reaching(&held, "b").is_empty() && reaching(&held, "c").is_empty(), "{held:?}");
-    }
-
-    /// One push that edits a record and then deletes it, both overtaken: the
-    /// record as it stands answers the delete. The pusher keeps a record it
-    /// deleted hidden until that delete is answered (@softn/core
-    /// `XDBServerSync.unansweredChanges`), and it knows the answer by the
-    /// op's id; under the edit's id the record stayed hidden there until the
-    /// delete's acknowledgement came, which it may do after the record.
-    #[test]
-    fn the_record_as_it_stands_answers_an_overtaken_delete_of_the_same_push() {
-        let (sync, _db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
-        sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10)], "b");
-        let answer = sync.handle_sync_push(vec![
-            stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 40),
-            stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 30),
-        ], "a");
-        let current = told(&answer);
-        assert_eq!(current.len(), 1, "{answer:?}");
-        assert_eq!((current[0].id.as_str(), current[0].operation.as_str()), ("d1", "update"), "{answer:?}");
-        let mut ids = acked(&answer);
-        ids.sort();
-        assert_eq!(ids, vec!["d1", "u1"]);
-    }
-
-    /// An edit is weighed by the time on the device that made it, and a
-    /// write the server makes itself (a hook's `db.update`) by the server's
-    /// clock. An edit from a device whose clock is behind the server's,
-    /// made after such a write, is acknowledged and not applied, and the
-    /// device is sent the record back. Stamped in the server's time, as the
-    /// runtime's client now stamps its edits (from `auth_ok.serverTime`,
-    /// @softn/core xdb-server-sync.ts), the same edit applies.
-    #[test]
-    fn an_edit_stamped_by_a_clock_behind_the_servers_loses_to_a_server_write() {
-        let (sync, db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
-        db.write().update_record("n1", serde_json::json!({"seen": true})).unwrap();
-        // Made just now on a device ten minutes behind.
-        let behind = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"edited"})), 10)], "a");
-        assert_eq!(acked(&behind), vec!["u1"], "{behind:?}");
-        assert_eq!(told(&behind).len(), 1, "{behind:?}");
-        assert_eq!(db.write().get_record("n1").unwrap().data["title"], "first", "the edit was applied");
-        let in_server_time = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"edited"})), 0)], "a");
-        assert_eq!(acked(&in_server_time), vec!["u2"]);
-        assert!(told(&in_server_time).is_empty(), "{in_server_time:?}");
-        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"edited", "seen": true}));
-    }
-
-    /// A client stamps to the millisecond and a server write to the
-    /// nanosecond: an edit stamped in the millisecond of the write is not
-    /// overtaken by it, one stamped a millisecond before is, and text that is
-    /// not a time decides nothing. (The test above met the first case on a
-    /// fast runner, when its edit landed in the same millisecond as the
-    /// write.)
-    #[test]
-    fn edits_and_server_writes_are_weighed_to_the_millisecond() {
-        let write = "2026-10-18T12:47:55.322109412+00:00";
-        assert!(!overtaken("2026-10-18T12:47:55.322Z", write), "the same millisecond, after the write");
-        assert!(overtaken("2026-10-18T12:47:55.321Z", write), "the millisecond before");
-        assert!(!overtaken("2026-10-18T12:47:55.323Z", write));
-        assert!(overtaken("2026-10-18T12:37:55.322Z", write), "ten minutes behind");
-        assert!(!overtaken("not a time", write) && !overtaken("2026-10-18T12:47:55.322Z", "not a time"));
-    }
-
-    /// The client sends an op again until it is acknowledged. An update whose
-    /// acknowledgement was lost, sent again after another client's newer
-    /// edit, does not undo that edit; sent again with nothing in between, it
-    /// leaves the record as it was.
-    #[test]
-    fn an_update_sent_again_after_a_lost_ack_is_harmless() {
-        let (sync, db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
-        let u1 = stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30);
-        assert_eq!(acked(&sync.handle_sync_push(vec![u1.clone()], "a")), vec!["u1"]);
-        assert_eq!(acked(&sync.handle_sync_push(vec![u1.clone()], "a")), vec!["u1"]);
-        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"draft"}));
-
-        sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10)], "b");
-        let again = sync.handle_sync_push(vec![u1], "a");
-        assert_eq!(acked(&again), vec!["u1"], "{again:?}");
-        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
-    }
-
-    /// Edits in the order they were made apply as they always did, in one
-    /// push or several, and the record keeps the time of the edit that made
-    /// it what it is: the time later edits are weighed against.
-    #[test]
-    fn updates_in_order_still_apply_and_keep_their_time() {
-        let (sync, db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first", "body":"b"})), 60)], "a");
-        let second = stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"third"})), 20);
-        let pushed = sync.handle_sync_push(vec![
-            stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"second"})), 30),
-            second.clone(),
-        ], "a");
-        let mut ids = acked(&pushed);
-        ids.sort();
-        assert_eq!(ids, vec!["u1", "u2"]);
-        let record = db.write().get_record("n1").unwrap();
-        assert_eq!(record.data, serde_json::json!({"title":"third", "body":"b"}), "an update still merges into the record");
-        assert_eq!(record.updated_at, second.timestamp);
-        // An op the client did not stamp is stamped by the server, now, and applies.
-        let unstamped = sync.handle_sync_push(vec![op("u3", "notes", "update", "n1", serde_json::json!({"title":"fourth"}))], "b");
-        assert_eq!(acked(&unstamped), vec!["u3"]);
-        assert_eq!(db.write().get_record("n1").unwrap().data["title"], "fourth");
-    }
-
-    /// An update is merged into the record it names, and a record may be no
-    /// larger than one op may carry: each op was held to that, and a record
-    /// was not, so a few updates of new keys grew one record without end,
-    /// until every op on it, and every pull of it, was a copy of all of it.
-    /// The op that would take a record past the limit is refused with the
-    /// reason; one that keeps it within the limit, or makes a record that is
-    /// already past it (from before this) smaller, applies.
-    #[test]
-    fn an_update_cannot_grow_a_record_past_what_one_op_may_carry() {
-        let (sync, db) = manager(None);
-        let big = "x".repeat(400 * 1024);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"k0": big})), 60)], "a");
-        let grown = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"k1": big})), 50)], "a");
-        assert_eq!(rejected(&grown), vec!["u1"], "{grown:?}");
-        let reason = grown.iter().find_map(|m| match m { ServerMessage::SyncReject { reason, .. } => Some(reason.clone()), _ => None }).unwrap();
-        assert!(reason.contains("too large") && reason.contains(&MAX_OP_DATA_BYTES.to_string()), "{reason}");
-        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"k0": big}));
-        let within = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"k1": "small"})), 40)], "a");
-        assert_eq!(acked(&within), vec!["u2"], "{within:?}");
-
-        // A record already past the limit: written before records were held to it.
-        let huge = "y".repeat(MAX_OP_DATA_BYTES + 1024);
-        db.write().upsert_record(xdb::Record {
-            id: "n2".into(), collection: "notes".into(), data: serde_json::json!({"k0": huge, "k1": "z"}),
-            created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
-        }).unwrap();
-        let more = sync.handle_sync_push(vec![stamped(op("u3", "notes", "update", "n2", serde_json::json!({"k2": "more"})), 30)], "a");
-        assert_eq!(rejected(&more), vec!["u3"], "{more:?}");
-        let smaller = sync.handle_sync_push(vec![stamped(op("u4", "notes", "update", "n2", serde_json::json!({"k0": "short"})), 20)], "a");
-        assert_eq!(acked(&smaller), vec!["u4"], "{smaller:?}");
-        assert_eq!(db.write().get_record("n2").unwrap().data, serde_json::json!({"k0": "short", "k1": "z"}));
-    }
-
-    /// The per-op after-sync hooks of a push stop being started once their
-    /// budget is spent, as the before-hooks do: a push of a thousand ops to a
-    /// hook that takes a little while each ran them all, however long that
-    /// was. And they hold no sync permit: the push is stored and answered
-    /// under one, and it is let go before the hooks run, so a slow hook
-    /// cannot keep it from the next push.
-    #[test]
-    fn the_after_sync_hooks_have_a_deadline_and_hold_no_permit() {
-        const SLOW: &str = "function onAfterSync(op) { var a = []; for (var i = 0; i < 100000; i++) a.push(i); var n = 0; for (var k = 0; k < 20; k++) n = n + JSON.stringify(a).length; return n; }";
-        let ops = |prefix: &str, count: usize| -> Vec<SyncOp> {
-            (0..count).map(|i| op(&format!("{prefix}{i}"), "notes", "create", &format!("{prefix}r{i}"), serde_json::json!({"n": i}))).collect()
-        };
-        // With one worker and with several: the hooks of a push are one run
-        // that idle workers take a stretch at a time.
-        for workers in [1, 4] {
-            let (sync, _db) = manager_with(Some(SLOW), workers);
-            // What one hook takes on this machine.
-            let started = std::time::Instant::now();
-            sync.run_after_sync(&sync.apply_sync_push(ops("one", 1), "a").1);
-            let one = started.elapsed();
-
-            sync.after_hook_budget_ms.store(200, std::sync::atomic::Ordering::Relaxed);
-            let accepted = sync.apply_sync_push(ops("many", 60), "a").1;
-            assert_eq!(accepted.len(), 60);
-            let started = std::time::Instant::now();
-            sync.run_after_sync(&accepted);
-            let many = started.elapsed();
-            assert!(many < std::time::Duration::from_millis(200) + one * 4 + std::time::Duration::from_millis(500),
-                "{workers} worker(s): 60 hooks took {many:?}, one {one:?}: the budget did not stop them");
-        }
-
-        let (sync, _db) = manager(Some(SLOW));
-        sync.after_hook_budget_ms.store(200, std::sync::atomic::Ordering::Relaxed);
-
-        // The permit is back as soon as the push is answered.
-        let total = sync.sync_permits.available_permits();
-        let permit = sync.sync_permits.clone().try_acquire_owned().unwrap();
-        let (answered_tx, answered_rx) = std::sync::mpsc::channel();
-        let pusher = Arc::clone(&sync);
-        let pushing = std::thread::spawn(move || {
-            pusher.push_and_hook(ops("later", 20), "a", permit, |responses| { let _ = answered_tx.send(responses); });
-        });
-        let responses = answered_rx.recv().unwrap();
-        assert_eq!(acked(&responses).len(), 20);
-        assert_eq!(sync.sync_permits.available_permits(), total, "the hooks are holding the permit");
-        pushing.join().unwrap();
-    }
-
-    /// A delete is weighed the same way: one made before a newer edit does
-    /// not remove it; one made after does, and keeps its time. An update for
-    /// a deleted record is refused, as it was.
-    #[test]
-    fn deletes_are_weighed_by_their_time_too() {
-        let (sync, db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
-        sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10)], "b");
-        let stale = sync.handle_sync_push(vec![stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 30)], "a");
-        assert_eq!(acked(&stale), vec!["d1"], "{stale:?}");
-        let record = db.write().get_record("n1").unwrap();
-        assert!(!record.deleted, "a delete made before the newer edit removed it");
-        assert_eq!(record.data, serde_json::json!({"title":"final"}));
-
-        let delete = stamped(op("d2", "notes", "delete", "n1", serde_json::json!({})), 5);
-        assert_eq!(acked(&sync.handle_sync_push(vec![delete.clone()], "a")), vec!["d2"]);
-        let record = db.write().get_record("n1").unwrap();
-        assert!(record.deleted);
-        assert_eq!(record.updated_at, delete.timestamp);
-        let late = sync.handle_sync_push(vec![stamped(op("u3", "notes", "update", "n1", serde_json::json!({"title":"late"})), 1)], "b");
-        assert_eq!(rejected(&late), vec!["u3"], "{late:?}");
-    }
-
-    /// Several clients edit one record at once, each edit weighed against
-    /// the record and written under the one writer lock: whatever order the
-    /// pushes arrive in, with one script worker checking them or four, the
-    /// record ends as the newest edit made it and every op is acknowledged.
-    #[test]
-    fn of_edits_pushed_at_once_the_newest_is_the_record() {
-        for workers in [1, 4] {
-            let (sync, db) = manager_with(Some("function onBeforeSync(op) { return true; }"), workers);
-            let began = chrono::Utc::now() - chrono::Duration::seconds(120);
-            let at = move |n: i64| (began + chrono::Duration::milliseconds(n)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-            let mut create = op("c1", "notes", "create", "n1", serde_json::json!({"v": -1}));
-            create.timestamp = at(0);
-            sync.handle_sync_push(vec![create], "seed");
-            const CLIENTS: i64 = 6;
-            const EDITS: i64 = 150;
-            let pushing: Vec<_> = (0..CLIENTS).map(|client| {
-                let sync = Arc::clone(&sync);
-                std::thread::spawn(move || {
-                    let mut answered = 0;
-                    for i in 0..EDITS {
-                        // Half the clients push their edits newest first, as
-                        // a device that was offline may.
-                        let turn = if client % 2 == 0 { i } else { EDITS - 1 - i };
-                        let n = 1 + turn * CLIENTS + client;
-                        let mut edit = op(&format!("u{n}"), "notes", "update", "n1", serde_json::json!({"v": n}));
-                        edit.timestamp = at(n);
-                        // An op the host could not check this time (every
-                        // worker taken) is sent again, as a client does.
-                        for attempt in 0.. {
-                            let answer = sync.handle_sync_push(vec![edit.clone()], &format!("client-{client}"));
-                            assert!(rejected(&answer).is_empty(), "{answer:?}");
-                            if acked(&answer).len() == 1 {
-                                answered += 1;
-                                break;
-                            }
-                            assert!(attempt < 2000 && matches!(answer.as_slice(), [ServerMessage::SyncRetry { .. }]), "{answer:?}");
-                            std::thread::sleep(std::time::Duration::from_millis(2));
-                        }
-                    }
-                    answered
-                })
-            }).collect();
-            let answered: usize = pushing.into_iter().map(|thread| thread.join().unwrap()).sum();
-            assert_eq!(answered as i64, CLIENTS * EDITS, "{workers} worker(s)");
-            let newest = CLIENTS * EDITS;
-            let record = db.write().get_record("n1").unwrap();
-            assert_eq!(record.data, serde_json::json!({"v": newest}), "{workers} worker(s)");
-            assert_eq!(record.updated_at, at(newest), "{workers} worker(s)");
-        }
-    }
-
-    /// An update for a record that has been deleted is refused, whenever it
-    /// was made. The device that pushed it had the record, edited, on its
-    /// screen: a full pull sends no deleted records and a refusal changes
-    /// nothing there, so it went on showing a record every other device had
-    /// seen deleted. Its pusher is sent the record as it stands, deleted,
-    /// as the pusher of an overtaken edit is, and nobody else is sent anything.
-    #[test]
-    fn the_pusher_of_an_update_to_a_deleted_record_is_told_it_is_deleted() {
-        let (sync, db) = manager(None);
-        sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
-        sync.handle_sync_push(vec![stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 20)], "b");
-        let mut others = sync.broadcast_tx.subscribe();
-        // Made before the delete (offline) and made after it: refused alike.
-        for (id, minutes) in [("u-before", 30), ("u-after", 5)] {
-            let answer = sync.handle_sync_push(vec![stamped(op(id, "notes", "update", "n1", serde_json::json!({"title":"edited"})), minutes)], "a");
-            assert_eq!(rejected(&answer), vec![id], "{answer:?}");
-            assert!(acked(&answer).is_empty(), "{answer:?}");
-            let current = told(&answer);
-            assert_eq!(current.len(), 1, "{answer:?}");
-            assert_eq!((current[0].operation.as_str(), current[0].collection.as_str(), current[0].record_id.as_str()), ("delete", "notes", "n1"));
-            assert_eq!(current[0].data, None);
-        }
-        assert!(db.write().get_record("n1").unwrap().deleted);
-        assert!(!reaches_another(&drained(&mut others), "a"), "another client was sent something");
-        // An update for a record that was never there has nothing to be told.
-        let missing = sync.handle_sync_push(vec![op("u-missing", "notes", "update", "nobody", serde_json::json!({"title":"x"}))], "a");
-        assert_eq!(rejected(&missing), vec!["u-missing"]);
-        assert!(told(&missing).is_empty(), "{missing:?}");
-    }
-
-    #[test]
-    fn a_create_sent_again_does_not_bring_back_a_deleted_record() {
-        let (sync, db) = manager(None);
-        sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"}))], "a");
-        sync.handle_sync_push(vec![op("d1", "notes", "delete", "n1", serde_json::json!({}))], "b");
-        assert!(db.write().get_record("n1").unwrap().deleted);
-
-        let again = sync.handle_sync_push(vec![
-            op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"})),
-            op("c2", "notes", "create", "n2", serde_json::json!({"title":"new"})),
-        ], "a");
-        let mut ids = acked(&again);
-        ids.sort();
-        assert_eq!(ids, vec!["c1", "c2"], "{again:?}");
-        assert!(db.write().get_record("n1").unwrap().deleted, "the delete was undone");
-        // A create for an id that is not there is still a create.
-        assert_eq!(db.write().get_record("n2").unwrap().data, serde_json::json!({"title":"new"}));
-    }
-
-    /// `{ data: clean(op.data) }` where `clean` returns nothing: the record
-    /// keeps its payload instead of becoming JSON null.
-    #[test]
-    fn a_per_op_hook_that_returns_no_data_does_not_null_the_record() {
-        let (sync, db) = manager(Some(
-            "function onBeforeSync(op) { return { data: op.operation === 'update' ? undefined : op.data }; }",
-        ));
-        sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title":"draft"}))], "a");
-        let responses = sync.handle_sync_push(vec![
-            op("u1", "notes", "update", "n1", serde_json::json!({"title":"final"})),
-        ], "a");
-        assert_eq!(acked(&responses), vec!["u1"], "{responses:?}");
-        let data = db.write().get_record("n1").unwrap().data;
-        assert!(data.is_object(), "the record's payload became {data}");
-        assert_eq!(data["title"], "final");
-    }
-
-    /// The per-op hooks of one push run in order in one VM, whatever the size
-    /// of the worker pool, and the next push's start from the script as it
-    /// was loaded. Sent as a call each they were taken by whichever worker
-    /// was idle, so on four workers a hook that counted the ops of a push
-    /// numbered them 1, 1, 1, 1, 2, 2 and so on.
-    #[test]
-    fn the_per_op_hooks_of_one_push_run_in_order_in_one_world() {
-        let (sync, db) = manager_with(Some(
-            "var seen = 0; function onBeforeSync(op) { seen = seen + 1; return { data: { seq: seen } }; }",
-        ), 4);
-        // One stretch, however slowly this machine is running the test.
-        sync.runtime.as_ref().unwrap().each_slice_ms.store(600_000, std::sync::atomic::Ordering::Relaxed);
-        for prefix in ["a", "b"] {
-            let ops: Vec<SyncOp> = (0..12)
-                .map(|n| op(&format!("{prefix}{n}"), "notes", "create", &format!("{prefix}-r{n}"), serde_json::json!({"n": n})))
-                .collect();
-            let responses = sync.handle_sync_push(ops, "a");
-            assert_eq!(acked(&responses).len(), 12, "{responses:?}");
-            let numbered: Vec<i64> = (0..12)
-                .map(|n| db.write().get_record(&format!("{prefix}-r{n}")).unwrap().data["seq"].as_i64().unwrap())
-                .collect();
-            assert_eq!(numbered, (1..=12).collect::<Vec<i64>>(), "push {prefix}");
-        }
-    }
-
-    /// A hook may change an op's data to another object of a size a client
-    /// may send, and to nothing else: a string would replace the record with
-    /// that string, and more than a client may send was never checked.
-    #[test]
-    fn what_a_before_hook_hands_back_is_held_to_what_a_client_may_send() {
-        for hook in [
-            "function onBeforeSync(op) { return { data: change(op) }; }",
-            "function onBeforeSyncBatch(ops) { return { rejected: [], ops: ops.map(function (op) { return { id: op.id, data: change(op) }; }) }; }",
-        ] {
-            let source = format!(
-                "function change(op) {{
-                    if (op.data.as === 'text') return 'wiped';
-                    if (op.data.as === 'list') return [1, 2];
-                    if (op.data.as === 'huge') return {{ blob: new Array({}).join('x') }};
-                    if (op.data.as === 'clean') return {{ title: op.data.title.trim() }};
-                    return op.data;
-                }}
-                {hook}",
-                MAX_OP_DATA_BYTES + 2
-            );
-            let (sync, db) = manager(Some(&source));
-            sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title":"kept"}))], "a");
-            for bad in ["text", "list", "huge"] {
-                let responses = sync.handle_sync_push(vec![
-                    op(&format!("u-{bad}"), "notes", "update", "n1", serde_json::json!({"as": bad})),
-                ], "a");
-                assert!(acked(&responses).is_empty(), "{bad}: {responses:?}");
-                assert!(rejected(&responses).is_empty(), "{bad}: the client keeps the op: {responses:?}");
-                assert!(responses.iter().any(|r| matches!(r, ServerMessage::SyncRetry { op_ids, .. } if op_ids == &vec![format!("u-{bad}")])), "{bad}: {responses:?}");
-                assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"kept"}), "{bad} ({hook})");
-            }
-            // An object of an ordinary size is what a sanitising hook is for.
-            let responses = sync.handle_sync_push(vec![
-                op("u-clean", "notes", "update", "n1", serde_json::json!({"as":"clean","title":"  tidy  "})),
-            ], "a");
-            assert_eq!(acked(&responses), vec!["u-clean"], "{responses:?}");
-            assert_eq!(db.write().get_record("n1").unwrap().data["title"], "tidy");
-        }
-    }
-
-    /// A collection past one page is pulled in pages: each full page says
-    /// where the next begins, and nothing is sent twice or left out.
-    #[test]
-    fn a_pull_past_one_page_says_where_the_next_begins() {
-        let (sync, _db) = manager(None);
-        sync.pull_page.store(2, std::sync::atomic::Ordering::Relaxed);
-        for n in 1..=5 {
-            sync.handle_sync_push(vec![op(&format!("c{n}"), "notes", "create", &format!("n{n}"), serde_json::json!({"n": n}))], "a");
-        }
-        // One that is deleted is in no page.
-        sync.handle_sync_push(vec![op("d3", "notes", "delete", "n3", serde_json::json!({}))], "a");
-
-        let page = |cursor: Option<&PullCursor>| {
-            let messages = sync.handle_sync_pull(&["notes".to_string()], None, None, cursor.map(|c| (c.at.as_str(), c.id.as_str())));
-            let mut ids = Vec::new();
-            let mut next = None;
-            for (i, message) in messages.iter().enumerate() {
-                let ServerMessage::SyncState { records, more, .. } = message else { panic!("{message:?}") };
-                ids.extend(records.iter().map(|r| r["id"].as_str().unwrap().to_string()));
-                assert!(more.is_none() || i == messages.len() - 1, "only the last piece of a page says there is more");
-                next = more.clone();
-            }
-            (ids, next)
-        };
-        let (first, more) = page(None);
-        assert_eq!(first.len(), 2);
-        let more = more.expect("a full page says where the next begins");
-        // What a client of today is sent, and what one from before reads past.
-        let wire = serde_json::to_value(ServerMessage::SyncState { collection: "notes".into(), records: Vec::new(), more: Some(more.clone()) }).unwrap();
-        assert_eq!(wire["more"], serde_json::json!({"at": more.at, "id": more.id}));
-        assert!(serde_json::to_value(ServerMessage::SyncState { collection: "notes".into(), records: Vec::new(), more: None }).unwrap().get("more").is_none());
-
-        let (second, more) = page(Some(&more));
-        assert_eq!(second.len(), 2);
-        let (third, end) = page(Some(&more.expect("the second page was full too")));
-        assert!(end.is_none(), "a page that is not full is the last");
-        let mut all = [first, second, third].concat();
-        all.sort();
-        assert_eq!(all, vec!["n1", "n2", "n4", "n5"]);
-    }
-
-    /// The acknowledgement and the broadcast do not wait for the after-hooks.
-    #[test]
-    fn a_push_is_answered_and_broadcast_before_its_after_hooks_run() {
-        let dir = crate::test_dirs::temp_path("softn-sync-after", "");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("xdb.sqlite");
-        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
-        let hook_db = db.clone();
-        let runtime = ServerRuntime::new(move || crate::host::BridgeSet {
-            db: Some(Box::new(crate::bridges::db::NativeDbBridge::new(hook_db.clone()))),
-            http: None, fs: None, env: None, sql: None, crypto: None,
-            allow_time: false, development: true, allow_photos: false, app_config: serde_json::Value::Null,
-        }, Some(1)).unwrap();
-        runtime.init("function onAfterSyncBatch(ops) { db.create('audit', { seen: ops.length }); }".to_string()).unwrap();
-        let settings = SyncSettings { max_storage_bytes: 0, sync_permits: 4, force_server_timestamps: false, max_connections: 2, max_connections_per_visitor: 2 };
-        let sync = SyncManager::new(db.clone(), Some(runtime), None, path, settings);
-        let mut deltas = sync.subscribe();
-        let audited = || {
-            let conn = db.read().unwrap();
-            pool::read_collection(&conn, "audit").unwrap().len()
-        };
-
-        let (responses, stored) = sync.apply_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "x"}))], "a");
-        assert_eq!(acked(&responses), vec!["c1"], "{responses:?}");
-        assert!(deltas.try_recv().is_ok(), "the other clients are told with the answer");
-        assert_eq!(audited(), 0, "the after-hook ran before the push was answered");
-        assert_eq!(stored.len(), 1);
-        sync.run_after_sync(&stored);
-        assert_eq!(audited(), 1, "and it does run");
-        // Nothing stored, nothing to hook.
-        sync.run_after_sync(&[]);
-        assert_eq!(audited(), 1);
-    }
-
-    /// Past its budget the per-op before-hook checks no more ops of a push;
-    /// the client keeps the rest. The first is always checked.
-    #[test]
-    fn a_before_hook_that_runs_out_of_time_leaves_the_rest_for_the_client() {
-        let (sync, db) = manager(Some("function onBeforeSync(op) { return true; }"));
-        sync.before_hook_budget_ms.store(0, std::sync::atomic::Ordering::Relaxed);
-        let responses = sync.handle_sync_push(vec![
-            op("c1", "notes", "create", "n1", serde_json::json!({"n": 1})),
-            op("c2", "notes", "create", "n2", serde_json::json!({"n": 2})),
-            op("c3", "notes", "create", "n3", serde_json::json!({"n": 3})),
-        ], "a");
-        assert_eq!(acked(&responses), vec!["c1"], "{responses:?}");
-        assert!(rejected(&responses).is_empty(), "nothing is refused for good: {responses:?}");
-        let retried: Vec<String> = responses.iter().flat_map(|r| match r {
-            ServerMessage::SyncRetry { op_ids, .. } => op_ids.clone(),
-            _ => Vec::new(),
-        }).collect();
-        assert_eq!(retried, vec!["c2", "c3"]);
-        assert!(db.write().get_record("n1").is_ok() && db.write().get_record("n2").is_err());
-        // With time to spare every op is checked.
-        sync.before_hook_budget_ms.store(60_000, std::sync::atomic::Ordering::Relaxed);
-        let responses = sync.handle_sync_push(vec![
-            op("c2", "notes", "create", "n2", serde_json::json!({"n": 2})),
-            op("c3", "notes", "create", "n3", serde_json::json!({"n": 3})),
-        ], "a");
-        let mut ids = acked(&responses);
-        ids.sort();
-        assert_eq!(ids, vec!["c2", "c3"]);
-    }
-
-    /// A push writes each collection's CRDT document once, not once an op,
-    /// and what it writes is still every op of the push but the one refused.
-    #[test]
-    fn a_push_saves_each_collections_document_once() {
-        let ops = |prefix: &str| -> Vec<SyncOp> {
-            (0..20).map(|n| op(&format!("{prefix}{n}"), "notes", "create", &format!("n{n}"), serde_json::json!({"n": n}))).collect()
-        };
-        // Twenty ops in one push, and the same twenty a push each: the rows
-        // are the same, and the one push saves the document nineteen fewer times.
-        let (together, db_together) = manager(None);
-        let before = db_together.write().total_changes();
-        let responses = together.handle_sync_push(ops("c"), "a");
-        assert_eq!(acked(&responses).len(), 20, "{responses:?}");
-        let one_push = db_together.write().total_changes() - before;
-
-        let (apart, db_apart) = manager(None);
-        let before = db_apart.write().total_changes();
-        for single in ops("c") {
-            apart.handle_sync_push(vec![single], "a");
-        }
-        let twenty_pushes = db_apart.write().total_changes() - before;
-        assert_eq!(twenty_pushes - one_push, 19, "{one_push} changes for one push, {twenty_pushes} for twenty");
-
-        // One op of a push refused by the store (an update of a record that
-        // is not there); the rest, on both sides of it, are in the document a
-        // peer would be sent.
-        let mixed = together.handle_sync_push(vec![
-            op("u1", "notes", "update", "n1", serde_json::json!({"edited": true})),
-            op("u-missing", "notes", "update", "nobody", serde_json::json!({"edited": true})),
-            op("u2", "notes", "update", "n2", serde_json::json!({"edited": true})),
-        ], "a");
-        let mut done = acked(&mixed);
-        done.sort();
-        assert_eq!(done, vec!["u1", "u2"], "{mixed:?}");
-        assert_eq!(rejected(&mixed), vec!["u-missing"]);
-        let state = db_together.write().get_full_state("notes").unwrap();
-        let dir = crate::test_dirs::temp_path("softn-sync-peer", "");
-        std::fs::create_dir_all(&dir).unwrap();
-        let peer = xdb::create_shared_db(dir.join("peer.sqlite")).unwrap();
-        let peer_db = ServerDb::new(peer, &dir.join("peer.sqlite"), 2).unwrap();
-        peer_db.write().apply_remote_update("notes", &state).unwrap();
-        let replicated = peer_db.write().get_collection("notes").unwrap();
-        assert_eq!(replicated.len(), 20);
-        let edited: Vec<&str> = replicated.iter().filter(|r| r.data["edited"] == true).map(|r| r.id.as_str()).collect();
-        assert_eq!(edited.len(), 2, "{edited:?}");
-        assert!(edited.contains(&"n1") && edited.contains(&"n2"));
-    }
-
-    /// What an after-sync hook throws reaches the caller, which logs it.
-    #[test]
-    fn an_after_sync_hook_that_throws_is_reported() {
-        let (sync, _) = manager(Some("function onAfterSyncBatch(ops) { throw new Error('mail is down'); } function onAfterSync(op) { throw new Error('mail is down'); }"));
-        let ops = vec![op("c1", "notes", "create", "n1", serde_json::json!({}))];
-        let batch = sync.call_after_sync_batch(&ops).unwrap_err();
-        assert!(batch.contains("mail is down"), "{batch}");
-        let single = sync.call_after_sync_each(&ops[..1]).remove(0);
-        assert!(single.contains("mail is down"), "{single}");
-    }
-
-    /// A pull is chunked by bytes as well as by count: the client drops any
-    /// message over 2 MB, so a count-only chunk of large records never lands.
-    #[test]
-    fn a_pull_is_chunked_under_the_clients_message_limit() {
-        let (sync, db) = manager(None);
-        let big = "x".repeat(300 * 1024);
-        for i in 0..20 {
-            db.write().upsert_record(xdb::Record {
-                id: format!("r{i}"), collection: "docs".into(), data: serde_json::json!({"body": big}),
-                created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
-            }).unwrap();
-        }
-        let messages = sync.handle_sync_pull(&["docs".to_string()], None, None, None);
-        let mut total = 0;
-        for message in &messages {
-            let bytes = serde_json::to_vec(message).unwrap().len();
-            assert!(bytes <= 2 * 1024 * 1024, "a {bytes}-byte sync_state would be discarded by the client");
-            if let ServerMessage::SyncState { records, .. } = message { total += records.len(); }
-        }
-        assert_eq!(total, 20);
-        assert!(messages.len() > 1);
-    }
-
-    /// A pull is read a message at a time, each when the one before has
-    /// gone: it holds one message's records, where it used to read every
-    /// collection it named, up to ten thousand records each, into memory
-    /// before the first was sent. What is sent is what was sent before, in
-    /// the same messages: by collection, chunked by count and by bytes, a
-    /// collection with nothing in it still answered, and an incremental pull
-    /// with the deleted records as well.
-    #[test]
-    fn a_pull_is_read_one_message_at_a_time() {
-        let (sync, db) = manager(None);
-        let put = |id: String, collection: &str, received: usize, deleted: bool| {
-            db.write().upsert_record(xdb::Record {
-                id, collection: collection.into(), data: serde_json::json!({"n": received}),
-                created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted,
-            }).unwrap();
-        };
-        for i in 0..1200 { put(format!("a{i:04}"), "alpha", i, false); }
-        for i in 0..3 { put(format!("b{i}"), "beta", i, i == 1); }
-        let names: Vec<String> = ["alpha", "beta", "gamma"].iter().map(|s| s.to_string()).collect();
-        let records = |message: &ServerMessage| match message {
-            ServerMessage::SyncState { collection, records, .. } => (collection.clone(), records.len()),
-            other => panic!("{other:?}"),
-        };
-
-        let mut pull = sync.start_pull(&names, None, None, None).unwrap();
-        let mut steps = Vec::new();
-        while let Some(message) = sync.pull_step(&mut pull) {
-            assert!(pull.chunk.len() <= SYNC_PULL_CHUNK_SIZE, "a step kept {} records", pull.chunk.len());
-            steps.push(message);
-        }
-        assert_eq!(steps.iter().map(records).collect::<Vec<_>>(), vec![
-            ("alpha".to_string(), 500), ("alpha".to_string(), 500), ("alpha".to_string(), 200),
-            ("beta".to_string(), 2), ("gamma".to_string(), 0),
-        ]);
-        let all = serde_json::to_string(&sync.handle_sync_pull(&names, None, None, None)).unwrap();
-        assert_eq!(serde_json::to_string(&steps).unwrap(), all, "the pull a step at a time is the pull");
-
-        // Incremental: what changed since a point, the deleted included, in order.
-        let since = "0000";
-        let mut pull = sync.start_pull(&names[1..2], Some(since), None, None).unwrap();
-        let first = sync.pull_step(&mut pull).unwrap();
-        assert!(sync.pull_step(&mut pull).is_none());
-        let ServerMessage::SyncState { records, more, .. } = first else { panic!() };
-        assert!(more.is_none());
-        let ids: Vec<(String, bool)> = records.iter().map(|r| (r["id"].as_str().unwrap().to_string(), r.get("deleted").is_some())).collect();
-        assert_eq!(ids, vec![("b0".to_string(), false), ("b1".to_string(), true), ("b2".to_string(), false)]);
-    }
-
-    /// Other clients are sent a push's ops in the order the pushes were
-    /// stored. They were sent once the writer lock had been let go, after
-    /// the acknowledgement was made and the ops copied, so a push stored
-    /// second could be sent first, and the larger the first push the longer
-    /// its copying took. A client applies what it is sent as it comes: of
-    /// two edits to one record it was left showing the older, while the
-    /// server, and the client that made the newer, had the newer.
-    ///
-    /// Several clients push at once here, one of them in large pushes. Every
-    /// op creates a record, so the table's row numbers are the order the
-    /// pushes were stored in, and the records must be sent on in that order.
-    #[test]
-    fn pushes_reach_other_clients_in_the_order_they_were_stored() {
-        let (sync, _db) = manager(None);
-        let mut deltas = sync.subscribe();
-        let listener = std::thread::spawn(move || {
-            let mut sent = Vec::new();
-            loop {
-                match deltas.blocking_recv() {
-                    Ok((_, message)) if matches!(*message, ServerMessage::SyncDelta { .. }) => {
-                        let ServerMessage::SyncDelta { ops } = &*message else { unreachable!() };
-                        for op in ops {
-                            if op.record_id == "end" {
-                                return sent;
-                            }
-                            sent.push(op.record_id.clone());
-                        }
-                    }
-                    // What a slow listener missed is left out; what it has is still in order.
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return sent,
-                }
-            }
-        });
-
-        let mut pushing = Vec::new();
-        {
-            // One client pushes six hundred records at a time.
-            let sync = Arc::clone(&sync);
-            pushing.push(std::thread::spawn(move || {
-                let tags: Vec<String> = (0..60).map(|n| format!("tag {n}")).collect();
-                for round in 0..12 {
-                    let ops: Vec<SyncOp> = (0..600)
-                        .map(|i| op(&format!("b{round}-{i}"), "bulk", "create", &format!("bulk-{round}-{i}"), serde_json::json!({"tags": tags})))
-                        .collect();
-                    assert_eq!(acked(&sync.handle_sync_push(ops, "bulk")).len(), 600);
-                }
-            }));
-        }
-        for client in 0..3 {
-            // The others push one record after another.
-            let sync = Arc::clone(&sync);
-            pushing.push(std::thread::spawn(move || {
-                for i in 0..300 {
-                    let create = op(&format!("c{client}-{i}"), "notes", "create", &format!("note-{client}-{i}"), serde_json::json!({"n": i}));
-                    assert_eq!(acked(&sync.handle_sync_push(vec![create], &format!("client-{client}"))).len(), 1);
-                }
-            }));
-        }
-        for thread in pushing {
-            thread.join().unwrap();
-        }
-        sync.handle_sync_push(vec![op("end", "notes", "create", "end", serde_json::json!({}))], "seed");
-        let sent = listener.join().unwrap();
-
-        let direct = rusqlite::Connection::open(&sync.db_path).unwrap();
-        let stored: std::collections::HashMap<String, i64> = direct
-            .prepare("SELECT id, rowid FROM records").unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
-            .collect::<Result<_, _>>().unwrap();
-        assert!(sent.len() > 1000, "only {} of the records were sent on", sent.len());
-        let rows: Vec<i64> = sent.iter().map(|id| stored[id]).collect();
-        let late = rows.windows(2).filter(|pair| pair[1] < pair[0]).count();
-        assert_eq!(late, 0, "{late} time(s) a push was sent on after one stored later");
-    }
-
-    /// The ids a full pull of `notes` sends, page after page as a client
-    /// asks for them, in the order they are sent.
-    fn pulled_in_pages(sync: &SyncManager) -> Vec<String> {
-        let mut ids = Vec::new();
-        let mut cursor: Option<PullCursor> = None;
-        for _ in 0..1000 {
-            let messages = sync.handle_sync_pull(&["notes".to_string()], None, None, cursor.as_ref().map(|c| (c.at.as_str(), c.id.as_str())));
-            cursor = None;
-            for message in messages {
-                let ServerMessage::SyncState { records, more, .. } = message else { panic!("{message:?}") };
-                ids.extend(records.iter().map(|r| r["id"].as_str().unwrap().to_string()));
-                cursor = more;
-            }
-            if cursor.is_none() {
-                return ids;
-            }
-        }
-        panic!("the pull went on asking for more after {} records", ids.len());
-    }
-
-    /// Each step of a pull goes on from the last record the step before
-    /// read, and each page from the last record of the page before. Through
-    /// records received in the same millisecond (a bulk statement stamps
-    /// every row it touches alike), through records with no receipt time
-    /// (null, or empty, from a host before there were receipt times), and
-    /// with the ends of messages and of pages falling among both, every
-    /// record is sent once, in the order `COALESCE(server_received_at, '')`,
-    /// id: the order the pull was read in when it was one query.
-    #[test]
-    fn a_pull_in_steps_and_pages_sends_every_record_once_in_the_one_order() {
-        let (sync, db) = manager(None);
-        for i in 0..1300 {
-            db.write().upsert_record(xdb::Record {
-                id: format!("n{i:04}"), collection: "notes".into(), data: serde_json::json!({"n": i}),
-                created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
-            }).unwrap();
-        }
-        let direct = rusqlite::Connection::open(&sync.db_path).unwrap();
-        // 650 records in one millisecond and 450 in the next, 50 as they were
-        // received, and 150 with no receipt time: null and empty by turns.
-        direct.execute_batch(
-            "UPDATE records SET server_received_at = '2026-01-01T00:00:00.000Z' WHERE id < 'n0650';
-             UPDATE records SET server_received_at = '2026-01-01T00:00:00.001Z' WHERE id >= 'n0650' AND id < 'n1100';
-             UPDATE records SET server_received_at = NULL WHERE id >= 'n1150';
-             UPDATE records SET server_received_at = '' WHERE id >= 'n1150' AND substr(id, 5, 1) IN ('1', '3', '5', '7', '9');",
-        ).unwrap();
-        let wanted: Vec<String> = direct
-            .prepare("SELECT id FROM records WHERE collection = 'notes' AND deleted = 0 ORDER BY COALESCE(server_received_at, '') ASC, id ASC").unwrap()
-            .query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
-        assert_eq!(wanted.len(), 1300);
-        assert!(wanted[0] == "n1150" && wanted[149] == "n1299" && wanted[150] == "n0000", "{:?}", &wanted[..3]);
-
-        // A page the size of the collection, pages that end among the
-        // records with no receipt time, among the ties, and on a message's end.
-        for page in [10_000, 700, 500, 100, 7] {
-            sync.pull_page.store(page, std::sync::atomic::Ordering::Relaxed);
-            let sent = pulled_in_pages(&sync);
-            assert_eq!(sent.len(), wanted.len(), "pages of {page}");
-            assert!(sent == wanted, "pages of {page}: sent in another order, or one twice");
-        }
-
-        // An incremental pull, from a record among the ties: the rest, the
-        // records with no receipt time left out as they always were.
-        let since = sync.handle_sync_pull(&["notes".to_string()], Some("2026-01-01T00:00:00.000Z"), Some("n0100"), None);
-        let ids: Vec<String> = since.iter().flat_map(|m| match m {
-            ServerMessage::SyncState { records, .. } => records.iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>(),
-            other => panic!("{other:?}"),
-        }).collect();
-        assert_eq!(ids, wanted[251..].to_vec());
-    }
-
-    /// Records are written while a pull is between two of its steps. One not
-    /// yet read that is changed is sent once, as changed (it has moved to
-    /// the end, where it is read); one already sent that is changed is sent
-    /// again, as changed; one not yet read that is deleted is not sent; and
-    /// the pull ends.
-    #[test]
-    fn records_written_between_the_steps_of_a_pull_are_neither_lost_nor_sent_for_ever() {
-        let (sync, _db) = manager(None);
-        let creates: Vec<SyncOp> = (0..1200)
-            .map(|i| op(&format!("c{i}"), "notes", "create", &format!("n{i:04}"), serde_json::json!({"n": i})))
-            .collect();
-        for batch in creates.chunks(400) {
-            assert_eq!(acked(&sync.handle_sync_push(batch.to_vec(), "a")).len(), 400);
-        }
-        let mut pull = sync.start_pull(&["notes".to_string()], None, None, None).unwrap();
-        let mut sent: Vec<(String, serde_json::Value)> = Vec::new();
-        let take = |message: ServerMessage, sent: &mut Vec<(String, serde_json::Value)>| {
-            let ServerMessage::SyncState { records, .. } = message else { panic!("{message:?}") };
-            sent.extend(records.iter().map(|r| (r["id"].as_str().unwrap().to_string(), r["data"].clone())));
-        };
-        take(sync.pull_step(&mut pull).unwrap(), &mut sent);
-        assert_eq!(sent.len(), 500);
-        let pushed = sync.handle_sync_push(vec![
-            op("u-unread", "notes", "update", "n0800", serde_json::json!({"edited": true})),
-            op("u-sent", "notes", "update", "n0010", serde_json::json!({"edited": true})),
-            op("d-unread", "notes", "delete", "n0900", serde_json::json!({})),
-        ], "b");
-        assert_eq!(acked(&pushed).len(), 3, "{pushed:?}");
-        let mut steps = 1;
-        while let Some(message) = sync.pull_step(&mut pull) {
-            take(message, &mut sent);
-            steps += 1;
-            assert!(steps < 50, "the pull did not end");
-        }
-        let of = |id: &str| -> Vec<&serde_json::Value> { sent.iter().filter(|(sent_id, _)| sent_id == id).map(|(_, data)| data).collect() };
-        assert_eq!(of("n0800"), vec![&serde_json::json!({"n": 800, "edited": true})]);
-        assert_eq!(of("n0010"), vec![&serde_json::json!({"n": 10}), &serde_json::json!({"n": 10, "edited": true})]);
-        assert!(of("n0900").is_empty());
-        for i in (0..1200).filter(|i| ![800, 10, 900].contains(i)) {
-            assert_eq!(of(&format!("n{i:04}")).len(), 1, "n{i:04}");
-        }
-    }
-
-    /// Naming one collection many times in one pull used to read it that many
-    /// times into memory: a 4 MB message could hold a hundred thousand names.
-    #[test]
-    fn a_pull_reads_each_collection_once_and_bounds_how_many() {
-        let (sync, db) = manager(None);
-        db.write().upsert_record(xdb::Record {
-            id: "a".into(), collection: "notes".into(), data: serde_json::json!({}),
-            created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
-        }).unwrap();
-        let repeated: Vec<String> = std::iter::repeat_n("notes".to_string(), 5_000).collect();
-        let messages = sync.handle_sync_pull(&repeated, None, None, None);
-        assert_eq!(messages.len(), 1, "one sync_state for one distinct collection");
-        let many: Vec<String> = (0..MAX_PULL_COLLECTIONS + 1).map(|i| format!("c{i}")).collect();
-        let messages = sync.handle_sync_pull(&many, None, None, None);
-        assert!(matches!(messages.as_slice(), [ServerMessage::Error { .. }]), "{} messages", messages.len());
-    }
-}
+#[path = "sync_tests.rs"]
+mod tests;

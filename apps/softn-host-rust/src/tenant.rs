@@ -37,7 +37,7 @@ pub struct TenantContext {
     /// to receive clean shutdown notifications.
     pub shutdown: tokio::sync::watch::Sender<bool>,
     /// Per-address allowance for the app's routes (see bundle::requests_per_minute).
-    pub api_limiter: Option<Arc<crate::sync::AddressLimiter>>,
+    pub api_limiter: Option<Arc<crate::limiter::AddressLimiter>>,
 }
 
 /// Top-level multi-tenant manager. Holds all loaded tenants and provides
@@ -420,11 +420,16 @@ fn load_tenant(
         return Err("A host-token route requires an operator authentication token".into());
     }
 
+    // The sync stream, before the runtime whose `db` bridge writes into it
+    // (as in app.rs).
+    let stream = crate::sync::sync_stream();
+
     // Load runtime
     let runtime = if let Some(server) = &manifest.server {
         let source = bundle::load_server_scripts(&bundle_path, server)?;
 
         let db_for_factory = db.clone();
+        let stream_for_factory = stream.clone();
         let fs_root = data_dir.join("files");
         std::fs::create_dir_all(&fs_root)
             .map_err(|e| format!("Failed to create files dir: {}", e))?;
@@ -461,7 +466,7 @@ fn load_tenant(
 
         let app_config = bundle::app_config(&manifest);
         let rt = ServerRuntime::new(move || BridgeSet {
-            db: Some(Box::new(NativeDbBridge::new(db_for_factory.clone()))),
+            db: Some(Box::new(NativeDbBridge::with_stream(db_for_factory.clone(), stream_for_factory.clone()))),
             http: if allow_http { Some(Box::new(NativeHttpBridge::new())) } else { None },
             fs: if allow_fs { Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))) } else { None },
             env: Some(Box::new(NativeEnvBridge)),
@@ -500,10 +505,11 @@ fn load_tenant(
         None
     };
 
-    let api_limiter = bundle::requests_per_minute(&manifest).map(|n| Arc::new(crate::sync::AddressLimiter::per_minute(n)));
-    let sync_manager = SyncManager::new(
+    let api_limiter = bundle::requests_per_minute(&manifest).map(|n| Arc::new(crate::limiter::AddressLimiter::per_minute(n)));
+    let sync_manager = SyncManager::with_stream(
         db.clone(), runtime.clone(), auth_token.clone(),
         db_path, crate::sync::SyncSettings::from_manifest(&manifest, true),
+        stream,
     );
 
     Ok(TenantContext {

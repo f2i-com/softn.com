@@ -117,14 +117,15 @@ describe('XDBServerSync', () => {
   });
 
   it('pushes collection-scoped edits and deletes with the original record identity', () => {
-    const record = xdb.create('notes', { text: 'before' });
     const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
     sync.connect();
     const socket = FakeSocket.made[0];
     try {
       socket.open();
       authOk(socket);
-      socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+      // A record the server has.
+      const record = { id: 'n1', collection: 'notes', data: { text: 'before' }, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [record] });
       xdb.updateInCollection('notes', record.id, { text: 'after' });
       xdb.deleteFromCollection('notes', record.id);
       // One op of a record at a time: the delete goes once the update is answered.
@@ -152,7 +153,8 @@ describe('XDBServerSync', () => {
     expect(FakeSocket.made).toHaveLength(0);
   });
 
-  it('queues what the app writes before the socket is up and pushes it after the pull', () => {
+  it('queues what the app writes before the socket is up, and before the client existed, and pushes it after the pull', () => {
+    // Written before there was a client at all (it starts after consent).
     xdb.create('notes', { text: 'seed' });
     const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
     sync.connect();
@@ -162,7 +164,8 @@ describe('XDBServerSync', () => {
     xdb.create('notes', { text: 'written offline' });
 
     socket.open();
-    expect(socket.ofType('auth')).toHaveLength(1);
+    // Nothing is said on open: the host speaks first.
+    expect(socket.sent).toEqual([]);
     authOk(socket);
     expect(socket.ofType('sync_pull')).toHaveLength(1);
     // Not before the pull has answered.
@@ -172,9 +175,11 @@ describe('XDBServerSync', () => {
     const pushes = socket.ofType('sync_push');
     expect(pushes).toHaveLength(1);
     const ops = pushes[0].ops as Array<Record<string, unknown>>;
-    expect(ops).toHaveLength(1);
-    expect(ops[0].operation).toBe('create');
-    expect(ops[0].clientId).toBe('c1');
+    expect(ops.map((op) => [op.operation, (op.data as { text: string }).text])).toEqual([
+      ['create', 'seed'],
+      ['create', 'written offline'],
+    ]);
+    expect(ops.every((op) => op.clientId === 'c1')).toBe(true);
 
     sync.disconnect();
   });
@@ -560,10 +565,17 @@ describe('an edit made here that the server has not answered', () => {
   });
 
   it('is not undone by the first pull when it was made before the socket was up', () => {
-    xdb.writeRecord('notes', { id: 'n1', collection: 'notes', data: { title: 'old', body: 'b' }, created_at: stamp, updated_at: stamp, deleted: false });
+    // A store that has synced before, and has n1 from the server.
+    const earlier = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
+    earlier.connect();
+    FakeSocket.made[0].open();
+    authOk(FakeSocket.made[0]);
+    FakeSocket.made[0].receive({ type: 'sync_state', collection: 'notes', records: [before] });
+    earlier.disconnect();
+
     const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
     sync.connect();
-    const socket = FakeSocket.made[0];
+    const socket = FakeSocket.made[1];
     try {
       xdb.updateInCollection('notes', 'n1', { title: 'new' });
       socket.open();
@@ -775,6 +787,8 @@ describe('changes made offline, and the app closed before it reconnected', () =>
   }
 
   it('is sent until answered and not after, and belongs to its own app', () => {
+    // Time moves on between the visits, as it does between page loads.
+    vi.useFakeTimers({ now: new Date('2026-02-01T00:00:00Z') });
     const storage = createTestStorage();
     const first = visit(storage);
     first.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
@@ -793,6 +807,7 @@ describe('changes made offline, and the app closed before it reconnected', () =>
     const [op] = pushedOps(second.socket);
     expect([op.operation, op.recordId]).toEqual(['create', 'n2']);
     second.socket.receive({ type: 'sync_ack', opIds: [op.id] });
+    vi.advanceTimersByTime(5);
     second.sync.disconnect();
 
     const third = visit(storage);

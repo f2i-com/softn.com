@@ -4,6 +4,7 @@ mod bridges;
 mod bundle;
 mod host;
 mod http;
+mod limiter;
 mod pool;
 mod private_backend;
 mod runtime;

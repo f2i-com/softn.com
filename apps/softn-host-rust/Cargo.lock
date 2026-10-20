@@ -3675,6 +3675,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "tungstenite",
  "ureq",
  "uuid",
  "zip",

@@ -1,7 +1,8 @@
-use crate::sync::{Audience, ServerMessage, SyncManager, SyncOp};
+use crate::sync::{is_valid_collection_name, Audience, ServerMessage, SyncManager, SyncOp};
 use crate::util;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -13,7 +14,14 @@ use tokio::sync::{broadcast, mpsc, watch};
 /// and the client, still holding those op ids, would push them again.
 const HANDLER_TIMEOUT: std::time::Duration =
     crate::runtime::MAX_CALL_WAIT.saturating_add(std::time::Duration::from_secs(10));
-const MAX_OPS_PER_PUSH: usize = 1000;
+/// Ops one `sync_push` may carry (`sync-protocol.json` `maxOpsPerPush`).
+pub(crate) const MAX_OPS_PER_PUSH: usize = 1000;
+/// Collections a connection's subscription may name; past this it is sent
+/// every collection's deltas, as before subscriptions were read.
+const MAX_SUBSCRIBED: usize = 1024;
+/// How long a socket closed for a frame it refused is kept open, unread,
+/// once its Close frame is sent (see handle_ws).
+const REFUSED_FRAME_LINGER: std::time::Duration = std::time::Duration::from_secs(1);
 /// If no data is received from the client within this period, assume the
 /// connection is dead (e.g. mobile lost signal, laptop asleep) and clean up.
 const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
@@ -67,6 +75,79 @@ struct Outbound {
 impl From<ServerMessage> for Outbound {
     fn from(message: ServerMessage) -> Self {
         Outbound { message, place: None }
+    }
+}
+
+/// Why a connection is being closed, for its Close frame: a code and a
+/// reason (at most 123 bytes).
+type CloseReason = (u16, String);
+
+/// The collections whose deltas a connection is sent: every collection
+/// (None) until the client names the ones it wants with `subscribe`, then
+/// those and every collection it pulls or pushes to after that. The host
+/// used to ignore `subscribe` and send each client every delta, which it
+/// applied, collections it had not asked for included. A client from before
+/// subscribes with the collections it knows when it connects and starts
+/// using others later: one it pulls or pushes to is one it is sent.
+#[derive(Clone, Default)]
+struct Subscription(Arc<std::sync::Mutex<Option<HashSet<String>>>>);
+
+impl Subscription {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<HashSet<String>>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The client said which collections it wants.
+    fn set(&self, collections: &[String]) {
+        let names: HashSet<String> = collections.iter().filter(|c| is_valid_collection_name(c)).cloned().collect();
+        *self.lock() = (names.len() <= MAX_SUBSCRIBED).then_some(names);
+    }
+
+    /// The client pulled or pushed to these.
+    fn add<'a>(&self, collections: impl IntoIterator<Item = &'a str>) {
+        let mut subscribed = self.lock();
+        if let Some(names) = subscribed.as_mut() {
+            for collection in collections {
+                if is_valid_collection_name(collection) && !names.contains(collection) {
+                    names.insert(collection.to_string());
+                }
+            }
+            if names.len() > MAX_SUBSCRIBED {
+                *subscribed = None;
+            }
+        }
+    }
+
+    /// What of `message` is for this connection, or None if nothing is. What
+    /// the store says to this connection alone is never held back.
+    fn admit(&self, audience: &Audience, message: &Arc<ServerMessage>) -> Option<Arc<ServerMessage>> {
+        let ServerMessage::SyncDelta { ops } = &**message else { return Some(message.clone()) };
+        if matches!(audience, Audience::Only(_)) {
+            return Some(message.clone());
+        }
+        let subscribed = self.lock();
+        let Some(names) = subscribed.as_ref() else { return Some(message.clone()) };
+        if ops.iter().all(|op| names.contains(&op.collection)) {
+            return Some(message.clone());
+        }
+        let kept: Vec<SyncOp> = ops.iter().filter(|op| names.contains(&op.collection)).cloned().collect();
+        (!kept.is_empty()).then(|| Arc::new(ServerMessage::SyncDelta { ops: kept }))
+    }
+}
+
+/// The Close frame for a frame the WebSocket layer refused: 1009 for a
+/// message over MAX_WS_MESSAGE_SIZE, 1007 for text that is not UTF-8, 1002
+/// for anything else the protocol does not allow. None when the connection
+/// itself failed, and there is nobody to tell. The reader used to pass over
+/// every such error and read on, and the socket closed as a normal closure
+/// (1000), or, for a message over the limit, with no Close frame at all.
+fn refused_frame(error: axum::Error) -> Option<CloseReason> {
+    let error = error.into_inner();
+    match error.downcast_ref::<tungstenite::Error>()? {
+        tungstenite::Error::Capacity(_) => Some((1009, format!("Message too big (over {} bytes)", crate::http::MAX_WS_MESSAGE_SIZE))),
+        tungstenite::Error::Utf8(_) => Some((1007, "A text message was not valid UTF-8".into())),
+        tungstenite::Error::Protocol(_) => Some((1002, "WebSocket protocol error".into())),
+        _ => None,
     }
 }
 
@@ -136,7 +217,7 @@ async fn finish_writer(mut writer: tokio::task::JoinHandle<()>, wait: std::time:
 /// when the mpsc channel is completely full.
 async fn send_response(
     out_tx: &mpsc::Sender<Outbound>,
-    close_reason_tx: &watch::Sender<Option<String>>,
+    close_reason_tx: &watch::Sender<Option<CloseReason>>,
     msg: ServerMessage,
 ) -> bool {
     send_response_with_timeout(out_tx, close_reason_tx, msg.into(), SEND_TIMEOUT).await
@@ -147,7 +228,7 @@ async fn send_response(
 /// need more time to drain large payloads without being disconnected.
 async fn send_response_with_timeout(
     out_tx: &mpsc::Sender<Outbound>,
-    close_reason_tx: &watch::Sender<Option<String>>,
+    close_reason_tx: &watch::Sender<Option<CloseReason>>,
     msg: Outbound,
     timeout: std::time::Duration,
 ) -> bool {
@@ -161,9 +242,7 @@ async fn send_response_with_timeout(
             tracing::warn!("WebSocket send timed out ({}s) — dropping connection to force re-sync", timeout.as_secs());
             // Signal the close reason via a dedicated watch channel that bypasses
             // the full mpsc queue. The writer reads this when out_rx returns None.
-            let _ = close_reason_tx.send(Some(
-                "Connection too slow — disconnecting to force re-sync".into(),
-            ));
+            let _ = close_reason_tx.send(Some((1000, "Connection too slow — disconnecting to force re-sync".into())));
             false
         }
     }
@@ -209,17 +288,29 @@ pub async fn handle_ws(
     // times out, the mpsc channel is likely full — so we use a separate watch
     // channel to deliver the close reason to the writer task, which reads it
     // when out_rx returns None (after out_tx is dropped).
-    let (close_reason_tx, close_reason_rx) = watch::channel::<Option<String>>(None);
+    let (close_reason_tx, close_reason_rx) = watch::channel::<Option<CloseReason>>(None);
+    // What the client has asked for, which the reader learns and the writer holds deltas to.
+    let subscription = Subscription::default();
 
     let cid_for_writer = cid.clone();
-    let writer_handle = tokio::spawn(writer_task(ws_tx, out_rx, broadcast_rx, cid_for_writer, shutdown_rx, close_reason_rx, WRITER_SEND_TIMEOUT));
+    let writer_handle = tokio::spawn(writer_task(ws_tx, out_rx, broadcast_rx, cid_for_writer, shutdown_rx, close_reason_rx, subscription.clone(), WRITER_SEND_TIMEOUT));
 
     // Reader task: runs in the current task
-    reader_task(&mut ws_rx, &sync, &cid, &out_tx, &close_reason_tx).await;
+    reader_task(&mut ws_rx, &sync, &cid, &out_tx, &close_reason_tx, &subscription).await;
 
     // Reader exited (client disconnected or error) — drop out_tx to signal writer
     drop(out_tx);
     finish_writer(writer_handle, WRITER_DRAIN).await;
+    // A frame refused part-way through (a message over the limit) leaves the
+    // rest of it unread. Closed at once, the socket resets the connection
+    // while the client is still sending, and the reset can reach it before
+    // the Close frame that says why (it saw 1006, no reason). It is held a
+    // moment, unread, so the Close frame arrives first.
+    let refused = close_reason_tx.borrow().as_ref().is_some_and(|(code, _)| *code != 1000);
+    if refused {
+        tokio::time::sleep(REFUSED_FRAME_LINGER).await;
+    }
+    drop(ws_rx);
     tracing::info!("Client {} disconnected", cid);
 }
 
@@ -233,7 +324,8 @@ async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
     mut broadcast_rx: broadcast::Receiver<(Audience, Arc<ServerMessage>)>,
     cid: String,
     mut shutdown_rx: watch::Receiver<bool>,
-    close_reason_rx: watch::Receiver<Option<String>>,
+    close_reason_rx: watch::Receiver<Option<CloseReason>>,
+    subscription: Subscription,
     send_limit: std::time::Duration,
 ) {
     let mut ws_tx = Deadlined { sink, limit: send_limit, dead: false };
@@ -259,12 +351,13 @@ async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
                     // (covers both normal exit and send_response timeout).
                     None => {
                         // Check the watch channel for a terminal close reason
-                        // (set by send_response on timeout). Falls back to a
-                        // generic reason for normal disconnects.
-                        let reason = close_reason_rx.borrow().clone()
-                            .unwrap_or_else(|| "Connection closing".into());
+                        // (set by send_response on timeout, or by the reader
+                        // for a frame it refused). Falls back to a generic
+                        // reason for normal disconnects.
+                        let (code, reason) = close_reason_rx.borrow().clone()
+                            .unwrap_or_else(|| (1000, "Connection closing".into()));
                         let _ = ws_tx.send(Message::Close(Some(CloseFrame {
-                            code: 1000,
+                            code,
                             reason: reason.into(),
                         }))).await;
                         break;
@@ -272,12 +365,13 @@ async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
                 }
             }
             // The sync stream: other clients' pushes, and what the store
-            // said of this client's own (sync.rs Audience).
+            // said of this client's own (sync.rs Audience), held to the
+            // collections the client asked for (Subscription).
             result = broadcast_rx.recv() => {
                 match result {
                     Ok((audience, msg)) => {
                         // A push is not echoed back to its sender.
-                        if audience.reaches(&cid) {
+                        if let Some(msg) = audience.reaches(&cid).then(|| subscription.admit(&audience, &msg)).flatten() {
                             if let Ok(json) = serde_json::to_string(&*msg) {
                                 if ws_tx.send(Message::Text(json.into())).await.is_err() {
                                     break;
@@ -287,9 +381,7 @@ async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("Client {} lagged, missed {} messages — disconnecting to force re-sync", cid, n);
-                        let msg = ServerMessage::Error {
-                            message: format!("Missed {} messages, reconnect to re-sync", n),
-                        };
+                        let msg = ServerMessage::error(format!("Missed {} messages, reconnect to re-sync", n));
                         if let Ok(json) = serde_json::to_string(&msg) {
                             let _ = ws_tx.send(Message::Text(json.into())).await;
                         }
@@ -314,9 +406,7 @@ async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     tracing::info!("Server shutting down, closing client {}", cid);
-                    let msg = ServerMessage::Error {
-                        message: "Server shutting down".into(),
-                    };
+                    let msg = ServerMessage::error("Server shutting down");
                     if let Ok(json) = serde_json::to_string(&msg) {
                         let _ = ws_tx.send(Message::Text(json.into())).await;
                     }
@@ -344,7 +434,8 @@ async fn reader_task(
     sync: &Arc<SyncManager>,
     cid: &str,
     out_tx: &mpsc::Sender<Outbound>,
-    close_reason_tx: &watch::Sender<Option<String>>,
+    close_reason_tx: &watch::Sender<Option<CloseReason>>,
+    subscription: &Subscription,
 ) {
     // The places a pull's messages take in this connection (PULL_MESSAGES_HELD).
     let pull_places = Arc::new(tokio::sync::Semaphore::new(PULL_MESSAGES_HELD));
@@ -356,9 +447,7 @@ async fn reader_task(
             Ok(msg) => msg,
             Err(_) => {
                 tracing::info!("Client {} idle timeout ({}s) — disconnecting", cid, IDLE_TIMEOUT.as_secs());
-                let _ = send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                    message: "Idle timeout".into(),
-                }).await;
+                let _ = send_response(out_tx, close_reason_tx, ServerMessage::error("Idle timeout")).await;
                 break;
             }
         };
@@ -368,9 +457,7 @@ async fn reader_task(
                 let parsed: serde_json::Value = match util::parse_json_bounded(&text, util::MAX_JSON_DEPTH) {
                     Ok(v) => v,
                     Err(_) => {
-                        if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                            message: "Invalid JSON".into(),
-                        }).await {
+                        if !send_response(out_tx, close_reason_tx, ServerMessage::error("Invalid JSON")).await {
                             break;
                         }
                         continue;
@@ -385,14 +472,17 @@ async fn reader_task(
                             .get("collections")
                             .and_then(|c| serde_json::from_value(c.clone()).ok())
                             .unwrap_or_default();
-                        // Optional timestamp cursor for incremental sync.
-                        // If provided, only records updated after this timestamp are returned.
+                        // Optional point for incremental sync: only records the
+                        // host received after it are returned, deleted ones
+                        // included. It is the host's own receipt time
+                        // (`serverReceivedAt` on each record a pull sends,
+                        // pool.rs SyncFrom), not the time of the edit.
                         let last_sync: Option<String> = parsed
                             .get("lastSync")
                             .and_then(|v| v.as_str())
                             .map(String::from);
-                        // Optional compound cursor: (lastSync, lastId) resolves
-                        // timestamp ties when >10k records share the same updated_at.
+                        // With `lastSync`, a compound cursor: of the records
+                        // received in that millisecond, those after this id.
                         let last_id: Option<String> = parsed
                             .get("lastId")
                             .and_then(|v| v.as_str())
@@ -403,6 +493,10 @@ async fn reader_task(
                             Some((c.get("at")?.as_str()?.to_string(), c.get("id")?.as_str()?.to_string()))
                         });
 
+                        // A collection the client pulls is one it is sent the deltas of.
+                        if collections.len() <= crate::sync::MAX_PULL_COLLECTIONS {
+                            subscription.add(collections.iter().map(String::as_str));
+                        }
                         let mut pull = match sync.start_pull(
                             &collections, last_sync.as_deref(), last_id.as_deref(),
                             cursor.as_ref().map(|(at, id)| (at.as_str(), id.as_str())),
@@ -429,7 +523,7 @@ async fn reader_task(
                                 Ok(Ok(place)) => place,
                                 _ => {
                                     tracing::warn!("A sync pull's messages were not taken for {}s — dropping the connection", PULL_PLACE_WAIT.as_secs());
-                                    let _ = close_reason_tx.send(Some("Connection too slow — disconnecting to force re-sync".into()));
+                                    let _ = close_reason_tx.send(Some((1000, "Connection too slow — disconnecting to force re-sync".into())));
                                     return;
                                 }
                             };
@@ -443,15 +537,20 @@ async fn reader_task(
                             // may take, rather than stop part-way.
                             let wait = if first { PERMIT_WAIT } else { HANDLER_TIMEOUT };
                             first = false;
+                            // What a refusal from here on names: the
+                            // collections not yet sent whole. A client used to
+                            // be told only "server busy", which it took for its
+                            // pushes, and never asked for the pull again.
+                            let remaining = pull.remaining();
                             let permit = match tokio::time::timeout(
                                 wait,
                                 sync.sync_permits.clone().acquire_owned(),
                             ).await {
                                 Ok(Ok(p)) => p,
                                 _ => {
-                                    if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                                        message: "Server busy — too many concurrent sync operations, retry later".into(),
-                                    }).await {
+                                    if !send_response(out_tx, close_reason_tx, ServerMessage::pull_refused(
+                                        "Server busy — too many concurrent sync operations, retry later", remaining, true,
+                                    )).await {
                                         return;
                                     }
                                     break;
@@ -473,16 +572,12 @@ async fn reader_task(
                                 }
                                 Ok(Err(e)) => {
                                     tracing::error!("sync_pull task failed: {}", e);
-                                    let _ = send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                                        message: "Internal server error".into(),
-                                    }).await;
+                                    let _ = send_response(out_tx, close_reason_tx, ServerMessage::pull_refused("Internal server error", remaining, true)).await;
                                     break;
                                 }
                                 Err(_) => {
                                     tracing::error!("sync_pull timed out");
-                                    let _ = send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                                        message: "Operation timed out".into(),
-                                    }).await;
+                                    let _ = send_response(out_tx, close_reason_tx, ServerMessage::pull_refused("Operation timed out", remaining, true)).await;
                                     break;
                                 }
                             };
@@ -501,21 +596,24 @@ async fn reader_task(
                             None => Vec::new(),
                         };
                         if ops.is_empty() {
-                            if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                                message: "Invalid or empty ops in sync_push".into(),
-                            }).await {
+                            if !send_response(out_tx, close_reason_tx, ServerMessage::error("Invalid or empty ops in sync_push")).await {
                                 return;
                             }
                             continue;
                         }
                         if ops.len() > MAX_OPS_PER_PUSH {
-                            if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                                message: format!("Too many ops ({}, max {})", ops.len(), MAX_OPS_PER_PUSH),
-                            }).await {
+                            if !send_response(out_tx, close_reason_tx, ServerMessage::error(format!("Too many ops ({}, max {})", ops.len(), MAX_OPS_PER_PUSH))).await {
                                 return;
                             }
                             continue;
                         }
+                        // A collection the client pushes to is one it is sent the deltas of.
+                        subscription.add(ops.iter().map(|op| op.collection.as_str()));
+                        // A push not taken this time is answered `sync_retry`
+                        // with its op ids, which every client reads as "send
+                        // these again". It was an `error` naming nothing, which
+                        // a client took for everything it had sent.
+                        let op_ids: Vec<String> = ops.iter().map(|op| op.id.clone()).collect();
 
                         // Acquire sync permit (same rationale as sync_pull above)
                         let permit = match tokio::time::timeout(
@@ -524,9 +622,9 @@ async fn reader_task(
                         ).await {
                             Ok(Ok(p)) => p,
                             _ => {
-                                if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
-                                    message: "Server busy — too many concurrent sync operations, retry later".into(),
-                                }).await {
+                                if !send_response(out_tx, close_reason_tx, ServerMessage::push_retry(
+                                    op_ids, "Server busy — too many concurrent sync operations, retry later",
+                                )).await {
                                     return;
                                 }
                                 continue;
@@ -545,19 +643,17 @@ async fn reader_task(
                                 let _ = answer_tx.send(responses);
                             });
                         });
+                        // Sent again, an op the first attempt did store is
+                        // acknowledged and not applied twice (sync.rs RecentOps).
                         let responses = match tokio::time::timeout(HANDLER_TIMEOUT, answer_rx).await {
                             Ok(Ok(r)) => r,
                             Ok(Err(_)) => {
                                 tracing::error!("sync_push task ended before it answered");
-                                vec![ServerMessage::Error {
-                                    message: "Internal server error".into(),
-                                }]
+                                vec![ServerMessage::push_retry(op_ids, "Internal server error")]
                             }
                             Err(_) => {
                                 tracing::error!("sync_push timed out");
-                                vec![ServerMessage::Error {
-                                    message: "Operation timed out".into(),
-                                }]
+                                vec![ServerMessage::push_retry(op_ids, "Operation timed out")]
                             }
                         };
                         for resp in responses {
@@ -571,7 +667,12 @@ async fn reader_task(
                         let _ = tokio::time::timeout(HANDLER_TIMEOUT, &mut task).await;
                     }
                     "subscribe" => {
-                        // Subscriptions handled via broadcast channel
+                        // The collections this client wants the deltas of
+                        // (Subscription); not a list of names, and it is
+                        // sent everything, as before.
+                        if let Some(collections) = parsed.get("collections").and_then(|c| serde_json::from_value::<Vec<String>>(c.clone()).ok()) {
+                            subscription.set(&collections);
+                        }
                     }
                     _ => {}
                 }
@@ -584,8 +685,22 @@ async fn reader_task(
             Some(Ok(Message::Pong(_))) => {
                 // Pong responses also reset the idle timer.
             }
+            // The protocol is JSON text. A binary message used to be passed
+            // over without a word, and the client waited for an answer.
+            Some(Ok(Message::Binary(_))) => {
+                let _ = close_reason_tx.send(Some((1003, "Binary messages are not accepted".into())));
+                break;
+            }
+            // A frame the WebSocket layer refused: the connection cannot go
+            // on, and the Close frame says why (refused_frame).
+            Some(Err(error)) => {
+                if let Some(reason) = refused_frame(error) {
+                    tracing::debug!("Client {} sent a frame that was refused: {} {}", cid, reason.0, reason.1);
+                    let _ = close_reason_tx.send(Some(reason));
+                }
+                break;
+            }
             Some(Ok(Message::Close(_))) | None => break,
-            _ => {}
         }
     }
 }
@@ -633,13 +748,13 @@ mod writer_tests {
         let (out_tx, out_rx) = mpsc::channel::<Outbound>(4);
         let (_broadcast_tx, broadcast_rx) = broadcast::channel::<(Audience, Arc<ServerMessage>)>(4);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-        let (_reason_tx, reason_rx) = watch::channel::<Option<String>>(None);
+        let (_reason_tx, reason_rx) = watch::channel::<Option<CloseReason>>(None);
         let writer = tokio::spawn(writer_task(
             Stalled(closes.clone()), out_rx, broadcast_rx, "peer".into(), shutdown_rx, reason_rx,
-            std::time::Duration::from_millis(100),
+            Subscription::default(), std::time::Duration::from_millis(100),
         ));
-        out_tx.send(ServerMessage::Error { message: "one".into() }.into()).await.unwrap();
-        out_tx.send(ServerMessage::Error { message: "two".into() }.into()).await.unwrap();
+        out_tx.send(ServerMessage::error("one").into()).await.unwrap();
+        out_tx.send(ServerMessage::error("two").into()).await.unwrap();
         let ended = tokio::time::timeout(std::time::Duration::from_secs(3), writer).await;
         assert!(ended.is_ok(), "the writer was still inside a send its peer will never take");
         // One send ran out of time. The goodbye after it was not waited for as well.
@@ -678,20 +793,20 @@ mod writer_tests {
             let (out_tx, out_rx) = mpsc::channel::<Outbound>(4);
             let (stream, broadcast_rx) = broadcast::channel::<(Audience, Arc<ServerMessage>)>(8);
             let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-            let (_reason_tx, reason_rx) = watch::channel::<Option<String>>(None);
+            let (_reason_tx, reason_rx) = watch::channel::<Option<CloseReason>>(None);
             let writer = tokio::spawn(writer_task(
                 Recording(sent.clone()), out_rx, broadcast_rx, cid.into(), shutdown_rx, reason_rx,
-                std::time::Duration::from_secs(5),
+                Subscription::default(), std::time::Duration::from_secs(5),
             ));
             for (audience, text) in [
                 (Audience::Others("a".into()), "from a"),
                 (Audience::Only("a".into()), "for a"),
                 (Audience::Others("b".into()), "from b"),
             ] {
-                stream.send((audience, Arc::new(ServerMessage::Error { message: text.into() }))).unwrap();
+                stream.send((audience, Arc::new(ServerMessage::error(text)))).unwrap();
             }
             // The last item is for both: once it is through, the rest are too.
-            stream.send((Audience::Others("c".into()), Arc::new(ServerMessage::Error { message: "end".into() }))).unwrap();
+            stream.send((Audience::Others("c".into()), Arc::new(ServerMessage::error("end")))).unwrap();
             let waited = tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 while !sent.lock().unwrap().iter().any(|text| text.contains("\"end\"")) {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -746,5 +861,54 @@ mod writer_tests {
         // One that finishes in time is simply waited for.
         let quick = tokio::spawn(async {});
         finish_writer(quick, std::time::Duration::from_secs(5)).await;
+    }
+
+    fn delta(ops: &[(&str, &str)]) -> Arc<ServerMessage> {
+        Arc::new(ServerMessage::SyncDelta {
+            ops: ops.iter().map(|(id, collection)| SyncOp {
+                id: id.to_string(), collection: collection.to_string(), operation: "update".into(),
+                record_id: id.to_string(), data: None, timestamp: String::new(), client_id: "c".into(),
+            }).collect(),
+        })
+    }
+
+    fn ids(message: Option<Arc<ServerMessage>>) -> Vec<String> {
+        match message.as_deref() {
+            Some(ServerMessage::SyncDelta { ops }) => ops.iter().map(|op| op.id.clone()).collect(),
+            Some(other) => panic!("{other:?}"),
+            None => Vec::new(),
+        }
+    }
+
+    /// A connection is sent the deltas of the collections its client asked
+    /// for, and of those it pulls or pushes to after: the host ignored
+    /// `subscribe`, and every client applied every collection's changes.
+    /// Until it says, it is sent everything, as a client from before expects;
+    /// and what the store says to it alone is never held back.
+    #[test]
+    fn a_connection_is_sent_the_collections_its_client_wants() {
+        let everyone = Audience::Others("x".into());
+        let mixed = delta(&[("n1", "notes"), ("s1", "secrets"), ("t1", "tags")]);
+        let subscription = Subscription::default();
+        assert_eq!(ids(subscription.admit(&everyone, &mixed)), vec!["n1", "s1", "t1"], "before it says");
+        subscription.set(&["notes".into(), "bad name".into()]);
+        assert_eq!(ids(subscription.admit(&everyone, &mixed)), vec!["n1"]);
+        assert_eq!(ids(subscription.admit(&Audience::All, &mixed)), vec!["n1"], "the server's own writes too");
+        assert_eq!(ids(subscription.admit(&Audience::Only("me".into()), &mixed)), vec!["n1", "s1", "t1"], "its own answers");
+        assert!(subscription.admit(&everyone, &delta(&[("s2", "secrets")])).is_none());
+        // A message of its collections alone goes as it is, not copied.
+        let notes = delta(&[("n2", "notes")]);
+        assert!(Arc::ptr_eq(&subscription.admit(&everyone, &notes).unwrap(), &notes));
+        // A collection it pulls or pushes to is one it is sent.
+        subscription.add(["tags", "../x"]);
+        assert_eq!(ids(subscription.admit(&everyone, &mixed)), vec!["n1", "t1"]);
+        // Errors and acknowledgements are not deltas, and go.
+        assert!(subscription.admit(&everyone, &Arc::new(ServerMessage::error("x"))).is_some());
+        // Past MAX_SUBSCRIBED it is sent everything again.
+        subscription.add((0..MAX_SUBSCRIBED).map(|i| format!("c{i}")).collect::<Vec<_>>().iter().map(String::as_str));
+        assert_eq!(ids(subscription.admit(&everyone, &mixed)), vec!["n1", "s1", "t1"]);
+        // An empty list: nothing until it uses a collection.
+        subscription.set(&[]);
+        assert!(subscription.admit(&everyone, &mixed).is_none());
     }
 }

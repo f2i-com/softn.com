@@ -1,0 +1,15 @@
+{
+  "$comment": "The sync protocol's limits, which the host (src/sync_protocol_tests.rs) and the SoftN client (packages/@softn/core/test/xdb-server-sync.test.ts, against SYNC_LIMITS in src/runtime/xdb-server-sync.ts) are each checked against. Change a limit here and in both, or one of the two tests fails.",
+  "maxMessageBytes": 4194304,
+  "pieceBytes": 1048576,
+  "maxOpsPerPush": 1000,
+  "maxOpDataBytes": 524288,
+  "maxPushDataBytes": 4194304,
+  "maxPullCollections": 100,
+  "pageRows": 10000,
+  "collectionName": "^[A-Za-z0-9_-]{1,64}$",
+  "collectionNames": {
+    "valid": ["notes", "a", "A-b_9", "x123456789x123456789x123456789x123456789x123456789x123456789xyz1"],
+    "invalid": ["", "bad name", "../x", "notes.v2", "über", "x123456789x123456789x123456789x123456789x123456789x123456789xyz12"]
+  }
+}

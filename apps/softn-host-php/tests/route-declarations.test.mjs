@@ -113,7 +113,8 @@ test('routes declared against the Rust host\'s defaults are served, with reads a
   assert.equal(b.invoke({method:'POST',path:'/api/count'}).body.value,1);
   assert.equal(b.invoke({method:'POST',path:'/api/count'}).body.value,2);
   assert.equal(b.invoke({method:'GET',path:'/api/legacy'}).status,200);
-  assert.equal(b.invoke({method:'GET',path:'/api/nothing'}).status,404);
+  // As the Rust host answers it (http.rs not_found).
+  assert.deepEqual(b.invoke({method:'GET',path:'/api/nothing'}),{status:404,body:{error:'Endpoint not found.',code:'not_found'}});
 });
 
 test('routes this host cannot serve are set aside and named, and the rest of the app runs',t=>{

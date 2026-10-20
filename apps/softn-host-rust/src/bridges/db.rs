@@ -1,13 +1,45 @@
 use crate::pool::{self, ServerDb};
+use crate::sync::{Audience, SyncOp, SyncStream};
 use super::{DbBridge, DbRecord, DbSyncStatus, DbUpdateIf};
 
 pub struct NativeDbBridge {
     db: ServerDb,
+    /// Where the server's own writes are announced to the connected sync
+    /// clients, when the host syncs.
+    stream: Option<SyncStream>,
 }
 
 impl NativeDbBridge {
+    /// A bridge whose writes reach no sync client.
+    #[cfg(test)]
     pub fn new(db: ServerDb) -> Self {
-        Self { db }
+        Self { db, stream: None }
+    }
+
+    /// A bridge whose writes every connected sync client is sent, as it is
+    /// sent another client's push. A route's `db.update` used to reach a
+    /// device only when it next connected and pulled.
+    pub fn with_stream(db: ServerDb, stream: SyncStream) -> Self {
+        Self { db, stream: Some(stream) }
+    }
+
+    /// Tell every sync client of a record as it now stands: called with the
+    /// writer lock still held (`_held`), so the stream carries the writes in
+    /// the order the store made them, as a push's are. The whole record goes,
+    /// not the fields the call named: `db.update` merges, and a client
+    /// replaces a record with what it is sent.
+    fn announce(&self, _held: &xdb::XdbDatabase, record: &xdb::Record, created: bool) {
+        let Some(stream) = &self.stream else { return };
+        let op = SyncOp {
+            id: format!("server-{}", uuid::Uuid::new_v4()),
+            collection: record.collection.clone(),
+            operation: if record.deleted { "delete" } else if created { "create" } else { "update" }.into(),
+            record_id: record.id.clone(),
+            data: (!record.deleted).then(|| record.data.clone()),
+            timestamp: record.updated_at.clone(),
+            client_id: "server".into(),
+        };
+        crate::sync::send_all(stream, &Audience::All, crate::sync::delta_pieces(vec![op]));
     }
 }
 
@@ -66,6 +98,7 @@ impl DbBridge for NativeDbBridge {
             .map_err(|e| format!("db.create: invalid JSON: {}", e))?;
         let (record, _update) = db.create_record(collection, json)
             .map_err(|e| format!("db.create failed: {}", e))?;
+        self.announce(&db, &record, true);
         Ok(xdb_to_record(record))
     }
 
@@ -74,7 +107,10 @@ impl DbBridge for NativeDbBridge {
         let json: serde_json::Value = serde_json::from_str(data)
             .map_err(|e| format!("db.update: invalid JSON: {}", e))?;
         match db.update_record(id, json) {
-            Ok((r, _)) => Ok(Some(xdb_to_record(r))),
+            Ok((r, _)) => {
+                self.announce(&db, &r, false);
+                Ok(Some(xdb_to_record(r)))
+            }
             Err(xdb::DbError::NotFound(_)) => Ok(None),
             Err(e) => Err(format!("db.update failed: {}", e)),
         }
@@ -99,7 +135,10 @@ impl DbBridge for NativeDbBridge {
             return Ok(DbUpdateIf::Conflict);
         }
         match db.update_record(id, json) {
-            Ok((r, _)) => Ok(DbUpdateIf::Updated(xdb_to_record(r))),
+            Ok((r, _)) => {
+                self.announce(&db, &r, false);
+                Ok(DbUpdateIf::Updated(xdb_to_record(r)))
+            }
             Err(xdb::DbError::NotFound(_)) => Ok(DbUpdateIf::Missing),
             Err(e) => Err(format!("db.updateIf failed: {}", e)),
         }
@@ -109,6 +148,9 @@ impl DbBridge for NativeDbBridge {
         let mut db = self.db.write();
         db.delete_record(id)
             .map_err(|e| format!("db.delete failed: {}", e))?;
+        if let Ok(record) = db.get_record(id) {
+            self.announce(&db, &record, false);
+        }
         Ok(())
     }
 
@@ -126,6 +168,9 @@ impl DbBridge for NativeDbBridge {
         }
         db.delete_record(id)
             .map_err(|e| format!("db.hard_delete failed: {}", e))?;
+        if let Ok(record) = db.get_record(id) {
+            self.announce(&db, &record, false);
+        }
         Ok(())
     }
 
@@ -178,5 +223,40 @@ mod tests {
         assert!(bridge.get("admin", &admin.id).unwrap().is_some());
         bridge.hard_delete("admin", &admin.id).unwrap();
         assert!(bridge.get("admin", &admin.id).unwrap().is_none());
+    }
+
+    /// What a route's (or a hook's) `db.*` writes reaches every connected
+    /// sync client, as another client's push does: it reached a device only
+    /// when it next connected and pulled. The whole record goes, since
+    /// `db.update` merges and a client replaces a record with what it is sent.
+    #[test]
+    fn the_servers_own_writes_reach_every_sync_client() {
+        let dir = crate::test_dirs::temp_path("softn-db-bridge", "");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xdb.sqlite");
+        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
+        let stream = crate::sync::sync_stream();
+        let mut listening = stream.subscribe();
+        let mut bridge = NativeDbBridge::with_stream(db, stream);
+        let note = bridge.create("notes", r#"{"title":"one","body":"b"}"#).unwrap();
+        bridge.update(&note.id, r#"{"title":"two"}"#).unwrap();
+        assert!(matches!(bridge.update_if(&note.id, r#"{"title":"three"}"#, "title", r#""two""#).unwrap(), DbUpdateIf::Updated(_)));
+        bridge.delete(&note.id).unwrap();
+        let mut told = Vec::new();
+        while let Ok((audience, message)) = listening.try_recv() {
+            assert_eq!(audience, Audience::All);
+            let crate::sync::ServerMessage::SyncDelta { ops } = &*message else { panic!("{message:?}") };
+            told.extend(ops.iter().map(|op| (op.operation.clone(), op.record_id.clone(), op.data.clone(), op.client_id.clone())));
+        }
+        let data = |v: serde_json::Value| Some(v);
+        assert_eq!(told, vec![
+            ("create".to_string(), note.id.clone(), data(serde_json::json!({"title":"one","body":"b"})), "server".to_string()),
+            ("update".to_string(), note.id.clone(), data(serde_json::json!({"title":"two","body":"b"})), "server".to_string()),
+            ("update".to_string(), note.id.clone(), data(serde_json::json!({"title":"three","body":"b"})), "server".to_string()),
+            ("delete".to_string(), note.id.clone(), None, "server".to_string()),
+        ]);
+        // A write that changed nothing says nothing.
+        assert!(bridge.update("no-such-id", "{}").unwrap().is_none());
+        assert!(listening.try_recv().is_err());
     }
 }

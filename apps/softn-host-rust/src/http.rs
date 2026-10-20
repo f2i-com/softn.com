@@ -789,7 +789,7 @@ fn asked_method(method: axum::http::Method, route_declares_get: bool) -> axum::h
 
 /// Spend one request of the client's allowance for the app's routes, or
 /// answer 429 as the PHP host does.
-fn check_rate(limiter: Option<&crate::sync::AddressLimiter>, client_ip: std::net::IpAddr) -> Option<axum::response::Response> {
+fn check_rate(limiter: Option<&crate::limiter::AddressLimiter>, client_ip: std::net::IpAddr) -> Option<axum::response::Response> {
     let wait = limiter?.check(client_ip).err()?;
     let mut response = json_error(StatusCode::TOO_MANY_REQUESTS, "Too many requests.", "rate_limited");
     response.headers_mut().insert(axum::http::header::RETRY_AFTER, wait.as_secs().max(1).into());
@@ -998,8 +998,10 @@ async fn serve_manifest(State(ctx): State<Arc<AppContext>>) -> Json<serde_json::
     Json(bundle::client_manifest(&ctx.manifest))
 }
 
-/// Max incoming WebSocket message size (4MB).
-const MAX_WS_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+/// Max incoming WebSocket message size (4MB): a larger one closes the
+/// socket with 1009 (ws.rs). The client holds the messages it takes to the
+/// same size (`sync-protocol.json` `maxMessageBytes`).
+pub(crate) const MAX_WS_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 // ── Who may reach the host, by which name, from which page ──
 
@@ -1224,7 +1226,7 @@ fn authorize_sync_upgrade(
     if origin.is_none() && (token.is_none() || !sync.has_auth()) {
         return Err((StatusCode::UNAUTHORIZED, "A client that sends no Origin must present a ticket from /sync/ticket"));
     }
-    sync.handle_auth(token, params.get("appVersion").map(String::as_str))
+    sync.handle_auth(token)
         .map_err(|_| (StatusCode::UNAUTHORIZED, "Authentication failed"))
 }
 
@@ -2409,5 +2411,184 @@ mod sync_upgrade_tests {
         let host_route = script_headers(&headers, true, false);
         assert!(!host_route.contains_key("authorization"));
         assert!(host_route.contains_key("x-custom"));
+    }
+
+    // ── Over an open sync socket ──
+
+    /// A sync socket opened with a ticket, its `auth_ok` read.
+    async fn open_socket(addr: SocketAddr) -> tokio::net::TcpStream {
+        let (_, issued) = ticket(addr, None).await;
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(format!(
+            "GET /sync?ticket={} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            issued.unwrap(), addr).as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        assert!(head.starts_with(b"HTTP/1.1 101"), "{}", String::from_utf8_lossy(&head));
+        let (_, first) = read_frame(&mut stream).await;
+        assert!(String::from_utf8_lossy(&first).contains("auth_ok"));
+        stream
+    }
+
+    /// One frame as a client sends it: masked, `length` as its header says
+    /// (the payload may be shorter, or absent).
+    fn client_frame(opcode: u8, payload: &[u8], length: usize, masked: bool) -> Vec<u8> {
+        let mut frame = vec![0x80 | opcode];
+        let mask_bit = if masked { 0x80 } else { 0 };
+        match length {
+            0..=125 => frame.push(mask_bit | length as u8),
+            126..=0xFFFF => {
+                frame.push(mask_bit | 126);
+                frame.extend_from_slice(&(length as u16).to_be_bytes());
+            }
+            _ => {
+                frame.push(mask_bit | 127);
+                frame.extend_from_slice(&(length as u64).to_be_bytes());
+            }
+        }
+        let key = [0x12, 0x34, 0x56, 0x78];
+        if masked {
+            frame.extend_from_slice(&key);
+        }
+        frame.extend(payload.iter().enumerate().map(|(i, b)| if masked { b ^ key[i % 4] } else { *b }));
+        frame
+    }
+
+    async fn send_text(stream: &mut tokio::net::TcpStream, text: &str) {
+        stream.write_all(&client_frame(0x1, text.as_bytes(), text.len(), true)).await.unwrap();
+    }
+
+    /// The next frame the host sends (unmasked): its opcode and payload.
+    async fn read_frame<R: tokio::io::AsyncRead + Unpin>(stream: &mut R) -> (u8, Vec<u8>) {
+        let read = async {
+            let mut head = [0u8; 2];
+            stream.read_exact(&mut head).await.unwrap();
+            let length = match head[1] & 0x7F {
+                126 => {
+                    let mut n = [0u8; 2];
+                    stream.read_exact(&mut n).await.unwrap();
+                    u16::from_be_bytes(n) as usize
+                }
+                127 => {
+                    let mut n = [0u8; 8];
+                    stream.read_exact(&mut n).await.unwrap();
+                    u64::from_be_bytes(n) as usize
+                }
+                n => n as usize,
+            };
+            let mut payload = vec![0u8; length];
+            stream.read_exact(&mut payload).await.unwrap();
+            (head[0] & 0x0F, payload)
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), read).await.expect("no frame came")
+    }
+
+    /// The next text message the host sends, as JSON, passing over pings.
+    async fn read_message(stream: &mut tokio::net::TcpStream) -> serde_json::Value {
+        loop {
+            let (opcode, payload) = read_frame(stream).await;
+            match opcode {
+                0x1 => return serde_json::from_slice(&payload).unwrap(),
+                0x9 | 0xA => continue,
+                other => panic!("opcode {other}: {}", String::from_utf8_lossy(&payload)),
+            }
+        }
+    }
+
+    /// The code of the Close frame the host ends with, passing over what comes first.
+    async fn close_code<R: tokio::io::AsyncRead + Unpin>(stream: &mut R) -> u16 {
+        loop {
+            let (opcode, payload) = read_frame(stream).await;
+            if opcode == 0x8 {
+                return u16::from_be_bytes([payload[0], payload[1]]);
+            }
+        }
+    }
+
+    /// A frame the WebSocket layer refuses ends the socket with a Close frame
+    /// that says why. It used to be passed over (a binary message, which the
+    /// client then waited on for an answer), or closed as a normal closure
+    /// (1000), and a message over the limit got no Close frame at all.
+    #[tokio::test]
+    async fn a_frame_the_socket_refuses_closes_it_with_a_code_that_says_why() {
+        let addr = serve(app(serde_json::json!({})), false).await;
+        for (frame, code) in [
+            (client_frame(0x2, b"{}", 2, true), 1003),
+            (client_frame(0x1, &[0xFF, 0xFE, 0x7B], 3, true), 1007),
+            // Only the header: the length alone is refused.
+            (client_frame(0x1, b"", MAX_WS_MESSAGE_SIZE + 1, true), 1009),
+            (client_frame(0x1, b"{}", 2, false), 1002),
+        ] {
+            let mut stream = open_socket(addr).await;
+            stream.write_all(&frame).await.unwrap();
+            assert_eq!(close_code(&mut stream).await, code);
+        }
+        // A whole message over the limit, still being sent when the host
+        // refuses it: the Close frame reaches the client all the same.
+        let stream = open_socket(addr).await;
+        let (mut read, mut write) = stream.into_split();
+        let payload = vec![b'x'; MAX_WS_MESSAGE_SIZE + 1024];
+        let sending = tokio::spawn(async move {
+            let _ = write.write_all(&client_frame(0x1, &payload, payload.len(), true)).await;
+            write
+        });
+        assert_eq!(close_code(&mut read).await, 1009);
+        sending.abort();
+    }
+
+    /// A host too busy to take a pull says so, names the collections, and
+    /// says when to ask again; one too busy for a push answers `sync_retry`
+    /// with its ops. Both used to be an `error` naming nothing: the client
+    /// never asked for the pull again, and took any such error for its pushes.
+    #[tokio::test]
+    async fn a_busy_host_says_which_pull_to_ask_for_again_and_which_ops_to_send_again() {
+        let ctx = app(serde_json::json!({"syncPermits": 4}));
+        let addr = serve(ctx.clone(), false).await;
+        let mut stream = open_socket(addr).await;
+        let held = ctx.sync_manager.sync_permits.clone().acquire_many_owned(4).await.unwrap();
+        send_text(&mut stream, r#"{"type":"sync_pull","collections":["notes","tags"]}"#).await;
+        let refused = read_message(&mut stream).await;
+        assert_eq!(refused["type"], "error");
+        assert_eq!(refused["for"], "pull");
+        assert_eq!(refused["collections"], serde_json::json!(["notes", "tags"]));
+        assert!(refused["retryAfter"].as_u64().is_some_and(|s| s > 0), "{refused}");
+        send_text(&mut stream, r#"{"type":"sync_push","ops":[{"id":"o1","collection":"notes","operation":"create","recordId":"n1","data":{}},{"id":"o2","collection":"notes","operation":"create","recordId":"n2","data":{}}]}"#).await;
+        let retry = read_message(&mut stream).await;
+        assert_eq!(retry["type"], "sync_retry");
+        assert_eq!(retry["opIds"], serde_json::json!(["o1", "o2"]));
+        drop(held);
+        send_text(&mut stream, r#"{"type":"sync_pull","collections":["notes"]}"#).await;
+        assert_eq!(read_message(&mut stream).await["type"], "sync_state");
+    }
+
+    /// A client is sent the changes of the collections it subscribed to, and
+    /// of those it pushes to after; the host used to ignore `subscribe`.
+    #[tokio::test]
+    async fn a_client_is_sent_the_collections_it_subscribed_to() {
+        let addr = serve(app(serde_json::json!({})), false).await;
+        let mut a = open_socket(addr).await;
+        let mut b = open_socket(addr).await;
+        send_text(&mut a, r#"{"type":"subscribe","collections":["notes"]}"#).await;
+        // Answered in order: once the pull is, the subscription is read.
+        send_text(&mut a, r#"{"type":"sync_pull","collections":["notes"]}"#).await;
+        assert_eq!(read_message(&mut a).await["type"], "sync_state");
+        let create = |id: &str, collection: &str| format!(
+            r#"{{"type":"sync_push","ops":[{{"id":"{id}","collection":"{collection}","operation":"create","recordId":"{id}","data":{{}}}}]}}"#);
+        send_text(&mut b, &create("s1", "secrets")).await;
+        assert_eq!(read_message(&mut b).await["type"], "sync_ack");
+        send_text(&mut b, &create("n1", "notes")).await;
+        assert_eq!(read_message(&mut b).await["type"], "sync_ack");
+        let told = read_message(&mut a).await;
+        assert_eq!(told["ops"][0]["recordId"], "n1", "{told}");
+        // a writes to secrets: from now on it is sent them.
+        send_text(&mut a, &create("s2", "secrets")).await;
+        assert_eq!(read_message(&mut a).await["type"], "sync_ack");
+        send_text(&mut b, &create("s3", "secrets")).await;
+        let told = read_message(&mut a).await;
+        assert_eq!(told["ops"][0]["recordId"], "s3", "{told}");
     }
 }

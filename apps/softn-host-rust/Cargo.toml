@@ -23,6 +23,10 @@ zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.27", featur
 xdb = { package = "softn-xdb", path = "../../crates/softn-xdb", default-features = false }
 
 axum = { version = "0.8", features = ["ws"] }
+# The WebSocket layer axum's `ws` runs on, at the version axum brings in: a
+# frame it refuses reaches the sync reader as one of its errors, whose kind
+# picks the Close code (ws.rs refused_frame).
+tungstenite = { version = "0.29", default-features = false }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "fs", "timeout"] }
 # A connection loop of our own (http::serve_router) so hyper gets a timer:

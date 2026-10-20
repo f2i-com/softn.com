@@ -178,8 +178,9 @@ on the next connection. Pushes go out in pieces of at most 500 ops and 1 MB.
 On the host, an op whose `recordId` belongs to a different collection than the
 one it names is rejected (a hook that guards one collection could otherwise be
 bypassed by naming another), a pull reads each named collection once (at most
-100 per pull) and `sync_state` messages stay under 1 MB so the client, which
-drops messages over 2 MB, receives them.
+100 per pull) and `sync_state` and `sync_delta` messages go in pieces of at
+most 1 MB, which the client, taking messages of up to 4 MiB, receives (see
+"Sync protocol" below).
 
 Request traces log the path only; a query string (`?token=`, `?ticket=`) is
 logged as `?<redacted>`. A script sees the request's headers minus `Cookie`
@@ -629,6 +630,90 @@ Sync hooks: what `onBeforeSync` or `onBeforeSyncBatch` hands back as an op's
 `data` must be an object no larger than a client may send (512 KB). Anything
 else is not applied, and the client is told to retry, as when the hook
 throws: a string or a number would have replaced the whole record.
+
+### Sync protocol
+
+The limits below are in `sync-protocol.json`, beside this file; a test on
+each side (`src/sync_tests.rs`, and `xdb-server-sync-protocol.test.ts` in
+@softn/core against the client's `SYNC_LIMITS`) holds the host and the
+client to it. Either side refuses a message over 4 MiB: the host closes the
+socket with 1009, the client drops it. A push carries at most 1,000 ops and
+4 MiB of data, an op's data at most 512 KB; a pull names at most 100
+collections, and a collection name is 1 to 64 letters, digits, `-` and `_`.
+
+Pulls come in three forms, each answered with `sync_state` messages per
+collection:
+
+- `{type:"sync_pull", collections}`: the whole of each collection, live
+  records only, a page of 10,000 at a time (`more`, then `cursor`, above).
+- `{..., cursor:{at, id}}`: the page after the one whose last message said
+  `more: {at, id}`.
+- `{..., lastSync, lastId}`: what the host received after that point, deleted
+  records included, as `{id, ..., deleted: true}`, so a client removes a
+  record deleted while it was away (a whole pull lists live records only).
+  The point is the host's own receipt time, `serverReceivedAt` on every
+  record a pull sends, and the id of the record at it; never `updatedAt`,
+  which is when the edit was made and may be long before the host saw it.
+  At most 10,000 records per collection, and such an answer carries no
+  `more`: a client that gets that many asks again from the last record it
+  read.
+
+Every record a pull or a delta brings is held to 1 MB per message: records go
+in pieces, and only a record larger than that travels alone. A record a
+client pushes is at most 512 KB; only one the server writes itself (a route's
+`db.update`, which is not held to it) can be larger than a client takes.
+
+`{type:"subscribe", collections}` names the collections whose changes a
+client wants. A connection is sent the deltas of those, and of every
+collection it pulls or pushes to after; one that never subscribes is sent
+every collection's, as before (the host used to ignore `subscribe`). What
+the host says to one client alone (an acknowledgement, a record as it
+stands) is never held back.
+
+Refusals say what was refused. A pull the host cannot take now (no sync
+permit within two seconds, a step that failed or timed out) is answered
+`{type:"error", message, for:"pull", collections, retryAfter}`: the
+collections it did not send whole, and the seconds to wait. One it refuses
+for good (too many collections, a name it does not take) has no
+`retryAfter`. A push it cannot take now is answered
+`{type:"sync_retry", opIds, reason}`, which every client already reads as
+"send these again". Both used to be an `error` naming nothing: the client
+never asked for the pull again, so a device whose first pull met a busy host
+pushed nothing until it reconnected, and it took any `error` for its pushes,
+which it sent again. A client from before reads the new fields' `error` as it
+always read `error`.
+
+An op the host stored in the last fifteen minutes (up to 10,000 of them) and
+is sent again, by its op id, collection and record, is acknowledged and not
+applied, broadcast or hooked again. An update or a delete sent again used to
+be all three.
+
+The pusher is sent a record as it stands, in a `sync_delta` from `server`
+under the id of the op it answers and just after that op's acknowledgement,
+when what it applied to its own copy is not what the host has: an edit
+overtaken by a newer one (above); an op whose data a before-sync hook
+changed, where it used to be sent only the acknowledgement and kept what it
+had sent; and an update or a delete refused for good (by a hook, or for its
+size), which used to stay on the device that made it, since no later pull
+brings a record that has not changed. A refused create is left on the
+device, which the app is told of: the host has no record to send back.
+
+A write the server makes itself, a route's or a hook's `db.create`,
+`db.update`, `db.updateIf`, `db.delete` or `db.hardDelete`, reaches every
+connected client as another client's push does, with the whole record as
+stored, in the order the store made it. It used to reach a device only when
+that device next connected and pulled.
+
+A frame the WebSocket layer refuses closes the socket with a code that says
+why: 1009 for a message over 4 MiB (which used to end the connection with no
+Close frame), 1007 for text that is not UTF-8, 1003 for a binary message
+(which used to be passed over, the client left waiting on an answer), 1002
+for any other protocol error. These were all 1000, a normal closure.
+
+The index on (collection, updated_at, id) is dropped when an existing
+database is opened: pulls go by `server_received_at`, and no query filters or
+sorts on `updated_at`. The `auth` message clients used to send on open was
+never read; clients no longer send it.
 
 The legacy `http` bridge refuses private, link-local, unique-local (including
 cloud metadata such as `fd00:ec2::254`), multicast and reserved addresses,

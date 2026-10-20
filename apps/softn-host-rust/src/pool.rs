@@ -58,11 +58,12 @@ impl ServerDb {
             idx_conn.execute_batch("PRAGMA busy_timeout = 5000;")
                 .map_err(|e| format!("Failed to set busy_timeout: {}", e))?;
 
-            // Legacy index (kept for non-sync queries that filter by updated_at)
-            idx_conn.execute_batch(
-                "CREATE INDEX IF NOT EXISTS idx_records_sync \
-                 ON records (collection, updated_at, id);"
-            ).map_err(|e| format!("Failed to create sync index: {}", e))?;
+            // The index on (collection, updated_at, id) pulls were read by
+            // before they went by server_received_at. No query filters or
+            // sorts on updated_at (xdb's own lists go by created_at), so it
+            // only cost every write: dropped where an older host made it.
+            idx_conn.execute_batch("DROP INDEX IF EXISTS idx_records_sync;")
+                .map_err(|e| format!("Failed to drop the unused sync index: {}", e))?;
 
             // Add server_received_at column for sync cursor pagination.
             // This separates the sync pull cursor (server_received_at, monotonically
@@ -137,12 +138,6 @@ impl ServerDb {
         self.read_pool
             .get()
             .map_err(|e| format!("Read pool error: {}", e))
-    }
-
-    /// Get the underlying SharedDb (for code that still needs direct access).
-    #[allow(dead_code)]
-    pub fn shared(&self) -> &SharedDb {
-        &self.writer
     }
 }
 

@@ -195,7 +195,7 @@ try {
   else if(!route) {
     // A declared route that needs the host token is refused as the Rust host refuses it without one; anything else undeclared is not found.
     const aside=unserved.find(u=>u.path===request.path&&u.method===request.method);
-    result=aside&&aside.reason.startsWith('hosttoken')?{status:401,body:{error:'Authorization required'}}:{status:404,body:{error:'Endpoint not found.'}};
+    result=aside&&aside.reason.startsWith('hosttoken')?{status:401,body:{error:'Authorization required'}}:{status:404,body:{error:'Endpoint not found.',code:'not_found'}};
   }
   else {
     // The rate bucket is the host's; the address only for an app granted trusted-client-ip.
