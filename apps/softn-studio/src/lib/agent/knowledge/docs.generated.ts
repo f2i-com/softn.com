@@ -322,7 +322,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "logic-files",
     "title": "Rules for logic files",
-    "text": "- A logic file whose name ends `.py` is Python; any other is JavaScript. Nothing else declares the language.\n- A bundle that mixes Python and JavaScript logic is refused: the two run in separate engines and cannot share names.\n- Python must live in a file referenced with `<script src>` or `<logic src>`. An inline `<logic lang=\"python\">` block is refused, because reindenting markup could change the program.\n- Each `.py` file is a module named after the file, so two with the same name are refused, and the names `softn`, `torch`, `json`, `math` and anything starting `__softn` are reserved.\n- Server logic for the PHP and Rust hosts is JavaScript. Python is client logic only."
+    "text": "- A logic file whose name ends `.py` is Python; any other is JavaScript. Nothing else declares the language.\n- A bundle that mixes Python and JavaScript logic is refused: one engine reads both languages, but an app’s logic is read as one of them, so the two could not share names.\n- Python must live in a file referenced with `<script src>` or `<logic src>`. An inline `<logic lang=\"python\">` block is refused, because reindenting markup could change the program.\n- Each `.py` file is a module named after the file, so two with the same name are refused, and the names `softn`, `torch`, `json`, `math` and anything starting `__softn` are reserved.\n- Server logic for the PHP and Rust hosts is JavaScript. Python is client logic only."
    },
    {
     "id": "seeds-and-live-data",
@@ -860,7 +860,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "names",
     "title": "Module names and refusals",
-    "text": "The composer refuses | Because\nA `.py` name that is not a Python identifier | Python imports a module by its name\n`softn.py`, `json.py`, `math.py`, `torch.py`, or a name starting `__softn` | The app, the runtime or the torch package already uses that module name\nTwo `.py` files with the same name | Each module needs its own name\nAn inline `<logic lang=\"python\">` block | Python lives in a file the bundle carries verbatim\nPython and JavaScript logic in one app | They run in separate engines and cannot share names\n`import torch` without a declaration | The manifest declares every package the app imports"
+    "text": "The composer refuses | Because\nA `.py` name that is not a Python identifier | Python imports a module by its name\n`softn.py`, `json.py`, `math.py`, `torch.py`, or a name starting `__softn` | The app, the runtime or the torch package already uses that module name\nTwo `.py` files with the same name | Each module needs its own name\nAn inline `<logic lang=\"python\">` block | Python lives in a file the bundle carries verbatim\nPython and JavaScript logic in one app | An app’s logic is read as one language, so the two could not share names\n`import torch` without a declaration | The manifest declares every package the app imports"
    },
    {
     "id": "engines",

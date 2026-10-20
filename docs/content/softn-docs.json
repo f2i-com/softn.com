@@ -1754,7 +1754,7 @@
               "ordered": false,
               "items": [
                 "A logic file whose name ends `.py` is Python; any other is JavaScript. Nothing else declares the language.",
-                "A bundle that mixes Python and JavaScript logic is refused: the two run in separate engines and cannot share names.",
+                "A bundle that mixes Python and JavaScript logic is refused: one engine reads both languages, but an app’s logic is read as one of them, so the two could not share names.",
                 "Python must live in a file referenced with `<script src>` or `<logic src>`. An inline `<logic lang=\"python\">` block is refused, because reindenting markup could change the program.",
                 "Each `.py` file is a module named after the file, so two with the same name are refused, and the names `softn`, `torch`, `json`, `math` and anything starting `__softn` are reserved.",
                 "Server logic for the PHP and Rust hosts is JavaScript. Python is client logic only."
@@ -4267,7 +4267,7 @@
                 ],
                 [
                   "Python and JavaScript logic in one app",
-                  "They run in separate engines and cannot share names"
+                  "An app’s logic is read as one language, so the two could not share names"
                 ],
                 [
                   "`import torch` without a declaration",
