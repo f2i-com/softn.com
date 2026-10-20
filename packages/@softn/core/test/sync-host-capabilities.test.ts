@@ -141,6 +141,32 @@ describe('synchronous host capabilities', () => {
     }
   });
 
+  it('opens an app in a frame whose localStorage cannot be read, as FormLogic runs one', async () => {
+    // A sandboxed frame with no origin throws on reading `localStorage`, and
+    // `typeof localStorage` reads it: registering the bridge threw, and an app
+    // that is not native never opened in FormLogic.
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException("Failed to read the 'localStorage' property from 'Window'", 'SecurityError');
+      },
+    });
+    const adapter = await VmAdapter.create();
+    try {
+      adapter.registerLocalStorageBridge('OpaqueFrame');
+      await adapter.initializeScript(
+        'let read = localStorage.getItem("k");\nlet refused = false;\ntry { localStorage.setItem("k", "v") } catch (e) { refused = true }'
+      );
+      expect(adapter.evalSync('read')).toBeNull();
+      expect(adapter.evalSync('refused')).toBe(true);
+    } finally {
+      adapter.dispose();
+      if (original) Object.defineProperty(globalThis, 'localStorage', original);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+
   it('serves navigator.clipboard from its own bridge, not the localStorage one', async () => {
     const written: string[] = [];
     const original = (globalThis.navigator as unknown as Record<string, unknown>).clipboard;

@@ -423,7 +423,16 @@ export class ZippWasmAdapter {
     const safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
     const prefix = `softn:${safeAppId}:`;
     // The app's share of the store, which the host and every other app use too.
-    const budget = typeof localStorage === 'undefined' ? null : new StorageBudget(localStorage, prefix, LOCAL_STORAGE_BUDGET);
+    // In a sandboxed frame with no origin, as FormLogic runs an app that is not
+    // native, reading `localStorage` throws, and `typeof` reads it: that threw
+    // here and the app never opened. There is no store to share then, and each
+    // call below says so to the script as it would anywhere else.
+    let budget: StorageBudget | null = null;
+    try {
+      budget = typeof localStorage === 'undefined' ? null : new StorageBudget(localStorage, prefix, LOCAL_STORAGE_BUDGET);
+    } catch {
+      budget = null;
+    }
 
     // A write that fails is thrown to the guest, not logged and swallowed.
     // The bridge used to catch the browser's exception — quota, most often —
