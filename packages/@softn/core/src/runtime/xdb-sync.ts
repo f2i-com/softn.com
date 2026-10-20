@@ -368,11 +368,6 @@ export class XDBSyncAdapter {
     }
   }
 
-  /**
-   * Write into XDB whatever the document holds for a collection that the
-   * local database lacks or holds an older copy of. Runs with the echo guard
-   * up, so the writes do not come straight back as outbound changes.
-   */
   /** Collections a malformed value has already been reported for. */
   private warnedMalformed = new Set<string>();
 
@@ -390,6 +385,11 @@ export class XDBSyncAdapter {
     );
   }
 
+  /**
+   * Write into XDB whatever the document holds for a collection that the
+   * local database lacks or holds an older copy of. Runs with the echo guard
+   * up, so the writes do not come straight back as outbound changes.
+   */
   private projectCollection(collName: string, ymap: Y.Map<unknown>): void {
     if (ymap.size === 0) return;
     this.isSyncing = true;

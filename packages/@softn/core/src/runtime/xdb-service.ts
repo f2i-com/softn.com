@@ -2115,31 +2115,6 @@ export class XDBService {
   }
 
   /**
-   * Import data from an export object.
-   *
-   * Merging (the default) builds one id-keyed index per collection, seeded
-   * from the stored records in their stored order, then applies the incoming
-   * rows in the order they arrive. The policy is last value wins: an id the
-   * collection already holds is replaced in place and keeps its position, an
-   * id that appears twice in one import keeps only the later row, and unseen
-   * ids append. That is exactly what the Tauri branch's `coll.set` has always
-   * done; the browser branch used to snapshot the existing ids once and append
-   * every row missing from that snapshot, so two new rows sharing an id both
-   * landed and the collection could never be deduplicated again.
-   *
-   * Replacing (`merge: false`) drops what the collection held — in memory and,
-   * on Tauri, in SQLite — but writes the incoming rows through the same index,
-   * so a batch cannot store one id twice either.
-   *
-   * A row that is not an object with a non-empty string id, or a collection
-   * whose value is not an array, is skipped and counted in `skipped` rather
-   * than thrown. Collections persist one by one, so throwing midway would
-   * leave the store half-updated, which is worse than dropping a bad row.
-   *
-   * @param data - The exported data object
-   * @param options - Import options
-   */
-  /**
    * Everything an import WILL do, computed without touching any state
    * (R2-SN-01): the envelope, collection names, writability (corrupt or
    * unhydrated collections) and every row are checked first, so a refusal
@@ -2329,6 +2304,31 @@ export class XDBService {
     return { imported, collections: importedCollections, persisted };
   }
 
+  /**
+   * Import data from an export object.
+   *
+   * Merging (the default) builds one id-keyed index per collection, seeded
+   * from the stored records in their stored order, then applies the incoming
+   * rows in the order they arrive. The policy is last value wins: an id the
+   * collection already holds is replaced in place and keeps its position, an
+   * id that appears twice in one import keeps only the later row, and unseen
+   * ids append. That is exactly what the Tauri branch's `coll.set` has always
+   * done; the browser branch used to snapshot the existing ids once and append
+   * every row missing from that snapshot, so two new rows sharing an id both
+   * landed and the collection could never be deduplicated again.
+   *
+   * Replacing (`merge: false`) drops what the collection held — in memory and,
+   * on Tauri, in SQLite — but writes the incoming rows through the same index,
+   * so a batch cannot store one id twice either.
+   *
+   * A row that is not an object with a non-empty string id, or a collection
+   * whose value is not an array, is skipped and counted in `skipped` rather
+   * than thrown. Collections persist one by one, so throwing midway would
+   * leave the store half-updated, which is worse than dropping a bad row.
+   *
+   * @param data - The exported data object
+   * @param options - Import options
+   */
   import(
     data: XDBExportData,
     options: { merge?: boolean; clearFirst?: boolean } = {}

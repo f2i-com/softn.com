@@ -15,14 +15,6 @@ interface StartAttempt {
 }
 
 /**
- * True for the `play()` rejections that mean "something else happened to this
- * element first", rather than "the camera does not work".
- *
- * `play()` returns a promise that rejects if the video is detached from the
- * document, or given a new source, before playback begins. Both are routine
- * during a remount and neither says anything about the hardware.
- */
-/**
  * The reason a media call failed, in words.
  *
  * Not `err instanceof Error`: every getUserMedia rejection is a DOMException,
@@ -40,6 +32,14 @@ function describeMediaError(err: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * True for the `play()` rejections that mean "something else happened to this
+ * element first", rather than "the camera does not work".
+ *
+ * `play()` returns a promise that rejects if the video is detached from the
+ * document, or given a new source, before playback begins. Both are routine
+ * during a remount and neither says anything about the hardware.
+ */
 function isBenignPlayAbort(err: unknown): boolean {
   const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : undefined;
   if (name === 'AbortError') return true;

@@ -703,10 +703,6 @@ export class ZippWasmAdapter {
   }
 
   /**
-   * Call a named top-level function. The engine drains microtasks before
-   * returning, so promise callbacks the call scheduled have already run.
-   */
-  /**
    * Restore the engine's instruction budget before re-entering it.
    *
    * The budget is a LIFETIME total — about 50 million instructions for the
@@ -759,6 +755,10 @@ export class ZippWasmAdapter {
         : undefined;
   }
 
+  /**
+   * Call a named top-level function. The engine drains microtasks before
+   * returning, so promise callbacks the call scheduled have already run.
+   */
   callFunction(name: string, args: unknown[]): unknown {
     const crossing = sanitizeArgs(args);
     // Handed an event, a function is entered through EVENT_ENTRY, which gives

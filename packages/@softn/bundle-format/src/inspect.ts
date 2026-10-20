@@ -183,11 +183,6 @@ export function inspectBundle(bytes: Uint8Array): BundleInspection {
   return { ...inspection, report, problem: report.find((l) => l.level === 'error')?.text ?? null };
 }
 
-/**
- * Inspect a bundle's files by path. This is the whole check; `inspectBundle`
- * is it after unzipping. Studio and Builder call this on the files they hold
- * rather than zipping first.
- */
 /** An inspection that learned nothing about the bundle, for a report to be laid over. */
 function nothingRead(): Omit<BundleInspection, 'report' | 'problem'> {
   return {
@@ -205,6 +200,11 @@ function nothingRead(): Omit<BundleInspection, 'report' | 'problem'> {
   };
 }
 
+/**
+ * Inspect a bundle's files by path. This is the whole check; `inspectBundle`
+ * is it after unzipping. Studio and Builder call this on the files they hold
+ * rather than zipping first.
+ */
 export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleInspection {
   const report: BundleReportLine[] = [];
   const error = (text: string) => report.push({ level: 'error', text });

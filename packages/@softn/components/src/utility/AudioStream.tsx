@@ -247,6 +247,7 @@ const MIN_WANT_SECONDS = 0.005;
  * ceiling on scratch memory across every stream in the page, so that ten
  * components cannot each claim what one is allowed.
  */
+
 /** Longest block a producer may hand back, in seconds of audio. */
 const MAX_BLOCK_SECONDS = 2;
 /** Furthest ahead of the playhead a block may be scheduled, in seconds. */

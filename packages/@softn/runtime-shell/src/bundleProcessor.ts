@@ -508,7 +508,6 @@ export { requestedCapabilities, withheldPermissions } from './consent';
 export { CAPABILITIES } from '@softn/core';
 export type { Capability } from '@softn/core';
 
-/** Extract icon as a data URL from bundle binary files */
 /**
  * Resolve `asset("images/x.png")` to something the browser can load.
  *
@@ -630,6 +629,7 @@ function warnUnknownAssetExtension(path: string): void {
   );
 }
 
+/** Extract icon as a data URL from bundle binary files */
 export function extractIconDataUrl(
   binaryFiles: Pick<BundleBinaryStore, 'get'>,
   manifest: BundleManifest

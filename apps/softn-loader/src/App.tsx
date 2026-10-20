@@ -824,11 +824,6 @@ function RegistryDamagedDialog({ choice }: { choice: RegistryDamagedChoice & { r
 }
 
 /**
- * An upgrade of this installation to another package never finished
- * (R3-SN-01): the newer package may already have changed the data, so this
- * older package is not run against it until the person decides.
- */
-/**
  * A failed upgrade could not be rolled back (R4-SN-02): the installation is
  * blocked until the verified backup is restored AND that recovery is
  * recorded. Retry here, or keep the backup file for a manual recovery.
@@ -849,6 +844,11 @@ function RecoveryRequiredDialog({ choice }: { choice: RecoveryRequiredChoice & {
   </div>;
 }
 
+/**
+ * An upgrade of this installation to another package never finished
+ * (R3-SN-01): the newer package may already have changed the data, so this
+ * older package is not run against it until the person decides.
+ */
 function UnresolvedUpgradeDialog({ choice }: { choice: UnresolvedUpgradeChoice & { resolve: (decision: LoaderDecision) => void } }) {
   const pending: PendingUpgrade = choice.pending;
   const { dialogRef, cancelRef } = useQuestion(() => choice.resolve({ kind: 'cancel' }));

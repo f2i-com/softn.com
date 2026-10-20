@@ -507,15 +507,15 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   // ==========================================================================
 
   /**
-   * Apply DB mutations from the worker to the real XDB.
-   */
-  /**
    * Resolve a mutation ID — if it's a worker temp ID (_wk_*), look up the real XDB ID.
    */
   private resolveId(id: string): string {
     return this.tempIdMap.get(id) ?? id;
   }
 
+  /**
+   * Apply DB mutations from the worker to the real XDB.
+   */
   private async applyDBMutations(mutations: DBMutation[]): Promise<void> {
     if (!mutations || mutations.length === 0) return;
     // Worker mutations change DB state — track which collections are dirty
@@ -612,9 +612,6 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   }
 
   /**
-   * Apply localStorage mutations from the worker.
-   */
-  /**
    * Mark DB snapshot as dirty so the next worker call includes fresh data.
    * Called when external changes (e.g. P2P sync, React state) modify context.data.
    */
@@ -628,6 +625,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     }
   }
 
+  /**
+   * Apply localStorage mutations from the worker.
+   */
   private applyLSMutations(mutations: LSMutation[]): void {
     if (!mutations || mutations.length === 0) return;
     // Worker mutations change LS state — mark dirty so next call sends a fresh snapshot

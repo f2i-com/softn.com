@@ -158,8 +158,7 @@ export function getXDB(appId?: string): XDBService {
  * them would destroy data belonging to an app that has not been opened yet.
  * Copying preserves exactly the access each app already had while making all
  * subsequent writes private.
- */
-/**
+ *
  * The old keys are never deleted, the copy is VERIFIED before the namespace is
  * marked migrated, and an interrupted run (quota) leaves no marker so the next
  * open restarts it (audit SN-02).

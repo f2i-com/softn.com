@@ -5,6 +5,7 @@
  * too, without pulling the main-thread runtime — and its DOM — into the
  * worker bundle.
  */
+
 /**
  * Bridge preamble for the softn.* namespace.
  * Builds a JS object that delegates to host.call() for each capability.

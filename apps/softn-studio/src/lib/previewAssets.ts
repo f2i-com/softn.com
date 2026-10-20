@@ -4,6 +4,13 @@ import { isPrivatePath, normalizeProjectPath } from './paths';
 import { resolveProjectRelativePath } from './projectImport';
 
 /**
+ * Files a page names for the composer, not for the browser: `<logic src="../logic/main.logic" />`
+ * is how a page says where its logic is, and is read before anything runs; `<link
+ * rel="stylesheet" href="styles.css">` places a stylesheet, and `<a href="about.html">` names a page.
+ */
+const SOURCE_FILE = /\.(ui|html?|logic|js|py|css|xdb|json|sql)$/i;
+
+/**
  * A bundle file named by its bare path in a `src`, with where and what to
  * write instead.
  *
@@ -23,13 +30,6 @@ import { resolveProjectRelativePath } from './projectImport';
  * bundle, as an HTML page expects. A component's `src` is the component's,
  * and is still reported.
  */
-/**
- * Files a page names for the composer, not for the browser: `<logic src="../logic/main.logic" />`
- * is how a page says where its logic is, and is read before anything runs; `<link
- * rel="stylesheet" href="styles.css">` places a stylesheet, and `<a href="about.html">` names a page.
- */
-const SOURCE_FILE = /\.(ui|html?|logic|js|py|css|xdb|json|sql)$/i;
-
 export function bareAssetPaths(path: string, source: string, files: ReadonlyMap<string, unknown>): string[] {
   const out: string[] = [];
   // Other languages blanked, line numbers kept: a path in the logic is the logic's business.

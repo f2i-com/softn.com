@@ -556,10 +556,6 @@ function normalizeExternalPrimitive(value: unknown): ExternalValueRead {
 }
 
 /**
- * Extract safe, serializable properties from a browser Event for passing to the VM.
- * Only extracts primitive-valued properties — no DOM nodes, functions, or circular refs.
- */
-/**
  * SoftN Script Runtime
  * Executes .logic code inside the WASM VM for true sandboxing.
  * No `new Function()` calls are used — all user code runs in the VM.
@@ -859,9 +855,6 @@ export class SoftNScriptRuntime {
   }
 
   /**
-   * Load and execute a script or logic block inside the WASM VM.
-   */
-  /**
    * Empty result for a load that was abandoned before it could run.
    */
   private static readonly ABANDONED: ScriptLoadResult = {
@@ -929,6 +922,9 @@ export class SoftNScriptRuntime {
     }
   }
 
+  /**
+   * Load and execute a script or logic block inside the WASM VM.
+   */
   async loadScript(script: CodeBlock): Promise<ScriptLoadResult> {
     const useHostBridges = this.runtimeMode === 'main';
     // A wait a previous script asked for holds a call id this one will reuse.
@@ -1659,12 +1655,6 @@ export class SoftNScriptRuntime {
   }
 
   /**
-   * Create a sync function wrapper for template expressions.
-   * Does NOT propagate state changes (used during React render).
-   * Stripped to bare minimum for performance — window sync is only done
-   * in async wrappers (needed for Scene3D mouse-look, not template expressions).
-   */
-  /**
    * Key for the per-render sync-call cache, or null when the arguments cannot
    * be described by one.
    *
@@ -1680,6 +1670,12 @@ export class SoftNScriptRuntime {
     return buildSyncCacheKey(name, args);
   }
 
+  /**
+   * Create a sync function wrapper for template expressions.
+   * Does NOT propagate state changes (used during React render).
+   * Stripped to bare minimum for performance — window sync is only done
+   * in async wrappers (needed for Scene3D mouse-look, not template expressions).
+   */
   private createVMSyncFunction(name: string): (...args: unknown[]) => unknown {
     return (...args: unknown[]): unknown => {
       try {
@@ -1879,11 +1875,6 @@ export class SoftNScriptRuntime {
   }
 
   /**
-   * Sync VM globals → React component state.
-   * Uses VM-side dirty tracking to only deepEqual globals that were actually
-   * written during execution, eliminating O(N) deepEqual scans on unchanged state.
-   */
-  /**
    * Drop the cached digests for `names`, so the next sync reads them.
    *
    * A digest answers "has the VM changed since I last looked?", but the skip it
@@ -1927,6 +1918,11 @@ export class SoftNScriptRuntime {
     }
   }
 
+  /**
+   * Sync VM globals → React component state.
+   * Uses VM-side dirty tracking to only deepEqual globals that were actually
+   * written during execution, eliminating O(N) deepEqual scans on unchanged state.
+   */
   private syncVMStateToReact(): void {
     if (!this.symbolMap || !this.vmEngine) return;
     this.takeDocumentChanges();
@@ -2038,9 +2034,6 @@ export class SoftNScriptRuntime {
     }
   }
 
-  /**
-   * Evaluate an expression synchronously using the VM.
-   */
   /**
    * Evaluate one `$:` declaration by calling the function compiled for it.
    *
@@ -2172,6 +2165,9 @@ export class SoftNScriptRuntime {
     }
   }
 
+  /**
+   * Evaluate an expression synchronously using the VM.
+   */
   evaluateExpression(expression: string): unknown {
     try {
       if (!this.vmEngine) return undefined;
@@ -2541,14 +2537,14 @@ export class SoftNScriptRuntime {
     }
   }
 
+  /** What each synced window global held when it was last handed to the VM. */
+  private windowSyncSeen = new Map<string, unknown>();
+
   /**
    * Sync properties from the real browser `window` into the VM's `window` global.
    * Only syncs __ prefixed keys registered via registerSyncKey().
    * Short-circuits when no sync keys have values on the real window.
    */
-  /** What each synced window global held when it was last handed to the VM. */
-  private windowSyncSeen = new Map<string, unknown>();
-
   private syncWindowToVM(): void {
     if (this.windowGlobalIndex < 0 || !this.vmEngine) return;
     if (typeof window === 'undefined' || this.syncKeys.size === 0) return;
@@ -2628,16 +2624,16 @@ export class SoftNScriptRuntime {
 
   // ── Host call processing (softn.* bridge) ───────────────────────────
 
+  /** Max total host calls resolved per processPendingHostCalls invocation.
+   *  Prevents runaway callback chains from consuming unbounded memory/CPU. */
+  private static readonly MAX_HOST_CALL_ROUNDS = 256;
+
   /**
    * Process pending host calls WITHOUT holding the VM lock during async operations.
    * The lock is released before this method is called, so other VM calls (like
    * movement ticks) can execute while slow host operations (AI generation) run.
    * The lock is re-acquired only briefly to resolve each callback in the VM.
    */
-  /** Max total host calls resolved per processPendingHostCalls invocation.
-   *  Prevents runaway callback chains from consuming unbounded memory/CPU. */
-  private static readonly MAX_HOST_CALL_ROUNDS = 256;
-
   private async processPendingHostCallsUnlocked(initialPending: PendingHostCall[]): Promise<void> {
     if (!this.vmEngine) return;
 
@@ -3757,14 +3753,6 @@ export class SoftNScriptRuntime {
   }
 
   /**
-   * Save a file the app produced: the content becomes a Blob and the browser's
-   * own download handles the rest, so where it lands and whether it is
-   * confirmed is the user's setting, not the app's. Text by default; with
-   * `base64: true` the content is decoded to bytes first, which is how an
-   * app hands over an image or a zip. Gated with the other file calls: an
-   * app that may open the user's files may also give them one.
-   */
-  /**
    * `softn.input.captureKeys(keys)`: the keys whose browser default the
    * window bridge cancels before the script's handler sees them. Not a
    * gated capability: it changes nothing but the page the app already
@@ -3776,6 +3764,14 @@ export class SoftNScriptRuntime {
     return { captured: keys.length };
   }
 
+  /**
+   * Save a file the app produced: the content becomes a Blob and the browser's
+   * own download handles the rest, so where it lands and whether it is
+   * confirmed is the user's setting, not the app's. Text by default; with
+   * `base64: true` the content is decoded to bytes first, which is how an
+   * app hands over an image or a zip. Gated with the other file calls: an
+   * app that may open the user's files may also give them one.
+   */
   private async handleFilesSaveFile(call: PendingHostCall): Promise<unknown> {
     this.checkPermission('files');
     const [rawName, content, optionsJson] = call.args;

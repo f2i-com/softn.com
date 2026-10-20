@@ -210,22 +210,6 @@ function currentUrl(): string {
 }
 
 /**
- * How this page was entered.
- *
- * `?open=` beats an `/app/` path deliberately: both want the one skeleton tab,
- * and a bundle arriving over the network racing a bundle arriving from the
- * cache would leave whichever lost holding a tab that never finishes loading.
- */
-/**
- * Put the address back after a static host bounced it here.
- *
- * `/web/app/Notes` is a route, not a file, so a host with no SPA rewrite serves
- * its 404 page — which forwards the original path as `?softn-restore=`. This
- * restores it before anything reads the URL, so the app sees the address the
- * visitor actually typed and the address bar shows it. Same-origin paths only:
- * the value arrives from the query string, so it is not ours to trust.
- */
-/**
  * A query-string value as a path of this origin, or null.
  *
  * Judged by where the URL parser actually sends it, not by its first
@@ -247,6 +231,15 @@ function sameOriginPath(value: string | null): string | null {
   return url.pathname + url.search + url.hash;
 }
 
+/**
+ * Put the address back after a static host bounced it here.
+ *
+ * `/web/app/Notes` is a route, not a file, so a host with no SPA rewrite serves
+ * its 404 page — which forwards the original path as `?softn-restore=`. This
+ * restores it before anything reads the URL, so the app sees the address the
+ * visitor actually typed and the address bar shows it. Same-origin paths only:
+ * the value arrives from the query string, so it is not ours to trust.
+ */
 function restoreForwardedPath(): void {
   const params = new URLSearchParams(window.location.search);
   const forwarded = sameOriginPath(params.get('softn-restore'));
@@ -258,6 +251,13 @@ function restoreForwardedPath(): void {
   }
 }
 
+/**
+ * How this page was entered.
+ *
+ * `?open=` beats an `/app/` path deliberately: both want the one skeleton tab,
+ * and a bundle arriving over the network racing a bundle arriving from the
+ * cache would leave whichever lost holding a tab that never finishes loading.
+ */
 function readEntry(): {
   openValue: string | null;
   appName: string | null;
@@ -1189,7 +1189,6 @@ function App(): React.ReactElement {
     return false;
   }, []);
 
-  /** Handle opening a cached app */
   /**
    * Carry one build's records into another, then open it.
    *
@@ -1227,6 +1226,7 @@ function App(): React.ReactElement {
     [canChangeAppData]
   );
 
+  /** Handle opening a cached app */
   const handleOpenCached = useCallback(
     (app: CachedApp) => {
       // A tab is found below only once its load has finished, so a second
@@ -1450,15 +1450,6 @@ function App(): React.ReactElement {
     [openLocalFile]
   );
 
-  /**
-   * Tell an embedder that the app is actually on screen.
-   *
-   * An iframe's `load` event only says the runtime shell arrived; parsing the
-   * bundle and starting the engine takes another moment, and a page that
-   * announces "running" during that gap is lying to its reader. There is
-   * nothing sensitive in the message, so it is not worth narrowing the target
-   * origin to a list the runtime would then have to maintain.
-   */
   /** Tabs whose run has been counted, so a reload of the runtime inside one tab is not a second run. */
   const countedRunsRef = useRef(new Set<string>());
 
@@ -1471,6 +1462,12 @@ function App(): React.ReactElement {
    * The site counts the press of Play separately, as a launch. A tab is
    * counted once: a permission grant reloads the runtime in place, and that
    * is the same run.
+   *
+   * An iframe's `load` event only says the runtime shell arrived; parsing the
+   * bundle and starting the engine takes another moment, and a page that
+   * announces "running" during that gap is lying to its reader. There is
+   * nothing sensitive in the message, so it is not worth narrowing the target
+   * origin to a list the runtime would then have to maintain.
    */
   const announceReady = useCallback(
     (tab: OpenTab) => {
