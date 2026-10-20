@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import initWasm from '../wasm-zipp/zipp_wasm.js';
+import { configureZippWasmSource } from '../src/runtime/zipp-wasm-loader';
 
 const REL = 'wasm-zipp/zipp_wasm_bg.wasm';
 
@@ -32,4 +33,8 @@ function findEngine(): string {
   );
 }
 
-await initWasm({ module_or_path: readFileSync(findEngine()) });
+const engine = readFileSync(findEngine());
+await initWasm({ module_or_path: engine });
+// And the loader, for what it hands to workers: the page's engine is posted
+// to every worker it starts, compiled from this source.
+configureZippWasmSource(engine);

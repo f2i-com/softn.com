@@ -19,7 +19,7 @@ import { ZippModelRunner, type ModelBackend, type GenerateOptions } from './zipp
 import type { ChatMessage } from './chat-template';
 
 export type WorkerRequest =
-  | { type: 'open'; id: number; blob: Blob; backend?: ModelBackend; context?: number }
+  | { type: 'open'; id: number; blob: Blob; engine: WebAssembly.Module | BufferSource; backend?: ModelBackend; context?: number }
   | { type: 'generate'; id: number; messages: ChatMessage[]; options: GenerateOptions }
   | { type: 'cancel'; id: number };
 
@@ -45,9 +45,10 @@ let runner: ZippModelRunner | null = null;
 let ready: Promise<void> | null = null;
 const cancelled = new Set<number>();
 
-function boot(): Promise<void> {
+/** The engine is the page's, compiled once and posted with `open`: there is no copy beside this worker. */
+function boot(engine: WebAssembly.Module | BufferSource): Promise<void> {
   ready ??= (async () => {
-    await initEngine({ module_or_path: new URL('../zipp_wasm_bg.wasm', import.meta.url) });
+    await initEngine({ module_or_path: engine });
     zipp_install_panic_hook();
     await initGguf({ module_or_path: new URL('./models/gguf_wasm_bg.wasm', import.meta.url) });
   })();
@@ -57,7 +58,7 @@ function boot(): Promise<void> {
 async function handle(request: WorkerRequest): Promise<unknown> {
   if (request.type === 'open') {
     if (runner) throw new Error('This worker already holds a model');
-    await boot();
+    await boot(request.engine);
     runner = await ZippModelRunner.open(request.blob, {
       engine: () => new Engine(),
       gguf,

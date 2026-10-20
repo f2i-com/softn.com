@@ -102,6 +102,19 @@ test('production leaves source maps behind; development still serves them', t =>
   assert.equal(status, 200);
 });
 
+test('production leaves the ZIPP engine to the app: its workers are handed the page’s compiled copy', t => {
+  const { temp, core, files } = fixture(t);
+  fs.writeFileSync(path.join(core, 'zipp_wasm_bg.wasm'), Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
+  fs.writeFileSync(path.join(core, 'zipp_torch.wasm'), Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
+  const output = path.join(temp, 'one-engine');
+  coreWorkerAssetPlugin({ coreDistRoot: core }).writeBundle({ dir: output });
+  const destination = path.join(output, 'assets', 'core-runtime');
+  assert.equal(fs.existsSync(path.join(destination, 'zipp_wasm_bg.wasm')), false);
+  // The torch package stays: the page fetches it from here for an app that declares torch.
+  assert.equal(fs.existsSync(path.join(destination, 'zipp_torch.wasm')), true);
+  for (const relative of Object.keys(files)) assert.equal(fs.existsSync(path.join(destination, relative)), true, relative);
+});
+
 test('production omits the core dist mirror while retaining the worker dependency tree', t => {
   const { temp, core, files } = fixture(t);
   fs.mkdirSync(path.join(core, 'core-runtime', 'runtime'), { recursive: true });

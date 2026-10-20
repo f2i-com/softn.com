@@ -207,7 +207,10 @@ launcher says which of the two it is promising for each app.
    new names. The precache route is registered first and keeps answering for
    the shell's own files. A second route, `softn-worker-assets`, holds the
    script worker's files under `/assets/core-runtime/` (js, wasm, json) with
-   `NetworkFirst` (4 s network timeout, 40 entries, 30 days): the worker's
+   `NetworkFirst` (4 s network timeout, 40 entries, 30 days). The engine is
+   not among them: the page compiles the shell's one precached copy and posts
+   the module to every worker it starts, so `core-runtime/` carries none and
+   the offline install fetches none. The worker's
    entry keeps one name across builds, `runtime/script-worker.js`, so a
    CacheFirst copy would outlive the release that made it and a worker from
    the previous release would be talking to this release's main thread.

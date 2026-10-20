@@ -118,12 +118,13 @@ export default defineConfig({
         // can reach its worker (core's SoftNRenderer starts one for a bundle
         // whose manifest asks for `config.execution: "worker"`). Most bundles
         // never do, yet globbing swept 23 files and 5.68 MiB into the
-        // precache, over half of every visitor's first load, including a
-        // second copy of both WASM engines. The worker needs three modules and
-        // one .wasm of it; the per-app install fetches exactly those, for
-        // exactly the apps that run a worker, through the softn-worker-assets
-        // route below. The rest of the copy stays for the model worker and
-        // for dev, and precaching it does not.
+        // precache, over half of every visitor's first load. The worker needs
+        // three modules of it, and no engine: the page posts it the engine it
+        // compiled, the one precached copy, and the copy here carries none.
+        // The per-app install fetches exactly those modules, for exactly the
+        // apps that run a worker, through the softn-worker-assets route below.
+        // The rest of the copy stays for the model worker and for dev, and
+        // precaching it does not.
         // Optional demos are removed from the default website distribution.
         // Missing demo icons must not prevent the worker from installing.
         //

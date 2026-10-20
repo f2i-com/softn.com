@@ -289,8 +289,10 @@ describe('installAppOffline', () => {
     const files: Record<string, string> = {
       [`${ROOT}runtime/script-worker.js`]:
         'import{a as b}from"../chunk-A.js";import"../chunk-B.js";const later=()=>import("../lazy.js");',
+      // The engine glue still names zipp_wasm_bg.wasm, which is not served
+      // under core-runtime/: the worker is handed the page's engine.
       [`${ROOT}chunk-A.js`]:
-        'import React from "react";const wasm=new URL("engine.wasm", import.meta.url);export const a=1;',
+        'import React from "react";const wasm=new URL("engine.wasm", import.meta.url);const zipp=new URL("zipp_wasm_bg.wasm", import.meta.url);export const a=1;',
       [`${ROOT}chunk-B.js`]: 'export * from "./chunk-A.js";',
       [`${ROOT}engine.wasm`]: '\0asm',
     };
@@ -306,7 +308,7 @@ describe('installAppOffline', () => {
       });
     }
 
-    it('fetches the worker entry, what it imports statically and its wasm through the service worker', async () => {
+    it('fetches the worker entry, what it imports statically and its wasm through the service worker, but not the engine', async () => {
       const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
       const fetch = serve();
       const result = await installAppOffline(

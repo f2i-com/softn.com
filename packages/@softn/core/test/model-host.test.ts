@@ -263,6 +263,8 @@ describe('the Worker a model lives in', () => {
     expect(loaded).toMatchObject({ modelHandle: 'model-1', modelId: 'a/b/m.gguf', backend: 'webgpu' });
     expect(workers[0].posted[0]).toMatchObject({ type: 'open', backend: 'webgpu', context: 1024 });
     expect(workers[0].posted[0].blob).toBeInstanceOf(Blob);
+    // The page's own engine, compiled: the worker has no copy to fetch.
+    expect(workers[0].posted[0].engine).toBeInstanceOf(WebAssembly.Module);
     const reply = await host.generate('model-1', [{ role: 'user', content: 'hi' }], { do_sample: false, max_new_tokens: 5 });
     expect(reply).toMatchObject({ text: 'hello' });
     expect(workers[0].posted[1]).toMatchObject({ type: 'generate', options: { temperature: 0, maxNewTokens: 5 } });

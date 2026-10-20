@@ -78,6 +78,14 @@ Every copy of the torch package, recognised by its exports, must carry the
 digest `packages.torch` records: `zipp-torch/` and the `assets/core-runtime/`
 copy beside each built runtime and editor.
 
+The built runtime and editors carry the engine once, as their hashed asset:
+a SoftN page posts the engine it compiled to every worker it starts, so their
+`assets/core-runtime/` holds none. The archive alone adds the engine at
+`assets/core-runtime/zipp_wasm_bg.wasm` in `hosted-runtime/` and each editor,
+because FormLogic's `fetch-softn-release.mjs` has required a copy there.
+Nothing reads it; drop it from `scripts/package-formlogic-runtime.mjs` once the
+FormLogic installing these archives no longer asks for it.
+
 `hosted-runtime/` has two entry documents. `index.html` serves the ZIPP
 engines; `host.html` is the same document with one attribute and serves only
 `host-js`, which runs the app author's `.logic` as the document's own

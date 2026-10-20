@@ -35,23 +35,60 @@ export function configureZippWasmSource(source: BufferSource | WebAssembly.Modul
   suppliedSource = bytes.slice();
 }
 
-/** A copy for a new worker; never expose this realm's mutable engine memory. */
-export function getConfiguredZippWasmSource(): BufferSource | WebAssembly.Module | undefined {
-  if (suppliedSource === undefined || suppliedSource instanceof WebAssembly.Module) {
-    return suppliedSource;
-  }
-  return suppliedSource instanceof ArrayBuffer
-    ? suppliedSource.slice(0)
-    : new Uint8Array(suppliedSource.buffer, suppliedSource.byteOffset, suppliedSource.byteLength).slice();
+/**
+ * Take the engine a page compiled and posted to this worker, unless this realm
+ * has already started one. A worker's realm has not, so the page's module is
+ * what it runs; the exception is a test that runs a worker's code in the page's
+ * own realm, whose engine is already an instance of that module.
+ */
+export function adoptZippWasmSource(source: BufferSource | WebAssembly.Module): void {
+  if (!initializationStarted) configureZippWasmSource(source);
 }
 
+/** The engine compiled once for this realm: from the configured source, or fetched from beside this chunk. */
+const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
+  if (suppliedSource instanceof WebAssembly.Module) return suppliedSource;
+  if (suppliedSource !== undefined) return WebAssembly.compile(suppliedSource);
+  // The engine beside this chunk: the glue's own default, which a Vite build
+  // rewrites into the app's one hashed, precached copy. A worker is never left
+  // to fetch it from beside its own chunk in core-runtime/, where there is no
+  // copy: the page compiles the engine once and posts the module to every
+  // worker it starts (`zippEngineForWorker`), so one file serves them all.
+  const url = new URL('zipp_wasm_bg.wasm', import.meta.url);
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(`The ZIPP engine (${url.pathname}) could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!response.ok) throw new Error(`The ZIPP engine (${url.pathname}) answered ${response.status}`);
+  // Streaming only for a server that labels the file as WebAssembly, which
+  // compileStreaming insists on; any other label still serves the right bytes.
+  return typeof WebAssembly.compileStreaming === 'function' && response.headers.get('Content-Type') === 'application/wasm'
+    ? WebAssembly.compileStreaming(response)
+    : WebAssembly.compile(await response.arrayBuffer());
+});
+
 const initialize = retryableSingleFlight<InitOutput>(async () => {
-  const exports = suppliedSource === undefined
-    ? await initWasm()
-    : await initWasm({ module_or_path: suppliedSource });
+  // A thenable, so the glue compiles nothing when its engine is already
+  // instantiated (a test hands it the bytes directly); it reads it only when
+  // it has to instantiate one.
+  const module = { then: (resolve: (value: WebAssembly.Module) => void, reject: (reason: unknown) => void) => compileEngine().then(resolve, reject) };
+  const exports = await initWasm({ module_or_path: module as unknown as WebAssembly.Module });
   zipp_install_panic_hook();
   return exports;
 });
+
+/**
+ * The engine, compiled, for a worker this realm starts: the module this realm
+ * runs, which a worker instantiates without fetching or compiling anything.
+ * Fixes the source as initialization does. A host that configured bytes gets
+ * them compiled once, here, for every worker.
+ */
+export function zippEngineForWorker(): Promise<WebAssembly.Module> {
+  initializationStarted = true;
+  return compileEngine();
+}
 
 /** One retryable initialization per JS realm, shared by its runtime consumers. */
 export function ensureZippWasm(): Promise<InitOutput> {

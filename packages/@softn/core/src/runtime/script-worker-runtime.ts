@@ -28,6 +28,7 @@ import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 import { LogicTimers } from './logic-timers';
 import { printRuntimeLine } from './engine-output';
 import { getXDB } from './xdb-registry';
+import { zippEngineForWorker } from './zipp-wasm-loader';
 import type { XDBService } from './xdb-service';
 
 type WorkerPayloadMap = {
@@ -322,6 +323,21 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     const workerPath = './core-runtime/runtime/script-worker.js';
     this.workerUrl = new URL(workerPath, import.meta.url);
     this.worker = new Worker(this.workerUrl, { type: 'module' });
+    // The engine the worker runs is the page's, compiled once and posted as
+    // soon as it is ready (a module is shared, not copied, when it is
+    // posted): there is no copy beside the worker to fetch. The worker's
+    // `init` waits for it, so a script can be sent before it arrives.
+    const worker = this.worker;
+    zippEngineForWorker().then(
+      (engine) => {
+        if (!this.terminated) worker.postMessage({ type: 'engine', engine });
+      },
+      (error: unknown) => {
+        if (this.terminated) return;
+        console.error('[SoftN Worker] the engine could not be compiled for the worker', error);
+        this.teardown(`worker_engine_unavailable:${error instanceof Error ? error.message : String(error)}`, true);
+      }
+    );
     const generation = this.generation;
     this.worker.onmessage = (evt: MessageEvent) => {
       if (generation !== this.generation) return;

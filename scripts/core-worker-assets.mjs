@@ -33,6 +33,11 @@ function copyDirectory(source, destination, skipRuntimeMirror = false) {
     // them; a deployed Worker never loads one, and they were 3.1 MB of every
     // app's copy.
     if (entry.name.endsWith('.map')) continue;
+    // Nor the ZIPP engine: the page compiles its own copy, the app's one
+    // hashed and precached asset, and posts the module to every worker it
+    // starts (zippEngineForWorker in core). A copy here was a second 6 MB
+    // engine in every deployment that nothing fetched.
+    if (entry.name === 'zipp_wasm_bg.wasm') continue;
     const from = path.join(source, entry.name);
     const to = path.join(destination, entry.name);
     if (entry.isDirectory()) copyDirectory(from, to);

@@ -247,7 +247,12 @@ to at install.
 (`zipp_torch-<hash>.js`); an app's `coreWorkerAssetPlugin` copies it to
 `assets/core-runtime/zipp_torch.wasm`. The PWAs precache the engine (6.41 MB,
 under their 8 MiB caps) and not the package: `assets/core-runtime/` is in
-every PWA's `globIgnores`. The FormLogic runtime archive carries the install
+every PWA's `globIgnores`. An app carries the engine once, as its hashed
+asset: the page compiles it (`zippEngineForWorker` in `zipp-wasm-loader.ts`)
+and posts the module to every worker it starts, the script, sandbox and
+local-model workers, which therefore fetch and compile none, and
+`assets/core-runtime/` holds no engine. A host that configures the engine's
+bytes (`configureZippWasmSource`) has them compiled once for all of them. The FormLogic runtime archive carries the install
 as `zipp-torch/`, and every copy of the package in it, found by its exports,
 must be the recorded one.
 

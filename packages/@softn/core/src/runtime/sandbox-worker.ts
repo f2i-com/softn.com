@@ -1,11 +1,12 @@
-import {configureZippWasmSource,ensureZippWasm} from './zipp-wasm-loader';
+import {adoptZippWasmSource,ensureZippWasm} from './zipp-wasm-loader';
 import {executeSandbox} from './sandbox-execute';
 // This worker runs only ZIPP bytecode. Guest text is never browser JavaScript.
 let started=false;
 self.onmessage = async (event: MessageEvent) => {
   try {
     if(!started){
-      if(event.data.zippWasm!==undefined)configureZippWasmSource(event.data.zippWasm);
+      // The page's compiled engine: there is no copy beside this worker to fetch.
+      if(event.data.zippWasm!==undefined)adoptZippWasmSource(event.data.zippWasm);
       started=true;
     } else if(event.data.zippWasm!==undefined)throw new Error('The sandbox engine is already initialized');
     await ensureZippWasm();

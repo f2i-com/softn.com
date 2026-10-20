@@ -15,6 +15,9 @@ function copyDirRecursive(src: string, dest: string) {
     // Source maps are for reading dist/ itself; a Worker never loads one, and
     // they were 3.1 MB of the mirror and of every app's copy of it.
     if (entry.name.endsWith('.map')) continue;
+    // The engine is the page's: it posts its compiled module to every worker
+    // it starts, so no worker fetches one from beside its own chunk.
+    if (entry.name === 'zipp_wasm_bg.wasm') continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {

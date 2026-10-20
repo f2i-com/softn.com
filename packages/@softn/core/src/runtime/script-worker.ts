@@ -16,6 +16,7 @@ import {
   SnapshotLocalStorageBridge,
 } from './script-worker-bridges';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
+import { adoptZippWasmSource } from './zipp-wasm-loader';
 import { TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { deepEqual } from './vm-state';
 import { moduleSyntaxAsScript } from './module-syntax';
@@ -33,6 +34,9 @@ type ImportResolver = (path: string) => Promise<string | null>;
 // ============================================================================
 
 let wasmAdapter: VmAdapter | null = null;
+/** Settles when the page's engine has arrived; `init` waits for it. */
+let engineArrived: () => void = () => {};
+const engine = new Promise<void>((resolve) => { engineArrived = resolve; });
 const dbBridge = new SnapshotDBBridge();
 const lsBridge = new SnapshotLocalStorageBridge();
 
@@ -242,6 +246,13 @@ function beforeEntry(payload: Record<string, unknown>): void {
 self.onmessage = async (evt: MessageEvent) => {
   const msg = evt.data as Record<string, unknown>;
 
+  // The page's compiled engine: there is no copy beside this worker to fetch.
+  if (msg?.type === 'engine') {
+    adoptZippWasmSource(msg.engine as WebAssembly.Module);
+    engineArrived();
+    return;
+  }
+
   // Handle import responses
   if (msg?.type === 'import_response') {
     const id = Number(msg.id || 0);
@@ -278,7 +289,8 @@ self.onmessage = async (evt: MessageEvent) => {
         wasmAdapter = null;
       }
 
-      // Create WASM adapter
+      // Create WASM adapter, on the engine the page posts (above).
+      await engine;
       wasmAdapter = await VmAdapter.create();
       // A call here blocks nothing the user can see, so one re-entry may spend
       // twenty times what it may on the main thread: a modem decoding a whole

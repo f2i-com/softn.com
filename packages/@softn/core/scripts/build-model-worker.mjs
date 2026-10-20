@@ -1,7 +1,8 @@
 // The local-model worker: src/runtime/models/model-worker.ts and ZIPP's model
 // stack (vendor/zipp-models/) in one module at dist/runtime/model-worker.js,
 // with the two WebAssembly modules it fetches, and their licences, beside it in
-// dist/runtime/models/. The engine is core's own (dist/zipp_wasm_bg.wasm).
+// dist/runtime/models/. The engine is the page's: model-host.ts posts the
+// module it compiled with the request that opens a model.
 import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';

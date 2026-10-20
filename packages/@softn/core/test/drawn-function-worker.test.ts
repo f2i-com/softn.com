@@ -17,6 +17,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from '../src/parser';
 import { collectDrawnNames, collectObservedStateNames } from '../src/runtime/script-runtime';
+import { zippEngineForWorker } from '../src/runtime/zipp-wasm-loader';
 
 type Reply = { id: number; ok: boolean; result?: Record<string, unknown>; error?: string };
 
@@ -60,6 +61,8 @@ beforeAll(async () => {
     replies.push(message as Reply);
   };
   await import('../src/runtime/script-worker');
+  // The page's engine, which the runtime posts as the worker's first message.
+  await scope.onmessage!({ data: { type: 'engine', engine: await zippEngineForWorker() } });
 });
 
 afterAll(async () => {

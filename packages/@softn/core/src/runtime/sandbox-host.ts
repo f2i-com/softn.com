@@ -1,4 +1,4 @@
-import { getConfiguredZippWasmSource } from './zipp-wasm-loader';
+import { zippEngineForWorker } from './zipp-wasm-loader';
 
 /** Worker isolation bounds parsing/native builtins as well as VM fuel. */
 export class SandboxHost {
@@ -23,14 +23,20 @@ export class SandboxHost {
       };
       this.pending=()=>finish({error:'Sandbox cancelled'});
       try {
-        let zippWasm: ReturnType<typeof getConfiguredZippWasmSource>;
-        if(!this.worker){const workerPath='./core-runtime/runtime/sandbox-worker.js';this.worker=new Worker(new URL(workerPath,import.meta.url),{type:'module'});zippWasm=getConfiguredZippWasmSource();}
+        const fresh=!this.worker;
+        if(!this.worker){const workerPath='./core-runtime/runtime/sandbox-worker.js';this.worker=new Worker(new URL(workerPath,import.meta.url),{type:'module'});}
+        const worker=this.worker;
         timer=setTimeout(()=>finish({error:'Sandbox startup timed out'}),10000);
-        this.worker.onmessage=e=>{if(e.data?.ready){clearTimeout(timer);timer=setTimeout(()=>finish({error:'Sandbox execution timed out'}),1500);}else finish(e.data);};
-        this.worker.onerror=()=>finish({error:'Sandbox worker failed'});
-        // Only the first message to each new/recycled worker carries a source.
-        // Structured cloning preserves the host copy for later worker restarts.
-        this.worker.postMessage({source,input,...(zippWasm===undefined?{}:{zippWasm})});
+        worker.onmessage=e=>{if(e.data?.ready){clearTimeout(timer);timer=setTimeout(()=>finish({error:'Sandbox execution timed out'}),1500);}else finish(e.data);};
+        worker.onerror=()=>finish({error:'Sandbox worker failed'});
+        // A new or recycled worker's first message carries the engine, the
+        // page's own compiled module: the worker has no copy to fetch. The
+        // startup bound above covers the page compiling it the first time.
+        if(!fresh){worker.postMessage({source,input});return;}
+        zippEngineForWorker().then(
+          zippWasm=>{if(!settled&&this.worker===worker)worker.postMessage({source,input,zippWasm});},
+          error=>finish({error:`Sandbox engine unavailable: ${String(error).slice(0,400)}`}),
+        );
       }catch(error){finish({error:String(error).slice(0,500)});}
     });
   }

@@ -349,17 +349,21 @@ async function serviceWorkerControls(): Promise<boolean> {
 // route too, so they have their own runtime route (`softn-worker-assets`,
 // NetworkFirst, since the worker's entry keeps a stable name across builds).
 // Installing the app means fetching the worker's files through it: the
-// entry, every module it imports statically, and the engine's .wasm, which
-// the glue names with `new URL('…', import.meta.url)`. Which files those are
+// entry and every module it imports statically. Which files those are
 // changes with every core build, so rather than a list kept by hand the
 // served entry is read and its imports followed, the way the browser will.
+// Not the engine: the glue still names `zipp_wasm_bg.wasm` beside itself,
+// but the page posts its own compiled engine to the worker, the shell's one
+// precached copy, and there is no copy under core-runtime/ to fetch.
 
 /** The copied core dist, relative to the shell's base. */
 const WORKER_ASSET_ROOT = 'assets/core-runtime/';
 /** The worker's entry, relative to that root. */
 const WORKER_ENTRY = 'runtime/script-worker.js';
-/** A bound on the walk: the worker is three modules and one .wasm today. */
+/** A bound on the walk: the worker is three modules today. */
 const WORKER_ASSET_LIMIT = 32;
+/** The ZIPP engine, which a worker takes from the page rather than fetching. */
+const ENGINE_FILE = /\/zipp_wasm_bg\.wasm$/;
 
 const FROM_SPECIFIER = /\bfrom\s*["']([^"']+)["']/g;
 const BARE_IMPORT = /\bimport\s*["']([^"']+)["']/g;
@@ -427,8 +431,9 @@ async function installWorkerAssets(options: OfflineInstallOptions): Promise<bool
     for (const ref of moduleReferences(text)) {
       const target = new URL(ref, url);
       // The copied dist and nothing else: a reference that leaves it is not
-      // the worker's to need, and not this install's to fetch.
-      if (target.href.startsWith(root.href)) queue.push(target);
+      // the worker's to need, and not this install's to fetch. Nor the
+      // engine, which the worker is handed (above).
+      if (target.href.startsWith(root.href) && !ENGINE_FILE.test(target.pathname)) queue.push(target);
     }
   }
   return true;

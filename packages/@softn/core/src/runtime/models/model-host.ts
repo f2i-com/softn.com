@@ -19,6 +19,7 @@
  */
 import type { AIPermissionConfig } from '../ai-manager';
 import { describeNetDestination, type NetPermission } from '../egress-policy';
+import { zippEngineForWorker } from '../zipp-wasm-loader';
 import type { ChatMessage } from './chat-template';
 import type { WorkerReply, WorkerRequest } from './model-worker';
 import type { GenerateOptions, GenerateResult, ModelBackend, ModelInfo } from './zipp-model-runner';
@@ -39,6 +40,8 @@ export interface ModelHostConfig {
   readBundleFile?: (path: string) => Promise<Blob | null>;
   /** Makes the Worker a model lives in; tests hand in their own. */
   createWorker?: () => Worker;
+  /** The engine the Worker runs: the page's own, compiled once, unless a test hands in another. */
+  engine?: () => Promise<WebAssembly.Module | BufferSource>;
 }
 
 interface Resolved {
@@ -438,10 +441,12 @@ export class ModelHost {
       const { blob, label } = await this.fetchCheckpoint(spec, options);
       if (this.#closed) throw new Error('The app has closed');
       const device = options.device === 'webgpu' || options.device === 'wasm' ? options.device : 'auto';
+      const engine = await (this.config.engine ?? zippEngineForWorker)();
+      if (this.#closed) throw new Error('The app has closed');
       const worker = new ModelWorker((this.config.createWorker ?? defaultWorker)());
       let info: ModelInfo;
       try {
-        info = (await worker.request({ type: 'open', blob, backend: device as ModelBackend, context: num(options.context) }, OPEN_TIMEOUT).done) as ModelInfo;
+        info = (await worker.request({ type: 'open', blob, engine, backend: device as ModelBackend, context: num(options.context) }, OPEN_TIMEOUT).done) as ModelInfo;
       } catch (error) {
         worker.fail(error instanceof Error ? error : new Error(String(error)));
         throw error;
