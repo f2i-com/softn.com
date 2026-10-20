@@ -50,7 +50,14 @@ async function mount() {
   await settle();
 }
 async function click(selector: string) {
-  const button = container.querySelector<HTMLElement>(selector);
+  // What a click waits for can take more turns than settle() gives it on a
+  // loaded machine (the directory's listing is a fetch, then a render), so
+  // the button is waited for, within a bound.
+  let button = container.querySelector<HTMLElement>(selector);
+  for (let i = 0; !button && i < 25; i++) {
+    await settle();
+    button = container.querySelector<HTMLElement>(selector);
+  }
   expect(button, selector).toBeTruthy();
   act(() => button!.click());
   await settle();
