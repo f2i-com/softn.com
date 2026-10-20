@@ -619,7 +619,27 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
  * held to the bundle's network permission as well.
  */
 export function sanitizeSvg(markup: string, judge?: MarkupUrlJudge): string {
-  return sanitizeFragment(markup, SVG_TAGS, judge);
+  return sanitizedToRest(markup, SVG_TAGS, judge);
+}
+
+/**
+ * sanitizeFragment again on its own output, until the output reads back as
+ * itself (at most a few passes). Unwrapping an element can leave what was in
+ * it where the parser reads it otherwise: a `<title>` that held elements in
+ * a `<math>` is text once the `<math>` is gone, and table parts left without
+ * their table are moved. The browser that is given the output reads it the
+ * second way, so the second way is what is checked and returned. Such a
+ * difference between the tree checked and the tree drawn is how mutation XSS
+ * works; nothing was found to run through these, and nothing can now.
+ */
+function sanitizedToRest(markup: string, allowed: Set<string>, judge?: MarkupUrlJudge): string {
+  let out = sanitizeFragment(markup, allowed, judge);
+  for (let pass = 0; pass < 4; pass++) {
+    const again = sanitizeFragment(out, allowed, judge);
+    if (again === out) return out;
+    out = again;
+  }
+  return out;
 }
 
 /**
@@ -633,5 +653,5 @@ export function sanitizeSvg(markup: string, judge?: MarkupUrlJudge): string {
  * pending, as in the renderer.
  */
 export function sanitizeRichText(markup: string, judge?: MarkupUrlJudge): string {
-  return sanitizeFragment(markup, RICH_TEXT_TAGS, judge);
+  return sanitizedToRest(markup, RICH_TEXT_TAGS, judge);
 }

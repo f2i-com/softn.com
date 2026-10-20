@@ -121,6 +121,23 @@ describe('sanitizeRichText', () => {
   });
 });
 
+describe('sanitizing what was sanitized', () => {
+  // Unwrapping can leave what was inside where the parser reads it another
+  // way: a <title> that held elements in a <math> is text once the <math> is
+  // gone. The output is what a browser will read, so it is what is returned.
+  it.each([
+    ['svg', '<math><title><svg onload=alert(1)></math>'],
+    ['svg', '<math><title><!-- --><img src=https://evil.test/b></title></math>'],
+    ['svg', '<foreignObject><math><title><a/onload=alert(1)><!-- --><a href=javascript:alert(1)>x</a></title></foreignObject>'],
+    ['rich', '<math><tr><title a=`b`/><a href=javascript:alert(1)>x</a><!-- --></title>'],
+    ['rich', '<section><tr><td>cell</td></tr></section><caption>c</caption>'],
+  ])('gives back what it gives back (%s): %s', (mode, input) => {
+    const sanitize = mode === 'svg' ? sanitizeSvg : sanitizeRichText;
+    const once = sanitize(input);
+    expect(sanitize(once)).toBe(once);
+  });
+});
+
 describe('isSafeUrl', () => {
   it('accepts what apps legitimately use', () => {
     for (const u of [
