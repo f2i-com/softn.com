@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
-import { readZip } from '../src/lib/bundleProcessor';
+import { readZip } from '../src/bundleProcessor';
 
 /** Rewrite every little-endian u32 equal to `from` as `to`. */
 function patchU32(zip: Uint8Array, from: number, to: number): Uint8Array {

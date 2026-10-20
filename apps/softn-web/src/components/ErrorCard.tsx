@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useRef } from 'react';
-import { describeFailure } from '../lib/failure';
+import { describeFailure } from '@softn/runtime-shell/failure';
 
 /*
  * The runtime's own failure screen: an app would not open, a download failed,

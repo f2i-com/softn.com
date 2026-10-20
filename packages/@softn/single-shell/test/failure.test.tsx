@@ -12,7 +12,7 @@ vi.mock('@softn/components', () => ({
   ThemeProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 vi.mock('@softn/brand', () => ({ Mark: () => null }));
-import { Failure, SingleApp, describeFailure } from '../src/SingleApp';
+import { Failure, SingleApp } from '../src/SingleApp';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const element = document.createElement('div');
@@ -33,8 +33,10 @@ it('shows the reason behind a details toggle, and only a reason worth showing', 
 
   act(() => root!.render(<Failure />));
   expect(element.querySelector('details')).toBeNull();
-  expect(describeFailure({})).toBeNull();
-  expect(describeFailure('plain text')).toBe('plain text');
+  act(() => root!.render(<Failure error={{}} />));
+  expect(element.querySelector('details')).toBeNull();
+  act(() => root!.render(<Failure error="plain text" />));
+  expect(element.querySelector('details p')?.textContent).toBe('plain text');
 });
 
 it('logs a load failure and shows its message, instead of a bare sentence', async () => {

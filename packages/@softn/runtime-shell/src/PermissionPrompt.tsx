@@ -13,7 +13,7 @@
  */
 
 import React, { useEffect, useId, useRef } from 'react';
-import type { PermissionConfig } from '@softn/core';
+import { describeStoragePolicy, inspectDeclaration, type PermissionConfig } from '@softn/core';
 import { CONSENT_STYLES } from './consentStyles';
 import type { ConsentWording } from './PermissionBar';
 
@@ -148,9 +148,14 @@ export const PERMISSION_INFO: Record<string, { label: string; description: strin
     description: "Run the numeric code it generates (an emulator, a signal kernel) on your browser's own engine, bound to its own data only, so it runs many times faster.",
     icon: svg(<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />),
   },
+  // Who may read and change the records depends on the collection: shared by
+  // default, but a declaration can make one private to each visitor, append-
+  // only, and so on. The rows under this say which (storagePolicyLines); this
+  // used to call every collection one "anyone running the app can read and
+  // add to", a private one included.
   storage: {
     label: 'Server storage',
-    description: "Keep records in this app's own database on this site — a scoreboard, shared notes — which anyone running the app can read and add to.",
+    description: "Keep records in this app's own database on this site, such as a scoreboard or notes.",
     icon: svg(
       <>
         <ellipse cx="12" cy="5" rx="8" ry="3" />
@@ -170,7 +175,63 @@ interface RequestedRow {
   label: string;
   description: string;
   icon: React.ReactNode;
-  detail?: string;
+  /** Lines under the description: what the declaration narrows the capability to. */
+  details: React.ReactNode[];
+}
+
+/** Words for a declaration's own tokens (`user_selected`, `photo`), which are the author's, not the reader's. */
+const TOKEN_WORDS: Record<string, string> = {
+  user_selected: 'files you choose',
+  photo: 'photos',
+  photos: 'photos',
+  video: 'video',
+};
+
+function inWords(token: unknown): string {
+  if (typeof token !== 'string') return '';
+  return TOKEN_WORDS[token] ?? token.replace(/[_-]+/g, ' ').trim();
+}
+
+function listInWords(tokens: unknown[]): string {
+  return tokens.map(inWords).filter(Boolean).join(', ');
+}
+
+/**
+ * A host name that wraps at its dots on a narrow screen, not between any two
+ * letters: `api.<wbr>example.<wbr>com`. A name too long for the line even
+ * then still breaks, rather than running off the dialog.
+ */
+function wrappableHost(host: string): React.ReactNode {
+  const parts = host.split('.');
+  return parts.map((part, i) => (
+    <React.Fragment key={i}>
+      {part}
+      {i < parts.length - 1 ? '.' : null}
+      {i < parts.length - 1 ? <wbr /> : null}
+    </React.Fragment>
+  ));
+}
+
+/**
+ * One line per collection the declaration names, saying who can read and
+ * change its records, in bundle-format's words (describeStoragePolicy);
+ * `*` is every collection not named. A declaration that names none is the
+ * default for them all: shared.
+ */
+function storagePolicyLines(config: PermissionConfig): string[] {
+  const policies = inspectDeclaration(config).storagePolicies;
+  const named = Object.keys(policies).filter((name) => name !== '*');
+  const lines = named.map((name) => {
+    const info = describeStoragePolicy(policies[name]);
+    return `${name}: ${info.label}. ${capitalise(info.summary)}.`;
+  });
+  const rest = describeStoragePolicy(policies['*'] ?? 'public');
+  lines.push(`${named.length > 0 ? 'Other collections' : 'Every collection'}: ${rest.label}. ${capitalise(rest.summary)}.`);
+  return lines;
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function getRequestedPermissions(config: PermissionConfig, wording?: ConsentWording): RequestedRow[] {
@@ -190,26 +251,42 @@ function getRequestedPermissions(config: PermissionConfig, wording?: ConsentWord
     };
     const override = wording?.details?.[key as keyof NonNullable<ConsentWording['details']>];
 
-    let detail: string | undefined;
+    // In words, not the declaration's tokens: "Scopes: user_selected" told a
+    // reader nothing.
+    const details: React.ReactNode[] = [];
     if (key === 'net' && 'allowed_hosts' in value && Array.isArray(value.allowed_hosts) && value.allowed_hosts.length > 0) {
-      detail = `Hosts: ${value.allowed_hosts.join(', ')}`;
+      const hosts = value.allowed_hosts.filter((host): host is string => typeof host === 'string');
+      details.push(
+        <>
+          Only these sites:{' '}
+          {hosts.map((host, i) => (
+            <React.Fragment key={host}>
+              {i > 0 ? ', ' : null}
+              <span className="softn-consent-host">{wrappableHost(host)}</span>
+            </React.Fragment>
+          ))}
+        </>
+      );
     }
     if (key === 'files' && 'scopes' in value && Array.isArray(value.scopes) && value.scopes.length > 0) {
-      detail = `Scopes: ${value.scopes.join(', ')}`;
+      const words = listInWords(value.scopes);
+      if (words) details.push(`Which files: ${words}`);
     }
     if (key === 'camera' && 'modes' in value && Array.isArray(value.modes) && value.modes.length > 0) {
-      detail = `Modes: ${value.modes.join(', ')}`;
+      const words = listInWords(value.modes);
+      if (words) details.push(`For: ${words}`);
     }
     if (key === 'mic' && 'maxSeconds' in value && typeof value.maxSeconds === 'number' && value.maxSeconds > 0) {
-      detail = `Up to ${value.maxSeconds}s per recording`;
+      details.push(`Up to ${value.maxSeconds}s per recording`);
     }
+    if (key === 'storage') details.push(...storagePolicyLines(config));
 
     result.push({
       key,
       label: override?.label ?? base.label,
       description: override?.description ?? base.description,
       icon: base.icon,
-      detail,
+      details,
     });
   }
 
@@ -321,13 +398,15 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
 
         <ul className="softn-consent-list">
           {requested.length > 0 ? (
-            requested.map(({ key, label, description, icon, detail }) => (
+            requested.map(({ key, label, description, icon, details }) => (
               <li key={key} className="softn-consent-row">
                 <div className="softn-consent-row-icon">{icon}</div>
                 <div className="softn-consent-row-text">
                   <div className="softn-consent-row-label">{label}</div>
                   <div className="softn-consent-row-desc">{description}</div>
-                  {detail && <div className="softn-consent-row-detail">{detail}</div>}
+                  {details.map((detail, i) => (
+                    <div key={i} className="softn-consent-row-detail">{detail}</div>
+                  ))}
                 </div>
               </li>
             ))

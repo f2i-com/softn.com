@@ -1,9 +1,11 @@
 /**
- * Bundle Processing — extracted from softn-loader/src/App.tsx
+ * Bundle processing for every host that runs one bundle: the web runtime,
+ * the single-app shell and the desktop loader.
  *
  * Pure functions for reading .softn ZIP bundles, loading XDB data,
  * and resolving imports/logic into a single renderable source string.
- * No Tauri dependencies — uses only browser APIs.
+ * No Tauri dependencies — uses only browser APIs; a host that must reach the
+ * network some other way passes its own fetch (createImportResolver).
  */
 
 import {
@@ -17,6 +19,7 @@ import {
 } from '@softn/core';
 import type { BundleArchive, ComposedBundleSource, PermissionConfig } from '@softn/core';
 import { debug } from '@softn/core';
+import { cancelBody, judgeRemoteImport, readBoundedBody } from './net';
 
 // The permission read is core's now (audit-core 2.2), so the desktop loader,
 // the single-app hosts and this runtime map a legacy `manifest.permissions`
@@ -55,9 +58,12 @@ export interface BundleManifest {
     };
     /** Where the script runs: `AppConfig.execution` in @softn/core. */
     execution?: 'worker' | 'main';
+    /** The sync server; see resolveServerConfig in ./net, which reads it. */
     server?: {
       url?: string;
       token?: string;
+      /** The spelling older desktop bundles used for `token`. */
+      auth_token?: string;
       collections?: string[];
     };
   };
@@ -198,7 +204,7 @@ export function readZip(data: Uint8Array): ZipResult {
     }
   }
 
-  debug('[SoftN Web] Loaded files:', Array.from(textFiles.keys()));
+  debug('[SoftN] Loaded files:', Array.from(textFiles.keys()));
 
   return { textFiles, binaryFiles: createBinaryStore(archive, binaryNames), archive };
 }
@@ -285,30 +291,46 @@ export function firstScreenAssets(
   return chosen;
 }
 
-/** Load XDB data from bundle files into XDB (browser sync mode) */
+/**
+ * Seed the bundle's XDB files into the app's database; resolves with the
+ * number of records written.
+ *
+ * `isActive` is asked after the database is ready and before every file's
+ * seed, so a load that has been replaced while it waited — the desktop
+ * loader opens another file, a tab is closed — writes nothing further into a
+ * database that is no longer its own. Readiness is asynchronous where the
+ * store is native, and a bundle can be replaced during that await.
+ */
 export async function loadXDBData(
-  textFiles: Map<string, string>,
-  manifest: BundleManifest,
-  appId?: string
-): Promise<void> {
+  textFiles: ReadonlyMap<string, string>,
+  manifest: Partial<BundleManifest>,
+  appId?: string,
+  isActive: () => boolean = () => true
+): Promise<number> {
+  if (!isActive()) return 0;
   const xdb = getXDB(appId);
   const xdbFiles = manifest.files?.xdb ?? [];
   await xdb.isReady;
 
+  let insertedTotal = 0;
   for (const xdbFileName of xdbFiles) {
+    if (!isActive()) return insertedTotal;
     const content = textFiles.get(xdbFileName);
     if (!content) continue;
 
     try {
       const xdbData = parseXDBFile(xdbFileName, content);
+      if (!isActive()) return insertedTotal;
       const inserted = seedXDBBundleData(xdb, xdbData);
+      insertedTotal += inserted;
       debug(
-        `[SoftN Web] Loaded ${inserted}/${xdbData.records.length} records into ${xdbData.collection}`
+        `[SoftN] Loaded ${inserted}/${xdbData.records.length} records into ${xdbData.collection}`
       );
     } catch (err) {
-      console.error(`[SoftN Web] Failed to load XDB file ${xdbFileName}:`, err);
+      console.error(`[SoftN] Failed to load XDB file ${xdbFileName}:`, err);
     }
   }
+  return insertedTotal;
 }
 
 /**
@@ -318,15 +340,15 @@ export async function loadXDBData(
  * canonicalized before the fragments become one parser-visible block.
  */
 export function processBundle(
-  textFiles: Map<string, string>,
-  manifest: BundleManifest
+  textFiles: ReadonlyMap<string, string>,
+  manifest: Pick<BundleManifest, 'main'> & Partial<BundleManifest>
 ): ComposedBundleSource {
   // The whole composition, `python` included. This used to be declared as
   // three of its fields, and every host passed on exactly those three — so a
   // Python app reached the renderer with its project dropped and ran as a
   // page with no logic at all.
   const result = composeBundleSource(textFiles, manifest.main, manifest.files?.logic);
-  debug('[SoftN Web] Final source prepared with inlined components');
+  debug('[SoftN] Final source prepared with inlined components');
   return result;
 }
 
@@ -340,106 +362,67 @@ export interface DisposableImportResolver {
   dispose(): void;
 }
 
+/** What a host may change about how remote imports are fetched. */
+export interface ImportResolverOptions {
+  /**
+   * The fetch to make remote imports with: the desktop loader's goes through
+   * the native side, under the webview's CSP. The page's own `fetch` when
+   * not given, looked up when each import is made.
+   */
+  fetchImpl?: typeof fetch;
+  /** The largest remote module read, in bytes. */
+  maxRemoteBytes?: number;
+  /** How long one remote import may take before it is abandoned. */
+  timeoutMs?: number;
+}
+
+const MAX_REMOTE_IMPORT_BYTES = 1024 * 1024;
+const REMOTE_IMPORT_TIMEOUT_MS = 10_000;
+
 export function createImportResolver(
   textFiles: Map<string, string>,
-  permissionConfig: PermissionConfig | null = null
+  permissionConfig: PermissionConfig | null = null,
+  options: ImportResolverOptions = {}
 ): DisposableImportResolver {
+  const maxRemoteBytes = options.maxRemoteBytes ?? MAX_REMOTE_IMPORT_BYTES;
+  const timeoutMs = options.timeoutMs ?? REMOTE_IMPORT_TIMEOUT_MS;
   const urlCache = new Map<string, string>();
   const controllers = new Set<AbortController>();
   const readers = new Set<ReadableStreamDefaultReader<Uint8Array>>();
   let disposed = false;
 
-  const remoteUrl = (value: string): URL | null => {
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      return null;
-    }
-
-    const permissions = permissionConfig?.permissions;
-    const net = permissions && typeof permissions === 'object' ? permissions.net : undefined;
-
-    // Remote imports are network access just as surely as fetch() in app logic.
-    // Missing permission.json is therefore deny-by-default too: only an
-    // explicit net.enabled grant reaches the network.
-    if (!net || typeof net !== 'object' || !net.enabled) return null;
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && net?.allow_http)) return null;
-    if (
-      Array.isArray(net?.allowed_hosts) &&
-      net.allowed_hosts.length > 0 &&
-      !net.allowed_hosts.includes(url.hostname)
-    ) {
-      return null;
-    }
-    return url;
-  };
-
-  const MAX_REMOTE_IMPORT_BYTES = 1024 * 1024;
-  const REMOTE_IMPORT_TIMEOUT_MS = 10_000;
-
-  const cancelBody = async (response: Response): Promise<void> => {
-    try {
-      await response.body?.cancel();
-    } catch {
-      // It may already be locked by a reader or aborted by disposal.
-    }
-  };
-
-  const readBoundedText = async (response: Response): Promise<string | null> => {
-    const declared = response.headers.get('content-length');
-    if (declared !== null && Number(declared) > MAX_REMOTE_IMPORT_BYTES) {
-      await cancelBody(response);
-      return null;
-    }
-
-    if (!response.body) {
-      const bytes = await response.arrayBuffer();
-      if (disposed || bytes.byteLength > MAX_REMOTE_IMPORT_BYTES) return null;
-      return new TextDecoder().decode(bytes);
-    }
-
-    const reader = response.body.getReader();
-    readers.add(reader);
-    try {
-      const decoder = new TextDecoder();
-      const chunks: string[] = [];
-      let received = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        received += value.byteLength;
-        if (disposed || received > MAX_REMOTE_IMPORT_BYTES) {
-          await reader.cancel();
-          return null;
-        }
-        chunks.push(decoder.decode(value, { stream: true }));
+  // Judged by core's rule, the one `softn.net.fetch` is held to (see
+  // ./net). A refusal of a destination the bundle has `net` for is the one
+  // an author needs to see; a withheld or undeclared `net` is the ordinary
+  // state of most bundles and says nothing.
+  const permitted = (value: string): URL | null => {
+    const verdict = judgeRemoteImport(value, permissionConfig);
+    if (!verdict.allowed) {
+      if (permissionConfig?.permissions?.net?.enabled === true) {
+        console.warn(`[SoftN] Remote import refused: ${verdict.reason}`);
       }
-      chunks.push(decoder.decode());
-      return disposed ? null : chunks.join('');
-    } finally {
-      readers.delete(reader);
-      reader.releaseLock();
+      return null;
     }
+    return new URL(value);
   };
 
   const resolve = (async (path: string): Promise<string | null> => {
     if (disposed) return null;
     // URL imports — fetch with caching
     if (path.startsWith('http://') || path.startsWith('https://')) {
-      const requestedUrl = remoteUrl(path);
+      const requestedUrl = permitted(path);
       if (!requestedUrl) return null;
       if (urlCache.has(requestedUrl.href)) return urlCache.get(requestedUrl.href)!;
 
       const controller = new AbortController();
       controllers.add(controller);
-      const timer = setTimeout(() => controller.abort(), REMOTE_IMPORT_TIMEOUT_MS);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         // `redirect: 'error'` makes the browser reject the fetch at the first
         // redirect response, so the hop's target is never requested. Checking
         // the final URL afterwards, as this used to, only found out about a
         // forbidden host after the request had already reached it.
-        const response = await fetch(requestedUrl.href, {
+        const response = await (options.fetchImpl ?? fetch)(requestedUrl.href, {
           signal: controller.signal,
           redirect: 'error',
         });
@@ -459,13 +442,20 @@ export function createImportResolver(
         // service worker answering for another origin), and a host that
         // ignores the option would otherwise hand the import to a host the
         // user did not approve.
-        if (response.url && !remoteUrl(response.url)) {
+        if (response.url && !permitted(response.url)) {
           await cancelBody(response);
           return null;
         }
 
-        const text = await readBoundedText(response);
-        if (text === null) return null;
+        const bytes = await readBoundedBody(response, maxRemoteBytes, {
+          onChunk: () => !disposed,
+          onReader: (reader) => {
+            readers.add(reader);
+            return () => readers.delete(reader);
+          },
+        });
+        if (bytes === null || disposed) return null;
+        const text = new TextDecoder().decode(bytes);
         urlCache.set(requestedUrl.href, text);
         return text;
       } catch {
@@ -552,11 +542,16 @@ export function createAssetResolver(
   const resolve = ((assetPath: string): string => {
     if (disposed) return '';
     if (typeof assetPath !== 'string' || !assetPath) return '';
-    // Same refusal as the icon path: nothing that climbs out of the bundle.
-    if (assetPath.includes('..') || assetPath.startsWith('/') || /^[a-zA-Z]:/.test(assetPath))
+    // Same refusal as the icon path: nothing that climbs out of the bundle,
+    // starts at a root or names a scheme or a drive. Backslashes are read as
+    // the separators a Windows author meant, so `\\server\x` and `..\x` are
+    // judged as what they are; the desktop loader's copy did that, this one
+    // refused `a..b` where that one did not, and both rules now hold.
+    const normalized = assetPath.replace(/\\/g, '/');
+    if (normalized.includes('..') || normalized.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(normalized))
       return '';
 
-    const path = assetPath.replace(/^\.\//, '');
+    const path = normalized.replace(/^\.\//, '');
     const cached = urls.get(path);
     if (cached) return cached;
     if (unreadable.has(path)) return '';
@@ -577,7 +572,7 @@ export function createAssetResolver(
       binary = binaryFiles.get(path);
     } catch (err) {
       unreadable.add(path);
-      console.error(`[SoftN Web] Asset ${path} could not be read from the bundle:`, err);
+      console.error(`[SoftN] Asset ${path} could not be read from the bundle:`, err);
       return '';
     }
     // An SVG may have been read as text rather than as bytes, depending on how
@@ -625,7 +620,7 @@ function warnUnknownAssetExtension(path: string): void {
   if (ext in ASSET_CLASSIFICATIONS || warnedAssetExtensions.has(ext)) return;
   warnedAssetExtensions.add(ext);
   console.warn(
-    `[SoftN Web] No MIME type registered for .${ext}; serving as application/octet-stream`
+    `[SoftN] No MIME type registered for .${ext}; serving as application/octet-stream`
   );
 }
 
@@ -650,7 +645,7 @@ export function extractIconDataUrl(
   try {
     iconData = binaryFiles.get(manifest.icon);
   } catch (err) {
-    console.error(`[SoftN Web] Icon ${manifest.icon} could not be read from the bundle:`, err);
+    console.error(`[SoftN] Icon ${manifest.icon} could not be read from the bundle:`, err);
     return undefined;
   }
   if (!iconData) return undefined;

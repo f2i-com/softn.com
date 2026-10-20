@@ -145,7 +145,7 @@ describe('PermissionBar', () => {
         />,
       ),
     );
-    expect(host.textContent).toContain('This app wants to use its own shared database online and pictures from your camera.');
+    expect(host.textContent).toContain('This app wants to use its own database online and pictures from your camera.');
     expect(host.textContent).not.toContain('on this site');
     act(() => button('What this means').click());
     expect(host.textContent).toContain('Your system may ask you separately');

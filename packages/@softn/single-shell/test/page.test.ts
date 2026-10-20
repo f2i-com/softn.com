@@ -7,7 +7,7 @@ vi.mock('@softn/runtime-shell/bundleProcessor', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   loadXDBData: vi.fn(async () => {}),
 }));
-import { loadPageApplication, pathFrom, withoutRuntimeScripts } from '../src/page';
+import { loadPageApplication, pageHeadMetas, pathFrom, withoutRuntimeScripts } from '../src/page';
 
 const SITE = 'https://example.test/notes/';
 const RUNTIME = [`${SITE}softn/softn.js`];
@@ -171,6 +171,70 @@ describe('a page of a site', () => {
     serve({ 'index.html': '   ' });
     await expect(loadPageApplication({ pageUrl: 'ftp://example.test/index.html' }, new AbortController().signal)).rejects.toThrow();
     await expect(loadPageApplication({ pageUrl: `${SITE}index.html`, runtimeScripts: RUNTIME }, new AbortController().signal)).rejects.toThrow('The page is empty');
+  });
+});
+
+describe('the layout metas of a page’s head', () => {
+  it('are its viewport, theme-color and color-scheme, wherever softn.js stands', () => {
+    // The head as softn.js leaves it: the metas come after its tag, so the
+    // browser never read them.
+    const page = `<!DOCTYPE html><html><head>
+<script src="softn/softn.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0f766e">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Not about layout">
+<title>Notes</title>
+</head><body><p>Hi</p></body></html>`;
+    expect(pageHeadMetas(page)).toEqual([
+      { name: 'viewport', content: 'width=device-width, initial-scale=1' },
+      { name: 'theme-color', content: '#0f766e' },
+      { name: 'color-scheme', content: 'light dark' },
+    ]);
+  });
+
+  it('are read however the attributes are written', () => {
+    const page = `<HEAD>
+<META CONTENT='width=device-width' NAME='Viewport'>
+<meta content=#123456 name=theme-color media="(prefers-color-scheme: dark)" />
+<meta name=theme-color content="#fff" media='(prefers-color-scheme: light)'>
+<meta name="viewport" content=width=device-width,initial-scale=1>
+<meta name="color-scheme" content="light &amp; dark">
+</HEAD>`;
+    expect(pageHeadMetas(page)).toEqual([
+      { name: 'viewport', content: 'width=device-width' },
+      { name: 'theme-color', content: '#123456', media: '(prefers-color-scheme: dark)' },
+      { name: 'theme-color', content: '#fff', media: '(prefers-color-scheme: light)' },
+      { name: 'viewport', content: 'width=device-width,initial-scale=1' },
+      { name: 'color-scheme', content: 'light & dark' },
+    ]);
+  });
+
+  it('are none for a page that names none, or only empty ones', () => {
+    expect(pageHeadMetas('<p>{count}</p>')).toEqual([]);
+    expect(pageHeadMetas('<head><title>T</title><meta name="viewport" content=""><meta name="viewport"></head>')).toEqual([]);
+  });
+
+  it('are not what a comment, a script, a title or the body holds', () => {
+    const page = `<html><head>
+<!-- <meta name="viewport" content="width=600"> -->
+<script>document.write('<meta name="viewport" content="width=700">')</script>
+<title><meta name="viewport" content="width=800"></title>
+<noscript><meta name="theme-color" content="red"></noscript>
+<meta name="theme-color" content="blue">
+</head><body>
+<meta name="viewport" content="width=900">
+</body></html>`;
+    expect(pageHeadMetas(page)).toEqual([{ name: 'theme-color', content: 'blue' }]);
+    // A page with no <head> or <body> tag at all: what comes before the
+    // first <body> is its head, and with neither, all of it is read.
+    expect(pageHeadMetas('<meta name="viewport" content="width=device-width"><p>x</p>')).toEqual([
+      { name: 'viewport', content: 'width=device-width' },
+    ]);
+    expect(pageHeadMetas('<meta name="viewport" content="width=1"><body><meta name="viewport" content="width=2">')).toEqual([
+      { name: 'viewport', content: 'width=1' },
+    ]);
   });
 });
 

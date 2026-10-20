@@ -5,6 +5,9 @@
  *
  * - `bundleProcessor`: read a .softn archive, compose its source, seed XDB,
  *   resolve its assets and imports.
+ * - `net`: whether a remote import may be fetched (core's egress rule), a
+ *   response body read within a bound, and the manifest's sync server.
+ * - `failure`: what a host says when an app will not open.
  * - `zipWarmup` (+ `zipWorker`): inflate the first screen's entries off the
  *   main thread, falling back to the main thread when a worker is not
  *   available or answers too slowly.
@@ -14,11 +17,12 @@
  *   `PermissionBar` and `PermissionPrompt` are the bar and dialog that ask.
  *
  * These used to live in the web app (and consent in three copies), and the
- * other hosts imported them by path or duplicated them. The web app keeps
- * re-export shims at the old paths.
+ * other hosts imported them by path or duplicated them.
  */
 export * from './bundleProcessor';
 export * from './zipWarmup';
+export * from './net';
+export * from './failure';
 export { FrameBar } from './FrameBar';
 export type { TabInfo } from './FrameBar';
 export {

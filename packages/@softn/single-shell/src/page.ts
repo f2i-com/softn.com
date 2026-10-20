@@ -13,6 +13,12 @@
  *
  * Pictures and other files the page shows are not fetched here: the browser
  * loads them from the site by their paths, as it would for any page.
+ *
+ * What the page's head says about how it is laid out and coloured (its
+ * viewport, theme-color and color-scheme metas) is carried into the document
+ * here too (./headMetas): `softn.js` turns everything after its own tag into
+ * text, the head's metas included, and without its viewport a page drew at a
+ * desktop's 980 pixels on a phone.
  */
 
 import {
@@ -26,6 +32,9 @@ import {
 } from '@softn/core';
 import type { AssetResolver, BundleManifest } from '@softn/runtime-shell/bundleProcessor';
 import { assembleApplication, mark } from './assemble';
+import { adoptHeadMetas, pageHeadMetas } from './headMetas';
+// Where the tests and the page entry have always found them.
+export { adoptHeadMetas, pageHeadMetas, type HeadMeta } from './headMetas';
 import { digest, localUrl, type SingleConfig } from './config';
 import type { LoadedPage } from './SingleApp';
 
@@ -170,6 +179,9 @@ export async function loadPageApplication(
   const pageText = withoutRuntimeScripts(source.text ?? (await fetchText(mainPath, page)) ?? '', pageUrl, source.runtimeScripts ?? []);
   if (pageText.trim() === '') throw Error('The page is empty');
   textFiles.set(mainPath, pageText);
+  // First, before the rest of the site is read: the page is laid out at the
+  // width its viewport names from here on, not at a desktop's.
+  adoptHeadMetas(pageHeadMetas(pageText));
 
   // What the pages name, by the composer's own rules, each followed once.
   const pages = [mainPath];

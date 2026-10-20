@@ -1,0 +1,143 @@
+/*
+ * The runtime's shell (App.tsx): the product bar or frame bar over Home and the
+ * running apps, and the corner tab that brings a hidden bar back.
+ */
+@keyframes softn-shell-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.softn-shell {
+  /* Two names for one number, because a tab showing a permission bar has to
+     ADD to this rather than replace it, and a self-referential calc() on one
+     custom property is invalid at computed-value time. --softn-tab-bar-height
+     is the name @softn/components sizes an app root against, so it stays;
+     the base is what the breakpoints below move. */
+  /* On the home screen the product bar; over a running app the slim frame
+     bar, which is what an app root is sized against. */
+  --softn-chrome-base: var(--bar-height, 3rem);
+  --softn-tab-bar-height: var(--softn-chrome-base);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--ink);
+  color: var(--paper);
+}
+/* The frame bar is one row at every width, where the product bar it
+   replaces grows to two on a phone. */
+.softn-shell.softn-shell--playing {
+  --softn-chrome-base: 3rem;
+}
+.softn-shell-loading {
+  animation: softn-shell-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+/* Embedded, there is no tab bar, so there is no chrome to subtract: without
+   this an app in a host page's frame stopped 38px short of the bottom. The
+   same holds when the bar has been folded away. */
+.softn-shell.softn-shell--embedded,
+.softn-shell.softn-shell--embedded .softn-runner-host,
+.softn-shell.softn-shell--bare,
+.softn-shell.softn-shell--bare .softn-runner-host {
+  --softn-chrome-base: 0px !important;
+}
+/* The corner tab that brings a hidden bar back. */
+.softn-chrome-peek {
+  position: fixed;
+  top: 0;
+  right: 12px;
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--nav-bg);
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  opacity: 0.6;
+  backdrop-filter: blur(6px);
+  transition: opacity 160ms ease;
+}
+.softn-chrome-peek:hover, .softn-chrome-peek:focus-visible { opacity: 1; color: var(--paper); }
+.softn-chrome-peek:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+/* With the bar folded, the corner tab sits over the top of the tab — which
+   is where a pending permission bar is, and it covered the end of the
+   sentence saying what the app wants. The bar steps down below it. */
+.softn-shell--bare .softn-consent-bar,
+.softn-shell--bare .softn-consent-chip-strip {
+  padding-top: 2rem;
+}
+/* A line on Home: mint for something that went right, the plain edge for
+   something to do first. */
+.softn-shell-notice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 1rem 1.5rem 0;
+  padding: 0.625rem 0.875rem;
+  border-radius: 10px;
+  border: 1px solid var(--mint-edge, #2e7d5b);
+  background: var(--mint-glow-soft, rgba(46, 125, 91, 0.12));
+  color: var(--paper, #f2f0ec);
+  font-size: 0.8125rem;
+}
+.softn-shell-notice--warning {
+  border-color: var(--line-strong);
+  background: var(--ink-2);
+}
+.softn-shell-notice-text { flex: 1 1 16rem; }
+.softn-shell-notice-action {
+  min-height: 2rem;
+  padding: 0 0.75rem;
+  border-radius: 7px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--paper);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.softn-shell-notice-action:hover { border-color: var(--paper); background: var(--ink-3); }
+.softn-shell-notice-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+}
+.softn-shell-notice-action:focus-visible,
+.softn-shell-notice-dismiss:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+/* Out of sight until focused: the first Tab on Home offers them. */
+.softn-skip-links {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.softn-skip-link {
+  position: absolute;
+  left: -10000px;
+  padding: 0.5rem 0.875rem;
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.softn-skip-link:focus {
+  position: static;
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+}

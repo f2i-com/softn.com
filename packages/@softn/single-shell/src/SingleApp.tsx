@@ -1,4 +1,4 @@
-import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   SoftNWithXDB,
   inspectDeclaration,
@@ -15,6 +15,7 @@ import { createImportResolver } from '@softn/runtime-shell/bundleProcessor';
 // use too, so a bundle is asked in the same words on a single-app page.
 import { hasSavedGrant, saveGrant, withheldPermissions } from '@softn/runtime-shell/consent';
 import { PermissionBar } from '@softn/runtime-shell/PermissionBar';
+import { describeFailure } from '@softn/runtime-shell/failure';
 import type { AssetResolver } from '@softn/runtime-shell/bundleProcessor';
 import { loadApplication, type ConfigSource } from './load';
 import { watchForStall } from './stall';
@@ -25,6 +26,12 @@ import { bundlePageAt, composePage, mainPage, pageTitle } from './pages';
 // The slim bar the runtime draws over every app, for the pages a directory
 // serves through this shell; drawn from the shared tokens, which come along.
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
+import {
+  apply as applySiteTheme,
+  readChoice as readThemeChoice,
+  resolve as resolveSiteTheme,
+  subscribeTheme,
+} from '@softn/brand';
 import '@softn/brand/tokens.css';
 /**
  * What `Application` needs of a loaded app: the slice of `LoadedApplication`
@@ -87,7 +94,9 @@ export function Loading({ text = 'Loading…' }: { text?: string }) {
  * be found by attaching a debugger to the page.
  */
 export function Failure({ error }: { error?: unknown }) {
-  const reason = describeFailure(error);
+  // The reason as the web runtime's error card reads it (runtime-shell's
+  // describeFailure): the thrower's own words, or none.
+  const reason = describeFailure(error).detail;
   return (
     <div className="loading" role="alert">
       <h1>Unable to open this application</h1>
@@ -101,12 +110,6 @@ export function Failure({ error }: { error?: unknown }) {
       <button onClick={() => location.reload()}>Try again</button>
     </div>
   );
-}
-/** The message a failure carries, if it carries one worth showing. */
-export function describeFailure(error: unknown): string | null {
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === 'string' && error) return error;
-  return null;
 }
 /** Record a failure where a site owner will look for it, once. */
 function reportFailure(error: unknown): void {
@@ -174,6 +177,27 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   // was opened from. A standalone deployment stays unbranded, as documented.
   const slug = app.config.id;
   const framed = Boolean(app.config.directory && slug);
+  // Framed, the page is the site's, and its chrome — the frame bar, the
+  // permission bar, the corner tab — is drawn in the site's theme, as the web
+  // runtime draws it: the reader's choice, else the device's, and following
+  // either as it changes (@softn/brand's theme). It stayed dark in light mode.
+  // The app is then weighed against that side too (`followHost` below), as in
+  // the web runtime, so an app on the other side is drawn in its own box with
+  // its own colours rather than inheriting the chrome's.
+  // Before the first paint, so a light reader does not see the dark bar first.
+  // The page's ground goes with it (style.css, `softn-play-framed`): the
+  // boot screen's fixed dark stayed behind an app drawn on the light side.
+  useLayoutEffect(() => {
+    if (!framed) return;
+    applySiteTheme(resolveSiteTheme(readThemeChoice()));
+    const root = document.documentElement;
+    root.classList.add('softn-play-framed');
+    const unsubscribe = subscribeTheme(() => {});
+    return () => {
+      unsubscribe();
+      root.classList.remove('softn-play-framed');
+    };
+  }, [framed]);
   const [chromeHidden, setChromeHiddenState] = useState(() => framed && savedChromeHidden());
   const setChromeHidden = (hidden: boolean) => {
     try {
@@ -293,7 +317,13 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     // the default; the rule that weighs them is the provider's. The box named
     // here is where a side that is not the deployment's is written, with a
     // ground of its own: this page's is dark whatever the theme (style.css).
-    <ThemeProvider defaultDarkMode={app.config.theme === 'dark'} declaredMode={app.themeMode} box={THEME_BOX}>
+    <ThemeProvider
+      defaultDarkMode={app.config.theme === 'dark'}
+      declaredMode={app.themeMode}
+      box={THEME_BOX}
+      followHost={framed}
+      followSystem={framed}
+    >
       <div
         ref={layout}
         className={answer === 'pending' ? 'application-layout consenting' : 'application-layout'}
@@ -326,7 +356,9 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
           {framed && !chromeHidden && (
             <FrameBar
               tab={{ id: slug!, name: app.config.title, icon: app.icon, directorySlug: slug }}
-              homeLabel="softn.com"
+              // The site this directory is: its own host, which is softn.com
+              // only on softn.com.
+              homeLabel={window.location.host}
               homeTitle="Back to the directory. This leaves the app."
               closeTitle="Stop the app and go back to its page"
               onHome={() => window.location.assign('/apps')}

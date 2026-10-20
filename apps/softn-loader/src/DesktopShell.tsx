@@ -67,7 +67,7 @@ export function DesktopWelcome({ onOpen, canOpen, dragging, error }: {
       <div className="desktop-drop-card">
         <Mark size={44} />
         <h2>{dragging ? 'Drop your app here' : 'Start with a .softn app'}</h2>
-        <p>{canOpen ? 'Choose a file or drop it into this window.' : 'Open this workspace in the Softn desktop app to choose a local file.'}</p>
+        <p>{canOpen ? 'Choose a file or drop it into this window.' : 'Open this workspace in the SoftN desktop app to choose a local file.'}</p>
         {canOpen && <button className="desktop-button desktop-button-primary" onClick={onOpen}>Open a .softn file</button>}
         {error && <p className="desktop-error" role="alert">{error.message}</p>}
       </div>

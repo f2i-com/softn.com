@@ -12,19 +12,28 @@ import { ThemeProvider } from '@softn/components/theme';
 import {
   SoftNWithXDB,
   XDBStorageNotice,
-  readBundleEntries,
-  classifyAsset,
   extractPermissions,
   readManifest,
   type ComposedBundleSource,
   type PermissionConfig,
   type AppAssetResolver,
 } from '@softn/core';
+// The bundle pipeline the browser hosts use: one archive reader, composer,
+// XDB seed, asset and import resolver, judged by the same rules. The loader
+// kept a copy of each, and the copies had drifted.
+import {
+  createAssetResolver,
+  createImportResolver,
+  loadXDBData,
+  processBundle,
+  readZip,
+  type BundleBinaryReader,
+  type BundleManifest as SharedBundleManifest,
+  type DisposableImportResolver,
+} from '@softn/runtime-shell/bundleProcessor';
+import { resolveServerConfig, type ServerSyncSettings } from '@softn/runtime-shell/net';
 import { DesktopShell, DesktopWelcome } from './DesktopShell';
-import { createBundleAssetResolver } from './bundleAssets';
-import { isSoftnPath, resolveServerConfig, type BundleServerConfig } from './runtimeConfig';
-import { createBundleImportResolver } from './remoteImport';
-import { computeBundleAppId, loadBundleXDBData, processBundleSource } from './bundleRuntime';
+import { computeBundleAppId, isSoftnPath } from './bundleFile';
 // The consent rule, bar and dialog every host that runs one bundle shares
 // (@softn/runtime-shell), so a bundle is asked in the same words here as in
 // the browser. Grants stay under this loader's own prefix, where earlier
@@ -33,7 +42,7 @@ import { grantKey, hasSavedGrant, requestedCapabilities, saveGrant, withheldPerm
 import { PermissionBar, DESKTOP_WORDING, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import { createNativeFetch, createNativeNetFetch } from './nativeNetFetch';
 import { shortIdentity, type PendingUpgrade } from './installations';
-import { bindDataIdentity, chooseDataIdentity } from './nativeIdentity';
+import { bindDataIdentity, chooseDataIdentity, nativeInvoke } from './nativeIdentity';
 import {
   UpgradeBlockedError,
   abandonUpgrade,
@@ -49,15 +58,8 @@ import {
 } from './upgradeFlow';
 import { debug } from '@softn/core';
 
-export { UpgradeBlockedError } from './upgradeFlow';
-
 /** A question shown by the loader, with the answer channel attached. */
 type LoaderChoice = LoaderQuestion & { resolve: (decision: LoaderDecision) => void };
-
-function tauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | undefined {
-  // @ts-expect-error - Tauri invoke
-  return window.__TAURI__?.core?.invoke as ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | undefined;
-}
 
 /**
  * Consistent SQLite snapshot of the installation's data, written by the
@@ -65,7 +67,7 @@ function tauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promis
  * page never learns or chooses a file system path.
  */
 async function backupBeforeUpgrade(dataId: string): Promise<string> {
-  const invoke = tauriInvoke();
+  const invoke = nativeInvoke();
   if (!invoke) throw new Error('the native database is not available in this environment');
   const written = await invoke('backup_database', { appId: dataId });
   if (typeof written !== 'string' || !written) throw new Error('the backup was not written');
@@ -74,7 +76,7 @@ async function backupBeforeUpgrade(dataId: string): Promise<string> {
 
 /** Restore the data namespace from a pre-upgrade snapshot (local scope: this device only). */
 async function restoreFromBackup(dataId: string, backup: string): Promise<void> {
-  const invoke = tauriInvoke();
+  const invoke = nativeInvoke();
   if (!invoke) throw new Error('the native database is not available in this environment');
   await invoke('restore_database', { appId: dataId, backup });
 }
@@ -96,78 +98,22 @@ const isMobile = typeof __ANDROID__ !== 'undefined' && __ANDROID__;
 /** The name of the one box an app is drawn in here: the shell's content area. */
 const THEME_BOX = 'desktop-app';
 
-// Types for bundle content
-interface BundleManifest {
-  name: string;
-  version: string;
-  description?: string;
-  main: string;
-  icon?: string;
-  /** Absent in a manifest that names only its entry; core's readManifest fills the groups in. */
-  files?: {
-    ui?: string[];
-    logic?: string[];
-    xdb?: string[];
-    assets?: string[];
-  };
-  config?: {
-    window?: {
-      title?: string;
-      width?: number;
-      height?: number;
-    };
-    theme?: {
-      primary?: string;
-      mode?: 'light' | 'dark' | 'system';
-    };
+/**
+ * The manifest as every host reads it, and what only the desktop reads
+ * besides: the orientation to lock a phone to. Only the literal 'worker' in
+ * `config.execution` asks for a worker.
+ */
+type BundleManifest = SharedBundleManifest & {
+  config?: NonNullable<SharedBundleManifest['config']> & {
     mobile?: {
       orientation?: 'portrait' | 'landscape' | 'auto';
     };
-    server?: BundleServerConfig;
-    /** Where the bundle asked its script to run; only the literal 'worker' asks for a worker. */
-    execution?: string;
   };
-  permissions?: import('@softn/core').AppPermissions;
-}
-
-// ZIP reading result with text and binary files
-interface ZipResult {
-  textFiles: Map<string, string>;
-  binaryFiles: Map<string, Uint8Array>;
-}
-
-// Check if a file should be treated as binary
-function isBinaryFile(fileName: string): boolean {
-  // The extension list lived here, in softn-web, in core and in the demo
-  // build script, and the four disagreed. @softn/core's registry is the only
-  // copy now.
-  return classifyAsset(fileName).binary;
-}
-
-// Read ZIP entries from Uint8Array using fflate
-function readZip(data: Uint8Array): ZipResult {
-  const textFiles = new Map<string, string>();
-  const binaryFiles = new Map<string, Uint8Array>();
-  const decoder = new TextDecoder();
-
-  // Validation lives in @softn/core so every reader shares it. This file and
-  // softn-web each carried their own copy — identical today, but two copies of
-  // a security check are two chances to fix only one — and the builder had
-  // none at all.
-  for (const [normalizedPath, content] of readBundleEntries(data)) {
-    if (isBinaryFile(normalizedPath)) {
-      binaryFiles.set(normalizedPath, content);
-    } else {
-      textFiles.set(normalizedPath, decoder.decode(content));
-    }
-  }
-
-  return { textFiles, binaryFiles };
-}
+};
 
 // Set window icon from bundle
 async function setWindowIconFromBundle(
-  binaryFiles: Map<string, Uint8Array>,
+  binaryFiles: BundleBinaryReader,
   manifest: BundleManifest
 ): Promise<void> {
   // The manifest is the bundle's, read as it came: an icon written as a list
@@ -188,15 +134,22 @@ async function setWindowIconFromBundle(
     return;
   }
 
-  const iconData = binaryFiles.get(manifest.icon);
+  // Read from the archive on demand, and checked as it is read: a corrupt
+  // icon is a window without one, not an app that will not open.
+  let iconData: Uint8Array | undefined;
+  try {
+    iconData = binaryFiles.get(manifest.icon);
+  } catch (err) {
+    console.warn(`[SoftN Loader] Icon ${manifest.icon} could not be read from the bundle:`, err);
+    return;
+  }
   if (!iconData) {
     console.warn(`[SoftN Loader] Icon file not found in bundle: ${manifest.icon}`);
     return;
   }
 
   try {
-    // @ts-expect-error - Tauri invoke
-    await window.__TAURI__?.core?.invoke('set_window_icon', {
+    await nativeInvoke()?.('set_window_icon', {
       iconData: Array.from(iconData),
     });
     debug(`[SoftN Loader] Window icon set from: ${manifest.icon}`);
@@ -248,12 +201,12 @@ function App(): React.ReactElement {
   // as UpgradeAwareError, which restores the backup and drops the staging.
   const [failedWhileUpgrading, setFailedWhileUpgrading] = useState(false);
   const [assetResolver, setAssetResolver] = useState<AppAssetResolver>();
-  const [serverConfig, setServerConfig] = useState(() => resolveServerConfig());
+  const [serverConfig, setServerConfig] = useState<ServerSyncSettings>({});
   // `softn.net.fetch` goes through the native side, under the config the app
   // is running with (see nativeNetFetch.ts). A new one on Allow is what makes
   // the renderer rebuild the runtime with the granted config.
   const netFetchHandler = useMemo(() => {
-    const invoke = tauriInvoke();
+    const invoke = nativeInvoke();
     return invoke && permissionConfig ? createNativeNetFetch(permissionConfig, invoke) : undefined;
   }, [permissionConfig]);
 
@@ -265,7 +218,7 @@ function App(): React.ReactElement {
   // no file system plugin, which read every app's database.
   const openFilePicker = async () => {
     try {
-      const invoke = tauriInvoke();
+      const invoke = nativeInvoke();
       if (!invoke) throw new Error('the native file picker is not available in this environment');
       const selected = await invoke('pick_softn_bundle');
       if (typeof selected === 'string' && selected) selectBundle(selected);
@@ -333,8 +286,7 @@ function App(): React.ReactElement {
       }
 
       try {
-        // @ts-expect-error - Tauri invoke
-        const openedFile = await window.__TAURI__?.core?.invoke('get_opened_file');
+        const openedFile = await nativeInvoke()?.('get_opened_file');
         if (!active) return;
         if (revision === selectionRevision.current) {
           if (openedFile && typeof openedFile === 'string' && isSoftnPath(openedFile)) {
@@ -407,7 +359,9 @@ function App(): React.ReactElement {
 
     let active = true;
     let loadedAssets: AppAssetResolver | undefined;
-    const remoteControllers = new Set<AbortController>();
+    // Every import resolver this load made: disposing one aborts its requests
+    // and reads, and resolves nothing after.
+    const importResolvers = new Set<DisposableImportResolver>();
 
     // The question the identity flow is waiting on, if any: a newer selection
     // answers it with "cancel" so the old continuation stops before any new
@@ -415,8 +369,8 @@ function App(): React.ReactElement {
     let pendingQuestion: ((decision: LoaderDecision) => void) | null = null;
     const cleanup = () => {
       setConsent(null);
-      for (const controller of remoteControllers) controller.abort();
-      remoteControllers.clear();
+      for (const resolver of importResolvers) resolver.dispose();
+      importResolvers.clear();
       if (pendingQuestion) {
         const answer = pendingQuestion;
         pendingQuestion = null;
@@ -442,14 +396,12 @@ function App(): React.ReactElement {
         if (isMobile && bundlePath!.startsWith('__intent__:')) {
           // Intent-opened file: read from app cache via Rust command
           const filename = bundlePath!.replace('__intent__:', '');
-          // @ts-expect-error - Tauri invoke
-          rawData = await window.__TAURI__?.core?.invoke('read_cached_bundle', { filename });
+          rawData = (await nativeInvoke()?.('read_cached_bundle', { filename })) as number[] | Uint8Array;
         } else {
           // A path, or on Android the content URI the picker returned: read via Rust command
-          // @ts-expect-error - Tauri invoke
-          rawData = await window.__TAURI__?.core?.invoke('read_softn_bundle', {
+          rawData = (await nativeInvoke()?.('read_softn_bundle', {
             path: bundlePath,
-          });
+          })) as number[] | Uint8Array;
         }
 
         if (!active) return;
@@ -460,6 +412,9 @@ function App(): React.ReactElement {
         const data = new Uint8Array(rawData);
         const resolvedAppId = await computeBundleAppId(data);
         if (!active) return;
+        // Indexes the archive and reads its text; binaries are read, and
+        // checked, when the icon or an asset() asks for them. Disposing the
+        // asset resolver releases the archive.
         const { textFiles, binaryFiles } = readZip(data);
 
         // The one manifest read every host shares (core's readManifest): a
@@ -554,8 +509,9 @@ function App(): React.ReactElement {
           return;
         }
 
-        // Load XDB data from bundle (await for Tauri backend)
-        await loadBundleXDBData(textFiles, parsedManifest, dataId, () => active);
+        // Load XDB data from bundle (await for Tauri backend). Seeding stops
+        // as soon as another selection replaces this load.
+        await loadXDBData(textFiles, parsedManifest, dataId, () => active);
         if (!active) return;
 
         // Set window icon from bundle (desktop only)
@@ -564,25 +520,25 @@ function App(): React.ReactElement {
         }
         if (!active) return;
 
-        const { source, logicBasePath, preIncludedLogicPaths, python } = processBundleSource(
+        const { source, logicBasePath, preIncludedLogicPaths, python } = processBundle(
           textFiles,
           parsedManifest
         );
-        debug('[SoftN Loader] Final source prepared with inlined components');
 
         // A remote `import` is network access as surely as fetch() in the
-        // app's logic, so it is withheld with the rest, and made through the
-        // native side for the same reason fetch() is.
-        const invoke = tauriInvoke();
-        const importResolverFor = (config: PermissionConfig) => createBundleImportResolver(textFiles, {
-          permissionConfig: config,
-          isActive: () => active,
-          trackController: (controller) => {
-            remoteControllers.add(controller);
-            return () => remoteControllers.delete(controller);
-          },
-          ...(invoke ? { fetchImpl: createNativeFetch(config, invoke) } : {}),
-        });
+        // app's logic, so it is withheld with the rest, judged by the same
+        // rule (local network included), and made through the native side for
+        // the same reason fetch() is.
+        const invoke = nativeInvoke();
+        const importResolverFor = (config: PermissionConfig) => {
+          const resolver = createImportResolver(
+            textFiles,
+            config,
+            invoke ? { fetchImpl: createNativeFetch(config, invoke) } : {}
+          );
+          importResolvers.add(resolver);
+          return resolver;
+        };
         const resolver = importResolverFor(runningConfig);
         // Allow upgrades the running app in place: a new config and import
         // resolver make the renderer rebuild the script runtime and keep the
@@ -595,7 +551,7 @@ function App(): React.ReactElement {
           setConsent(null);
         };
 
-        loadedAssets = createBundleAssetResolver(binaryFiles, textFiles);
+        loadedAssets = createAssetResolver(binaryFiles, textFiles);
         if (!active) { cleanup(); return; }
         // Update window title (desktop only)
         if (!isMobile && (parsedManifest.config?.window?.title || parsedManifest.name)) {
@@ -603,7 +559,7 @@ function App(): React.ReactElement {
             const windowModule = await import('@tauri-apps/api/window');
             if (!active) return;
             const appWindow = windowModule.getCurrentWindow();
-            await appWindow.setTitle(`Opening ${parsedManifest.config?.window?.title || parsedManifest.name} — Softn`);
+            await appWindow.setTitle(`Opening ${parsedManifest.config?.window?.title || parsedManifest.name} — SoftN`);
           } catch {
             // Window API not available
           }
@@ -664,7 +620,7 @@ function App(): React.ReactElement {
     setImportResolver(undefined);
     setConsent(null);
     if (isTauri && !isMobile) {
-      void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle('Softn — Desktop runtime')).catch(() => {});
+      void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle('SoftN — Desktop runtime')).catch(() => {});
     }
   };
 
@@ -722,7 +678,7 @@ function App(): React.ReactElement {
               }
             }
             if (isTauri && !isMobile) {
-              void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${_manifest?.config?.window?.title || _manifest?.name || 'App'} — Softn`)).catch(() => {});
+              void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${_manifest?.config?.window?.title || _manifest?.name || 'App'} — SoftN`)).catch(() => {});
             }
           }}
           functions={{ asset: (path: unknown) => typeof path === 'string' ? assetResolver?.(path) || '' : '' }}

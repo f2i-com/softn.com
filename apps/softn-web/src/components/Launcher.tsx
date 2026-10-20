@@ -9,379 +9,7 @@ import { DirectoryShelf } from './DirectoryShelf';
  * is the same surface as the site and the tools — the product bar above it
  * already says which product this is, so there is no second logo here.
  */
-const launcherStyles = `
-  @keyframes softn-launcher-fade-up {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .softn-launcher {
-    min-height: 100%;
-    background: var(--ink);
-    color: var(--paper);
-    font-family: var(--body);
-    padding: clamp(1.5rem, 4vw, 3rem) var(--gutter) 4rem;
-  }
-  .softn-launcher-inner {
-    max-width: 1040px;
-    margin: 0 auto;
-  }
-  .softn-launcher-head {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 1.5rem;
-    flex-wrap: wrap;
-    margin-bottom: 2rem;
-    animation: softn-launcher-fade-up 400ms var(--ease) both;
-  }
-  .softn-launcher-title:focus { outline: none; }
-  .softn-launcher-title {
-    font-family: var(--display);
-    font-weight: 700;
-    font-size: clamp(1.625rem, 3vw, 2.25rem);
-    line-height: 1.05;
-    letter-spacing: -0.03em;
-  }
-  .softn-launcher-sub {
-    margin-top: 0.5rem;
-    color: var(--dim);
-    font-size: 0.9375rem;
-    max-width: 40rem;
-  }
-  .softn-launcher-sub a,
-  .softn-launcher-empty a {
-    color: var(--paper);
-    text-decoration: underline;
-    text-decoration-color: var(--dimmer);
-    text-underline-offset: 3px;
-  }
-  .softn-launcher-sub a:hover,
-  .softn-launcher-empty a:hover { text-decoration-color: var(--paper); }
-  .softn-launcher-sub code {
-    font-family: var(--mono);
-    font-size: 0.875em;
-    color: var(--coral);
-  }
-  .softn-launcher-open {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-height: 2.75rem;
-    padding: 0 1.125rem;
-    border-radius: 8px;
-    border: 1px solid var(--paper);
-    background: var(--paper);
-    color: var(--ink);
-    font: inherit;
-    font-weight: 600;
-    font-size: 0.875rem;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 160ms var(--ease), border-color 160ms var(--ease);
-  }
-  .softn-launcher-open:hover { background: var(--invert-hover); border-color: var(--invert-hover); }
-  .softn-launcher-open:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
-  .softn-launcher-hint {
-    color: var(--dimmer);
-    font-size: 0.8125rem;
-  }
-  .softn-launcher-section {
-    margin-top: 2.5rem;
-    animation: softn-launcher-fade-up 400ms var(--ease) 80ms both;
-  }
-  .softn-launcher-section-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 0.875rem;
-  }
-  .softn-launcher-section-title {
-    font-family: var(--display);
-    font-weight: 700;
-    font-size: 1.125rem;
-    letter-spacing: -0.02em;
-  }
-  .softn-launcher-section-count {
-    font-family: var(--mono);
-    font-size: 0.75rem;
-    color: var(--dimmer);
-  }
-  .softn-launcher-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 0.75rem;
-  }
-  .softn-launcher-card {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    background: var(--ink-2);
-    border: 1px solid var(--line-soft);
-    border-radius: 12px;
-    padding: 1rem;
-    cursor: pointer;
-    transition: border-color 160ms var(--ease), background 160ms var(--ease);
-  }
-  .softn-launcher-card:hover {
-    border-color: var(--line-strong);
-    background: var(--ink-3);
-  }
-  .softn-launcher-card:focus-visible {
-    outline: 2px solid var(--mint);
-    outline-offset: 3px;
-  }
-  .softn-launcher-card-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    min-width: 0;
-  }
-  .softn-launcher-icon {
-    position: relative;
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
-    flex-shrink: 0;
-    overflow: hidden;
-    background: var(--ink-3);
-    border: 1px solid var(--line-soft);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .softn-launcher-icon img {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-  .softn-launcher-icon span {
-    font-family: var(--display);
-    font-weight: 700;
-    font-size: 1rem;
-    color: var(--paper);
-  }
-  .softn-launcher-card-name {
-    font-weight: 600;
-    font-size: 0.9375rem;
-    letter-spacing: -0.01em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .softn-launcher-card-meta {
-    margin-top: 2px;
-    font-family: var(--mono);
-    font-size: 0.6875rem;
-    color: var(--dimmer);
-  }
-  .softn-launcher-card-desc {
-    margin-top: 0.75rem;
-    font-size: 0.8125rem;
-    color: var(--dim);
-    line-height: 1.5;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-  }
-  .softn-launcher-card-foot {
-    margin-top: auto;
-    padding-top: 0.75rem;
-    font-size: 0.75rem;
-    color: var(--dimmer);
-  }
-  /* Whether the app opens without a connection. Words, not a dot: the three
-     states have to be told apart without colour. */
-  .softn-launcher-offline {
-    margin-left: 0.5rem;
-    padding-left: 0.5rem;
-    border-left: 1px solid var(--line-soft);
-    white-space: nowrap;
-  }
-  .softn-launcher-offline[data-state="ready"] { color: var(--mint); }
-  .softn-launcher-offline[data-state="installing"] { color: var(--dim); }
-  .softn-launcher-remove {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    width: 26px;
-    height: 26px;
-    background: transparent;
-    border: none;
-    color: transparent;
-    font: inherit;
-    font-size: 1rem;
-    cursor: pointer;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: color 160ms var(--ease), background 160ms var(--ease);
-  }
-  .softn-launcher-card:hover .softn-launcher-remove,
-  .softn-launcher-remove:focus-visible { color: var(--dimmer); }
-  .softn-launcher-remove:hover { color: var(--paper); background: var(--ink); }
-  .softn-launcher-versions {
-    margin-top: 0.75rem;
-    padding-top: 0.625rem;
-    border-top: 1px solid var(--line-soft);
-  }
-  .softn-launcher-versions-label {
-    font-size: 0.6875rem;
-    color: var(--dimmer);
-    margin-bottom: 0.4375rem;
-  }
-  .softn-launcher-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; }
-  .softn-launcher-chip {
-    display: inline-flex;
-    align-items: stretch;
-    border-radius: 6px;
-    border: 1px solid var(--line);
-    background: var(--ink);
-    overflow: hidden;
-  }
-  .softn-launcher-chip button {
-    min-height: 28px;
-    padding: 0.25rem 0.5rem;
-    border: none;
-    background: transparent;
-    color: var(--dim);
-    font: inherit;
-    font-family: var(--mono);
-    font-size: 0.6875rem;
-    cursor: pointer;
-  }
-  .softn-launcher-chip button:hover { color: var(--paper); background: var(--ink-3); }
-  .softn-launcher-chip button + button { border-left: 1px solid var(--line); min-width: 24px; padding: 0 0.375rem; }
-  .softn-launcher-adopt {
-    margin-top: 0.5rem;
-    min-height: 30px;
-    width: 100%;
-    padding: 0.3125rem 0.5rem;
-    border-radius: 6px;
-    border: 1px solid var(--mint-edge);
-    background: var(--mint-glow-soft);
-    color: var(--paper);
-    font: inherit;
-    font-size: 0.75rem;
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .softn-launcher-adopt:hover { background: var(--mint-glow); }
-  .softn-launcher-data {
-    margin-top: 0.5rem;
-    display: flex;
-    gap: 0.375rem;
-    flex-wrap: wrap;
-  }
-  .softn-launcher-data-btn {
-    min-height: 26px;
-    padding: 0.1875rem 0.5rem;
-    border-radius: 6px;
-    border: 1px solid var(--line);
-    background: transparent;
-    color: var(--dim);
-    font: inherit;
-    font-size: 0.6875rem;
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .softn-launcher-data-btn:hover { color: var(--paper); border-color: var(--paper); }
-  .softn-launcher-running {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-  .softn-launcher-run {
-    display: inline-flex;
-    align-items: stretch;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--ink-2);
-    overflow: hidden;
-  }
-  .softn-launcher-run-open,
-  .softn-launcher-run-stop {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-height: 2.5rem;
-    padding: 0 0.875rem;
-    border: none;
-    background: transparent;
-    color: var(--paper);
-    font: inherit;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 160ms var(--ease);
-  }
-  .softn-launcher-run-open:hover { background: var(--ink-3); }
-  .softn-launcher-run-open:focus-visible, .softn-launcher-run-stop:focus-visible { outline: 2px solid var(--mint); outline-offset: -3px; }
-  .softn-launcher-run-dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--mint);
-    box-shadow: 0 0 0 3px var(--mint-glow);
-    flex-shrink: 0;
-  }
-  .softn-launcher-run-icon { width: 18px; height: 18px; border-radius: 5px; object-fit: cover; }
-  .softn-launcher-run-stop {
-    border-left: 1px solid var(--line);
-    color: var(--dim);
-    font-size: 1.1rem;
-    padding: 0 0.75rem;
-  }
-  .softn-launcher-run-stop:hover { color: var(--paper); background: var(--ink-3); }
-  .softn-launcher-empty {
-    padding: 2.5rem 1.5rem;
-    border: 1px dashed var(--line);
-    border-radius: 12px;
-    color: var(--dim);
-    font-size: 0.9375rem;
-    line-height: 1.6;
-    max-width: 40rem;
-    animation: softn-launcher-fade-up 400ms var(--ease) 60ms both;
-  }
-  .softn-launcher-empty strong { color: var(--paper); font-weight: 500; }
-  .softn-explore { padding-top: 2rem; border-top: 1px solid var(--line-soft); }
-  .softn-explore .softn-launcher-section-head { flex-wrap: wrap; }
-  .softn-explore .softn-launcher-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); }
-  .softn-explore-description { color: var(--dim); font-size: 0.8125rem; margin-top: 0.35rem; }
-  .softn-explore-link { color: var(--paper); font-size: 0.8125rem; text-decoration: underline; text-underline-offset: 3px; }
-  .softn-explore-message { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; padding: 1.25rem; border: 1px solid var(--line); border-radius: 12px; font-size: 0.875rem; background: var(--ink-2); }
-  .softn-explore-message > div { flex: 1; min-width: min(100%, 220px); }
-  .softn-explore-message p { color: var(--dim); margin: 0.35rem 0 0; line-height: 1.5; }
-  .softn-explore-card { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: 12px; overflow: hidden; background: var(--ink-2); }
-  .softn-explore-picture { display: grid; place-items: center; position: relative; height: 150px; overflow: hidden; background: var(--ink-3); border-bottom: 1px solid var(--line-soft); text-decoration: none; }
-  .softn-explore-picture span { font-family: var(--display); font-size: 3rem; color: var(--dimmer); }
-  .softn-explore-picture img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .softn-explore-card-body { display: flex; flex: 1; flex-direction: column; padding: 1rem; }
-  .softn-explore-card h3 { font-size: 0.9375rem; margin: 0; overflow-wrap: anywhere; }
-  .softn-explore-card h3 a { color: var(--paper); text-decoration: none; }
-  .softn-explore-card-body > p { color: var(--dim); font-size: 0.8125rem; line-height: 1.5; margin: 0.5rem 0 1rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .softn-explore-card-actions { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-  .softn-explore-primary, .softn-explore-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; min-height: 40px; padding: 0.5rem 0.875rem; border-radius: 8px; font: inherit; font-size: 0.8125rem; font-weight: 500; text-decoration: none; cursor: pointer; }
-  /* Outlined, not inverted: a grid of six inverted buttons out-shouted the one
-     primary action on Home, "Open a .softn file". Weight carries it instead. */
-  .softn-explore-primary { background: transparent; color: var(--paper); border: 1px solid var(--line-strong); font-weight: 600; }
-  .softn-explore-secondary { background: transparent; color: var(--paper); border: 1px solid var(--line-strong); }
-  .softn-explore-primary:hover, .softn-explore-secondary:hover { border-color: var(--paper); background: var(--ink-3); }
-  .softn-explore-create { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 1rem; padding: 1rem 0; }
-  .softn-explore-create > div { flex: 1; min-width: min(100%, 240px); display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.875rem; }
-  .softn-explore-create span { color: var(--dim); font-size: 0.8125rem; }
-  .softn-explore a:focus-visible, .softn-explore button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
-  @media (max-width: 640px) {
-    .softn-launcher-grid { grid-template-columns: 1fr; }
-    .softn-launcher-hint { display: none; }
-  }
-  @media (pointer: coarse) {
-    .softn-launcher-card { min-height: 44px; }
-    .softn-launcher-remove { color: var(--dimmer); }
-  }
-`;
+import './Launcher.css';
 
 /** An app open in this runtime right now, behind the home screen. */
 export interface RunningApp {
@@ -473,32 +101,6 @@ function offlineStatus(
   return { state: 'needs-connection', label: 'Needs connection', title };
 }
 
-/**
- * Enter and Space on a `role="button"` element.
- *
- * The launcher's cards were plain divs with an onClick, so every app and every
- * demo on the runtime's front screen could only be opened with a mouse — the
- * browser gives keyboard activation to real buttons, and to nothing else. They
- * cannot simply become buttons: a cached app's card contains its own Remove
- * button, and a button inside a button is not valid HTML.
- *
- * The target check matters. Without it, pressing Space on the nested Remove
- * button would delete the app and open it in the same keystroke.
- */
-function activateOnKey(run: () => void) {
-  return (event: React.KeyboardEvent) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    if (event.target !== event.currentTarget) return;
-    // A key held down is one press, as it is on a real button.
-    if (event.repeat) {
-      event.preventDefault();
-      return;
-    }
-    event.preventDefault();
-    run();
-  };
-}
-
 export function Launcher({
   apps,
   installing,
@@ -542,7 +144,6 @@ export function Launcher({
 
   return (
     <>
-      <style dangerouslySetInnerHTML={{ __html: launcherStyles }} />
       <input
         ref={importInputRef}
         type="file"
@@ -562,7 +163,7 @@ export function Launcher({
             <div>
               {/* Focusable, so returning Home from an app puts keyboard focus here
                   rather than on <body> (see App's focus effect). */}
-              <h1 className="softn-launcher-title" tabIndex={-1}>Your app workspace</h1>
+              <h1 className="softn-launcher-title" id="softn-workspace" tabIndex={-1}>Your app workspace</h1>
               <p className="softn-launcher-sub">
                 Pick up a saved app, discover something from the directory, or open a <code>.softn</code> file.
                 Your apps keep their data in this browser.
@@ -639,55 +240,63 @@ export function Launcher({
                   // The most recently used older build that actually has records.
                   const dataSource = olderVersions.find((v) => hasStoredData(v.origin));
                   const offline = offlineStatus(app, installing);
+                  const describedBy = `softn-launcher-card-${app.id}`;
                   return (
-                    <div
-                      key={app.id}
-                      className="softn-launcher-card"
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Open ${app.name}`}
-                      onClick={() => onOpenCached(app)}
-                      onKeyDown={activateOnKey(() => onOpenCached(app))}
-                    >
+                    // The card was a `role="button"` div holding real buttons
+                    // — Remove, Export data, a version chip — and a button
+                    // inside a button is announced as one control and is not
+                    // valid HTML. Opening is a real button now, and the card's
+                    // other controls are its siblings. The button's ::after
+                    // covers the card (Launcher.css), so a press anywhere on it
+                    // still opens the app, as it did.
+                    <div key={app.id} className="softn-launcher-card">
+                      <button
+                        type="button"
+                        className="softn-launcher-card-open"
+                        aria-label={`Open ${app.name}`}
+                        aria-describedby={describedBy}
+                        onClick={() => onOpenCached(app)}
+                      >
+                        {/* Phrasing content only, as a button may hold. */}
+                        <span className="softn-launcher-card-row">
+                          <span className="softn-launcher-icon">
+                            {app.icon ? <img src={app.icon} alt="" /> : <span>{app.name.charAt(0).toUpperCase()}</span>}
+                          </span>
+                          <span style={{ minWidth: 0 }}>
+                            <span className="softn-launcher-card-name">{app.name}</span>
+                            <span className="softn-launcher-card-meta">v{app.version}</span>
+                          </span>
+                        </span>
+                        <span id={describedBy} className="softn-launcher-card-text">
+                          {/* The manifest's own words, cached as they came: one written
+                              as `{ "en": "…" }` threw here, and Home, and with it the
+                              whole runtime, went blank on every load. */}
+                          {typeof app.description === 'string' && app.description && (
+                            <span className="softn-launcher-card-desc">{app.description}</span>
+                          )}
+                          <span className="softn-launcher-card-foot">
+                            Opened {formatDate(app.lastOpened).toLowerCase()}{' '}
+                            <span className="softn-launcher-offline" data-state={offline.state} title={offline.title}>
+                              {offline.label}
+                            </span>
+                          </span>
+                        </span>
+                      </button>
+
                       <button
                         className="softn-launcher-remove"
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRemove(app.id);
-                        }}
+                        onClick={() => onRemove(app.id)}
                         title={`Remove ${app.name} from this browser`}
                         aria-label={`Remove ${app.name}`}
                       >
                         &times;
                       </button>
 
-                      <div className="softn-launcher-card-row">
-                        <div className="softn-launcher-icon">
-                          {app.icon ? <img src={app.icon} alt="" /> : <span>{app.name.charAt(0).toUpperCase()}</span>}
-                        </div>
-                        <div style={{ minWidth: 0 }}>
-                          <div className="softn-launcher-card-name">{app.name}</div>
-                          <div className="softn-launcher-card-meta">v{app.version}</div>
-                        </div>
-                      </div>
-                      {/* The manifest's own words, cached as they came: one written
-                          as `{ "en": "…" }` threw here, and Home, and with it the
-                          whole runtime, went blank on every load. */}
-                      {typeof app.description === 'string' && app.description && (
-                        <div className="softn-launcher-card-desc">{app.description}</div>
-                      )}
-                      <div className="softn-launcher-card-foot">
-                        Opened {formatDate(app.lastOpened).toLowerCase()}
-                        <span className="softn-launcher-offline" data-state={offline.state} title={offline.title}>
-                          {offline.label}
-                        </span>
-                      </div>
-
                       {/* A build's records as a file: to keep, to move, to put
                           back. Import replaces, whole or not at all, and never
                           leaves an app emptier than the file it was given. */}
-                      <div className="softn-launcher-data" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                      <div className="softn-launcher-data">
                         {hasStoredData(app.origin) && (
                           <button
                             type="button"
@@ -713,11 +322,7 @@ export function Launcher({
                         // of their own. Each keeps its own records — that is what
                         // makes going back to one meaningful rather than just
                         // older code.
-                        <div
-                          className="softn-launcher-versions"
-                          onClick={(e) => e.stopPropagation()}
-                          onKeyDown={(e) => e.stopPropagation()}
-                        >
+                        <div className="softn-launcher-versions">
                           <div className="softn-launcher-versions-label">Earlier versions</div>
                           <div className="softn-launcher-chips">
                             {olderVersions.map((older) => (

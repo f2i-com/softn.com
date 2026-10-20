@@ -1,7 +1,7 @@
 /**
- * The shell and the web runtime import these by name; the detailed tests of
- * each module live with the web app (apps/softn-web/test), which exercises
- * them through its re-export shims. This pins the package surface itself.
+ * The web runtime, the single-app shell and the desktop loader import these
+ * by name; the detailed tests of each module are beside this one. This pins
+ * the package surface itself.
  */
 import { describe, expect, it } from 'vitest';
 import { strToU8, zipSync } from 'fflate';
@@ -12,7 +12,7 @@ import { composeBundleSource } from '@softn/core';
 
 describe('@softn/runtime-shell', () => {
   it('exports the bundle pipeline, the warm-up, the frame bar and consent', () => {
-    for (const name of ['readZip', 'processBundle', 'loadXDBData', 'createAssetResolver', 'createImportResolver', 'extractPermissions', 'requestedCapabilities', 'withheldPermissions', 'CAPABILITIES', 'warmFirstScreen', 'FrameBar', 'PermissionBar', 'PermissionPrompt', 'PERMISSION_INFO', 'grantKey', 'hasSavedGrant', 'saveGrant', 'grantCovers', 'diffCapabilities']) {
+    for (const name of ['readZip', 'processBundle', 'loadXDBData', 'createAssetResolver', 'createImportResolver', 'judgeRemoteImport', 'readBoundedBody', 'resolveServerConfig', 'describeFailure', 'extractPermissions', 'requestedCapabilities', 'withheldPermissions', 'CAPABILITIES', 'warmFirstScreen', 'FrameBar', 'PermissionBar', 'PermissionPrompt', 'PERMISSION_INFO', 'grantKey', 'hasSavedGrant', 'saveGrant', 'grantCovers', 'diffCapabilities']) {
       expect(typeof (shell as Record<string, unknown>)[name], name).toMatch(/function|object/);
     }
   });

@@ -161,7 +161,7 @@ export function warmFirstScreen(
       // A corrupt entry, or a release mid-flight, is the app's to discover on
       // the read that touches it; the warm-up only ever ran ahead of that.
       if (controller.signal.aborted || archive.released) return;
-      console.warn('[SoftN Web] First-screen asset warm-up stopped early:', err);
+      console.warn('[SoftN] First-screen asset warm-up stopped early:', err);
     })
     .finally(() => {
       inflater?.terminate();

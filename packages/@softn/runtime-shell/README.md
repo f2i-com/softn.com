@@ -27,8 +27,13 @@ grants on its cached-app records (by content origin, under its adoption and
 secure-context rules) and checks them with `grantCovers`; the loader and the
 single-app shell keep theirs in localStorage under their own prefixes.
 
-`apps/softn-web` re-exports these under its old paths
-(`src/lib/bundleProcessor`, `src/lib/zipWarmup`, `src/components/FrameBar`),
-so nothing that imported them from the app changes. The web app's tests
-remain the detailed tests of these modules; this package's own test checks
-that the package resolves and its exports are what the shell relies on.
+Also here:
+
+- `net` — whether a remote `import` may be fetched (core's egress rule, the
+  one `softn.net.fetch` is held to, local network included), a response body
+  read within a bound, and the manifest's sync server as one WebSocket
+  address (`resolveServerConfig`).
+- `failure` — what a host says when an app will not open.
+
+The hosts import these modules directly; the detailed tests of each are in
+this package's `test/`.

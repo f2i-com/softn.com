@@ -1,120 +1,29 @@
 import { reopenBundle } from './lib/reopenBundle';
 import { useLocalBundleFile } from './lib/useLocalBundleFile';
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { flushSync } from 'react-dom';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
 import { Spinner, Text } from '@softn/components/minimal';
 import { ThemeProvider } from '@softn/components/theme';
+// Before the components' own stylesheets, which used to follow this one in
+// the document as <style> elements.
+import './App.css';
 import { DropZone } from './components/DropZone';
 import { ErrorCard } from './components/ErrorCard';
 import { Launcher } from './components/Launcher';
 import { AppRunner } from './components/AppRunner';
-import { FrameBar } from './components/FrameBar';
+import { FrameBar } from '@softn/runtime-shell/FrameBar';
 import { ProductBar } from '@softn/brand';
-import type { ConsentRequest } from '@softn/runtime-shell/PermissionBar';
-import type { PermissionConfig, PythonProject } from '@softn/core';
-import { ManifestError, describeHandoffFailure, handoffIdFrom, readManifest, takeBundleHandoff } from '@softn/core';
+import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn/core';
 import { debug } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
-const appShellStyles = `
-  @keyframes softn-shell-fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  .softn-shell {
-    /* Two names for one number, because a tab showing a permission bar has to
-       ADD to this rather than replace it, and a self-referential calc() on one
-       custom property is invalid at computed-value time. --softn-tab-bar-height
-       is the name @softn/components sizes an app root against, so it stays;
-       the base is what the breakpoints below move. */
-    /* On the home screen the product bar; over a running app the slim frame
-       bar, which is what an app root is sized against. */
-    --softn-chrome-base: var(--bar-height, 3rem);
-    --softn-tab-bar-height: var(--softn-chrome-base);
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-    background: var(--ink);
-    color: var(--paper);
-  }
-  /* The frame bar is one row at every width, where the product bar it
-     replaces grows to two on a phone. */
-  .softn-shell.softn-shell--playing {
-    --softn-chrome-base: 3rem;
-  }
-  .softn-shell-loading {
-    animation: softn-shell-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-  /* Embedded, there is no tab bar, so there is no chrome to subtract: without
-     this an app in a host page's frame stopped 38px short of the bottom. The
-     same holds when the bar has been folded away. */
-  .softn-shell.softn-shell--embedded,
-  .softn-shell.softn-shell--embedded .softn-runner-host,
-  .softn-shell.softn-shell--bare,
-  .softn-shell.softn-shell--bare .softn-runner-host {
-    --softn-chrome-base: 0px !important;
-  }
-  /* The corner tab that brings a hidden bar back. */
-  .softn-chrome-peek {
-    position: fixed;
-    top: 0;
-    right: 12px;
-    z-index: 50;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border: 1px solid var(--line);
-    border-top: 0;
-    border-radius: 0 0 8px 8px;
-    background: var(--nav-bg);
-    color: var(--dim);
-    font: inherit;
-    font-size: 0.72rem;
-    cursor: pointer;
-    opacity: 0.6;
-    backdrop-filter: blur(6px);
-    transition: opacity 160ms ease;
-  }
-  .softn-chrome-peek:hover, .softn-chrome-peek:focus-visible { opacity: 1; color: var(--paper); }
-  .softn-chrome-peek:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
-  /* With the bar folded, the corner tab sits over the top of the tab — which
-     is where a pending permission bar is, and it covered the end of the
-     sentence saying what the app wants. The bar steps down below it. */
-  .softn-shell--bare .softn-consent-bar,
-  .softn-shell--bare .softn-consent-chip-strip {
-    padding-top: 2rem;
-  }
-`;
-import {
-  readZip,
-  loadXDBData,
-  processBundle,
-  createImportResolver,
-  createAssetResolver,
-  extractIconDataUrl,
-  extractPermissions,
-  firstScreenAssets,
-  requestedCapabilities,
-  withheldPermissions,
-  type BundleManifest,
-  type AssetResolver,
-  type DisposableImportResolver,
-  type ZipResult,
-} from './lib/bundleProcessor';
 import { installAppOffline } from './lib/offlineInstall';
 import { whenIdle } from './lib/idle';
-import { warmFirstScreen, type FirstScreenWarmup } from './lib/zipWarmup';
 import {
   getCachedApp,
   getCachedApps,
-  cacheApp,
-  computeAppOrigin,
   copyAppData,
   currentBuildId,
   exportAppData,
@@ -124,22 +33,15 @@ import {
   snapshotEntryCount,
   hasStoredData,
   isOfflineReady,
-  isSecureAppOrigin,
   getCachedAppByName,
   getCachedAppByOrigin,
   removeAppData,
   removeCachedApp,
   setOfflineState,
-  updateLastOpened,
-  recordPermissionGrant,
   type CachedApp,
 } from './lib/appCache';
-import { displayNameFor, findCachedAppTab, findPlaceholder, findRunningTab, findTabForUrlName } from './lib/tabIdentity';
-import { previousBuildFor, type PreviousBuild } from './lib/consentDiff';
-// The consent rule the desktop loader and the single-app shell share. The
-// grant itself is kept on the app's cache record (appCache), by origin, where
-// adoption and the secure-context rule already govern it.
-import { grantCovers, grantRecord } from '@softn/runtime-shell/consent';
+import { displayNameFor, findCachedAppTab, findTabForUrlName } from './lib/tabIdentity';
+import { openBundle, type OpenBundleHost, type OpenBundleRequest, type OpenTab } from './lib/openBundle';
 import { parseAppPath, buildAppPath, publicPath } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
 
@@ -282,77 +184,13 @@ function readEntry(): {
   return { openValue: null, ...parseAppUrl(), embedded, backTo };
 }
 
-// ── Types ────────────────────────────────────────────────────────
-
-interface OpenTab {
-  id: string;
-  name: string;
-  /**
-   * The app's identity: a digest of its bundle. `name` is for the user to read,
-   * this is what its stored data and its permission grants belong to. Absent on
-   * a skeleton tab, which has no bundle yet.
-   */
-  appId?: string;
-  /** The exact running bundle stays downloadable even when browser caching fails. */
-  bundleData?: Uint8Array;
-  /** The manifest's version, to tell two open tabs with one name apart. */
-  version?: string;
-  source: string; // empty string = skeleton tab (loading)
-  icon?: string;
-  initialPage?: string;
-  permissions?: import('@softn/core').AppPermissions;
-  /**
-   * What the runtime is actually running with. While consent is pending this
-   * is the withheld config, not the declared one — the bundle's own request
-   * lives on `consent.config` until the user answers.
-   */
-  permissionConfig?: PermissionConfig;
-  /**
-   * Raised by the tab as a bar over the running app. Cleared on Allow.
-   */
-  consent?: ConsentRequest;
-  importResolver?: DisposableImportResolver;
-  /** Turns a bundle-relative asset path into a URL the browser can load. */
-  assetResolver?: AssetResolver;
-  logicBasePath?: string;
-  preIncludedLogicPaths?: string[];
-  /** The app's Python project, when its logic is Python. */
-  python?: PythonProject;
-  /** The manifest's `config.execution`: where the bundle asked its script to run. */
-  execution?: 'worker' | 'main';
-  /**
-   * The manifest's `config.theme.mode`, as the bundle has it: the side the
-   * project declares. Judged by the theme rule, not here.
-   */
-  themeMode?: unknown;
-  serverUrl?: string;
-  serverToken?: string;
-  serverCollections?: string[];
-  /** The app's slug in the site's directory, when it was opened from there. */
-  directorySlug?: string;
-  /** The address the bundle was fetched from, when it came from one. */
-  bundleUrl?: string;
-}
-
-/**
- * What a cached bundle's permission.json asked for, read from the bytes: for
- * records cached before the list was kept on the record.
- */
-function requestedCapabilitiesOf(bundleData: Uint8Array): string[] {
-  let archive: import('@softn/core').BundleArchive | undefined;
-  try {
-    const zip = readZip(bundleData);
-    archive = zip.archive;
-    const manifestText = zip.textFiles.get('manifest.json');
-    const manifest = (manifestText ? JSON.parse(manifestText) : {}) as BundleManifest;
-    const config = extractPermissions(zip.textFiles, manifest);
-    return config ? requestedCapabilities(config) : [];
-  } catch {
-    return [];
-  } finally {
-    // A peek at the manifest, not an open: nothing will read an asset from it.
-    archive?.release();
-  }
+/** A line on Home, and the one thing to do about it when there is one. */
+interface HomeNotice {
+  text: string;
+  /** Something to do first, rather than something that went right. */
+  warning?: boolean;
+  /** Stop a running app, which is what the line asks for. */
+  stop?: { tabId: string; label: string };
 }
 
 /** The directory slug a bundle URL names, if it is one of the directory's. */
@@ -420,6 +258,8 @@ function App(): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   /** The shell — bar and app together — which is what fullscreen is asked of. */
   const shellRef = useRef<HTMLDivElement>(null);
+  /** Home's scroller: Home is not the window's scroll but its own. */
+  const homeRef = useRef<HTMLDivElement>(null);
   const openTabsRef = useRef(openTabs);
   openTabsRef.current = openTabs;
   const activeTabIdRef = useRef(activeTabId);
@@ -617,418 +457,38 @@ function App(): React.ReactElement {
   );
 
   /**
-   * Process a .softn bundle from raw bytes. Resolves with the app's name, or null if it did not open.
-   *
-   * `placeholderId` is the tab the caller put in the bar while the bytes were
-   * on their way; this call adopts that tab and no other. A placeholder used
-   * to be found by name — the file's name, which need not match the manifest's
-   * — and a running tab by the manifest's name, so an update, or an unrelated
-   * bundle with the same name, activated whatever was already open under it.
+   * What an open of a bundle's bytes (lib/openBundle.ts) needs of this
+   * component: the tabs, what is on screen, the error card, the "Opening…"
+   * cover, Home's list and the offline install. Setters and refs are stable,
+   * so this is made once.
    */
-  const processBundleData = useCallback(
-    async (
-      data: Uint8Array,
-      fileName: string,
-      cachedAppId?: string,
-      initialPage?: string,
-      directorySlug?: string,
-      placeholderId?: string,
-      isForeground: () => boolean = () => true,
-    ): Promise<string | null> => {
-      // The placeholder tab this call adopted, once it has adopted one.
-      //
-      // Tracked out here so the catch below can remove it — but only failures
-      // past the adoption point are its to clean up. Everything that throws
-      // before then is the caller's, which is why the two places that create a
-      // placeholder retire it themselves.
-      let skeletonTabId: string | null = null;
-      let loadingOwner: string | null = null;
-
-      // The first-screen warm-up this open started, so a failure after it
-      // began stops it rather than leaving a worker inflating for a tab that
-      // will never exist.
-      let warmup: FirstScreenWarmup | undefined;
-
-      // Phase boundaries for scripts/bench/measure.mjs, which pairs each
-      // `softn:<phase>:start` with the first `:end` after it. Guarded because
-      // the runtime is also rendered where the User Timing API is absent or
-      // stubbed. Every `:end` below is in a finally: a corrupt archive or a
-      // rejected seed used to throw between the two, leaving a `:start` the
-      // harness then paired with the NEXT open's `:end` — a phase measured
-      // across two opens and a failure, reported as one number.
-      const mark = (name: string) => {
-        if (typeof performance !== 'undefined' && typeof performance.mark === 'function') {
-          performance.mark(name);
-        }
-      };
-
-      // Whether the placeholder this load was given has since been closed.
-      //
-      // Asked again after every await below. The caller checks once, after
-      // the download, but the steps here — hashing the bytes, seeding the
-      // database, writing the cache — take long enough on a large bundle that
-      // a tab closed during them used to open anyway: the app the user had
-      // just dismissed appeared a moment later. A load with no placeholder
-      // has nothing to be closed and never bails.
-      const placeholderClosed = (): boolean =>
-        placeholderId !== undefined && !openTabsRef.current.some((t) => t.id === placeholderId);
-
-      try {
-        if (isForeground()) setError(null);
-
-        // Indexes the archive and reads its text; binaries are read when an
-        // asset() asks for them, or by the warm-up below.
-        let zip: ZipResult;
-        mark('softn:zip:start');
-        try {
-          zip = readZip(data);
-        } finally {
-          mark('softn:zip:end');
-        }
-        const { textFiles, binaryFiles, archive } = zip;
-
-        // The one manifest read every host shares (core's readManifest): a
-        // manifest without `files` opens, as it always did in core, and what
-        // cannot run is refused in the inspector's words.
-        let manifest: BundleManifest;
-        try {
-          manifest = readManifest<BundleManifest>(textFiles);
-        } catch (err) {
-          throw err instanceof ManifestError ? new Error(`Invalid manifest.json: ${err.message}`) : err;
-        }
-        if (manifest.name.length > 255) {
-          throw new Error('Invalid manifest.json: name exceeds 255 characters');
-        }
-
-        const appName = manifest.name || fileName.replace(/\.softn$/, '');
-
-        // What the app IS, as distinct from what it calls itself. Everything
-        // that persists — its database, its granted permissions, its cached
-        // copy — hangs off this rather than off manifest.name, which the bundle
-        // chooses for itself and could therefore choose to be someone else's.
-        const appOrigin = await computeAppOrigin(data);
-        // Before the running-tab check as well: a closed placeholder means the
-        // user dismissed this load, not that they asked for whatever copy of
-        // the app is already open.
-        if (placeholderClosed()) return null;
-
-        // These exact bytes already running: the same app, opened again.
-        // Identity, not name — two builds of one app, or two unrelated
-        // bundles called Notes, are two tabs, and the bar tells them apart.
-        const running = findRunningTab(openTabsRef.current, appOrigin);
-        if (running) {
-          if (isForeground() && (!placeholderId || activeTabIdRef.current === placeholderId)) setActiveTabId(running.id);
-          // The placeholder this load was given has nothing left to become,
-          // and would otherwise sit in the tab bar loading forever.
-          if (placeholderId) setOpenTabs((prev) => prev.filter((t) => t.id !== placeholderId));
-          return appName;
-        }
-
-        // The placeholder this load was given, if it is still there; else a
-        // fresh tab. A tab with no source is waiting for this load, and if the
-        // load fails it has to go, or it renders "Loading …" indefinitely.
-        const existingTab = findPlaceholder(openTabsRef.current, placeholderId);
-        const tabId = existingTab?.id || randomUUID();
-        if (existingTab) skeletonTabId = existingTab.id;
-
-        if (!existingTab && isForeground()) {
-          // Fresh open (not from URL) — show loading overlay
-          setLoadingTabId(tabId);
-          loadingOwner = tabId;
-          setLoadingFileName(appName);
-          setActiveTabId(null); // Show loading on Home
-        }
-
-        // Extract permission config from permission.json or manifest.permissions.
-        //
-        // A bundle that ships neither declared nothing, and is run as exactly
-        // that: an empty declaration. It used to be run with no config at all,
-        // which the script runtime denies but the renderer and the device
-        // components read as "no host is enforcing" — the reading a preview
-        // outside any bundle needs — so the least-trusted bundles got the
-        // camera and remote images unasked while an honest one was refused.
-        const permissionConfig = extractPermissions(textFiles, manifest) ?? { permissions: {} };
-
-        // Extract icon early (the consent bar's detail dialog shows it).
-        //
-        // Bounded by the declared size before its bytes exist, as softn-single
-        // does: the archive allows an entry of 50 MB, and an icon that size
-        // was inflated and base64-encoded whole on the way to a data: URL.
-        const icon =
-          typeof manifest.icon === 'string' && (binaryFiles.declaredSize(manifest.icon) ?? Infinity) <= 256 * 1024
-            ? extractIconDataUrl(binaryFiles, manifest)
-            : undefined;
-
-        // Decide what the app runs with. It runs either way — the bundle's UI
-        // is on screen from the first frame and the request becomes a bar over
-        // it — so this decides whether the runtime is handed the capabilities
-        // the bundle declared or an empty set, not whether it starts.
-        //
-        // The grant has to be compared against what *this* bundle asks for.
-        // The old check was a boolean "has this name ever been prompted",
-        // and the lookup was by manifest name — so version 2 of an app, or
-        // any unrelated .softn calling itself the same thing, could add
-        // net + camera + files to a bundle the user had approved for `qr`
-        // alone and never see a prompt.
-        // By origin, not by name. A grant belongs to the bundle the user
-        // actually approved; looking it up by name handed it to anything that
-        // later called itself the same thing. This read must stay ahead of the
-        // cacheApp below: that call adopts a legacy record on the way past, and
-        // reading after it would find the record it had just written.
-        const cachedApp = permissionConfig ? await getCachedAppByOrigin(appOrigin) : null;
-        if (placeholderClosed()) return null;
-        const requested = permissionConfig ? requestedCapabilities(permissionConfig) : [];
-        const granted = cachedApp?.grantedPermissions ?? {};
-        // A bundle that asks for nothing has nothing to consent to, and a bar
-        // reading "this app wants to use nothing" trains people to press Allow
-        // without reading — which is what the dialog was already doing wrong.
-        // `granted[c] === true`, not truthy: the map comes off disk unchecked.
-        const hasGrant =
-          !permissionConfig ||
-          requested.length === 0 ||
-          (Boolean(cachedApp?.permissionsPromptedAt) && grantCovers(granted, requested));
-
-        // Load XDB data (per-app isolation)
-        mark('softn:xdb-seed:start');
-        try {
-          await loadXDBData(textFiles, manifest, appOrigin);
-        } finally {
-          mark('softn:xdb-seed:end');
-        }
-        if (placeholderClosed()) return null;
-
-        // Process source
-        let composed: ReturnType<typeof processBundle>;
-        mark('softn:compose:start');
-        try {
-          composed = processBundle(textFiles, manifest);
-        } finally {
-          mark('softn:compose:end');
-        }
-        const { source, logicBasePath, preIncludedLogicPaths, python } = composed;
-
-        // The assets the composed source names by literal, then the manifest's
-        // asset list, start inflating now, in a worker where there is one,
-        // while the cache write, the consent lookup and the render go on. Not
-        // awaited: an asset() the app makes before its entry lands reads the
-        // entry itself. Disposing the tab's asset resolver releases the
-        // archive, which ends the warm-up.
-        warmup = warmFirstScreen(archive, data, firstScreenAssets(source, manifest, binaryFiles));
-        // Withheld until the user answers, and withheld here too: a remote
-        // `import` is network access just as surely as fetch() in app logic,
-        // and it resolves during loadScript — before the bar has been on
-        // screen long enough to read, let alone answer.
-        const runningConfig =
-          hasGrant || !permissionConfig ? permissionConfig : withheldPermissions(permissionConfig);
-        const importResolver = createImportResolver(textFiles, runningConfig);
-
-        // Unconditional, and before any consent: the app is about to run and
-        // can already write records into its own database, and removing it from
-        // Home is the only thing that deletes those. No record, nothing to
-        // remove them with. Origin dedup means opening it again is an update.
-        // The record comes back for the offline install below, which is keyed
-        // by it and writes its outcome onto it.
-        const cachedRecord = await cacheApp(data, manifest, icon, directorySlug, requested);
-
-        if (cachedAppId) {
-          await updateLastOpened(cachedAppId);
-        }
-
-        // Refresh cached apps list
-        const updatedApps = await getCachedApps();
-        setApps(updatedApps);
-        // The record stays — it is the memory of an app that was opened, and
-        // Home shows it — but the warm-up and the resolver were minted for a
-        // tab that no longer exists, so they go the way the failure path
-        // below sends them.
-        if (placeholderClosed()) {
-          warmup.abort();
-          importResolver.dispose();
-          return null;
-        }
-
-        // What this build asks for that the one before it did not, for the
-        // consent bar: an update must not add a capability under a request
-        // that reads like the one the user already approved.
-        let previousBuild: PreviousBuild | undefined;
-        if (!hasGrant && permissionConfig) {
-          const prev = previousBuildFor(updatedApps, appName, appOrigin);
-          if (prev) previousBuild = { version: prev.version, capabilities: prev.requestedCapabilities ?? requestedCapabilitiesOf(prev.bundleData) };
-        }
-
-        // Create or update the tab
-        // Build server sync URL (convert http(s) to ws(s) if needed)
-        const serverConfig = manifest.config?.server;
-        let serverUrl: string | undefined;
-        if (serverConfig?.url) {
-          const url = serverConfig.url;
-          if (url.startsWith('ws://') || url.startsWith('wss://')) {
-            serverUrl = url;
-          } else if (url.startsWith('http://')) {
-            serverUrl = url.replace('http://', 'ws://');
-          } else if (url.startsWith('https://')) {
-            serverUrl = url.replace('https://', 'wss://');
-          } else {
-            serverUrl = url;
-          }
-          // Ensure /sync path
-          if (!serverUrl.endsWith('/sync')) {
-            serverUrl = serverUrl.replace(/\/$/, '') + '/sync';
-          }
-        }
-
-        // Granting upgrades the running tab in place. It does not remount it.
-        //
-        // The bar's whole premise is that people look first and grant after, so
-        // by the time Allow is pressed they have typed, played, navigated or
-        // started something. A remount threw all of it away with no warning —
-        // measured: text typed into WarbleWire reverted to the bundle's default
-        // and TheOffice went from LIVE back to PAUSED.
-        //
-        // Handing the tab a new permissionConfig and a new importResolver is
-        // enough to rebuild everything that captured the withheld one. Both are
-        // dependencies of the renderer's script-load effect, so it tears the old
-        // VM down, builds a fresh runtime with the granted config — new import
-        // resolution, new AI and GPU managers — reloads the script and runs
-        // `_init()` again, now allowed. What it does not throw away is
-        // `componentState`: the renderer merges reloaded script state under it
-        // (`{...result.state, ...prev.componentState}`), so what the user did
-        // survives, including the page they are on.
-        const onAllow = (): void => {
-          if (!permissionConfig) return;
-          // Recorded from the same list the check above reads, so the two
-          // cannot drift. An earlier version enumerated four capabilities by
-          // hand and omitted ai, gpu and sync, so a grant for those was never
-          // written down.
-          const grantedPerms = grantRecord(requested);
-          // Not awaited, and its failure does not block the grant. getDB
-          // rejects outright in private browsing, and an Allow that does
-          // nothing until a write succeeds is a button that looks broken to
-          // exactly the users with the most reason to distrust it. The tab is
-          // the authority for this run; IndexedDB is only the memory of it.
-          void recordPermissionGrant(appOrigin, grantedPerms);
-
-          const grantedResolver = createImportResolver(textFiles, permissionConfig);
-          // The resolver being replaced is read out of the updater's own
-          // `prev`, not out of openTabsRef. That ref is only refreshed on
-          // render, so two activations in one frame both read the pre-grant
-          // tab: the second built a resolver that replaced nothing and was
-          // never disposed, and the first one's stayed live for the session.
-          //
-          // Nothing is disposed from inside the updater. A state updater must
-          // be pure — React runs it speculatively and, under StrictMode, twice
-          // — and it may not run at all for a tab that no longer exists, which
-          // is how the granted resolver leaked whole: closing the tab between
-          // pressing Allow and the re-render left `prev.map` matching nothing,
-          // and the blob URLs it holds stayed alive for the session. The
-          // updater only decides; the decision is carried out here, where a
-          // tab that was never matched is an outcome instead of a silence.
-          let adopted = false;
-          let superseded: DisposableImportResolver | undefined;
-          // flushSync so the updater has run by the next line. onAllow is only
-          // ever reached from a click — the bar's Allow, or the detail
-          // dialog's — which is where flushSync is permitted; the alternative
-          // is reading the outcome on a later tick, by which time the tab may
-          // have been closed and the answer is unrecoverable either way.
-          flushSync(() => {
-            setOpenTabs((prev) => {
-              adopted = false;
-              superseded = undefined;
-              return prev.map((t) => {
-                if (t.id !== tabId) return t;
-                // Already granted. A second activation has nothing to replace,
-                // and must not dispose the resolver the app is running on.
-                if (!t.consent) return t;
-                adopted = true;
-                superseded = t.importResolver;
-                return {
-                  ...t,
-                  permissionConfig,
-                  importResolver: grantedResolver,
-                  consent: undefined,
-                };
-              });
-            });
-          });
-          // dispose() is idempotent, so a StrictMode-doubled updater reporting
-          // the same outcome twice is harmless.
-          if (adopted) superseded?.dispose();
-          else grantedResolver.dispose();
-        };
-
-        if (!isSecureAppOrigin(appOrigin)) {
-          console.warn(
-            `[SoftN Web] "${appName}" is identified without a secure context (no crypto.subtle); its data stays isolated but no grant will be remembered.`
-          );
-        }
-
-        const newTab: OpenTab = {
-          id: tabId,
-          name: appName,
-          appId: appOrigin,
-          bundleData: data,
-          version: typeof manifest.version === 'string' ? manifest.version : undefined,
-          source,
-          icon: icon || undefined,
-          initialPage: initialPage || existingTab?.initialPage,
-          permissions: manifest.permissions,
-          permissionConfig: runningConfig || undefined,
-          consent:
-            hasGrant || !permissionConfig
-              ? undefined
-              : { config: permissionConfig, capabilities: requested, appName, appIcon: icon || undefined, previous: previousBuild, onAllow },
-          importResolver,
-          assetResolver: createAssetResolver(binaryFiles, textFiles),
-          logicBasePath,
-          preIncludedLogicPaths,
-          python,
-          execution: manifest.config?.execution,
-          themeMode: manifest.config?.theme?.mode,
-          serverUrl,
-          serverToken: serverConfig?.token,
-          serverCollections: serverConfig?.collections,
-          directorySlug,
-        };
-        setOpenTabs((prev) => {
-          const idx = prev.findIndex((t) => t.id === tabId);
-          if (idx !== -1) {
-            // Update skeleton tab in-place
-            return prev.map((t) => (t.id === tabId ? newTab : t));
-          }
-          return [...prev, newTab];
-        });
-        // Home or another app may have been selected while this download was
-        // being prepared. Finish its tab in the background without stealing focus.
-        if (isForeground() && (!placeholderId || activeTabIdRef.current === placeholderId)) setActiveTabId(tabId);
-        if (loadingOwner) setLoadingTabId((current) => current === loadingOwner ? null : current);
-
-        // Make the app openable without a network, in the background. It is
-        // on screen already; nothing waits on this, and the outcome is a word
-        // on its card at Home. Not started for a record the cache could not
-        // write: there is nothing to record the outcome on.
-        if (cachedRecord) {
-          beginOfflineInstall(tabId, cachedRecord, source, manifest.config?.execution, requested, python?.packages);
-        }
-        return appName;
-      } catch (err) {
-        warmup?.abort();
-        console.error('[SoftN Web] Failed to load bundle:', err);
-        if (isForeground()) setError(err instanceof Error ? err : new Error(String(err)));
-        if (loadingOwner) setLoadingTabId((current) => current === loadingOwner ? null : current);
-        if (skeletonTabId) {
-          setOpenTabs((prev) => prev.filter((t) => t.id !== skeletonTabId));
-          setActiveTabId((current) => current === skeletonTabId ? null : current);
-        }
-        return null;
-      }
-    },
+  const bundleHost = useMemo<OpenBundleHost>(
+    () => ({
+      tabs: () => openTabsRef.current,
+      activeTabId: () => activeTabIdRef.current,
+      setOpenTabs,
+      setActiveTabId,
+      setError,
+      showOpening: (tabId, appName) => {
+        setLoadingTabId(tabId);
+        setLoadingFileName(appName);
+      },
+      hideOpening: (tabId) => setLoadingTabId((current) => (current === tabId ? null : current)),
+      appsChanged: setApps,
+      installOffline: beginOfflineInstall,
+    }),
     [beginOfflineInstall]
   );
 
+  /** Open a bundle's bytes as a tab. Resolves with the app's name, or null if it did not open. */
+  const processBundleData = useCallback(
+    (request: OpenBundleRequest): Promise<string | null> => openBundle(bundleHost, request),
+    [bundleHost]
+  );
   /** Handle file from picker or drag-drop */
   const handleOpenFile = useCallback(
     (data: Uint8Array, fileName: string) => {
-      void processBundleData(data, fileName, undefined, undefined, undefined, undefined, claimNavigation());
+      void processBundleData({ data, fileName, isForeground: claimNavigation() });
     },
     [processBundleData, claimNavigation]
   );
@@ -1056,7 +516,7 @@ function App(): React.ReactElement {
             }
             return null;
           }
-          return processBundleData(result.handoff.bytes, `${result.handoff.name || 'app'}.softn`, undefined, initialPage, undefined, undefined, isForeground);
+          return processBundleData({ data: result.handoff.bytes, fileName: `${result.handoff.name || 'app'}.softn`, initialPage, isForeground });
         }).catch((err: unknown) => {
           // The hand-off read itself can fail (IndexedDB refused, the store
           // gone); it used to reject unobserved, and the launcher waited on a
@@ -1147,7 +607,14 @@ function App(): React.ReactElement {
         // opened the bundle, in which case the tab it adopted is the running app.
         let opened: string | null = null;
         try {
-          opened = await processBundleData(data, `${displayName}.softn`, undefined, initialPage, directorySlug, skeletonTabId, isForeground);
+          opened = await processBundleData({
+            data,
+            fileName: `${displayName}.softn`,
+            initialPage,
+            directorySlug,
+            placeholderId: skeletonTabId,
+            isForeground,
+          });
           if (opened) {
             setOpenTabs((prev) => prev.map((t) => (t.id === skeletonTabId && t.source ? { ...t, bundleUrl: url.href } : t)));
           }
@@ -1180,11 +647,28 @@ function App(): React.ReactElement {
     [processBundleData, discardPlaceholder]
   );
 
+  /**
+   * One line on Home: something that went right, or something to do first.
+   * The error card is for what went wrong, and it takes Home's place, so a
+   * line here is what a request Home can answer itself gets.
+   */
+  const [notice, setNotice] = useState<HomeNotice | null>(null);
+
   // Home keeps apps mounted. Restoring/deleting their storage while they are
-  // running would leave stale in-memory records that can overwrite the change.
+  // running would leave stale in-memory records that can overwrite the change,
+  // so the app is stopped first. Said on Home, beside the section it names,
+  // with the way to stop it: this used to replace Home with an error card that
+  // sent people looking for a "Running apps" section called "Running now".
+  // Stopping and removing in one press is not offered: the stopped app's own
+  // teardown can still be writing the records the removal deletes.
   const canChangeAppData = useCallback((app: CachedApp): boolean => {
-    if (!findCachedAppTab(openTabsRef.current, app)) return true;
-    setError(new Error(`Stop “${app.name}” in Running apps before changing or removing its saved data. Returning Home keeps the app running.`));
+    const running = findCachedAppTab(openTabsRef.current, app);
+    if (!running) return true;
+    setNotice({
+      text: `“${app.name}” is still running. Stop it under Running now, then try again; its saved data is changed or removed only once it has stopped.`,
+      warning: true,
+      stop: { tabId: running.id, label: `Stop “${app.name}”` },
+    });
     setActiveTabId(null);
     return false;
   }, []);
@@ -1254,15 +738,16 @@ function App(): React.ReactElement {
       }
       const load = { isForeground };
       openingCachedRef.current.set(app.id, load);
-      void processBundleData(app.bundleData, `${app.name}.softn`, app.id, undefined, app.directorySlug, undefined, () => load.isForeground()).finally(
-        () => openingCachedRef.current.delete(app.id)
-      );
+      void processBundleData({
+        data: app.bundleData,
+        fileName: `${app.name}.softn`,
+        cachedAppId: app.id,
+        directorySlug: app.directorySlug,
+        isForeground: () => load.isForeground(),
+      }).finally(() => openingCachedRef.current.delete(app.id));
     },
     [processBundleData, claimNavigation]
   );
-
-  /** One line on Home about something that went right; the error card is for what did not. */
-  const [notice, setNotice] = useState<string | null>(null);
 
   /**
    * A build's records as a file. What is written is exactly what the build
@@ -1286,7 +771,7 @@ function App(): React.ReactElement {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
     const n = snapshotEntryCount(snapshot);
-    setNotice(`Exported ${n} stored ${n === 1 ? 'record' : 'records'} of "${app.name}" v${app.version}.`);
+    setNotice({ text: `Exported ${n} stored ${n === 1 ? 'record' : 'records'} of "${app.name}" v${app.version}.` });
   }, []);
 
   /**
@@ -1331,7 +816,7 @@ function App(): React.ReactElement {
       setActiveTabId(null);
       return;
     }
-    setNotice(`Imported ${result.copied} stored ${result.copied === 1 ? 'record' : 'records'} into "${app.name}" v${app.version} from ${file.name}.`);
+    setNotice({ text: `Imported ${result.copied} stored ${result.copied === 1 ? 'record' : 'records'} into "${app.name}" v${app.version} from ${file.name}.` });
     setApps(await getCachedApps());
   }, [canChangeAppData]);
 
@@ -1547,7 +1032,14 @@ function App(): React.ReactElement {
         : fromCatalogue().then((opened) => opened ?? fromApi());
       const attempt = reopenBundle(
         () => getCachedAppByName(wanted),
-        (cached) => processBundleData(cached.bundleData, `${cached.name}.softn`, cached.id, urlInit.page || undefined, undefined, undefined, isForeground),
+        (cached) =>
+          processBundleData({
+            data: cached.bundleData,
+            fileName: `${cached.name}.softn`,
+            cachedAppId: cached.id,
+            initialPage: urlInit.page || undefined,
+            isForeground,
+          }),
         fromRemote,
       );
       attempt
@@ -1556,7 +1048,14 @@ function App(): React.ReactElement {
             // If server fetch failed (e.g. offline), fall back to cached version
             const cachedApp = await getCachedAppByName(urlInit.appName!);
             if (cachedApp) {
-              await processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined, cachedApp.directorySlug, undefined, isForeground);
+              await processBundleData({
+                data: cachedApp.bundleData,
+                fileName: `${cachedApp.name}.softn`,
+                cachedAppId: cachedApp.id,
+                initialPage: urlInit.page || undefined,
+                directorySlug: cachedApp.directorySlug,
+                isForeground,
+              });
             }
           }
         })
@@ -1658,6 +1157,10 @@ function App(): React.ReactElement {
     let target: HTMLElement | null = null;
     if (activeTabId === null) {
       target = shell.querySelector<HTMLElement>('.softn-launcher-title');
+      // Home kept the scroll it had when an app was opened over it, and the
+      // heading focused with preventScroll was then above the fold: focus
+      // somewhere the person cannot see. Home opens at its top instead.
+      if (homeRef.current) homeRef.current.scrollTop = 0;
     } else if (previous.tab === activeTabId && previous.hidden !== chromeHidden && previous.failed === failed) {
       // The bar was folded or brought back: to whichever replaced it.
       target = chromeHidden
@@ -1672,9 +1175,21 @@ function App(): React.ReactElement {
   const isHome = activeTabId === null;
   const activeTab = isHome ? null : openTabs.find((t) => t.id === activeTabId) ?? null;
 
+  /**
+   * A skip link's press: focus where it points, made focusable for the
+   * purpose if it is a heading, and scrolled into view. The address is left
+   * alone; a fragment there would be read as a route.
+   */
+  const skipTo = (selector: string) => (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    const target = shellRef.current?.querySelector<HTMLElement>(selector);
+    if (!target) return;
+    if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+    target.focus();
+  };
+
   return (
     <DropZone onFile={openLocalFile} onError={setError}>
-      <style dangerouslySetInnerHTML={{ __html: appShellStyles }} />
       {/* Hidden file input for the + button */}
       <input
         ref={fileInputRef}
@@ -1694,6 +1209,19 @@ function App(): React.ReactElement {
             app looks the same wherever it was opened from; the bar folds to a
             corner tab when the app wants every pixel. Embedded in someone
             else's page, the app is the whole frame and the host has the bar. */}
+        {/* Before the product bar, so the first Tab offers them: reaching the
+            first "Run" in Explore apps took 25 presses, through the bar and
+            every card of the library. */}
+        {!embedded && isHome && !loadingTabId && !error && (
+          <div className="softn-skip-links">
+            <a className="softn-skip-link" href="#softn-workspace" onClick={skipTo('#softn-workspace')}>
+              Skip to your workspace
+            </a>
+            <a className="softn-skip-link" href="#softn-explore-title" onClick={skipTo('#softn-explore-title')}>
+              Skip to Explore apps
+            </a>
+          </div>
+        )}
         {!embedded && isHome && <ProductBar current="runtime" />}
         {!embedded && !isHome && activeTab && chromeHidden && (
           <button
@@ -1767,6 +1295,7 @@ function App(): React.ReactElement {
 
           {/* Home / Launcher */}
           <div
+            ref={homeRef}
             style={{
               position: 'absolute',
               inset: 0,
@@ -1775,9 +1304,22 @@ function App(): React.ReactElement {
             }}
           >
             {notice && (
-              <div className="softn-shell-notice" role="status" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', margin: '1rem 1.5rem 0', padding: '0.625rem 0.875rem', borderRadius: '10px', border: '1px solid var(--mint-edge, #2e7d5b)', background: 'var(--mint-glow-soft, rgba(46,125,91,0.12))', color: 'var(--paper, #f2f0ec)', fontSize: '0.8125rem' }}>
-                <span style={{ flex: 1 }}>{notice}</span>
-                <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss" style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '1rem' }}>
+              <div className={`softn-shell-notice${notice.warning ? ' softn-shell-notice--warning' : ''}`} role="status">
+                <span className="softn-shell-notice-text">{notice.text}</span>
+                {notice.stop && (
+                  <button
+                    type="button"
+                    className="softn-shell-notice-action"
+                    onClick={() => {
+                      const stop = notice.stop!;
+                      setNotice(null);
+                      handleCloseTab(stop.tabId, true);
+                    }}
+                  >
+                    {notice.stop.label}
+                  </button>
+                )}
+                <button type="button" className="softn-shell-notice-dismiss" onClick={() => setNotice(null)} aria-label="Dismiss">
                   &times;
                 </button>
               </div>

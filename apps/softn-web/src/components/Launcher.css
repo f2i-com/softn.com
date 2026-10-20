@@ -1,0 +1,423 @@
+/*
+ * The runtime's home (Launcher.tsx): open a file, come back to an app you had
+ * open, or find one in the directory. Drawn from the shared tokens so it is
+ * the same surface as the site and the tools.
+ */
+@keyframes softn-launcher-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.softn-launcher {
+  min-height: 100%;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--body);
+  padding: clamp(1.5rem, 4vw, 3rem) var(--gutter) 4rem;
+}
+.softn-launcher-inner {
+  max-width: 1040px;
+  margin: 0 auto;
+}
+.softn-launcher-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 2rem;
+  animation: softn-launcher-fade-up 400ms var(--ease) both;
+}
+.softn-launcher-title:focus { outline: none; }
+.softn-launcher-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(1.625rem, 3vw, 2.25rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+.softn-launcher-sub {
+  margin-top: 0.5rem;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  max-width: 40rem;
+}
+.softn-launcher-sub a,
+.softn-launcher-empty a {
+  color: var(--paper);
+  text-decoration: underline;
+  text-decoration-color: var(--dimmer);
+  text-underline-offset: 3px;
+}
+.softn-launcher-sub a:hover,
+.softn-launcher-empty a:hover { text-decoration-color: var(--paper); }
+.softn-launcher-sub code {
+  font-family: var(--mono);
+  font-size: 0.875em;
+  color: var(--coral);
+}
+.softn-launcher-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0 1.125rem;
+  border-radius: 8px;
+  border: 1px solid var(--paper);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.softn-launcher-open:hover { background: var(--invert-hover); border-color: var(--invert-hover); }
+.softn-launcher-open:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+.softn-launcher-hint {
+  color: var(--dimmer);
+  font-size: 0.8125rem;
+}
+.softn-launcher-section {
+  margin-top: 2.5rem;
+  animation: softn-launcher-fade-up 400ms var(--ease) 80ms both;
+}
+.softn-launcher-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.875rem;
+}
+.softn-launcher-section-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.125rem;
+  letter-spacing: -0.02em;
+}
+.softn-launcher-section-count {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--dimmer);
+}
+.softn-launcher-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 0.75rem;
+}
+.softn-launcher-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 1rem;
+  cursor: pointer;
+  transition: border-color 160ms var(--ease), background 160ms var(--ease);
+}
+.softn-launcher-card:hover {
+  border-color: var(--line-strong);
+  background: var(--ink-3);
+}
+/* Opening is the card's own button, and its ::after covers the whole card, so
+   a press anywhere on the card opens the app as it always did. The card's
+   other controls sit above it (z-index below) and are pressed themselves. */
+.softn-launcher-card-open {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.softn-launcher-card-open::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+}
+.softn-launcher-card-open:focus { outline: none; }
+.softn-launcher-card-open:focus-visible::after {
+  outline: 2px solid var(--mint);
+  outline-offset: 3px;
+}
+.softn-launcher-card-text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+.softn-launcher-remove,
+.softn-launcher-data,
+.softn-launcher-versions {
+  z-index: 1;
+}
+.softn-launcher-data,
+.softn-launcher-versions {
+  position: relative;
+}
+.softn-launcher-card-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.softn-launcher-icon {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--ink-3);
+  border: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.softn-launcher-icon img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.softn-launcher-icon span {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--paper);
+}
+.softn-launcher-card-name {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9375rem;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.softn-launcher-card-meta {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--dimmer);
+}
+.softn-launcher-card-desc {
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--dim);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.softn-launcher-card-foot {
+  display: block;
+  margin-top: auto;
+  padding-top: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--dimmer);
+}
+/* Whether the app opens without a connection. Words, not a dot: the three
+   states have to be told apart without colour. */
+/* A space before it in the markup, so its words are not run into the date's
+   when read out; the margin is what is left of the gap. */
+.softn-launcher-offline {
+  /* Above the open button's ::after, so its title still shows on hover; it
+     is inside the button, so a press on it still opens the app. */
+  position: relative;
+  z-index: 1;
+  margin-left: 0.3rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
+.softn-launcher-offline[data-state="ready"] { color: var(--mint); }
+.softn-launcher-offline[data-state="installing"] { color: var(--dim); }
+.softn-launcher-remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: none;
+  color: transparent;
+  font: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 160ms var(--ease), background 160ms var(--ease);
+}
+.softn-launcher-card:hover .softn-launcher-remove,
+.softn-launcher-remove:focus-visible { color: var(--dimmer); }
+.softn-launcher-remove:hover { color: var(--paper); background: var(--ink); }
+.softn-launcher-versions {
+  margin-top: 0.75rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--line-soft);
+}
+.softn-launcher-versions-label {
+  font-size: 0.6875rem;
+  color: var(--dimmer);
+  margin-bottom: 0.4375rem;
+}
+.softn-launcher-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.softn-launcher-chip {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--ink);
+  overflow: hidden;
+}
+.softn-launcher-chip button {
+  min-height: 28px;
+  padding: 0.25rem 0.5rem;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  cursor: pointer;
+}
+.softn-launcher-chip button:hover { color: var(--paper); background: var(--ink-3); }
+.softn-launcher-chip button + button { border-left: 1px solid var(--line); min-width: 24px; padding: 0 0.375rem; }
+.softn-launcher-adopt {
+  margin-top: 0.5rem;
+  min-height: 30px;
+  width: 100%;
+  padding: 0.3125rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--mint-edge);
+  background: var(--mint-glow-soft);
+  color: var(--paper);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.softn-launcher-adopt:hover { background: var(--mint-glow); }
+.softn-launcher-data {
+  margin-top: 0.5rem;
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+.softn-launcher-data-btn {
+  min-height: 26px;
+  padding: 0.1875rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.softn-launcher-data-btn:hover { color: var(--paper); border-color: var(--paper); }
+.softn-launcher-running {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.softn-launcher-run {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ink-2);
+  overflow: hidden;
+}
+.softn-launcher-run-open,
+.softn-launcher-run-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0 0.875rem;
+  border: none;
+  background: transparent;
+  color: var(--paper);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 160ms var(--ease);
+}
+.softn-launcher-run-open:hover { background: var(--ink-3); }
+.softn-launcher-run-open:focus-visible, .softn-launcher-run-stop:focus-visible { outline: 2px solid var(--mint); outline-offset: -3px; }
+.softn-launcher-run-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--mint);
+  box-shadow: 0 0 0 3px var(--mint-glow);
+  flex-shrink: 0;
+}
+.softn-launcher-run-icon { width: 18px; height: 18px; border-radius: 5px; object-fit: cover; }
+.softn-launcher-run-stop {
+  border-left: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 1.1rem;
+  padding: 0 0.75rem;
+}
+.softn-launcher-run-stop:hover { color: var(--paper); background: var(--ink-3); }
+.softn-launcher-empty {
+  padding: 2.5rem 1.5rem;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  max-width: 40rem;
+  animation: softn-launcher-fade-up 400ms var(--ease) 60ms both;
+}
+.softn-launcher-empty strong { color: var(--paper); font-weight: 500; }
+.softn-explore { padding-top: 2rem; border-top: 1px solid var(--line-soft); }
+.softn-explore .softn-launcher-section-head { flex-wrap: wrap; }
+.softn-explore .softn-launcher-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); }
+.softn-explore-description { color: var(--dim); font-size: 0.8125rem; margin-top: 0.35rem; }
+.softn-explore-link { color: var(--paper); font-size: 0.8125rem; text-decoration: underline; text-underline-offset: 3px; }
+.softn-explore-message { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; padding: 1.25rem; border: 1px solid var(--line); border-radius: 12px; font-size: 0.875rem; background: var(--ink-2); }
+.softn-explore-message > div { flex: 1; min-width: min(100%, 220px); }
+.softn-explore-message p { color: var(--dim); margin: 0.35rem 0 0; line-height: 1.5; }
+.softn-explore-card { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: 12px; overflow: hidden; background: var(--ink-2); }
+.softn-explore-picture { display: grid; place-items: center; position: relative; height: 150px; overflow: hidden; background: var(--ink-3); border-bottom: 1px solid var(--line-soft); text-decoration: none; }
+.softn-explore-picture span { font-family: var(--display); font-size: 3rem; color: var(--dimmer); }
+.softn-explore-picture img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.softn-explore-card-body { display: flex; flex: 1; flex-direction: column; padding: 1rem; }
+.softn-explore-card h3 { font-size: 0.9375rem; margin: 0; overflow-wrap: anywhere; }
+.softn-explore-card h3 a { color: var(--paper); text-decoration: none; }
+.softn-explore-card-body > p { color: var(--dim); font-size: 0.8125rem; line-height: 1.5; margin: 0.5rem 0 1rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.softn-explore-card-actions { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.softn-explore-primary, .softn-explore-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; min-height: 40px; padding: 0.5rem 0.875rem; border-radius: 8px; font: inherit; font-size: 0.8125rem; font-weight: 500; text-decoration: none; cursor: pointer; }
+/* Outlined, not inverted: a grid of six inverted buttons out-shouted the one
+   primary action on Home, "Open a .softn file". Weight carries it instead. */
+.softn-explore-primary { background: transparent; color: var(--paper); border: 1px solid var(--line-strong); font-weight: 600; }
+.softn-explore-secondary { background: transparent; color: var(--paper); border: 1px solid var(--line-strong); }
+.softn-explore-primary:hover, .softn-explore-secondary:hover { border-color: var(--paper); background: var(--ink-3); }
+.softn-explore-create { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 1rem; padding: 1rem 0; }
+.softn-explore-create > div { flex: 1; min-width: min(100%, 240px); display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.875rem; }
+.softn-explore-create span { color: var(--dim); font-size: 0.8125rem; }
+.softn-explore a:focus-visible, .softn-explore button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+@media (max-width: 640px) {
+  .softn-launcher-grid { grid-template-columns: 1fr; }
+  .softn-launcher-hint { display: none; }
+}
+@media (pointer: coarse) {
+  .softn-launcher-card { min-height: 44px; }
+  .softn-launcher-remove { color: var(--dimmer); }
+}

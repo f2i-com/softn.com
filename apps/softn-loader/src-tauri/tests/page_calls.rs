@@ -6,16 +6,50 @@ use softn_loader_lib::data_identity::{bundle_digest, DataIdentity, Step};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, MockRuntime, INVOKE_KEY};
 use tauri::Manager;
 
 const APP_A: &str = "bundle-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+/// The runtime's data folder for one test, removed when the test ends, passed or failed.
+///
+/// On Windows a SQLite file cannot be deleted while a handle to it is open, so this is removed
+/// only after the database manager holding them is gone (see `Page`'s `Drop`). It used to be
+/// removed while they were open: the removal failed, and every run left one folder per test
+/// behind. A worker thread can still be letting a database go just after the manager does, so
+/// the removal is tried again for a second, as in apps/softn-host-rust's test_dirs.rs.
+struct DataFolder(PathBuf);
+
+impl Drop for DataFolder {
+    fn drop(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while fs::remove_dir_all(&self.0).is_err() && self.0.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+/// Fields are dropped in the order they are declared, after `Drop::drop` below: the page and
+/// the app, then the test's own handle on the database manager, and the folder the databases
+/// are in after all of them.
 struct Page {
-    dir: PathBuf,
     webview: tauri::WebviewWindow<MockRuntime>,
-    manager: xdb::tauri::SharedDbManager,
     app: tauri::App<MockRuntime>,
+    manager: xdb::tauri::SharedDbManager,
+    dir: DataFolder,
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        // Dropping the app does not drop its state. The mock runtime runs no event loop, so it
+        // never reports the page's window destroyed, and the window and the app keep each other
+        // alive until the process ends -- with them the database manager the app was given, and
+        // every SQLite file it opened. So the manager is taken out of the state here, when the
+        // test is over and nothing borrows it; the `manager` field is then its last handle.
+        #[allow(deprecated)]
+        drop(self.app.unmanage::<xdb::tauri::SharedDbManager>());
+    }
 }
 
 impl Page {
@@ -45,18 +79,12 @@ impl Page {
     /// data. Returns its data id.
     fn open_own(&self, file: &str, bytes: &[u8]) -> String {
         let identity = self.app.state::<DataIdentity>();
-        let path = self.dir.join(file);
+        let path = self.dir.0.join(file);
         identity.bundle_chosen(&path);
         identity.bundle_read(&path, bytes);
         let digest = bundle_digest(bytes);
         assert!(matches!(identity.prepare_bind(&digest, &digest, None, None, true), Ok(Step::Settled(()))));
         digest
-    }
-}
-
-impl Drop for Page {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -89,7 +117,7 @@ fn with_app_a_data(name: &str) -> Page {
         .build(mock_context(noop_assets()))
         .unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
-    Page { dir, webview, manager, app }
+    Page { webview, app, manager, dir: DataFolder(dir) }
 }
 
 /// App B is the app the person opened. Whatever runs in the page while B is open must not
@@ -136,7 +164,7 @@ fn the_app_open_before_is_refused_once_the_next_one_is_bound() {
     page.call("create_record", serde_json::json!({ "appId": first, "payload": { "collection": "notes", "data": {} } }))
         .unwrap();
     let identity = page.app.state::<DataIdentity>();
-    identity.bundle_chosen(&page.dir.join("second.softn"));
+    identity.bundle_chosen(&page.dir.0.join("second.softn"));
     // Chosen, not yet bound: the first app's last write still lands in its own data.
     page.call("create_record", serde_json::json!({ "appId": first, "payload": { "collection": "notes", "data": {} } }))
         .unwrap();

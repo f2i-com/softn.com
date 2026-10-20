@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Softn — Desktop runtime",
+        "title": "SoftN — Desktop runtime",
         "width": 1200,
         "height": 800,
         "backgroundColor": "#101317",

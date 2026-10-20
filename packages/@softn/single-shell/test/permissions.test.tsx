@@ -32,7 +32,7 @@ vi.mock('@softn/core', async (original) => ({
 vi.mock('@softn/components', () => ({
   ThemeProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock('@softn/brand', () => ({ Mark: () => null }));
+vi.mock('@softn/brand', async (importOriginal) => ({ ...(await importOriginal<object>()), Mark: () => null }));
 import { Application } from '../src/SingleApp';
 import type { LoadedApplication } from '../src/load';
 const element = document.createElement('div');
@@ -131,7 +131,8 @@ it("a directory's play page wears the runtime bar, which folds to a corner tab a
   const bar = element.querySelector('.softn-frame-bar');
   expect(bar).not.toBeNull();
   expect(bar?.querySelector('.softn-frame-name')?.textContent).toContain('Example');
-  expect(bar?.querySelector('.softn-frame-home')?.textContent).toContain('softn.com');
+  // The site's own name for itself, its host, not a fixed "softn.com".
+  expect(bar?.querySelector('.softn-frame-home')?.textContent).toContain(window.location.host);
   expect(element.querySelector('.chrome-peek')).toBeNull();
   // The permission bar sits under it, in the same measured chrome.
   expect(element.querySelector('.application-chrome .permission-bar')).not.toBeNull();
@@ -145,6 +146,24 @@ it("a directory's play page wears the runtime bar, which folds to a corner tab a
   expect(element.querySelector('.softn-frame-bar')).not.toBeNull();
   expect(element.querySelector('.chrome-peek')).toBeNull();
   expect(localStorage.getItem('softn.play.chromeHidden')).toBe('0');
+});
+it("a directory's play page draws its chrome in the site's theme, and the app is weighed against it", () => {
+  // A dark bar and a dark permission bar on a page in light mode, where the
+  // web runtime draws both light.
+  localStorage.setItem('softn.site.theme', 'light');
+  document.documentElement.removeAttribute('data-theme');
+  try {
+    mount({ id: 'example', directory: { runs: 'https://example.test/api/apps/example/runs' } });
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+  } finally {
+    document.documentElement.removeAttribute('data-theme');
+  }
+});
+it('a standalone deployment leaves the theme to its configuration', () => {
+  localStorage.setItem('softn.site.theme', 'light');
+  document.documentElement.removeAttribute('data-theme');
+  mount();
+  expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
 });
 it('a standalone deployment stays unbranded: no bar, no corner tab', () => {
   mount();

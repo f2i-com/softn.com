@@ -2,9 +2,10 @@
 
 How a `.softn` archive becomes the files an app reads, what is read when, and
 what is deliberately not attempted. The reader is
-`packages/@softn/core/src/bundle/zip.ts`; the hosts are
-`apps/softn-web/src/lib/bundleProcessor.ts` (shared by softn-single) and the
-worker pair `zipWorker.ts` / `zipWarmup.ts` beside it.
+`packages/@softn/core/src/bundle/zip.ts`; the hosts share
+`packages/@softn/runtime-shell/src/bundleProcessor.ts` (the web runtime, the
+standalone runtime and the desktop loader) and the worker pair `zipWorker.ts` /
+`zipWarmup.ts` beside it.
 
 ## What is eager, what is on demand
 
@@ -115,7 +116,7 @@ build on.
 
 ## The worker warm-up
 
-`apps/softn-web/src/lib/zipWarmup.ts` runs after the source is composed and
+`packages/@softn/runtime-shell/src/zipWarmup.ts` runs after the source is composed and
 before the app renders, without being awaited:
 
 1. `firstScreenAssets` picks the paths: every `asset("…")` / `asset('…')`
@@ -155,7 +156,7 @@ before the app renders, without being awaited:
    host releasing the archive) stops it at the next step and terminates the
    worker.
 
-The worker script (`apps/softn-web/src/lib/zipWorker.ts`) imports the reader
+The worker script (`packages/@softn/runtime-shell/src/zipWorker.ts`) imports the reader
 from `@softn/core/bundle`, the `./bundle` entry in core's exports map, which
 resolves to core's built `dist/bundle/zip.js` — a tsup entry of its own.
 Through the `@softn/core` barrel the worker chunk measured 1.35 MB, yjs and

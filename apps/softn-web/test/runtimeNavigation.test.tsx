@@ -84,7 +84,9 @@ describe('runtime entry and navigation ownership', () => {
     expect(window.location.pathname).toBe('/app/Example');
     expect(new URLSearchParams(window.location.search).get('back')).toBe('/app/example?from=directory#details');
     expect(new URLSearchParams(window.location.search).has('open')).toBe(false);
-    expect(container.querySelector('.softn-frame-close')?.getAttribute('aria-label')).toBe('Stop the app and return to the page that opened it');
+    // Named by its visible label; where it goes is its description.
+    expect(container.querySelector('.softn-frame-close')?.getAttribute('aria-label')).toBe('Close');
+    expect(container.querySelector('.softn-frame-close')?.getAttribute('title')).toBe('Stop the app and return to the page that opened it');
     await click('.softn-frame-home');
     expect(new URLSearchParams(window.location.search).get('back')).toBe('/app/example?from=directory#details');
   });
@@ -189,8 +191,12 @@ describe('runtime entry and navigation ownership', () => {
 
   it.each([
     ['a double click', (card: HTMLElement) => { card.click(); card.click(); }],
+    // The card's open control is a real button now, and a browser turns each
+    // Enter keydown on a button into a click, the auto-repeated ones too;
+    // jsdom does not, so the clicks are what is dispatched here.
     ['Enter held down', (card: HTMLElement) => {
-      for (const repeat of [false, true, true]) card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, repeat }));
+      expect(card.tagName).toBe('BUTTON');
+      for (let press = 0; press < 3; press++) card.click();
     }],
   ])('opens a card on Home once for %s', async (_, press) => {
     // Two tabs of one app ran two copies over one database, each listed as

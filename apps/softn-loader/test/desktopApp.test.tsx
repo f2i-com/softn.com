@@ -3,32 +3,39 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), readFile: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), theme: vi.fn(), files: new Map<string, string>(), id: { value: 'bundle-test' }, failCompose: { value: false } }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: bridge.open }));
-vi.mock('@tauri-apps/plugin-fs', () => ({ readFile: bridge.readFile }));
+// `open` stands for the person's choice in the native picker, which the
+// `pick_softn_bundle` command returns.
+const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), theme: vi.fn(), files: new Map<string, string>(), id: { value: 'bundle-test' }, failCompose: { value: false } }));
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: bridge.drag }) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: bridge.title }) }));
 vi.mock('@softn/components/lazy', () => ({ registerRuntimeComponents() {} }));
 vi.mock('@softn/components/minimal', () => ({ Spinner: () => <span>Loading</span> }));
 vi.mock('@softn/components/theme', () => ({ ThemeProvider: (props: Record<string, unknown> & { children: React.ReactNode }) => { bridge.theme(props); return props.children; } }));
 vi.mock('@softn/core', async (importOriginal) => ({
-  // The manifest and permission reads are core's real ones: the loader is
-  // what this test exercises, and those are what it reads through. So is
-  // `debug`, which is silent here and would otherwise be missing from the mock.
-  // So are the consent and egress rules the loader applies on top of them.
-  ...(({ readManifest, extractPermissions, debug, inspectDeclaration, describeNetDestination }) => ({ readManifest, extractPermissions, debug, inspectDeclaration, describeNetDestination }))(await importOriginal<typeof import('@softn/core')>()),
+  // Core's real reads and rules — the manifest, the permissions, consent and
+  // egress — are what the loader reads through; only the renderer is a stand-in.
+  ...(await importOriginal<typeof import('@softn/core')>()),
   SoftNWithXDB: (props: Record<string, unknown>) => { bridge.runner(props); return <p>Running the selected app</p>; },
   XDBStorageNotice: () => null,
-  classifyAsset: () => ({ binary: false, mime: 'text/plain' }),
-  readBundleEntries: () => new Map([...bridge.files].map(([name, text]) => [name, new TextEncoder().encode(text)])),
 }));
-vi.mock('../src/bundleRuntime', () => ({
-  computeBundleAppId: async () => bridge.id.value,
-  loadBundleXDBData: async () => 0,
-  processBundleSource: () => {
+// The archive is this test's text files and the composer can be made to fail;
+// the shared pipeline itself is tested in @softn/runtime-shell. Assets and
+// imports are its real resolvers.
+vi.mock('@softn/runtime-shell/bundleProcessor', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@softn/runtime-shell/bundleProcessor')>()),
+  readZip: () => ({
+    textFiles: new Map(bridge.files),
+    binaryFiles: { get: () => undefined, has: () => false, declaredSize: () => undefined, isRead: () => false, release() {} },
+  }),
+  loadXDBData: async () => 0,
+  processBundle: () => {
     if (bridge.failCompose.value) throw new Error('Main file not found: main.ui');
     return { source: '<Text>App</Text>', preIncludedLogicPaths: [] };
   },
+}));
+vi.mock('../src/bundleFile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/bundleFile')>()),
+  computeBundleAppId: async () => bridge.id.value,
 }));
 
 let host: HTMLDivElement;
@@ -418,6 +425,5 @@ it('picks and reads a bundle on Android through the native side, which the page 
   expect(bridge.invoke.mock.calls).toContainEqual(['read_softn_bundle', { path: picked }]);
   expect(bridge.invoke.mock.calls).toContainEqual(['bind_data_identity', { bundleId: 'bundle-test', dataId: 'bundle-test', name: 'Fieldnotes', version: '', start: true }]);
   expect(bridge.open).not.toHaveBeenCalled();
-  expect(bridge.readFile).not.toHaveBeenCalled();
   expect(host.textContent).toContain('Running the selected app');
 });

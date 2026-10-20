@@ -10,7 +10,13 @@ local network. Open a file, drop one onto the window, or double-click a
   shell, with the web inspector available as in every debug build).
 - Build: `npm run tauri build` from this directory; the Rust side takes XDB
   from this repository (`crates/softn-xdb`, by path).
-- Test: `npx vitest run` here; `cargo check --offline` in `src-tauri/`.
+- Test: `npx vitest run` here; `cargo test --offline` in `src-tauri/` (CI
+  runs `cargo test --locked`).
+
+The bundle pipeline (reading the archive, composing, seeding XDB, resolving
+assets and imports, the sync server address) is `@softn/runtime-shell`'s, the
+same the browser hosts use; this app passes it a fetch that goes through the
+native side (`src/nativeNetFetch.ts`).
 
 ## What the page may ask the native side to do
 
@@ -56,7 +62,7 @@ side's there too.
 ## Content security policy
 
 `src-tauri/tauri.conf.json` allows `connect-src … wss:` to any host on
-purpose: server sync (`src/runtimeConfig.ts`) upgrades a user-configured
+purpose: server sync (`resolveServerConfig` in `@softn/runtime-shell/net`) upgrades a user-configured
 `https:` sync URL to `wss:`, and core's egress policy is what gates an app's
 own traffic. Tightening the CSP to a fixed host would break sync for anyone
 who runs their own server.

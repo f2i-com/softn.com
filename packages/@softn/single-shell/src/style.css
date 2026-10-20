@@ -24,6 +24,16 @@ body {
   background: transparent;
   color: inherit;
 }
+/* A directory's play page, once the app is known: the site's ground and text,
+   in the site's theme, as the web runtime's page has them. The boot screen's
+   fixed dark (and the light one the server writes for an app that declares
+   light) stays behind only until then. An app on the other side from the
+   site draws its own ground in its box. */
+html.softn-play-framed,
+html.softn-play-framed body {
+  background: var(--ink);
+  color: var(--paper);
+}
 .loading {
   min-height: 100dvh;
   display: flex;

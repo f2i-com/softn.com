@@ -9,6 +9,8 @@
     ".": "./src/index.ts",
     "./bundleProcessor": "./src/bundleProcessor.ts",
     "./zipWarmup": "./src/zipWarmup.ts",
+    "./net": "./src/net.ts",
+    "./failure": "./src/failure.ts",
     "./FrameBar": "./src/FrameBar.tsx",
     "./consent": "./src/consent.ts",
     "./PermissionBar": "./src/PermissionBar.tsx",

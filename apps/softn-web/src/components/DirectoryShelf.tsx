@@ -40,7 +40,7 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
             Explore apps
           </h2>
           <p className="softn-explore-description">
-            From the Softn directory, ready to open in your workspace.
+            From the SoftN directory, ready to open in your workspace.
           </p>
         </div>
         <a className="softn-explore-link" href={DEFAULT_URLS.apps}>
@@ -119,13 +119,16 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
                         Visit app <span aria-hidden="true">↗</span>
                       </a>
                     ) : bundle ? (
+                      // The visible word starts the name ("Run" in "Run
+                      // Blockfall"), so a voice user can say what they see
+                      // (WCAG 2.5.3); "Run app" was not in "Run Blockfall".
                       <button
                         type="button"
                         className="softn-explore-primary"
                         onClick={() => onOpen(bundle)}
                         aria-label={`Run ${app.name}`}
                       >
-                        Run app <span aria-hidden="true">→</span>
+                        Run <span aria-hidden="true">→</span>
                       </button>
                     ) : (
                       <span className="softn-explore-description">View details to open</span>
@@ -135,7 +138,7 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
                       href={`/app/${slug}`}
                       aria-label={`About ${app.name}`}
                     >
-                      Details
+                      About
                     </a>
                   </div>
                 </div>
@@ -144,7 +147,7 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
           })}
         </div>
       )}
-      <div className="softn-explore-create" aria-label="Create with Softn">
+      <div className="softn-explore-create" role="group" aria-label="Create with SoftN">
         <div>
           <strong>Make it your own.</strong>
           <span>Start an app, then bring it here to run.</span>

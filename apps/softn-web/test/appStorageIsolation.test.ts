@@ -20,7 +20,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { extractPermissions, requestedCapabilities, withheldPermissions, type BundleManifest } from '../src/lib/bundleProcessor';
+import { extractPermissions, requestedCapabilities, withheldPermissions, type BundleManifest } from '@softn/runtime-shell/bundleProcessor';
 
 // ── The slice of `idb` the cache uses, in memory ────────────────────────
 

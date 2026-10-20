@@ -243,10 +243,11 @@ jobs:
   # The desktop loader's Rust side, with XDB's Tauri commands compiled in (the
   # XDB job above tests the crate without them), so a change that breaks those
   # commands or the loader's use of them is seen on every push rather than on
-  # the next dispatched six-runner build. A check, not a build: it compiles
-  # every crate without linking or bundling.
+  # the next dispatched six-runner build. Its tests, not only a check: they
+  # drive the loader's commands through Tauri's mock IPC (tests/page_calls.rs
+  # and the unit tests beside each module), and need no window or bundle.
   loader:
-    name: Check the desktop loader (Rust)
+    name: Test the desktop loader (Rust)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -268,5 +269,5 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-      - name: Check the loader
-        run: cargo check --manifest-path apps/softn-loader/src-tauri/Cargo.toml --locked
+      - name: Test the loader
+        run: cargo test --manifest-path apps/softn-loader/src-tauri/Cargo.toml --locked

@@ -6,6 +6,8 @@
  * until it has proved to be a same-origin bundle of a plausible size.
  */
 
+import { readBoundedBody } from '@softn/runtime-shell/net';
+
 /** Refuse anything larger than this. Promptly Unemployed is about 18 MB. */
 const MAX_REMOTE_BUNDLE_BYTES = 32 * 1024 * 1024;
 
@@ -46,40 +48,11 @@ export async function fetchRemoteBundle(url: URL, signal?: AbortSignal): Promise
     throw new Error(`${url.pathname} is not a bundle — the server returned a web page.`);
   }
 
-  const declaredLength = response.headers.get('content-length');
-  if (declaredLength !== null && Number(declaredLength) > MAX_REMOTE_BUNDLE_BYTES) {
-    throw new Error(`${url.pathname} is larger than the ${MAX_MB} MB limit for bundles opened by URL.`);
-  }
-
   // Content-Length is a claim, so the cap is enforced again against the bytes
   // that actually arrive; a chunked response carries no length at all.
-  if (!response.body) {
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > MAX_REMOTE_BUNDLE_BYTES) {
-      throw new Error(`${url.pathname} is larger than the ${MAX_MB} MB limit for bundles opened by URL.`);
-    }
-    return new Uint8Array(buffer);
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-    if (received > MAX_REMOTE_BUNDLE_BYTES) {
-      await reader.cancel();
-      throw new Error(`${url.pathname} is larger than the ${MAX_MB} MB limit for bundles opened by URL.`);
-    }
-    chunks.push(value);
-  }
-
-  const data = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    data.set(chunk, offset);
-    offset += chunk.byteLength;
+  const data = await readBoundedBody(response, MAX_REMOTE_BUNDLE_BYTES);
+  if (data === null) {
+    throw new Error(`${url.pathname} is larger than the ${MAX_MB} MB limit for bundles opened by URL.`);
   }
   return data;
 }

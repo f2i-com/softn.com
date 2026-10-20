@@ -8,6 +8,8 @@
  * a page of the build's own, so nothing else would link them.
  */
 
+import { adoptHeadMetas, pageHeadMetas } from '@softn/single-shell/headMetas';
+
 /** What `softn.js` leaves for this entry: the page, and the script that loaded it. */
 interface PageBoot {
   pageUrl: string;
@@ -21,6 +23,13 @@ declare global {
 }
 
 async function boot(): Promise<void> {
+  // The page's viewport and colours, from the text `softn.js` turned the rest
+  // of its head into, before anything is drawn: the loading screen is then
+  // laid out at the phone's width too, not at a desktop's. The shell reads
+  // them again from the page it fetches, which covers a page run by another
+  // (`data-page`) and one whose head the browser parsed itself.
+  const written = document.querySelector('plaintext');
+  if (written?.textContent) adoptHeadMetas(pageHeadMetas(written.textContent));
   // The app is drawn in this document, whichever page it was written in.
   const page = { ...(window.__softnPage ?? { pageUrl: location.href, runtimeScripts: [] }), documentUrl: location.href };
   const [{ createRoot }, { registerRuntimeComponents }, shell] = await Promise.all([

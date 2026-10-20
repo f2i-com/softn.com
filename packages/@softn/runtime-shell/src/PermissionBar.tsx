@@ -98,7 +98,7 @@ export const CAPABILITY_PHRASE: Record<Capability, string> = {
 /** The desktop loader's words: no browser, no site. */
 export const DESKTOP_WORDING: ConsentWording = {
   phrases: {
-    storage: 'its own shared database online',
+    storage: 'its own database online',
     accel: "this computer's engine for the code it generates",
   },
   details: {
@@ -108,9 +108,10 @@ export const DESKTOP_WORDING: ConsentWording = {
       description:
         'Run the numeric code it generates (an emulator, a signal kernel) on the runtime’s own engine, bound to its own data only, so it runs many times faster.',
     },
+    // Who may read and change the records is the declaration's, per
+    // collection, and is listed under this (PermissionPrompt).
     storage: {
-      description:
-        'Keep records in this app’s own shared database online — a scoreboard, shared notes — which anyone running the app can read and add to.',
+      description: 'Keep records in this app’s own database online, such as a scoreboard or notes.',
     },
   },
   deviceNote:

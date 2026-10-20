@@ -340,8 +340,11 @@ function AppMenu({ tab, onDownload }: { tab: TabInfo; onDownload?: (id: string) 
               </div>}
             </>
           ) : (
+            // Not published here, however it was opened: a file, a link, or
+            // Studio or Builder handing it over. Saying "opened from a file"
+            // was wrong for an app a link opened.
             <div className="softn-frame-menu-note">
-              This app was opened from a file. <a href="/publish" role="menuitem">Publish it</a> to share it, remix it or edit it
+              This app isn’t in the directory. <a href="/publish" role="menuitem">Publish it</a> to share it, remix it or edit it
               online.
             </div>
           )}
@@ -390,7 +393,10 @@ export function FrameBar({
       <style dangerouslySetInnerHTML={{ __html: frameBarStyles }} />
       <div className="softn-frame-bar">
         <div className="softn-frame-left">
-          <button type="button" className="softn-frame-home" onClick={onHome} title={homeTitle} aria-label={homeTitle}>
+          {/* Named by what it shows, "SoftN runtime", so the words on screen
+              are the words a voice user says (WCAG 2.5.3); what it does is
+              its description, from the title. */}
+          <button type="button" className="softn-frame-home" onClick={onHome} title={homeTitle}>
             <Mark size={22} radius={6} title="SoftN" />
             <small>{homeLabel}</small>
           </button>
@@ -406,13 +412,15 @@ export function FrameBar({
         </div>
         <span className="softn-frame-actions">
           <AppMenu key={tab.id} tab={tab} onDownload={onDownload} />
-          <button type="button" className="softn-frame-btn" onClick={onHide} aria-label="Hide the app bar" title="Hide this bar and give the app the whole screen">
+          {/* Each name is the label the button shows, which a narrow screen
+              shortens or turns into an icon; the title says more. */}
+          <button type="button" className="softn-frame-btn" onClick={onHide} aria-label="Hide bar" title="Hide this bar and give the app the whole screen">
             <span className="softn-frame-mobile-label">Hide <span className="softn-frame-hide-label">bar</span></span><span className="softn-frame-mobile-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m6 15 6-6 6 6" /></svg></span>
           </button>
           <button type="button" className="softn-frame-btn" onClick={() => { void toggleFullscreen(); }} aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
             <span className="softn-frame-mobile-label">{fullscreen ? 'Exit fullscreen' : 'Fullscreen'}</span><span className="softn-frame-mobile-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d={fullscreen ? 'M9 3v6H3m12-6v6h6M3 15h6v6m12-6h-6v6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6'} /></svg></span>
           </button>
-          <button type="button" className="softn-frame-btn softn-frame-close" onClick={onClose} aria-label={closeTitle} title={closeTitle}>
+          <button type="button" className="softn-frame-btn softn-frame-close" onClick={onClose} aria-label="Close" title={closeTitle}>
             <span className="softn-frame-mobile-label">Close</span><span className="softn-frame-mobile-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m6 6 12 12M6 18 18 6" /></svg></span>
           </button>
         </span>

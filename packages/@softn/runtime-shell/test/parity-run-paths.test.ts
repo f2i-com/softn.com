@@ -27,7 +27,7 @@
 import { strToU8, zipSync } from 'fflate';
 import { afterEach, describe, expect, it } from 'vitest';
 import { composeBundleSource, getXDB, inspectDeclaration, parseXDBFile, readBundle } from '@softn/core';
-import { extractPermissions, loadXDBData, processBundle, readZip, requestedCapabilities, withheldPermissions, type BundleManifest } from '../src/lib/bundleProcessor';
+import { extractPermissions, loadXDBData, processBundle, readZip, requestedCapabilities, withheldPermissions, type BundleManifest } from '../src/bundleProcessor';
 
 const MANIFEST: BundleManifest = {
   name: 'Parity probe',

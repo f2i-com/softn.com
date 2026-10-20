@@ -67,18 +67,17 @@ export default defineConfig({
         // it every bundle fails to run offline. It is also larger than
         // Workbox's 2 MiB default cap, which would silently skip the file.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
-        // assets/core-runtime/ is a whole copy of @softn/core's dist, put there
-        // by coreWorkerAssetPlugin above so the off-main-thread script runtime
-        // can reach its worker (core's SoftNRenderer starts one for a bundle
-        // whose manifest asks for `config.execution: "worker"`). Most bundles
-        // never do, yet globbing swept 23 files and 5.68 MiB into the
-        // precache, over half of every visitor's first load. The worker needs
-        // three modules of it, and no engine: the page posts it the engine it
-        // compiled, the one precached copy, and the copy here carries none.
-        // The per-app install fetches exactly those modules, for exactly the
-        // apps that run a worker, through the softn-worker-assets route below.
-        // The rest of the copy stays for the model worker and for dev, and
-        // precaching it does not.
+        // assets/core-runtime/ holds the files of @softn/core's dist that its
+        // workers reach (packages/@softn/core/scripts/worker-files.mjs), put
+        // there by coreWorkerAssetPlugin above: the script worker core's
+        // SoftNRenderer starts for a bundle whose manifest asks for
+        // `config.execution: "worker"`, the local-model worker and the torch
+        // package, about 2.8 MB in 25 files. Most bundles never start a
+        // worker, so none of it is precached; the worker gets no engine from
+        // here either, since the page posts it the one it compiled. The
+        // per-app install fetches the modules the script worker needs, for
+        // exactly the apps that run one, through the softn-worker-assets route
+        // below; the model worker's files are fetched when a model runs.
         // Optional demos are removed from the default website distribution.
         // Missing demo icons must not prevent the worker from installing.
         //

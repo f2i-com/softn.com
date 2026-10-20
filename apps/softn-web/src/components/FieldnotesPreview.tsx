@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { createEphemeralXDBScope, type PermissionConfig } from '@softn/core';
 import { AppRunner } from './AppRunner';
-import { createAssetResolver, createImportResolver, loadXDBData, processBundle, readZip, type BundleManifest } from '../lib/bundleProcessor';
+import { createAssetResolver, createImportResolver, loadXDBData, processBundle, readZip, type BundleManifest } from '@softn/runtime-shell/bundleProcessor';
 
 const permissions: PermissionConfig = { permissions: {} };
 type Preview = ReturnType<typeof processBundle> & {

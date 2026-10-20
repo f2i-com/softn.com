@@ -1,4 +1,5 @@
 import { inspectDeclaration, sha256Hex, type PermissionConfig } from '@softn/core';
+import { readBoundedBody } from '@softn/runtime-shell/net';
 /**
  * Where the app came from, when a directory served this shell for it: the
  * endpoints the runtime reports to and stores through. Both are the same-origin
@@ -166,39 +167,14 @@ export async function fetchBytes(
   });
   progress?.();
   if (!response.ok) throw Error('Required file could not be loaded');
-  if (Number(response.headers.get('content-length')) > limit) {
-    await response.body?.cancel();
-    throw Error('File exceeds size limit');
-  }
-  if (!response.body) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length > limit) throw Error('File exceeds size limit');
-    return bytes;
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
+  // The bound is held against the declared length and then the bytes that
+  // arrive (runtime-shell's readBoundedBody, which every host reads with).
+  const bytes = await readBoundedBody(response, limit, {
+    onChunk: () => {
       progress?.();
-      size += next.value.length;
-      if (size > limit) {
-        await reader.cancel();
-        throw Error('File exceeds size limit');
-      }
-      chunks.push(next.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(size);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.length;
-  }
+    },
+  });
+  if (bytes === null) throw Error('File exceeds size limit');
   return bytes;
 }
 /**

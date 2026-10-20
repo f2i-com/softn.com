@@ -11,8 +11,8 @@ import {
   extractPermissions,
   requestedCapabilities,
   withheldPermissions,
-} from '../src/lib/bundleProcessor';
-import type { BundleManifest } from '../src/lib/bundleProcessor';
+} from '../src/bundleProcessor';
+import type { BundleManifest } from '../src/bundleProcessor';
 
 const manifest = { name: 'T', version: '1.0.0', main: 'ui/main.ui' } as unknown as BundleManifest;
 

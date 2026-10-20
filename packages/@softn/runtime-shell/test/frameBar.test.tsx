@@ -2,7 +2,7 @@
 import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FrameBar } from '../src/components/FrameBar';
+import { FrameBar } from '../src/FrameBar';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -88,6 +88,30 @@ describe('runtime frame controls', () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
       'Fullscreen is unavailable'
     );
-    expect(container.querySelector('[aria-label="Hide the app bar"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="Hide bar"]')).toBeTruthy();
+  });
+
+  it('names each control by the label it shows, and describes it with its title', () => {
+    act(() => root.render(<FrameBar {...props} closeTitle="Stop the app and go back to its page" homeLabel="softn.com" homeTitle="Back to the directory." />));
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('.softn-frame-bar button')];
+    const home = container.querySelector<HTMLButtonElement>('.softn-frame-home')!;
+    // No aria-label: the name is its content, the mark's "SoftN" and the visible label.
+    expect(home.hasAttribute('aria-label')).toBe(false);
+    expect(home.querySelector('small')?.textContent).toBe('softn.com');
+    expect(home.title).toBe('Back to the directory.');
+    for (const button of buttons) {
+      const label = button.querySelector('.softn-frame-mobile-label')?.textContent;
+      if (!label) continue;
+      expect(button.getAttribute('aria-label'), label).toBe(label);
+    }
+    const close = buttons.find((button) => button.classList.contains('softn-frame-close'))!;
+    expect(close.title).toBe('Stop the app and go back to its page');
+  });
+
+  it('does not say an app it has no directory page for was opened from a file', () => {
+    act(() => root.render(<FrameBar {...props} tab={{ id: 'x', name: 'Linked' }} />));
+    act(() => menuButton().click());
+    expect(container.querySelector('[role="menu"]')?.textContent).not.toMatch(/opened from a file/);
+    expect(container.querySelector('[role="menu"]')?.textContent).toContain('isn’t in the directory');
   });
 });

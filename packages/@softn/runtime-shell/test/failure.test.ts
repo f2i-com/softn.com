@@ -3,7 +3,7 @@
  * own words as the detail an author needs.
  */
 import { describe, expect, it } from 'vitest';
-import { describeFailure } from '../src/lib/failure';
+import { describeFailure } from '../src/failure';
 
 describe('describeFailure', () => {
   it('names a broken manifest and says how to get a working copy', () => {
@@ -48,8 +48,47 @@ describe('describeFailure', () => {
     expect(view.offerAnotherFile).toBe(false);
   });
 
+  it('says an app that is not there was not found, rather than blaming the connection', () => {
+    // `/web/app/NoSuchApp` and `?open=/demos/Nope.softn` both end in a 404.
+    for (const message of ['Could not fetch /api/apps/NoSuchApp/bundle.softn (HTTP 404 Not Found).', 'Could not fetch /demos/Nope.softn (HTTP 404 Not Found).']) {
+      const view = describeFailure(new Error(message));
+      expect(view.title, message).toBe('This app wasn’t found');
+      expect(view.hint, message).not.toMatch(/connection/);
+      expect(view.detail).toBe(message);
+    }
+  });
+
+  it('says the same when a host answers a missing app with its own page', () => {
+    // The dev server and most static hosts send their index.html, with a 200,
+    // for an address they have nothing at.
+    const view = describeFailure(new Error('/demos/Nope.softn is not a bundle — the server returned a web page.'));
+    expect(view.title).toBe('This app wasn’t found');
+    expect(view.hint).toMatch(/sent back a web page/);
+    expect(view.hint).not.toMatch(/Only a \.softn app/);
+  });
+
+  it('names a refused link for what it is', () => {
+    expect(describeFailure(new Error('Refusing to open "/index.html": only .softn bundles can be opened by URL.')).title).toBe('That address isn’t a .softn file');
+    expect(describeFailure(new Error('Refusing to open a bundle from https://example.com: only bundles served from this site can be opened by URL.')).title).toBe(
+      'Only apps from this site open from a link'
+    );
+    expect(describeFailure(new Error('Refusing /a.softn: it redirected to https://evil.example, which is not this site.')).title).toBe(
+      'Only apps from this site open from a link'
+    );
+    expect(describeFailure(new Error('Refusing to open a javascript: URL: only bundles served over http or https can be opened by URL.')).title).toBe(
+      'That link can’t open an app'
+    );
+    expect(describeFailure(new Error('Cannot open "%%": it is not a valid path.')).title).toBe('That link can’t open an app');
+  });
+
   it('falls back to a plain title and the message', () => {
     const view = describeFailure(new Error('Something odd'));
     expect(view).toEqual({ title: 'Something went wrong', detail: 'Something odd', offerAnotherFile: false });
+  });
+
+  it('reads a thrown string, and gives no detail for something with no message', () => {
+    expect(describeFailure('plain text').detail).toBe('plain text');
+    expect(describeFailure({}).detail).toBe('');
+    expect(describeFailure(undefined)).toEqual({ title: 'Something went wrong', detail: '', offerAnotherFile: false });
   });
 });

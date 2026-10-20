@@ -11,18 +11,49 @@
 // Dedicated worker scripts get the same treatment: an isolated page refuses
 // to start a worker whose script arrives without the embedder policy, and the
 // runtime's worker mode (the emulator, the modem) is nothing but such a worker.
+//
+// Network first, but not for ever: a server that accepts the connection and
+// then stalls held Home back for as long as it stalled. After NETWORK_WAIT_MS
+// the precached copy answers if there is one, as the worker-asset route does
+// after 4 s (scripts/build/on-demand-chunks.mjs). With no copy — a first
+// visit, a worker script that is not precached — the request keeps waiting on
+// the same fetch, so a slow answer is still an answer.
+//
+// Nothing here is declared at the top level: this file is imported into the
+// generated sw.js (importScripts), whose global scope it shares.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.mode !== 'navigate' && req.destination !== 'worker' && req.destination !== 'sharedworker') return;
+  const NETWORK_WAIT_MS = 3000;
+  const cachedCopy = async () => {
+    const res = await caches.match(req, { ignoreSearch: true });
+    if (res || req.mode !== 'navigate') return res;
+    return caches.match(new URL('./index.html', self.registration.scope).href, { ignoreSearch: true });
+  };
   event.respondWith(
     (async () => {
+      const network = fetch(req);
+      // Answered from the cache, a network failure that arrives later is
+      // nobody's to report.
+      network.catch(() => {});
+      let timer;
+      const slow = new Promise((resolve) => {
+        timer = setTimeout(() => resolve('slow'), NETWORK_WAIT_MS);
+      });
       let res;
       try {
-        res = await fetch(req);
+        const first = await Promise.race([network, slow]);
+        if (first === 'slow') {
+          res = await cachedCopy();
+          if (!res) res = await network;
+        } else {
+          res = first;
+        }
       } catch (err) {
-        res = await caches.match(req, { ignoreSearch: true });
-        if (!res && req.mode === 'navigate') res = await caches.match(new URL('./index.html', self.registration.scope).href, { ignoreSearch: true });
+        res = await cachedCopy();
         if (!res) throw err;
+      } finally {
+        clearTimeout(timer);
       }
       // A navigation answered with a redirect arrives here opaque, status 0,
       // and `new Response(body, { status: 0 })` throws — so every redirected

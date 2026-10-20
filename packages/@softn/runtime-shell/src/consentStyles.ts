@@ -236,7 +236,10 @@ export const CONSENT_STYLES = `
   .softn-consent-row-label { font-size: 0.875rem; font-weight: 600; letter-spacing: -0.01em; }
   .softn-consent-row-desc { color: var(--softn-consent-dim); font-size: 0.8125rem; line-height: 1.5; margin-top: 2px; }
   .softn-consent-row-detail {
-    color: var(--softn-consent-dim); font-size: 0.75rem; margin-top: 4px; word-break: break-all;
+    color: var(--softn-consent-dim); font-size: 0.75rem; line-height: 1.5; margin-top: 4px; overflow-wrap: anywhere;
+  }
+  /* A host name is the one detail written as the machine reads it. */
+  .softn-consent-host {
     font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .softn-consent-note { color: var(--softn-consent-dim); font-size: 0.75rem; line-height: 1.5; margin: -0.5rem 0 1.25rem; }

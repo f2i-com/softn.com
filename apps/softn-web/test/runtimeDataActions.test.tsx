@@ -137,15 +137,36 @@ describe('runtime app-data actions', () => {
     expect(requests.filter((url) => url.endsWith('/api/apps/older-build/bundle.softn'))).toHaveLength(1);
   });
 
+  /** The line Home shows instead of the error card it used to be replaced by. */
+  const notice = () => container.querySelector('.softn-shell-notice');
+
   it('keeps running app data and bundle when Remove is pressed from Home', async () => {
     localStorage.setItem(dataKey(current), 'original note');
     await mount();
     await startAndReturnHome();
     await click('[aria-label="Remove Data guard test"]');
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Stop “Data guard test”');
+    // Said on Home, in the words of the section it names, not as an error card over it.
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(notice()?.textContent).toContain('“Data guard test” is still running. Stop it under Running now');
+    expect(container.querySelector('.softn-launcher-title')).not.toBeNull();
     expect(localStorage.getItem(dataKey(current))).toBe('original note');
     expect(removeCachedApp).not.toHaveBeenCalled();
     expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('offers to stop the running app, after which Remove asks as it does for a stopped one', async () => {
+    localStorage.setItem(dataKey(current), 'original note');
+    await mount();
+    await startAndReturnHome();
+    await click('[aria-label="Remove Data guard test"]');
+    const stop = [...(notice()?.querySelectorAll('button') ?? [])].find((button) => button.textContent === 'Stop “Data guard test”');
+    expect(stop).toBeDefined();
+    await act(async () => stop!.click());
+    await settle();
+    expect(notice()).toBeNull();
+    expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(0);
+    await click('[aria-label="Remove Data guard test"]');
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('and its saved data from this browser'));
   });
 
   it('rejects importing into a running app before even reading the file', async () => {
@@ -155,7 +176,7 @@ describe('runtime app-data actions', () => {
     const read = vi.fn(async () => 'unused');
     await chooseImport(dataFile(current, read));
     expect(read).not.toHaveBeenCalled();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Returning Home keeps the app running');
+    expect(notice()?.textContent).toContain('its saved data is changed or removed only once it has stopped');
     expect(localStorage.getItem(dataKey(current))).toBe('original note');
   });
 
@@ -164,7 +185,7 @@ describe('runtime app-data actions', () => {
     await mount();
     await startAndReturnHome();
     await click('.softn-launcher-adopt');
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Stop “Data guard test”');
+    expect(notice()?.textContent).toContain('“Data guard test” is still running');
     expect(localStorage.getItem(dataKey(current))).toBeNull();
     expect(localStorage.getItem(dataKey(older))).toBe('older saved note');
   });
@@ -180,7 +201,7 @@ describe('runtime app-data actions', () => {
     await startAndReturnHome();
     await act(async () => finish(JSON.stringify(snapshot)));
     await settle();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Stop “Data guard test”');
+    expect(notice()?.textContent).toContain('“Data guard test” is still running');
     expect(localStorage.getItem(dataKey(current))).toBe('original note');
   });
 

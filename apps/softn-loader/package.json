@@ -25,9 +25,6 @@
     "@softn/components": "*",
     "@softn/core": "*",
     "@softn/runtime-shell": "*",
-    "@tauri-apps/plugin-dialog": "^2.6.0",
-    "@tauri-apps/plugin-fs": "^2.4.5",
-    "fflate": "^0.8.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

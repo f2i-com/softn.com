@@ -12,8 +12,8 @@ import {
   FIRST_SCREEN_WARM_MAX_BYTES,
   FIRST_SCREEN_WARM_MAX_ENTRIES,
   type BundleManifest,
-} from '../src/lib/bundleProcessor';
-import { warmFirstScreen } from '../src/lib/zipWarmup';
+} from '../src/bundleProcessor';
+import { warmFirstScreen } from '../src/zipWarmup';
 import { getXDB } from '@softn/core';
 
 afterEach(() => {
@@ -37,7 +37,7 @@ describe('bundleProcessor', () => {
     const textFiles = new Map([['ui/main.ui', '<App><logic>let n = 1;</logic><Text>{n}</Text></App>']]);
     const composed = processBundle(textFiles, manifest);
     expect(composed.source).toContain('let n = 1;');
-    await expect(loadXDBData(textFiles, manifest, `bare-${Date.now()}`)).resolves.toBeUndefined();
+    await expect(loadXDBData(textFiles, manifest, `bare-${Date.now()}`)).resolves.toBe(0);
   });
 
   it('adds missing flat XDB seeds without reviving a deleted seed', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createNativeFetch, createNativeNetFetch } from '../src/nativeNetFetch';
-import { createBundleImportResolver } from '../src/remoteImport';
+import { createImportResolver } from '@softn/runtime-shell/bundleProcessor';
 import { withheldPermissions } from '@softn/runtime-shell/consent';
 
 const granted = { permissions: { net: { enabled: true, allowed_hosts: ['api.example.com'] } } };
@@ -54,19 +54,37 @@ describe('remote imports through the native side', () => {
     const invoke = vi.fn(async () => ({ ...reply, body: 'export const x = 1;' }));
     const url = 'https://api.example.com/lib.logic';
     const withheld = withheldPermissions(granted);
-    const pending = createBundleImportResolver(new Map(), { permissionConfig: withheld, fetchImpl: createNativeFetch(withheld, invoke) });
+    const pending = createImportResolver(new Map(), withheld, { fetchImpl: createNativeFetch(withheld, invoke) });
     expect(await pending(url)).toBeNull();
     expect(invoke).not.toHaveBeenCalled();
 
-    const allowed = createBundleImportResolver(new Map(), { permissionConfig: granted, fetchImpl: createNativeFetch(granted, invoke) });
+    const allowed = createImportResolver(new Map(), granted, { fetchImpl: createNativeFetch(granted, invoke) });
     expect(await allowed(url)).toBe('export const x = 1;');
     expect(invoke).toHaveBeenCalledWith('net_fetch', { request: { url, method: 'GET', allowHttp: false, allowedHosts: ['api.example.com'] } });
   });
 
   it('treats a failed or bodiless native answer as no module', async () => {
     const invoke = vi.fn().mockResolvedValueOnce({ ok: false, status: 404, statusText: 'Not Found', body: 'missing', headers: {} }).mockResolvedValueOnce({ ok: true, status: 204, body: '', headers: {} });
-    const resolve = createBundleImportResolver(new Map(), { permissionConfig: granted, fetchImpl: createNativeFetch(granted, invoke) });
+    const resolve = createImportResolver(new Map(), granted, { fetchImpl: createNativeFetch(granted, invoke) });
     expect(await resolve('https://api.example.com/a.logic')).toBeNull();
     expect(await resolve('https://api.example.com/b.logic')).toBe('');
+  });
+
+  it('does not ask the native side for an import on this computer or its network unless the grant names the host', async () => {
+    // The loader's own copy of the import rule judged scheme and host list
+    // only, so `import "https://192.168.1.1/x.logic"` under a bare `net`
+    // went out where softn.net.fetch to the same host was refused.
+    const invoke = vi.fn(async () => ({ ...reply, body: 'let x = 1' }));
+    const bare = { permissions: { net: { enabled: true, allow_http: true } } };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolve = createImportResolver(new Map(), bare, { fetchImpl: createNativeFetch(bare, invoke) });
+    expect(await resolve('https://192.168.1.1/x.logic')).toBeNull();
+    expect(await resolve('http://localhost:8080/x.logic')).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+    warn.mockRestore();
+
+    const named = { permissions: { net: { enabled: true, allow_http: true, allowed_hosts: ['localhost'] } } };
+    const local = createImportResolver(new Map(), named, { fetchImpl: createNativeFetch(named, invoke) });
+    expect(await local('http://localhost:8080/x.logic')).toBe('let x = 1');
   });
 });

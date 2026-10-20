@@ -7,6 +7,7 @@ import { Spinner, Box, Text } from '@softn/components/minimal';
 import { ThemeProvider } from '@softn/components/theme';
 import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
+import './AppRunner.css';
 
 interface AppRunnerProps {
   /** The shell's id for this tab, so the shell can move focus into it. */
@@ -74,84 +75,6 @@ const APP_BOX_STYLE: React.CSSProperties = {
   isolation: 'isolate',
 };
 
-const appRunnerStyles = `
-  @keyframes softn-runner-fade-in {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  /* An app that failed while running. Drawn from the shared tokens, like the
-     shell's own error card; danger marks only the icon. */
-  .softn-runner-error-wrap {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100%;
-    padding: clamp(1rem, 4vw, 2rem);
-    background: var(--ink);
-    color: var(--paper);
-    font-family: var(--body);
-    animation: softn-runner-fade-in 350ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-  .softn-runner-error-card {
-    width: 100%;
-    max-width: 520px;
-    padding: clamp(1.25rem, 5vw, 1.75rem);
-    background: var(--ink-2);
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    box-shadow: var(--shadow);
-  }
-  .softn-runner-error-head { display: flex; align-items: center; gap: 0.75rem; }
-  .softn-runner-error-icon {
-    width: 32px; height: 32px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 8px; border: 1px solid var(--line); background: var(--ink-3); color: var(--danger);
-  }
-  .softn-runner-error-title { margin: 0; font-family: var(--display); font-weight: 700; font-size: 1.0625rem; letter-spacing: -0.02em; }
-  .softn-runner-error-hint { margin: 0.75rem 0 0; color: var(--dim); font-size: 0.875rem; line-height: 1.55; }
-  .softn-runner-error-detail {
-    margin: 0.875rem 0 0; padding: 0.75rem 0.875rem; border-radius: 8px;
-    background: var(--inset); color: var(--dim);
-    font-family: var(--mono); font-size: 0.78rem; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap;
-  }
-  .softn-runner-retry-btn {
-    margin-top: 1.25rem;
-    min-height: 2.5rem;
-    padding: 0 1.125rem;
-    border-radius: 8px;
-    border: 1px solid var(--paper);
-    background: var(--paper);
-    color: var(--ink);
-    font: inherit;
-    font-size: 0.875rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 160ms var(--ease, ease);
-  }
-  .softn-runner-retry-btn:hover { background: var(--invert-hover); }
-  .softn-runner-retry-btn:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
-  .softn-runner-loading {
-    animation: softn-runner-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-  /* @softn/components sizes an app root at calc(100vh - var(--softn-tab-bar-height)),
-     off the viewport rather than off this flex box, so a bar inserted above it
-     does not shrink it — it pushes the bundle's own footer that far below the
-     fold. Anything the runtime puts above the app has to be added into that
-     variable instead, and per tab: a bar in one tab must not resize another.
-
-     Neither fallback in the calc() is a guess at the bar's height.
-     --softn-chrome-base falls back to the 38px .softn-shell sets it to, for an
-     AppRunner mounted outside that shell; --softn-consent-bar-height falls back
-     to 0px, the height of a bar that is not there. The real height arrives
-     inline on the element under the identical condition that adds this class,
-     and an inline custom property beats a stylesheet one, so a per-breakpoint
-     guess here could never be read anyway — and there is no frame for one to
-     cover, because before the bar is measured the class is not applied. */
-  .softn-runner-host--consenting {
-    --softn-tab-bar-height: calc(var(--softn-chrome-base, 38px) + var(--softn-consent-bar-height, 0px));
-  }
-`;
-
 const ERROR_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <circle cx="12" cy="12" r="10" />
@@ -194,7 +117,6 @@ class RunnerErrorBoundary extends Component<
     if (this.state.error) {
       return (
         <>
-          <style dangerouslySetInnerHTML={{ __html: appRunnerStyles }} />
           <div className="softn-runner-error-wrap" role="alert">
             <RunnerErrorCard
               title="This app stopped working"
@@ -273,7 +195,6 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
           outline: 'none',
         }}
       >
-        <style dangerouslySetInnerHTML={{ __html: appRunnerStyles }} />
         <ThemeProvider followHost followSystem>
           <Box
             className="softn-runner-loading"
@@ -317,7 +238,6 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
           : null),
       }}
     >
-      <style dangerouslySetInnerHTML={{ __html: appRunnerStyles }} />
       {/* Outside ThemeProvider, and above the error boundary, so it cannot be
           mistaken for the app's own UI: the bundle picks its theme and would
           otherwise paint this bar in it. */}
