@@ -488,7 +488,7 @@ export class HostJsAdapter implements LogicEngine {
    * VM memory to take a view of. `accel.*` stays unavailable to the script, as
    * it is on an engine whose host never granted it.
    */
-  registerAccelBridge(): void {
+  async registerAccelBridge(): Promise<void> {
     /* nothing to install */
   }
 

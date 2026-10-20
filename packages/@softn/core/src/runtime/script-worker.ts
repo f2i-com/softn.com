@@ -308,7 +308,7 @@ self.onmessage = async (evt: MessageEvent) => {
       // The accelerator is a declared capability like the rest: a script that
       // did not ask for it gets a preamble whose `accel.*` throws.
       if (payload.accel === true) {
-        wasmAdapter.registerAccelBridge();
+        await wasmAdapter.registerAccelBridge();
       }
 
       // Resolve imports. The shell may already have inlined some of the logic

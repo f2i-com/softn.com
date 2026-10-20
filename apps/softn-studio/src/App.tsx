@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react';
 import { ProductBar, currentTheme, subscribeTheme } from '@softn/brand';
 import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
 import { TopBar } from './components/toolbar/TopBar';
@@ -8,13 +8,11 @@ import { BottomDrawer } from './components/layout/BottomDrawer';
 import { StatusBar } from './components/layout/StatusBar';
 import { Icon } from './components/common/Icon';
 import { Dashboard, type DashboardOutcome, type RecentEntry } from './components/layout/Dashboard';
-import { BriefWizard } from './components/brief/BriefWizard';
 import { AIChat } from './components/ai/AIChat';
 import { ProviderSetupDialog } from './components/ai/ProviderSetupDialog';
 import { needsProviderSetup } from './components/ai/AIStatusPill';
 import { PagesPanel } from './components/panels/PagesPanel';
 import { HistoryPanel } from './components/panels/HistoryPanel';
-import { SettingsPanel } from './components/panels/SettingsPanel';
 import { FilesPanel } from './components/panels/FilesPanel';
 import { MobileProjectMenu } from './components/mobile/MobileProjectMenu';
 import { SaveStatusIndicator } from './components/common/SaveStatus';
@@ -39,7 +37,6 @@ import {
   recordFilesAsMap,
   removeRecentProject,
 } from './lib/persistence';
-import { BlueprintReview } from './components/blueprint/BlueprintReview';
 import {
   hasZipSignature,
   normalizeProjectPath,
@@ -64,6 +61,13 @@ import {
   subscribeProjectClosed,
   type AutosaveController,
 } from './lib/projectSession';
+
+// Screens shown after something is chosen — a new app's brief, its blueprint,
+// the settings — load the first time they open (about 50 KB), not with the
+// dashboard. Studio's service worker installs them with everything else.
+const BriefWizard = lazy(() => import('./components/brief/BriefWizard').then((m) => ({ default: m.BriefWizard })));
+const SettingsPanel = lazy(() => import('./components/panels/SettingsPanel').then((m) => ({ default: m.SettingsPanel })));
+const BlueprintReview = lazy(() => import('./components/blueprint/BlueprintReview').then((m) => ({ default: m.BlueprintReview })));
 
 type View = 'dashboard' | 'brief' | 'editor';
 
@@ -466,7 +470,7 @@ const App: React.FC = () => {
       case 'history':
         return <HistoryPanel />;
       case 'settings':
-        return <SettingsPanel />;
+        return <Suspense fallback={null}><SettingsPanel /></Suspense>;
       case 'files':
         return <FilesPanel />;
       default:
@@ -529,7 +533,7 @@ const App: React.FC = () => {
       <div style={styles.root}>
         {bar}
         <div style={styles.fill}>
-          <BriefWizard onBack={handleBackToDashboard} onSubmit={() => setView('editor')} />
+          <Suspense fallback={null}><BriefWizard onBack={handleBackToDashboard} onSubmit={() => setView('editor')} /></Suspense>
         </div>
         {setupDialog}
       </div>
@@ -584,7 +588,7 @@ const App: React.FC = () => {
           )}
           {mobilePanel === 'settings' && (
             <div style={styles.mobilePanel}>
-              <SettingsPanel />
+              <Suspense fallback={null}><SettingsPanel /></Suspense>
             </div>
           )}
         </div>
@@ -614,14 +618,16 @@ const App: React.FC = () => {
         </div>
 
         {!blueprintApproved && blueprint && view === 'editor' && (
-          <BlueprintReview
-            onApprove={() => {
-              useWorkspaceStore.getState().setMode('design');
-              // The agent builds the app to the brief; the chat is where that shows.
-              if (buildFromBrief()) setMobilePanel('chat');
-            }}
-            onReviseBrief={() => setView('brief')}
-          />
+          <Suspense fallback={null}>
+            <BlueprintReview
+              onApprove={() => {
+                useWorkspaceStore.getState().setMode('design');
+                // The agent builds the app to the brief; the chat is where that shows.
+                if (buildFromBrief()) setMobilePanel('chat');
+              }}
+              onReviseBrief={() => setView('brief')}
+            />
+          </Suspense>
         )}
         {setupDialog}
       </div>
@@ -642,13 +648,15 @@ const App: React.FC = () => {
       </div>
       <StatusBar />
       {!blueprintApproved && blueprint && view === 'editor' && (
-        <BlueprintReview
-          onApprove={() => {
-            useWorkspaceStore.getState().setMode('design');
-            buildFromBrief();
-          }}
-          onReviseBrief={() => setView('brief')}
-        />
+        <Suspense fallback={null}>
+          <BlueprintReview
+            onApprove={() => {
+              useWorkspaceStore.getState().setMode('design');
+              buildFromBrief();
+            }}
+            onReviseBrief={() => setView('brief')}
+          />
+        </Suspense>
       )}
       {setupDialog}
     </div>

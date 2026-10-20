@@ -12,7 +12,20 @@
  */
 
 import { createElement } from 'react';
-import { UI_IMPORT_PATTERN } from '@softn/core';
+import {
+  builtinHelpers,
+  collectAllComponentTags,
+  createEphemeralXDBScope,
+  createMockNavModule,
+  createMockXDBModule,
+  createScriptRuntime,
+  getDefaultRegistry,
+  parse,
+  parseXDBFile,
+  resolveBundlePath,
+  SoftNWithXDB,
+  UI_IMPORT_PATTERN,
+} from '@softn/core';
 import { resolveProjectRelativePath } from '../projectImport';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { validateProject } from '../validator';
@@ -27,7 +40,6 @@ import { duringCheck, explainEngineStops, heardByPreview } from '../previewFault
 import { bareAssetPaths } from '../previewAssets';
 import { isLogicPath, isPagePath } from '../sourceKinds';
 import { explainUngrantedCalls } from '../declaredCapabilities';
-import * as core from '@softn/core';
 import { createRoot } from 'react-dom/client';
 
 export interface RunFunctionRequest {
@@ -146,7 +158,7 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   // Every component the page names, on every branch, loaded before it is drawn: the check
   // reads what the page shows, and a component still loading would show nothing.
   try {
-    await core.getDefaultRegistry().preload(core.collectAllComponentTags(core.parse(stripTemplateComments(composition.source))));
+    await getDefaultRegistry().preload(collectAllComponentTags(parse(stripTemplateComments(composition.source))));
   } catch {
     // A page that does not parse is reported by the render below.
   }
@@ -185,7 +197,7 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   // `<collection name="x" as="x" />` with nothing else on it. A store of this render's own,
   // in memory: it does not find the last check's records, and leaves none behind.
   const seed = buildPreviewXDBState(files).initialData;
-  const scope = core.createEphemeralXDBScope();
+  const scope = createEphemeralXDBScope();
   scope.xdb.import({ version: 1, exportedAt: new Date().toISOString(), collections: seed }, { merge: false });
 
   const host = document.createElement('div');
@@ -197,7 +209,7 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   let loaded = false;
   try {
     root.render(
-      createElement(core.SoftNWithXDB, {
+      createElement(SoftNWithXDB, {
         source: stripTemplateComments(composition.source),
         importResolver: composition.importResolver,
         logicBasePath: composition.logicBasePath,
@@ -346,7 +358,7 @@ async function parseDiagnostics(source: string): Promise<{ errors: string[]; war
   const errors: string[] = [];
   const warnings: string[] = [];
   try {
-    const doc = core.parse(source);
+    const doc = parse(source);
     for (const d of doc.diagnostics ?? []) {
       const line = `Parse ${d.severity} at line ${d.loc.line}:${d.loc.column}: ${d.message}`;
       (d.severity === 'error' ? errors : warnings).push(line);
@@ -477,16 +489,13 @@ function emitUses(path: string, source: string): string[] {
   );
 }
 
-type CoreModule = typeof import('@softn/core');
-
 /** A fresh script runtime for a composed page — the engine the preview uses — with its logic loaded. */
 async function loadPageLogic(
-  core: CoreModule,
   composition: Extract<ReturnType<typeof composePreviewProject>, { ok: true }>['composition'],
   block: { type: string; code: string } | undefined,
-  context: Parameters<CoreModule['createScriptRuntime']>[0],
-): Promise<{ runtime: ReturnType<CoreModule['createScriptRuntime']>; loaded: Awaited<ReturnType<ReturnType<CoreModule['createScriptRuntime']>['loadScript']>> }> {
-  const runtime = core.createScriptRuntime(
+  context: Parameters<typeof createScriptRuntime>[0],
+): Promise<{ runtime: ReturnType<typeof createScriptRuntime>; loaded: Awaited<ReturnType<ReturnType<typeof createScriptRuntime>['loadScript']>> }> {
+  const runtime = createScriptRuntime(
     context,
     undefined,
     `studio-agent-run-${Date.now().toString(36)}`,
@@ -503,7 +512,7 @@ async function loadPageLogic(
   }
 }
 
-function quietContext(core: CoreModule, files: Map<string, VFSFile>, logs: string[]) {
+function quietContext(files: Map<string, VFSFile>, logs: string[]) {
   const state: Record<string, unknown> = {};
   return {
     state,
@@ -519,8 +528,8 @@ function quietContext(core: CoreModule, files: Map<string, VFSFile>, logs: strin
     },
     batchSetState: (changes: Record<string, unknown>) => Object.assign(state, changes),
     data: buildPreviewXDBState(files).initialData as Record<string, never[]>,
-    xdb: core.createMockXDBModule(),
-    nav: core.createMockNavModule(),
+    xdb: createMockXDBModule(),
+    nav: createMockNavModule(),
     console: {
       log: (...args: unknown[]) => logs.push(`log: ${formatConsoleArgs(args)}`),
       error: (...args: unknown[]) => logs.push(`error: ${formatConsoleArgs(args)}`),
@@ -598,7 +607,7 @@ async function backendProblems(files: Map<string, VFSFile>): Promise<{ errors: s
   }
   // Loaded as its host loads it: a backend's top level only defines functions (a host refuses SQL outside a request).
   const logs: string[] = [];
-  const runtime = core.createScriptRuntime(quietContext(core, files, logs) as never, undefined, `studio-agent-backend-${Date.now().toString(36)}`, undefined, undefined, { mode: 'main' } as never);
+  const runtime = createScriptRuntime(quietContext(files, logs) as never, undefined, `studio-agent-backend-${Date.now().toString(36)}`, undefined, undefined, { mode: 'main' } as never);
   try {
     const loaded = await withTimeout(runtime.loadScript({ type: 'logic', code: source } as never), 10_000, 'Loading the backend');
     const defined = new Set(Object.keys(loaded.functions ?? {}));
@@ -641,7 +650,7 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
     for (const match of file.content.matchAll(UI_IMPORT)) {
       importedTags.add(match[1]);
       try {
-        const imported = core.resolveBundlePath(path, match[2]);
+        const imported = resolveBundlePath(path, match[2]);
         imports.set(match[1], imported);
         queue.push(imported);
       } catch {
@@ -650,7 +659,7 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
     }
     let doc;
     try {
-      doc = core.parse(blankTemplateComments(file.content));
+      doc = parse(blankTemplateComments(file.content));
     } catch {
       continue;
     }
@@ -665,7 +674,7 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
   // for a page looked at on its own, those of the page that imports it (previewProject.ts).
   let declared: Array<{ name: string; as: string }> = [];
   try {
-    const doc = core.parse(stripTemplateComments(composition.source));
+    const doc = parse(stripTemplateComments(composition.source));
     block = doc.logic ?? doc.script;
     declared = (doc.data?.collections ?? []).map((c) => ({ name: c.name, as: c.as }));
   } catch {
@@ -675,7 +684,7 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
   const collections = new Map<string, string>();
   for (const [path, file] of files) {
     if (!/\.xdb$/i.test(path) || typeof file.content !== 'string' || isPrivatePath(path)) continue;
-    const name = core.parseXDBFile(path, file.content).collection;
+    const name = parseXDBFile(path, file.content).collection;
     if (!collections.has(name)) collections.set(name, path);
   }
   const logic: LogicNames = { state: new Set(), functions: new Set(), computed: new Set() };
@@ -687,7 +696,7 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
       if (!heardByPreview(args)) logs.push(`error: ${formatConsoleArgs(args)}`);
     };
     try {
-      const { runtime, loaded } = await loadPageLogic(core, composition, block, quietContext(core, files, logs) as never);
+      const { runtime, loaded } = await loadPageLogic(composition, block, quietContext(files, logs) as never);
       runtime.cleanup();
       const visible = (name: string) => !name.startsWith('__');
       for (const name of Object.keys(loaded.state)) if (visible(name)) logic.state.add(name);
@@ -705,7 +714,7 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
     dataNames: declared.map((c) => c.as),
     collections,
     declared,
-    helpers: Object.keys(core.builtinHelpers),
+    helpers: Object.keys(builtinHelpers),
     python: !!composition.python,
   });
 }
@@ -730,7 +739,7 @@ async function ownParseErrors(files: Map<string, VFSFile>, page: string): Promis
     if (!file || typeof file.content !== 'string') continue;
     for (const match of file.content.matchAll(UI_IMPORT)) {
       try {
-        queue.push(core.resolveBundlePath(path, match[2]));
+        queue.push(resolveBundlePath(path, match[2]));
       } catch {
         // An unsafe path is the composer's to report.
       }
@@ -929,7 +938,7 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
   const { composition } = composed;
   let doc;
   try {
-    doc = core.parse(stripTemplateComments(composition.source));
+    doc = parse(stripTemplateComments(composition.source));
   } catch (err) {
     return { ok: false, text: `${target} does not parse: ${err instanceof Error ? err.message : String(err)}` };
   }
@@ -937,15 +946,15 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
   if (!block && !composition.python) return { ok: false, text: `${target} has no logic to run.` };
 
   const logs: string[] = [];
-  const context = quietContext(core, files, logs);
+  const context = quietContext(files, logs);
   const state = context.state;
   const original = console.error;
   console.error = (...args: unknown[]) => {
     if (!heardByPreview(args)) logs.push(`error: ${formatConsoleArgs(args)}`);
   };
-  let runtime: ReturnType<CoreModule['createScriptRuntime']> | null = null;
+  let runtime: ReturnType<typeof createScriptRuntime> | null = null;
   try {
-    const started = await loadPageLogic(core, composition, block, context as never);
+    const started = await loadPageLogic(composition, block, context as never);
     runtime = started.runtime;
     const { loaded } = started;
     Object.assign(state, loaded.state);

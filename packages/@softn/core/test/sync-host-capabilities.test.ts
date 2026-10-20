@@ -66,7 +66,9 @@ describe('synchronous host capabilities', () => {
 
       const adapter = await VmAdapter.create();
       try {
-        (adapter as unknown as Record<string, (...a: unknown[]) => void>)[name](...args);
+        // The accelerator's registrar is asynchronous (it loads its host); its
+        // operations are declared before it waits, and it is awaited all the same.
+        await (adapter as unknown as Record<string, (...a: unknown[]) => unknown>)[name](...args);
         expect(
           adapter.getPendingSyncCapabilities(),
           `${name} installs a bridge but declares no synchronous host ` +

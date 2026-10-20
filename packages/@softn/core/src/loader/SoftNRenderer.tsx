@@ -42,10 +42,10 @@ import {
   type PermissionConfig,
   type PersistenceFailure,
 } from '../runtime/script-runtime';
-// The off-main-thread runtime. Reached only by `?exec=worker` for now; every
-// other path routes calls through the main-thread VM. See the note where
-// `forceWorker` is decided.
-import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
+// The off-main-thread runtime, loaded behind a handle for an app that asks for
+// a worker; every other path routes calls through the main-thread VM. See the
+// note where `forceWorker` is decided.
+import { createWorkerScriptRuntimeLazily } from '../runtime/script-worker-runtime-lazy';
 import { declaredFunctionNames, standInFunctions } from '../runtime/declared-functions';
 import { logicEngineIsSandboxed, logicEngineThreads, type PythonProject } from '../runtime/vm-adapter';
 import { CapabilityProvider, type CapabilityState } from './consent-gate';
@@ -1293,7 +1293,7 @@ export function SoftNRenderer({
               },
             };
           } else if (effectiveMode === 'worker' && forceWorker) {
-            runtime = createWorkerScriptRuntime(
+            runtime = createWorkerScriptRuntimeLazily(
               formLogicContext,
               runtimePermissions,
               appId,
@@ -1337,9 +1337,13 @@ export function SoftNRenderer({
             // reclaimed only by a reload). Hosts that must run untrusted or
             // long-running code choose forceWorker, where the Worker is
             // terminated on the hard deadline and recycled on app switch.
-            if (typeof console !== 'undefined') {
-              console.warn('[SoftN] scriptExecutionMode="worker" without forceWorker runs scripts on the main thread: no wall-clock interruption and no instance recycling. Set forceWorker for untrusted or long-running code.');
-            }
+            // Reached by every app that did not ask for a worker (the
+            // manifest's `config.execution`, or `?exec=worker`), so it is the
+            // ordinary case and not a warning: printed for each app a runtime
+            // opened, it told visitors' consoles to set a flag no host can.
+            debug(
+              '[SoftN] Script on the main thread: the bundle did not ask for a worker (config.execution), so there is no wall-clock interruption and no instance recycling.'
+            );
             const mainRuntime = createScriptRuntime(
               formLogicContext,
               runtimePermissions,

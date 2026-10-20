@@ -18,7 +18,6 @@
  */
 
 import { Engine, accelGuestCall } from '../../wasm-zipp/zipp_wasm.js';
-import { createAccelHost } from './accel-host';
 import { ensureZippWasm } from './zipp-wasm-loader';
 import { flushEngineOutput } from './engine-output';
 import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
@@ -547,10 +546,17 @@ export class ZippWasmAdapter {
    * `accel-host.ts` for what keeps that safe. Granted by the `accel`
    * capability; an engine without the bridge (a rolled-back artifact) makes
    * this a no-op, and the guest's `accel.*` then throws as if denied.
+   *
+   * Asynchronous because the host and its validator (some 15 KB) load here:
+   * only the script worker installs the bridge, for a script that asked for
+   * `accel`, so the main-thread runtime of every host no longer carries them.
+   * Awaited before the script is compiled, as the worker does.
    */
-  registerAccelBridge(): void {
+  async registerAccelBridge(): Promise<void> {
     for (const op of ACCEL_SYNC_OPS) this.pendingSyncCapabilities.add(op);
     if (typeof this.wasm.setAccelBridge !== 'function') return;
+    const { createAccelHost } = await import('./accel-host');
+    if (this._disposed) return;
     const host = createAccelHost({
       memory: () => {
         if (!wasmExports) throw new Error('accel: the engine is not instantiated');

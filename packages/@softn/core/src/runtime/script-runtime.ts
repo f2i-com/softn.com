@@ -40,7 +40,7 @@ import {
   namesDeclaredBy,
   usesDocument,
 } from '../document-shell/names';
-import { LocalSpeechHost } from './local-speech';
+import type { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { appHears, clearCapturedKeys, parseCapturedKeys, setAppElement, setCapturedKeys, shouldCaptureKey } from './key-capture';
 import { deepEqual } from './vm-state';
@@ -3125,8 +3125,11 @@ export class SoftNScriptRuntime {
 
   private async handleLocalSpeech(call: PendingHostCall): Promise<unknown> {
     // The device's own voices only: nothing is downloaded, so speech asks for
-    // no permission (local-speech.ts).
-    if(!this.localSpeech)this.localSpeech=new LocalSpeechHost();
+    // no permission (local-speech.ts). Loaded at an app's first speech call.
+    if (!this.localSpeech) {
+      const { LocalSpeechHost } = await import('./local-speech');
+      this.localSpeech ??= new LocalSpeechHost();
+    }
     return this.localSpeech.handle(call.kind,call.args);
   }
 
