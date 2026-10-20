@@ -277,6 +277,35 @@ test('the nginx config maps the same pages, 404s the rest, and uses the site as 
   }
 });
 
+/**
+ * Apache sent the .gz twins as application/gzip. AddEncoding names a twin's
+ * encoding, but its type comes from the last extension that has one, and
+ * nearly every host gives .gz a type. Browsers ask for gzip rather than
+ * brotli over plain HTTP, so every page was saved as a file and every script
+ * and stylesheet refused (seen in Chromium against Apache 2.4 with Ubuntu's
+ * mime.types). And nginx refuses to start on a directive it does not know:
+ * brotli_static is a third-party module's, so it ships commented out.
+ */
+test('the twins go out under their original type, and the nginx config starts without ngx_brotli', () => {
+  const apache = rawBlock('APACHE_CONFIG');
+  const twins = apache.match(/<IfModule mod_mime\.c>\n((?:(?!<\/?IfModule).*\n)*)<IfModule mod_rewrite\.c>/);
+  assert.ok(twins, 'the twins block: mod_mime around the twin rewrite');
+  assert.match(twins[1], /^\s*RemoveType \.br \.gz$/m);
+  assert.match(twins[1], /^\s*AddEncoding br \.br$/m);
+  assert.match(twins[1], /^\s*AddEncoding gzip \.gz$/m);
+  const vary = apache.match(/<FilesMatch "([^"]+)">\n\s*Header append Vary Accept-Encoding/);
+  assert.ok(vary, 'the Vary rule');
+  for (const file of ['app-1a2b3c4d.js', 'app-1a2b3c4d.js.br', 'engine.wasm.gz', 'index.html.gz']) {
+    assert.ok(new RegExp(vary[1]).test(file), `Vary: Accept-Encoding on ${file}`);
+  }
+
+  const nginx = rawBlock('NGINX_CONFIG');
+  assert.match(nginx, /^\s*# brotli_static on;$/m);
+  assert.doesNotMatch(nginx, /^\s*brotli_static/m);
+  assert.match(nginx, /^\s*gzip_static on;$/m);
+  assert.match(nginx, /gzip_types [^;]*\btext\/javascript\b/);
+});
+
 test('the PHP router and the static-host redirects apply the same allowlist', () => {
   const guard = routerSource.match(/if \(!preg_match\('#(\^[^']+\$)#', \$path\)\) \{\n\s*http_response_code\(404\);\n\}/);
   assert.ok(guard, 'the router 404s a path outside the allowlist before serving index.html');

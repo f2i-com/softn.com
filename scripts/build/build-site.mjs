@@ -151,7 +151,7 @@ ErrorDocument 404 /index.html
 
 # Prefer the .br/.gz twins the build wrote. Brotli at the quality used here is
 # far too slow to run per request, so the win only exists if the file is already
-# on disk: the engine alone is 5.4MB raw, 1.8MB gzipped and 1.2MB brotlied.
+# on disk: the engine alone is 6.1MB raw, 2.1MB gzipped and 1.5MB brotlied.
 # mod_deflate above still covers anything without a twin.
 #
 # AddEncoding, not a Header in a FilesMatch. The first version of this set
@@ -164,10 +164,19 @@ ErrorDocument 404 /index.html
 # extension underneath, so app.js.br serves as application/javascript with
 # Content-Encoding: br, and no per-type rules are needed at all.
 #
+# RemoveType as well, or the extension underneath does not decide the type: the
+# last extension that has one does. .br has none, but nearly every host gives
+# .gz one (application/gzip in Debian's, Ubuntu's and Red Hat's mime.types,
+# application/x-gzip in Apache's own httpd.conf), so app.js.gz went out as
+# application/gzip. A browser refuses that as a script or a wasm module, and
+# saves the page itself as a file; a browser asks for brotli only over HTTPS,
+# so the whole site failed to load for everyone visiting over plain HTTP.
+#
 # Both modules are required. Without mod_mime nothing labels the encoding, and
 # serving a compressed body unlabelled is worse than not compressing, so the
 # rewrite is nested inside it rather than left to run alone.
 <IfModule mod_mime.c>
+  RemoveType .br .gz
   AddEncoding br .br
   AddEncoding gzip .gz
 
@@ -186,7 +195,8 @@ ErrorDocument 404 /index.html
 
 <IfModule mod_headers.c>
   # Caches must not hand a brotli body to a client that did not ask for one.
-  <FilesMatch "\.(?:css|js|mjs|map|wasm|svg|json|html?|txt|webmanifest)$">
+  # The same optional twin suffix as the cache rules above, for the same reason.
+  <FilesMatch "\.(?:css|js|mjs|map|wasm|svg|json|html?|txt|webmanifest)(?:\.(?:br|gz))?$">
     Header append Vary Accept-Encoding
   </FilesMatch>
 </IfModule>
@@ -314,13 +324,6 @@ server {
     # checkers act on.
     error_page 404 /index.html;
 
-    # Serve the .br/.gz twins the build wrote in preference to compressing per
-    # request: brotli at build quality is far too slow to run live, and it is
-    # where the engine's 5.4MB becomes 1.2MB rather than the 1.4MB a live
-    # brotli pass would manage. gzip_static needs nginx built with
-    # --with-http_gzip_static_module; brotli_static needs the ngx_brotli module.
-    # Both degrade to the on-the-fly gzip below when absent or when a file has
-    # no twin.
     # The directory API is PHP: hand /api/ to PHP-FPM, refuse /data/ outright,
     # and let an app's page go through the API so its <meta> tags are its own.
     location /data/ { return 404; }
@@ -348,12 +351,22 @@ server {
         include fastcgi_params;
     }
 
-    brotli_static on;
+    # Serve the .br/.gz twins the build wrote in preference to compressing per
+    # request: brotli at build quality is far too slow to run live, and it is
+    # where the engine's 6.1MB becomes 1.5MB rather than the 1.8MB a live
+    # brotli pass would manage. gzip_static is in the nginx of every
+    # distribution and of nginx.org. brotli_static is the third-party
+    # ngx_brotli module (on Debian and Ubuntu, the
+    # libnginx-mod-http-brotli-static package), and nginx refuses to start on
+    # a directive it does not know, so it waits here for that module to be
+    # loaded: uncomment it then. Until then a browser that asks for brotli is
+    # sent the .gz twin, and a file with no twin is gzipped on the fly.
+    # brotli_static on;
     gzip_static on;
 
     gzip on;
     gzip_vary on;
-    gzip_types text/plain text/css application/javascript application/json
+    gzip_types text/plain text/css text/javascript application/javascript application/json
                application/manifest+json application/wasm image/svg+xml;
 
     # Configure TLS here, or terminate HTTPS at the reverse proxy/CDN.
@@ -526,18 +539,25 @@ compression rules when available.
 
 The build writes \`.br\` and \`.gz\` twins beside every compressible file.
 They exist because the quality worth having cannot be afforded per request: the
-zipp engine is 5.4MB raw, 1.8MB gzipped, and 1.2MB at the brotli quality used
-here -- 6.3s to produce against 0.1s for a live-quality pass, which is why it
-is spent once at build time rather than per request. Serving the twin costs
-the server nothing.
+zipp engine is 6.1MB raw, 2.1MB gzipped, and 1.5MB at the brotli quality used
+here -- 8s to produce against 0.1s for a live-quality pass (1.8MB), which is
+why it is spent once at build time rather than per request. Serving the twin
+costs the server nothing.
 
-nginx needs \`gzip_static\` (built in with
-\`--with-http_gzip_static_module\`) and, for the smaller half of the win,
-the third-party \`ngx_brotli\` module for \`brotli_static\`. Apache serves them
-through the supplied rewrite, which needs \`mod_rewrite\` and \`mod_headers\`:
-without \`mod_headers\` the rewrite is skipped entirely, deliberately, because a
-brotli stream served without \`Content-Encoding\` is not a file any browser can
-read. Either way, anything with no twin still falls back to compressing live.
+Browsers ask for brotli only over HTTPS. Over plain HTTP (a site on an
+intranet address, say) they ask for gzip, and the \`.gz\` twins are what they
+are sent; keep both.
+
+Apache serves them through the supplied rewrite, which needs \`mod_rewrite\`
+and \`mod_mime\`: without \`mod_mime\` the rewrite is skipped entirely,
+deliberately, because a compressed body served without \`Content-Encoding\` is
+not a file any browser can read. nginx serves the \`.gz\` twins with
+\`gzip_static\`, which every distribution's nginx has. The \`.br\` twins need
+the third-party \`ngx_brotli\` module (on Debian and Ubuntu, the
+\`libnginx-mod-http-brotli-static\` package): once it is loaded, uncomment
+\`brotli_static on;\` in \`nginx.conf.example\`. nginx refuses to start on a
+directive it does not know, so the line ships commented out. Either way,
+anything with no twin still falls back to compressing live.
 
 Bundles are left alone: a \`.softn\` is a ZIP, so a second pass would spend CPU
 to produce a slightly larger file.
@@ -559,7 +579,8 @@ configuration, change its \`server_name\` and \`root\`, then validate and reload
     sudo systemctl reload nginx
 
 Add TLS in nginx or at your hosting proxy/CDN. HTTPS is required for service
-workers and browser permissions outside localhost.
+workers, browser permissions and cross-origin isolation (which lets a local
+language model use every CPU core) outside localhost.
 
 ## What is included
 
@@ -944,8 +965,8 @@ function writeDeepLinkFallbacks() {
  * Write .br and .gz twins beside everything worth compressing.
  *
  * Done at build time because the quality that makes this worthwhile cannot be
- * afforded per request: the zipp engine is 5.74MB raw, 1.88MB gzipped, 1.51MB
- * under the brotli quality a live pass can spare, and 1.28MB at quality 11.
+ * afforded per request: the zipp engine is 6.12MB raw, 2.05MB gzipped, 1.80MB
+ * under the brotli quality a live pass can spare, and 1.52MB at quality 11.
  * Paying that once here is the difference between the last two figures.
  *
  * Skipped: anything already compressed, which for a .softn is the whole point —
