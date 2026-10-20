@@ -1991,45 +1991,7 @@ export class Parser {
     this.expectToken(TokenType.RPAREN);
     this.reportPendingOperand();
 
-    const consequent: TemplateNode[] = [];
-
-    // Parse consequent
-    while (!this.curTokenIs(TokenType.EOF)) {
-      // Skip comments FIRST so we can properly detect #elseif/#else/#end
-      this.skipComments();
-
-      if (this.curTokenIs(TokenType.HASH)) {
-        const nextToken = this.peekToken;
-        if (
-          nextToken.type === TokenType.ELSE ||
-          nextToken.type === TokenType.ELSEIF ||
-          nextToken.type === TokenType.END
-        ) {
-          break;
-        }
-      }
-
-      if (this.curTokenIs(TokenType.TAG_OPEN)) {
-        this.nextToken();
-        consequent.push(...this.parseChildElement());
-      } else if (this.curTokenIs(TokenType.HASH)) {
-        const cf = this.parseControlFlow();
-        if (cf) consequent.push(cf);
-      } else if (this.curTokenIs(TokenType.EXPR_START)) {
-        consequent.push(this.parseExpressionNode());
-      } else if (this.curTokenIs(TokenType.TEXT)) {
-        consequent.push(createTextNode(this.curToken.literal, this.currentLoc()));
-        this.nextToken();
-      } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
-        // We hit a closing tag - this is unexpected in #if consequent context
-        // This means we're probably inside an element that's parsing its children
-        // Break out to let the parent element handle the closing tag
-        break;
-      } else {
-        // Skip unknown tokens (whitespace, etc.) and continue looking for #elseif/#else/#end
-        this.nextToken();
-      }
-    }
+    const consequent = this.parseBranch([TokenType.ELSE, TokenType.ELSEIF, TokenType.END]);
 
     let alternate: TemplateNode[] | IfBlock | undefined;
 
@@ -2048,35 +2010,7 @@ export class Parser {
         return { type: 'IfBlock', condition, consequent, alternate, loc };
       } else if (this.curTokenIs(TokenType.ELSE)) {
         this.nextToken();
-        alternate = [];
-
-        while (!this.curTokenIs(TokenType.EOF)) {
-          // Skip comments FIRST so we can properly detect #end
-          this.skipComments();
-
-          if (this.curTokenIs(TokenType.HASH) && this.peekToken.type === TokenType.END) {
-            break;
-          }
-
-          if (this.curTokenIs(TokenType.TAG_OPEN)) {
-            this.nextToken();
-            alternate.push(...this.parseChildElement());
-          } else if (this.curTokenIs(TokenType.HASH)) {
-            const cf = this.parseControlFlow();
-            if (cf) alternate.push(cf);
-          } else if (this.curTokenIs(TokenType.EXPR_START)) {
-            alternate.push(this.parseExpressionNode());
-          } else if (this.curTokenIs(TokenType.TEXT)) {
-            alternate.push(createTextNode(this.curToken.literal, this.currentLoc()));
-            this.nextToken();
-          } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
-            // Hit a closing tag - break to let parent handle it
-            break;
-          } else {
-            // Skip unknown tokens and continue
-            this.nextToken();
-          }
-        }
+        alternate = this.parseBranch([TokenType.END]);
       } else if (this.curTokenIs(TokenType.END)) {
         this.nextToken();
         // A following #end belongs to the parent block, not this one.
@@ -2093,6 +2027,38 @@ export class Parser {
     }
 
     return { type: 'IfBlock', condition, consequent, alternate, loc };
+  }
+
+  /**
+   * The content of a branch of a block (`#if`, `#else`, `#each`, `#empty`):
+   * elements, text, expressions and blocks inside it, up to a `#` whose word
+   * is one of `stops` (left for the caller), the end tag of the element the
+   * block is in (left for that element), or the end of the page.
+   */
+  private parseBranch(stops: readonly TokenType[]): TemplateNode[] {
+    const nodes: TemplateNode[] = [];
+    while (!this.curTokenIs(TokenType.EOF)) {
+      // Comments first, so the `#` of a stop after one is seen.
+      this.skipComments();
+      if (this.curTokenIs(TokenType.HASH) && stops.includes(this.peekToken.type)) break;
+      if (this.curTokenIs(TokenType.TAG_OPEN)) {
+        this.nextToken();
+        nodes.push(...this.parseChildElement());
+      } else if (this.curTokenIs(TokenType.HASH)) {
+        const block = this.parseControlFlow();
+        if (block) nodes.push(block);
+      } else if (this.curTokenIs(TokenType.EXPR_START)) {
+        nodes.push(this.parseExpressionNode());
+      } else if (this.curTokenIs(TokenType.TEXT)) {
+        nodes.push(createTextNode(this.curToken.literal, this.currentLoc()));
+        this.nextToken();
+      } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
+        break;
+      } else {
+        this.nextToken();
+      }
+    }
+    return nodes;
   }
 
   /**
@@ -2206,40 +2172,8 @@ export class Parser {
       this.expectToken(TokenType.EXPR_END);
     }
 
-    const body: TemplateNode[] = [];
+    const body = this.parseBranch([TokenType.EMPTY, TokenType.END]);
     let emptyFallback: TemplateNode[] | undefined;
-
-    // Parse body
-    while (!this.curTokenIs(TokenType.EOF)) {
-      // Skip comments FIRST so we can properly detect #empty/#end
-      this.skipComments();
-
-      if (this.curTokenIs(TokenType.HASH)) {
-        const nextToken = this.peekToken;
-        if (nextToken.type === TokenType.EMPTY || nextToken.type === TokenType.END) {
-          break;
-        }
-      }
-
-      if (this.curTokenIs(TokenType.TAG_OPEN)) {
-        this.nextToken();
-        body.push(...this.parseChildElement());
-      } else if (this.curTokenIs(TokenType.HASH)) {
-        const cf = this.parseControlFlow();
-        if (cf) body.push(cf);
-      } else if (this.curTokenIs(TokenType.EXPR_START)) {
-        body.push(this.parseExpressionNode());
-      } else if (this.curTokenIs(TokenType.TEXT)) {
-        body.push(createTextNode(this.curToken.literal, this.currentLoc()));
-        this.nextToken();
-      } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
-        // Hit a closing tag - break to let parent handle it
-        break;
-      } else {
-        // Skip unknown tokens and continue
-        this.nextToken();
-      }
-    }
 
     // Check for #empty
     const peekType = this.peekToken.type;
@@ -2247,40 +2181,10 @@ export class Parser {
       this.nextToken();
       this.nextToken();
 
-      emptyFallback = [];
-
-      while (!this.curTokenIs(TokenType.EOF)) {
-        // Skip comments FIRST so we can properly detect #end
-        this.skipComments();
-
-        const nextPeekType = this.peekToken.type;
-        if (this.curTokenIs(TokenType.HASH) && nextPeekType === TokenType.END) {
-          break;
-        }
-
-        if (this.curTokenIs(TokenType.TAG_OPEN)) {
-          this.nextToken();
-          emptyFallback.push(...this.parseChildElement());
-        } else if (this.curTokenIs(TokenType.HASH)) {
-          // An #if or an #each inside #empty. This branch had no rule for
-          // one and stepped over the `#`, the keyword and the header a token
-          // at a time: `#if (loading) … #else … #end` drew both of its
-          // branches, and the block's own #end was taken for the loop's.
-          const cf = this.parseControlFlow();
-          if (cf) emptyFallback.push(cf);
-        } else if (this.curTokenIs(TokenType.EXPR_START)) {
-          emptyFallback.push(this.parseExpressionNode());
-        } else if (this.curTokenIs(TokenType.TEXT)) {
-          emptyFallback.push(createTextNode(this.curToken.literal, this.currentLoc()));
-          this.nextToken();
-        } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
-          // Hit a closing tag - break to let parent handle it
-          break;
-        } else {
-          // Skip unknown tokens and continue
-          this.nextToken();
-        }
-      }
+      // An #if or an #each inside #empty is read as one (parseBranch): this
+      // branch once had a loop of its own with no rule for one, and
+      // `#if (loading) … #else … #end` drew both of its branches.
+      emptyFallback = this.parseBranch([TokenType.END]);
     }
 
     // Consume #end
