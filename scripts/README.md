@@ -13,7 +13,7 @@ that hold the repository together. Run them through `npm run …` (the root
 | `licenses/` | The third-party notices and inventory (`generate-third-party-notices.mjs`, `npm run licenses:check`) and the licence texts it adds. |
 | `demos/` | The example apps: pinning and fetching the softn-Examples release (`fetch-demos.mjs`), screenshots, and `softn-apps/`, the tooling for a folder of apps. |
 | `checks/` | Tests that hold the whole repository to something — one ZIPP release, Python in every host, the host-JavaScript engine in one place, these folders — and the CI test sharding. |
-| `lib/` | What the scripts share: the checkout's root (`paths.mjs`), running npm without a shell (`npm.mjs`), the archive writer, build information, the engine-copy checks. |
+| `lib/` | What the scripts share: the checkout's root (`paths.mjs`), running npm without a shell (`npm.mjs`), temporary folders a later run can clean up after a hard kill (`owned-temp-dir.mjs`), the archive writer, build information, the engine-copy checks. |
 | `bench/` | Performance measurement against a built site. |
 
 Every script takes the checkout's root from `lib/paths.mjs`, so a script can

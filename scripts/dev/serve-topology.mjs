@@ -18,7 +18,10 @@
  * release check, and the stand-in for the deployed .htaccess.
  *
  * The directory's state goes to a disposable directory (SOFTN_DATA_DIR),
- * created here and removed on exit, so a run starts from an empty catalogue
+ * created here and removed on exit — or, when the server was ended by a hard
+ * kill (taskkill, which is how Playwright stops it on Windows), by the next
+ * start, which removes the folders of servers that are gone
+ * (scripts/lib/owned-temp-dir.mjs). So a run starts from an empty catalogue
  * that the API seeds from the example bundles beside it, and dist/ itself is
  * never written to. The build therefore has to carry the examples:
  *
@@ -40,6 +43,7 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { repoRoot } from '../lib/paths.mjs';
+import { ownedTempDir } from '../lib/owned-temp-dir.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name) => {
@@ -85,7 +89,8 @@ async function freePort() {
 
 const port = requestedPort > 0 ? requestedPort : await freePort();
 const base = `http://${host}:${port}`;
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-topology-'));
+// A folder to keep is named without an owner, so no later start removes it.
+const dataDir = keepData ? fs.mkdtempSync(path.join(os.tmpdir(), 'softn-topology-')) : ownedTempDir('softn-topology-');
 
 // PHP's built-in server answers one request at a time unless told to fork
 // workers, and a page of the runtime asks for dozens of chunks at once.
