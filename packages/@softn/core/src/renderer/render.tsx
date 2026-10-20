@@ -432,11 +432,26 @@ export function renderNode(
 ): React.ReactNode {
   renderDepth++;
   try {
+    if (renderDepth > MAX_NESTING) {
+      if (!reportedTooDeep) {
+        reportedTooDeep = true;
+        console.warn(`[SoftN] This page nests more than ${MAX_NESTING} levels deep, elements and blocks together; what is deeper is not drawn.`);
+      }
+      return null;
+    }
     return renderNodeOfKind(node, context, registry, key);
   } finally {
     renderDepth--;
   }
 }
+
+/**
+ * How deep a page is drawn, elements and blocks together; past it, nothing.
+ * Browsers cap nesting too (Chromium's HTML parser stops at 512). Deeper,
+ * drawing ran out of stack, at about 800 levels, and the app went with it.
+ */
+const MAX_NESTING = 512;
+let reportedTooDeep = false;
 
 function renderNodeOfKind(
   node: TemplateNode,
@@ -1893,7 +1908,14 @@ function renderElement(
   }
 
   // Render non-slot children with parent key for stable keys
-  const children = renderNodes(contentNodes, childContext, registry, String(key));
+  let children = renderNodes(contentNodes, childContext, registry, String(key));
+  // What a block inside a textarea draws (`#if`, `#each`) is its text too,
+  // where textareaText above could not read it: React throws for a textarea
+  // with more than one child, and the page went with it.
+  if (FinalComponent === 'textarea' && contentNodes.length > 0) {
+    if (!('value' in props) && !('defaultValue' in props)) props.defaultValue = drawnText(children);
+    children = [];
+  }
 
   // A string tag means these props go straight to the DOM, so every name HTML
   // treats as a URL can be judged by name. A registered component gets the
@@ -1925,6 +1947,10 @@ function renderElement(
   // CSS text becomes an object first, so it is checked the way an object is
   // (see inline-style.ts for why a string reached React at all).
   if (typeof props.style === 'string') props.style = inlineStyleObject(props.style);
+  // A style that is neither CSS text nor a record of properties draws no
+  // style: a bare `<div style>`, `style={busy && {…}}` while busy is false,
+  // a number. React throws for every one of them, and the page went with it.
+  if (props.style !== undefined && props.style !== null && !isPlainObject(props.style)) delete props.style;
   // Applies to both: a registered component that spreads `style` onto its root
   // element reaches the network by exactly the same route a raw <div> does.
   withholdRemoteStyleUrls(props, egressPolicy);
@@ -2025,6 +2051,14 @@ function textOf(children: readonly React.ReactNode[]): string | undefined {
     return undefined;
   }
   return text;
+}
+
+/** All the text `drawn` holds, through the fragments and lists blocks draw: a textarea's content. */
+function drawnText(drawn: React.ReactNode): string {
+  if (typeof drawn === 'string' || typeof drawn === 'number') return String(drawn);
+  if (Array.isArray(drawn)) return drawn.map(drawnText).join('');
+  if (React.isValidElement(drawn)) return drawnText((drawn.props as { children?: React.ReactNode }).children);
+  return '';
 }
 
 /** What a condition that does not hold, or a list with nothing in it, draws. */
