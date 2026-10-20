@@ -177,7 +177,7 @@ describe('the host JavaScript engine as a logic engine', () => {
     expect(() => engine.callFunction('save', [])).toThrow(/capability denied: ls.setItem/);
     // accel compiles numeric functions over views of the VM's memory. There is
     // no VM memory here, so it is unavailable however the host is configured.
-    engine.registerAccelBridge();
+    await engine.registerAccelBridge();
     expect(() => engine.callFunction('accelerate', [])).toThrow(/accel is not available/);
     expect(slotOf(symbols, 'window')).toBeGreaterThanOrEqual(0);
     engine.dispose();
