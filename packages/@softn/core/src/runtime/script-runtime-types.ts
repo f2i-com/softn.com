@@ -129,7 +129,7 @@ export interface ScriptRuntimeOptions {
    *
    * State variables outside this set are owned by the VM: the host neither
    * reads them back nor writes them, because nothing outside the VM can
-   * observe them. See {@link SoftNScriptRuntime.partitionStateVars}.
+   * observe them. See `partitionStateVars` in script-runtime.ts.
    *
    * Omit it and every state variable is synced, which is what every host did
    * before this existed and is always correct — just slower.

@@ -2162,18 +2162,12 @@ export class SoftNScriptRuntime {
     }
   }
 
-  // ── Permission checks ──
+  // ── Permission checks (host-calls/permissions.ts), on the config as it is now ──
 
   private checkPermission(capability: string): void {
     requirePermission(this.permissionConfig, capability);
   }
 
-  /**
-   * Scheme, `allow_http` and `allowed_hosts`, judged by the one evaluator the
-   * renderer's markup sinks and the server-sync effect also use, so a host the
-   * bundle scoped itself away from is out of reach by every route rather than
-   * only by `softn.net.fetch`.
-   */
   private checkNetHost(url: string): void {
     requireNetHost(this.permissionConfig, url);
   }
