@@ -453,7 +453,7 @@ function offlineStatus(
       state: 'ready',
       label: 'Offline ready',
       title: online.includes('ai')
-        ? 'Opens without a connection. Its AI features still need one: models are downloaded.'
+        ? 'Opens without a connection, with a model it has loaded before. A model it has not loaded yet is a download.'
         : 'Opens without a connection: everything it can reach is kept in this browser.',
     };
   }

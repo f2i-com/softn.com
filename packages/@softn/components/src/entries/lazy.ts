@@ -95,6 +95,18 @@ export const lazyComponentRegistrations: Record<string, LazyComponentRegistratio
   QRReader: fromFeature('media', media, 'QRReader'),
 };
 
+/**
+ * What a component fetches later than its feature's chunk, when a page first
+ * uses it a particular way: Scene3D's model loaders, controls and effects,
+ * QRReader's decoder. A host installing an app for offline use runs these for
+ * the components the app names, so what the app may ask for later is already
+ * held; nothing else calls them.
+ */
+export const offlineExtras: Record<string, () => Promise<void>> = {
+  Scene3D: () => scene3d().then((m) => m.preloadScene3DAddons()),
+  QRReader: () => media().then((m) => m.preloadQrDecoder()),
+};
+
 /** Every name registerRuntimeComponents() registers, eager and lazy alike. */
 export const runtimeComponentNames: readonly string[] = [
   ...Object.keys(minimalComponents),

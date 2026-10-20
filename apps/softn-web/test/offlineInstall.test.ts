@@ -18,8 +18,10 @@ import {
   installAppOffline,
   moduleReferences,
   requiredFeatures,
+  AI_RUNTIME,
   SYNC_RUNTIME,
   TORCH_PACKAGE,
+  workerEntries,
   type OfflineInstallOptions,
 } from '../src/lib/offlineInstall';
 import { buildIdFromEntry, isOfflineReady } from '../src/lib/appCache';
@@ -68,6 +70,10 @@ const host = (
 ): OfflineInstallOptions => ({
   registry,
   cacheHolder: async () => true,
+  // No component fetches anything after its chunk, and the AI runtime is here,
+  // unless a test says otherwise: the real ones are Three.js and core's chunks.
+  componentExtras: () => undefined,
+  preloadAI: async () => {},
   ...extra,
 });
 
@@ -265,11 +271,28 @@ describe('installAppOffline', () => {
     pending.resolve();
   });
 
-  it('leaves AI online by design and says so', async () => {
+  it('fetches what a component reaches for later, and names the component when that fails', async () => {
     const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
-    const result = await installAppOffline(app({ capabilities: ['ai'] }), host(registry));
-    expect(result.ready).toBe(true);
-    expect(result.optionalOnline).toEqual(['ai']);
+    const asked: string[] = [];
+    const ready = await installAppOffline(
+      app(),
+      host(registry, { componentExtras: (name) => (asked.push(name), name === 'Scene3D' ? Promise.resolve() : undefined) })
+    );
+    expect(ready.ready).toBe(true);
+    expect(asked.sort()).toEqual(['LineChart', 'Scene3D']);
+    const failed = await installAppOffline(
+      app(),
+      host(registry, { componentExtras: (name) => (name === 'Scene3D' ? Promise.reject(new Error('GLTFLoader did not arrive')) : undefined) })
+    );
+    expect(failed.ready).toBe(false);
+    expect(failed.missing).toEqual(['Scene3D']);
+  });
+
+  it('starts the workers an app can start: its script worker, the sandbox its code reaches, the model worker for ai', () => {
+    expect(workerEntries({ source: '<Text>x</Text>' })).toEqual([]);
+    expect(workerEntries({ source: '<Text>x</Text>', execution: 'worker' })).toEqual(['runtime/script-worker.js']);
+    expect(workerEntries({ source: '<logic>softn.sandbox.run(code, {}, done)</logic>' })).toEqual(['runtime/sandbox-worker.js']);
+    expect(workerEntries({ source: '<Text>x</Text>', capabilities: ['ai'] })).toEqual(['runtime/model-worker.js']);
   });
 
   it('refuses to count a fetch nothing would keep', async () => {
@@ -289,6 +312,8 @@ describe('installAppOffline', () => {
     const files: Record<string, string> = {
       [`${ROOT}runtime/script-worker.js`]:
         'import{a as b}from"../chunk-A.js";import"../chunk-B.js";const later=()=>import("../lazy.js");',
+      // A module the worker imports on demand is one it may need offline.
+      [`${ROOT}lazy.js`]: 'export const later = 1;',
       // The engine glue still names zipp_wasm_bg.wasm, which is not served
       // under core-runtime/: the worker is handed the page's engine.
       [`${ROOT}chunk-A.js`]:
@@ -334,6 +359,36 @@ describe('installAppOffline', () => {
       expect(result.missing).toEqual([]);
     });
 
+    it('installs the AI runtime and the model worker for an app that asked for ai, and says a model is still a download', async () => {
+      const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
+      const model = {
+        [`${ROOT}runtime/model-worker.js`]: 'const k=new URL("./models/kernels.wasm", import.meta.url);',
+        [`${ROOT}runtime/models/kernels.wasm`]: '\0asm',
+      };
+      Object.assign(files, model);
+      try {
+        const fetch = serve();
+        const preloadAI = vi.fn(async () => {});
+        const result = await installAppOffline(
+          app({ capabilities: ['ai'] }),
+          host(registry, { fetch: fetch as unknown as typeof globalThis.fetch, baseUrl: '/web/', preloadAI })
+        );
+        expect(result.ready).toBe(true);
+        expect(result.workerAssets).toBe('installed');
+        expect(result.optionalOnline).toEqual(['ai']);
+        expect(preloadAI).toHaveBeenCalledTimes(1);
+        expect(fetch.mock.calls.map(([input]) => String(input)).sort()).toEqual(Object.keys(model).sort());
+        const failed = await installAppOffline(
+          app({ capabilities: ['ai'] }),
+          host(registry, { fetch: serve() as unknown as typeof globalThis.fetch, baseUrl: '/web/', preloadAI: async () => { throw new Error('offline'); } })
+        );
+        expect(failed.ready).toBe(false);
+        expect(failed.missing).toEqual([AI_RUNTIME]);
+      } finally {
+        for (const key of Object.keys(model)) delete files[key];
+      }
+    });
+
     it('is not needed for an app that runs on the main thread', async () => {
       const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
       const fetch = serve();
@@ -348,7 +403,7 @@ describe('installAppOffline', () => {
 });
 
 describe('moduleReferences', () => {
-  it('finds static imports, re-exports, bare imports and import.meta.url files; skips dynamic and bare', () => {
+  it('finds static imports, re-exports, bare imports, literal import()s and import.meta.url files; skips packages and other origins', () => {
     const text = [
       'import{a as b}from"../chunk-A.js";',
       "import x from './x.js';",
@@ -364,6 +419,7 @@ describe('moduleReferences', () => {
       './x.js',
       './chunk-B.js',
       '../side.js',
+      '../lazy.js',
       'engine.wasm',
     ]);
   });

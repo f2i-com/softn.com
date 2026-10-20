@@ -25,4 +25,5 @@ export { configureZippTorchSource, configureZippWasmSource, preloadZippTorch, zi
 export { configureLogicEngine, createLogicEngine, logicEngineThreads } from './vm-adapter';
 export type { LogicEngine, LogicEngineFactory, LogicEngineThreads, PythonProject } from './vm-adapter';
 export { preloadSyncRuntime } from './xdb-sync-preload';
+export { preloadAIRuntime } from './ai-runtime-preload';
 export { debug, debugEnabled } from './debug';

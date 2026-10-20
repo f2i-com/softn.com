@@ -23,6 +23,16 @@ prepareZXingModule({
   },
 });
 
+/**
+ * Fetch the decoder now rather than on the first scan, so a host's service
+ * worker holds it: an app installed for offline use scans offline.
+ */
+export async function preloadQrDecoder(init: RequestInit = {}): Promise<void> {
+  const response = await fetch(zxingReaderWasm, { credentials: 'same-origin', ...init });
+  if (!response.ok) throw new Error(`The QR decoder answered ${response.status}`);
+  await response.arrayBuffer();
+}
+
 export interface QRReaderProps {
   /** Callback fired when a QR code is detected */
   onScan?: (data: string) => void;

@@ -87,6 +87,26 @@ export const importMeshoptDecoder = cachedImport(async () => {
   return MeshoptDecoder;
 });
 
+/**
+ * Fetch every part a scene can ask for — the four loaders, the controls, the
+ * environment, SkeletonUtils, the bloom pipeline and the Meshopt decoder —
+ * so a host's service worker holds them: an app installed for offline use
+ * draws any scene offline, whatever its models turn out to be.
+ */
+export async function preloadScene3DAddons(): Promise<void> {
+  await Promise.all([
+    importGLTFLoader(),
+    importOBJLoader(),
+    importFBXLoader(),
+    importSTLLoader(),
+    importOrbitControls(),
+    importRoomEnvironment(),
+    importSkeletonUtils(),
+    importPostprocessing(),
+    importMeshoptDecoder(),
+  ]);
+}
+
 export const GLTF_DRACO = 'KHR_draco_mesh_compression';
 export const GLTF_BASISU = 'KHR_texture_basisu';
 export const GLTF_MESHOPT = 'EXT_meshopt_compression';

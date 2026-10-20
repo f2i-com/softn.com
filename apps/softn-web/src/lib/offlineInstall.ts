@@ -14,31 +14,36 @@
  * This module makes the second claim, one app at a time, while the network
  * is up. Every lazy component that any branch of the app's documents names
  * is loaded through the registry, so its chunk passes through the service
- * worker and stays in the runtime cache; the peer-sync runtime is fetched
- * when the app asked for `sync`; and for an app whose manifest runs its
- * script in a worker, the worker's files are fetched through the worker
- * asset route; for an app that declares the torch Python package, its loader
- * chunk and zipp_torch.wasm are fetched the same way. Only when all of that
- * is held does the result say `ready`.
+ * worker and stays in the runtime cache, and so is what such a component
+ * fetches later still (`offlineExtras`: Scene3D's model loaders, controls
+ * and effects, QRReader's decoder); the peer-sync runtime is fetched when
+ * the app asked for `sync`; the workers' files are fetched through the
+ * worker asset route — the script worker for an app whose manifest runs its
+ * script in one, the sandbox worker for an app whose code reaches
+ * `softn.sandbox`, the local-model worker for an app that asked for `ai`;
+ * for such an app the AI runtime's own chunks too; and for an app that
+ * declares the torch Python package, its loader chunk and zipp_torch.wasm.
+ * Only when all of that is held does the result say `ready`.
  * Nothing here imports a feature itself — every load goes through the
  * registry's own loaders — so this file adds nothing to the entry closure,
  * which test/build-graph.test.ts holds.
  *
- * What is deliberately left online: models. An app that asked for `ai`
- * downloads them from the network by design, and the AI runtime (the
- * local-model worker under core-runtime/) is not precached either, so such an app is
- * reported ready with `optionalOnline: ['ai']` — the app opens and runs
- * offline; its AI features do not.
+ * What stays a download: an AI model. The runtime that runs one is installed
+ * with the app, and a model is kept in Cache Storage the first time the app
+ * loads it, so an app reported ready with `optionalOnline: ['ai']` runs a
+ * model it has loaded before offline, and needs the network for one it has not.
  */
 
 import {
   collectAllComponentTags,
   getDefaultRegistry,
   parse,
+  preloadAIRuntime,
   preloadSyncRuntime,
   preloadZippTorch,
   type ComponentRegistry,
 } from '@softn/core';
+import { offlineExtras } from '@softn/components/lazy';
 
 export interface OfflineInstallApp {
   /** The cache record's id, which installs dedupe on. */
@@ -80,6 +85,8 @@ export interface OfflineInstallResult {
 export const SYNC_RUNTIME = 'sync-runtime';
 /** The name `missing` uses for the torch package (its loader chunk and zipp_torch.wasm). */
 export const TORCH_PACKAGE = 'torch';
+/** The name `missing` uses for the AI runtime's own chunks. */
+export const AI_RUNTIME = 'ai-runtime';
 
 /**
  * What an install reaches the world through. Every member defaults to the
@@ -92,6 +99,10 @@ export interface OfflineInstallHost {
   preloadSync?: () => Promise<void>;
   /** Fetches the torch package's loader and module; core's preloadZippTorch outside tests. */
   preloadTorch?: (init: RequestInit) => Promise<void>;
+  /** Fetches the AI runtime's chunks; core's preloadAIRuntime outside tests. */
+  preloadAI?: () => Promise<void>;
+  /** What a component fetches after its chunk, or undefined for none; @softn/components' offlineExtras outside tests. */
+  componentExtras?: (name: string) => Promise<void> | undefined;
   /** Resolves true once something will keep what is fetched: a controlling service worker. */
   cacheHolder?: () => Promise<boolean>;
   /** For the worker's files. */
@@ -167,7 +178,7 @@ async function performInstall(
     features: [],
     missing: [],
     // A worker's files are unavailable until they are seen to be there.
-    workerAssets: app.execution === 'worker' ? 'unavailable' : 'not-needed',
+    workerAssets: workerEntries(app).length > 0 ? 'unavailable' : 'not-needed',
     optionalOnline: capabilities.includes('ai') ? ['ai'] : [],
   };
 
@@ -214,6 +225,18 @@ async function performInstall(
       if (registry.getLoadState(name) !== 'loaded') result.missing.push(name);
     }
 
+    // What a loaded component fetches later still: a Scene3D's loaders for
+    // models it has not named yet, a QRReader's decoder before its first scan.
+    const extras = options.componentExtras ?? ((name: string) => offlineExtras[name]?.());
+    const pending = componentNames
+      .filter((name) => !result.missing.includes(name))
+      .map((name) => ({ name, run: extras(name) }))
+      .filter((entry): entry is { name: string; run: Promise<void> } => entry.run !== undefined)
+      .map(({ name, run }) => run.then(() => null, () => name));
+    const extrasMissing = await abortable(Promise.all(pending), signal);
+    if (extrasMissing === ABORTED) return cancelled(result);
+    for (const name of extrasMissing) if (name) result.missing.push(name);
+
     if (wantsSync) {
       const fetched = await abortable(
         (options.preloadSync ?? preloadSyncRuntime)().then(
@@ -226,10 +249,25 @@ async function performInstall(
       if (!fetched) result.missing.push(SYNC_RUNTIME);
     }
 
-    if (app.execution === 'worker') {
-      const installed = await abortable(installWorkerAssets(options), signal);
+    const entries = workerEntries(app);
+    if (entries.length > 0) {
+      const installed = await abortable(installWorkerAssets(options, entries), signal);
       if (installed === ABORTED) return cancelled(result);
       result.workerAssets = installed ? 'installed' : 'unavailable';
+    }
+
+    // The page's side of the AI runtime: the model host, the capability
+    // report and the GPU compute manager, each a chunk of its own.
+    if (capabilities.includes('ai')) {
+      const ok = await abortable(
+        (options.preloadAI ?? preloadAIRuntime)().then(
+          () => true,
+          () => false
+        ),
+        signal
+      );
+      if (ok === ABORTED) return cancelled(result);
+      if (!ok) result.missing.push(AI_RUNTIME);
     }
 
     // torch is not in the engine the shell loads; the first `import torch`
@@ -340,46 +378,61 @@ async function serviceWorkerControls(): Promise<boolean> {
 
 // ── Worker assets ────────────────────────────────────────────────────
 //
-// An app whose manifest asks for `config.execution: "worker"` runs its
-// script in core's script worker, which the shell ships as a copy of core's
-// dist under assets/core-runtime/ (scripts/core-worker-assets.mjs; the
-// worker resolves `./core-runtime/runtime/script-worker.js` against its own
-// chunk). Those files are outside the precache on purpose — the copy is
-// 5+ MiB and most apps never start a worker — and outside the hashed-chunk
-// route too, so they have their own runtime route (`softn-worker-assets`,
-// NetworkFirst, since the worker's entry keeps a stable name across builds).
-// Installing the app means fetching the worker's files through it: the
-// entry and every module it imports statically. Which files those are
-// changes with every core build, so rather than a list kept by hand the
-// served entry is read and its imports followed, the way the browser will.
-// Not the engine: the glue still names `zipp_wasm_bg.wasm` beside itself,
-// but the page posts its own compiled engine to the worker, the shell's one
-// precached copy, and there is no copy under core-runtime/ to fetch.
+// Core's workers ship in a copy of what they reach of its dist under
+// assets/core-runtime/ (scripts/core-worker-assets.mjs; a worker resolves
+// `./core-runtime/runtime/script-worker.js` against its own chunk): the
+// script worker, which runs an app whose manifest asks for
+// `config.execution: "worker"`; the sandbox worker behind
+// `softn.sandbox.run`; and the local-model worker behind `softn.ai.model`.
+// Those files are outside the precache on purpose — most apps never start a
+// worker — and outside the hashed-chunk route too, so they have their own
+// runtime route (`softn-worker-assets`, NetworkFirst, since an entry keeps a
+// stable name across builds). Installing the app means fetching its workers'
+// files through it: each entry, every module it imports, statically or by a
+// literal import(), and every file it names with URL() (the model worker's
+// modules). Which files those are changes with every core build, so rather
+// than a list kept by hand the served entry is read and its imports
+// followed, the way the browser will. Not the engine: the glue still names
+// `zipp_wasm_bg.wasm` beside itself, but the page posts its own compiled
+// engine to the worker, the shell's one precached copy, and there is no copy
+// under core-runtime/ to fetch.
 
 /** The copied core dist, relative to the shell's base. */
 const WORKER_ASSET_ROOT = 'assets/core-runtime/';
-/** The worker's entry, relative to that root. */
-const WORKER_ENTRY = 'runtime/script-worker.js';
-/** A bound on the walk: the worker is three modules today. */
-const WORKER_ASSET_LIMIT = 32;
+/** A bound on the walk: the three workers reach about twenty files today. */
+const WORKER_ASSET_LIMIT = 48;
+
+/** Code that may reach `softn.sandbox`, read from the app's composed source. */
+const SANDBOX_USE = /\bsandbox\b/;
+
+/** The workers an app can start, by their entries under the copied dist. */
+export function workerEntries(app: Pick<OfflineInstallApp, 'execution' | 'source' | 'capabilities'>): string[] {
+  const entries: string[] = [];
+  if (app.execution === 'worker') entries.push('runtime/script-worker.js');
+  if (SANDBOX_USE.test(app.source)) entries.push('runtime/sandbox-worker.js');
+  if (app.capabilities?.includes('ai')) entries.push('runtime/model-worker.js');
+  return entries;
+}
 /** The ZIPP engine, which a worker takes from the page rather than fetching. */
 const ENGINE_FILE = /\/zipp_wasm_bg\.wasm$/;
 
 const FROM_SPECIFIER = /\bfrom\s*["']([^"']+)["']/g;
 const BARE_IMPORT = /\bimport\s*["']([^"']+)["']/g;
+const DYNAMIC_IMPORT = /\bimport\(\s*["']([^"']+)["']\s*\)/g;
 const META_URL = /new\s+URL\(\s*["']([^"']+)["']\s*,\s*import\.meta\.url\s*\)/g;
 
 /**
- * The files a module names statically: `import … from '…'`, `export … from
- * '…'`, a bare `import '…'`, and `new URL('…', import.meta.url)`. Dynamic
- * `import()`s are on demand by definition and are not followed. Import
- * specifiers must be relative — a bare `react` would resolve to a file under
- * the root that does not exist — where a URL() argument may be a bare file
- * name, which is how the engine glue spells its .wasm.
+ * The files a module names: `import … from '…'`, `export … from '…'`, a
+ * bare `import '…'`, a literal `import('…')` (a worker's on-demand module is
+ * still one it may need offline, the Python adapter among them), and
+ * `new URL('…', import.meta.url)`. Import specifiers must be relative — a
+ * bare `react` would resolve to a file under the root that does not exist —
+ * where a URL() argument may be a bare file name, which is how the engine
+ * glue spells its .wasm.
  */
 export function moduleReferences(text: string): string[] {
   const refs: string[] = [];
-  for (const pattern of [FROM_SPECIFIER, BARE_IMPORT]) {
+  for (const pattern of [FROM_SPECIFIER, BARE_IMPORT, DYNAMIC_IMPORT]) {
     for (const match of text.matchAll(pattern)) {
       if (/^\.{1,2}\//.test(match[1])) refs.push(match[1]);
     }
@@ -391,18 +444,18 @@ export function moduleReferences(text: string): string[] {
 }
 
 /**
- * Fetch the worker's files so the service worker holds them. `cache:
+ * Fetch the workers' files so the service worker holds them. `cache:
  * 'reload'` so the request reaches the worker's route rather than being
  * answered from the HTTP cache, which survives no reload. True only when
  * every file in the graph came back 200.
  */
-async function installWorkerAssets(options: OfflineInstallOptions): Promise<boolean> {
+async function installWorkerAssets(options: OfflineInstallOptions, entries: readonly string[]): Promise<boolean> {
   const fetchFn = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined);
   if (!fetchFn) return false;
   const base = options.baseUrl ?? import.meta.env.BASE_URL ?? '/';
   const page = typeof location !== 'undefined' ? location.href : 'http://localhost/';
   const root = new URL(base.replace(/\/?$/, '/') + WORKER_ASSET_ROOT, page);
-  const queue = [new URL(WORKER_ENTRY, root)];
+  const queue = entries.map((entry) => new URL(entry, root));
   const seen = new Set<string>();
   while (queue.length) {
     const url = queue.shift()!;

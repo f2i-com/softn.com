@@ -6,6 +6,7 @@
  * knows it wants it.
  */
 export * from '../threed/Scene3D';
+export { preloadScene3DAddons } from '../threed/model-loaders';
 
 import { Scene3D } from '../threed/Scene3D';
 

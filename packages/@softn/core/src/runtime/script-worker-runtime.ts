@@ -63,6 +63,13 @@ export interface WorkerRuntimeOptions {
   permissionConfig?: PermissionConfig;
   bundleFileProvider?: BundleFileProvider;
   /**
+   * Where a file of the app's bundle is served from; see
+   * ScriptRuntimeOptions.assetResolver. The host calls that read the app's own
+   * files (a model shipped in the bundle, `fetch('data.json')`) run on this
+   * thread, so the resolver stays here.
+   */
+  assetResolver?: (path: string) => string;
+  /**
    * Functions the host injects into the script. The worker is handed the same
    * snapshot of primitive getter values the main-thread runtime compiles; the
    * host calls run here keep the live functions (`asset`, for audio sources).
@@ -308,7 +315,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       appId,
       importResolver,
       logicBasePath,
-      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall, netFetchHandler: options?.netFetchHandler, onAlert: options?.onAlert },
+      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall, netFetchHandler: options?.netFetchHandler, onAlert: options?.onAlert, assetResolver: options?.assetResolver },
       options?.bundleFileProvider,
       options?.externalFunctions
     );

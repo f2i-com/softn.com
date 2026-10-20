@@ -46,6 +46,7 @@ import {
 // other path routes calls through the main-thread VM. See the note where
 // `forceWorker` is decided.
 import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
+import { declaredFunctionNames, standInFunctions } from '../runtime/declared-functions';
 import { logicEngineIsSandboxed, logicEngineThreads, type PythonProject } from '../runtime/vm-adapter';
 import { CapabilityProvider, type CapabilityState } from './consent-gate';
 import { AppScopeProvider, type AppAssetResolver, type AppScope } from './app-scope';
@@ -995,6 +996,8 @@ export function SoftNRenderer({
 
         // Set when the page is to be drawn from its document from the start.
         let earlyShell: Promise<void> | null = null;
+        // What the page calls before the script has loaded (declared-functions.ts).
+        let standIns: Record<string, (...args: unknown[]) => unknown> = {};
 
         if (codeBlock && !scriptInitializedRef.current) {
           scriptInitializedRef.current = true;
@@ -1306,6 +1309,9 @@ export function SoftNRenderer({
                 netFetchHandler,
                 onAlert: showAlert,
                 bundleFileProvider,
+                // The app's own files, for the host calls that read them (a
+                // bundled model): a worker-mode app read none before.
+                assetResolver: readAsset,
                 externalFunctions: runtimeFunctions,
                 // A worker that missed its hard deadline has been terminated;
                 // the app is shown as failed rather than left frozen.
@@ -1405,6 +1411,15 @@ export function SoftNRenderer({
           }
           scriptRuntimeRef.current = runtime;
 
+          // A tap before the script has loaded — right after the app opens, or
+          // right after Allow reloads it — waits for it rather than finding no
+          // function; one made in a runtime that was replaced is let go.
+          let scriptArrived: (functions: Record<string, (...args: unknown[]) => unknown>) => void = () => {};
+          const arrived = new Promise<Record<string, (...args: unknown[]) => unknown>>((resolve) => {
+            scriptArrived = resolve;
+          });
+          standIns = standInFunctions(declaredFunctionNames(codeBlock.code || ''), arrived);
+
           // Load the script in the VM (async — compiles, runs, extracts state + functions)
           runtime
             .loadScript(codeBlock)
@@ -1412,6 +1427,7 @@ export function SoftNRenderer({
             // after the React work its result starts.
             .finally(() => perfMark('softn:vm-init:end'))
             .then((result) => {
+              scriptArrived(stale || !mountedRef.current ? {} : result.functions);
               if (stale || !mountedRef.current) return;
 
               debug('[SoftNRenderer] Script loaded successfully (VM)');
@@ -1527,6 +1543,7 @@ export function SoftNRenderer({
               }
             })
             .catch((err) => {
+              scriptArrived({});
               if (stale || !mountedRef.current) return;
               console.error('[SoftN] Error loading script:', err);
               const scriptError = err instanceof Error ? err : new Error(String(err));
@@ -1551,8 +1568,9 @@ export function SoftNRenderer({
         }
 
         // Set the document immediately (functions/state arrive asynchronously via loadScript).
-        // Clear old script functions to prevent stale closures from calling a cleaned-up
-        // runtime's vmEngine (which is null) during the gap before loadScript resolves.
+        // Replace old script functions so no stale closure calls a cleaned-up
+        // runtime's vmEngine (which is null) during the gap before loadScript
+        // resolves: with stand-ins that wait for the new one.
         // A page drawn from its document waits the moment it takes to make it.
         const showDocument = () => {
           setState((prev) => ({
@@ -1560,7 +1578,7 @@ export function SoftNRenderer({
             document: doc,
             loading: false,
             error: null,
-            scriptFunctions: codeBlock ? {} : prev.scriptFunctions,
+            scriptFunctions: codeBlock ? standIns : prev.scriptFunctions,
             scriptSyncFunctions: codeBlock ? {} : prev.scriptSyncFunctions,
             scriptComputed: codeBlock ? {} : prev.scriptComputed,
           }));

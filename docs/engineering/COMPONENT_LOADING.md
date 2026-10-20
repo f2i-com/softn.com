@@ -31,13 +31,14 @@ builds register the same way since 2026-10-20 (`registerRuntimeComponents`,
 or `ensureRuntimeComponents` in the plugin's generated modules): a preview,
 the Builder's canvas or a built app fetches a feature the first time a page
 draws it, so a page with a chart fetches the charts and a page with no
-`Scene3D` never fetches Three.js. Studio's and the Builder's service workers
-leave the same chunks out of their precache and keep them with the same
-runtime routes, from one module the three apps share
-(`scripts/on-demand-chunks.mjs`); `scripts/editor-on-demand.test.mjs` holds
-the two editors' builds to it. Measured on one build: Studio's precache went
-from 10.75 MB to 8.57 MB and the Builder's from 10.57 MB to 8.40 MB, whose
-entry fell from 2.4 MB to 1.1 MB. Studio's agent check, which reads what a
+`Scene3D` never fetches Three.js. The editors are installed whole: their
+service workers precache everything they ship (`globIgnores: []`), the
+features, Three.js and its addons, the QR decoder and the workers' files
+under `core-runtime/` included, so an installed Studio or Builder works
+offline with every feature, while a page still loads each one only when it
+draws it; `scripts/editor-offline.test.mjs` holds the two editors' builds to
+both halves. The Builder's entry fell from 2.4 MB to 1.1 MB. SoftN Web keeps
+the shell-only precache below, and installs each app it opens. Studio's agent check, which reads what a
 page shows, preloads every component the page names (on every branch) before
 it renders. The Builder's canvas draws the minimal set at once and any other
 component (a QRCode) as its stand-in until its feature has arrived.
@@ -251,15 +252,28 @@ launcher says which of the two it is promising for each app.
      which performs the same `import('./xdb-sync')` the runtime's `startSync`
      does, so the same `xdb-sync-*` chunk is fetched; it appears in
      `features` as `sync-runtime`, and in `missing` if the import fails;
-   - for an app whose manifest sets `config.execution: "worker"`, fetches the
-     worker's files with `cache: 'reload'` through the `softn-worker-assets`
-     route: the entry `assets/core-runtime/runtime/script-worker.js`, every
-     module it imports statically (read from the served text and followed,
-     the way the browser will — the names change with every core build),
-     and the engine's `.wasm`, which the glue names with
-     `new URL('…', import.meta.url)`. Dynamic `import()`s inside the worker
-     are not followed; references that leave `core-runtime/` are not either.
+   - runs each loaded component's `offlineExtras` (`@softn/components/lazy`):
+     what it fetches later than its chunk, when a page first uses it a
+     particular way — every Three.js loader, the controls, the environment,
+     the bloom pipeline and the Meshopt decoder for a `Scene3D`, whatever
+     models it will be given; the decoder for a `QRReader`. A component
+     whose extras fail is listed under `missing`;
+   - fetches the workers' files the app can start (`workerEntries`) with
+     `cache: 'reload'` through the `softn-worker-assets` route: the script
+     worker for an app whose manifest sets `config.execution: "worker"`,
+     the sandbox worker for one whose code names `sandbox`, the local-model
+     worker for one that asked for `ai`. Each entry under
+     `assets/core-runtime/runtime/`, every module it imports, statically or
+     by a literal `import()` (read from the served text and followed, the
+     way the browser will — the names change with every core build), and
+     every file it names with `new URL('…', import.meta.url)` (the model
+     worker's modules). Not the engine, which the page posts every worker;
+     references that leave `core-runtime/` are not followed either.
      `workerAssets` is `installed`, `unavailable` or `not-needed`;
+   - for an app that asked for `ai`, calls core's `preloadAIRuntime()`
+     (`packages/@softn/core/src/runtime/ai-runtime-preload.ts`): the model
+     host, the capability report and the GPU compute manager, each the chunk
+     the runtime's own `import()` fetches; `ai-runtime` in `missing` if it fails;
    - reports `ready` only when `missing` is empty and the worker assets, if
      needed, are installed. The result is `{ ready, features, missing,
      workerAssets, optionalOnline, error? }`, marked `softn:offline-install:start`/`:end`.
@@ -278,17 +292,18 @@ launcher says which of the two it is promising for each app.
    release's — and is installed again the next time the app opens online.
    One install runs per record at a time; a second open joins the first.
 
-   **AI stays online by design.** The models an app requesting `ai` uses are
-   downloads, so the AI runtime (the model host and the local-model worker
-   under `core-runtime/`) is neither precached nor installed per app. Such an app is
-   reported ready with `optionalOnline: ['ai']`: it opens and runs offline,
-   and its AI features need a connection. Server storage (`storage`) and
+   **An AI model stays a download.** The runtime that runs one is installed
+   with the app, and a model is kept in Cache Storage (`softn-models-v1`)
+   the first time the app loads it, so an app that asked for `ai` is
+   reported ready with `optionalOnline: ['ai']`: it runs offline with a
+   model it has loaded before, a model shipped in its bundle among them, and
+   needs a connection for one it has not. Server storage (`storage`) and
    the manifest's `config.server` sync are network features by nature and
    are not installed either; the shell precaches neither runtime.
 
 The launcher shows one of three words on every cached app's card, as text
 rather than a colour: **Offline ready** (the record's install succeeded
-against this build; the tooltip notes when AI stays online),
+against this build; the tooltip notes when a model may still be a download),
 **Installing…** (an install is running for it now), or **Needs connection**
 (never installed, the install failed or was cut short, or it was installed
 against an earlier build). The bundle bytes are in IndexedDB in every case;
