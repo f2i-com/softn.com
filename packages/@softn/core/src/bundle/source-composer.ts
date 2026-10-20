@@ -774,16 +774,17 @@ export function composeBundleSource(
     entryFragments[0].basePath;
 
   // Which language the logic is in, from the file names alone. A bundle whose
-  // logic is partly each is refused: the two run in separate engines with no
-  // shared scope, so concatenating them would silently drop one, and running
-  // both would need a message model between them that v1 does not have.
+  // logic is partly each is refused: one engine reads both languages, but an
+  // app's logic is compiled as one of them, with no scope the other could
+  // share, so concatenating them would silently drop one, and running both
+  // would need a message model between them that v1 does not have.
   const pythonFragments = ordered.filter((fragment) => fragment.python);
   const javascriptFragments = ordered.filter(
     (fragment) => !fragment.python && fragment.code.trim() !== ''
   );
   if (pythonFragments.length > 0 && javascriptFragments.length > 0) {
     throw new Error(
-      'This app mixes Python and JavaScript logic. They run in separate engines and cannot share names, so an app uses one language for all of its logic.'
+      'This app mixes Python and JavaScript logic. An app’s logic is read as one language, so the two could not share names: an app uses one language for all of its logic.'
     );
   }
 

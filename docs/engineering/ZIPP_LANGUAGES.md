@@ -49,7 +49,8 @@ inliner can reindent a block and change what it means — so Python lives in a
 file the bundle carries verbatim.
 
 An app uses one language for all of its logic. A bundle whose logic is partly
-each is refused: the two run in separate engines and cannot share names.
+each is refused: one engine reads both languages, but an app's logic is
+read as one of them, so the two could not share names.
 
 ### The contract
 
