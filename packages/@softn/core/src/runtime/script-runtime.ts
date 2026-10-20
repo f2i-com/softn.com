@@ -3129,6 +3129,11 @@ export class SoftNScriptRuntime {
     if (!this.localSpeech) {
       const { LocalSpeechHost } = await import('./local-speech');
       this.localSpeech ??= new LocalSpeechHost();
+      // The app may have closed while the module loaded, when cleanup() had no
+      // host to stop: this one stops at once, so it answers as a closed app's
+      // host does and speaks for nobody (nor holds the device's voice from
+      // the apps still open).
+      if (this.disposed) this.localSpeech.dispose();
     }
     return this.localSpeech.handle(call.kind,call.args);
   }

@@ -48,6 +48,21 @@ it('system speech lists only local voices and does not cancel another owner',asy
  expect(second.stop('')).toMatchObject({stopped:false});expect(synthesis.cancel).not.toHaveBeenCalled();first.stop('');expect(await start).toMatchObject({started:false});expect(synthesis.cancel).toHaveBeenCalledOnce();first.dispose();second.dispose();
 });
 
+// The speech host loads at an app's first speech call. An app closed while it
+// loaded had nothing for cleanup() to stop, and the host made afterwards spoke
+// for it, holding the device's voice from every other app until it finished.
+it('says nothing for an app that closed while its speech was loading',async()=>{
+ const {synthesis,Utterance}=device();
+ vi.stubGlobal('speechSynthesis',synthesis);vi.stubGlobal('SpeechSynthesisUtterance',Utterance);
+ try{
+  const r=Object.create(SoftNScriptRuntime.prototype);r.permissionConfig=null;r.localSpeech=null;
+  const answer=r.executeHostCall({kind:'audio.speak',id:2,args:['{"text":"Still there?"}']});
+  r.disposed=true;
+  expect(await answer).toMatchObject({started:false,reason:'runtime-closed'});
+  expect(synthesis.speak).not.toHaveBeenCalled();
+ }finally{vi.unstubAllGlobals();}
+});
+
 describe('speech needs no AI permission now that it downloads nothing',()=>{
  const call={kind:'audio.loadSpeechModel',id:1,args:['{"provider":"kokoro"}']};
  it('answers a neural load for any app, and speaks without ai',async()=>{
