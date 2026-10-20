@@ -113,7 +113,9 @@ if ($real !== false && $rootReal !== false && ($real === $rootReal || str_starts
     }
     if (is_dir($real) && is_file("$real/index.html")) {
         if (!str_ends_with($path, '/')) {
-            header("Location: $path/", true, 308);
+            // One leading slash: `//evil.example/..`, which Windows' realpath()
+            // folds into a folder here, is a link to another site in Location.
+            header('Location: /' . ltrim($path, '/\\') . '/', true, 308);
             return true;
         }
         header('Content-Type: text/html; charset=utf-8');

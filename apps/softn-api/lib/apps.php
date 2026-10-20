@@ -66,6 +66,9 @@ final class Apps
     private static function uniqueSlug(string $base): string {
         $rows = Catalog::all(); $slug=$base;
         for ($n=2;$n<1000;$n++) { if (!isset($rows[$slug]) && !is_dir(Catalog::path($slug))) return $slug; $slug=substr($base,0,44).'-'.$n; }
+        // Past a thousand of one name (every name with no Latin letter in it is
+        // `app`), an ending of its own: the thousandth such app could not be published.
+        for ($i=0;$i<20;$i++) { $slug=substr($base,0,40).'-'.bin2hex(random_bytes(3)); if (!isset($rows[$slug]) && !is_dir(Catalog::path($slug))) return $slug; }
         throw new ApiError(500,'Could not find a free name for the app.');
     }
 
@@ -380,7 +383,8 @@ final class Apps
         // parent that is hidden is a 404 here, not after the bundle is on disk.
         $rootSlug = null;
         if ($parentSlug !== null) {
-            $parent = self::row($parentSlug);
+            // One with a bundle: a linked app has nothing to remix, as the remix route says.
+            $parent = self::requireBundle($parentSlug);
             $rootSlug = is_string($parent['root_slug']) && $parent['root_slug'] !== '' ? $parent['root_slug'] : $parent['slug'];
         }
         $editKey = $source === 'seed' ? null : bin2hex(random_bytes(20));
@@ -497,6 +501,9 @@ final class Apps
         if(!$byAdmin&&$promised!==null)self::refuseChangedPolicies($promised,$info);
         $dir=self::dir($slug);$file="v$next.softn";
         $staged=self::stageBundle($bundlePath,$dir);
+        // The icon is written before the record, so a version that fails to be
+        // recorded puts back the icon it replaced: it served the failed one.
+        $icons=self::iconFiles($dir);
         try {
             $icon=self::storeIcon($dir,$info['icon'])??$row['icon'];$now=time();
             $doc['versions'][]=['slug'=>$slug,'version'=>$next,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>Text::clean($notes,400,true),'created_at'=>$now];
@@ -518,6 +525,9 @@ final class Apps
                 try { Catalog::put($slug,$before); } catch (Throwable $undo) { error_log("softn-api: $slug records version $next, whose bundle could not be stored: " . $undo->getMessage()); }
                 throw $e;
             }
+        } catch (Throwable $e) {
+            self::restoreIcons($dir,$icons);
+            throw $e;
         } finally {
             if(is_file($staged))@unlink($staged);
         }
@@ -700,6 +710,24 @@ final class Apps
     }
 
     /** @param array{0: string, 1: string}|null $icon */
+    /** @return array<string, string> The icon files an app's folder holds, by path, with their bytes (restoreIcons). */
+    private static function iconFiles(string $dir): array
+    {
+        $files = [];
+        foreach (glob("$dir/icon.*") ?: [] as $file) {
+            $bytes = @file_get_contents($file);
+            if ($bytes !== false) $files[$file] = $bytes;
+        }
+        return $files;
+    }
+
+    /** @param array<string, string> $files The icon files as iconFiles found them, put back. */
+    private static function restoreIcons(string $dir, array $files): void
+    {
+        foreach (glob("$dir/icon.*") ?: [] as $file) if (!isset($files[$file])) @unlink($file);
+        foreach ($files as $file => $bytes) @file_put_contents($file, $bytes, LOCK_EX);
+    }
+
     private static function storeIcon(string $dir, ?array $icon): ?string
     {
         if ($icon === null) return null;
@@ -875,7 +903,8 @@ final class Categories
         if ($id === '') $id = 'c-' . substr(hash('sha256', mb_strtolower($name)), 0, 12);
         $rows=Catalog::categories();
         foreach($rows as $r)if($r['id']===$id||mb_strtolower($r['name'])===mb_strtolower($name))return self::one($r['id']);
-        if(count($rows)>=200)throw new ApiError(400,'There are already as many categories as the directory will hold.');
+        // Only those that show count: hidden ones filled the room for good, with no way to delete them.
+        if(count(array_filter($rows,static fn($r)=>($r['status']??'')!=='hidden'))>=200)throw new ApiError(400,'There are already as many categories as the directory will hold.');
         $emoji = Text::clean($emoji, 4);
         if ($emoji !== '' && !preg_match('/^\p{So}\p{M}*(\x{200D}\p{So}\p{M}*)*$/u', $emoji)) $emoji = '';
         $rows[$id]=['id'=>$id,'name'=>$name,'description'=>Text::clean($description,120),'emoji'=>$emoji?:'🏷️','status'=>'suggested','sort'=>500,'created_at'=>time()];Catalog::saveCategories($rows);

@@ -169,6 +169,9 @@ try {
     // A storage body is decoded here the way its handler needs it (the text
     // is not kept to decode twice): an object stays an object. See Json.
     if ($req->method !== 'GET' && $req->method !== 'HEAD' && $req->contentType() === 'application/json' && $req->bodyLimit() === Limits::json()) $req->json($handler === 'storage');
+    // A form body PHP has already read is held to the same limit: sent as a
+    // form, a 2 MB comment was taken where the same body as JSON was a 413.
+    elseif ($req->method !== 'GET' && $req->method !== 'HEAD' && $req->bodyLimit() === Limits::json()) $req->admitForm();
     $response = handle($handler, $args, $req);
     Catalog::release();
     server_timing();
@@ -445,7 +448,7 @@ function handle(string $handler, array $args, Request $req): Response
             // (Storage::leaveCatalogue): a count over a large store used to
             // hold the directory's one lock for every app page. Who is
             // asking is settled first, since that is the catalogue's to say.
-            $app['storage'] = Storage::summaryOutsideCatalogue($slug, Storage::actor($req, $slug));
+            $app['storage'] = Storage::summaryOutsideCatalogue($slug, Storage::actor($req, $slug), Config::limitKey($req->ip));
             return Response::json(['ok' => true, 'app' => $app]);
         }
 
@@ -665,6 +668,9 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'storageSummary': {
             $slug = storage_app($args[0]);
+            // A read of the store, counted as Storage::run counts one: a count
+            // over a large store ran as often as it was asked for.
+            Db::rateLimit('storageRead', Config::limitKey($req->ip) . "|$slug");
             $viewer = Storage::actor($req, $slug);
             Storage::leaveCatalogue();
             return Response::json(['ok' => true, 'storage' => Storage::summary($slug, $viewer)]);

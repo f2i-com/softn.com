@@ -106,17 +106,23 @@ final class Storage
         Catalog::release();
     }
 
-    /** An app's storage summary as `$viewer` (see `actor`) may see it, read after the catalogue has been let go. */
-    public static function summaryOutsideCatalogue(string $slug, ?array $viewer = null): array
+    /**
+     * An app's storage summary as `$viewer` (see `actor`) may see it, read
+     * after the catalogue has been let go. With `$reader` (the visitor's
+     * limit key) it is counted as a read of the store, as `run` counts one;
+     * past the limit the summary is unavailable and the page still answered.
+     */
+    public static function summaryOutsideCatalogue(string $slug, ?array $viewer = null, ?string $reader = null): array
     {
         self::leaveCatalogue();
         // An app's page is not its storage: a store that will not open
         // (see Db::open) is reported as unavailable rather than taking the
         // app's detail, and the page built on it, down with it.
         try {
+            if ($reader !== null) Db::rateLimit('storageRead', "$reader|$slug");
             return self::summary($slug, $viewer);
         } catch (ApiError | PDOException $e) {
-            error_log("softn-api: the storage of $slug could not be summarised: " . $e->getMessage());
+            if (!($e instanceof ApiError && $e->status === 429)) error_log("softn-api: the storage of $slug could not be summarised: " . $e->getMessage());
             return ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0, 'diskBytes' => 0, 'unavailable' => true];
         }
     }

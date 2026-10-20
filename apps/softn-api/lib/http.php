@@ -448,6 +448,22 @@ final class Request
     }
 
     /**
+     * A form body (urlencoded or multipart) held to this route's limit. PHP
+     * has read it before the script starts, so this cannot spare the reading;
+     * it refuses what was read past the limit, by the length declared or, with
+     * none declared, by what the form held.
+     */
+    public function admitForm(): void
+    {
+        $this->admitDeclared($this->bodyLimit, 'The request body');
+        $size = 0;
+        array_walk_recursive($_POST, static function ($value, $key) use (&$size): void {
+            $size += strlen((string) $key) + strlen(is_scalar($value) ? (string) $value : '');
+        });
+        if ($size > $this->bodyLimit) throw self::tooLarge($this->bodyLimit);
+    }
+
+    /**
      * php://input in bounded pieces, stopping one byte past `$limit` and
      * refusing there — the rest of an oversized body is never read, whatever
      * the client declared. With `$sink`, each piece goes to the callback
@@ -1077,8 +1093,10 @@ final class Text
     {
         if ($value === null) return '';
         $value = str_replace(["\r\n", "\r"], "\n", $value);
-        $value = preg_replace($multiline ? '/[^\P{C}\n\t]/u' : '/\p{C}/u', '', $value) ?? '';
+        // Made valid UTF-8 first: the pattern below gives null for any invalid
+        // byte, and one `%FF` in a name emptied the whole field.
         if (!mb_check_encoding($value, 'UTF-8')) $value = mb_convert_encoding($value, 'UTF-8', 'UTF-8');
+        $value = preg_replace($multiline ? '/[^\P{C}\n\t]/u' : '/\p{C}/u', '', $value) ?? '';
         $value = trim($value);
         if (mb_strlen($value) > $max) $value = mb_substr($value, 0, $max);
         return $value;

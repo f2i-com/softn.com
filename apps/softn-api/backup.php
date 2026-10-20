@@ -235,6 +235,8 @@ final class Backup
         if (in_array($rel, ['ratelimits.json', 'ratelimits.lock', 'seed.lock', 'seeded'], true)) return true;
         if ($rel === 'cache' && $isDir) return true;
         if (preg_match('/^\.(json|upload|retired)-/', $name)) return true;
+        // On Windows tempnam() keeps three characters of its prefix: `.jsA1B2.tmp`, `.upC3D4.tmp`.
+        if (preg_match('/^\.(js|up|re)[0-9a-f]+\.tmp$/i', $name)) return true;
         if (str_ends_with($name, '-shm') || str_ends_with($name, '-journal')) return true;
         return false;
     }
