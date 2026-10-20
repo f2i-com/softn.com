@@ -32,6 +32,7 @@ import {
   DOCUMENT_NAMED_TAGS,
   TOP_LAYER_ATTRIBUTES,
   URL_ATTRIBUTES,
+  dropsFromMarkup,
 } from './sanitize-html';
 import { cssPropertyName, inlineStyleObject } from './inline-style';
 import { isCallbackProp } from '../runtime/drawn-functions';
@@ -682,24 +683,13 @@ function ShellBody({ shell, template, context, registry }: ShellProps & { templa
  * is a function SoftN made (`onClick` from `@click` or `onclick="…"`); one
  * given as text (`ONCLICK="…"`, or `onclick` from the code a page runs) is
  * React's to write as an attribute wherever it treats the element as custom,
- * and `is="…"` makes any element custom, so the browser would run it. Both
- * go: `is`, and every `on…` that is not a function.
+ * so every `on…` that is not a function goes; and what dropsFromMarkup
+ * names, as the HTML sanitizer takes it off too.
  */
 function dropCodeAttributes(props: SoftNProps): void {
   for (const name of Object.keys(props)) {
     const lower = name.toLowerCase();
-    if (lower === 'is' || (lower.startsWith('on') && typeof props[name] !== 'function')) delete props[name];
-    // Requests the browser makes on its own, past the network permission:
-    // `ping` beacons each URL in its list on a click, `attributionsrc`
-    // reports to its URL, and SVG's `xml:base` moves where every relative
-    // reference below it resolves.
-    else if (lower === 'ping' || lower === 'attributionsrc' || lower === 'xml:base' || lower === 'xmlbase') delete props[name];
-    // An element answers to its `id` as a global of the page's window, and
-    // the host's own globals are `__` names: `<div id="__TAURI__">` took the
-    // page for the desktop runtime.
-    else if ((lower === 'id' || lower === 'name') && typeof props[name] === 'string' && (props[name] as string).startsWith('__')) {
-      delete props[name];
-    }
+    if ((lower.startsWith('on') && typeof props[name] !== 'function') || dropsFromMarkup(lower, props[name])) delete props[name];
   }
 }
 

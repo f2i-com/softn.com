@@ -299,7 +299,7 @@ export const rewriteCssUrls = rewriteCssResources;
  */
 export type MarkupUrlJudge = (url: string, attribute: string, tag: string) => boolean;
 
-/** Attributes whose value the browser will fetch or navigate to. */
+/** Attributes whose value the browser will fetch or navigate to. (`ping` never reaches the page: see dropsFromMarkup.) */
 export const URL_ATTRIBUTES = new Set([
   'href',
   'src',
@@ -309,10 +309,31 @@ export const URL_ATTRIBUTES = new Set([
   'poster',
   'cite',
   'data',
-  'ping',
   'background',
   'xlink:href',
 ]);
+
+/**
+ * Whether the attribute `name` (in lower case), with `value`, never reaches
+ * the page from an app's markup, drawn by the renderer or sanitized from HTML
+ * (a rich-text value, an icon's SVG): one rule for both, so neither lets
+ * through what the other takes off.
+ *
+ * - `is` makes any element a custom one, whose `on…` text React writes and
+ *   the browser runs.
+ * - Requests the browser makes on its own, past the network permission:
+ *   `ping` beacons each URL in its list on a click (judged as one URL,
+ *   `ping="/a https://…"` reached any host), `attributionsrc` reports to its
+ *   URL, and SVG's `xml:base` moves where every relative reference below it
+ *   resolves.
+ * - An `id` or `name` starting `__`: an element answers to its `id` as a
+ *   global of the page's window, and the host's own globals are `__` names
+ *   (`<div id="__TAURI__">` took the page for the desktop runtime).
+ */
+export function dropsFromMarkup(name: string, value: unknown): boolean {
+  if (name === 'is' || name === 'ping' || name === 'attributionsrc' || name === 'xml:base' || name === 'xmlbase') return true;
+  return (name === 'id' || name === 'name') && typeof value === 'string' && value.startsWith('__');
+}
 
 /**
  * Attributes that put an element in the browser's top layer without a script.
@@ -451,6 +472,17 @@ const RICH_TEXT_TAGS = new Set([
  */
 const WITHHELD_PREFIX = 'data-softn-withheld-';
 
+/** `element` made again in its place, with its attributes but `is`, and its children. */
+function remadeWithoutIs(element: Element): Element {
+  const plain = element.ownerDocument.createElementNS(element.namespaceURI, element.localName);
+  for (const attr of Array.from(element.attributes)) {
+    if (attr.name.toLowerCase() !== 'is') plain.setAttributeNS(attr.namespaceURI, attr.name, attr.value);
+  }
+  while (element.firstChild) plain.appendChild(element.firstChild);
+  element.replaceWith(plain);
+  return plain;
+}
+
 /**
  * Strip everything outside `allowed` from a fragment of markup.
  *
@@ -471,6 +503,11 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
   const DROP_WHOLE = new Set(['script', 'style', 'iframe', 'object', 'embed', 'template', 'link']);
 
   const walk = (node: Element): void => {
+    // An element made with `is` is written back out with it whatever its
+    // attributes say (HTML serializes an element's `is` value), so taking the
+    // attribute off kept it: one that has it is made again without it.
+    if (node.hasAttribute('is')) node = remadeWithoutIs(node);
+
     // Snapshot first: the loop reparents and removes nodes as it goes.
     for (const child of Array.from(node.children)) walk(child);
 
@@ -499,7 +536,7 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
         node.removeAttribute(attr.name);
         continue;
       }
-      if (TOP_LAYER_ATTRIBUTES.has(name)) {
+      if (TOP_LAYER_ATTRIBUTES.has(name) || dropsFromMarkup(name, attr.value)) {
         node.removeAttribute(attr.name);
         continue;
       }
