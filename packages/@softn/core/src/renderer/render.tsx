@@ -731,20 +731,6 @@ function classText(value: unknown, depth = 0): string {
 }
 
 /**
- * What `:bind` holds on a component whose state is not called `value`.
- *
- * `:bind` gives a control the variable as `value` and writes back what its
- * `onChange` reports. A Modal has neither: it is `open`, and it asks to be
- * shut through `onClose`. Bound the ordinary way it was handed a `value` it
- * does not read and an `onChange` it never calls, so every page that opens
- * a dialog carried a function whose whole body was `showAdd = false`.
- *
- * `prop` is given the variable (as a plain true or false where `flag`);
- * each callback in `writes` writes it, with the callback's own argument or
- * with the value fixed here. By tag name, as the checkable controls are:
- * a component is registered lazily and cannot be asked before it is drawn.
- */
-/**
  * The components a `selectTo="path"` is wired for: the chosen row is written
  * to `path` from their `onSelect` (see renderElement). By tag name, as
  * BOUND_STATE is, and only where a component declares the prop.
@@ -777,6 +763,20 @@ function writeStateAt(path: string, value: unknown, context: SoftNRenderContext)
   }
 }
 
+/**
+ * What `:bind` holds on a component whose state is not called `value`.
+ *
+ * `:bind` gives a control the variable as `value` and writes back what its
+ * `onChange` reports. A Modal has neither: it is `open`, and it asks to be
+ * shut through `onClose`. Bound the ordinary way it was handed a `value` it
+ * does not read and an `onChange` it never calls, so every page that opens
+ * a dialog carried a function whose whole body was `showAdd = false`.
+ *
+ * `prop` is given the variable (as a plain true or false where `flag`);
+ * each callback in `writes` writes it, with the callback's own argument or
+ * with the value fixed here. By tag name, as the checkable controls are:
+ * a component is registered lazily and cannot be asked before it is drawn.
+ */
 const BOUND_STATE: Record<string, { prop: string; flag?: boolean; writes: Array<[callback: string, fixed?: unknown]> }> = {
   Modal: { prop: 'open', flag: true, writes: [['onClose', false]] },
   Drawer: { prop: 'open', flag: true, writes: [['onClose', false]] },
@@ -1625,12 +1625,6 @@ function renderExpression(
 }
 
 /**
- * Render an if block
- *
- * Uses unique keys to force React to completely unmount and remount content
- * when switching between conditional branches.
- */
-/**
  * Extract a descriptive identifier from a condition expression
  * Used to generate more unique keys for conditional branches
  */
@@ -1657,6 +1651,12 @@ function getConditionIdentifier(condition: Expression): string {
   return 'cond';
 }
 
+/**
+ * Render an if block
+ *
+ * Uses unique keys to force React to completely unmount and remount content
+ * when switching between conditional branches.
+ */
 function renderIfBlock(
   node: IfBlock,
   context: SoftNRenderContext,
