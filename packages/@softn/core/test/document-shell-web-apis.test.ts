@@ -63,7 +63,12 @@ async function page(code: string, seed: object = SEED) {
   await engine.initializeScript(shellPrelude(JSON.stringify(seed)) + '\n' + code);
   const run = engine;
   return {
-    take: () => (run.callFunction(SHELL_TAKE, []) as Op[] | null) ?? [],
+    // Every page of what the code changed, as the host reads it (takeDocumentChanges).
+    take: () => {
+      const all: Op[] = [];
+      for (let page = run.callFunction(SHELL_TAKE, [false]) as Op[] | null; page; page = run.callFunction(SHELL_TAKE, [false]) as Op[] | null) all.push(...page);
+      return all;
+    },
     sync: (changes: unknown[]) => run.callFunction(SHELL_SYNC, [changes]),
     call: (name: string, ...args: unknown[]) => run.callFunction(name, args),
   };
@@ -300,6 +305,125 @@ describe('pointers and dragging', () => {
     expect(event(20, 'dragover') & 1).toBe(1);
     event(20, 'drop');
     expect(doc.call('report')).toEqual(['pen 7 true', 'dropped 7 text/plain']);
+  });
+});
+
+describe('the window\u2019s helpers, as a browser has them', () => {
+  // TextDecoder threw on bytes that are not UTF-8 (a RangeError past
+  // U+10FFFF), kept a byte order mark, read too-long and surrogate
+  // sequences as characters, and took no fatal, ignoreBOM or stream.
+  it('reads UTF-8 as the Encoding Standard reads it', async () => {
+    const doc = await page(`
+      function hex(s) { return Array.from(s).map((c) => c.codePointAt(0).toString(16)).join(' '); }
+      function run() {
+        const d = new TextDecoder();
+        const bytes = (list) => new Uint8Array(list);
+        const streamed = new TextDecoder();
+        let fatal = 'read';
+        try { new TextDecoder('utf-8', { fatal: true }).decode(bytes([0xff])); } catch (e) { fatal = e.name; }
+        return [
+          hex(d.decode(bytes([0xef, 0xbb, 0xbf, 0x61]))), hex(d.decode(bytes([0xe0, 0x80, 0x80]))), hex(d.decode(bytes([0xed, 0xa0, 0x80]))),
+          hex(d.decode(bytes([0xf4, 0x90, 0x80, 0x80]))), hex(d.decode(bytes([0xe2, 0x82, 0x41]))),
+          hex(streamed.decode(bytes([0xe2, 0x82]), { stream: true }) + streamed.decode(bytes([0xac]))),
+          fatal, hex(new TextDecoder('utf8', { ignoreBOM: true }).decode(bytes([0xef, 0xbb, 0xbf]))),
+          new TextEncoder().encodeInto('a\u00e9\u20ac', new Uint8Array(4)).written,
+        ];
+      }
+    `);
+    expect(doc.call('run')).toEqual([
+      '61', 'fffd fffd fffd', 'fffd fffd fffd', 'fffd fffd fffd fffd', 'fffd 41', '20ac', 'TypeError', 'feff', 3,
+    ]);
+  });
+
+  // An address kept its spaces, quotes and \u00e9 as written and read %2e%2e as
+  // a name; reading searchParams wrote the query again (a%20b as a+b), and
+  // a URLSearchParams went stale when the URL's search was set.
+  it('URL encodes its parts, and its searchParams follow it both ways', async () => {
+    const doc = await page(`
+      function run() {
+        const u = new URL('https://x.test/?q=a%20b&flag');
+        u.searchParams.get('q');
+        const read = u.href;
+        const p = u.searchParams;
+        u.search = '?q=2';
+        const stale = p.get('q');
+        p.append('n', 'v w');
+        return [
+          new URL('https://x.test/a b?c d#\u00e9').href, new URL('https://x.test/a/%2e%2e/b').pathname, new URL('https://x.test?').href,
+          read, stale, u.href, URL.canParse('http://x.test:99999'), URL.canParse('http://'),
+        ];
+      }
+    `);
+    expect(doc.call('run')).toEqual([
+      'https://x.test/a%20b?c%20d#%C3%A9', '/b', 'https://x.test/?', 'https://x.test/?q=a%20b&flag', '2',
+      'https://x.test/?q=2&n=v+w', false, false,
+    ]);
+  });
+
+  // set() moved the entry to the end; !'()~ were not encoded; a Map or any
+  // other list of pairs made nothing; a bad % lost the whole value.
+  it('URLSearchParams sets in place, encodes as a form does, and is made from any list of pairs', async () => {
+    const doc = await page(`
+      function run() {
+        const p = new URLSearchParams('a=1&b=2&a=3');
+        p.set('a', 'x');
+        const form = new FormData();
+        form.append('a', '1');
+        form.append('b', '2');
+        form.set('a', 'x');
+        return [
+          p.toString(), Array.from(form.keys()).join(','), new URLSearchParams({ k: "!'()~*" }).toString(),
+          new URLSearchParams(new Map([['a', '1']])).toString(), new URLSearchParams('a=%zz%41&b=%FF').toString(),
+          p.has('b', '3'), [...new URLSearchParams('z=1&y=2').keys()].join(','),
+        ];
+      }
+    `);
+    expect(doc.call('run')).toEqual(['a=x&b=2', 'a,b', 'k=%21%27%28%29%7E*', 'a=1', 'a=%25zzA&b=%EF%BF%BD', false, 'z,y']);
+  });
+
+  // A DataView threw, an error came back a plain Error, an array lost its
+  // length, and a WeakMap was copied as an empty object.
+  it('structuredClone copies what a browser copies, and refuses what it refuses', async () => {
+    const doc = await page(`
+      function run() {
+        const buffer = new ArrayBuffer(8);
+        const copy = structuredClone({ view: new DataView(buffer, 2), bytes: new Uint8Array(buffer, 1, 3), error: new TypeError('t'), list: [1, , 3, , ] });
+        let refused = '';
+        try { structuredClone(new WeakMap()); } catch (e) { refused = e.name; }
+        return [
+          copy.view.byteLength, copy.view.buffer === copy.bytes.buffer, copy.bytes.byteOffset, copy.error instanceof TypeError,
+          copy.list.length, 1 in copy.list, refused,
+        ];
+      }
+    `);
+    expect(doc.call('run')).toEqual([6, true, 1, true, 4, false, 'DataCloneError']);
+  });
+
+  // A box ticked with value="" was sent as on, an image button was sent,
+  // and the button a form was sent with was not.
+  it('FormData sends a form\u2019s fields as a browser sends them', async () => {
+    const doc = await page(`
+      function run() {
+        const form = document.createElement('form');
+        form.innerHTML = '<input type="checkbox" name="c" value="" checked><input type="image" name="img"><textarea name="t">a\\r\\nb</textarea>' +
+          '<select name="none"></select><button name="go" value="1">Go</button>';
+        return Array.from(new FormData(form, form.querySelector('button'))).map((e) => e.join('='));
+      }
+    `);
+    expect(doc.call('run')).toEqual(['c=', 't=a\nb', 'go=1']);
+  });
+
+  // Headers were read in the order they were set, as arrays rather than
+  // iterators, and a DOMException had no code.
+  it('Headers in the order of their names, and a DOMException\u2019s code', async () => {
+    const doc = await page(`
+      function run() {
+        const h = new Headers({ b: '1', a: '2' });
+        h.append('A', '3');
+        return [Array.from(h.keys()).join(','), h.get('a'), typeof h.entries().next, new DOMException('m', 'NotFoundError').code];
+      }
+    `);
+    expect(doc.call('run')).toEqual(['a,b', '2, 3', 'function', 8]);
   });
 });
 

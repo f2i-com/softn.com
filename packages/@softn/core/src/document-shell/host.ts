@@ -480,7 +480,9 @@ export class DocumentShell implements DocumentShellView {
           const [, id, children] = op;
           const node = this.nodes.get(id);
           if (!node || node.kind !== 'element') break;
-          for (const old of node.children) if (!children.includes(old)) dropped.push(old);
+          // A set, as a list of thousands of rows is told whole.
+          const now = new Set(children);
+          for (const old of node.children) if (!now.has(old)) dropped.push(old);
           node.children = children.slice();
           node.childrenTouched = true;
           for (const child of children) {

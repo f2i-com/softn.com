@@ -554,6 +554,93 @@ describe('a page whose code is written for a browser', () => {
     }
   });
 
+  // Two thousand rows, each appended on its own, came to more than the
+  // engine could hand the host in one read: the page's script stopped, the
+  // list was never drawn, and the click listener added after it was lost.
+  it('draws a long list the code fills a row at a time, and goes on hearing its clicks', async () => {
+    await mount(
+      `<ul id="list"></ul><button id="more">More</button><p id="out">-</p>
+<script>
+  const list = document.getElementById('list');
+  for (let i = 0; i < 2500; i++) { const li = document.createElement('li'); li.textContent = 'row ' + i; list.appendChild(li); }
+  document.getElementById('more').addEventListener('click', () => {
+    list.appendChild(document.createElement('li'));
+    document.getElementById('out').textContent = 'rows ' + list.children.length;
+  });
+</script>`,
+      () => container.querySelectorAll('#list li').length === 2500 && $('#more')?.hasAttribute('data-softn-node') === true
+    );
+    expect(container.querySelectorAll('#list li')).toHaveLength(2500);
+    expect(container.querySelector('#list li:last-child')!.textContent).toBe('row 2499');
+    await act(async () => $('#more')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('rows 2501');
+    expect(container.querySelectorAll('#list li')).toHaveLength(2501);
+  }, 30000);
+
+  // A live list the page keeps in its state is read out with the rest of
+  // the state, and must not come back as a copy, which would no longer
+  // follow the page.
+  it('keeps a live list the page holds in its state live across turns', async () => {
+    await mount(
+      `<ul id="list"><li>a</li></ul><button id="add">Add</button><p id="out">{label}</p>
+<script>
+  let label = 'start';
+  const kids = document.getElementById('list').children;
+  document.getElementById('add').addEventListener('click', () => {
+    document.getElementById('list').appendChild(document.createElement('li'));
+    label = 'kids ' + kids.length;
+  });
+</script>`,
+      () => $('#add')?.hasAttribute('data-softn-node') === true && $('#out')?.textContent === 'start'
+    );
+    await act(async () => $('#add')!.click());
+    await settle();
+    await act(async () => $('#add')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('kids 3');
+  });
+
+  // A box the person clicked was seen by a click listener as it was before
+  // the click; HTML ticks it first, and unticks it if the click is cancelled.
+  it('lets a click listener read the box the person just clicked', async () => {
+    await mount(
+      `<input type="checkbox" id="box"><input type="checkbox" id="locked"><p id="out">-</p>
+<script>
+  document.getElementById('box').addEventListener('click', (e) => { document.getElementById('out').textContent = 'box ' + e.target.checked; });
+  document.getElementById('locked').addEventListener('click', (e) => { e.preventDefault(); });
+</script>`,
+      () => $('#box')?.hasAttribute('data-softn-node') === true
+    );
+    await act(async () => $('#box')!.click());
+    await settle();
+    expect($('#out')!.textContent).toBe('box true');
+    expect($<HTMLInputElement>('#box')!.checked).toBe(true);
+    await act(async () => $('#locked')!.click());
+    await settle();
+    expect($<HTMLInputElement>('#locked')!.checked).toBe(false);
+  });
+
+  // A drawing the code made had its viewBox written as viewbox, which SVG
+  // does not read.
+  it('draws an <svg> the code makes with its names in their case', async () => {
+    await mount(
+      `<div id="box"></div>
+<script>
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 10 10');
+  svg.innerHTML = '<defs><linearGradient id="g"></linearGradient></defs><rect width="10" height="10"/>';
+  document.getElementById('box').appendChild(svg);
+</script>`,
+      () => container.querySelector('#box svg rect') !== null
+    );
+    const svg = container.querySelector('#box svg')!;
+    expect(svg.getAttribute('viewBox')).toBe('0 0 10 10');
+    expect(svg.querySelector('rect')!.parentElement).toBe(svg);
+    expect(svg.querySelector('linearGradient')).not.toBeNull();
+  });
+
   it('checks a form before it is sent, as a browser does', async () => {
     await mount(
       `<form id="f"><input id="email" name="email" type="email" required><button id="send">Send</button></form><p id="out">-</p>

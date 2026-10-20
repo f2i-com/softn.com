@@ -1742,15 +1742,35 @@ export class SoftNScriptRuntime {
     if (changes) this.vmEngine.callFunctionSync(SHELL_SYNC, [changes]);
   }
 
-  /** What the code did to the document, out to the page, after it ran. */
+  /**
+   * What the code did to the document, out to the page, after it ran. The
+   * shell hands it over a page at a time, each kept until the next is asked
+   * for: a page the engine could not hand across is asked for again (the
+   * shell sends it in halves), so nothing the code did is lost. All of it is
+   * applied at once, as one turn's changes.
+   */
   private takeDocumentChanges(): void {
     if (!this.documentShellOn || !this.vmEngine) return;
-    try {
-      const ops = this.vmEngine.callFunctionSync(SHELL_TAKE, []) as ShellOp[] | null;
-      if (ops) this.documentShell!.apply(ops);
-    } catch (error) {
-      console.error('[SoftN] What the page\u2019s code did to the document could not be read:', error);
+    const ops: ShellOp[] = [];
+    let failed = false;
+    let failures = 0;
+    for (;;) {
+      let page: ShellOp[] | null;
+      try {
+        page = this.vmEngine.callFunctionSync(SHELL_TAKE, [failed]) as ShellOp[] | null;
+        failed = false;
+      } catch (error) {
+        failed = true;
+        if (this.vmEngine.terminated || ++failures > 40) {
+          console.error('[SoftN] What the page\u2019s code did to the document could not be read:', error);
+          break;
+        }
+        continue;
+      }
+      if (!page) break;
+      for (const op of page) ops.push(op);
     }
+    if (ops.length > 0) this.documentShell!.apply(ops);
   }
 
   /**

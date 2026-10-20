@@ -77,6 +77,7 @@ export const SHELL_GLOBAL_NAMES: ReadonlySet<string> = new Set([
   'PointerEvent',
   'DragEvent',
   'DataTransfer',
+  'SVGElement',
 ]);
 
 /**
