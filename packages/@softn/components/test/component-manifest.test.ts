@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { buildManifest, manifestPath } from '../scripts/generate-manifest.mjs';
+import { buildManifest, manifestPath, propKindsPath, renderPropKinds } from '../scripts/generate-manifest.mjs';
 
 type Manifest = ReturnType<typeof buildManifest>;
 
@@ -17,6 +17,10 @@ describe('component-manifest.json', () => {
 
   it('matches the component sources (run `npm run generate:manifest -w @softn/components` after changing props)', () => {
     expect(committed).toEqual(fresh);
+  });
+
+  it('and so does src/prop-kinds.generated.ts, which the renderer reads number and boolean props by', () => {
+    expect(readFileSync(propKindsPath, 'utf8').replace(/\r\n/g, '\n')).toBe(renderPropKinds(fresh));
   });
 
   it('describes every component the registry entries register', () => {

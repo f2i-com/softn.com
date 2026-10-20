@@ -16,6 +16,7 @@
 import type { ComponentRegistry, SoftNComponent, SoftNComponentLoader } from '@softn/core';
 import { getDefaultRegistry } from '@softn/core';
 import { minimalComponents } from './minimal';
+import { declareBuiltinPropKinds } from '../prop-kinds';
 
 export interface LazyComponentRegistration {
   /** The feature entry the loader fetches: `charts`, `scene3d`, … */
@@ -136,6 +137,7 @@ export function registerRuntimeComponents(
   for (const [name, { feature, load }] of Object.entries(lazyComponentRegistrations)) {
     registry.registerLazy(name, load, { feature });
   }
+  declareBuiltinPropKinds(registry);
 }
 
 const registeredOnce = new WeakSet<ComponentRegistry>();

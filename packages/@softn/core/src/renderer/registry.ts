@@ -30,6 +30,21 @@ export type SoftNComponent = React.ComponentType<SoftNProps>;
 export type ComponentLoadState = 'eager' | LazyLoadState;
 
 /**
+ * What a component declares its props to be, where a page's markup may
+ * write them otherwise: `numbers` take a number written as text
+ * (`<Progress value="40">`), `choices` take one when it is one of the
+ * numbers listed (a heading level, 2 to 6), and `booleans` take a number as
+ * yes or no (`required={0}`). The renderer gives each prop its kind
+ * (coerceDeclaredProps in render.tsx); anything else reaches the component as
+ * written.
+ */
+export interface DeclaredPropKinds {
+  numbers?: readonly string[];
+  choices?: Readonly<Record<string, readonly number[]>>;
+  booleans?: readonly string[];
+}
+
+/**
  * Component Registry
  */
 export class ComponentRegistry {
@@ -37,15 +52,35 @@ export class ComponentRegistry {
   private lazyEntries: Map<string, LazyComponentEntry> = new Map();
   /** Each registered name by its lower-case spelling, made when first asked for (see resolveName). */
   private namesByLowerCase: Map<string, string> | null = null;
+  /** What each name's component declares its props to be (setPropKinds). */
+  private propKinds: Map<string, DeclaredPropKinds> = new Map();
 
   /**
    * Register a component
    */
   public register(name: string, component: SoftNComponent): void {
-    // Last registration wins, whichever kind it is.
+    // Last registration wins, whichever kind it is, and with it what the
+    // component declares: a host's own `Button` is not the built-in's.
     this.lazyEntries.delete(name);
+    this.propKinds.delete(name);
     this.components.set(name, component);
     this.namesByLowerCase = null;
+  }
+
+  /**
+   * What the components registered by these names declare their props to be
+   * (DeclaredPropKinds), for the renderer. Given after registering them; a
+   * name registered again afterwards has none until it is given again.
+   */
+  public setPropKinds(kinds: Readonly<Record<string, DeclaredPropKinds>>): void {
+    for (const [name, declared] of Object.entries(kinds)) {
+      if (this.has(name)) this.propKinds.set(name, declared);
+    }
+  }
+
+  /** What the component registered as `name` declares its props to be, when it was given (setPropKinds). */
+  public getPropKinds(name: string): DeclaredPropKinds | undefined {
+    return this.propKinds.get(name);
   }
 
   /**
@@ -92,6 +127,7 @@ export class ComponentRegistry {
     options: LazyComponentOptions = {}
   ): void {
     this.components.delete(name);
+    this.propKinds.delete(name);
     this.lazyEntries.set(name, new LazyComponentEntry(name, load, options));
     this.namesByLowerCase = null;
   }
@@ -135,6 +171,7 @@ export class ComponentRegistry {
   public unregister(name: string): boolean {
     const eager = this.components.delete(name);
     const lazy = this.lazyEntries.delete(name);
+    this.propKinds.delete(name);
     this.namesByLowerCase = null;
     return eager || lazy;
   }
@@ -145,6 +182,7 @@ export class ComponentRegistry {
   public clear(): void {
     this.components.clear();
     this.lazyEntries.clear();
+    this.propKinds.clear();
     this.namesByLowerCase = null;
   }
 

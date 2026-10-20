@@ -24,7 +24,7 @@ import type {
 import { EVENT_MODIFIERS, isIdentifierName, patternNames } from '../parser/ast';
 import { VOID_ELEMENTS } from '../parser/html';
 import type { SoftNLocalScope, SoftNRenderContext, SoftNProps } from '../types';
-import { ComponentRegistry, SoftNComponent } from './registry';
+import { ComponentRegistry, SoftNComponent, type DeclaredPropKinds } from './registry';
 import {
   cssResourceReferences,
   isRemoteUrl,
@@ -691,6 +691,39 @@ function dropCodeAttributes(props: SoftNProps): void {
     const lower = name.toLowerCase();
     if ((lower.startsWith('on') && typeof props[name] !== 'function') || dropsFromMarkup(lower, props[name])) delete props[name];
   }
+}
+
+/**
+ * A component's props given the kinds it declares (DeclaredPropKinds), from
+ * what the page wrote. A number written as text, as an HTML page writes every
+ * attribute (`<Progress value="40">`, `<Rating max="7">`), is the number: a
+ * component that asks `Number.isFinite(value)` showed 0, and one that adds to
+ * it joined text (`5 + "1"` was page "51"). A number where a yes or no goes
+ * (`required={0}`, `checked={count}`) is that yes or no: `{flag && …}` drew
+ * the 0 as text, and `aria-checked="1"` is no value a screen reader reads.
+ * Text that is no number, and anything that is not a number or text, reach
+ * the component as written.
+ */
+function coerceDeclaredProps(props: SoftNProps, kinds: DeclaredPropKinds | undefined): void {
+  if (!kinds) return;
+  for (const name of kinds.numbers ?? []) {
+    const number = numberWritten(props[name]);
+    if (number !== undefined) props[name] = number;
+  }
+  for (const [name, choices] of Object.entries(kinds.choices ?? {})) {
+    const number = numberWritten(props[name]);
+    if (number !== undefined && choices.includes(number)) props[name] = number;
+  }
+  for (const name of kinds.booleans ?? []) {
+    if (typeof props[name] === 'number') props[name] = Boolean(props[name]);
+  }
+}
+
+/** The finite number `value` is written as, when it is text that writes one (`"40"`, `" 2.5 "`). */
+function numberWritten(value: unknown): number | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
 }
 
 /**
@@ -1932,6 +1965,7 @@ function renderElement(
     dropDocumentName(props, FinalComponent);
   } else {
     sanitizeComponentUrlProps(props, node.tag, egressPolicy);
+    coerceDeclaredProps(props, registry.getPropKinds(registry.resolveName(node.tag) ?? node.tag));
   }
   dropRawMarkupProp(props);
   // CSS text becomes an object first, so it is checked the way an object is

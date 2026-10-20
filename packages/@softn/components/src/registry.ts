@@ -10,7 +10,8 @@
  * union of the entries so the two cannot drift apart by construction.
  */
 
-import { ComponentRegistry, registerComponents, type SoftNComponent } from '@softn/core';
+import { ComponentRegistry, getDefaultRegistry, registerComponents, type SoftNComponent } from '@softn/core';
+import { declareBuiltinPropKinds } from './prop-kinds';
 import { minimalComponents } from './entries/minimal';
 import { chartComponents } from './entries/charts';
 import { animationComponents } from './entries/animation';
@@ -41,6 +42,7 @@ export const builtinComponents = {
  */
 export function registerBuiltinComponents(registry: ComponentRegistry): void {
   registry.registerAll(builtinComponents as unknown as Record<string, SoftNComponent>);
+  declareBuiltinPropKinds(registry);
 }
 
 /**
@@ -48,4 +50,5 @@ export function registerBuiltinComponents(registry: ComponentRegistry): void {
  */
 export function registerAllBuiltins(): void {
   registerComponents(builtinComponents as unknown as Record<string, SoftNComponent>);
+  declareBuiltinPropKinds(getDefaultRegistry());
 }

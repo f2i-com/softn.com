@@ -16,6 +16,7 @@
 
 import type { ComponentRegistry, SoftNComponent } from '@softn/core';
 import { getDefaultRegistry } from '@softn/core';
+import { declareBuiltinPropKinds } from '../prop-kinds';
 
 export * from '../layout';
 // The form controls but the pickers, which are an entry of their own.
@@ -209,4 +210,5 @@ export function registerMinimalComponents(
   registry: ComponentRegistry = getDefaultRegistry()
 ): void {
   registry.registerAll(minimalComponents as unknown as Record<string, SoftNComponent>);
+  declareBuiltinPropKinds(registry);
 }

@@ -24,6 +24,8 @@ export interface ComponentManifest {
 
 export declare const packageRoot: string;
 export declare const manifestPath: string;
+export declare const propKindsPath: string;
 export declare function describeType(type: unknown, source: unknown): unknown;
 export declare function buildManifest(): ComponentManifest;
 export declare function renderManifest(manifest?: ComponentManifest): string;
+export declare function renderPropKinds(manifest?: ComponentManifest): string;
