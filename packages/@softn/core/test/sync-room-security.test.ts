@@ -35,7 +35,7 @@ import {
 import { bindSyncOptions } from '../src/runtime/host-bound-sync-options';
 import { getSyncRoomKey } from '../src/runtime/xdb-sync-key';
 import { createDBNamespace, type PermissionConfig } from '../src/runtime/script-runtime';
-import { createXDBHelpers } from '../src/loader/SoftNRenderer';
+import { createXDBHelpers } from '../src/loader/xdb-bindings';
 import { getXDB } from '../src/runtime/xdb';
 
 const APP = 'app-under-test';

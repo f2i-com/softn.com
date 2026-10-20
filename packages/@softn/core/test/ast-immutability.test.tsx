@@ -23,7 +23,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearParseCache, parseCached } from '../src/parser';
 import type { SoftNDocument } from '../src/parser';
-import { SoftNRenderer, SoftNWithXDB } from '../src/loader/SoftNRenderer';
+import { SoftNRenderer } from '../src/loader/SoftNRenderer';
+import { SoftNWithXDB } from '../src/loader/xdb-bindings';
 import { registerComponent, type SoftNComponent } from '../src/renderer/registry';
 import type { SoftNProps } from '../src/types';
 

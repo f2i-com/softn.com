@@ -20,7 +20,7 @@ import {
   getParseCacheStats,
   parseCached,
 } from '../src/parser';
-import { SoftNWithXDB } from '../src/loader/SoftNRenderer';
+import { SoftNWithXDB } from '../src/loader/xdb-bindings';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

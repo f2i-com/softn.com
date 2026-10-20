@@ -21,7 +21,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SoftNWithXDB, createXDBHelpers } from '../src/loader/SoftNRenderer';
+import { SoftNWithXDB, createXDBHelpers } from '../src/loader/xdb-bindings';
 import { getXDB } from '../src/runtime/xdb';
 import type { PermissionConfig } from '../src/runtime/script-runtime';
 

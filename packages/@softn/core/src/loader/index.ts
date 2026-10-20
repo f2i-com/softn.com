@@ -4,14 +4,10 @@
  * Runtime loading and rendering of .softn files.
  */
 
-export {
-  SoftNRenderer,
-  useSoftN,
-  useDataBlock,
-  createXDBHelpers,
-  SoftNWithXDB,
-} from './SoftNRenderer';
-export type { SoftNRendererProps, SoftNWithXDBProps } from './SoftNRenderer';
+export { SoftNRenderer, useSoftN } from './SoftNRenderer';
+export type { SoftNRendererProps } from './SoftNRenderer';
+export { useDataBlock, createXDBHelpers, SoftNWithXDB } from './xdb-bindings';
+export type { SoftNWithXDBProps } from './xdb-bindings';
 
 // How @softn/components learns what the host has allowed: which capabilities
 // the bundle declared and the user granted, and whether the bar is unanswered.

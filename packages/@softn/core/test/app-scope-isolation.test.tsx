@@ -17,7 +17,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SoftNWithXDB } from '../src/loader/SoftNRenderer';
+import { SoftNWithXDB } from '../src/loader/xdb-bindings';
 import { useAppXDB } from '../src/loader/app-scope';
 import { registerComponent, type SoftNComponent } from '../src/renderer/registry';
 import { getXDB } from '../src/runtime/xdb';

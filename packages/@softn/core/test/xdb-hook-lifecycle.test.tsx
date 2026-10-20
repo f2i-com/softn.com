@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useDataBlock } from '../src/loader/SoftNRenderer';
+import { useDataBlock } from '../src/loader/xdb-bindings';
 import { parse } from '../src/parser';
 import { getXDB } from '../src/runtime/xdb';
 import type { SoftNDocument } from '../src/parser/ast';

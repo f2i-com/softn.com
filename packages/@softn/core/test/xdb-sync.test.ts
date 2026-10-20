@@ -102,7 +102,7 @@ import {
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { SoftNWithXDB } from '../src/loader/SoftNRenderer';
+import { SoftNWithXDB } from '../src/loader/xdb-bindings';
 
 // ═══════════════════════════════════════════════════════════
 // Tests
