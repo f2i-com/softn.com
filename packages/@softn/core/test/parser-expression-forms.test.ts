@@ -258,6 +258,52 @@ describe('literals', () => {
       properties: [{ key: '1' }, { key: '2.5' }],
     });
   });
+
+  it('reads every way JavaScript writes a number', () => {
+    // `0b101` and `1_000` were `0` and `1` followed by a name, which an
+    // argument list took as a second argument: JSON.stringify(0o17) was "0".
+    const value = (source: string) => (expr(source) as { value?: number }).value;
+    expect(value('0b101')).toBe(5);
+    expect(value('0B11')).toBe(3);
+    expect(value('0o17')).toBe(15);
+    expect(value('1_000_000')).toBe(1_000_000);
+    expect(value('1_000.5')).toBe(1000.5);
+    expect(value('0xFF_FF')).toBe(0xffff);
+    expect(value('.5')).toBe(0.5);
+    expect(value('3.')).toBe(3);
+    expect(expr('f(.5, 0b1)')).toMatchObject({ arguments: [num(0.5, '.5'), num(1, '0b1')] });
+    expect(expr('-.25')).toMatchObject({ operator: '-', argument: num(0.25, '.25') });
+  });
+
+  it('still reads a point after a value as a member', () => {
+    expect(expr('3.toFixed(2)')).toMatchObject({ type: 'CallExpression', callee: { property: id('toFixed') } });
+    expect(expr('3..toString()')).toMatchObject({ type: 'CallExpression', callee: { object: num(3) } });
+    expect(diagnostics('<Probe v={rows.0} />')).not.toEqual([]);
+  });
+});
+
+describe('a missing comma', () => {
+  it('is said, in arguments, lists and records', () => {
+    // Each was read as if the comma were there, with nothing said.
+    expect(diagnostics('<Probe v={f(a b)} />')).toEqual(['A "," is missing before "b": arguments are separated by commas']);
+    expect(diagnostics('<Probe v={[1 2]} />')).toEqual(['A "," is missing before "2": list items are separated by commas']);
+    expect(diagnostics('<Probe v={{ a: 1 b: 2 }} />')).toEqual(['A "," is missing before "b": record fields are separated by commas']);
+  });
+
+  it('is not asked for after the last one', () => {
+    expect(diagnostics('<Probe v={f(a, b,)} w={[1, 2,]} x={{ a: 1, }} />')).toEqual([]);
+  });
+});
+
+describe('?? beside || or &&', () => {
+  it('is read, and the author asked to say which with parentheses', () => {
+    const doc = parse('<Probe v={a ?? b || c} />');
+    expect(doc.diagnostics?.map((d) => [d.severity, d.message])).toEqual([
+      ['warning', '"??" beside "||" or "&&" reads either way: write (a ?? b) || c or a ?? (b || c)'],
+    ]);
+    expect(diagnostics('<Probe v={a && b ?? c} />')).toHaveLength(1);
+    expect(diagnostics('<Probe v={(a ?? b) || c} w={a ?? (b || c)} x={(a && b) ?? c} />')).toEqual([]);
+  });
 });
 
 describe('comments inside an expression', () => {
@@ -538,7 +584,7 @@ describe('the parser version', () => {
   it('moved with what parse returns', () => {
     // parseCached keys on it; a document parsed under the old rules must not
     // be served to a renderer written for these.
-    expect(PARSER_VERSION).toBe(12);
+    expect(PARSER_VERSION).toBe(13);
   });
 });
 

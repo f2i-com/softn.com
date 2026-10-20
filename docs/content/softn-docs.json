@@ -1986,7 +1986,7 @@
                 ],
                 [
                   "Values",
-                  "Numbers including `0xff`, strings, template literals, `true`, `false`, `null`, `undefined`"
+                  "Numbers as JavaScript writes them (`12`, `2.5`, `.5`, `1e3`, `0xff`, `0b101`, `0o17`, `1_000`), strings, template literals, `true`, `false`, `null`, `undefined`"
                 ],
                 [
                   "Construction",

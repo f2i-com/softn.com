@@ -36,6 +36,36 @@ const TAG_KEYWORDS: ReadonlySet<string> = new Set([
   'collection',
 ]);
 
+/**
+ * The HTML elements whose content is text, a tag in it a tag's words: what a
+ * `<textarea>` or `<title>` holds, and what `<xmp>`, `<iframe>`, `<noembed>`
+ * and `<noframes>` hold (HTML's RCDATA and RAWTEXT elements; `<style>` and
+ * `<script>` are SoftN's blocks).
+ */
+const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set(['textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes']);
+
+/** The tokens that end a value: a `.` after one reads a member, never a number's point. */
+const ENDS_AN_OPERAND: ReadonlySet<TokenType> = new Set([
+  TokenType.IDENTIFIER,
+  TokenType.NUMBER,
+  TokenType.STRING,
+  TokenType.RPAREN,
+  TokenType.RBRACKET,
+  TokenType.TRUE,
+  TokenType.FALSE,
+  TokenType.NULL,
+  TokenType.UNDEFINED,
+  TokenType.THIS,
+]);
+
+/** A number's `0x`, `0b` or `0o`, in either case, and the digits each takes. */
+const RADIX_PREFIXES: Readonly<Record<string, { prefix: string; digit: (ch: string) => boolean }>> = (() => {
+  const hex = { prefix: 'x', digit: (ch: string) => /^[0-9a-fA-F]$/.test(ch) };
+  const binary = { prefix: 'b', digit: (ch: string) => ch === '0' || ch === '1' };
+  const octal = { prefix: 'o', digit: (ch: string) => ch >= '0' && ch <= '7' };
+  return { x: hex, X: hex, b: binary, B: binary, o: octal, O: octal };
+})();
+
 export class Lexer {
   private source: string;
   private position: number = 0;
@@ -45,6 +75,8 @@ export class Lexer {
   private ch: string = '';
   /** Where the last token began, for the no-progress check in nextToken(). */
   private lastTokenStart: number = -1;
+  /** Whether the last token ends a value (a name, a number, a `)`), after which `.5` is `.` and `5`. */
+  private afterOperand: boolean = false;
   /**
    * Whether the last token closed an expression in element content (not in an
    * attribute). Whitespace right after one is part of the text that follows:
@@ -70,12 +102,12 @@ export class Lexer {
   private tagNameNext: boolean = false;
   /** Whether the token after the `=` just read is an attribute's value, which may be unquoted. */
   private unquotedValueNext: boolean = false;
-  /** The `textarea` or `title` whose opening tag is being read. */
+  /** The element of RAW_TEXT_ELEMENTS whose opening tag is being read. */
   private sawRawTextTag: string | null = null;
   /**
-   * The `textarea` or `title` whose text is being read, as HTML reads it: a
-   * `<` in it is a character, and only its own end tag ends it. Braces are
-   * still SoftN's expressions there, as everywhere in a page's text.
+   * The element of RAW_TEXT_ELEMENTS whose text is being read, as HTML reads
+   * it: a `<` in it is a character, and only its own end tag ends it. Braces
+   * are still SoftN's expressions there, as everywhere in a page's text.
    */
   private rawTextEnd: string | null = null;
 
@@ -149,6 +181,7 @@ export class Lexer {
       );
     }
     this.lastTokenStart = token.start;
+    this.afterOperand = ENDS_AN_OPERAND.has(token.type);
     // The word after `#`, and the `if` of `#else if`, are read in any case.
     this.wordAfterHash = token.type === TokenType.HASH || (token.type === TokenType.ELSE && this.inControlFlow > 0);
     this.tagNameNext = token.type === TokenType.TAG_OPEN || token.type === TokenType.TAG_END_OPEN;
@@ -224,7 +257,7 @@ export class Lexer {
       return this.readLineComment();
     }
 
-    // HTML comments: <!-- ... --> (not in a textarea's or title's text, where they are text).
+    // HTML comments: <!-- ... --> (not in the text of a RAW_TEXT_ELEMENTS element, where they are text).
     if (
       this.ch === '<' &&
       !this.rawTextEnd &&
@@ -528,6 +561,10 @@ export class Lexer {
             startPos,
             this.position
           );
+        }
+        // `.5` is a number where a value begins; after one, `.` reads a member.
+        if (this.isDigit(this.peekChar()) && !this.afterOperand) {
+          return this.readNumber();
         }
         this.readChar();
         return createToken(TokenType.DOT, '.', startLine, startColumn, startPos, this.position);
@@ -894,7 +931,7 @@ export class Lexer {
       this.inTag = true;
       this.readingClosingTag = true;
       if (this.preformatted > 0 && this.preformattedTagAhead()) this.preformatted--;
-      // Inside a textarea's or title's text only its own end tag opens a tag.
+      // Inside a raw-text element's text (RAW_TEXT_ELEMENTS) only its own end tag opens a tag.
       this.rawTextEnd = null;
       return createToken(
         TokenType.TAG_END_OPEN,
@@ -921,7 +958,7 @@ export class Lexer {
       this.sawPreformattedTag = true;
     }
     const raw = this.htmlTagWordAhead();
-    if (raw === 'textarea' || raw === 'title') this.sawRawTextTag = raw;
+    if (raw !== null && RAW_TEXT_ELEMENTS.has(raw)) this.sawRawTextTag = raw;
 
     return createToken(TokenType.TAG_OPEN, '<', startLine, startColumn, startPos, this.position);
   }
@@ -1101,7 +1138,11 @@ export class Lexer {
   }
 
   /**
-   * Read a number literal (supports integers, decimals, and exponential notation)
+   * Read a number literal as JavaScript writes one: `12`, `2.5`, `.5`, `3.`,
+   * `1e-3`, `0xff`, `0b101`, `0o17`, and `1_000` with its separators. The
+   * token's literal is what `Number()` reads (`1000`, `0b101`). `0b101` and
+   * `1_000` used to lex as `0` and `1` followed by a name, which an argument
+   * list then took as a second argument: `JSON.stringify(0o17)` was "0".
    */
   private readNumber(): Token {
     const startLine = this.line;
@@ -1109,21 +1150,25 @@ export class Lexer {
     const startPos = this.position;
 
     // `0xff8800`: a colour as a number, which is how a 3D scene takes one.
-    // It used to lex as `0` followed by a name.
-    if (this.ch === '0' && (this.peekChar() === 'x' || this.peekChar() === 'X') && this.isHexDigit(this.peekCharAt(2))) {
+    // It used to lex as `0` followed by a name. And `0b101`, `0o17`.
+    const radix = this.ch === '0' ? RADIX_PREFIXES[this.peekChar()] : undefined;
+    if (radix !== undefined && radix.digit(this.peekCharAt(2))) {
       this.readChar(); // 0
-      this.readChar(); // x
-      const hex = this.readWhile((ch) => this.isHexDigit(ch));
-      return createToken(TokenType.NUMBER, `0x${hex}`, startLine, startColumn, startPos, this.position);
+      this.readChar(); // x, b or o
+      const digits = this.readDigits(radix.digit);
+      return createToken(TokenType.NUMBER, `0${radix.prefix}${digits}`, startLine, startColumn, startPos, this.position);
     }
 
-    let num = this.readWhile((ch) => this.isDigit(ch));
+    let num = this.readDigits((ch) => this.isDigit(ch));
 
-    // Check for decimal
+    // Check for decimal: `2.5`, `.5`; and `3.` before what cannot start a
+    // member's name (`3.toFixed(2)` stays the call it has always been read as).
     if (this.ch === '.' && this.isDigit(this.peekChar())) {
       num += this.ch;
       this.readChar();
-      num += this.readWhile((ch) => this.isDigit(ch));
+      num += this.readDigits((ch) => this.isDigit(ch));
+    } else if (this.ch === '.' && num !== '' && !this.isIdentifierStart(this.peekChar())) {
+      this.readChar();
     }
 
     // Check for exponential notation (e.g., 1e10, 3.14E-2)
@@ -1482,14 +1527,21 @@ export class Lexer {
     this.readChar(); // -
     this.readChar(); // -
 
-    // Read until we find -->
+    // `<!-->` and `<!--->` are whole comments, as HTML ends them; read as
+    // opening one, they hid the rest of the page.
+    if (this.ch === '>' || (this.ch === '-' && this.peekChar() === '>')) {
+      if (this.ch === '-') this.readChar();
+      this.readChar(); // >
+      return createToken(TokenType.COMMENT, '', startLine, startColumn, startPos, this.position);
+    }
+
+    // Read until we find --> (or --!>, which HTML also takes as the end)
     let comment = '';
     while (this.ch !== '') {
-      if (this.ch === '-' && this.peekCharAt(1) === '-' && this.peekCharAt(2) === '>') {
-        // Consume -->
-        this.readChar(); // -
-        this.readChar(); // -
-        this.readChar(); // >
+      const bang = this.peekCharAt(2) === '!' ? 1 : 0;
+      if (this.ch === '-' && this.peekCharAt(1) === '-' && this.peekCharAt(2 + bang) === '>') {
+        // Consume --> or --!>
+        for (let i = 0; i < 3 + bang; i++) this.readChar();
         break;
       }
       comment += this.ch;
@@ -1536,7 +1588,7 @@ export class Lexer {
    */
   private ltOpensMarkup(at: number): boolean {
     if (this.rawTextEnd) {
-      // In a textarea's or title's text, only its own end tag.
+      // In a raw-text element's text (RAW_TEXT_ELEMENTS), only its own end tag.
       const name = this.rawTextEnd;
       return (
         this.source.slice(at + 1, at + 2 + name.length).toLowerCase() === `/${name}` &&
@@ -1749,6 +1801,16 @@ export class Lexer {
 
   private isHexDigit(ch: string): boolean {
     return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+  }
+
+  /** Digits as JavaScript writes them, a `_` allowed between two (`1_000`), returned without it. */
+  private readDigits(isDigit: (ch: string) => boolean): string {
+    let digits = '';
+    while (this.ch !== '' && (isDigit(this.ch) || (this.ch === '_' && digits !== '' && isDigit(this.peekChar())))) {
+      if (this.ch !== '_') digits += this.ch;
+      this.readChar();
+    }
+    return digits;
   }
 }
 

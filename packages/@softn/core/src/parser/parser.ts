@@ -2745,13 +2745,28 @@ export class Parser {
     return expr;
   }
 
+  /**
+   * `a ?? b`, below `||` and `&&`. JavaScript refuses `??` beside an
+   * unparenthesised `||` or `&&` (`a ?? b || c`), since readers take it either
+   * way; it is read here as `a ?? (b || c)`, and the author is asked to say
+   * which with parentheses.
+   */
   private parseNullishCoalescing(): Expression {
+    const first = this.curToken;
     let left = this.parseOr();
 
     while (this.curTokenIs(TokenType.NULLISH_COALESCE)) {
       const loc = this.currentLoc();
       this.nextToken();
+      const rightFirst = this.curToken;
       const right = this.parseOr();
+      if (isBareLogical(left, first) || isBareLogical(right, rightFirst)) {
+        this.diagnostics.push({
+          message: '"??" beside "||" or "&&" reads either way: write (a ?? b) || c or a ?? (b || c)',
+          severity: 'warning',
+          loc,
+        });
+      }
       left = { type: 'BinaryExpression', operator: '??', left, right, loc };
     }
 
@@ -2973,9 +2988,7 @@ export class Parser {
     while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
       const argStart = this.curToken.start;
       args.push(this.curTokenIs(TokenType.SPREAD) ? this.parseSpread() : this.parseExpression());
-      if (this.curTokenIs(TokenType.COMMA)) {
-        this.nextToken();
-      }
+      this.expectSeparator(TokenType.RPAREN, 'arguments');
       // `parsePrimary` falls back to a synthetic `undefined` without
       // consuming anything, so an argument it cannot start on otherwise
       // loops here forever, and the args array grows until the heap gives out.
@@ -3521,9 +3534,7 @@ export class Parser {
         break;
       }
 
-      if (this.curTokenIs(TokenType.COMMA)) {
-        this.nextToken();
-      }
+      this.expectSeparator(TokenType.EXPR_END, 'record fields');
     }
 
     // Consume closing }
@@ -3544,9 +3555,9 @@ export class Parser {
       // `[...done, item]`: the renderer has always laid a SpreadElement out in
       // place here; no rule produced one.
       elements.push(this.curTokenIs(TokenType.SPREAD) ? this.parseSpread() : this.parseExpression());
-      if (this.curTokenIs(TokenType.COMMA)) {
-        this.nextToken();
-      } else if (this.curToken === before && !this.curTokenIs(TokenType.RBRACKET)) {
+      if (this.curToken !== before) {
+        this.expectSeparator(TokenType.RBRACKET, 'list items');
+      } else if (!this.curTokenIs(TokenType.RBRACKET)) {
         // Token didn't advance - break to avoid infinite loop
         break;
       }
@@ -3731,6 +3742,26 @@ export class Parser {
 
   private curTokenIs(type: TokenType): boolean {
     return this.curToken.type === type;
+  }
+
+  /**
+   * The `,` between two of a list's `what` (arguments, list items, record
+   * fields), consumed; or the list's `closer`, left for the list. Anything
+   * else is a missing comma, reported and read past as if it were there: `f(a b)`
+   * and `[0 b101]` were two arguments and two items with nothing said, which
+   * is how `0b101`, before the lexer read it, became `0` and a name.
+   */
+  private expectSeparator(closer: TokenType, what: string): void {
+    if (this.curTokenIs(TokenType.COMMA)) {
+      this.nextToken();
+      return;
+    }
+    if (this.curTokenIs(closer) || this.curTokenIs(TokenType.EOF)) return;
+    this.diagnostics.push({
+      message: `A "," is missing before "${this.curToken.literal}": ${what} are separated by commas`,
+      severity: 'error',
+      loc: this.currentLoc(),
+    });
   }
 
   private expectToken(type: TokenType): void {
@@ -3983,7 +4014,13 @@ export function parse(source: string): SoftNDocument {
 //    table; `<rt>` and `<optgroup>` ending their like only in a ruby or a
 //    select, and a ruby's annotation ending a paragraph left open. Nesting
 //    deeper than 512 elements is placed beside the 512th.
-export const PARSER_VERSION = 12;
+// 13: Numbers as JavaScript writes them (`.5`, `3.`, `0b101`, `0o17`,
+//    `1_000`), where `0b101` was `0` and a name; a missing comma between
+//    arguments, list items or record fields is an error, where it was read
+//    as if there; `??` beside a bare `||` or `&&` is a warning. `<!-->`,
+//    `<!--->` and `--!>` end a comment as HTML ends one, and `<xmp>`,
+//    `<iframe>`, `<noembed>` and `<noframes>` hold text, as `<textarea>` does.
+export const PARSER_VERSION = 13;
 
 /**
  * An element's attributes as HTML compares them for Noah's Ark: names and
@@ -4004,6 +4041,11 @@ function copyElement(element: ElementNode, loc: SourceLocation): ElementNode {
 /** Whether the end tag `closer` ends the open element `open`: its own, in any case, and any heading's a heading. */
 function closesElement(closer: string, open: string): boolean {
   return sameTagName(closer, open) || (HEADINGS.has(closer) && HEADINGS.has(open));
+}
+
+/** Whether `expr`, read from the token `first`, is an `||` or `&&` not written in parentheses. */
+function isBareLogical(expr: Expression, first: Token): boolean {
+  return expr.type === 'BinaryExpression' && (expr.operator === '||' || expr.operator === '&&') && first.type !== TokenType.LPAREN;
 }
 
 /** How many elements deep a page is read before what is deeper is placed beside them, as browsers cap it. */
