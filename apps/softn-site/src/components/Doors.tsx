@@ -1,5 +1,6 @@
 import React from 'react';
 import { Reveal } from './Reveal';
+import { Arrow } from './glyphs';
 import { BUILDER_HREF, STUDIO_HREF, WEB_HREF } from '../lib/appUrls';
 
 interface Door {
@@ -65,14 +66,6 @@ const DOORS: Door[] = [
     ),
   },
 ];
-
-function Arrow(): React.ReactElement {
-  return (
-    <svg className="cta-arrow" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <path d="M3 7h8M7.5 3.5 11 7l-3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
 
 export function Doors(): React.ReactElement {
   return (

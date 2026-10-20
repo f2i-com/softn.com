@@ -3,6 +3,7 @@ import type { AppCard as AppCardData, Category } from '../../lib/api';
 import { recordRun } from '../../lib/api';
 import { runtimeAppUrl } from '../../lib/appUrls';
 import { formatCount, runsLabel } from '../../lib/format';
+import { ExternalGlyph, PlayGlyph } from '../glyphs';
 import { Stars } from './Stars';
 
 /**
@@ -34,22 +35,6 @@ export function Thumb({ app, className = '' }: { app: AppCardData; className?: s
   );
 }
 
-function PlayGlyph({ size = 12 }: { size?: number }): React.ReactElement {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M8 5v14l11-7z" />
-    </svg>
-  );
-}
-
-function ExternalGlyph({ size = 11 }: { size?: number }): React.ReactElement {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M7 17 17 7M9 7h8v8" />
-    </svg>
-  );
-}
-
 /**
  * The one way an app runs from the directory: straight into the runtime,
  * with the count bumped on the way out. The runtime's Close brings the
@@ -72,7 +57,7 @@ function PlayLink({ app, className, children }: { app: AppCardData; className: s
         title={`Opens ${app.external.host} in a new tab`}
       >
         {children}
-        <ExternalGlyph />
+        <ExternalGlyph size={11} />
       </a>
     );
   }
@@ -97,7 +82,7 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
       <div className="app-card-media">
         <Thumb app={app} />
         <PlayLink app={app} className="app-card-play">
-          <PlayGlyph />
+          <PlayGlyph size={12} />
           Play
         </PlayLink>
         {category && (
@@ -130,7 +115,7 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
             </span>
           )}
           <span className="app-card-stat" title={runsLabel(app.runs)}>
-            <PlayGlyph />
+            <PlayGlyph size={12} />
             {formatCount(app.runs)}
           </span>
           {app.remixes > 0 && (
@@ -140,7 +125,7 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
           )}
           {app.external && (
             <span className="app-card-stat app-card-linked" title={`Plays at ${app.external.host}, in a new tab`}>
-              <ExternalGlyph />
+              <ExternalGlyph size={11} />
               {app.external.host}
             </span>
           )}

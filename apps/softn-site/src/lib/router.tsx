@@ -17,7 +17,6 @@ export interface Route {
 }
 
 const OWNED = /^\/(?:apps|app\/[^/]+|publish)\/?$/;
-const FOREIGN = /^\/(?:web|studio|builder|api|demos|softn-files)(?:\/|$)/;
 
 const listeners = new Set<() => void>();
 
@@ -60,7 +59,7 @@ export function useRoute(): Route {
 
 /** Whether a same-origin path is one of this SPA's own pages. */
 export function isOwnedPath(pathname: string): boolean {
-  return pathname === '/' || (OWNED.test(pathname) && !FOREIGN.test(pathname));
+  return pathname === '/' || OWNED.test(pathname);
 }
 
 /** Which page a path is, decided by the same pattern that decides which links are the SPA's to follow. */
@@ -69,9 +68,9 @@ export type Page = { kind: 'home' } | { kind: 'directory' } | { kind: 'app'; slu
 /**
  * The page for a path. Anything `OWNED` does not name is not-found — the
  * app used to fall back to the home page there, so a mistyped or stale
- * link looked like the front door. The deployed .htaccess still serves
- * index.html for every path, so this is the only place an unknown one is
- * told apart.
+ * link looked like the front door. The deployed .htaccess names the same
+ * pages and answers any other path with a 404 whose body is index.html, so
+ * the status comes from the server and the page shown comes from here.
  */
 export function selectPage(pathname: string): Page {
   const path = pathname.replace(/\/+$/, '') || '/';

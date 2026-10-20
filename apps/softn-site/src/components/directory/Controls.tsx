@@ -207,7 +207,8 @@ export function Pagination({ page, pages, hrefFor, onPage }: { page: number; pag
  *
  * `opener` is the control that opened it. Escape gives focus back to it when
  * focus was inside: the popover is gone from the page by then, and focus used
- * to be left on nothing. A click elsewhere leaves focus where the click put it.
+ * to be left on nothing. A click elsewhere leaves focus where the click put it;
+ * a click on the opener is left to the opener, which closes it.
  *
  * It hangs from the `align` edge of its anchor unless that puts it off the
  * screen, and then from the other: the Share button sits at the left of its
@@ -234,7 +235,11 @@ export function Popover({
   useEffect(() => {
     if (!open) return undefined;
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      const target = e.target as Node;
+      // A press on the opener is the opener's to handle: closing here as well
+      // made its click open the popover again straight after.
+      if (opener?.current?.contains(target)) return;
+      if (ref.current && !ref.current.contains(target)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;

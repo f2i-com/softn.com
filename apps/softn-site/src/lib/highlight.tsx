@@ -1,14 +1,15 @@
 import React from 'react';
 
 /**
- * A deliberately small highlighter for `.ui`, `.logic` and `.py` source.
+ * A deliberately small highlighter for a bundle's pages (`.ui`, `.html`),
+ * its `.logic` and its `.py` source.
  *
  * It exists to make one point visually — that the marks belonging to SoftN
  * itself (`#each`, `@click`, `:bind`, the braces around an expression, the
  * `<logic>` block) are a different kind of thing from the markup around them —
  * so it only needs enough resolution to separate those from tags, attributes,
  * strings and prose. Anything a real editor would do beyond that is out of
- * scope; the builder ships Monaco for that.
+ * scope; that is the editors' job, in Studio and Builder.
  */
 
 /**
@@ -18,6 +19,10 @@ import React from 'react';
  */
 type Rule = { cls: string; re: RegExp; quotes?: string; oneLine?: boolean };
 
+// In logic, a tag only counts when the name is capitalised or is the `logic`
+// block — otherwise every `a<b` in a `.logic` file would open an element.
+const LOGIC_TAG: Rule = { cls: 'tok-tag', re: /^<\/?(?:[A-Z][\w.]*|logic|script|style)\b/ };
+
 // Order is the whole design here: the first rule that matches at a position
 // wins, so the specific marks have to be tried before the general ones.
 const RULES: Rule[] = [
@@ -25,9 +30,7 @@ const RULES: Rule[] = [
   { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'|^`(?:[^`\\]|\\.)*`/, quotes: '"\'`' },
   // SoftN's control-flow directives.
   { cls: 'tok-mark', re: /^#(?:if|else|each|empty|end)\b/ },
-  // A tag only counts when the name is capitalised or is the `logic` block —
-  // otherwise every `a < b` in a `.logic` file would open an element.
-  { cls: 'tok-tag', re: /^<\/?(?:[A-Z][\w.]*|logic|script|style)\b/ },
+  LOGIC_TAG,
   { cls: 'tok-tag', re: /^\/?>/ },
   // Event handlers and two-way bindings.
   { cls: 'tok-mark', re: /^[@:][A-Za-z_][\w-]*/ },
@@ -61,12 +64,33 @@ const PYTHON_RULES: Rule[] = [
   { cls: 'tok-expr', re: /^[^\s#"'=(),:[\]]+|^\s+|^./ },
 ];
 
-/** Which rules a source is read with: SoftN markup and `.logic`, or Python. */
-export type HighlightLanguage = 'softn' | 'python';
+/**
+ * A page: `.ui` or `.html`. The SoftN marks are read as in the rules above,
+ * and a lowercase name is an element too, as the parser reads it (`<div>`,
+ * `<section>`, `<input>`), as are a comment and the doctype. A tag name has
+ * to end where a tag's name ends — at a space, `>`, `/` or the end — so a
+ * `<script>` block's `i<n;` is still a comparison. Each of the new rules
+ * consumes what it opens to the end of the file when it does not close, so
+ * no stretch is read twice.
+ */
+const MARKUP_RULES: Rule[] = [
+  { cls: 'tok-com', re: /^<!--[\s\S]*?(?:-->|$)/ },
+  { cls: 'tok-tag', re: /^<![A-Za-z][^>]*>?/ },
+  ...RULES.map((rule) => (rule === LOGIC_TAG ? { cls: 'tok-tag', re: /^<\/?[A-Za-z][\w.:-]*(?=[\s/>]|$)/ } : rule)),
+];
 
-/** A file's highlighting language from its name — the composer's own rule: `.py` is Python. */
+/** Which rules a source is read with: a page, `.logic` (and other JavaScript), or Python. */
+export type HighlightLanguage = 'softn' | 'markup' | 'python';
+
+/**
+ * A file's highlighting language from its name — the composer's own rule:
+ * `.py` is Python; a page (`.ui`, `.html`, `.svg`, `.xml`) is markup; the rest,
+ * `.logic` and `.js` among them, is read with the SoftN rules.
+ */
 export function languageOf(path: string): HighlightLanguage {
-  return /\.py$/i.test(path) ? 'python' : 'softn';
+  if (/\.py$/i.test(path)) return 'python';
+  if (/\.(?:ui|html?|svg|xml)$/i.test(path)) return 'markup';
+  return 'softn';
 }
 
 const BACKSLASH = 92;
@@ -104,7 +128,7 @@ function unclosedUntil(source: string, open: number, oneLine: boolean): number {
 }
 
 export function highlight(source: string, language: HighlightLanguage = 'softn'): React.ReactElement[] {
-  const rules = language === 'python' ? PYTHON_RULES : RULES;
+  const rules = language === 'python' ? PYTHON_RULES : language === 'markup' ? MARKUP_RULES : RULES;
   const out: React.ReactElement[] = [];
   let rest = source;
   let pos = 0;

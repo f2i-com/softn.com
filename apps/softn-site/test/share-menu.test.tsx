@@ -110,6 +110,25 @@ describe('the Share menu without a system share sheet', () => {
     expect(menu.querySelectorAll('a[href], button').length).toBe(10);
   });
 
+  it('closes when Share is pressed a second time', async () => {
+    // A real press is a mousedown and then a click. The mousedown, outside
+    // the popover, used to close it, and the click then opened it again.
+    await open();
+    expect(container.querySelector('.popover')).not.toBeNull();
+    await act(async () => {
+      shareButton().dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      shareButton().click();
+    });
+    expect(container.querySelector('.popover')).toBeNull();
+    expect(shareButton().getAttribute('aria-expanded')).toBe('false');
+    // And a third press opens it again.
+    await act(async () => {
+      shareButton().dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      shareButton().click();
+    });
+    expect(container.querySelector('.popover')).not.toBeNull();
+  });
+
   it('opens towards the side that has room for it', async () => {
     // What Chromium reports at 320px: hung from the button's right edge, the box starts 80px left of the screen.
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
@@ -119,5 +138,37 @@ describe('the Share menu without a system share sheet', () => {
     const menu = await open();
     expect(menu.classList.contains('popover-left')).toBe(true);
     expect(menu.classList.contains('popover-right')).toBe(false);
+  });
+});
+
+describe('the Share button with a system share sheet', () => {
+  afterEach(() => {
+    delete (navigator as unknown as { share?: unknown }).share;
+  });
+
+  const withShare = (share: () => Promise<void>) => {
+    const fn = vi.fn(share);
+    Object.defineProperty(navigator, 'share', { value: fn, configurable: true, writable: true });
+    return fn;
+  };
+
+  it('opens no menu when the person closes the sheet', async () => {
+    const share = withShare(() => Promise.reject(new DOMException('Share canceled', 'AbortError')));
+    await open();
+    expect(share).toHaveBeenCalledOnce();
+    expect(container.querySelector('.popover')).toBeNull();
+    expect(shareButton().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('opens no menu once the link is shared', async () => {
+    withShare(() => Promise.resolve());
+    await open();
+    expect(container.querySelector('.popover')).toBeNull();
+  });
+
+  it('falls back to the menu when the sheet is refused', async () => {
+    withShare(() => Promise.reject(new DOMException('Not allowed', 'NotAllowedError')));
+    await open();
+    expect(container.querySelector('.popover')).not.toBeNull();
   });
 });

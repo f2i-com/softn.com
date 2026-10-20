@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type CapabilityFilter, type Category } from '../lib/api';
 import { navigate, type Route } from '../lib/router';
-import { AppGrid, Featured, pickFeatured } from '../components/directory/AppCard';
+import { AppGrid, Featured } from '../components/directory/AppCard';
+import { useFeaturedShelf } from '../components/directory/featured';
 import { CAP_FILTERS, SORTS, CapabilityChips, CategoriesNotice, CategoryChips, Pagination, SearchBox, SortSelect } from '../components/directory/Controls';
 
 interface Filters {
@@ -94,12 +95,25 @@ export function DirectoryPage({
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [featured, setFeatured] = useState<AppCardData[]>([]);
   const [attempt, setAttempt] = useState(0);
+  const current = categories.find((c) => c.id === category);
+  const capName = CAP_FILTERS.find((c) => c.id === cap)?.name;
 
+  // The title names what the list is narrowed to, in the order the heading
+  // over the grid does, so a tab or a bookmark says which list it is.
   useEffect(() => {
-    document.title = q ? `${q} — apps on SoftN` : author ? `Apps by ${author} — SoftN` : 'Apps — SoftN';
-  }, [q, author]);
+    document.title = q
+      ? `${q} — apps on SoftN`
+      : author
+        ? `Apps by ${author} — SoftN`
+        : category !== 'all'
+          ? `${current?.name ?? category} apps — SoftN`
+          : tag
+            ? `Apps tagged #${tag} — SoftN`
+            : capName
+              ? `Apps: ${capName} — SoftN`
+              : 'Apps — SoftN';
+  }, [q, author, category, current?.name, tag, capName]);
 
   // An address that says page=abc, page=0 or page=1 means page 1, and the
   // address is made to say so — replaced, so back does not return to it.
@@ -140,23 +154,11 @@ export function DirectoryPage({
   // The featured shelf is chosen from the most-played dozen and changes as
   // the directory does. It only appears on the unfiltered front page.
   const showFeatured = !filtered && page === 1 && sort === 'trending';
-  useEffect(() => {
-    if (!showFeatured) return undefined;
-    const ac = new AbortController();
-    listApps({ sort: 'runs', perPage: 12 }, ac.signal)
-      .then((r) => {
-        if (!ac.signal.aborted) setFeatured(pickFeatured(r.items));
-      })
-      .catch(() => {
-        if (!ac.signal.aborted) setFeatured([]);
-      });
-    return () => ac.abort();
-  }, [showFeatured]);
+  const { featured } = useFeaturedShelf({ enabled: showFeatured });
 
   const go = (next: Partial<Filters>) => {
     navigate(buildUrl({ ...filters, page: 1, ...next }));
   };
-  const current = categories.find((c) => c.id === category);
 
   // What the listing is showing, in the section's own heading. The page is
   // always "Apps"; the heading over the grid says which ones.
@@ -203,7 +205,7 @@ export function DirectoryPage({
           </div>
         </header>
 
-        {showFeatured && <Featured apps={featured} categories={categories} />}
+        {showFeatured && <Featured apps={featured ?? []} categories={categories} />}
 
         <section className="directory-all" aria-labelledby="all-apps-title">
           <div className="directory-section-head">

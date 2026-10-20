@@ -16,6 +16,15 @@ async function expectLoadedImage(image: Locator): Promise<void> {
   }), { message: 'The real workspace screenshot must load' }).toBe(true);
 }
 
+/**
+ * Let the live preview load: at phone width it waits to be asked, so a
+ * visitor on a phone does not download the runtime unless they want it.
+ */
+async function startPreview(panel: Locator): Promise<void> {
+  const start = panel.getByRole('button', { name: 'Start live preview', exact: true });
+  if (await start.isVisible()) await start.click();
+}
+
 test.describe('landing workspace and the Fieldnotes teaching app', () => {
   test('a live app preview supports keyboard navigation and opens in the runtime', async ({ page }, testInfo) => {
     const log = watchConsole(page, testInfo);
@@ -30,6 +39,7 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
       const previewPanel = page.getByRole('tabpanel', { name: 'App preview', exact: true });
       const live = previewPanel.locator('.workspace-live-stage');
       await live.scrollIntoViewIfNeeded();
+      await startPreview(previewPanel);
       await expect(live).toHaveAttribute('data-state', 'ready', { timeout: 60_000 });
       await expect(previewPanel.getByRole('img')).toHaveCount(0);
       const frame = page.frameLocator('iframe[title="Live Fieldnotes sample app"]');
@@ -76,6 +86,7 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
       await data.press('ArrowRight');
       await expect(preview).toBeFocused();
       await live.scrollIntoViewIfNeeded();
+      await startPreview(previewPanel);
       await expect(live).toHaveAttribute('data-state', 'ready', { timeout: 60_000 });
       await expect(frame.locator('[aria-label="Total tasks"]')).toHaveText('6');
       await expect(page.locator('.workspace-preview')).not.toContainText(/Glamour/i);

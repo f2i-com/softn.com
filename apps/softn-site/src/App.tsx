@@ -16,6 +16,31 @@ import { applyMeta, HOME_TITLE, metaFor } from './lib/meta';
 const AppPage = lazy(() => import('./pages/AppPage').then((m) => ({ default: m.AppPage })));
 const PublishPage = lazy(() => import('./pages/PublishPage').then((m) => ({ default: m.PublishPage })));
 
+/**
+ * The first stop for a keyboard: past the product bar to the page. Each page
+ * draws its own <main>, so this moves to whichever is there rather than
+ * following the fragment, which would also put #main in the address for the
+ * router to look for.
+ */
+function SkipLink(): React.ReactElement {
+  return (
+    <a
+      className="skip-link"
+      href="#main"
+      onClick={(e) => {
+        const main = document.querySelector<HTMLElement>('main');
+        if (!main) return;
+        e.preventDefault();
+        if (!main.hasAttribute('tabindex')) main.tabIndex = -1;
+        main.focus({ preventScroll: true });
+        main.scrollIntoView?.({ block: 'start' });
+      }}
+    >
+      Skip to content
+    </a>
+  );
+}
+
 /** Says when a page that loads on demand has arrived, so focus and a fragment can find it. */
 function Arrived({ onArrive, children }: { onArrive: () => void; children: React.ReactNode }): React.ReactElement {
   useEffect(onArrive, [onArrive]);
@@ -139,6 +164,7 @@ export default function App(): React.ReactElement {
   // other, shared one Arrived, which said nothing when the second arrived.
   return (
     <>
+      <SkipLink />
       <Nav />
       <PageBoundary key={selected.kind}>
         {selected.kind === 'home' ? <main>{page}</main> : <Suspense fallback={null}>{page}</Suspense>}

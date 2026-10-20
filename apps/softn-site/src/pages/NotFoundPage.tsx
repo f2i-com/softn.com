@@ -3,13 +3,11 @@ import React, { useEffect } from 'react';
 /**
  * The page for a path the site does not have.
  *
- * Every path reaches this bundle — the deployed .htaccess answers index.html
- * for any browser navigation that is not a real file — and the app used to
- * show the home page for the ones it did not recognise, so a mistyped or
- * stale link looked like the front door with nothing said. This says what
- * happened and offers the three places a visitor could have meant. The
- * response is still a 200 from the server; a real 404 status is a
- * deployment change, not one this bundle can make.
+ * The deployed .htaccess answers a browser navigation to any path the site
+ * does not name with a 404 whose body is this bundle, and the app used to
+ * show the home page for those, so a mistyped or stale link looked like the
+ * front door with nothing said. This says what happened and offers the
+ * three places a visitor could have meant.
  */
 export function NotFoundPage({ path }: { path: string }): React.ReactElement {
   useEffect(() => {

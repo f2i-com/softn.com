@@ -118,6 +118,45 @@ describe('the drop overlay', () => {
     expect(container.querySelector('.dropzone')?.textContent).toContain('beside.softn');
   });
 
+  // A dropped folder is one item of `dataTransfer.files`, which is not a
+  // file, so a folder of bundles used to be "None of those is a .softn
+  // bundle", on the zone and beside it alike.
+  it.each([
+    ['on the zone', '.dropzone'],
+    ['beside the zone', 'h1'],
+  ])('opens a folder dropped %s and lists the bundles in it', async (_where, selector) => {
+    const target = container.querySelector(selector)!;
+    const entry = (f: File) => ({ name: f.name, isFile: true, isDirectory: false, file: (ok: (f: File) => void) => ok(f) });
+    const children = [entry(bundleFile('two.softn')), entry(new File(['notes'], 'notes.txt', { type: 'text/plain' })), entry(bundleFile('one.softn'))];
+    const folder = {
+      name: 'my-apps',
+      isFile: false,
+      isDirectory: true,
+      createReader: () => {
+        let done = false;
+        return {
+          readEntries: (ok: (batch: unknown[]) => void) => {
+            const batch = done ? [] : children;
+            done = true;
+            setTimeout(() => ok(batch), 0);
+          },
+        };
+      },
+    };
+    const event = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'dataTransfer', {
+      value: { types: ['Files'], files: [new File([], 'my-apps')], items: [{ kind: 'file', webkitGetAsEntry: () => folder }], dropEffect: 'none' },
+    });
+    act(() => {
+      target.dispatchEvent(event);
+    });
+    await settle();
+    expect(container.textContent).not.toContain('None of those is a .softn bundle');
+    const rows = [...container.querySelectorAll('.batch-item')];
+    expect(rows.map((r) => r.querySelector('.batch-status')?.textContent)).toEqual(['ready', 'ready']);
+    expect(rows.map((r) => r.querySelector('.muted')?.textContent?.trim())).toEqual([expect.stringContaining('v1.0.0'), expect.stringContaining('v1.0.0')]);
+  });
+
   it('follows the pointer across elements while the drag is still over the page', () => {
     const zone = container.querySelector('.dropzone')!;
     const title = container.querySelector('h1')!;

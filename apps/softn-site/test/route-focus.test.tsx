@@ -122,3 +122,19 @@ describe('focus on navigation', () => {
     expect(document.activeElement).toBe(document.body);
   });
 });
+
+describe('the skip link', () => {
+  it('is the first thing Tab reaches, and takes focus past the bar to the page', async () => {
+    act(() => navigate('/apps'));
+    await settle();
+    const first = container.querySelector('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    expect(first?.classList.contains('skip-link')).toBe(true);
+    expect(first?.textContent).toBe('Skip to content');
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    act(() => (first as HTMLAnchorElement).click());
+    expect(document.activeElement?.tagName).toBe('MAIN');
+    expect(document.activeElement?.closest('.directory')).not.toBeNull();
+    // The address is left alone: the router does not go looking for #main.
+    expect(window.location.hash).toBe('');
+  });
+});

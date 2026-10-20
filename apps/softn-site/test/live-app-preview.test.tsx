@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { LiveAppPreview, prefersManualStart } from '../src/components/LiveAppPreview';
+import { isPhone, LiveAppPreview, PHONE_QUERY, prefersManualStart } from '../src/components/LiveAppPreview';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -94,6 +94,52 @@ it('waits for a visitor who asked to save data to start the preview', () => {
   act(() => root.render(<LiveAppPreview />));
   expect(host.querySelector('iframe')).toBeNull();
   expect(host.textContent).toContain('Paused to save data');
+  expect(host.querySelector('a')?.href).toContain('open=');
+  act(() => host.querySelector<HTMLButtonElement>('button.workspace-live-start')!.click());
+  expect(host.querySelector('iframe')).not.toBeNull();
+  expect(host.querySelector('button.workspace-live-start')).toBeNull();
+});
+
+it('keeps the stand-in until the card scrolls near the screen, at the same size', () => {
+  act(() => root.unmount());
+  let intersect: (entries: Array<{ isIntersecting: boolean }>) => void = () => {};
+  const observed: Element[] = [];
+  const stopped = vi.fn();
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) { intersect = callback; }
+    observe(element: Element) { observed.push(element); }
+    disconnect = stopped;
+  });
+  root = createRoot(host);
+  act(() => root.render(<LiveAppPreview />));
+  const stage = host.querySelector<HTMLElement>('.workspace-live-stage')!;
+  const ratio = stage.style.aspectRatio;
+  expect(observed).toEqual([stage]);
+  expect(host.querySelector('iframe')).toBeNull();
+  expect(host.querySelector('.workspace-live-placeholder')).not.toBeNull();
+  act(() => intersect([{ isIntersecting: false }]));
+  expect(host.querySelector('iframe')).toBeNull();
+  act(() => intersect([{ isIntersecting: true }]));
+  expect(host.querySelector('iframe')).not.toBeNull();
+  expect(stopped).toHaveBeenCalled();
+  // Nothing about the box changes when the runtime arrives in it.
+  expect(stage.style.aspectRatio).toBe(ratio);
+});
+
+it('does not load the runtime on a phone until asked, and says so without claiming a data saver', () => {
+  act(() => root.unmount());
+  const queries: string[] = [];
+  vi.stubGlobal('matchMedia', (query: string) => {
+    queries.push(query);
+    return { matches: query === PHONE_QUERY, media: query, addEventListener() {}, removeEventListener() {} };
+  });
+  expect(isPhone()).toBe(true);
+  root = createRoot(host);
+  act(() => root.render(<LiveAppPreview />));
+  expect(queries).toContain(PHONE_QUERY);
+  expect(host.querySelector('iframe')).toBeNull();
+  expect(host.textContent).toContain('Loads when you start it');
+  expect(host.textContent).not.toContain('save data');
   expect(host.querySelector('a')?.href).toContain('open=');
   act(() => host.querySelector<HTMLButtonElement>('button.workspace-live-start')!.click());
   expect(host.querySelector('iframe')).not.toBeNull();

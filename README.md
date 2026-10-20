@@ -393,11 +393,13 @@ And the pieces an app would otherwise lay out by hand each time:
 Auto-configured, data-driven components:
 
 ```xml
+<data><collection name="clients" as="clients" /></data>
+
 <SmartGrid
-  collection="clients"
+  data={clients}
   columns="name, email, phone, visits"
   searchable sortable pageable
-  editable deletable
+  editable delete
   onEdit={editClient}
   onDelete={deleteClient}
 />

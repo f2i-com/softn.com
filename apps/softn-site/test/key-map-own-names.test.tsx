@@ -25,7 +25,7 @@ vi.mock('../src/lib/api', async () => ({
   getComments: async () => ({ items: [], pages: 1, total: 0 }),
 }));
 
-import { forgetKey, importKeys, rememberKey, savedKey, savedKeys } from '../src/lib/api';
+import { forgetKey, importKeys, rememberKey, savedKey, savedKeys } from '../src/lib/keyStore';
 import { AppPage } from '../src/pages/AppPage';
 import { PublishPage } from '../src/pages/PublishPage';
 

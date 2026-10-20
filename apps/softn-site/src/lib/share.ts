@@ -25,13 +25,19 @@ export function canSystemShare(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 }
 
-export async function systemShare(url: string, title: string, text: string): Promise<boolean> {
-  if (!canSystemShare()) return false;
+/**
+ * Hand the link to the system share sheet. `cancelled` is the person closing
+ * the sheet, which the browser reports as an AbortError: they chose not to
+ * share, and the fallback menu must not open in its place. `failed` is the
+ * sheet being refused or unavailable, where the menu is the way to share.
+ */
+export async function systemShare(url: string, title: string, text: string): Promise<'shared' | 'cancelled' | 'failed'> {
+  if (!canSystemShare()) return 'failed';
   try {
     await navigator.share({ url, title, text });
-    return true;
-  } catch {
-    return false;
+    return 'shared';
+  } catch (err) {
+    return (err as { name?: unknown } | null)?.name === 'AbortError' ? 'cancelled' : 'failed';
   }
 }
 

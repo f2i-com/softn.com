@@ -1,31 +1,41 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ApiError, getApp, getRating, listApps, rate, recordRun, savedKey, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
+import { ApiError, getApp, getRating, listApps, rate, recordRun, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
+import { savedKey } from '../lib/keyStore';
 import { launchApp } from '../lib/launch';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
 import { runtimeAppUrl } from '../lib/appUrls';
 import type { Route } from '../lib/router';
-import { setDescription } from '../lib/meta';
+import { applyMeta, metaFor, setDescription } from '../lib/meta';
 import { AppGrid, Thumb } from '../components/directory/AppCard';
 import { StarInput, Stars } from '../components/directory/Stars';
 import { ShareMenu } from '../components/directory/ShareMenu';
 import { Comments } from '../components/directory/Comments';
 import { SourceViewer } from '../components/directory/SourceViewer';
+import { ExternalGlyph, PlayGlyph } from '../components/glyphs';
 import { describeCapability, describeStoragePolicy } from '../lib/capabilities';
 
-function PlayGlyph({ size = 14 }: { size?: number }): React.ReactElement {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M8 5v14l11-7z" />
-    </svg>
-  );
-}
+type Breakdown = AppDetail['ratingBreakdown'];
+type Star = keyof Breakdown;
 
-function ExternalGlyph({ size = 13 }: { size?: number }): React.ReactElement {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M7 17 17 7M9 7h8v8" />
-    </svg>
-  );
+/**
+ * The rating breakdown after this visitor's vote, from what the vote's answer
+ * says. The directory answers a vote with the new average, count and the
+ * visitor's own stars, not the breakdown, so the bars are moved here: a first
+ * vote adds one to its star, and a changed vote moves one from the star it
+ * had to the new one. `previous` is the visitor's earlier stars when known;
+ * when it is not (the rating had not loaded), a count that went up says the
+ * vote was a first one, and a count that did not leaves the bars as they
+ * were rather than guess which star to take one from.
+ */
+export function breakdownAfterVote(breakdown: Breakdown, previous: number | null | undefined, stars: number, countWentUp: boolean): Breakdown {
+  const star = (n: number) => String(n) as Star;
+  // null: no earlier vote; undefined: an earlier vote on a star not known.
+  const from = previous === undefined ? (countWentUp ? null : undefined) : previous;
+  if (from === undefined || from === stars || !(star(stars) in breakdown)) return breakdown;
+  const next = { ...breakdown };
+  if (from !== null && star(from) in next) next[star(from)] = Math.max(0, next[star(from)] - 1);
+  next[star(stars)] += 1;
+  return next;
 }
 
 function Badges({ capabilities, execution, official, external }: { capabilities: string[]; execution: string; official: boolean; external: { url: string; host: string } | null }): React.ReactElement {
@@ -198,11 +208,21 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
     ratingPending.current = true;
     setRateBusy(true);
     setRateError(null);
+    // The visitor's stars before this vote, if the rating has loaded.
+    const previous = rating ? rating.mine : undefined;
     try {
       const r = await rate(app.slug, stars);
       ratingRevision.current += 1;
       setRating(r);
-      setApp((current) => current ? { ...current, rating: { average: r.average, count: r.count } } : current);
+      setApp((current) =>
+        current
+          ? {
+              ...current,
+              rating: { average: r.average, count: r.count },
+              ratingBreakdown: breakdownAfterVote(current.ratingBreakdown, previous, r.mine ?? stars, r.count > current.rating.count),
+            }
+          : current,
+      );
     } catch (e) {
       setRateError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -210,6 +230,21 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
       setRateBusy(false);
     }
   };
+
+  // A failed load says so in the title, where the last page's title (the
+  // front page's, or the previous app's) used to stay. A slug the directory
+  // does not have is a page that does not exist: not to be indexed, and not
+  // canonical under its own address, the same as any other unknown path.
+  // Another app's page puts its own head back (App's metaFor on the change).
+  useEffect(() => {
+    if (!error) return;
+    if (error.status === 404) {
+      document.title = 'App not found — SoftN';
+      applyMeta(metaFor({ kind: 'not-found' }));
+    } else {
+      document.title = 'App not loaded — SoftN';
+    }
+  }, [error]);
 
   // Go, and count the run on the way out. The count is best effort and is
   // not waited for: a directory that is not answering must not stand between
@@ -590,7 +625,7 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
               <h2 className="side-title">{external ? 'Listed from elsewhere' : editable ? 'Yours' : 'Yours to update?'}</h2>
               {external ? (
                 <p className="muted">
-                  This listing points at a Softn app on its own site. The site administrator keeps it; the app itself is updated where it lives.
+                  This listing points at a SoftN app on its own site. The site administrator keeps it; the app itself is updated where it lives.
                 </p>
               ) : editable ? (
                 <p className="muted">

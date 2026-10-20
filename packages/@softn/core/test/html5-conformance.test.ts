@@ -62,7 +62,10 @@ function softn(fragment: string): string {
         if (node.type === 'Text') return node.content;
         if (node.type !== 'Element') return { html: `[${node.type}]` };
         const attrs = attributes(
-          node.props.map((p) => [p.name, p.value.type === 'static' ? p.value.value : p.value.type === 'boolean' ? '' : String(p.value.value)])
+          node.props.map((p) => [
+            p.name,
+            p.value.type === 'static' ? p.value.value : p.value.type === 'boolean' ? '' : p.value.type === 'expression' ? '{expression}' : String(p.value.value),
+          ])
         );
         return { html: `<${node.tag}${attrs}>${shape(node.children)}</${node.tag}>` };
       })
@@ -223,6 +226,11 @@ const DIFFERENCES: Record<string, [source: string, softn: string, why: string]> 
     '<p><b>x</p>\n<p>y',
     '<p><b>x</b></p><p><b>y</b></p>',
     "space alone between tags, a page's layout, does not open a formatting element again; HTML opens it around the space and puts every later block inside it",
+  ],
+  templateLiteralValue: [
+    '<p title=`Hi`>x</p>',
+    '<p title="{expression}">x</p>',
+    "a value written as a template literal is the expression it looks like, as one in braces is; HTML reads the backticks as part of an unquoted value",
   ],
 };
 

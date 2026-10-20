@@ -26,7 +26,8 @@ vi.mock('../src/lib/api', async () => ({
   unpublish,
 }));
 
-import { ApiError, savedKeys } from '../src/lib/api';
+import { ApiError } from '../src/lib/api';
+import { savedKeys } from '../src/lib/keyStore';
 import { PublishPage } from '../src/pages/PublishPage';
 import { stashDroppedBundles, takeDroppedBundles } from '../src/lib/dropped';
 

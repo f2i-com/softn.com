@@ -1,5 +1,6 @@
 import React from 'react';
 import { Reveal } from './Reveal';
+import { Arrow } from './glyphs';
 import landing from '../../../../docs/generated/landing.json';
 
 /**
@@ -22,7 +23,7 @@ export function LearnDocs(): React.ReactElement {
           </div>
           <a className="cta" href={landing.cta.href}>
             {landing.cta.label}
-            <Arrow />
+            <Arrow className={null} />
           </a>
         </div>
         <div className="learn-grid">
@@ -32,20 +33,12 @@ export function LearnDocs(): React.ReactElement {
               <span className="learn-title">{card.label}</span>
               <span className="learn-desc">{card.description}</span>
               <span className="learn-go" aria-hidden="true">
-                Read the guide <Arrow />
+                Read the guide <Arrow className={null} />
               </span>
             </a>
           ))}
         </div>
       </div>
     </Reveal>
-  );
-}
-
-function Arrow(): React.ReactElement {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M3 8h9M8.5 3.5 13 8l-4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   );
 }

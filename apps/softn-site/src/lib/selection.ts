@@ -21,6 +21,7 @@
  * Nothing here knows about React; the page subscribes.
  */
 
+import { formatBytes } from './format';
 import { inspectBundle, type Inspection } from './inspectBundle';
 
 /**
@@ -113,10 +114,6 @@ export interface SelectionDeps {
   concurrency?: number;
 }
 
-function fmt(n: number): string {
-  return n >= 1024 * 1024 ? `${Math.round(n / (1024 * 1024))} MB` : `${Math.round(n / 1024)} KB`;
-}
-
 /** Whether these files may be read at all, from their sizes alone. */
 export function admit(files: File[], limits: SelectionLimits = DEFAULT_LIMITS): Admission {
   if (files.length > limits.maxBatchFiles) {
@@ -125,12 +122,12 @@ export function admit(files: File[], limits: SelectionLimits = DEFAULT_LIMITS): 
   let total = 0;
   for (const f of files) {
     if (f.size > limits.maxFileBytes) {
-      return { ok: false, reason: `${f.name} is ${fmt(f.size)}; the directory takes bundles up to ${fmt(limits.maxFileBytes)}.` };
+      return { ok: false, reason: `${f.name} is ${formatBytes(f.size)}; the directory takes bundles up to ${formatBytes(limits.maxFileBytes)}.` };
     }
     total += f.size;
   }
   if (total > limits.maxBatchBytes) {
-    return { ok: false, reason: `Those bundles are ${fmt(total)} together; the page takes at most ${fmt(limits.maxBatchBytes)} at once.` };
+    return { ok: false, reason: `Those bundles are ${formatBytes(total)} together; the page takes at most ${formatBytes(limits.maxBatchBytes)} at once.` };
   }
   return { ok: true };
 }

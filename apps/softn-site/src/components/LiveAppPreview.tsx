@@ -19,15 +19,41 @@ export function prefersManualStart(nav: Navigator | undefined = typeof navigator
   return Boolean(connection && (connection.saveData || ['slow-2g', '2g', '3g'].includes(connection.effectiveType ?? '')));
 }
 
+/**
+ * A phone, for this purpose: the site's narrow layout, where the hero stacks
+ * and the preview card is a phone's width. There the runtime is a lot to load
+ * for a card most visitors scroll past, so it waits to be asked for. Without
+ * `matchMedia` (an old browser, a test) nothing is a phone.
+ */
+export const PHONE_QUERY = '(max-width: 720px)';
+
+export function isPhone(): boolean {
+  return typeof matchMedia === 'function' && matchMedia(PHONE_QUERY).matches;
+}
+
+/** Why the preview waits for its button, if it does. */
+type Held = 'save-data' | 'phone' | null;
+
+function heldBack(): Held {
+  if (prefersManualStart()) return 'save-data';
+  if (isPhone()) return 'phone';
+  return null;
+}
+
 export function LiveAppPreview() {
   const stage = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const [width, setWidth] = useState(0);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [loaded, setLoaded] = useState(false);
-  const [started, setStarted] = useState(() => !prefersManualStart());
+  const [held] = useState<Held>(heldBack);
+  const [started, setStarted] = useState(() => held === null);
   const [pageLoaded, setPageLoaded] = useState(() => typeof document === 'undefined' || document.readyState === 'complete');
-  const mounted = started && pageLoaded;
+  // Whether the stage has come near the screen. Below the fold (the hero
+  // stacks on a tablet) the runtime waits until it is scrolled to; without
+  // IntersectionObserver there is no telling, so it counts as seen.
+  const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined');
+  const mounted = started && pageLoaded && seen;
   // Let the app use its phone layout in narrow cards instead of shrinking
   // desktop controls to a size that is difficult to tap.
   const compact = width > 0 && width < 420;
@@ -56,6 +82,27 @@ export function LiveAppPreview() {
     window.addEventListener('load', done, { once: true });
     return () => window.removeEventListener('load', done);
   }, [pageLoaded]);
+
+  // Watched only once it would otherwise start: a held-back preview loads on
+  // its button, which is beside it, and needs no watching.
+  useEffect(() => {
+    const element = stage.current;
+    if (seen || !started || !element || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
+      },
+      { rootMargin: '200px 0px' },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [seen, started]);
+
+  const start = () => {
+    setStarted(true);
+    // Pressed beside the card, so the card is on screen.
+    setSeen(true);
+  };
 
   useEffect(() => {
     const origin = new URL(frameUrl, window.location.href).origin;
@@ -87,8 +134,8 @@ export function LiveAppPreview() {
       </div>}
     </div>
     <div className="workspace-live-footer" data-state={state}>
-      <span className="workspace-live-status" role="status"><span aria-hidden="true" />{state === 'ready' ? 'Live · try it here' : state === 'error' ? 'Preview unavailable' : !started ? 'Paused to save data' : 'Loading app…'}</span>
-      {!started && <button type="button" className="workspace-live-start" onClick={() => setStarted(true)}>Start live preview</button>}
+      <span className="workspace-live-status" role="status"><span aria-hidden="true" />{state === 'ready' ? 'Live · try it here' : state === 'error' ? 'Preview unavailable' : !started ? (held === 'phone' ? 'Loads when you start it' : 'Paused to save data') : 'Loading app…'}</span>
+      {!started && <button type="button" className="workspace-live-start" onClick={start}>Start live preview</button>}
       <a className="workspace-live-action" href={FIELDNOTES_RUNTIME} aria-label="Open live Fieldnotes app in the runtime">Open in runtime <span aria-hidden="true">↗</span></a>
     </div>
   </>;

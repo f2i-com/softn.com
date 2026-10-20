@@ -57,6 +57,25 @@ main:focus-visible {
   outline: none;
 }
 
+/* The first stop for a keyboard: past the product bar to the page's main.
+   Off screen until focused, then over the sticky bar (z-index 50 in
+   @softn/brand's bar.css), as the docs draw theirs. */
+.skip-link {
+  position: fixed;
+  left: 1rem;
+  top: -4rem;
+  z-index: 60;
+  padding: 0.5rem 0.875rem;
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 0.5rem;
+  font-weight: 600;
+}
+
+.skip-link:focus {
+  top: 0.75rem;
+}
+
 /* Two exceptions, and the same reason for both: these are scrollers, so the
    browser makes them focusable, and each one sits inside a rounded parent with
    overflow: hidden — .lang around the code sample, .player around the source
@@ -405,13 +424,6 @@ main:focus-visible {
 }
 
 /* ── Code panels: the language samples ────────────────────────── */
-
-.panel {
-  background: var(--ink-2);
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
 
 .panel-bar {
   display: flex;
@@ -1019,9 +1031,10 @@ main:focus-visible {
 /* ── Touch ─────────────────────────────────────────────────────── */
 
 /*
- * The small controls are sized for a cursor: the theme toggle is 30px square,
- * the "open full size" link is 18px tall. Fine to click, awkward to thumb, and
- * 18px is under the 24px WCAG asks for outright.
+ * The small controls are sized for a cursor: the footer links are 30px tall,
+ * the "open full size" link is 18px. Fine to click, awkward to thumb, and
+ * 18px is under the 24px WCAG asks for outright. (The product bar's own
+ * controls are @softn/brand's bar.css, which sizes them for touch itself.)
  *
  * Real height rather than an invisible ::after hit area, which was the first
  * attempt and does not survive contact: stacked 30px footer links cannot have
@@ -1033,18 +1046,6 @@ main:focus-visible {
  * mouse, and a large tablet does not.
  */
 @media (pointer: coarse) {
-  .nav-repo,
-  .theme-toggle {
-    min-width: 44px;
-    min-height: 44px;
-  }
-
-  .theme-toggle {
-    width: 44px;
-    height: 44px;
-  }
-
-  .nav-links a,
   .foot-col a {
     display: block;
     padding-block: 0.6875rem;
@@ -1064,10 +1065,6 @@ main:focus-visible {
   .panel-bar-name {
     display: inline-flex;
     align-items: center;
-    min-height: 44px;
-  }
-
-  .chip {
     min-height: 44px;
   }
 
@@ -1121,7 +1118,6 @@ main:focus-visible {
 @media (max-width: 767px) {
   .eyebrow,
   .panel-bar-tag,
-  .chip-meta,
   .live,
   .lang-tab-hint,
   .stage-out,
@@ -1184,9 +1180,16 @@ main:focus-visible {
     border-color 160ms var(--ease),
     box-shadow 160ms var(--ease);
 }
+/* The ring is the field's own focus indicator (the input inside draws none),
+   so it is solid mint, two pixels with the border, rather than the translucent
+   edge it was: that measured 2.4:1 against the page in the dark theme and
+   1.8:1 in the light. Solid, it is 11:1 dark and 5:1 light, and 4:1 or more
+   against the unfocused border in both. */
 .search:focus-within {
-  border-color: var(--mint-edge);
-  box-shadow: 0 0 0 4px var(--mint-glow-soft);
+  border-color: var(--mint);
+  box-shadow:
+    0 0 0 1px var(--mint),
+    0 0 0 5px var(--mint-glow-soft);
 }
 .search-icon {
   color: var(--dim);
@@ -1311,7 +1314,10 @@ main:focus-visible {
   gap: 1rem;
   margin-top: 1.5rem;
 }
+/* The card is an article; its name is the link and stretches over the card
+   (.app-card-link below), so the card is the box it stretches over. */
 .app-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   background: var(--ink-2);
@@ -1604,9 +1610,6 @@ main:focus-visible {
 .publish {
   padding: 2.5rem 0 4rem;
 }
-.directory-head {
-  margin-bottom: 1.25rem;
-}
 .page-title {
   font-family: var(--display);
   font-weight: 800;
@@ -1722,40 +1725,6 @@ main:focus-visible {
 }
 
 /* The app page */
-/* The app, running, at the top of its page: the full width and most of the
-   height, because a game in a thumbnail-sized box is not a game. */
-.app-frame {
-  display: flex;
-  flex-direction: column;
-  border-radius: 16px;
-  overflow: hidden;
-  border: 1px solid var(--mint-edge);
-  box-shadow: 0 0 0 4px var(--mint-glow-soft);
-  background: #000;
-  margin: 0 0 2rem;
-  height: clamp(520px, 82vh, 1000px);
-}
-.app-frame:fullscreen {
-  height: 100vh;
-  border-radius: 0;
-  border: 0;
-  box-shadow: none;
-  margin: 0;
-}
-.app-frame iframe {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
-  border: 0;
-  display: block;
-  background: #000;
-}
-@media (max-width: 720px) {
-  .app-frame {
-    height: clamp(420px, 75vh, 800px);
-    border-radius: 12px;
-  }
-}
 .crumbs {
   display: flex;
   gap: 0.5rem;
@@ -2541,9 +2510,6 @@ main:focus-visible {
 }
 
 /* App page */
-.app-frame {
-  position: relative;
-}
 .badge-official {
   color: var(--mint);
   border-color: var(--mint-edge);
@@ -2899,9 +2865,6 @@ main:focus-visible {
 
 /* The card is an article; its name is the link and stretches over the card,
    and the play pill is a second link, into the runtime, drawn above it. */
-.app-card {
-  position: relative;
-}
 .app-card-link {
   color: inherit;
   text-decoration: none;
@@ -3204,35 +3167,6 @@ main:focus-visible {
 }
 .side-sublist code {
   font-size: 0.75rem;
-}
-
-/* The pre-publish report under the drop zone. */
-.prepublish {
-  margin: 0.75rem 0 0;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--ink-2);
-  font-size: 0.8125rem;
-}
-.prepublish-head {
-  margin: 0 0 0.375rem;
-  color: var(--paper);
-  font-weight: 600;
-}
-.prepublish-list {
-  margin: 0;
-  padding: 0 0 0 1.125rem;
-  color: var(--dim);
-}
-.prepublish-list li {
-  margin: 0.2rem 0;
-}
-.prepublish-error {
-  color: var(--coral);
-}
-.prepublish-error::marker {
-  color: var(--coral);
 }
 
 /* The pre-publish report under the drop zone. */

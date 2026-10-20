@@ -20,7 +20,8 @@ vi.mock('../src/lib/api', async () => {
   return { ...actual, listApps: (...args: unknown[]) => listApps(...args) };
 });
 
-import { HomePage, recallFeatured, rememberFeatured } from '../src/pages/HomePage';
+import { HomePage } from '../src/pages/HomePage';
+import { recallFeatured, rememberFeatured } from '../src/components/directory/featured';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

@@ -11,10 +11,18 @@ export function ShareMenu({ url, title, text, className = '' }: { url: string; t
   const absolute = typeof window !== 'undefined' ? new URL(url, window.location.origin).href : url;
 
   const onShare = async () => {
+    // A second press closes the menu. The popover leaves a press on this
+    // button to this handler rather than closing on its mousedown, which
+    // used to close the menu only for this click to open it again.
+    if (open) {
+      setOpen(false);
+      return;
+    }
     // A phone's own share sheet reaches every app the person has; the menu
-    // is for the browsers that lack one.
-    if (canSystemShare() && (await systemShare(absolute, title, text))) return;
-    setOpen((o) => !o);
+    // is for the browsers that lack one. Closing the sheet is a choice not to
+    // share, not a reason to offer the menu instead.
+    if (canSystemShare() && (await systemShare(absolute, title, text)) !== 'failed') return;
+    setOpen(true);
   };
 
   // Closing from inside takes the pressed control out of the page with the

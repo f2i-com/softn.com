@@ -36,5 +36,5 @@ export function demoFileExists(): boolean {
   return fs.existsSync(DEMO.file);
 }
 
-/** The localStorage key the site keeps edit keys under; the site's own contract (apps/softn-site/src/lib/api.ts). */
+/** The localStorage key the site keeps edit keys under; the site's own contract (apps/softn-site/src/lib/keyStore.ts). */
 export const SITE_KEYS_STORAGE = 'softn.site.editKeys';

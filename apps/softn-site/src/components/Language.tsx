@@ -10,8 +10,8 @@ export function Language(): React.ReactElement {
 
   /**
    * One tab stop for the whole strip, arrow keys between the tabs — the pattern
-   * `role="tablist"` promises. Five separate tab stops was the other half of the
-   * problem below 820px, where the strip scrolls sideways: tabs four and five
+   * `role="tablist"` promises. Six separate tab stops was the other half of the
+   * problem below 820px, where the strip scrolls sideways: the last tabs
    * start off the right edge at 320px, and the browser does not scroll a focused
    * child into a scroller of its own accord, so tabbing walked into controls
    * nobody could see. Selection moves with focus, and the `onFocus` below brings
@@ -62,7 +62,7 @@ export function Language(): React.ReactElement {
                 id={`lang-tab-${s.id}`}
                 aria-selected={s.id === active}
                 /* Only the selected sample's panel is rendered, so pointing the
-                   other four at ids that do not exist claims a relationship the
+                   other five at ids that do not exist claims a relationship the
                    browser drops on the floor. */
                 aria-controls={s.id === active ? `lang-panel-${s.id}` : undefined}
                 tabIndex={s.id === active ? 0 : -1}

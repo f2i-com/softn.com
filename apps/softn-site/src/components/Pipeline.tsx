@@ -28,8 +28,8 @@ const GUARDS = [
     copy: 'A script reaches nothing the engine preamble does not hand it. There is no path from bundle code to the host page.',
   },
   {
-    name: 'A budget, on the server',
-    copy: '`softn-server` runs untrusted `.logic` under a step budget it can abort. The browser has no equivalent yet — in a tab, a runaway loop still wedges the app it belongs to.',
+    name: 'A step budget, on every call',
+    copy: '`softn-server` runs untrusted `.logic` under a step budget it can abort, and so does the browser: the engine is given a fresh budget before each call into it, so no one call runs unbounded. A runaway loop ends its own app instead of holding the tab.',
   },
   {
     name: 'Bridges, not globals',

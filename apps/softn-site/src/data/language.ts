@@ -127,13 +127,15 @@ def train(steps):
     name: 'Smart components',
     hint: 'a table from one line',
     file: 'ui/pages/Clients.ui',
-    source: `// Point one at a collection and it reads the shape from
-// the data: columns, types, validation, empty state.
+    source: `// Hand one the records and it reads their shape:
+// columns, types, validation, empty state.
+<data><collection name="clients" as="clients" /></data>
+
 <SmartGrid
-  collection="clients"
+  data={clients}
   columns="name, email, phone, visits"
   searchable sortable pageable
-  editable deletable
+  editable delete
   @edit={editClient}
   @delete={removeClient}
 />

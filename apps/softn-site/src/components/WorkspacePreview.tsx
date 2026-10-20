@@ -4,7 +4,7 @@ import { LiveAppPreview } from './LiveAppPreview';
 
 const VIEWS = [
   { id: 'preview', label: 'App preview', image: '', alt: '', caption: 'Try adding or completing a task right here. This preview uses temporary sample data; open the runtime for a full workspace that saves your tasks.' },
-  { id: 'data', label: 'Data collections', image: dataImage, alt: 'Softn Builder’s Data view showing the Fieldnotes tasks collection, fields and sample records.', caption: 'The same app’s data: a tasks collection with a title, focus and completion status.' },
+  { id: 'data', label: 'Data collections', image: dataImage, alt: 'SoftN Builder’s Data view showing the Fieldnotes tasks collection, fields and sample records.', caption: 'The same app’s data: a tasks collection with a title, focus and completion status.' },
 ];
 
 /** A live app alongside a view of the collections behind it. */

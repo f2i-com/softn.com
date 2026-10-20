@@ -15,7 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { importKeys, rememberKey, savedKeys } from '../src/lib/api';
+import { importKeys, rememberKey, savedKeys } from '../src/lib/keyStore';
 import { PBKDF2_ITERATIONS, decryptBackup, encryptBackup, exportKeyBackup, importKeyBackup, isEncryptedBackupText, type EncryptedBackup } from '../src/lib/keyBackup';
 import { KeyImport } from '../src/pages/PublishPage';
 
@@ -224,6 +224,37 @@ describe('the import control on the update page', () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain('1 key restored');
     expect(savedKeys()).toEqual({ other: KEY_B, notes: KEY_A });
     expect(onImported).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries a passphrase once at a time', async () => {
+    const sealed = new File([await exportKeyBackup(PASS)], 'sealed.json', { type: 'application/json' });
+    act(() => {
+      root.render(<KeyImport />);
+    });
+    give(sealed);
+    await settle(() => container.textContent?.includes('is encrypted') ?? false);
+    const passphrase = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    type(passphrase, 'nope');
+    const open = [...container.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Open the backup')!;
+    act(() => open.click());
+    // The key derivation takes a moment; a second press or Enter meanwhile started a second one.
+    expect(open.disabled).toBe(true);
+    expect(open.textContent).toBe('Opening…');
+    await settle(() => container.querySelector('[role="alert"]') !== null);
+    expect(open.disabled).toBe(false);
+    expect(open.textContent).toBe('Open the backup');
+  });
+
+  it('says so when the chosen file cannot be read, and changes nothing', async () => {
+    rememberKey('notes', KEY_A);
+    Object.defineProperty(File.prototype, 'text', { value: () => Promise.reject(new DOMException('gone', 'NotReadableError')), configurable: true, writable: true });
+    act(() => {
+      root.render(<KeyImport />);
+    });
+    give(new File(['{}'], 'keys.json'));
+    await settle(() => container.querySelector('[role="status"]') !== null);
+    expect(container.querySelector('[role="status"]')?.textContent).toMatch(/keys\.json could not be read/);
+    expect(savedKeys()).toEqual({ notes: KEY_A });
   });
 
   it('takes a plain file without asking', async () => {

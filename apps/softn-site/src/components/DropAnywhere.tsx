@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { navigate } from '../lib/router';
-import { dragHasFiles, stashDroppedBundles } from '../lib/dropped';
+import { dragHasFiles, droppedFiles, stashDroppedBundles } from '../lib/dropped';
 
 /**
- * Drop `.softn` files on any page and they go to the publish page, one or a
- * folder's worth. While a file drag is over the window an overlay says so.
+ * Drop `.softn` files on any page and they go to the publish page, one, many
+ * or a folder of them (opened for the bundles inside, folders within it too).
+ * While a file drag is over the window an overlay says so.
  * On the publish page itself the stash is what its zone would have taken,
  * so a drop beside the zone is not the browser opening the file; the zone's
  * own drop stops before it reaches here — which is why the overlay comes
@@ -44,7 +45,11 @@ export function DropAnywhere({ onPublishPage }: { onPublishPage: boolean }): Rea
     const drop = (e: DragEvent) => {
       if (!dragHasFiles(e.dataTransfer)) return;
       e.preventDefault();
-      if (stashDroppedBundles(e.dataTransfer?.files ?? []) > 0 && !onPublishPage) navigate('/publish');
+      // A dropped folder is opened for the bundles in it; its entries are
+      // taken now, while the drop is being handled.
+      void droppedFiles(e.dataTransfer).then((files) => {
+        if (stashDroppedBundles(files) > 0 && !onPublishPage) navigate('/publish');
+      });
     };
     window.addEventListener('dragenter', enter);
     window.addEventListener('dragover', move);
@@ -66,7 +71,7 @@ export function DropAnywhere({ onPublishPage }: { onPublishPage: boolean }): Rea
     <div className="drop-anywhere" role="status" aria-live="polite">
       <div className="drop-anywhere-card">
         <strong>Drop .softn files to publish them</strong>
-        <span className="muted">{onPublishPage ? 'One or many: they go straight into the form.' : 'One or many: they go to the publish page, ready to go in.'}</span>
+        <span className="muted">{onPublishPage ? 'One, many or a folder of them: they go straight into the form.' : 'One, many or a folder of them: they go to the publish page, ready to go in.'}</span>
       </div>
     </div>
   );

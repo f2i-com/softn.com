@@ -25,7 +25,8 @@ vi.mock('../src/lib/api', async () => ({
   replaceKey,
 }));
 
-import { ApiError, savedKeys } from '../src/lib/api';
+import { ApiError } from '../src/lib/api';
+import { savedKeys } from '../src/lib/keyStore';
 import { PublishPage, YourApps } from '../src/pages/PublishPage';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

@@ -21,12 +21,12 @@
  * so a wrong passphrase and an altered file are refused the same way, and
  * nothing is imported from either.
  *
- * Version 1 files (plain) still import; `importKeys` in lib/api.ts takes
- * them and refuses an encrypted one, so no caller can mistake the sealed
- * form for a key map.
+ * Version 1 files (plain) still import; `importKeys` in lib/keyStore.ts
+ * takes them and refuses an encrypted one, so no caller can mistake the
+ * sealed form for a key map.
  */
 
-import { exportKeys, importKeys, type KeyImportResult } from './api';
+import { exportKeys, importKeys, type KeyImportResult } from './keyStore';
 
 export const BACKUP_FORMAT = 'softn-edit-keys';
 export const PBKDF2_ITERATIONS = 310_000;

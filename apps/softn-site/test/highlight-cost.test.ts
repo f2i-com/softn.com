@@ -43,6 +43,15 @@ describe('a file of quotes that never close', () => {
     }
   }, 600_000);
 
+  // Pages are read with the markup rules now (a page's lowercase tags), which
+  // share the string rule: the same file there costs the same.
+  it('is read once as a page', () => {
+    for (const quote of ['"', "'", '`']) {
+      expect(timed((quote + BACKSLASH).repeat(MOST_TEXT / 2), 'markup'), quote).toBeLessThan(4000);
+    }
+    expect(timed('<!doctype '.repeat(MOST_TEXT / 10), 'markup')).toBeLessThan(4000);
+  }, 600_000);
+
   it('is read once as Python, on one long line', () => {
     for (const quote of ['"', "'"]) {
       expect(timed((quote + BACKSLASH).repeat(MOST_TEXT / 2), 'python'), quote).toBeLessThan(4000);

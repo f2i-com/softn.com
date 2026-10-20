@@ -29,6 +29,9 @@ export function Comments({ slug, onCount }: { slug: string; onCount?: (n: number
     setLoading(true);
     getComments(slug, page, ac.signal)
       .then((r) => {
+        // A page the visitor has moved off, or an app they have left, is not
+        // painted over the one they are on now.
+        if (ac.signal.aborted) return;
         setItems(r.items);
         setPages(r.pages);
         setTotal(r.total);

@@ -10,7 +10,9 @@ vi.mock('../src/lib/api', async () => ({
   listApps: async () => ({ items: [] }),
   getComments: async () => ({ items: [], pages: 1, total: 0 }),
 }));
-import { AppPage } from '../src/pages/AppPage';
+import { AppPage, breakdownAfterVote } from '../src/pages/AppPage';
+import { ApiError } from '../src/lib/api';
+import { applyMeta, metaFor } from '../src/lib/meta';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
 let root: Root;
@@ -67,6 +69,22 @@ describe('app listing lifecycle', () => {
     expect(document.title).toBe('second — SoftN');
   });
 
+  it('says an unknown app is not found, in the title too, and asks for it not to be indexed under its own address', async () => {
+    document.title = 'SoftN — create, refine and run your own apps';
+    applyMeta(metaFor({ kind: 'app', slug: 'no-such-app' }));
+    expect(document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href).toContain('/app/no-such-app');
+    getApp.mockRejectedValueOnce(new ApiError(404, 'No app is published under that name.'));
+    await render('no-such-app');
+    expect(container.querySelector('h1')?.textContent).toBe('No app is published under that name.');
+    expect(document.title).toBe('App not found — SoftN');
+    expect(document.querySelector<HTMLMetaElement>('meta[name="robots"]')?.content).toBe('noindex');
+    expect(document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href).not.toContain('no-such-app');
+    expect(document.querySelector<HTMLMetaElement>('meta[property="og:url"]')?.content).not.toContain('no-such-app');
+    // A real app's page puts its own head back.
+    applyMeta(metaFor({ kind: 'app', slug: 'demo' }));
+    expect(document.querySelector('meta[name="robots"]')).toBeNull();
+  });
+
   it('offers an in-place retry for a temporary app failure', async () => {
     getApp.mockRejectedValueOnce(new Error('Temporary outage'));
     await render('demo');
@@ -74,5 +92,62 @@ describe('app listing lifecycle', () => {
     await act(async () => retry.click());
     expect(container.querySelector('h1')?.textContent).toBe('demo');
     expect(container.textContent).not.toContain('Temporary outage');
+  });
+});
+
+describe('the rating breakdown after a vote', () => {
+  /** The bars' counts, by star. */
+  const bars = () =>
+    Object.fromEntries(
+      [...container.querySelectorAll('.breakdown-row')].map((row) => [row.querySelector('.breakdown-n')?.textContent, Number(row.querySelector('.breakdown-count')?.textContent)]),
+    );
+  const vote = async (stars: number) => {
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="${stars} star${stars === 1 ? '' : 's'}"]`)!.click());
+  };
+
+  it('counts a first vote under its star', async () => {
+    rate.mockResolvedValue({ average: 4, count: 1, mine: 4 });
+    await render('demo');
+    expect(bars()).toEqual({ '5': 0, '4': 0, '3': 0, '2': 0, '1': 0 });
+    await vote(4);
+    expect(bars()).toEqual({ '5': 0, '4': 1, '3': 0, '2': 0, '1': 0 });
+  });
+
+  it('moves a changed vote from its old star to the new one', async () => {
+    getApp.mockImplementation(async (slug: string) => ({ ...app(slug), rating: { average: 4, count: 2 }, ratingBreakdown: { '1': 0, '2': 0, '3': 1, '4': 0, '5': 1 } }));
+    getRating.mockResolvedValue({ average: 4, count: 2, mine: 5 });
+    rate.mockResolvedValue({ average: 2.5, count: 2, mine: 2 });
+    await render('demo');
+    await vote(2);
+    expect(bars()).toEqual({ '5': 0, '4': 0, '3': 1, '2': 1, '1': 0 });
+    expect(container.querySelector('.stat strong')?.textContent).toBe('2.5');
+  });
+
+  it('counts a vote as a first one by the count when the visitor’s earlier stars are not known yet', async () => {
+    getRating.mockImplementation(() => new Promise(() => {}));
+    rate.mockResolvedValue({ average: 3, count: 1, mine: 3 });
+    await render('demo');
+    await vote(3);
+    expect(bars()['3']).toBe(1);
+  });
+
+  it('leaves the bars alone for a changed vote whose old star is not known', async () => {
+    getApp.mockImplementation(async (slug: string) => ({ ...app(slug), rating: { average: 5, count: 1 }, ratingBreakdown: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 1 } }));
+    getRating.mockImplementation(() => new Promise(() => {}));
+    rate.mockResolvedValue({ average: 1, count: 1, mine: 1 });
+    await render('demo');
+    await vote(1);
+    expect(bars()).toEqual({ '5': 1, '4': 0, '3': 0, '2': 0, '1': 0 });
+  });
+});
+
+describe('breakdownAfterVote', () => {
+  const empty = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 };
+  it('does nothing for a vote that did not change', () => {
+    const b = { ...empty, '4': 2 };
+    expect(breakdownAfterVote(b, 4, 4, false)).toBe(b);
+  });
+  it('never takes a bar below zero', () => {
+    expect(breakdownAfterVote(empty, 2, 5, false)).toEqual({ ...empty, '5': 1 });
   });
 });

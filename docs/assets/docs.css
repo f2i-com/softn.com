@@ -181,6 +181,14 @@ main:focus-visible {
   background: var(--inset);
 }
 
+/* On a guide the bar's Docs link is the section the page is in
+   (aria-current="true"), not the page itself; it is drawn as bar.css draws
+   the current page. */
+.softn-bar-links a[aria-current='true'] {
+  color: var(--paper);
+  border-bottom-color: var(--paper);
+}
+
 .sidebar li a[aria-current='page'],
 .mobile-navigation li a[aria-current='page'] {
   color: var(--paper);
@@ -436,14 +444,25 @@ article li::marker {
   color: var(--dimmer);
 }
 
-/* Inline code is the language, so it takes the language colour. */
+/* Inline code is the language, so it takes the language colour. In the light
+   theme the brand's coral (#c2410c) on the inset ground is 4.33:1, under the
+   4.5:1 small text needs; this is the same coral a step deeper, 5.0:1 or more
+   on every ground inline code sits on here (the page, a card, a table head). */
+:root {
+  --code-ink: var(--coral);
+}
+
+:root[data-theme='light'] {
+  --code-ink: #ad380a;
+}
+
 code {
   font-family: var(--mono);
   font-size: 0.875em;
   padding: 0.1em 0.4em;
   border-radius: 0.35rem;
   background: var(--inset);
-  color: var(--coral);
+  color: var(--code-ink);
   overflow-wrap: anywhere;
 }
 

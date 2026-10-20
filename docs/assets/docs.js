@@ -53,7 +53,8 @@
       if (links.scrollLeft + links.clientWidth < links.scrollWidth - 1) more.push('end');
       if (more.length) links.dataset.more = more.join(' '); else delete links.dataset.more;
     };
-    const current = links.querySelector('[aria-current="page"]');
+    // The Docs link: the current page on /docs/, the current section on a guide.
+    const current = links.querySelector('[aria-current]');
     const reveal = () => {
       if (current && links.scrollWidth > links.clientWidth) {
         // Clear of the padding and of the 3rem fade, or to the end if that is nearer.
@@ -94,13 +95,18 @@
   }
   for (const button of document.querySelectorAll('.copy-code')) {
     button.hidden = false;
+    // The label is read once, before any click: read on each click, a second
+    // click within the 2.5 s took "Copied" as the label to go back to.
+    const label = button.textContent;
+    let restore;
     button.addEventListener('click', async () => {
-      const label=button.textContent;
+      clearTimeout(restore);
       try {
         await navigator.clipboard.writeText(button.closest('.code-block').querySelector('pre code').textContent);
         button.textContent=button.dataset.copied;
       } catch { button.textContent=button.dataset.failed; }
-      setTimeout(()=>{button.textContent=label;},2500);
+      clearTimeout(restore);
+      restore = setTimeout(()=>{button.textContent=label;},2500);
     });
   }
 })();
