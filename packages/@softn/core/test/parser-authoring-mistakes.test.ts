@@ -192,3 +192,72 @@ describe('a block with no #end', () => {
     expect(messages('<div>#if (a)<p>a</p>#end#if (b)<p>b</p>#end</div>')).toEqual([]);
   });
 });
+
+describe('a block header without parentheses', () => {
+  // `#if ok` read the rest of the page as its condition, and the page drew
+  // nothing at all, under "expected LPAREN".
+  it('runs to the end of its line', () => {
+    expect(html('#if ok\n<p>yes</p>\n#else\n<p>no</p>\n#end', { ok: true })).toBe('<p>yes</p>');
+    expect(html('#if ok\n<p>yes</p>\n#else\n<p>no</p>\n#end', { ok: false })).toBe('<p>no</p>');
+    expect(html('#if items.includes(2) && ok\n<p>two</p>\n#end', { items: [1, 2], ok: true })).toBe('<p>two</p>');
+    expect(html('#if a\nA\n#elseif b\nB\n#else if (c)\nC\n#end', { a: false, b: false, c: true }).trim()).toBe('C');
+    // `#else if c` is still the #else branch with the words "if c" in it, as
+    // it always was: without the parenthesis `#else` cannot tell them apart.
+    expect(html('#if a\nA\n#else if you like\n#end', { a: false }).trim()).toBe('if you like');
+    expect(html('<ul>\n#each item in items\n<li>{item}</li>\n#end\n</ul>', { items: ['x', 'y'] })).toBe('<ul><li>x</li><li>y</li></ul>');
+    expect(html('#each item, i in items key={item}\n<p>{i}{item}</p>\n#end', { items: ['x'] })).toBe('<p>0x</p>');
+  });
+
+  it('says what it did not read, past the condition on its line', () => {
+    expect(messages('#if ok yes\n<p>x</p>\n#end')).toEqual([
+      '1: "yes" is not part of this block\'s header, so it was not read: a header without parentheses runs to the end of its line, so put the condition in parentheses',
+    ]);
+  });
+});
+
+describe('an #each written with of', () => {
+  it('is the same loop as in, as JavaScript\'s for…of writes it', () => {
+    expect(html('#each (item of items)\n<p>{item}</p>\n#end', { items: ['a', 'b'] })).toBe('<p>a</p><p>b</p>');
+    expect(html('#each ([k, v] OF pairs)\n<p>{k}{v}</p>\n#end', { pairs: [['a', 1]] })).toBe('<p>a1</p>');
+  });
+});
+
+describe('another framework\'s way of writing a page', () => {
+  it('names Svelte\'s and Handlebars\' blocks, once each, and the page still draws', () => {
+    const said = messages('<div>{#if ok}<p>yes</p>{:else}<p>no</p>{/if}</div><p>after</p>');
+    expect(said).toHaveLength(3);
+    expect(said[0]).toMatch(/^1: "\{#if" is how Svelte or Handlebars writes a block\. SoftN writes #if \(condition\)/);
+    expect(messages('{{#each items}}<p>x</p>{{/each}}')[0]).toMatch(/"\{\{#each" is how Svelte or Handlebars/);
+    // The rest of the page is read as the page, not as the block's condition.
+    const doc = parse('<div>{#if ok}<p>yes</p>{/if}</div><p>after</p>');
+    expect(doc.template.map((n) => (n.type === 'Element' ? n.tag : n.type))).toEqual(['div', 'p']);
+  });
+
+  it('says that {{ name }} shows a record', () => {
+    expect(messages('<p>Hello {{ name }}</p>')).toEqual([
+      '1: "{{ … }}" shows a record, not a value: SoftN writes a value in single braces, as in {name}',
+    ]);
+    expect(messages('<div style={{ color: "red" }}>x</div>')).toEqual([]);
+  });
+
+  it('says that markup is not written inside braces', () => {
+    expect(messages('<div>{ok && <p>yes</p>}</div>')[0]).toMatch(/^1: Markup is not written inside \{ \}: show it when a condition holds with #if/);
+  });
+
+  it('names Angular\'s attributes and Vue\'s directives, with what SoftN writes', () => {
+    expect(messages('<p *ngIf="ok">yes</p>')).toEqual([
+      '1: "*ngIf="ok"" is how Angular writes this, so it was not read: SoftN writes #if (ok) … #end, or if={ok} on the tag',
+    ]);
+    expect(messages('<input [value]="name">')).toEqual(['1: "[value]="name"" is how Angular writes this, so it was not read: SoftN writes value={name}']);
+    expect(messages('<button (click)="save()">x</button>')).toEqual([
+      '1: "(click)="save()"" is how Angular writes this, so it was not read: SoftN writes @click={() => save()}, or onclick="save()"',
+    ]);
+    expect(messages('<input [(ngModel)]="name">')[0]).toMatch(/SoftN writes :bind=\{name\}$/);
+    expect(messages('<li v-for="item in items">x</li>')).toEqual(['1: "v-for" is Vue\'s, so it does nothing here: SoftN writes #each (item in items) … #end']);
+    expect(messages('<input :value="name">')).toEqual(['1: :value="name" is how Vue writes this: SoftN writes :value={name}']);
+  });
+
+  it('reads a template literal written as an attribute\'s value', () => {
+    expect(html('<p title=`Hi ${name}`>x</p>', { name: 'Ada' })).toBe('<p title="Hi Ada">x</p>');
+  });
+});

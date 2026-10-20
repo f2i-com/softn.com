@@ -1391,10 +1391,13 @@ export class Parser {
           loc: this.currentLoc(),
         });
         this.skipBracedRegion();
+      } else if (this.angularAttributeAhead()) {
+        this.passOverAngularAttribute();
       } else {
         this.nextToken();
       }
     }
+    this.noteVueDirectives(element);
 
     // Set up inline loop if configured. `as="item"` (or `"item, index"`)
     // names its variable, and only beside `each=`: on any other element it is
@@ -1627,6 +1630,76 @@ export class Parser {
     if (all.length > 0) event.modifiers = all;
     if (!reference) event.quoted = true;
     return event;
+  }
+
+  /**
+   * `*ngIf="ok"`, `[value]="name"`, `(click)="save()"`: Angular's attribute
+   * forms, each starting with a mark no attribute name starts with.
+   */
+  private angularAttributeAhead(): boolean {
+    const mark = this.curToken;
+    if (mark.type !== TokenType.ASTERISK && mark.type !== TokenType.LBRACKET && mark.type !== TokenType.LPAREN) return false;
+    return this.peekToken.start === mark.end && (this.isNamePiece(this.peekToken) || this.peekToken.type === TokenType.LPAREN);
+  }
+
+  /**
+   * Pass over an Angular attribute, name and value, and say what SoftN
+   * writes. Each was read in pieces: `[value]="name"` became an attribute
+   * `value` with no value, `*ngIf="ok"` one called `ngIf`, and `(click)` was
+   * dropped, and what they meant was lost with nothing said.
+   */
+  private passOverAngularAttribute(): void {
+    const loc = this.currentLoc();
+    const written = /^(\*|\[\(|\[|\()([\w.:-]+)(?:\)\]|\]|\))?(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/.exec(
+      this.source.slice(this.curToken.start, this.curToken.start + 400)
+    );
+    const end = this.curToken.start + (written ? written[0].length : 1);
+    const [, mark = '', name = '', quoted] = written ?? [];
+    const value = quoted ? quoted.replace(/^["']|["']$/g, '') : '…';
+    const softn =
+      mark === '*'
+        ? /^ngFor$/i.test(name)
+          ? '#each (item in items) … #end'
+          : `#if (${value}) … #end, or if={${value}} on the tag`
+        : mark === '('
+          ? `@${name}={() => ${value}}, or on${name}="${value}"`
+          : mark === '[('
+            ? `:bind={${value}}`
+            : `${name}={${value}}`;
+    this.diagnostics.push({
+      message: `"${this.source.slice(loc.start, end).slice(0, 60)}" is how Angular writes this, so it was not read: SoftN writes ${softn}`,
+      severity: 'warning',
+      loc,
+    });
+    while (!this.curTokenIs(TokenType.EOF) && this.curToken.start < end) this.nextToken();
+  }
+
+  /**
+   * Vue's directives (`v-if`, `v-for`, `v-model` …) are attributes to SoftN, as
+   * to a browser, and do nothing: each is named with what SoftN writes.
+   */
+  private noteVueDirectives(element: ElementNode): void {
+    for (const prop of element.props) {
+      const directive = /^v-(if|else-if|else|for|show|model|bind|on|html|text)\b/i.exec(prop.name)?.[1].toLowerCase();
+      if (!directive) continue;
+      const softn: Record<string, string> = {
+        if: '#if (condition) … #end, or if={condition} on the tag',
+        'else-if': '#elseif (condition) inside the #if',
+        else: '#else inside the #if',
+        for: '#each (item in items) … #end',
+        show: 'if={condition} on the tag',
+        model: ':bind={name}',
+        bind: 'name={value}',
+        on: '@event={handler}',
+        html: 'the markup itself, or {value} for text',
+        text: '{value} as the element\'s content',
+      };
+      this.diagnostics.push({
+        message: `"${prop.name}" is Vue's, so it does nothing here: SoftN writes ${softn[directive]}`,
+        severity: 'warning',
+        loc: prop.loc,
+      });
+    }
   }
 
   /** The value of a quoted attribute — `name="x"` — or undefined if not written that way. */
@@ -2339,6 +2412,11 @@ export class Parser {
         // Bare boolean: prop=false
         value = { type: 'boolean', value: false };
         this.nextToken();
+      } else if (this.curTokenIs(TokenType.BACKTICK)) {
+        // `title=`Hello ${name}``: a template literal is a value as one in
+        // braces is, and is read as one. It was the attribute `title` with no
+        // value, and each word inside it another attribute.
+        value = { type: 'expression', value: this.parseTemplateLiteral() };
       }
     }
 
@@ -2453,6 +2531,18 @@ export class Parser {
     }
 
     this.expectToken(TokenType.EQUALS);
+    if (this.curTokenIs(TokenType.STRING)) {
+      // `:value="name"`, as Vue binds a value: SoftN's value is in braces.
+      this.diagnostics.push({
+        message: `:${name}="${this.curToken.literal}" is how Vue writes this: SoftN writes :${name}={${this.curToken.literal}}`,
+        severity: 'error',
+        loc,
+      });
+      const written = this.curToken.literal;
+      this.nextToken();
+      // The words, as a value: what the binding shows, and nothing it can write to.
+      return { type: 'Binding', name, expression: createLiteral(written, JSON.stringify(written), loc), loc };
+    }
     this.expectToken(TokenType.EXPR_START);
 
     const expression = this.parseExpression();
@@ -2483,9 +2573,9 @@ export class Parser {
     const loc = this.currentLoc();
     this.nextToken(); // consume 'if'
 
-    this.expectToken(TokenType.LPAREN);
+    const bare = this.openHeader();
     const condition = this.parseExpression();
-    this.expectToken(TokenType.RPAREN);
+    this.closeHeader(bare, loc);
     this.reportPendingOperand();
 
     const consequent = this.parseBranch([TokenType.ELSE, TokenType.ELSEIF, TokenType.END]);
@@ -2524,6 +2614,36 @@ export class Parser {
     }
 
     return { type: 'IfBlock', condition, consequent, alternate, loc };
+  }
+
+  /**
+   * The start of a block's header: its `(`, or none, for a header written
+   * without parentheses (`#if ok`, `#each item in items`), which the lexer
+   * ends at the end of its line. True for such a header.
+   */
+  private openHeader(): boolean {
+    if (!this.curTokenIs(TokenType.LPAREN)) return true;
+    this.nextToken();
+    return false;
+  }
+
+  /**
+   * The end of a block's header: its `)`, or the end of the line for one
+   * without parentheses, where anything the condition did not take is said
+   * and passed over rather than read as the block's first content.
+   */
+  private closeHeader(bare: boolean, loc: SourceLocation): void {
+    if (!bare) {
+      this.expectToken(TokenType.RPAREN);
+      return;
+    }
+    if (this.curToken.line !== loc.line || this.curTokenIs(TokenType.EOF)) return;
+    this.diagnostics.push({
+      message: `"${this.curToken.literal}" is not part of this block's header, so it was not read: a header without parentheses runs to the end of its line, so put the condition in parentheses`,
+      severity: 'error',
+      loc: this.currentLoc(),
+    });
+    while (this.curToken.line === loc.line && !this.curTokenIs(TokenType.EOF)) this.nextToken();
   }
 
   /**
@@ -2594,7 +2714,7 @@ export class Parser {
     const loc = this.currentLoc();
     this.nextToken(); // consume 'each'
 
-    this.expectToken(TokenType.LPAREN);
+    const bare = this.openHeader();
 
     // Parse item name (and optional index)
     let itemName = '';
@@ -2647,14 +2767,12 @@ export class Parser {
       }
     }
 
-    // `in` in any case, as the rest of the header's words are (`#EACH (x IN xs)`).
-    if (this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal.toLowerCase() === 'in') this.nextToken();
+    // `in` in any case, as the rest of the header's words are (`#EACH (x IN xs)`),
+    // and `of`, as JavaScript's `for…of` writes it: the loop is the same.
+    if (this.curTokenIs(TokenType.IDENTIFIER) && /^(?:in|of)$/i.test(this.curToken.literal)) this.nextToken();
     else this.expectToken(TokenType.IN);
 
     const iterable = this.parseExpression();
-
-    this.expectToken(TokenType.RPAREN);
-    this.reportPendingOperand();
 
     // Optional `key={expr}` after the header.
     //
@@ -2662,9 +2780,23 @@ export class Parser {
     // recommends writing exactly it, but nothing ever parsed it — so the text
     // fell into the block body and rendered on the page.
     // Past the header the lexer is back in text mode, so `key=` arrives as a
-    // TEXT token rather than an identifier and an equals.
+    // TEXT token rather than an identifier and an equals; in a header with no
+    // parentheses it is still the header's, a name and an equals.
     let keyExpression: Expression | undefined;
+    if (bare && this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal.toLowerCase() === 'key' && this.peekToken.type === TokenType.EQUALS) {
+      this.nextToken(); // key
+      this.nextToken(); // =
+      if (this.curTokenIs(TokenType.EXPR_START)) {
+        this.nextToken();
+        keyExpression = this.parseExpression();
+        this.expectToken(TokenType.EXPR_END);
+      }
+    }
+    this.closeHeader(bare, loc);
+    this.reportPendingOperand();
+
     if (
+      !bare &&
       this.curTokenIs(TokenType.TEXT) &&
       this.curToken.literal.trim().toLowerCase() === 'key=' &&
       this.peekToken.type === TokenType.EXPR_START
@@ -2719,10 +2851,49 @@ export class Parser {
     const loc = this.currentLoc();
     this.expectToken(TokenType.EXPR_START);
 
+    // `{#if ok}`, `{:else}`, `{/if}`: another template language's block,
+    // which was a run of "unexpected token" errors, one of them about
+    // regular expressions. Said once, in SoftN's own words, and passed over.
+    const block = this.otherLanguageBlock();
+    if (block) {
+      this.diagnostics.push({
+        message:
+          `"${block}" is how Svelte or Handlebars writes a block. SoftN writes #if (condition) on a line of its own, ` +
+          'then #else and #end; a list is #each (item in items) … #end',
+        severity: 'error',
+        loc,
+      });
+      this.skipRestOfExpression();
+      return { type: 'Expression', expression: createIdentifier('undefined', loc), loc };
+    }
+
+    const doubled = this.curTokenIs(TokenType.EXPR_START);
     const expression = this.parseExpression();
     this.closeExpression();
 
+    // `{{ name }}`, as Mustache, Vue and Angular write a value, is JavaScript
+    // too: a record holding `name`, which showed as nothing. Said, not changed.
+    if (doubled && expression.type === 'ObjectExpression') {
+      this.diagnostics.push({
+        message: '"{{ … }}" shows a record, not a value: SoftN writes a value in single braces, as in {name}',
+        severity: 'warning',
+        loc,
+      });
+    }
+
     return { type: 'Expression', expression, loc };
+  }
+
+  /**
+   * The words of another template language's block (`{#if`, `{:else`,
+   * `{/each`, and Handlebars' `{{#if`) where a `{` has just been read, or
+   * null where it is anything else.
+   */
+  private otherLanguageBlock(): string | null {
+    const at = this.curTokenIs(TokenType.EXPR_START) ? this.peekToken : this.curToken;
+    const text = this.source.slice(at.start, at.start + 12);
+    const written = /^(?:#|\/|:)(?:if|each|else|await|then|catch|key|unless|with)\b/i.exec(text);
+    return written ? `{${this.curTokenIs(TokenType.EXPR_START) ? '{' : ''}${written[0]}` : null;
   }
 
   /**
@@ -3454,7 +3625,11 @@ export class Parser {
           at.type === TokenType.SLASH
             ? 'Unexpected "/" where a value was expected: a regular expression literal is not ' +
               'supported in a template, so test the text in a logic function'
-            : `Unexpected "${at.literal}" where a value was expected: nothing is on its left`,
+            : at.type === TokenType.LT && this.peekToken.type === TokenType.IDENTIFIER && this.peekToken.start === at.end
+              ? // `{ok && <p>yes</p>}`, `{items.map(i => <li>{i}</li>)}`, as JSX writes them.
+                'Markup is not written inside { }: show it when a condition holds with #if (condition) … #end, ' +
+                'and once per item with #each (item in items) … #end'
+              : `Unexpected "${at.literal}" where a value was expected: nothing is on its left`,
         severity: 'error',
         loc,
       };
@@ -3894,6 +4069,11 @@ export class Parser {
       severity: 'error',
       loc: this.currentLoc(),
     });
+    this.skipRestOfExpression();
+  }
+
+  /** Pass over what is left of an expression, to past the `}` that closes it, braces inside kept balanced. */
+  private skipRestOfExpression(): void {
     let depth = 0;
     while (!this.curTokenIs(TokenType.EOF)) {
       if (this.curTokenIs(TokenType.EXPR_START)) {
@@ -4111,6 +4291,9 @@ export function parse(source: string): SoftNDocument {
 //    escape JavaScript does (`\x41`, `\u{43}`, a line continuation); a
 //    byte-order mark is passed over. The bitwise operators and shifts are
 //    read at JavaScript's levels, and `?.` before a digit is `?` and a number.
+//    A block header may leave out its parentheses (`#if ok`, to the end of
+//    its line), `#each` takes `of` as `in`, a template literal may be an
+//    attribute's value, and a `#` inside braces or a tag begins no block.
 export const PARSER_VERSION = 14;
 
 /** Whether `expr`, read from the token `first`, is an `||` or `&&` not written in parentheses. */

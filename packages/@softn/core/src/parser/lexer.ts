@@ -169,6 +169,14 @@ export class Lexer {
    */
   private templateExprStack: number[] = [];
 
+  /**
+   * The block header being read has no parentheses of its own (`#if ok`,
+   * `#each item in items`), so it ends at the end of its line, not at a `)`.
+   * Such a header used to be read on through the page, every tag of it taken
+   * for the condition, and the page was gone.
+   */
+  private bareHeader = false;
+
   constructor(source: string) {
     this.source = source;
     this.readChar();
@@ -244,6 +252,16 @@ export class Lexer {
     // Handle template literal content
     if (this.inTemplateLiteral) {
       return this.readTemplateContent();
+    }
+
+    // A header with no parentheses of its own (`#if ok`) ends with its line.
+    if (this.bareHeader && this.inControlFlow > 0 && this.controlFlowParenDepth === 0 && this.inExpression === 0) {
+      let at = this.position;
+      while (this.source[at] === ' ' || this.source[at] === '\t' || this.source[at] === '\r') at++;
+      if (at >= this.source.length || this.source[at] === '\n') {
+        this.inControlFlow = 0;
+        this.bareHeader = false;
+      }
     }
 
     if (
@@ -323,9 +341,14 @@ export class Lexer {
     // A hex colour in text did the same. There is a `\#` escape, but nothing
     // tells an author they need it, and the failure gives them nothing to search
     // for.
-    if (this.ch === '#' && this.hashStartsControlFlow()) {
+    //
+    // Nor inside braces or a tag: Svelte's `{#if ok}` started a block there,
+    // which nothing inside the braces ended, and the rest of the page was read
+    // as its condition.
+    if (this.ch === '#' && this.inExpression === 0 && !this.inTag && this.hashStartsControlFlow()) {
       this.inControlFlow = 1; // Start control flow mode (will track () nesting)
       this.controlFlowParenDepth = 0;
+      this.bareHeader = false;
       const token = createToken(
         TokenType.HASH,
         '#',
@@ -542,7 +565,8 @@ export class Lexer {
           if (this.controlFlowParenDepth > 0) {
             this.controlFlowParenDepth--;
           }
-          if (this.controlFlowParenDepth === 0) {
+          // A header without parentheses of its own ends at its line's end.
+          if (this.controlFlowParenDepth === 0 && !this.bareHeader) {
             // Exiting control flow mode when all parens are closed
             this.inControlFlow = 0;
           }
@@ -1041,6 +1065,20 @@ export class Lexer {
     ) {
       this.inControlFlow = 0;
       this.controlFlowParenDepth = 0;
+      this.bareHeader = false;
+    }
+
+    // `#if ok` and `#each item in items`, with no parentheses: the header runs
+    // to the end of its line (see bareHeader).
+    if (
+      this.inControlFlow > 0 &&
+      this.controlFlowParenDepth === 0 &&
+      (type === TokenType.IF || type === TokenType.EACH || type === TokenType.ELSEIF)
+    ) {
+      let at = this.position;
+      while (this.source[at] === ' ' || this.source[at] === '\t') at++;
+      const next = this.source[at] ?? '';
+      this.bareHeader = next !== '(' && next !== '\n' && next !== '\r' && next !== '';
     }
 
     return createToken(type, ident, startLine, startColumn, startPos, this.position);
@@ -1314,6 +1352,7 @@ export class Lexer {
       if (this.ch === '#') {
         this.inControlFlow = 1;
         this.controlFlowParenDepth = 0;
+        this.bareHeader = false;
         const token = createToken(
           TokenType.HASH,
           '#',
