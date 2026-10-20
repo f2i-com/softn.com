@@ -5,6 +5,7 @@ import { HomePage } from './pages/HomePage';
 import { DirectoryPage } from './pages/DirectoryPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { DropAnywhere } from './components/DropAnywhere';
+import { PageBoundary } from './components/PageBoundary';
 import { selectPage, useLinkInterception, useRoute } from './lib/router';
 import { getCategories, type Category } from './lib/api';
 import { applyMeta, HOME_TITLE, metaFor } from './lib/meta';
@@ -95,14 +96,20 @@ export default function App(): React.ReactElement {
   // the body or a link that has gone. Only a change of path counts: a
   // search, a filter or a retry is the same page with a different query
   // and a refreshed list, and focus stays where the visitor put it. The
-  // first render is left alone too.
-  const lastPath = useRef(route.path);
+  // first render is left alone too. A page still loading has no main yet,
+  // so the move waits for it (this runs again when it arrives); a path that
+  // changes again meanwhile, even back to the one before, still gets its move.
+  const shownPath = useRef(route.path);
+  const focusPending = useRef(false);
   useEffect(() => {
-    if (lastPath.current === route.path) return;
+    if (shownPath.current !== route.path) {
+      shownPath.current = route.path;
+      focusPending.current = true;
+    }
+    if (!focusPending.current) return;
     const main = document.querySelector<HTMLElement>('main');
-    // A page still loading has no main yet: this runs again when it arrives.
     if (!main) return;
-    lastPath.current = route.path;
+    focusPending.current = false;
     if (!main.hasAttribute('tabindex')) main.tabIndex = -1;
     main.focus({ preventScroll: true });
   }, [route.path, arrivals]);
@@ -126,10 +133,16 @@ export default function App(): React.ReactElement {
       break;
   }
 
+  // The page's boundaries are keyed by the kind of page. Left unkeyed, the
+  // page being left stayed mounted, hidden, while the next one loaded, so
+  // focus went to its main; and two pages that load on demand, one after the
+  // other, shared one Arrived, which said nothing when the second arrived.
   return (
     <>
       <Nav />
-      {selected.kind === 'home' ? <main>{page}</main> : <Suspense fallback={null}>{page}</Suspense>}
+      <PageBoundary key={selected.kind}>
+        {selected.kind === 'home' ? <main>{page}</main> : <Suspense fallback={null}>{page}</Suspense>}
+      </PageBoundary>
       <Footer />
       <DropAnywhere onPublishPage={selected.kind === 'publish'} />
     </>
