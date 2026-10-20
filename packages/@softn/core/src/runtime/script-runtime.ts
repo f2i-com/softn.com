@@ -24,6 +24,7 @@ import {
 } from './vm-adapter';
 import { SandboxHost } from './sandbox-host';
 import { readZipText } from './zip-text';
+import { sha256Hex } from '../bundle/crypto';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { LogicTimers, TIMER_PREAMBLE_NAMES, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { placeSyntaxError } from './logic-syntax';
@@ -2803,8 +2804,7 @@ export class SoftNScriptRuntime {
         if(!file||file.size>262144)throw Error('Choose a ZIP smaller than 256 KiB');
         const bytes=new Uint8Array(await file.arrayBuffer());
         const files=readZipText(bytes);
-        const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(x=>x.toString(16).padStart(2,'0')).join('');
-        return {files,hash};
+        return {files,hash:await sha256Hex(bytes)};
       }
       case 'files.pickFile':
         return this.handleFilesPickFile(call);

@@ -11,6 +11,7 @@ import {
   type ModelInfo,
 } from '../../lib/providerConnection';
 import type { LocalServerKind, ProviderConfig, ProviderType } from '../../types/studio';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 interface ProviderSetupProps {
   /** The provider to edit; absent or null to add one. */
@@ -124,7 +125,7 @@ export const ProviderSetup: React.FC<ProviderSetupProps> = ({ provider, onDone, 
         ? hostName(address) || 'OpenAI-compatible'
         : TYPE_NAME[type];
     return {
-      id: provider?.id ?? crypto.randomUUID(),
+      id: provider?.id ?? randomUUID(),
       type,
       name,
       apiKey: effectiveKey,

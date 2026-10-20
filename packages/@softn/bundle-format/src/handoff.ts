@@ -28,6 +28,11 @@
  * and says so, rather than opening a receiver that finds nothing.
  */
 
+import { randomUUID, sha256Hex } from './crypto';
+
+// Part of this module's surface since before ./crypto held it.
+export { sha256Hex };
+
 export const HANDOFF_DB = 'softn-handoff';
 export const HANDOFF_DB_VERSION = 2;
 export const HANDOFF_STORE = 'bundles';
@@ -101,20 +106,6 @@ function committed(tx: IDBTransaction): Promise<void> {
   });
 }
 
-/** SHA-256 of the bytes, as lower-case hex. */
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const copy = new Uint8Array(bytes);
-  const hash = await crypto.subtle.digest('SHA-256', copy);
-  return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** An id nobody can guess: 128 bits from the platform's generator. */
-function newHandoffId(): string {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 function isDestination(value: unknown): value is HandoffDestination {
   return value === 'publish' || value === 'runtime';
 }
@@ -132,7 +123,8 @@ function isSource(value: unknown): value is HandoffSource {
 export async function stageBundleHandoff(bytes: Uint8Array, name: string, from: HandoffSource, to: HandoffDestination, now = Date.now()): Promise<StagedHandoff | null> {
   try {
     const digest = await sha256Hex(bytes);
-    const id = newHandoffId();
+    // An id nobody can guess: 122 random bits from the platform's generator.
+    const id = randomUUID();
     const db = await openHandoffDb();
     try {
       const tx = db.transaction(HANDOFF_STORE, 'readwrite');

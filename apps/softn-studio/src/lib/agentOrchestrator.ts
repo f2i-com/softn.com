@@ -18,6 +18,7 @@ import type { SuppliedFiles, TurnBase } from './changeset';
 import { isPrivatePath, resolveProjectPath } from './paths';
 import { buildAgentSystemPrompt } from './agent/prompt';
 import { discardAgentRuns, startAgentRun } from './agent/runAgent';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 // The write checks live with the changeset that uses them; they are still
 // reachable from here, where they were first written.
@@ -211,7 +212,7 @@ export function canAskAgent(): boolean {
 export function askAgentToFix(reason: string): boolean {
   if (!canAskAgent()) return false;
   useAIStore.getState().addMessage({
-    id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `u-${Date.now()}`,
+    id: randomUUID(),
     role: 'user',
     content: `The app stopped in the preview: ${reason} Find what causes it and fix it.`,
     timestamp: Date.now(),

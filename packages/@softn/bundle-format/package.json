@@ -15,6 +15,7 @@
     "./handoff": "./src/handoff.ts",
     "./capabilities": "./src/capabilities.ts",
     "./url": "./src/url.ts",
+    "./crypto": "./src/crypto.ts",
     "./package.json": "./package.json"
   },
   "dependencies": {

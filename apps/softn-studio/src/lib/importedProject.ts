@@ -2,6 +2,7 @@ import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
 import type { ProjectImportEntry } from './projectImport';
 import { resetProjectSessionForImport } from './projectSession';
 import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage, resolveManifest } from './studioProject';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 /** The app's name as the imported manifest gives it, or null when it gives none that can be read. */
 function manifestName(batch: ProjectImportEntry[]): string | null {
@@ -57,7 +58,7 @@ export function openImportedInStores(fileName: string, batch: ProjectImportEntry
     importedWorkspace.addConsoleOutput(`  ... and ${batch.length - 10} more`);
   }
   useAIStore.getState().addMessage({
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     role: 'assistant',
     content: `Imported \`${fileName}\` and mapped ${inferredBlueprint.pages.length} page(s). Ask me to restyle screens, reorganize flows, improve data bindings, or prepare the bundle for export.`,
     timestamp: Date.now(),

@@ -8,6 +8,7 @@ import { isReadableRun, RunTimeline } from './RunTimeline';
 import type { ChatMessage } from '../../types/studio';
 import { AIStatusPill, openSetupFor, useAIReadiness } from './AIStatusPill';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 export const AIChat: React.FC = () => {
   const {
@@ -67,7 +68,7 @@ export const AIChat: React.FC = () => {
     }
     if (!hasProvider) { openSettings(); return; }
     const msg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       role: 'user',
       content: text,
       timestamp: Date.now(),
@@ -115,7 +116,7 @@ export const AIChat: React.FC = () => {
     if (agentState !== 'idle') return;
     if (!hasProvider) { setInput(text); openSettings(); return; }
     const msg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       role: 'user',
       content: text,
       timestamp: Date.now(),

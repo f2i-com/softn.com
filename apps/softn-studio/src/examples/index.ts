@@ -3,6 +3,7 @@ import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, pr
 import { resetProjectSessionForImport } from '../lib/projectSession';
 import { READING_LIST } from './readingList';
 import { READING_LIST_PYTHON } from './readingListPython';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 /**
  * A bundled example: a complete project a first visit can open without a
@@ -49,7 +50,7 @@ export function openExampleInStores(example: ExampleProject = DEFAULT_EXAMPLE): 
   ws.setMode('design');
   ws.addConsoleOutput(`Opened the example "${example.name}" (${example.files.length} files). It is a copy: change it freely.`);
   useAIStore.getState().addMessage({
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     role: 'assistant',
     content: `This is the bundled example "${example.name}": ${example.description} Preview is the canvas; Run opens it in the runtime; Export bundle downloads it as a .softn file. To change it with the AI, connect a provider: a local model, or your own OpenAI or Anthropic key.`,
     timestamp: Date.now(),

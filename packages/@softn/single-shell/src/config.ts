@@ -1,4 +1,4 @@
-import { inspectDeclaration, type PermissionConfig } from '@softn/core';
+import { inspectDeclaration, sha256Hex, type PermissionConfig } from '@softn/core';
 /**
  * Where the app came from, when a directory served this shell for it: the
  * endpoints the runtime reports to and stores through. Both are the same-origin
@@ -201,7 +201,11 @@ export async function fetchBytes(
   }
   return bytes;
 }
-export async function digest(bytes: Uint8Array): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
-  return Array.from(new Uint8Array(hash), (v) => v.toString(16).padStart(2, '0')).join('');
+/**
+ * SHA-256, hex. Not crypto.subtle directly: a browser withholds it from a
+ * page outside a secure context (a site on plain HTTP at an intranet
+ * address), and there no app could open.
+ */
+export function digest(bytes: Uint8Array): Promise<string> {
+  return sha256Hex(bytes);
 }

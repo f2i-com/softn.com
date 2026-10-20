@@ -17,6 +17,7 @@ import type { ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import type { PermissionConfig, PythonProject } from '@softn/core';
 import { ManifestError, describeHandoffFailure, handoffIdFrom, readManifest, takeBundleHandoff } from '@softn/core';
 import { debug } from '@softn/core';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 const appShellStyles = `
   @keyframes softn-shell-fade-in {
@@ -371,7 +372,7 @@ function App(): React.ReactElement {
   // Parse URL once for initial state
   const [urlInit] = useState(readEntry);
   // Pre-create a skeleton tab ID if loading from URL (so tab bar shows immediately)
-  const [urlTabId] = useState(() => (urlInit.appName ? crypto.randomUUID() : null));
+  const [urlTabId] = useState(() => (urlInit.appName ? randomUUID() : null));
   const embedded = urlInit.embedded;
   // Set when the app was opened from a page of this site — its directory page —
   // so that Close returns there rather than to the runtime's home.
@@ -727,7 +728,7 @@ function App(): React.ReactElement {
         // fresh tab. A tab with no source is waiting for this load, and if the
         // load fails it has to go, or it renders "Loading …" indefinitely.
         const existingTab = findPlaceholder(openTabsRef.current, placeholderId);
-        const tabId = existingTab?.id || crypto.randomUUID();
+        const tabId = existingTab?.id || randomUUID();
         if (existingTab) skeletonTabId = existingTab.id;
 
         if (!existingTab && isForeground()) {
@@ -1109,7 +1110,7 @@ function App(): React.ReactElement {
         // The same placeholder the /app/:name flow uses, so the download shows
         // up in the tab bar instead of leaving the window blank until it lands.
         // processBundleData adopts it once the real name is known.
-        const skeletonTabId = crypto.randomUUID();
+        const skeletonTabId = randomUUID();
         if (isForeground()) setError(null);
         setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '' }]);
         if (isForeground()) setActiveTabId(skeletonTabId);

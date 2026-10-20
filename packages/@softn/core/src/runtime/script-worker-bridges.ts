@@ -6,6 +6,8 @@
  * main thread's storage. Mutations are queued and sent back to the main thread.
  */
 
+import { randomUUID } from '../bundle/crypto';
+
 // ============================================================================
 // Mutation types
 // ============================================================================
@@ -50,11 +52,13 @@ let tempIdCounter = 0;
  * does): the main thread's store keeps that id, so a script that puts the id
  * of one record into another (`{ taskId: db.create(...).id }`) persists a
  * reference that resolves, and the id it holds is the id everyone else sees.
- * Without `crypto.randomUUID` the old placeholder is used and mapped to the
- * stored id on the main thread as before.
+ * The UUID needs only a random source, which a worker on a page outside a
+ * secure context has too (it is `crypto.randomUUID` such a worker lacks).
+ * Without any, the old placeholder is used and mapped to the stored id on the
+ * main thread as before.
  */
 export function workerRecordId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') return randomUUID();
   return `_wk_${++tempIdCounter}`;
 }
 

@@ -5,6 +5,7 @@
 
 import { openDB, type IDBPDatabase, type IDBPObjectStore } from 'idb';
 import { debug } from '@softn/core';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -1045,7 +1046,7 @@ export async function cacheApp(
     // stored as one. Both appear in the launcher; neither can reach the other's
     // data or its granted permissions.
     const app: CachedApp = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       origin,
       name: manifest.name,
       version: manifest.version,

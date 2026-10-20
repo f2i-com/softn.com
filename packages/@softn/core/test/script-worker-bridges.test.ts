@@ -4,7 +4,7 @@
  * surface it had on the main thread (core audit 2.7).
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SnapshotDBBridge, isWorkerPlaceholderId, workerRecordId, type DBMutation } from '../src/runtime/script-worker-bridges';
 import { createDBNamespace } from '../src/runtime/script-runtime';
 
@@ -78,15 +78,28 @@ describe('SnapshotDBBridge', () => {
       expect(created).toEqual({ type: 'create', collection: 'tasks', data: { title: 'a' }, tempId: task.id });
     });
 
-    it('fall back to a placeholder the main thread maps when the worker has no id generator', () => {
+    // A worker of a page outside a secure context (plain HTTP, not localhost)
+    // has no crypto.randomUUID, but it has getRandomValues.
+    it('are real UUIDs in a worker without crypto.randomUUID', () => {
       const original = Object.getOwnPropertyDescriptor(crypto, 'randomUUID') ?? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(crypto), 'randomUUID');
       Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true });
+      try {
+        const id = workerRecordId();
+        expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        expect(isWorkerPlaceholderId(id)).toBe(false);
+      } finally {
+        if (original) Object.defineProperty(crypto, 'randomUUID', original);
+      }
+    });
+
+    it('fall back to a placeholder the main thread maps when the worker has no random source', () => {
+      vi.stubGlobal('crypto', {});
       try {
         const id = workerRecordId();
         expect(id).toMatch(/^_wk_\d+$/);
         expect(isWorkerPlaceholderId(id)).toBe(true);
       } finally {
-        if (original) Object.defineProperty(crypto, 'randomUUID', original);
+        vi.unstubAllGlobals();
       }
     });
   });

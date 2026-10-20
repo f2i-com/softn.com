@@ -11,6 +11,9 @@
  * its old paths, so nothing that imported them from core changes, and the
  * site imports them from here.
  *
+ * Beside them, `crypto`: the digest and the random id these pages use, kept
+ * working where a browser withholds Web Crypto (outside a secure context).
+ *
  * Nothing in here decides what a bundle MEANS at run time; that stays in
  * core. A change here is a change to the contract and must keep every
  * existing .softn file opening exactly as before.
@@ -20,3 +23,5 @@ export * from './inspect';
 export * from './handoff';
 export * from './capabilities';
 export * from './url';
+// sha256Hex comes through ./handoff.
+export { randomUUID } from './crypto';

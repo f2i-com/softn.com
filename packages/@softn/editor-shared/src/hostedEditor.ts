@@ -1,4 +1,5 @@
 /** Private editor session with the same-origin FormLogic parent. No account credentials cross it. */
+import { randomUUID } from '@softn/bundle-format/crypto';
 export const isHostedEditor = () => typeof window !== 'undefined' && window.parent !== window && new URLSearchParams(window.location.search).get('formlogicEditor') === '1';
 let currentPort: MessagePort | null = null;
 const hostRequests = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
@@ -194,7 +195,7 @@ function sendAIRequest(payload: Record<string, unknown>, signal?: AbortSignal): 
   // id it never saw still clears its "the AI is editing" mark, which another
   // request may be holding.
   if (signal?.aborted) return Promise.reject(new DOMException('AI request cancelled.', 'AbortError'));
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   return new Promise((resolve, reject) => {
     const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); hostRequests.delete(id); };
     const abort = () => { currentPort?.postMessage({ kind: 'ai-cancel', id }); finish(); reject(new DOMException('AI request cancelled.', 'AbortError')); };
@@ -252,7 +253,7 @@ export function requestHostedSave(): HostedSaveOutcome {
   if (!isHostedEditor()) return { handled: false, reason: 'not-hosted' };
   const port = currentPort;
   if (!port) return { handled: false, reason: 'disconnected' };
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   const completion = new Promise<HostedSaveResult>(resolve => {
     const timer = setTimeout(() => {
       pendingSaves.delete(id);

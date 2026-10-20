@@ -6,11 +6,13 @@
  * to bridge file references across packages.
  */
 
+import { randomUUID } from '../bundle/crypto';
+
 const _registry = new Map<string, File>();
 
 /** Register a File and return a UUID reference. */
 export function registerFileRef(file: File): string {
-  const ref = crypto.randomUUID();
+  const ref = randomUUID();
   _registry.set(ref, file);
   return ref;
 }

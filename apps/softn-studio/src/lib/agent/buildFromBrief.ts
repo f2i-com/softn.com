@@ -9,6 +9,7 @@ import { resolveModel } from '../aiProvider';
 import { useAIStore } from '../../stores/aiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { startAgentRun } from './runAgent';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 /** Whether a build can start now: a brief, and a provider with a model. */
 export function canBuildFromBrief(): boolean {
@@ -28,7 +29,7 @@ export function buildFromBrief(): boolean {
   const pages = brief.pages.length > 0 ? ` Pages: ${brief.pages.join(', ')}.` : '';
   const collections = brief.collections.length > 0 ? ` Data: ${brief.collections.join(', ')}.` : '';
   useAIStore.getState().addMessage({
-    id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `b-${Date.now()}`,
+    id: randomUUID(),
     role: 'user',
     content: `Build ${brief.appName} as the brief describes: ${brief.description}${pages}${collections}`,
     timestamp: Date.now(),

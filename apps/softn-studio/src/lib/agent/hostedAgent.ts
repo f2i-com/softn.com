@@ -10,6 +10,7 @@ import { useAIStore } from '../../stores/aiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import type { AgentRunRecord } from './types';
 import { startAgentRun } from './runAgent';
+import { randomUUID } from '@softn/bundle-format/crypto';
 
 /**
  * Put the host's request in the chat as the person's message and start a run
@@ -20,7 +21,7 @@ export function startRunFromBrief(brief: HostedBrief): Promise<void> | null {
   const ai = useAIStore.getState();
   if (ai.agentState === 'building') return null;
   ai.addMessage({
-    id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `h-${Date.now()}`,
+    id: randomUUID(),
     role: 'user',
     content: brief.prompt,
     timestamp: Date.now(),
