@@ -88,4 +88,48 @@ function bump() { taps = taps + 1 }
     }
     expect(container.querySelector('#out')?.textContent).toBe('1');
   });
+
+  it('leaves what the page draws alone: a function called while drawing is not stood in for', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => errors.push(args.map(String).join(' '));
+    try {
+      const source = `<logic>
+let names = ["a", "b"]
+function caption() { return "loaded" }
+function isReady() { return true }
+function rowsOf() { return names }
+</logic>
+<div>
+  <span id="label">{caption()}</span>
+  #if (isReady())
+  <span id="ready">yes</span>
+  #end
+  #each (item in rowsOf())
+  <i class="item">{item}</i>
+  #end
+</div>`;
+      act(() => {
+        root = createRoot(container);
+        root.render(<SoftNRenderer source={source} scriptExecutionMode="main" />);
+      });
+      // Before the script has loaded: nothing drawn from a promise.
+      expect(container.textContent).not.toContain('[object Promise]');
+      expect(container.querySelector('#ready')).toBeNull();
+      expect(container.querySelectorAll('.item')).toHaveLength(0);
+      for (let i = 0; i < 150 && container.querySelector('#label')?.textContent !== 'loaded'; i++) {
+        await act(async () => {
+          await sleep(20);
+        });
+      }
+      expect(container.querySelector('#label')?.textContent).toBe('loaded');
+      expect(container.querySelector('#ready')?.textContent).toBe('yes');
+      expect([...container.querySelectorAll('.item')].map((node) => node.textContent)).toEqual(['a', 'b']);
+      expect(errors.filter((line) => /Promise|#each|#if/.test(line))).toEqual([]);
+    } finally {
+      console.error = original;
+    }
+  });
 });
