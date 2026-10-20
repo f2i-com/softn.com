@@ -5,6 +5,7 @@ import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mj
 import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
+import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
 import { vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
@@ -90,6 +91,9 @@ export default defineConfig({
     strictPort: true,
   },
   envPrefix: ['VITE_', 'TAURI_'],
+  // In the site build, the engine and the QR decoder by their one shared copy
+  // (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
+  experimental: { renderBuiltUrl: sharedRenderBuiltUrl },
   build: {
     outDir: isTauri ? 'dist-desktop' : 'dist',
     // Tauri ships a known webview with each platform, so that build compiles

@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sharedPrecacheUrl } from './shared-assets.mjs';
 
 const SW_TEMPLATE = fileURLToPath(new URL('./pwa-sw.js', import.meta.url));
 const VIRTUAL = 'virtual:softn-pwa/react';
@@ -87,9 +88,12 @@ export function precacheEntries(outDir, { globPatterns = [], globIgnores = [], m
       continue;
     }
     // Vite's own assets/ are hashed; the workers' files it copies to
-    // assets/core-runtime/ keep their names from build to build.
+    // assets/core-runtime/ keep their names from build to build. In the site
+    // build the engine and the QR decoder are held at their shared copy
+    // (shared-assets.mjs), which this worker may cache though it is outside
+    // its scope.
     const hashed = file.startsWith('assets/') && !file.startsWith('assets/core-runtime/');
-    entries.push({ url: file, revision: hashed ? null : createHash('md5').update(bytes).digest('hex') });
+    entries.push({ url: sharedPrecacheUrl(file), revision: hashed ? null : createHash('md5').update(bytes).digest('hex') });
   }
   return entries;
 }

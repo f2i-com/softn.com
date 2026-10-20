@@ -239,7 +239,7 @@ test('the Apache rules serve the site only for its own pages and 404 the rest, w
     'RewriteRule ^play/?$ /apps [R=302,L]',
     'RewriteRule ^play/[^/]+/?$ api/index.php [L]',
     'RewriteRule ^(web|builder|studio)$ $1/ [R=308,L,NE]',
-    'RewriteRule ^(?:assets|demos|softn-files)(?:/|$) - [R=404,L]',
+    'RewriteRule ^(?:assets|demos|softn-files|shared)(?:/|$) - [R=404,L]',
     'RewriteRule ^(?:web|builder|studio|play)/(?:assets|demos)(?:/|$) - [R=404,L]',
     'RewriteRule ^web(?:/.*)?$ web/index.html [END]',
     'RewriteRule ^builder(?:/.*)?$ builder/index.html [END]',
@@ -271,7 +271,7 @@ test('the nginx config maps the same pages, 404s the rest, and uses the site as 
     'location /builder/ { try_files $uri $uri/ @softn_builder; }',
     'location /studio/ { try_files $uri $uri/ @softn_studio; }',
     'location / { try_files $uri $uri/ @softn_site; }',
-    'location ~ ^/(?:assets|demos|softn-files|web/(?:assets|demos)|builder/assets|studio/assets|play/assets)(?:/|$) {',
+    'location ~ ^/(?:assets|demos|softn-files|shared|web/(?:assets|demos)|builder/assets|studio/assets|play/assets)(?:/|$) {',
   ]) {
     assert.ok(nginx.includes(kept), kept);
   }

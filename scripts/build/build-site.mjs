@@ -13,6 +13,8 @@
  *   dist/play/       the single-app shell: /play/<slug> is an app's own page,
  *                    rendered by the API with the app's configuration written
  *                    in, so the page fetches the bundle and nothing else first
+ *   dist/shared/     what every app above ships alike — the ZIPP engine and the
+ *                    QR decoder — once, for all of them (shared-assets.mjs)
  *   dist/docs/       the documentation: static pages generated from
  *                    docs/content/softn-docs.json (docs/scripts/build-docs.mjs),
  *                    with sitemap-docs.xml and robots.txt beside index.html
@@ -37,6 +39,7 @@ import { dropMachineMaps, dropSourceMaps } from '../lib/build-paths.mjs';
 import { buildSite as buildDocs } from '../../docs/scripts/build-docs.mjs';
 import { repoRoot as root } from '../lib/paths.mjs';
 import { npmCommand } from '../lib/npm.mjs';
+import { collectSharedAssets } from './shared-assets.mjs';
 
 const outDir = path.join(root, 'dist');
 
@@ -231,7 +234,7 @@ ErrorDocument 404 /index.html
 
   # A missing asset is a real 404, never a successful HTML response. This also
   # protects extensionless files requested from known static directories.
-  RewriteRule ^(?:assets|demos|softn-files)(?:/|$) - [R=404,L]
+  RewriteRule ^(?:assets|demos|softn-files|shared)(?:/|$) - [R=404,L]
   RewriteRule ^(?:web|builder|studio|play)/(?:assets|demos)(?:/|$) - [R=404,L]
   RewriteCond %{REQUEST_URI} /[^/]*\.[^/]+$
   RewriteRule ^ - [R=404,L]
@@ -383,7 +386,7 @@ server {
 
     # Missing static files must stay 404s, including extensionless files in
     # asset/catalogue directories and ordinary files with an extension.
-    location ~ ^/(?:assets|demos|softn-files|web/(?:assets|demos)|builder/assets|studio/assets|play/assets)(?:/|$) {
+    location ~ ^/(?:assets|demos|softn-files|shared|web/(?:assets|demos)|builder/assets|studio/assets|play/assets)(?:/|$) {
         try_files $uri =404;
     }
     location ~* /[^/]*\.[^/]+$ {
@@ -565,6 +568,7 @@ workers and browser permissions outside localhost.
 - \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
+- \`/shared/\` — what every app above ships alike (the ZIPP engine, the QR decoder), kept once
 ${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — a page of download links for those bundles\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
 - \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
@@ -780,8 +784,11 @@ if (withDemos && demosDirArg === null) run(['run', 'fetch:demos']);
 run(['run', 'build:core']);
 run(['run', 'build:components']);
 
+// Each app refers to the engine and the QR decoder at their one shared copy
+// (shared-assets.mjs), gathered below once the apps are in place.
+const SHARED_ASSETS = '/shared/assets/';
 for (const app of [...APPS, PLAY]) {
-  run(['run', 'build', '-w', app.workspace], { VITE_BASE: app.base });
+  run(['run', 'build', '-w', app.workspace], { VITE_BASE: app.base, SOFTN_SHARED_ASSETS: SHARED_ASSETS });
 }
 
 // The documentation is generated twice: once here, so the card data the
@@ -820,6 +827,12 @@ for (const app of APPS) {
   copyDir(playDist, path.join(outDir, PLAY.into));
   for (const name of PLAY_STANDALONE_ONLY) fs.rmSync(path.join(outDir, PLAY.into, name), { force: true });
   if (!fs.existsSync(path.join(outDir, PLAY.into, 'index.html'))) throw new Error('The play shell has no index.html');
+}
+
+{
+  const kept = collectSharedAssets(outDir, [...APPS, PLAY].map((app) => app.into), SHARED_ASSETS);
+  if (!kept.some((name) => name.startsWith('zipp_wasm_bg-'))) throw new Error('No app shipped the ZIPP engine to share');
+  console.log(`\nShared by every app, once: ${kept.join(', ')}`);
 }
 
 // With the examples: the bundles, once, at the root, where every `?open=`

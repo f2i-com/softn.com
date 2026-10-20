@@ -774,6 +774,7 @@ dist/web/         web runtime
 dist/play/        the single-app shell; /play/<slug> is an app's play page, rendered by the API
 dist/builder/     visual builder
 dist/studio/      AI studio
+dist/shared/      the ZIPP engine and the QR decoder, kept once for every app above
 dist/api/         the directory API (PHP)
 dist/data/        the directory's state; never served
 dist/.htaccess    Apache rules, with nginx.conf.example and DEPLOY.md alongside

@@ -60,7 +60,7 @@ function mayUseSpaFallback(pathname) {
   // Returning an SPA shell with status 200 hides broken builds and produces
   // confusing MIME errors instead of the real missing-file response.
   if (/\/[^/]*\.[^/]+$/.test(pathname)) return false;
-  if (/^\/(?:assets|demos|softn-files)(?:\/|$)/.test(pathname)) return false;
+  if (/^\/(?:assets|demos|softn-files|shared)(?:\/|$)/.test(pathname)) return false;
   if (/^\/(?:web|builder|studio)\/(?:assets|demos)(?:\/|$)/.test(pathname)) return false;
   return true;
 }

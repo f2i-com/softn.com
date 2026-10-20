@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
+import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
 export default defineConfig({
   // Relative by default, so a standalone deployment works from any directory.
   // The site build sets VITE_BASE to where the shell lands under softn.com
@@ -10,6 +11,9 @@ export default defineConfig({
   // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
   plugins: [react(), coreWorkerAssetPlugin(), scriptPolicyPlugin()],
   resolve: { dedupe: ['react', 'react-dom'] },
+  // In the site build, the engine and the QR decoder by their one shared copy
+  // (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
+  experimental: { renderBuiltUrl: sharedRenderBuiltUrl },
   build: {
     sourcemap: false,
     // dist/.vite/manifest.json: the entry's static import closure, which
