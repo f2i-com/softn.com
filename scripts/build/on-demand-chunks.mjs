@@ -21,7 +21,7 @@
  * after the facade it starts at — dist/scene3d.js becomes
  * assets/scene3d-<hash>.js. Three.js itself is `vendor-three` below.
  */
-export const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation'];
+export const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation', 'pickers', 'games'];
 
 /**
  * Core's own on-demand modules that only some apps reach, by the name each

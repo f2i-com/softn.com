@@ -20,6 +20,8 @@ export default defineConfig({
     smart: 'src/entries/smart.ts',
     media: 'src/entries/media.ts',
     animation: 'src/entries/animation.ts',
+    pickers: 'src/entries/pickers.ts',
+    games: 'src/entries/games.ts',
   },
   format: ['esm'],
   dts: true,

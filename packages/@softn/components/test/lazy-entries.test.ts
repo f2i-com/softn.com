@@ -113,10 +113,10 @@ describe('the emitted entries', () => {
     ].map((m) => m[1]);
     for (const source of staticImports) {
       expect(source, `lazy.js statically imports ${source}`).not.toMatch(
-        /^three|scene3d|charts|editors|smart|media|animation/
+        /^three|scene3d|charts|editors|smart|media|animation|pickers|games/
       );
     }
-    for (const feature of ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation']) {
+    for (const feature of ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation', 'pickers', 'games']) {
       expect(lazy).toContain(`import('./${feature}.js')`);
     }
     expect(lazy).not.toMatch(/from ['"]three/);

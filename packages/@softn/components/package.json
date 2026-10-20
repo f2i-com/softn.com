@@ -64,6 +64,14 @@
       "types": "./dist/animation.d.ts",
       "default": "./dist/animation.js"
     },
+    "./pickers": {
+      "types": "./dist/pickers.d.ts",
+      "default": "./dist/pickers.js"
+    },
+    "./games": {
+      "types": "./dist/games.d.ts",
+      "default": "./dist/games.js"
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,

@@ -18,6 +18,8 @@ import { editorComponents } from './entries/editors';
 import { scene3dComponents } from './entries/scene3d';
 import { smartComponents } from './entries/smart';
 import { mediaComponents } from './entries/media';
+import { pickerComponents } from './entries/pickers';
+import { gameComponents } from './entries/games';
 
 /**
  * All built-in components
@@ -30,6 +32,8 @@ export const builtinComponents = {
   ...scene3dComponents,
   ...smartComponents,
   ...mediaComponents,
+  ...pickerComponents,
+  ...gameComponents,
 };
 
 /**

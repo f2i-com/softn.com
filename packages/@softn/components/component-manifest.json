@@ -12856,8 +12856,6 @@
       "Switch",
       "Radio",
       "Slider",
-      "DatePicker",
-      "ColorPicker",
       "FileChooser",
       "NumberInput",
       "Rating",
@@ -12902,10 +12900,7 @@
       "Accordion",
       "Collapse",
       "Tooltip",
-      "Loop",
-      "PixelGrid",
-      "PixelCanvas",
-      "DPad"
+      "Loop"
     ],
     "charts": [
       "LineChart",
@@ -12949,6 +12944,15 @@
       "AudioStream",
       "QRCode",
       "QRReader"
+    ],
+    "pickers": [
+      "DatePicker",
+      "ColorPicker"
+    ],
+    "games": [
+      "PixelGrid",
+      "PixelCanvas",
+      "DPad"
     ]
   }
 }

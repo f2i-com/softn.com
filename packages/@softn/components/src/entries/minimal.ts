@@ -2,11 +2,12 @@
  * The components every app is likely to use and no app is hurt by: layout,
  * forms, display, feedback, navigation, the data views and the light
  * utilities. Measured with esbuild, minified, dependencies external: about
- * 270 KB together, and nothing beyond React and @softn/core in their import
- * graphs. Everything heavier — Three.js behind Scene3D, the QR scanner and
- * the camera and microphone behind the media group, the editors, the charts,
- * the Smart family, the animation primitives — lives in its own entry and
- * reaches the registry as a loader (see lazy.ts).
+ * 245 KB together, and nothing beyond React and @softn/core in their import
+ * graphs. Everything heavier or rarer — Three.js behind Scene3D, the QR
+ * scanner and the camera and microphone behind the media group, the editors,
+ * the charts, the Smart family, the animation primitives, the date and colour
+ * pickers, the game pieces — lives in its own entry and reaches the registry
+ * as a loader (see lazy.ts).
  *
  * A host that wants a component directly imports it from here or from the
  * feature entry that owns it, never from the root barrel: the barrel is the
@@ -17,7 +18,23 @@ import type { ComponentRegistry, SoftNComponent } from '@softn/core';
 import { getDefaultRegistry } from '@softn/core';
 
 export * from '../layout';
-export * from '../form';
+// The form controls but the pickers, which are an entry of their own.
+export * from '../form/Button';
+export * from '../form/Input';
+export * from '../form/Form';
+export * from '../form/TextArea';
+export * from '../form/Select';
+export * from '../form/Checkbox';
+export * from '../form/Switch';
+export * from '../form/Radio';
+export * from '../form/Slider';
+export * from '../form/FileChooser';
+export * from '../form/NumberInput';
+export * from '../form/Rating';
+export * from '../form/SegmentedControl';
+export * from '../form/ButtonGroup';
+export * from '../form/Field';
+export * from '../form/CopyButton';
 export * from '../display';
 export * from '../feedback';
 export * from '../navigation';
@@ -26,9 +43,6 @@ export * from '../utility/Accordion';
 export * from '../utility/Collapse';
 export * from '../utility/Tooltip';
 export * from '../utility/Loop';
-export * from '../utility/PixelGrid';
-export * from '../utility/PixelCanvas';
-export * from '../utility/DPad';
 
 import { Stack } from '../layout/Stack';
 import { Box } from '../layout/Box';
@@ -54,8 +68,6 @@ import { Checkbox } from '../form/Checkbox';
 import { Switch } from '../form/Switch';
 import { Radio } from '../form/Radio';
 import { Slider } from '../form/Slider';
-import { DatePicker } from '../form/DatePicker';
-import { ColorPicker } from '../form/ColorPicker';
 import { FileChooser } from '../form/FileChooser';
 import { NumberInput } from '../form/NumberInput';
 import { Rating } from '../form/Rating';
@@ -98,9 +110,6 @@ import { Accordion } from '../utility/Accordion';
 import { Collapse } from '../utility/Collapse';
 import { Tooltip } from '../utility/Tooltip';
 import { Loop } from '../utility/Loop';
-import { PixelGrid } from '../utility/PixelGrid';
-import { PixelCanvas } from '../utility/PixelCanvas';
-import { DPad } from '../utility/DPad';
 
 /**
  * The minimal set, by registry name. The keys are the tag names a document
@@ -134,8 +143,6 @@ export const minimalComponents = {
   Switch,
   Radio,
   Slider,
-  DatePicker,
-  ColorPicker,
   FileChooser,
   NumberInput,
   Rating,
@@ -191,9 +198,6 @@ export const minimalComponents = {
   Collapse,
   Tooltip,
   Loop,
-  PixelGrid,
-  PixelCanvas,
-  DPad,
 };
 
 /**

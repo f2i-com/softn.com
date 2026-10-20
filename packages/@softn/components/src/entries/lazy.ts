@@ -31,6 +31,8 @@ const smart = () => import('./smart');
 const media = () => import('./media');
 const animation = () => import('./animation');
 const scene3d = () => import('./scene3d');
+const pickers = () => import('./pickers');
+const games = () => import('./games');
 
 // `keyof M` ties each name to an export of its entry, so a renamed export is
 // a type error here rather than an "Element type is invalid" in a browser.
@@ -93,6 +95,15 @@ export const lazyComponentRegistrations: Record<string, LazyComponentRegistratio
   AudioStream: fromFeature('media', media, 'AudioStream'),
   QRCode: fromFeature('media', media, 'QRCode'),
   QRReader: fromFeature('media', media, 'QRReader'),
+
+  // The date and colour pickers (~15 KB minified)
+  DatePicker: fromFeature('pickers', pickers, 'DatePicker'),
+  ColorPicker: fromFeature('pickers', pickers, 'ColorPicker'),
+
+  // What games are drawn with (~12 KB minified)
+  PixelGrid: fromFeature('games', games, 'PixelGrid'),
+  PixelCanvas: fromFeature('games', games, 'PixelCanvas'),
+  DPad: fromFeature('games', games, 'DPad'),
 };
 
 /**

@@ -29,7 +29,7 @@ export const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..'
 export const manifestPath = join(packageRoot, 'component-manifest.json');
 
 const SKIP_DIRS = new Set(['utils', 'entries', 'theme']);
-const ENTRY_FILES = ['minimal', 'charts', 'animation', 'editors', 'scene3d', 'smart', 'media'];
+const ENTRY_FILES = ['minimal', 'charts', 'animation', 'editors', 'scene3d', 'smart', 'media', 'pickers', 'games'];
 
 function* sourceFiles(dir) {
   for (const name of readdirSync(dir).sort()) {

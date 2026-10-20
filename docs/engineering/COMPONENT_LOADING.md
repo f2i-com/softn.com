@@ -51,7 +51,7 @@ its own `.d.ts` (`packages/@softn/components/tsup.config.ts`):
 | Entry | Contents | Minified, dependencies external |
 | --- | --- | --- |
 | `@softn/components` | The legacy barrel: everything, eagerly, plus `registerAllBuiltins()`, for a consumer outside this repository that relies on it. Nothing here imports it at run time any more (tests do, to hold the entries equal to it). Importing anything from it puts every component, Three.js included, into the importing chunk. | all of the below |
-| `@softn/components/minimal` | Layout, form, display, feedback, navigation, the data views and the light utilities (Accordion, Collapse, Tooltip, Loop, PixelGrid, PixelCanvas, DPad). `minimalComponents` and `registerMinimalComponents()`. Nothing beyond React and `@softn/core` in its import graph. | ~270 KB |
+| `@softn/components/minimal` | Layout, form (but the pickers), display, feedback, navigation, the data views and the light utilities (Accordion, Collapse, Tooltip, Loop). `minimalComponents` and `registerMinimalComponents()`. Nothing beyond React and `@softn/core` in its import graph. | ~245 KB |
 | `@softn/components/lazy` | `registerRuntimeComponents(registry?)`: the minimal set eagerly, every other built-in by loader; `ensureRuntimeComponents(registry?)`, the same once per registry, for code that may run more than once (each module `@softn/vite-plugin` compiles). `lazyComponentRegistrations` (name → feature + loader) and `runtimeComponentNames`. Imports `minimal` statically and the feature entries only through `import()`. | ~3 KB + minimal |
 | `@softn/components/theme` | `ThemeProvider`, the token sets, the variant and size scales. No component. | ~16 KB |
 | `@softn/components/scene3d` | `Scene3D`, with Three.js as its one static import. The GLTF/OBJ/FBX/STL loaders, OrbitControls, RoomEnvironment, the post-processing set, SkeletonUtils and the Meshopt decoder are each an `import()` of its own inside it (docs/engineering/SCENE3D_LOADING.md), so each is a further chunk fetched the first time a scene needs it. | ~49 KB + Three.js (~571 KB in the host build); the addons 1–47 KB each |
@@ -60,6 +60,8 @@ its own `.d.ts` (`packages/@softn/components/tsup.config.ts`):
 | `@softn/components/smart` | SmartGrid, SmartView, SmartForm, SmartStats, SmartCards, SmartList, SmartTimeline. | ~60 KB |
 | `@softn/components/media` | Camera, Microphone, AudioStream, QRCode, QRReader, with `@rc-component/qrcode` and `@yudiel/react-qr-scanner`. | ~186 KB in the host build, before the scanner's WASM decoder |
 | `@softn/components/animation` | AnimatedBox, AnimatedNumber, Marquee, Typewriter, Draggable, SortableList, PanView, Sprite, TileMap. | ~19 KB |
+| `@softn/components/pickers` | DatePicker, ColorPicker. | ~15 KB |
+| `@softn/components/games` | PixelGrid, PixelCanvas, DPad. | ~12 KB |
 
 The sizes come from bundling each source module with esbuild, minified, with
 react, `@softn/core`, three and the QR libraries external; the host-build
@@ -195,7 +197,7 @@ launcher says which of the two it is promising for each app.
    app's manifest and bundles its `sw.js` on Workbox's runtime) sweeps `dist` for js, css, html, svg,
    png, woff2 and wasm, minus:
    `core-runtime/`, the demos, `assets/vendor-three-*.js`, the feature
-   chunks `assets/{scene3d,charts,editors,smart,media,animation}-*.js`, the
+   chunks `assets/{scene3d,charts,editors,smart,media,animation,pickers,games}-*.js`, the
    Three addon chunks — `GLTFLoader-*`, `OBJLoader-*`, `FBXLoader-*`,
    `STLLoader-*`, `OrbitControls-*`, `RoomEnvironment-*`, `SkeletonUtils-*`,
    `EffectComposer-*`, `RenderPass-*`, `UnrealBloomPass-*`, `OutputPass-*`,
