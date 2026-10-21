@@ -4780,8 +4780,8 @@ dependencies = [
 
 [[package]]
 name = "zipp-numparse"
-version = "0.0.27"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.27#74d92e70eb8ff00eb08ac43d2bf42ea49ff2d945"
+version = "0.0.28"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.28#da0fe6b1bdf9472238827368d7fe5b96dfc8db8a"
 dependencies = [
  "num-bigint 0.5.1",
  "num-traits",
@@ -4790,7 +4790,7 @@ dependencies = [
 [[package]]
 name = "zipp-regress"
 version = "0.11.1"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.27#74d92e70eb8ff00eb08ac43d2bf42ea49ff2d945"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.28#da0fe6b1bdf9472238827368d7fe5b96dfc8db8a"
 dependencies = [
  "dynasm",
  "dynasmrt",
@@ -4800,8 +4800,8 @@ dependencies = [
 
 [[package]]
 name = "zipp-vm"
-version = "0.0.27"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.27#74d92e70eb8ff00eb08ac43d2bf42ea49ff2d945"
+version = "0.0.28"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.28#da0fe6b1bdf9472238827368d7fe5b96dfc8db8a"
 dependencies = [
  "dynasm",
  "dynasmrt",

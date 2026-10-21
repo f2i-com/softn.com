@@ -2,8 +2,8 @@
  * The PWAs precache the ZIPP engine so a bundle runs offline, and Workbox
  * skips any file over maximumFileSizeToCacheInBytes without failing the build
  * (apps/softn-web/vite.config.ts says so beside its glob). ZIPP's release
- * engine is not run through wasm-opt here; 0.0.27's javascript-python-base
- * module, bindings included, is about 6.1 MiB under today's 8 MiB caps, so a larger release has to raise the caps
+ * engine is not run through wasm-opt here; 0.0.28's javascript-python-base
+ * module, bindings included, is about 6.2 MiB under today's 8 MiB caps, so a larger release has to raise the caps
  * first, or every PWA silently loses its engine offline.
  *
  * The torch package (zipp_torch.wasm, about 2 MiB) is deliberately NOT in
