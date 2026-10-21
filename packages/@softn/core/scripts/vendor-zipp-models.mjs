@@ -2,9 +2,10 @@
 /**
  * ZIPP's local-model stack, vendored into vendor/zipp-models/.
  *
- *   node scripts/vendor-zipp-models.mjs --zipp <checkout> [--ref v0.0.27]
+ *   node scripts/vendor-zipp-models.mjs --zipp <checkout> [--ref vX.Y.Z]
  *       copy the files below out of that ZIPP checkout at that git ref, byte
- *       for byte, and record each one's sha256 in vendor/zipp-models/SOURCE.json
+ *       for byte, and record each one's sha256 in vendor/zipp-models/SOURCE.json;
+ *       the ref is the repository's declared ZIPP release unless one is named
  *   node scripts/vendor-zipp-models.mjs --check
  *       check the vendored files against SOURCE.json (no checkout needed)
  *
@@ -150,7 +151,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log('vendor/zipp-models matches SOURCE.json');
   } else {
     const zipp = value('--zipp');
-    if (!zipp) { console.error('Usage: vendor-zipp-models.mjs --zipp <ZIPP checkout> [--ref v0.0.27] | --check'); process.exit(2); }
-    await vendor(path.resolve(zipp), value('--ref') ?? 'v0.0.27');
+    if (!zipp) { console.error('Usage: vendor-zipp-models.mjs --zipp <ZIPP checkout> [--ref vX.Y.Z] | --check'); process.exit(2); }
+    // The installer reads the declared release; it is loaded only here, so --check and checkVendored's callers never load it.
+    const ref = value('--ref') ?? (await import('./fetch-zipp-release.mjs')).declaredRelease();
+    await vendor(path.resolve(zipp), ref);
   }
 }

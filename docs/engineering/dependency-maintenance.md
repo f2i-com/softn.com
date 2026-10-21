@@ -23,8 +23,9 @@ GossipSub, Hickory, and Yamux networking dependencies.
 
 Local models run on ZIPP's own model stack, vendored as source in
 `packages/@softn/core/vendor/zipp-models/` rather than installed from npm.
-Update it with `node scripts/vendor-zipp-models.mjs --zipp <checkout> --ref
-<tag>` in that package, which copies the files at that git ref byte for byte,
+Update it with `node scripts/vendor-zipp-models.mjs --zipp <checkout>` in that
+package, which copies the files at the declared ZIPP release (the `zipp-vm`
+tag in `apps/softn-host-rust/Cargo.toml`; `--ref <tag>` names another) byte for byte,
 checks the GPU runtime against the release's embed kit when the kit is cached,
 and records every file's digest in `SOURCE.json`; `--check` (and the licence
 inventory) refuse a tree that differs from it.
