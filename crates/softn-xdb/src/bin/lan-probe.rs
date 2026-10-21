@@ -1,5 +1,6 @@
 //! `lan-probe`: one XDB network node as a process, for LAN qualification runs
-//! across containers or machines (the two-host check the README asks for).
+//! across containers or machines (the two-host check
+//! docs/engineering/xdb/README.md asks for).
 //!
 //! It opens a database, starts a node with the trusted-LAN options (mDNS
 //! discovery + listening), optionally writes one record and broadcasts it,
@@ -8,10 +9,12 @@
 //! prints one JSON line with what it saw and exits 0 on success, 1 on a
 //! timeout. Two of these on one Docker bridge network, each writing one
 //! record and expecting two, prove discovery, delivery and convergence
-//! between separate network stacks; see scripts/lan-two-containers.sh.
+//! between separate network stacks; the script that ran them that way,
+//! scripts/lan-two-containers.sh, stayed in the former xdb.org repository
+//! (commit cac5bc2) and was not brought here with the crate.
 //!
 //! ```sh
-//! cargo run -p xdb --no-default-features --bin lan-probe -- \
+//! cargo run --manifest-path crates/softn-xdb/Cargo.toml --no-default-features --bin lan-probe -- \
 //!     --data /tmp/a --label a --write hello-from-a --expect 2 --timeout 90
 //! ```
 //!

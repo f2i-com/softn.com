@@ -72,7 +72,7 @@ try {
   startupStage='route_configuration';
   const declared=manifest.server.routes;
   if(!Array.isArray(declared)||declared.length>256)throw new Error('Unsupported route declaration');
-  // One route schema for every host (apps/softn-rust/src/bundle.rs is the other reader):
+  // One route schema for every host (apps/softn-host-rust/src/bundle.rs is the other reader):
   // `transaction` and `authorization` are optional there, so they are optional here.
   // A route this host cannot serve — a path outside /api/ (Apache routes only those
   // to api.php), a method PHP does not route, `hosttoken` authorization when this

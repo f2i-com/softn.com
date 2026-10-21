@@ -131,7 +131,7 @@ if ($real !== false && $rootReal !== false && ($real === $rootReal || str_starts
 // runs in, and a document without them has no SharedArrayBuffer whatever
 // its scripts were served with. The deployed configs set the headers on
 // every response; this file has to say so for each branch it answers from,
-// and the release smoke test (scripts/smoke-site.mjs) checks that it does.
+// and the release smoke test (scripts/release/smoke-site.mjs) checks that it does.
 foreach (['web', 'builder', 'studio'] as $app) {
     if (preg_match("#^/$app(/|$)#", $path) && is_file("$root/$app/index.html")) {
         header('Content-Type: text/html; charset=utf-8');
