@@ -525,9 +525,11 @@ without the client taking a byte, on plain requests and on sync sockets
 alike; a slow client is not affected, only one that has stopped. One sync
 message has two minutes to leave at most.
 
-Workers: a handler stuck inside one native call (a catastrophic regex, a
-huge `JSON.parse`) cannot be interrupted, so its worker is abandoned and a
-replacement started, for up to eight such threads running at once. When an
+Workers: a regular expression that backtracks for ever stops at the
+engine's ceiling for one search, as a `RangeError` the handler can catch
+(it used to hold its worker until the watchdog gave the thread up). A
+handler stuck inside one native call (a huge `JSON.parse`) cannot be
+interrupted, so its worker is abandoned and a replacement started, for up to eight such threads running at once. When an
 abandoned thread's call returns the thread exits and its place is free
 again. It used to be eight for the life of the process, after which every
 further stall cost the pool a worker for good. At the limit, or when no

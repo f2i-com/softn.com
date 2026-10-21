@@ -48,15 +48,16 @@ const MAX_STEPS_PER_CALL: u64 = 100_000_000;
 /// terminates and sends a clean error before the outer timeout fires.
 ///
 /// The step budget alone cannot bound this: one native builtin — a huge
-/// `JSON.parse`, a catastrophic regex — is a single instruction. The watchdog
-/// thread is what makes wall-time real.
+/// `JSON.parse` — is a single instruction. (A regex search is not: under
+/// `safe-sandbox` its steps are charged to the budget and capped per search.)
+/// The watchdog thread is what makes wall-time real.
 const WALL_TIME_MS: u64 = 25_000;
 
 /// Grace beyond the wall-time limit after which a call that has ignored its
 /// abort flag is treated as wedged rather than slow.
 ///
 /// The flag is polled between instructions, so a script sitting inside ONE long
-/// native builtin — a catastrophic regex, a huge `JSON.parse` — never sees it. That thread cannot be killed from safe Rust, so the pool
+/// native builtin — a huge `JSON.parse` — never sees it. That thread cannot be killed from safe Rust, so the pool
 /// abandons it and starts a replacement instead of losing a worker for good.
 const WEDGE_GRACE_MS: u64 = 25_000;
 
@@ -161,8 +162,8 @@ fn replace_wedged(
         if !guard.wedge_reported.swap(true, Ordering::Relaxed) {
             tracing::error!(
                 "Worker wedged in a native call and not replaced ({why}). It stays in the pool \
-                 and serves again when the call returns. This is almost always a catastrophic \
-                 regex or a huge JSON.parse."
+                 and serves again when the call returns. This is almost always a huge \
+                 JSON.parse."
             );
         }
         None
@@ -1610,6 +1611,25 @@ mod isolation_tests {
         }, Some(1)).unwrap();
         let refused = top.init("setTimeout(function () {}, 1000);\nfunction ping(req) { return {status: 200, body: {}}; }".to_string()).unwrap_err();
         assert!(refused.contains("setTimeout is not available in server logic"), "{refused}");
+    }
+
+    /// A regular expression that backtracks without end stops at the engine's
+    /// ceiling for one search, as a RangeError the handler can catch, long
+    /// before the call's step budget or its wall time.
+    #[test]
+    fn a_regex_that_backtracks_without_end_is_an_error_the_handler_can_catch() {
+        let runtime = one_worker(r#"
+            function search(req) {
+                try { return {status: 200, body: {matched: /^(a+)+$/.test("a".repeat(40) + "!")}}; }
+                catch (e) { return {status: 200, body: {caught: e.name + ": " + e.message}}; }
+            }
+        "#);
+        let started = Instant::now();
+        let answer = runtime.call("search", vec![serde_json::json!({})]);
+        let elapsed = started.elapsed();
+        let answer = answer.unwrap();
+        assert_eq!(answer["body"]["caught"], "RangeError: regular expression exceeded its execution budget", "{answer}");
+        assert!(elapsed < Duration::from_secs(5), "the search took {elapsed:?}");
     }
 
     /// What a handler builds and drops while it runs is collected while it

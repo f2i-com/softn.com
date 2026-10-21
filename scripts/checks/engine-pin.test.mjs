@@ -36,7 +36,10 @@ test('the Rust host takes zipp-vm from the release the browser engine was instal
   assert.ok(git && cargoTag, 'zipp-vm is a git dependency on a release tag, not a sibling checkout');
   assert.equal(git[1].replace(/\.git$/, ''), source.repository.replace(/\.git$/, ''), 'the same ZIPP repository');
   assert.equal(cargoTag, source.release, `Cargo tag ${cargoTag} vs installed engine ${source.release}`);
-  assert.ok(/features\s*=\s*\[[^\]]*"instrument"/.test(dependency[1]), 'the step budget stays on');
+  // The profile the browser engine is built with (the installer requires it
+  // of the module), which carries the step budget and the regex ceiling.
+  assert.ok(/features\s*=\s*\[[^\]]*"safe-sandbox"/.test(dependency[1]), 'the host runs untrusted logic on ZIPP\'s safe-sandbox profile');
+  assert.ok(/default-features\s*=\s*false/.test(dependency[1]), 'the JIT, which safe-sandbox excludes, is not taken by default');
 });
 
 // A tag names a commit only until it moves; the lock records which one cargo

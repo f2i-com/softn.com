@@ -14,10 +14,14 @@ license = "Apache-2.0"
 # together; a SoftN release refuses an older one (scripts/release/zipp-release-gate.mjs)
 # unless told otherwise. To develop against a sibling checkout
 # instead: cargo test --config 'patch."https://github.com/f2i-com/zipp.org".zipp-vm.path="../../../zipp.org/crates/zipp-vm"'
-# `instrument` is what gives the server a step budget and a cooperative
-# abort flag for untrusted scripts; it switches the JIT off, which is the
-# price of the budget being real.
-zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.28", features = ["instrument"] }
+# `safe-sandbox` is ZIPP's profile for untrusted code, the one the browser
+# engine is built with: `instrument` (a step budget and a cooperative abort
+# flag), a memory-safe interpreter with no JIT, and the sandbox's caps, among
+# them a step ceiling on one regex search, which a search past it meets as a
+# RangeError the handler can catch. Without it a regex that backtracks for
+# ever held its worker until the watchdog gave the thread up. The JIT is left
+# out (default-features = false); `instrument` turned it off on every VM anyway.
+zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.28", default-features = false, features = ["safe-sandbox"] }
 # The database, from this repository (crates/softn-xdb), without its Tauri
 # commands; its library is still called `xdb`.
 xdb = { package = "softn-xdb", path = "../../crates/softn-xdb", default-features = false }
