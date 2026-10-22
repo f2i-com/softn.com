@@ -56,6 +56,12 @@ export interface AppScope {
   currentPage?: string;
   /** Show the page of that name, by setting the state above: false when the app keeps none. */
   showPage?: (name: string) => boolean;
+  /**
+   * The owner a component registers the files the person picks under
+   * (`registerFileRef(file, filesOwner)`): the renderer releases them when
+   * the app closes. A FileChooser's picks were kept for the page's life.
+   */
+  filesOwner?: object;
 }
 
 /**

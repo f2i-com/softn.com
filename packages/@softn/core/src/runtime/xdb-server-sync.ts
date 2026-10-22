@@ -41,6 +41,12 @@ export interface ServerSyncConfig {
   reconnectDelay?: number;
   /** Allow insecure ws:// connections (default: false, only for local development) */
   allowInsecureWs?: boolean;
+  /**
+   * How long, in ms, the socket of an app its host is not showing stays open
+   * with nothing to send (default: 30000), so that switching tabs and back
+   * does not reconnect; see `setAppShown`.
+   */
+  restAfterMs?: number;
 }
 
 /** A sync operation (mutation) sent to/from the server. */
@@ -144,6 +150,12 @@ const INCREMENTAL_PULL_ROWS = 10_000;
 const HOST_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 /** What the host takes as a collection name; a pull naming anything else is answered with an error. */
 const SYNCABLE_COLLECTION = /^[A-Za-z0-9_-]{1,64}$/;
+/**
+ * How long a hidden app's socket stays open with nothing to send: long enough
+ * that a look at another tab and back does not cost a ticket, a handshake
+ * and a pull of every collection.
+ */
+const REST_AFTER_MS = 30_000;
 /** Names under which the queue and the pull positions are kept (`XDBService.readSyncMeta`). */
 const QUEUE_META = 'sync-queue';
 const PULLED_META = 'sync-pulled';
@@ -439,6 +451,16 @@ export class XDBServerSync {
    */
   private ticketAttempt = 0;
   private ticketPending = false;
+  /** connect() was called, and disconnect() not since. */
+  private started = false;
+  /**
+   * Whether the app's host is showing it (`setAppShown`). A hidden app keeps
+   * its socket only while it has something to send, and for `restAfterMs`
+   * after: it is opened for a change the app makes, and closed again once
+   * the change is answered.
+   */
+  private shown = true;
+  private restTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Event listeners */
   private listeners = {
@@ -469,12 +491,100 @@ export class XDBServerSync {
       this.listenForLocalChanges();
       this.saveSoon();
     }
+    // Started only now: what the scan above queued opens the one socket
+    // below, not a second through wakeToSend.
+    this.started = true;
+    // An app started behind another tab, with nothing to send, opens nothing:
+    // it connects when it is shown, or when it writes something.
+    if (!this.shown && !this.hasUnsent()) return;
+    if (this.ws || this.ticketPending || this.reconnectTimer) return;
+    this.createConnection();
+  }
+
+  /**
+   * Say whether the app's host is showing it. A hidden app's socket closes
+   * once nothing is waiting to be sent or answered, `restAfterMs` after that,
+   * and no remote change reaches it meanwhile; what it writes is still
+   * queued, and opens the socket to be sent. Shown again, it connects and
+   * pulls what changed while it was away. Every app open in SoftN Web kept a
+   * socket to its sync host, behind whichever tab was on screen.
+   */
+  setAppShown(shown: boolean): void {
+    if (this.shown === shown) return;
+    this.shown = shown;
+    this.clearRestTimer();
+    if (!this.started) return;
+    if (!shown) {
+      this.restSoon();
+      return;
+    }
+    // A reconnect waiting out a backoff (a host's Retry-After among them) is
+    // left to it.
+    if (!this.ws && !this.ticketPending && !this.reconnectTimer) this.createConnection();
+  }
+
+  /** Whether any change made here is still to be sent or answered. */
+  private hasUnsent(): boolean {
+    return this.pendingOps.size > 0 || this.inflightOps.size > 0;
+  }
+
+  private clearRestTimer(): void {
+    if (this.restTimer) clearTimeout(this.restTimer);
+    this.restTimer = null;
+  }
+
+  /** Hidden: close the socket `restAfterMs` from now, if nothing is waiting by then. */
+  private restSoon(): void {
+    if (this.shown || !this.started || this.destroyed) return;
+    this.clearRestTimer();
+    this.restTimer = setTimeout(() => {
+      this.restTimer = null;
+      if (this.shown || this.hasUnsent()) return;
+      this.closeSocket();
+    }, this.config.restAfterMs ?? REST_AFTER_MS);
+  }
+
+  /**
+   * Close the socket and what is waiting on it, and go on listening for the
+   * app's changes: unlike disconnect(), the queue stays live, so a change
+   * made while resting (a hard delete among them, which no later scan finds)
+   * is queued and opens the socket again.
+   */
+  private closeSocket(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.clearPullRetry();
+    this.requeueInflight();
+    this.save();
+    this.ticketAttempt++;
+    this.ticketPending = false;
+    const wasConnected = this.connected;
+    if (this.ws) {
+      // Cleared first, as in disconnect(): the socket's own onclose then
+      // leaves the state alone and schedules nothing.
+      const ws = this.ws;
+      this.ws = null;
+      ws.close();
+    }
+    this.connected = false;
+    this.clientId = null;
+    if (wasConnected) this.listeners.disconnect.forEach((fn) => fn());
+  }
+
+  /** Hidden and resting: open the socket for a change to send, once. */
+  private wakeToSend(): void {
+    if (this.shown || !this.started || this.destroyed) return;
+    if (this.ws || this.ticketPending || this.reconnectTimer) return;
     this.createConnection();
   }
 
   /** Disconnect and stop syncing. */
   disconnect(): void {
     this.destroyed = true;
+    this.started = false;
+    this.clearRestTimer();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -656,7 +766,8 @@ export class XDBServerSync {
       this.requeueInflight();
       this.clearPullRetry();
       this.listeners.disconnect.forEach((fn) => fn());
-      if (!this.destroyed) {
+      // A hidden app goes back only for something to send.
+      if (!this.destroyed && (this.shown || this.hasUnsent())) {
         this.scheduleReconnect();
       }
     };
@@ -715,6 +826,9 @@ export class XDBServerSync {
         this.handleError(msg);
         break;
     }
+    // Hidden, and everything this app made is answered: the socket rests
+    // `restAfterMs` from now, unless the app writes again before then.
+    if (!this.shown && this.ws && !this.restTimer && !this.hasUnsent()) this.restSoon();
   }
 
   /**
@@ -1280,6 +1394,8 @@ export class XDBServerSync {
     this.written.add(change.collection);
     this.queueChanged();
     this.flushPendingOps();
+    // A hidden app at rest opens its socket to send this.
+    this.wakeToSend();
   }
 
   /**
@@ -1490,7 +1606,8 @@ export class XDBServerSync {
     const delay = Math.max(backoff, atLeastMs);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (!this.destroyed) {
+      // Hidden since, with nothing left to send: it waits to be shown.
+      if (!this.destroyed && (this.shown || this.hasUnsent())) {
         this.createConnection();
       }
     }, delay);

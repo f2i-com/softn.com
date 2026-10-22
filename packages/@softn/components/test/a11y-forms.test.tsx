@@ -8,6 +8,7 @@
 import React, { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { click, mount, type } from './dom';
+import { AppScopeProvider, getFileByRef, releaseFilesOf, type AppScope } from '@softn/core';
 import { Button } from '../src/form/Button';
 import { Select } from '../src/form/Select';
 import { DatePicker } from '../src/form/DatePicker';
@@ -468,6 +469,27 @@ function dragEvent(type: string, init: { files?: File[]; relatedTarget?: EventTa
 }
 
 describe('FileChooser drop zone', () => {
+  // Registered with no owner, a pick was kept for the page's life: every
+  // file picked in an app SoftN Web had long since closed.
+  it("holds what is picked for its app, which lets it go when it closes", () => {
+    const owner = {};
+    const scope = { xdb: {}, active: true, filesOwner: owner } as unknown as AppScope;
+    const onSelect = vi.fn();
+    const { container } = mount(
+      <AppScopeProvider value={scope}>
+        <FileChooser variant="dropzone" onSelect={onSelect} />
+      </AppScopeProvider>
+    );
+    const zone = container.querySelector('input[type=file]')!.nextElementSibling as HTMLElement;
+    act(() => {
+      zone.dispatchEvent(dragEvent('drop', { files: [new File(['x'], 'photo.png', { type: 'image/png' })] }));
+    });
+    const [{ ref }] = onSelect.mock.calls[0][0] as Array<{ ref: string }>;
+    expect(getFileByRef(ref)?.name).toBe('photo.png');
+    releaseFilesOf(owner);
+    expect(getFileByRef(ref)).toBeUndefined();
+  });
+
   it('can be operated from the keyboard through a real button', () => {
     const { container } = mount(<FileChooser variant="dropzone" label="Upload" />);
     const button = container.querySelector('button')!;

@@ -15,9 +15,11 @@ const _owned = new WeakMap<object, Set<string>>();
 /**
  * Register a File and return a UUID reference. With an `owner`, the ref is
  * released with releaseFilesOf(owner): a runtime registers what the person
- * chooses for its app under itself, so closing the app lets them go. A
- * FileChooser's files have no such owner (a ref it hands the app's logic may
- * be read after the chooser has gone) and stay for the page's life.
+ * chooses for its app under itself, and a FileChooser under its app's
+ * `filesOwner` (app-scope-context.ts), not under itself, since a ref it hands
+ * the app's logic may be read after the chooser has gone; either way closing
+ * the app lets them go. Without one (a FileChooser outside any app) the file
+ * stays for the page's life.
  */
 export function registerFileRef(file: File, owner?: object): string {
   const ref = randomUUID();

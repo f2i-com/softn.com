@@ -3062,7 +3062,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Peer sync runs while the app is on screen. Where a host keeps several apps open, as SoftN Web’s tabs do, an app’s rooms wait while another app is shown: nothing arrives from its peers and nothing is sent, and what the app writes meanwhile is exchanged when it is shown again. Closing the app leaves its rooms, and `db.getSavedSyncRoom()` still names the last one, so the app can start it again when it next opens."
+              "text": "Peer sync runs while the app is on screen. Where a host keeps several apps open, as SoftN Web’s tabs do, an app’s rooms wait while another app is shown: nothing arrives from its peers and nothing is sent, and what the app writes meanwhile is exchanged when it is shown again. Closing the app leaves its rooms, and `db.getSavedSyncRoom()` still names the last one, so the app can start it again when it next opens. Sync through the server the manifest names (`config.server.url`) is live while the app is shown; behind another app it keeps its connection only while there is something of its own to send, and for half a minute after, so what it writes meanwhile still reaches the server and what others changed arrives when it is shown again."
             },
             {
               "type": "paragraph",

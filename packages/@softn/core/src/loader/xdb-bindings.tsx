@@ -475,6 +475,16 @@ export function SoftNWithXDB({
     });
   }, [xdb]);
 
+  // Server sync follows whether the host shows the app (setAppShown): a
+  // tab behind another keeps no socket open for nothing. Held in a ref and
+  // told on its own, so a tab switch does not rebuild the client.
+  const serverSyncRef = useRef<import('../runtime/xdb-server-sync').XDBServerSync | null>(null);
+  const appShownRef = useRef(props.active !== false);
+  appShownRef.current = props.active !== false;
+  useEffect(() => {
+    serverSyncRef.current?.setAppShown(props.active !== false);
+  }, [props.active]);
+
   // Server sync: connect to softn-server when serverUrl is provided
   useEffect(() => {
     if (!serverUrl) return;
@@ -531,6 +541,10 @@ export function SoftNWithXDB({
         sync.on('error', (err: unknown) => {
           console.warn('[SoftN] Server sync error:', err);
         });
+        // Before connect(): an app opened behind another tab opens no socket
+        // until it is shown or has something to send.
+        sync.setAppShown(appShownRef.current);
+        serverSyncRef.current = sync;
         sync.connect();
       })
       .catch((err: unknown) => {
@@ -542,6 +556,7 @@ export function SoftNWithXDB({
       });
     return () => {
       stale = true;
+      if (serverSyncRef.current === sync) serverSyncRef.current = null;
       sync?.disconnect();
     };
   }, [xdb, serverUrl, serverToken, stableServerCollections, consentPending, stablePermissionConfig]);

@@ -8,7 +8,7 @@
  */
 
 import React, { useRef, useState, useCallback, useId } from 'react';
-import { registerFileRef } from '@softn/core';
+import { registerFileRef, useAppScope } from '@softn/core';
 
 // ---- Types ----
 
@@ -81,11 +81,15 @@ export function FileChooser({
   const [rejected, setRejected] = useState(0);
   const hintId = useId();
 
+  // Held for the app, not for this chooser: the app's logic may read a ref
+  // after the chooser has gone, and the app's closing lets them go.
+  const { filesOwner } = useAppScope();
+
   const processFiles = useCallback(
     (files: FileList | File[]) => {
       const fileArray = Array.from(files);
       const infos: FileInfo[] = fileArray.map((file) => {
-        const ref = registerFileRef(file);
+        const ref = registerFileRef(file, filesOwner);
         return {
           name: file.name,
           size: file.size,
@@ -97,7 +101,7 @@ export function FileChooser({
       setRejected(0);
       onSelect?.(infos);
     },
-    [onSelect]
+    [onSelect, filesOwner]
   );
 
   const handleChange = useCallback(

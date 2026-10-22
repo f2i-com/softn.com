@@ -574,7 +574,10 @@ await db.startSync('my-room-name');
 All CRUD operations are **synchronous** (XDB caches everything in memory).
 Peer sync runs while the app is on screen: in SoftN Web, an app's rooms wait
 while another tab is shown, exchange what was written meanwhile when it is
-shown again, and close when the app closes.
+shown again, and close when the app closes. Server sync (`config.server.url`)
+is live while the app is shown; behind another tab it connects only to send
+what the app writes, and lets the socket go 30 seconds after
+(`restAfterMs` on `XDBServerSync`).
 
 ---
 

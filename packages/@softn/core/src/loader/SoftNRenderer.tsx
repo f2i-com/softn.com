@@ -60,6 +60,7 @@ import { AppScopeProvider, type AppAssetResolver, type AppScope } from './app-sc
 import { getXDB, type XDBService } from '../runtime/xdb';
 import { readSavedSyncRoom } from '../runtime/xdb-sync-key';
 import { openAppView, type AppView } from '../runtime/sync-activity';
+import { releaseFilesOf } from '../runtime/file-registry';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
 import type { BindingTarget, Expression, TemplateNode } from '../parser/ast';
@@ -2086,6 +2087,11 @@ export function SoftNRenderer({
     },
     [pageKey, setComponentState]
   );
+  // What the app's components register of the files the person picks (a
+  // FileChooser's) is released when the app closes, or when this renderer
+  // takes another app; it was kept for the page's life.
+  const filesOwner = useMemo(() => ({ appId }), [appId]);
+  useEffect(() => () => releaseFilesOf(filesOwner), [filesOwner]);
   const appScope = useMemo<AppScope>(
     () => ({
       appId,
@@ -2094,9 +2100,10 @@ export function SoftNRenderer({
       assets: assetResolver,
       clipboard: runtimePermissions?.clipboard !== false,
       followLink,
+      filesOwner,
       ...(pageKey ? { currentPage, showPage } : {}),
     }),
-    [appId, scopedXdb, active, assetResolver, runtimePermissions, followLink, pageKey, currentPage, showPage]
+    [appId, scopedXdb, active, assetResolver, runtimePermissions, followLink, filesOwner, pageKey, currentPage, showPage]
   );
 
   // The page has been drawn from the document: the browser's events on it go

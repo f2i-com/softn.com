@@ -37,6 +37,7 @@ vi.mock('../src/runtime/xdb-server-sync', () => ({
       dialled.push(options.wsUrl);
     }
     on(): void {}
+    setAppShown(): void {}
     connect(): void {}
     disconnect(): void {}
   },
