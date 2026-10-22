@@ -404,10 +404,10 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     let mounted = true;
     const loadRenderer = async () => {
       try {
-        // Registered as the runtimes register them: the minimal set now, and
-        // every other component (charts, editors, Scene3D and Three.js, the
-        // QR reader and its decoder) fetched the first time a page draws it,
-        // so a preview loads only what the page uses.
+        // Registered as the runtimes register them: the start-up set now, and
+        // every other component (the light groups, charts, editors, Scene3D
+        // and Three.js, the QR reader and its decoder) fetched the first time
+        // a page draws it, so a preview loads only what the page uses.
         const [{ registerRuntimeComponents }, theme] = await Promise.all([
           import('@softn/components/lazy'),
           import('@softn/components/theme'),

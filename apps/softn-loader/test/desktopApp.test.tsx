@@ -9,7 +9,7 @@ const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: bridge.drag }) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: bridge.title }) }));
 vi.mock('@softn/components/lazy', () => ({ registerRuntimeComponents() {} }));
-vi.mock('@softn/components/minimal', () => ({ Spinner: () => <span>Loading</span> }));
+vi.mock('@softn/components/essentials', () => ({ Spinner: () => <span>Loading</span> }));
 vi.mock('@softn/components/theme', () => ({ ThemeProvider: (props: Record<string, unknown> & { children: React.ReactNode }) => { bridge.theme(props); return props.children; } }));
 vi.mock('@softn/core', async (importOriginal) => ({
   // Core's real reads and rules — the manifest, the permissions, consent and

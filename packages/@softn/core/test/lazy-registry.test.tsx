@@ -209,6 +209,42 @@ describe('ComponentRegistry lazy registration', () => {
       'Lazy component "Typo" resolved to undefined'
     );
   });
+
+  it('answers what a first draw waits for: the unfinished loads of names registered beforeFirstDraw', async () => {
+    const registry = new ComponentRegistry();
+    const light = deferred<SoftNComponent>();
+    const failing = deferred<SoftNComponent>();
+    const loadLight = vi.fn(() => light.promise);
+    const loadFailing = vi.fn(() => failing.promise);
+    const loadHeavy = vi.fn(() => new Promise<SoftNComponent>(() => {}));
+    registry.registerLazy('Light', loadLight, { beforeFirstDraw: true });
+    registry.registerLazy('Failing', loadFailing, { beforeFirstDraw: true });
+    registry.registerLazy('Heavy', loadHeavy, { feature: 'scene3d' });
+    registry.register('Now', Hello);
+
+    // Nothing to wait for: eager, unknown, and a heavy feature, which is drawn around.
+    expect(registry.firstDrawLoads(['Now', 'Nope', 'Heavy'])).toBeNull();
+    expect(loadHeavy).not.toHaveBeenCalled();
+
+    // Already started by the preload, joined rather than started again; a
+    // tag as a page writes it resolves to the name.
+    void registry.preload(['Light']);
+    const waiting = registry.firstDrawLoads(['light', 'Failing', 'Now']);
+    expect(waiting).not.toBeNull();
+    expect(loadLight).toHaveBeenCalledTimes(1);
+    expect(loadFailing).toHaveBeenCalledTimes(1);
+
+    let settled = false;
+    void waiting!.then(() => (settled = true));
+    light.resolve(Hello);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    failing.reject(new Error('gone'));
+    await expect(waiting).resolves.toBeUndefined();
+
+    // Loaded, or failed (reported where it renders): nothing left to wait for.
+    expect(registry.firstDrawLoads(['Light', 'Failing'])).toBeNull();
+  });
 });
 
 describe('the lazy wrapper', () => {

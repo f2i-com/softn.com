@@ -4,7 +4,7 @@ import { Failure } from '@softn/single-shell';
 import { readBoot } from './boot';
 import { ServedApp } from './ServedApp';
 import '@softn/single-shell/style.css';
-// The same registration as softn-single: the minimal set eagerly, every other
+// The same registration as softn-single: the start-up set eagerly, every other
 // built-in as a loader the registry runs when a document first needs it.
 registerRuntimeComponents();
 let boot: ReturnType<typeof readBoot> | null = null;

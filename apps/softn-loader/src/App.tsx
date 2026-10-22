@@ -7,7 +7,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { registerRuntimeComponents } from '@softn/components/lazy';
-import { Spinner } from '@softn/components/minimal';
+import { Spinner } from '@softn/components/essentials';
 import { ThemeProvider } from '@softn/components/theme';
 import {
   SoftNWithXDB,
@@ -84,9 +84,9 @@ async function restoreFromBackup(dataId: string, backup: string): Promise<void> 
 // Compile-time constant from Vite define
 declare const __ANDROID__: boolean;
 
-// The components, as the browser runtimes register them: the minimal set now,
-// every other feature (charts, editors, Scene3D and Three.js, media) loaded
-// the first time an app draws it.
+// The components, as the browser runtimes register them: the start-up set
+// now, every other component (the light groups, charts, editors, Scene3D and
+// Three.js, media) loaded the first time an app draws it.
 registerRuntimeComponents();
 
 // Check if running in Tauri

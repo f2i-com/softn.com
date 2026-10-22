@@ -9,7 +9,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { flushSync } from 'react-dom';
 import type { BundleArchive, PermissionConfig, PythonProject } from '@softn/core';
-import { ManifestError, readManifest } from '@softn/core';
+import { ManifestError, preloadRememberedFirstDraw, readManifest } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 import {
   createAssetResolver,
@@ -216,6 +216,13 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
   const placeholderClosed = (): boolean =>
     placeholderId !== undefined && !host.tabs().some((t) => t.id === placeholderId);
 
+  // The app's identity (below), started beside the archive's read: as soon
+  // as it is known, what its first screen waited for last time is started
+  // too (core's first-draw-memory), while the rest of the open goes on. A
+  // failure is the await's below to report.
+  const origin = computeAppOrigin(data);
+  origin.then(preloadRememberedFirstDraw, () => {});
+
   try {
     if (isForeground()) host.setError(null);
 
@@ -249,7 +256,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // that persists — its database, its granted permissions, its cached
     // copy — hangs off this rather than off manifest.name, which the bundle
     // chooses for itself and could therefore choose to be someone else's.
-    const appOrigin = await computeAppOrigin(data);
+    const appOrigin = await origin;
     // Before the running-tab check as well: a closed placeholder means the
     // user dismissed this load, not that they asked for whatever copy of
     // the app is already open.

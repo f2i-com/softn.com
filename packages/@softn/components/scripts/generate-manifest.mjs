@@ -15,7 +15,7 @@
  * member with neither `default` nor `defaultUnknown` has none, and
  * `defaultUnknown` marks one the component works out in a way not read here.
  * It also records which names each registry entry registers
- * (`minimalComponents`, `chartComponents`, …).
+ * (`essentialComponents`, `controlComponents`, `chartComponents`, …).
  *
  * The manifest is the machine-readable description Builder's palette and
  * property panel can be generated from instead of hand-maintaining a second
@@ -39,7 +39,9 @@ export const manifestPath = join(packageRoot, 'component-manifest.json');
 export const propKindsPath = join(packageRoot, 'src', 'prop-kinds.generated.ts');
 
 const SKIP_DIRS = new Set(['utils', 'entries', 'theme']);
-const ENTRY_FILES = ['minimal', 'charts', 'animation', 'editors', 'scene3d', 'smart', 'media', 'pickers', 'games'];
+// Each name is registered by exactly one of these. `minimal` is not among them:
+// it is the union of the first six, spread together.
+const ENTRY_FILES = ['essentials', 'controls', 'feedback', 'data', 'display', 'navigation', 'charts', 'animation', 'editors', 'scene3d', 'smart', 'media', 'pickers', 'games'];
 
 function* sourceFiles(dir) {
   for (const name of readdirSync(dir).sort()) {

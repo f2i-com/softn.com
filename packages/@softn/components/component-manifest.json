@@ -13744,7 +13744,7 @@
     }
   ],
   "registered": {
-    "minimal": [
+    "essentials": [
       "Stack",
       "Box",
       "Card",
@@ -13760,10 +13760,23 @@
       "Header",
       "Content",
       "Section",
+      "Text",
+      "Heading",
+      "Badge",
+      "Image",
+      "Icon",
+      "Spinner",
       "Button",
       "Input",
-      "Form",
       "TextArea",
+      "Form",
+      "Field",
+      "List",
+      "ListItem",
+      "EmptyState",
+      "Loop"
+    ],
+    "controls": [
       "Select",
       "Checkbox",
       "Switch",
@@ -13774,46 +13787,43 @@
       "Rating",
       "SegmentedControl",
       "ButtonGroup",
-      "Field",
-      "CopyButton",
-      "Text",
-      "Heading",
-      "Badge",
-      "Tag",
-      "TagGroup",
-      "Avatar",
-      "AvatarGroup",
-      "Progress",
-      "Spinner",
-      "Image",
-      "Icon",
-      "Skeleton",
-      "Stat",
-      "Kbd",
-      "DescriptionList",
+      "CopyButton"
+    ],
+    "feedback": [
       "Alert",
       "Modal",
       "Toast",
       "Drawer",
       "Popover",
-      "EmptyState",
       "Confirm",
-      "List",
-      "ListItem",
+      "Tooltip"
+    ],
+    "data": [
       "Table",
       "TreeView",
       "Pagination",
       "DataGrid",
-      "Timeline",
+      "Timeline"
+    ],
+    "display": [
+      "Avatar",
+      "AvatarGroup",
+      "Tag",
+      "TagGroup",
+      "Progress",
+      "Skeleton",
+      "Stat",
+      "Kbd",
+      "DescriptionList"
+    ],
+    "navigation": [
       "Tabs",
       "Breadcrumb",
       "Menu",
       "NavItem",
       "Steps",
       "Accordion",
-      "Collapse",
-      "Tooltip",
-      "Loop"
+      "Collapse"
     ],
     "charts": [
       "LineChart",

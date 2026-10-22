@@ -37,6 +37,14 @@ export interface LazyComponentOptions {
    * host planning an offline install can ask which features a document needs.
    */
   feature?: string;
+  /**
+   * A page's first draw waits for this component when its first screen names
+   * it, up to a short limit (`ComponentRegistry.firstDrawLoads`), rather than
+   * drawing a placeholder where it goes. For light, common components whose
+   * chunk arrives in moments; a heavy feature (Scene3D) leaves it off, so the
+   * page is drawn around its placeholder rather than held for Three.js.
+   */
+  beforeFirstDraw?: boolean;
 }
 
 /**
@@ -64,6 +72,7 @@ export function isMissingChunkError(error: unknown): boolean {
 export class LazyComponentEntry {
   readonly name: string;
   readonly feature: string | undefined;
+  readonly beforeFirstDraw: boolean;
   /** The component the registry hands out for this name; never replaced. */
   readonly wrapper: SoftNComponent;
 
@@ -79,6 +88,7 @@ export class LazyComponentEntry {
   constructor(name: string, loader: SoftNComponentLoader, options: LazyComponentOptions = {}) {
     this.name = name;
     this.feature = options.feature;
+    this.beforeFirstDraw = options.beforeFirstDraw === true;
     this.loader = loader;
     this.lazy = this.createLazy();
     this.wrapper = createWrapper(this);

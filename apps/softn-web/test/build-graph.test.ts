@@ -19,7 +19,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { featureChunks } from '../../../scripts/build/on-demand-chunks.mjs';
+import { componentGroupChunks, featureChunks } from '../../../scripts/build/on-demand-chunks.mjs';
 
 interface ManifestChunk {
   file: string;
@@ -188,6 +188,33 @@ describe.skipIf(!built)('softn-web build graph', () => {
     process.stdout.write(
       `[build-graph] dynamic feature chunks:\n  ${featureChunks.join('\n  ')}\n`
     );
+  });
+
+  // The light groups that were in the shell until 2026-10-22 (controls,
+  // feedback, data, display, navigation): fetched by the page that draws one,
+  // so out of the entry closure, and precached with the shell, so an app that
+  // uses one works offline as it did. Found by the module each chunk starts
+  // at, not by a file-name prefix: `data-` and `display-` are names other
+  // chunks could start with.
+  it('reaches the light component groups by dynamic import only, and precaches them with the shell', () => {
+    const precached = precachedUrls();
+    const dynamicTargets = new Set(Object.values(manifest).flatMap((chunk) => chunk.dynamicImports ?? []));
+    const staticTargets = new Set(Object.values(manifest).flatMap((chunk) => chunk.imports ?? []));
+    const groups: string[] = [];
+    for (const group of componentGroupChunks) {
+      const key = Object.keys(manifest).find((k) => k.endsWith(`/components/dist/${group}.js`));
+      expect(key, `no chunk for the ${group} group`).toBeDefined();
+      const chunk = manifest[key!];
+      expect(chunk.isDynamicEntry, `${group} is not a dynamic entry`).toBe(true);
+      expect(dynamicTargets.has(key!), `${group} is not dynamically imported`).toBe(true);
+      expect(staticTargets.has(key!), `${group} is statically imported`).toBe(false);
+      expect(closure.has(key!), `${group} is in the entry closure`).toBe(false);
+      for (const [, part] of staticClosure(manifest, [key!])) {
+        expect(precached.has(part.file), `${part.file} (${group}) is not precached`).toBe(true);
+      }
+      groups.push(`${chunk.file} (${sizeOf(chunk.file)} B)`);
+    }
+    process.stdout.write(`[build-graph] component group chunks (on demand, precached):\n  ${groups.join('\n  ')}\n`);
   });
 
   it("keeps every Three addon out of the scene3d chunk's static closure and reaches it by dynamic import", () => {

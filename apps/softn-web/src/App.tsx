@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
-import { Spinner, Text } from '@softn/components/minimal';
+import { Spinner, Text } from '@softn/components/essentials';
 import { ThemeProvider } from '@softn/components/theme';
 // Before the components' own stylesheets, which used to follow this one in
 // the document as <style> elements.

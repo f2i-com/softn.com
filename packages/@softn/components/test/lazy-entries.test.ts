@@ -46,6 +46,12 @@ describe('registerRuntimeComponents', () => {
     expect(registry.getLoadState('Button')).toBe('eager');
     expect(registry.getLoadState('LineChart')).toBe('idle');
     expect(registry.getFeature('QRReader')).toBe('media');
+    // The light groups are loaders a page's first draw waits for; the heavy
+    // features are drawn around.
+    expect(registry.getLoadState('Select')).toBe('idle');
+    expect(registry.getFeature('Select')).toBe('controls');
+    expect(registry.firstDrawLoads(['Scene3D', 'LineChart', 'Button'])).toBeNull();
+    expect(registry.firstDrawLoads(['Select'])).not.toBeNull();
 
     await registry.preload(['Scene3D']);
     expect(scene3dModule.evaluations).toBe(1);
@@ -81,6 +87,30 @@ describe('registerRuntimeComponents', () => {
     expect([...runtimeComponentNames].sort()).toEqual(expected);
     expect(new Set(runtimeComponentNames).size).toBe(runtimeComponentNames.length);
   });
+
+  it('starts with the start-up set and fetches the five groups, which together are the minimal set', async () => {
+    const { essentialComponents } = await import('../src/entries/essentials');
+    const { minimalComponents } = await import('../src/entries/minimal');
+    const groups = await Promise.all([
+      import('../src/entries/controls').then((m) => m.controlComponents),
+      import('../src/entries/feedback').then((m) => m.feedbackComponents),
+      import('../src/entries/data').then((m) => m.dataComponents),
+      import('../src/entries/display').then((m) => m.displayComponents),
+      import('../src/entries/navigation').then((m) => m.navigationComponents),
+    ]);
+    const parts = [essentialComponents, ...groups].map((record) => Object.keys(record));
+    const all = parts.flat();
+    expect(new Set(all).size, 'no name in two of them').toBe(all.length);
+    expect([...all].sort()).toEqual(Object.keys(minimalComponents).sort());
+
+    const registry = new ComponentRegistry();
+    registerRuntimeComponents(registry);
+    for (const name of parts[0]) expect(registry.getLoadState(name), name).toBe('eager');
+    for (const name of parts.slice(1).flat()) {
+      expect(registry.getLoadState(name), name).toBe('idle');
+      expect(registry.firstDrawLoads([name]), name).not.toBeNull();
+    }
+  });
 });
 
 describe('ensureRuntimeComponents', () => {
@@ -113,17 +143,31 @@ describe('the emitted entries', () => {
     ].map((m) => m[1]);
     for (const source of staticImports) {
       expect(source, `lazy.js statically imports ${source}`).not.toMatch(
-        /^three|scene3d|charts|editors|smart|media|animation|pickers|games/
+        /^three|scene3d|charts|editors|smart|media|animation|pickers|games|controls|feedback|data|display|navigation|minimal/
       );
     }
-    for (const feature of ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation', 'pickers', 'games']) {
+    for (const feature of [
+      'controls',
+      'feedback',
+      'data',
+      'display',
+      'navigation',
+      'scene3d',
+      'charts',
+      'editors',
+      'smart',
+      'media',
+      'animation',
+      'pickers',
+      'games',
+    ]) {
       expect(lazy).toContain(`import('./${feature}.js')`);
     }
     expect(lazy).not.toMatch(/from ['"]three/);
   });
 
   it.skipIf(!built)('keep three out of minimal.js and theme.js and their chunks', () => {
-    for (const entry of ['minimal', 'theme', 'lazy']) {
+    for (const entry of ['minimal', 'essentials', 'theme', 'lazy']) {
       const seen = new Set<string>();
       const queue = [`${entry}.js`];
       while (queue.length) {
@@ -146,6 +190,12 @@ describe('the emitted entries', () => {
     };
     for (const entry of [
       'minimal',
+      'essentials',
+      'controls',
+      'feedback',
+      'data',
+      'display',
+      'navigation',
       'lazy',
       'theme',
       'scene3d',

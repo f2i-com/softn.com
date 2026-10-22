@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { featureChunks } from '../../../scripts/build/on-demand-chunks.mjs';
+import { componentGroupChunks, featureChunks } from '../../../scripts/build/on-demand-chunks.mjs';
 
 interface ManifestChunk {
   file: string;
@@ -35,8 +35,10 @@ if (!built) {
 }
 
 const HEAVY = /three|scene3d|gltf|fbx|obj|stl|postprocessing/i;
-// The feature entries, as the precache policy names them.
-const FEATURES = featureChunks;
+// The feature entries, as the precache policy names them, and the light
+// component groups: this host has no precache, and each is a chunk its own
+// pages fetch, reached only through import() like the features.
+const FEATURES = [...featureChunks, ...componentGroupChunks];
 // The Three addons Scene3D reaches through its own import() — the model
 // loaders, the controls, the room environment, the post-processing set,
 // SkeletonUtils and the Meshopt decoder, as docs/engineering/SCENE3D_LOADING.md lists

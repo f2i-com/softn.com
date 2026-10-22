@@ -6,7 +6,7 @@ import {
   type BundleManifest,
 } from '@softn/runtime-shell/bundleProcessor';
 import { warmFirstScreen } from '@softn/runtime-shell/zipWarmup';
-import { readManifest } from '@softn/core';
+import { preloadRememberedFirstDraw, readManifest } from '@softn/core';
 import { assembleApplication, mark } from './assemble';
 import { digest, fetchBytes, parseConfig } from './config';
 /**
@@ -30,6 +30,11 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
     inline !== undefined ? (JSON.parse(inline) as unknown) : decode(await fetchBytes(configUrl, signal, 16384, 'no-store', progress)),
     configUrl
   );
+  // Identity comes from this origin's deployment config, not an untrusted manifest name.
+  const appId = 'single:' + new URL(configUrl).pathname + ':' + config.id;
+  // What this app's first screen waited for last time, started now, while
+  // the bundle is on its way rather than after it has been read.
+  preloadRememberedFirstDraw(appId);
   mark('softn:bundle-fetch:start');
   // An inline configuration names a version-addressed bundle with its digest
   // pinned, so the browser's cache may answer; see fetchBytes.
@@ -49,8 +54,7 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
     textFiles,
     readManifest: () => readManifest<BundleManifest>(textFiles),
     sidecar: sidecar ? async () => decode(await fetchBytes(sidecar, signal, 65536, 'no-store', progress)) : undefined,
-    // Identity comes from this origin's deployment config, not an untrusted manifest name.
-    appId: 'single:' + new URL(configUrl).pathname + ':' + config.id,
+    appId,
     grantScope: configUrl + hash,
     signal,
   });

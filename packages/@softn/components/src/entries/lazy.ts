@@ -1,31 +1,45 @@
 /**
- * The runtime's registration: the minimal set now, everything else by loader.
+ * The runtime's registration: the start-up set now, everything else by
+ * loader.
  *
  * softn-web and softn-single both boot through registerRuntimeComponents(),
  * so the two hosts agree on which names load when. Each loader is a dynamic
- * import of one of this package's own feature entries — never of the root
- * barrel, which would fetch every feature to pick one out of it — followed
- * by the named export, so the registry receives the component itself.
+ * import of one of this package's own entries — never of the root barrel,
+ * which would fetch every feature to pick one out of it — followed by the
+ * named export, so the registry receives the component itself.
  *
- * The map below names every built-in that is not in the minimal set. A
- * test holds it equal to registry.ts's eager `builtinComponents`, so a
- * component added to a feature entry without a line here fails the suite
- * rather than silently disappearing from the runtime.
+ * The map below names every built-in that is not in the start-up set
+ * (essentials.ts). A test holds it equal to registry.ts's eager
+ * `builtinComponents`, so a component added to an entry without a line here
+ * fails the suite rather than silently disappearing from the runtime.
  */
 
 import type { ComponentRegistry, SoftNComponent, SoftNComponentLoader } from '@softn/core';
 import { getDefaultRegistry } from '@softn/core';
-import { minimalComponents } from './minimal';
+import { essentialComponents } from './essentials';
 import { declareBuiltinPropKinds } from '../prop-kinds';
 
 export interface LazyComponentRegistration {
-  /** The feature entry the loader fetches: `charts`, `scene3d`, … */
+  /** The entry the loader fetches: `controls`, `charts`, `scene3d`, … */
   feature: string;
   load: SoftNComponentLoader;
+  /**
+   * Whether a page's first draw waits for it when its first screen names it
+   * (core's `firstDrawLoads`): the light groups that were once in the shell,
+   * not the heavy features, which are drawn around a placeholder.
+   */
+  beforeFirstDraw?: boolean;
 }
 
-// One import() per feature, so every name of a feature shares the module
-// promise and the browser fetches its chunk once.
+// One import() per entry, so every name of it shares the module promise and
+// the browser fetches its chunk once. The first five were in the shell until
+// 2026-10-22: light, but drawn by few apps, so each is fetched by the page
+// that draws it and kept in softn-web's precache with the shell.
+const controls = () => import('./controls');
+const feedback = () => import('./feedback');
+const data = () => import('./data');
+const display = () => import('./display');
+const navigation = () => import('./navigation');
 const charts = () => import('./charts');
 const editors = () => import('./editors');
 const smart = () => import('./smart');
@@ -48,10 +62,68 @@ function fromFeature<M extends object>(
   };
 }
 
+/** One of the light groups, which a page's first draw waits for. */
+function fromGroup<M extends object>(
+  feature: string,
+  load: () => Promise<M>,
+  key: keyof M & string
+): LazyComponentRegistration {
+  return { ...fromFeature(feature, load, key), beforeFirstDraw: true };
+}
+
 /**
- * Every built-in outside the minimal set, by registry name.
+ * Every built-in outside the start-up set, by registry name.
  */
 export const lazyComponentRegistrations: Record<string, LazyComponentRegistration> = {
+  // Form controls beyond a button and a text field
+  Select: fromGroup('controls', controls, 'Select'),
+  Checkbox: fromGroup('controls', controls, 'Checkbox'),
+  Switch: fromGroup('controls', controls, 'Switch'),
+  Radio: fromGroup('controls', controls, 'Radio'),
+  Slider: fromGroup('controls', controls, 'Slider'),
+  FileChooser: fromGroup('controls', controls, 'FileChooser'),
+  NumberInput: fromGroup('controls', controls, 'NumberInput'),
+  Rating: fromGroup('controls', controls, 'Rating'),
+  SegmentedControl: fromGroup('controls', controls, 'SegmentedControl'),
+  ButtonGroup: fromGroup('controls', controls, 'ButtonGroup'),
+  CopyButton: fromGroup('controls', controls, 'CopyButton'),
+
+  // Alerts, toasts and what a page lays over itself
+  Alert: fromGroup('feedback', feedback, 'Alert'),
+  Modal: fromGroup('feedback', feedback, 'Modal'),
+  Toast: fromGroup('feedback', feedback, 'Toast'),
+  Drawer: fromGroup('feedback', feedback, 'Drawer'),
+  Popover: fromGroup('feedback', feedback, 'Popover'),
+  Confirm: fromGroup('feedback', feedback, 'Confirm'),
+  Tooltip: fromGroup('feedback', feedback, 'Tooltip'),
+
+  // Data views beyond a list
+  Table: fromGroup('data', data, 'Table'),
+  TreeView: fromGroup('data', data, 'TreeView'),
+  Pagination: fromGroup('data', data, 'Pagination'),
+  DataGrid: fromGroup('data', data, 'DataGrid'),
+  Timeline: fromGroup('data', data, 'Timeline'),
+
+  // Display pieces beyond text and images
+  Avatar: fromGroup('display', display, 'Avatar'),
+  AvatarGroup: fromGroup('display', display, 'AvatarGroup'),
+  Tag: fromGroup('display', display, 'Tag'),
+  TagGroup: fromGroup('display', display, 'TagGroup'),
+  Progress: fromGroup('display', display, 'Progress'),
+  Skeleton: fromGroup('display', display, 'Skeleton'),
+  Stat: fromGroup('display', display, 'Stat'),
+  Kbd: fromGroup('display', display, 'Kbd'),
+  DescriptionList: fromGroup('display', display, 'DescriptionList'),
+
+  // Ways through a page
+  Tabs: fromGroup('navigation', navigation, 'Tabs'),
+  Breadcrumb: fromGroup('navigation', navigation, 'Breadcrumb'),
+  Menu: fromGroup('navigation', navigation, 'Menu'),
+  NavItem: fromGroup('navigation', navigation, 'NavItem'),
+  Steps: fromGroup('navigation', navigation, 'Steps'),
+  Accordion: fromGroup('navigation', navigation, 'Accordion'),
+  Collapse: fromGroup('navigation', navigation, 'Collapse'),
+
   // Charts (SVG; ~30 KB minified)
   LineChart: fromFeature('charts', charts, 'LineChart'),
   BarChart: fromFeature('charts', charts, 'BarChart'),
@@ -121,21 +193,21 @@ export const offlineExtras: Record<string, () => Promise<void>> = {
 
 /** Every name registerRuntimeComponents() registers, eager and lazy alike. */
 export const runtimeComponentNames: readonly string[] = [
-  ...Object.keys(minimalComponents),
+  ...Object.keys(essentialComponents),
   ...Object.keys(lazyComponentRegistrations),
 ];
 
 /**
- * Register the built-ins the way the browser hosts do: the minimal set
+ * Register the built-ins the way the browser hosts do: the start-up set
  * eagerly, every other component as a loader. The default registry is the
  * one SoftNRenderer reads.
  */
 export function registerRuntimeComponents(
   registry: ComponentRegistry = getDefaultRegistry()
 ): void {
-  registry.registerAll(minimalComponents as unknown as Record<string, SoftNComponent>);
-  for (const [name, { feature, load }] of Object.entries(lazyComponentRegistrations)) {
-    registry.registerLazy(name, load, { feature });
+  registry.registerAll(essentialComponents as unknown as Record<string, SoftNComponent>);
+  for (const [name, { feature, load, beforeFirstDraw }] of Object.entries(lazyComponentRegistrations)) {
+    registry.registerLazy(name, load, { feature, beforeFirstDraw });
   }
   declareBuiltinPropKinds(registry);
 }

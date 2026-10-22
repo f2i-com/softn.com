@@ -14,9 +14,9 @@ import '@softn/brand/bar.css';
 import './styles/builder.css';
 import App from './App';
 
-// The components, registered as the runtimes register them: the minimal set
-// now, and every other feature (charts, editors, Scene3D and Three.js, media)
-// fetched the first time a page draws it.
+// The components, registered as the runtimes register them: the start-up set
+// now, and every other component (the light groups, charts, editors, Scene3D
+// and Three.js, media) fetched the first time a page draws it.
 registerRuntimeComponents();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

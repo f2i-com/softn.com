@@ -24,6 +24,7 @@ import type { DocumentShellRequest } from '../runtime/script-runtime';
 import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
 import { getDefaultRegistry } from '../renderer/registry';
 import { collectFirstScreenTags } from '../renderer/document-tags';
+import { rememberFirstDraw } from '../renderer/first-draw-memory';
 import { isRemoteUrl, rewriteCssResources } from '../renderer/sanitize-html';
 import { showBundleFilesInStyles } from '../renderer/html-elements';
 import {
@@ -95,6 +96,14 @@ function loadScopeCss(): Promise<void> {
 
 /** Names the apps drawn in this document by, for their CSS (see scope-css.ts). */
 let appsNamed = 0;
+
+/**
+ * The longest a page's first draw waits for the light on-demand components
+ * its first screen names (registry.firstDrawLoads). From a cache they take a
+ * few milliseconds; this bounds a slow network's round trip, after which the
+ * page is drawn with a placeholder where each still loading goes.
+ */
+const FIRST_DRAW_WAIT_MS = 300;
 
 /**
  * A phase boundary on the performance timeline, where a profile can read it
@@ -961,9 +970,17 @@ export function SoftNRenderer({
         // is deferred until it renders (see document-tags.ts). Never awaited:
         // a failed fetch is reported where the component renders.
         perfMark('softn:component-preload:start');
-        void getDefaultRegistry()
-          .preload(collectFirstScreenTags(doc))
-          .finally(() => perfMark('softn:component-preload:end'));
+        const firstScreen = collectFirstScreenTags(doc);
+        const registry = getDefaultRegistry();
+        void registry.preload(firstScreen).finally(() => perfMark('softn:component-preload:end'));
+        // The light on-demand components the first screen draws (a Select,
+        // Tabs, a Table): drawn before its chunk had arrived, each would stand
+        // as a placeholder, and a wrapper among them would hide what it holds.
+        // The first draw waits for them below; null when there are none.
+        const firstDraw = registry.firstDrawLoads(firstScreen);
+        // Written down for the app's next open, which a host can start them
+        // for before it has the page (first-draw-memory.ts).
+        if (appId) rememberFirstDraw(appId, registry.firstDrawNames(firstScreen));
 
         // Log parse diagnostics (fault-tolerant parsing may have recovered from errors)
         if (doc.diagnostics && doc.diagnostics.length > 0) {
@@ -1588,8 +1605,15 @@ export function SoftNRenderer({
         };
         // Started now, so the page is hidden for as little as can be.
         if (doc.style?.content && !scopeCss) void loadScopeCss();
-        if (earlyShell) {
-          void (earlyShell as Promise<void>).then(() => {
+        // What the first draw waits for, if anything: the document, for a page
+        // drawn from it, and the first screen's light components, a moment
+        // from the cache and no more than FIRST_DRAW_WAIT_MS from a slow
+        // network, after which the page is drawn as it stands.
+        const holds: Promise<unknown>[] = [];
+        if (earlyShell) holds.push(earlyShell as Promise<void>);
+        if (firstDraw) holds.push(Promise.race([firstDraw, new Promise((resolve) => setTimeout(resolve, FIRST_DRAW_WAIT_MS))]));
+        if (holds.length > 0) {
+          void Promise.all(holds).then(() => {
             if (!stale && mountedRef.current) showDocument();
           });
         } else {

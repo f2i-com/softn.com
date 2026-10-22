@@ -1,4 +1,4 @@
-import { normalizeManifest } from '@softn/core';
+import { normalizeManifest, preloadRememberedFirstDraw } from '@softn/core';
 import {
   assembleApplication,
   fetchBytes,
@@ -132,13 +132,17 @@ export async function loadServedApplication(
   const bytes = await fetchBytes(url.href + '?source', signal, MAX_PACK_BYTES, 'no-store', progress);
   const pack = parsePack(JSON.parse(new TextDecoder().decode(bytes)));
   const textFiles = new Map(Object.entries(pack.text));
+  const appId = 'served:' + url.pathname + ':' + pack.id;
+  // What this app's first screen waited for last time, started before the
+  // pack is composed (core's first-draw-memory).
+  preloadRememberedFirstDraw(appId);
   const { raw: _manifest, ...app } = await assembleApplication({
     textFiles,
     // Shape was checked in parsePack; this is the read that decides whether
     // it can run, the same one the archive loader makes.
     readManifest: () => normalizeManifest<BundleManifest>(pack.manifest, (path) => textFiles.has(path)),
     sidecar: pack.declared !== null ? () => Promise.resolve(pack.declared) : undefined,
-    appId: 'served:' + url.pathname + ':' + pack.id,
+    appId,
     grantScope: url.href + pack.digest,
     signal,
   });

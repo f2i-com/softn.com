@@ -242,6 +242,39 @@ export class ComponentRegistry {
   }
 
   /**
+   * What a page's first draw waits for when its first screen names `names`:
+   * the loads of those registered `beforeFirstDraw` that have not finished,
+   * started if idle and joined if another page started them. Null when there
+   * is none, so a page whose components are all here is drawn at once, as it
+   * always was. A failed load is waited for no longer than it takes to fail,
+   * and is reported where the component renders; the promise never rejects.
+   */
+  public firstDrawLoads(names: Iterable<string>): Promise<void> | null {
+    const waiting: Promise<unknown>[] = [];
+    for (const name of this.firstDrawNames(names)) {
+      const entry = this.lazyEntries.get(name)!;
+      const state = entry.getState();
+      if (state === 'loaded' || state === 'error') continue;
+      waiting.push(entry.load().catch(() => undefined));
+    }
+    return waiting.length > 0 ? Promise.all(waiting).then(() => undefined) : null;
+  }
+
+  /**
+   * The names among `names` that a first draw waits for — those registered
+   * `beforeFirstDraw` — by their registered names, each once, whatever their
+   * state: what a host can remember of a page to start them sooner next time
+   * (first-draw-memory.ts).
+   */
+  public firstDrawNames(names: Iterable<string>): string[] {
+    const found: string[] = [];
+    for (const name of new Set([...names].map((tag) => this.resolveName(tag) ?? tag))) {
+      if (this.lazyEntries.get(name)?.beforeFirstDraw) found.push(name);
+    }
+    return found;
+  }
+
+  /**
    * Discard a lazy name's cached attempt — a rejection included — and load
    * it again. Every mounted use of the name re-renders around the new
    * attempt. Resolves to the eager component for an eager name and rejects

@@ -11,6 +11,12 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     minimal: 'src/entries/minimal.ts',
+    essentials: 'src/entries/essentials.ts',
+    controls: 'src/entries/controls.ts',
+    feedback: 'src/entries/feedback.ts',
+    data: 'src/entries/data.ts',
+    display: 'src/entries/display.ts',
+    navigation: 'src/entries/navigation.ts',
     lazy: 'src/entries/lazy.ts',
     theme: 'src/entries/theme.ts',
     scene3d: 'src/entries/scene3d.ts',

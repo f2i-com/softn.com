@@ -10,7 +10,7 @@ import '@softn/brand/bar.css';
 import App from './App';
 import { FieldnotesPreview } from './components/FieldnotesPreview';
 
-// The minimal set now, every other built-in by loader: a document that never
+// The start-up set now, every other built-in by loader: a document that never
 // names Scene3D never fetches Three.js, and one that names it on its first
 // screen has it fetched while the VM starts. The same call as softn-single,
 // so the two hosts load the same names the same way (docs/engineering/COMPONENT_LOADING.md).

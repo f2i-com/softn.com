@@ -469,9 +469,10 @@ import { useState, useCallback, useMemo } from 'react';
 import { getDefaultEngine } from '@softn/core';
 import { ensureRuntimeComponents } from '@softn/components/lazy';
 
-// The built-in components, as the runtimes register them: the minimal set
-// now, every other feature (charts, editors, Scene3D with Three.js, media)
-// fetched the first time a page draws it, so an app carries only what it uses.
+// The built-in components, as the runtimes register them: the start-up set
+// now, every other component (the light groups, charts, editors, Scene3D with
+// Three.js, media) fetched the first time a page draws it, so an app carries
+// only what it uses.
 ensureRuntimeComponents();
 
 // Parsed SoftN document

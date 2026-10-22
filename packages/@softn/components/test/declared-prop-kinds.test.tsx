@@ -38,7 +38,10 @@ describe('a number written as text, in a number prop', () => {
     ['registerBuiltinComponents', registered(registerBuiltinComponents)],
     ['registerRuntimeComponents', registered(registerRuntimeComponents)],
     ['registerMinimalComponents', registered(registerMinimalComponents)],
-  ])('is the number, through %s', (_name, registry) => {
+  ])('is the number, through %s', async (_name, registry) => {
+    // Through the runtime's registration both are on demand (the display and
+    // controls groups): loaded first, as a page's first draw waits for them.
+    await registry.preload(['Progress', 'Rating']);
     expect(drawn('<Progress value="40" />', registry)).toContain('aria-valuenow="40"');
     expect((drawn('<Rating max="7" />', registry).match(/role="radio"/g) ?? []).length).toBe(7);
   });

@@ -8,8 +8,8 @@
  * tests hold each app's manifest to it.
  *
  * A host registers the built-in components through
- * registerRuntimeComponents() (@softn/components/lazy): the minimal set
- * eagerly, every other feature as a loader, so a feature is a chunk of its
+ * registerRuntimeComponents() (@softn/components/lazy): the start-up set
+ * eagerly, every other component as a loader, so a feature is a chunk of its
  * own that nothing imports statically. What is left in softn-web's precache
  * is the shell: the entry, what it imports statically, the engine and the
  * XDB module every app opens.
@@ -22,6 +22,16 @@
  * assets/scene3d-<hash>.js. Three.js itself is `vendor-three` below.
  */
 export const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation', 'pickers', 'games'];
+
+/**
+ * The light component groups, each a chunk of its own like a feature, but
+ * kept in softn-web's precache with the shell: they were in the shell until
+ * 2026-10-22, and an app that uses one works offline as it did. A page
+ * fetches the ones it draws (its first draw waits for them, a moment from the
+ * precache), so a page that draws none parses none of their code. Not in
+ * `featureChunks`, which the precache ignores.
+ */
+export const componentGroupChunks = ['controls', 'feedback', 'data', 'display', 'navigation'];
 
 /**
  * Core's own on-demand modules that only some apps reach, by the name each

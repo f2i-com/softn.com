@@ -2,7 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { SingleApp, type ConfigSource } from '@softn/single-shell';
 import '@softn/single-shell/style.css';
-// The same registration as softn-web: the minimal set eagerly, every other
+// The same registration as softn-web: the start-up set eagerly, every other
 // built-in as a loader the registry runs when a document first needs it.
 registerRuntimeComponents();
 /**

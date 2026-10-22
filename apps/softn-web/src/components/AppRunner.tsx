@@ -3,7 +3,7 @@ import { SoftNWithXDB, type AppAssetResolver, type PythonProject } from '@softn/
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
-import { Spinner, Box, Text } from '@softn/components/minimal';
+import { Spinner, Box, Text } from '@softn/components/essentials';
 import { ThemeProvider } from '@softn/components/theme';
 import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
