@@ -248,4 +248,63 @@ describe('Scene3D enhanced features', () => {
     expect(win.__softnKeys).toBeDefined();
     expect(typeof win.__softnKeys?.w).toBe('boolean');
   });
+
+  // The keys are shared with the next scene through the window, and a key
+  // held as the window lost focus or the scene went never saw its keyup:
+  // the next scene's player walked on by itself.
+  it('lets go of the game keys when the window loses focus and when the scene goes', () => {
+    act(() => root.render(<Scene3D gameControls={true} />));
+    const keys = (window as unknown as { __softnKeys: Record<string, boolean> }).__softnKeys;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w' }));
+    expect(keys.w).toBe(true);
+    window.dispatchEvent(new Event('blur'));
+    expect(keys.w).toBe(false);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+    expect(keys.left).toBe(true);
+    act(() => root.render(<div />));
+    expect(keys.left).toBe(false);
+  });
+
+  it('goes fullscreen only when its own wrapper does', () => {
+    const second = document.createElement('div');
+    document.body.appendChild(second);
+    const secondRoot = createRoot(second);
+    act(() => root.render(<Scene3D expandable />));
+    act(() => secondRoot.render(<Scene3D expandable />));
+    const descriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement');
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => container.firstElementChild });
+    try {
+      act(() => document.dispatchEvent(new Event('fullscreenchange')));
+      expect(container.querySelector('button')?.title).toBe('Exit fullscreen');
+      expect(second.querySelector('button')?.title).toBe('Fullscreen');
+    } finally {
+      if (descriptor) Object.defineProperty(document, 'fullscreenElement', descriptor);
+      else delete (document as unknown as { fullscreenElement?: unknown }).fullscreenElement;
+      act(() => secondRoot.unmount());
+      second.remove();
+    }
+  });
+
+  it('keeps its sky as the background, and lets the old one go when it changes', () => {
+    const context = { createLinearGradient: () => ({ addColorStop: () => undefined }), fillRect: () => undefined, fillStyle: '' };
+    const getContext = vi
+      .spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockImplementation(((kind: string) => (kind === '2d' ? context : null)) as unknown as HTMLCanvasElement['getContext']);
+    try {
+      act(() => root.render(<Scene3D sky="sunset" />));
+      const canvas = container.querySelector('canvas') as HTMLCanvasElement & { __softnScene: THREE.Scene };
+      const sky = canvas.__softnScene.background as THREE.Texture;
+      expect(sky).toBeInstanceOf(THREE.CanvasTexture);
+      const dispose = vi.spyOn(sky, 'dispose');
+      act(() => root.render(<Scene3D sky="sunset" />));
+      expect(canvas.__softnScene.background).toBe(sky);
+      act(() => root.render(<Scene3D sky="night" />));
+      expect(canvas.__softnScene.background).toBeInstanceOf(THREE.CanvasTexture);
+      expect(canvas.__softnScene.background).not.toBe(sky);
+      expect(dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      getContext.mockRestore();
+    }
+  });
 });

@@ -340,11 +340,44 @@ describe('DataGrid bound to rows that have not arrived', () => {
 });
 
 describe('Draggable when the browser cancels the pointer', () => {
-  const pointer = (type: string, clientX = 0) => {
+  const pointer = (type: string, clientX = 0, pointerId = 1) => {
     const event = new MouseEvent(type, { bubbles: true, clientX, clientY: 0 });
-    Object.defineProperty(event, 'pointerId', { value: 1 });
+    Object.defineProperty(event, 'pointerId', { value: pointerId });
     return event;
   };
+
+  // A second finger began a second drag beside the first: both moved the
+  // element, and unmount reached only the newer listeners, so the older went
+  // on calling onDrag and onDragEnd for a component that was gone.
+  it('follows the pointer that began the drag, and leaves nothing listening when it goes', () => {
+    const onDrag = vi.fn();
+    const onDragEnd = vi.fn();
+    mount(
+      <Draggable onDrag={onDrag} onDragEnd={onDragEnd}>
+        <div>handle</div>
+      </Draggable>
+    );
+    const handle = container.firstElementChild as HTMLElement;
+    act(() => {
+      handle.dispatchEvent(pointer('pointerdown', 0, 1));
+      handle.dispatchEvent(pointer('pointerdown', 0, 2));
+    });
+    act(() => {
+      document.dispatchEvent(pointer('pointermove', 30, 2));
+    });
+    expect(onDrag).not.toHaveBeenCalled();
+    act(() => {
+      document.dispatchEvent(pointer('pointermove', 30, 1));
+    });
+    expect(onDrag).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+    document.dispatchEvent(pointer('pointermove', 60, 1));
+    document.dispatchEvent(pointer('pointerup', 60, 1));
+    expect(onDrag).toHaveBeenCalledTimes(1);
+    expect(onDragEnd).not.toHaveBeenCalled();
+    root = createRoot(container);
+  });
 
   it('ends the drag on pointercancel and stops listening', () => {
     // A `pointercancel` — the browser took the pointer for a scroll, a touch

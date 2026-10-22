@@ -237,6 +237,37 @@ describe('Modal and Drawer as modal layers', () => {
     expect(document.activeElement).toBe(button('Open'));
   });
 
+  // The Drawer gave focus back to its opener behind the open Modal, and the
+  // Modal's own opener went with the Drawer, so its close left focus on the
+  // body.
+  it('keeps focus in a Modal when the Drawer it was opened from closes behind it', () => {
+    function Harness({ drawer, modal }: { drawer: boolean; modal: boolean }) {
+      return (
+        <>
+          <button>Menu</button>
+          <Drawer open={drawer} onClose={() => {}} title="Cart">
+            <button>Checkout</button>
+          </Drawer>
+          <Modal open={modal} onClose={() => {}} title="Pay" disableAnimation>
+            <button>Pay now</button>
+          </Modal>
+        </>
+      );
+    }
+    const view = mount(<Harness drawer={false} modal={false} />);
+    focus(button('Menu'));
+    view.rerender(<Harness drawer modal={false} />);
+    focus(button('Checkout'));
+    view.rerender(<Harness drawer modal />);
+    const payDialog = button('Pay now').closest<HTMLElement>('[role="dialog"]')!;
+    expect(payDialog.contains(document.activeElement)).toBe(true);
+
+    view.rerender(<Harness drawer={false} modal />);
+    expect(payDialog.contains(document.activeElement)).toBe(true);
+    view.rerender(<Harness drawer={false} modal={false} />);
+    expect(document.activeElement).toBe(button('Menu'));
+  });
+
   it('names the drawer by its title and slides in with keyframes that exist', () => {
     mount(<Drawer open onClose={() => {}} title="Cart" position="right" />);
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;

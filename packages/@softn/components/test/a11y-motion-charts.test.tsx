@@ -351,6 +351,27 @@ describe('SortableList from the keyboard', () => {
     expect(item.style.transform).not.toMatch(/translate\(0px, 100px\)/);
   });
 
+  // A row synced in above it mid-drag, and the drop moved whichever item had
+  // come to be at the dragged one's old index.
+  it('drops the item it picked up when the list changed under the drag', () => {
+    const onReorder = vi.fn();
+    const view = mount(<SortableList items={items} primary="name" onReorder={onReorder} />);
+    const item = view.container.querySelectorAll('[role="listitem"]')[0] as HTMLElement;
+    Object.assign(item, { setPointerCapture: () => {}, hasPointerCapture: () => false });
+    item.getBoundingClientRect = () => ({ height: 40, width: 200 }) as DOMRect;
+    pointer(item, 'pointerdown', { clientY: 0 });
+    pointer(item, 'pointermove', { clientY: 100 });
+    view.rerender(<SortableList items={[{ id: 'd', name: 'Date' }, ...items]} primary="name" onReorder={onReorder} />);
+    pointer(item, 'pointerup', { clientY: 100 });
+    expect(onReorder).toHaveBeenCalledTimes(1);
+    expect((onReorder.mock.calls[0][0] as Array<{ name: string }>).map((entry) => entry.name)).toEqual([
+      'Date',
+      'Banana',
+      'Apple',
+      'Cherry',
+    ]);
+  });
+
   it('paints its cards from the theme, not in white', () => {
     const { container } = mount(<SortableList items={items} primary="name" />);
     const item = container.querySelector('[role="listitem"]') as HTMLElement;
@@ -555,7 +576,7 @@ describe('PanView with clickable content', () => {
     const capture = vi.fn();
     Object.assign(viewport, { setPointerCapture: capture, hasPointerCapture: () => false, releasePointerCapture: () => {} });
     pointer(viewport, 'pointerdown', { button: 0, clientX: 100, clientY: 100 });
-    pointer(viewport, 'pointermove', { clientX: 80, clientY: 100 });
+    pointer(viewport, 'pointermove', { clientX: 80, clientY: 100, buttons: 1 });
     expect(capture).toHaveBeenCalledTimes(1);
   });
 });

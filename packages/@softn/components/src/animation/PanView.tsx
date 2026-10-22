@@ -162,6 +162,13 @@ export function PanView({
     const drag = dragRef.current;
     const el = viewportRef.current;
     if (!drag || !el || drag.id !== e.pointerId) return;
+    // Pressed here, let go outside before the drag began: the pointer was not
+    // captured yet, so its release went elsewhere, and the next hover panned
+    // the view with no button held.
+    if ((e.buttons & 1) === 0) {
+      endDrag();
+      return;
+    }
     if (!drag.moving) {
       if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < DRAG_THRESHOLD) return;
       drag.moving = true;

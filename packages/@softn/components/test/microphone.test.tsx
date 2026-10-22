@@ -260,6 +260,46 @@ describe('Microphone across a remount', () => {
     expect(handedOut[0].getTracks()[0].readyState).toBe('ended');
     expect(contexts[0].closed).toBe(true);
   });
+
+  // An attempt cancelled while its worklet loaded went on, when the load
+  // finished, to release whatever the component held, by then the newer
+  // attempt's device: that one showed open and delivered nothing.
+  it('lets an attempt it gave up on go without closing the newer one', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let first = true;
+    vi.stubGlobal(
+      'AudioContext',
+      class extends FakeAudioContext {
+        audioWorklet = {
+          addModule: vi.fn(() => {
+            if (!first) return Promise.resolve();
+            first = false;
+            return held;
+          }),
+        };
+      }
+    );
+    mount(<Microphone processing />);
+    await grant(); // the first attempt: the device, and a worklet still loading
+    mount(<Microphone processing={false} />);
+    await grant(); // the second, open
+    expect(handedOut[0].getTracks()[0].readyState).toBe('ended');
+    expect(handedOut[1].getTracks()[0].readyState).toBe('live');
+
+    await act(async () => {
+      release();
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    expect(handedOut[1].getTracks()[0].readyState).toBe('live');
+    expect(contexts[1].closed).toBe(false);
+    const nodeOf = (context: FakeAudioContext) => captureNodes.find((node) => node.context === context);
+    expect(nodeOf(contexts[1])?.disconnect).not.toHaveBeenCalled();
+    // The first attempt's node, made after it was given up on, is let go.
+    expect(nodeOf(contexts[0])?.disconnect).toHaveBeenCalled();
+  });
 });
 
 describe('Microphone live mode', () => {

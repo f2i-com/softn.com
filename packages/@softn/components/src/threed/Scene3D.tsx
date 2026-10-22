@@ -785,6 +785,31 @@ function createSkyTexture(sky: Scene3DProps['sky']): THREE.CanvasTexture | null 
 }
 
 /**
+ * Paint the scene's background: none for a transparent canvas, else the sky's
+ * gradient, else the colour. Returns the sky texture it made, for the caller
+ * to dispose when the background changes or the scene goes.
+ */
+function paintBackground(
+  scene: THREE.Scene,
+  alpha: boolean,
+  background: string,
+  sky: Scene3DProps['sky']
+): THREE.Texture | null {
+  if (alpha) {
+    scene.background = null;
+    return null;
+  }
+  const skyTexture = createSkyTexture(sky);
+  scene.background = skyTexture ?? new THREE.Color(background);
+  return skyTexture;
+}
+
+/** What a background is painted from, to tell a new one from a re-render with the same. */
+function backgroundKey(alpha: boolean, background: string, sky: Scene3DProps['sky']): string {
+  return alpha ? 'transparent' : JSON.stringify([background, sky ?? null]);
+}
+
+/**
  * The material for a primitive. `policy` is the scene's: an image texture
  * named by URL is fetched through a manager of its own, like a model's
  * images, never through three's page-wide default.
@@ -1483,6 +1508,10 @@ export function Scene3D({
   const crosshair = crosshairProp ?? (enablePointerLock && crosshairProp !== false);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
+  /** The sky's gradient texture, while it is the scene's background. */
+  const skyTextureRef = useRef<THREE.Texture | null>(null);
+  /** What the background was last painted from (backgroundKey). */
+  const backgroundKeyRef = useRef<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   // Whether the browser gave the scene a WebGL context to draw with.
@@ -1645,15 +1674,8 @@ export function Scene3D({
       });
       return loads;
     };
-    if (!alpha) {
-      if (sky) {
-        const skyTex = createSkyTexture(sky);
-        if (skyTex) scene.background = skyTex;
-        else scene.background = new THREE.Color(background);
-      } else {
-        scene.background = new THREE.Color(background);
-      }
-    }
+    skyTextureRef.current = paintBackground(scene, alpha, background, sky);
+    backgroundKeyRef.current = backgroundKey(alpha, background, sky);
 
     if (grid) {
       const size = typeof grid === 'object' ? (grid.size ?? 50) : 50;
@@ -1711,11 +1733,21 @@ export function Scene3D({
         if (e.key === 'Shift') keys.shift = false;
       };
 
+      // A key held as the window loses focus, or as the scene goes, has no
+      // keyup to come: the object is shared with the next scene, which walked
+      // on by itself until the key was pressed and let go again.
+      const releaseAll = () => {
+        for (const key of Object.keys(keys)) keys[key] = false;
+      };
+
       window.addEventListener('keydown', onKeyDown);
       window.addEventListener('keyup', onKeyUp);
+      window.addEventListener('blur', releaseAll);
       cleanupGameKeys = () => {
         window.removeEventListener('keydown', onKeyDown);
         window.removeEventListener('keyup', onKeyUp);
+        window.removeEventListener('blur', releaseAll);
+        releaseAll();
       };
     }
 
@@ -2322,6 +2354,9 @@ export function Scene3D({
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
+      skyTextureRef.current?.dispose();
+      skyTextureRef.current = null;
+      backgroundKeyRef.current = null;
       // A chain still being fetched must not be installed on a dead renderer.
       effectsVersionRef.current += 1;
       if (effectsRigRef.current) {
@@ -2393,17 +2428,19 @@ export function Scene3D({
   const toggleFullscreen = useCallback(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
-    if (!document.fullscreenElement) {
+    if (document.fullscreenElement !== wrapper) {
       wrapper.requestFullscreen().catch(() => {});
     } else {
       document.exitFullscreen().catch(() => {});
     }
   }, []);
 
-  // Listen for fullscreen changes to resize renderer
+  // Listen for fullscreen changes to resize renderer. This scene's own: one
+  // that asked whether anything was fullscreen grew to the window with
+  // another (a 3D app in a hidden tab, full-screen buffers for nobody).
   useEffect(() => {
     const onFsChange = () => {
-      const fs = !!document.fullscreenElement;
+      const fs = !!wrapperRef.current && document.fullscreenElement === wrapperRef.current;
       setIsFullscreen(fs);
       const renderer = rendererRef.current;
       const cam = cameraRef.current;
@@ -2474,16 +2511,18 @@ export function Scene3D({
     if (rig && plan && rig.shape === effectsShape) rig.retune(plan);
   }, [effectsTune, effectsShape]);
 
-  // Update background
+  // Update background. The sky is part of it: this effect set the colour
+  // over the sky the scene was made with, so a `sky` showed for one frame,
+  // and its texture was never disposed.
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
-    if (!alpha) {
-      scene.background = new THREE.Color(background);
-    } else {
-      scene.background = null;
-    }
-  }, [background, alpha]);
+    const key = backgroundKey(alpha, background, sky);
+    if (key === backgroundKeyRef.current) return;
+    backgroundKeyRef.current = key;
+    skyTextureRef.current?.dispose();
+    skyTextureRef.current = paintBackground(scene, alpha, background, sky);
+  }, [background, alpha, sky]);
 
   // Update fog — compare values to avoid recreating on reference-only changes
   useEffect(() => {

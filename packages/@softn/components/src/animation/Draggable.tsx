@@ -68,7 +68,11 @@ export function Draggable({
   const startPointerRef = React.useRef<DragPosition>({ x: 0, y: 0 });
   const startPositionRef = React.useRef<DragPosition>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = React.useState(false);
-  const activeListenersRef = React.useRef<{ move: (e: PointerEvent) => void; up: () => void } | null>(null);
+  const activeListenersRef = React.useRef<{
+    pointerId: number;
+    move: (e: PointerEvent) => void;
+    up: (e?: PointerEvent) => void;
+  } | null>(null);
 
   // Clean up document listeners on unmount
   React.useEffect(() => {
@@ -155,8 +159,20 @@ export function Draggable({
   const handlePointerDown = React.useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (disabled) return;
+      // One drag at a time, by the pointer that began it. A second finger
+      // began a second drag beside the first: both moved the element, and
+      // unmount removed only the newer listeners, so the older went on
+      // calling onDrag and onDragEnd for a component that was gone. The same
+      // pointer pressing again lost its release (let go outside the window):
+      // that drag ends first.
+      const active = activeListenersRef.current;
+      if (active) {
+        if (active.pointerId !== e.pointerId) return;
+        active.up();
+      }
       e.preventDefault();
       e.stopPropagation();
+      const pointerId = e.pointerId;
 
       setIsDragging(true);
 
@@ -167,6 +183,7 @@ export function Draggable({
 
       // Use document-level listeners for reliable tracking
       const handleMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
         ev.preventDefault();
 
         const dx = ev.clientX - startPointerRef.current.x;
@@ -186,7 +203,8 @@ export function Draggable({
       // `pointercancel` ends a drag as surely as `pointerup` — the browser
       // took the pointer for a scroll, a touch was lost — and without it the
       // document listener and `isDragging` outlived the gesture.
-      const handleUp = () => {
+      const handleUp = (ev?: PointerEvent) => {
+        if (ev && ev.pointerId !== pointerId) return;
         document.removeEventListener('pointermove', handleMove);
         document.removeEventListener('pointerup', handleUp);
         document.removeEventListener('pointercancel', handleUp);
@@ -198,7 +216,7 @@ export function Draggable({
       document.addEventListener('pointermove', handleMove);
       document.addEventListener('pointerup', handleUp);
       document.addEventListener('pointercancel', handleUp);
-      activeListenersRef.current = { move: handleMove, up: handleUp };
+      activeListenersRef.current = { pointerId, move: handleMove, up: handleUp };
     },
     [disabled, constrainPosition, applyTransform, onDragStart]
   );

@@ -193,7 +193,6 @@ export function Microphone({
   const contextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const nodeRef = useRef<AudioWorkletNode | ScriptProcessorNode | null>(null);
-  const workletUrlRef = useRef<string | null>(null);
 
   /** Blocks of the clip being recorded, joined only when it stops. */
   const clipRef = useRef<Float32Array[]>([]);
@@ -386,10 +385,6 @@ export function Microphone({
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
-    if (workletUrlRef.current) {
-      URL.revokeObjectURL(workletUrlRef.current);
-      workletUrlRef.current = null;
-    }
     windowRef.current = null;
     windowFillRef.current = 0;
     historyRef.current = [];
@@ -404,9 +399,15 @@ export function Microphone({
     const AudioWorkletNodeCtor = (globalThis as { AudioWorkletNode?: typeof AudioWorkletNode }).AudioWorkletNode;
     if (context.audioWorklet && typeof AudioWorkletNodeCtor === 'function' && typeof URL.createObjectURL === 'function') {
       try {
+        // The module is read once, by addModule, and the address goes with it:
+        // kept in a ref until cleanup, an attempt abandoned while it loaded
+        // revoked the address the newer attempt had put there.
         const url = URL.createObjectURL(new Blob([CAPTURE_WORKLET], { type: 'application/javascript' }));
-        workletUrlRef.current = url;
-        await context.audioWorklet.addModule(url);
+        try {
+          await context.audioWorklet.addModule(url);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
         const node = new AudioWorkletNodeCtor(context, 'softn-capture');
         node.port.onmessage = (event: MessageEvent) => consumeBlock(event.data as Float32Array);
         source.connect(node);
@@ -417,10 +418,6 @@ export function Microphone({
       } catch {
         // A page whose content security policy forbids blob: scripts lands
         // here. Falling back is better than refusing to record.
-        if (workletUrlRef.current) {
-          URL.revokeObjectURL(workletUrlRef.current);
-          workletUrlRef.current = null;
-        }
       }
     }
 
@@ -445,12 +442,27 @@ export function Microphone({
     // component shows its error box forever and toggling `active` never clears it.
     setError(null);
 
+    // What this attempt acquired, for it to release itself if it is
+    // cancelled while it waits. It used to call cleanup(), which releases
+    // what the refs hold, and by then they could hold a newer attempt's
+    // device: that one showed open and delivered nothing.
+    let stream: MediaStream | null = null;
+    let context: AudioContext | null = null;
+    let node: AudioWorkletNode | ScriptProcessorNode | null = null;
+    const abandon = () => {
+      node?.disconnect();
+      stream?.getTracks().forEach((track) => track.stop());
+      void context?.close().catch(() => {
+        // Already closed by the effect's cleanup.
+      });
+    };
+
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error('This browser has no microphone support');
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: processing,
           noiseSuppression: processing,
@@ -467,7 +479,7 @@ export function Microphone({
       // tracks to stop them — the OS recording indicator stays lit for the rest
       // of the session, and every open/close cycle leaks another device.
       if (attempt.cancelled) {
-        stream.getTracks().forEach((track) => track.stop());
+        abandon();
         return;
       }
       streamRef.current = stream;
@@ -480,7 +492,6 @@ export function Microphone({
       // Asking the context for the rate is what actually resamples: the
       // getUserMedia constraint above is widely ignored, and a graph running at
       // the hardware rate would hand back 44100 samples labelled 48000.
-      let context: AudioContext;
       try {
         context = new AudioContextCtor({ sampleRate });
       } catch {
@@ -493,24 +504,28 @@ export function Microphone({
       // A context created before a user gesture starts suspended, and a
       // suspended context never pulls a single sample.
       if (context.state === 'suspended') await context.resume();
-      if (attempt.cancelled) { cleanup(); return; }
+      if (attempt.cancelled) { abandon(); return; }
 
       const source = context.createMediaStreamSource(stream);
       sourceRef.current = source;
-      nodeRef.current = await attachCapture(context, source);
-      if (attempt.cancelled) { cleanup(); return; }
+      node = await attachCapture(context, source);
+      if (attempt.cancelled) { abandon(); return; }
+      nodeRef.current = node;
 
       setIsOpen(true);
       if (settings.current.mode === 'clip' && autoStart) startRecording();
     } catch (err) {
-      if (attempt.cancelled) return;
+      if (attempt.cancelled) {
+        abandon();
+        return;
+      }
       // A failure after getUserMedia — no Web Audio, a context that will not
       // resume, a worklet that will not load — left the stream in streamRef
       // with its tracks live: the error box showed while the microphone kept
       // recording and the OS indicator stayed lit until the component went
       // away. Release everything this attempt acquired before reporting.
-      // (A cancelled attempt was already released by the effect's cleanup,
-      // and releasing here could stop a newer attempt's device.)
+      // (A cancelled attempt releases only its own, above: the refs may hold
+      // a newer attempt's device by then.)
       cleanup();
       const message = describeMediaError(err, 'Failed to access microphone');
       setError(message);

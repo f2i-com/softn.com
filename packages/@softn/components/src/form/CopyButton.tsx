@@ -58,19 +58,22 @@ async function writeToClipboard(text: string): Promise<boolean> {
   } catch {
     // Refused, or a page that is not secure: the older way may still work.
   }
+  if (typeof document === 'undefined') return false;
+  const area = document.createElement('textarea');
   try {
-    const area = document.createElement('textarea');
     area.value = text;
     area.setAttribute('readonly', '');
     area.style.position = 'fixed';
     area.style.opacity = '0';
     document.body.appendChild(area);
     area.select();
-    const copied = document.execCommand('copy');
-    area.remove();
-    return copied;
+    return document.execCommand('copy');
   } catch {
     return false;
+  } finally {
+    // Taken out however the copy went: one that threw left the text it was
+    // given in the page (the usual path on a plain-HTTP deployment).
+    area.remove();
   }
 }
 

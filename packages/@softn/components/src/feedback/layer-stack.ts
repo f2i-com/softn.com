@@ -16,7 +16,12 @@
 
 import { useEffect, useRef, type RefObject } from 'react';
 
-const layers: Array<{ id: symbol; ref: RefObject<HTMLElement | null> }> = [];
+const layers: Array<{
+  id: symbol;
+  ref: RefObject<HTMLElement | null>;
+  /** Where focus goes when this layer closes. */
+  restoreTo: HTMLElement | null;
+}> = [];
 
 /**
  * Whether a layer's element is on screen. A runtime keeps an app it is not
@@ -134,9 +139,9 @@ export function useModalLayer(
   useEffect(() => {
     if (!active || typeof document === 'undefined') return;
     const layer = Symbol('modal-layer');
-    layers.push({ id: layer, ref });
-
     const previouslyFocused = openedFrom.current ?? (document.activeElement as HTMLElement | null);
+    const entry = { id: layer, ref, restoreTo: previouslyFocused };
+    layers.push(entry);
     const root = ref.current;
     if (root && !root.contains(document.activeElement)) root.focus();
 
@@ -180,10 +185,25 @@ export function useModalLayer(
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      const index = layers.findIndex((entry) => entry.id === layer);
+      const index = layers.indexOf(entry);
+      const above = index >= 0 ? layers.slice(index + 1).filter((upper) => isShown(upper.ref.current)) : [];
       if (index >= 0) layers.splice(index, 1);
-      if (previouslyFocused && previouslyFocused.isConnected && typeof previouslyFocused.focus === 'function') {
-        previouslyFocused.focus();
+      const restoreTo = entry.restoreTo;
+      if (above.length > 0) {
+        // Closed under a layer still open (a Drawer that app state closed
+        // behind the Modal opened from it). Focus stays in the layer on top,
+        // which goes back, when it closes, to where this one would have: it
+        // went to the page behind the open Modal, and the Modal's own opener
+        // went with the Drawer, so its close left focus on the body.
+        for (const upper of above) {
+          if (!upper.restoreTo || !upper.restoreTo.isConnected || root?.contains(upper.restoreTo)) {
+            upper.restoreTo = restoreTo;
+          }
+        }
+        return;
+      }
+      if (restoreTo && restoreTo.isConnected && typeof restoreTo.focus === 'function') {
+        restoreTo.focus();
       }
     };
   }, [active, ref]);

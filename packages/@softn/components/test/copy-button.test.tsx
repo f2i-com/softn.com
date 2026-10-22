@@ -105,6 +105,21 @@ describe('CopyButton', () => {
     unmount();
   });
 
+  // The older way is the usual one on a plain-HTTP deployment, which has no
+  // navigator.clipboard; a copy that threw left the text in the page.
+  it('leaves nothing in the page when the older way throws', async () => {
+    refuse = true;
+    const { container, unmount } = mount(<CopyButton value="ROOM-SECRET" />);
+    document.execCommand = () => {
+      throw new Error('not supported');
+    };
+    click(button(container));
+    await settle();
+    expect(document.querySelector('textarea')).toBeNull();
+    expect(button(container).textContent).toBe('Could not copy');
+    unmount();
+  });
+
   it('takes its own words', async () => {
     const { container, unmount } = mount(<CopyButton value="x" label="Copy link" copiedLabel="Link copied" resetAfter={500} />);
     expect(button(container).textContent).toBe('Copy link');

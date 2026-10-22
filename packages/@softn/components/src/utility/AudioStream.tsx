@@ -432,7 +432,13 @@ export function AudioStream({
    */
   const cursorRef = useRef(0);
   const startedRef = useRef(false);
-  const pumpingRef = useRef(false);
+  /**
+   * The pump running now, if any. Held by identity: a pump still awaiting a
+   * worker when the graph was torn down and rebuilt (a `sampleRate` change)
+   * ended by clearing a flag the new graph's pump had set, and two ran at
+   * once on one cursor, their blocks scheduled over each other.
+   */
+  const pumpingRef = useRef<object | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Wall time the last pump took. Feeds the tick's back-off; see PUMP_BUDGET_MS. */
   const lastPumpMsRef = useRef(0);
@@ -561,7 +567,7 @@ export function AudioStream({
 
     cursorRef.current = 0;
     startedRef.current = false;
-    pumpingRef.current = false;
+    pumpingRef.current = null;
     readyFiredRef.current = false;
     underrunsRef.current = 0;
     producerUnderrunsRef.current = 0;
@@ -842,7 +848,8 @@ export function AudioStream({
     const produce = handlers.current.getSamples;
     if (typeof produce !== 'function') return;
 
-    pumpingRef.current = true;
+    const self = {};
+    pumpingRef.current = self;
     const startedAt = performance.now();
     const overBudget = () => performance.now() - startedAt > PUMP_BUDGET_MS;
     try {
@@ -930,8 +937,10 @@ export function AudioStream({
 
       cursorRef.current = cursor;
     } finally {
-      lastPumpMsRef.current = performance.now() - startedAt;
-      pumpingRef.current = false;
+      if (pumpingRef.current === self) {
+        lastPumpMsRef.current = performance.now() - startedAt;
+        pumpingRef.current = null;
+      }
     }
   }, [noteUnderrun, scheduleBlock]);
 

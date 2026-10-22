@@ -166,11 +166,27 @@ describe('PanView dragging', () => {
     el.scrollTop = 100;
 
     pointer(el, 'pointerdown', { clientX: 300, clientY: 300, button: 0 });
-    pointer(el, 'pointermove', { clientX: 260, clientY: 275 });
+    pointer(el, 'pointermove', { clientX: 260, clientY: 275, buttons: 1 });
 
     // Dragging left by 40 has to reveal content to the right of what was shown.
     expect(el.scrollLeft).toBe(140);
     expect(el.scrollTop).toBe(125);
+  });
+
+  // Pressed here and let go outside before the drag began: the pointer was
+  // not captured yet, so the release went elsewhere, and the next hover
+  // panned the view with no button held.
+  it('stops at the next move with no button held, when the release happened elsewhere', () => {
+    mount(<PanView contentWidth={800} contentHeight={600} centered={false} />);
+    const el = viewport();
+    stubPointerCapture(el);
+
+    pointer(el, 'pointerdown', { clientX: 300, clientY: 300, button: 0 });
+    pointer(el, 'pointermove', { clientX: 200, clientY: 200, buttons: 0 });
+    pointer(el, 'pointermove', { clientX: 100, clientY: 100, buttons: 0 });
+
+    expect(el.scrollLeft).toBe(0);
+    expect(el.style.cursor).toBe('grab');
   });
 
   it('stops following the pointer once it is released', () => {
@@ -192,7 +208,7 @@ describe('PanView dragging', () => {
     stubPointerCapture(el);
 
     pointer(el, 'pointerdown', { clientX: 300, clientY: 300, button: 0, pointerType: 'touch' });
-    pointer(el, 'pointermove', { clientX: 200, clientY: 200, pointerType: 'touch' });
+    pointer(el, 'pointermove', { clientX: 200, clientY: 200, buttons: 1, pointerType: 'touch' });
 
     expect(el.scrollLeft).toBe(0);
   });
@@ -203,7 +219,7 @@ describe('PanView dragging', () => {
     stubPointerCapture(el);
 
     pointer(el, 'pointerdown', { clientX: 300, clientY: 300, button: 2 });
-    pointer(el, 'pointermove', { clientX: 200, clientY: 200 });
+    pointer(el, 'pointermove', { clientX: 200, clientY: 200, buttons: 2 });
 
     expect(el.scrollLeft).toBe(0);
   });
@@ -215,7 +231,7 @@ describe('PanView dragging', () => {
     expect(el.style.cursor).toBe('');
 
     pointer(el, 'pointerdown', { clientX: 300, clientY: 300, button: 0 });
-    pointer(el, 'pointermove', { clientX: 200, clientY: 200 });
+    pointer(el, 'pointermove', { clientX: 200, clientY: 200, buttons: 1 });
     expect(el.scrollLeft).toBe(0);
   });
 });

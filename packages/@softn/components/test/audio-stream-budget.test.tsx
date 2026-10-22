@@ -132,3 +132,43 @@ describe('AudioStream pump budget', () => {
     expect(framesScheduled).toBe(calls.length);
   });
 });
+
+describe('AudioStream pump lock', () => {
+  // A pump still waiting on a worker's samples when the graph was rebuilt (a
+  // new sampleRate) cleared the lock as it ended, though the new graph's pump
+  // held it: the next tick started a second pump on the same cursor.
+  it('runs one pump at a time across a rebuild that outlived an old pump', async () => {
+    let inFlight = 0;
+    let most = 0;
+    const answer: Array<() => void> = [];
+    const getSamples = vi.fn((want: number) => {
+      inFlight += 1;
+      most = Math.max(most, inFlight);
+      return new Promise<number[]>((resolve) =>
+        answer.push(() => {
+          inFlight -= 1;
+          resolve(new Array(want * 2).fill(0));
+        })
+      );
+    });
+    const props = { getSamples, bufferMs: 90, channels: 2 as const, running: true };
+    const settle = () => act(async () => { vi.advanceTimersByTime(40); for (let i = 0; i < 4; i++) await Promise.resolve(); });
+
+    mounted = mount(React.createElement(AudioStream, { ...props, sampleRate: 44100 }));
+    await settle();
+    expect(answer.length).toBe(1);
+
+    mounted.rerender(React.createElement(AudioStream, { ...props, sampleRate: 48000 }));
+    await settle();
+    expect(answer.length).toBe(2);
+
+    // The old graph's source answers; its pump finds the graph gone. The new
+    // graph's pump is still waiting, and holds the lock.
+    await act(async () => { answer[0](); for (let i = 0; i < 4; i++) await Promise.resolve(); });
+    most = inFlight;
+    await settle();
+    await settle();
+    expect(most).toBe(1);
+    expect(answer.length).toBe(2);
+  });
+});

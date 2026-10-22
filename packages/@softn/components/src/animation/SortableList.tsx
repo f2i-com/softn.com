@@ -36,6 +36,8 @@ export interface SortableListProps {
 }
 
 interface DragState {
+  /** The list the drag began over. */
+  list: unknown[];
   dragIndex: number;
   overIndex: number;
   startY: number;
@@ -60,6 +62,28 @@ function getItemText(item: unknown, field?: string): string {
     return String(item);
   }
   return '';
+}
+
+/**
+ * Where the dragged item is in `items` now. The list can change under a drag
+ * (a synced row arrives), and the drop moved whichever item had come to be at
+ * the old index. Found by its `renderKey`, or as itself, or, for a list that
+ * came back as a new array of the same items, where it was; -1 when it is gone.
+ */
+function draggedIndexIn(state: DragState, items: unknown[], renderKey?: string): number {
+  if (state.list === items) return state.dragIndex;
+  const dragged = state.list[state.dragIndex];
+  if (renderKey && dragged != null && typeof dragged === 'object' && renderKey in dragged) {
+    const key = getItemKey(dragged, state.dragIndex, renderKey);
+    return items.findIndex((item, index) => getItemKey(item, index, renderKey) === key);
+  }
+  const found = items.indexOf(dragged);
+  if (found >= 0) return found;
+  try {
+    return JSON.stringify(items) === JSON.stringify(state.list) ? state.dragIndex : -1;
+  } catch {
+    return -1;
+  }
 }
 
 /** Move the item at `from` to `to`, returning a new array. */
@@ -179,6 +203,7 @@ export function SortableList({
       const itemSize = isVertical ? rect.height : rect.width;
 
       const newState: DragState = {
+        list: items,
         dragIndex: index,
         overIndex: index,
         startY: e.clientY,
@@ -191,7 +216,7 @@ export function SortableList({
       dragStateRef.current = newState;
       setDragState(newState);
     },
-    [isVertical]
+    [isVertical, items]
   );
 
   const handlePointerMove = React.useCallback(
@@ -225,13 +250,14 @@ export function SortableList({
         // The capture is already gone.
       }
 
-      const { dragIndex, overIndex } = state;
-      if (commit && dragIndex !== overIndex && onReorder) {
-        onReorder(moveItem(items, dragIndex, overIndex));
+      if (commit && onReorder) {
+        const from = draggedIndexIn(state, items, renderKey);
+        const to = Math.min(state.overIndex, items.length - 1);
+        if (from >= 0 && from !== to) onReorder(moveItem(items, from, to));
       }
       setDragState(null);
     },
-    [items, onReorder]
+    [items, onReorder, renderKey]
   );
 
   const handlePointerUp = React.useCallback(
