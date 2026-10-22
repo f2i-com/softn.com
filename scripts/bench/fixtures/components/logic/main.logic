@@ -1,0 +1,15 @@
+let size = "m"
+let gift = false
+let showDetails = false
+let sizes = [{ value: "s", label: "Small" }, { value: "m", label: "Medium" }, { value: "l", label: "Large" }]
+let tabs = [{ key: "orders", label: "Orders" }, { key: "returns", label: "Returns" }]
+let columns = [{ key: "item", title: "Item" }, { key: "qty", title: "Qty" }]
+let rows = [{ id: 1, item: "Notebook", qty: 2 }, { id: 2, item: "Pencil", qty: 12 }]
+
+function open() {
+  showDetails = true
+}
+
+function close() {
+  showDetails = false
+}

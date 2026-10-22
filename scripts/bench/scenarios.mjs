@@ -37,6 +37,15 @@ export const SCENARIOS = {
     // a minimal app must pull in nothing from the 3D stack.
     expectsHeavy: false,
   },
+  components: {
+    title: 'The components beyond the commonest',
+    description:
+      'A field, a select, a checkbox, tabs, a table, a progress bar, a tooltip and an avatar on the first screen, a modal behind a condition. No 3D.',
+    fixture: 'components',
+    generated: {},
+    ready: text('Bench components is ready'),
+    expectsHeavy: false,
+  },
   'scene-glb': {
     title: 'Scene3D with one bundled GLB',
     description: 'One Scene3D, one bundled glTF binary, no effects, no orbit controls.',

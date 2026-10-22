@@ -1,0 +1,12 @@
+{
+  "name": "BenchComponents",
+  "version": "1.0.0",
+  "description": "A first screen of the components beyond the commonest: a field, a select, a checkbox, tabs, a table, a progress bar, a tooltip and an avatar, with a modal behind a condition.",
+  "main": "ui/main.ui",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "xdb": [],
+    "assets": []
+  }
+}

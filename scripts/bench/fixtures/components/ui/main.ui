@@ -1,0 +1,28 @@
+<logic src="../logic/main.logic" />
+
+<style>
+.bench-root { max-width: 720px; margin: 0 auto; padding: 32px 24px; font-family: system-ui, sans-serif; }
+</style>
+
+<Stack className="bench-root" gap={16}>
+  <Stack direction="horizontal" gap={12}>
+    <Avatar name="Bench Components" />
+    <Text style={{ display: "block", fontSize: "28px", fontWeight: 700 }}>Bench components</Text>
+  </Stack>
+  <Tabs tabs={tabs} defaultActiveKey="orders" />
+  <Field label="Size">
+    <Select options={sizes} :bind={size} />
+  </Field>
+  <Checkbox label="Gift wrap" :bind={gift} />
+  <Progress value={60} />
+  <Table columns={columns} data={rows} rowKey="id" />
+  <Tooltip content="Opens the order's details">
+    <Button @click={open}>Details</Button>
+  </Tooltip>
+  #if (showDetails)
+    <Modal open={showDetails} onClose={close} title="Details">
+      <Text>Two items, size {size}.</Text>
+    </Modal>
+  #end
+  <Text>{"Bench components is ready · " + size}</Text>
+</Stack>

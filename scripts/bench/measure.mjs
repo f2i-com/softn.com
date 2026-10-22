@@ -5,6 +5,7 @@
  *   node scripts/bench/measure.mjs [--host single|web] [--scenario a,b] [--runs N]
  *        [--label name] [--out dir] [--browser path] [--dist dir] [--build]
  *        [--bypass-sw] [--settle ms] [--timeout ms] [--no-runs] [--port N]
+ *        [--cpu-throttle N]
  *
  * Serves a production build of the host (apps/softn-single/dist or
  * apps/softn-web/dist, `--build` makes it first) from one local origin with
@@ -98,6 +99,8 @@ const options = {
   timeoutMs: Number(flag('--timeout', '60000')) || 60000,
   writeRuns: !has('--no-runs'),
   port: Number(flag('--port', '0')) || 0,
+  // CPU slowdown factor for the page (1 = none), DevTools' throttling.
+  cpuThrottle: Math.max(1, Number(flag('--cpu-throttle', '1')) || 1),
   // How long the service worker has to go quiet before its precache is called
   // complete; the cap keeps a worker that never settles from stalling a run.
   swQuietMs: 1500,
@@ -492,7 +495,7 @@ async function launch(browser, profile) {
  */
 function instrumentation(readyExpr) {
   return `(() => {
-  const bench = { longTasks: [], readyAt: null, webgl: { contextAt: null, firstDrawAt: null }, errors: 0 };
+  const bench = { longTasks: [], readyAt: null, drawnAt: null, busyAtReady: null, webgl: { contextAt: null, firstDrawAt: null }, errors: 0 };
   window.__softnBench = bench;
   // The page's text as a reader would see it, without the layout innerText
   // forces: textContent alone would include the theme's injected stylesheet.
@@ -536,7 +539,16 @@ function instrumentation(readyExpr) {
     }
   }
   const ready = () => { try { return !!(${readyExpr}); } catch (e) { return false; } };
-  const check = () => { if (bench.readyAt === null && ready()) bench.readyAt = performance.now(); };
+  const check = () => {
+    // The first moment the app's page has anything in it: its first draw.
+    if (bench.drawnAt === null && document.querySelector('[data-softn-app] *')) bench.drawnAt = performance.now();
+    if (bench.readyAt === null && ready()) {
+      bench.readyAt = performance.now();
+      // Components still loading when the page reads as ready, each drawn as
+      // its placeholder: a page ready around them is not the page yet.
+      bench.busyAtReady = document.querySelectorAll('[aria-busy="true"]').length;
+    }
+  };
   const start = () => {
     new MutationObserver(check).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
     check();
@@ -658,6 +670,7 @@ function summariseRequests(list, origin) {
 /** Pair softn:<phase>:start with the first softn:<phase>:end after it. */
 function pairMarks(marks, measures) {
   const durations = {};
+  const starts = {};
   const points = {};
   const unpaired = [];
   const sorted = [...marks].sort((a, b) => a.at - b.at);
@@ -668,6 +681,7 @@ function pairMarks(marks, measures) {
       const end = sorted.find((e) => !used.has(e) && e.name === `${phase}:end` && e.at >= m.at);
       if (end) {
         used.add(end);
+        if (starts[phase] === undefined) starts[phase] = m.at;
         // A phase that runs more than once keeps its first duration and the total.
         if (durations[phase] === undefined) durations[phase] = end.at - m.at;
         else durations[phase] += end.at - m.at;
@@ -683,7 +697,7 @@ function pairMarks(marks, measures) {
     if (durations[m.name] === undefined) durations[m.name] = m.duration;
     else durations[m.name] += m.duration;
   }
-  return { durations, points, unpaired };
+  return { durations, starts, points, unpaired };
 }
 
 async function runOnce({ browser, url, scenario, origin, log }) {
@@ -918,6 +932,8 @@ async function runOnce({ browser, url, scenario, origin, log }) {
     const marks = pairMarks(collected.marks, collected.measures);
     log(
       `${name.padEnd(5)} ${readyAt === null ? 'not ready' : `ready ${Math.round(readyAt)} ms`}` +
+        (bench.drawnAt != null ? ` · drawn ${Math.round(bench.drawnAt)} ms` : '') +
+        (bench.busyAtReady ? ` · ${bench.busyAtReady} loading at ready` : '') +
         ` · ${totals.requests} req · ${(totals.bytes / 1024).toFixed(0)} KB` +
         (totals.serviceWorker.requests
           ? ` · sw ${totals.serviceWorker.requests} req ${(totals.serviceWorker.bytes / 1024).toFixed(0)} KB`
@@ -931,6 +947,8 @@ async function runOnce({ browser, url, scenario, origin, log }) {
       pass: name,
       ready: readyAt !== null,
       readyMs: readyAt,
+      drawnMs: bench.drawnAt ?? null,
+      placeholdersAtReady: bench.busyAtReady ?? null,
       timedOut,
       nav: collected.nav,
       paint: {
@@ -1013,6 +1031,11 @@ async function runOnce({ browser, url, scenario, origin, log }) {
       { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false },
       pageSession
     );
+    // A slower CPU, as DevTools' throttling makes one: what a desktop parses
+    // in a few milliseconds a phone takes several times as long over.
+    if (options.cpuThrottle > 1) {
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: options.cpuThrottle }, pageSession);
+    }
     await cdp.send(
       'Page.addScriptToEvaluateOnNewDocument',
       { source: instrumentation(scenario.ready) },
@@ -1263,7 +1286,7 @@ function renderMarkdown(summary) {
       '',
       `${env.browser} headless · ${env.gpu} · ${env.cpu} (${env.cores} cores, ${env.memoryGb} GB) · ${env.os} · Node ${env.node}`,
       '',
-      `${env.options.runs} runs per scenario, fresh profile each; cold = HTTP cache disabled, warm = second navigation in the same profile${env.options.bypassServiceWorker ? ' with the service worker bypassed' : ''}. ${env.transport}. Medians and nearest-rank p90 over runs.`,
+      `${env.options.runs} runs per scenario, fresh profile each; cold = HTTP cache disabled, warm = second navigation in the same profile${env.options.bypassServiceWorker ? ' with the service worker bypassed' : ''}${env.options.cpuThrottle > 1 ? `; CPU throttled ${env.options.cpuThrottle}×` : ''}. ${env.transport}. Medians and nearest-rank p90 over runs.`,
       ''
     );
     for (const [name, sc] of Object.entries(host.scenarios)) {
