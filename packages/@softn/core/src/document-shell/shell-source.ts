@@ -4695,7 +4695,6 @@ var __softnShell = (function (win) {
   return api;
 })(typeof window !== 'undefined' ? window : null);
 
-function __softnDocInit(seed) { __softnShell.init(seed); }
 function __softnDocTake(failed) { return __softnShell.take(failed); }
 function __softnDocSync(changes) { __softnShell.sync(changes); }
 function __softnDocEvent(id, type, props, path) { return __softnShell.event(id, type, props, path); }

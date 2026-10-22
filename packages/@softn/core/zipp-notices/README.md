@@ -8,15 +8,15 @@ ships that notice itself. The same release's torch package (installed beside
 the engine in `wasm-zipp-torch/`) is built from the same commit and likewise
 comes with no notices of its own.
 
-`THIRD_PARTY_LICENSES.txt` is the file `scripts/build-zipp-wasm.mjs` writes
+`THIRD_PARTY_LICENSES.txt` is the file zipp.org's `scripts/build-zipp-wasm.mjs` writes
 (its `THIRD_PARTY_LICENSES.txt` step), generated from zipp.org's
 `LICENSE-UNICODE`. It is present at tag `v0.0.28` (commit
 `da0fe6b1bdf9472238827368d7fe5b96dfc8db8a`), unchanged since `v0.0.21`, and
 regenerating the file from it there gives these bytes exactly.
 
 Up to 0.0.20 the file also carried the RustPython parser's MIT licence. ZIPP
-0.0.21 removed its RustPython fork and parses Python with its own
-`crates/zipp-pyparse`, whose README states it contains no RustPython code, so
+0.0.21 removed its RustPython fork and parses Python with its own crate,
+zipp.org's `crates/zipp-pyparse`, whose README states it contains no RustPython code, so
 that notice no longer applies to the engine SoftN ships.
 
 `scripts/fetch-zipp-release.mjs` installs this copy beside the engine when the

@@ -34,7 +34,9 @@ export default defineConfig({
   // The engine's size, for the progress a host shows while it downloads
   // (zipp-wasm-loader.ts): a server that compresses it says only the
   // compressed length.
-  define: { __SOFTN_ENGINE_BYTES__: String(statSync('wasm-zipp/zipp_wasm_bg.wasm').size) },
+  // From this file's folder, not the working directory: a tool that loads
+  // the config from the repository's root (knip) must find it too.
+  define: { __SOFTN_ENGINE_BYTES__: String(statSync(new URL('./wasm-zipp/zipp_wasm_bg.wasm', import.meta.url)).size) },
   onSuccess: async () => {
     // Copy the engine's WASM to dist/ — tsup inlines the glue JS into a chunk,
     // and the glue uses `new URL('<name>_bg.wasm', import.meta.url)`, so the

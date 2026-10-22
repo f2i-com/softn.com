@@ -9,8 +9,10 @@
 /** The id of the page's `html` in the document; the body's is 1. */
 export const SHELL_HTML_ID = -2;
 
-/** The functions the host calls, declared at the top of the logic. */
-export const SHELL_INIT = '__softnDocInit';
+/**
+ * The functions the host calls, declared at the top of the logic. The shell
+ * is started with its seed inline (shellPrelude), so it has no init of its own.
+ */
 export const SHELL_TAKE = '__softnDocTake';
 export const SHELL_EVENT = '__softnDocEvent';
 export const SHELL_SYNC = '__softnDocSync';
