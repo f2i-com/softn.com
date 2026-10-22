@@ -71,13 +71,20 @@ function markdownToHtml(markdown: string): string {
   // Escape HTML
   html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+  // The patterns below that start at a line keep to it: `[ \t]` where `\s`
+  // would run on across line ends. A note is whoever wrote the record's to
+  // write (a sync peer, a server's storage), and `^\s*` under the `m` flag
+  // made one of blank lines, or a `[` that never closes repeated, cost the
+  // square of its length, seconds of the page for a few hundred kilobytes;
+  // `# ` above a blank line also took the line below into its heading.
+
   // Headers
-  html = html.replace(/^######\s+(.*)$/gm, '<h6>$1</h6>');
-  html = html.replace(/^#####\s+(.*)$/gm, '<h5>$1</h5>');
-  html = html.replace(/^####\s+(.*)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^###\s+(.*)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^##\s+(.*)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^#\s+(.*)$/gm, '<h1>$1</h1>');
+  html = html.replace(/^######[ \t]+(.*)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####[ \t]+(.*)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####[ \t]+(.*)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###[ \t]+(.*)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##[ \t]+(.*)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#[ \t]+(.*)$/gm, '<h1>$1</h1>');
 
   // Bold and italic
   html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
@@ -99,27 +106,29 @@ function markdownToHtml(markdown: string): string {
   // Images — before links, since `![alt](url)` also matches the link pattern.
   // Running links first turned every image into `!<a href="url">alt</a>`, so
   // images never rendered at all.
+  // A link's text and target are kept to a line and a length, so a `[` or a
+  // `](` that never closes is looked past at once rather than read to the end.
   html = html.replace(
-    /!\[([^\]]*)\]\(([^)]+)\)/g,
+    /!\[([^\]\n]{0,256})\]\(([^)\n]{1,2048})\)/g,
     (_m, alt: string, src: string) =>
       `<img src="${safeLinkTarget(src)}" alt="${alt.replace(/"/g, '&quot;')}" style="max-width: 100%;" />`
   );
 
   // Links
   html = html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
+    /\[([^\]\n]{1,256})\]\(([^)\n]{1,2048})\)/g,
     (_m, text: string, target: string) =>
       `<a href="${safeLinkTarget(target)}" target="_blank" rel="noopener noreferrer">${text}</a>`
   );
 
   // Blockquotes
-  html = html.replace(/^>\s+(.*)$/gm, '<blockquote>$1</blockquote>');
+  html = html.replace(/^>[ \t]+(.*)$/gm, '<blockquote>$1</blockquote>');
 
   // Unordered lists
-  html = html.replace(/^\s*[-*+]\s+(.*)$/gm, '<li>$1</li>');
+  html = html.replace(/^[ \t]*[-*+][ \t]+(.*)$/gm, '<li>$1</li>');
 
   // Ordered lists
-  html = html.replace(/^\s*\d+\.\s+(.*)$/gm, '<li>$1</li>');
+  html = html.replace(/^[ \t]*\d+\.[ \t]+(.*)$/gm, '<li>$1</li>');
 
   // Wrap consecutive li elements in ul/ol
   html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');

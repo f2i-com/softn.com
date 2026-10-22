@@ -26,6 +26,7 @@ import { SandboxHost } from './sandbox-host';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { LogicTimers, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { prologueIsStrict, STRICT_DIRECTIVE } from './directive-prologue';
+import { blankCommentsAndStrings } from './code-text';
 import { placeSyntaxError } from './logic-syntax';
 import { moduleSyntaxAsScript } from './module-syntax';
 import { inlineLogicImports } from './logic-imports';
@@ -173,12 +174,7 @@ export function detectWorkerIncompatibilities(code: string): string[] {
   if (!code) return [];
 
   // Strip comments and string literals to prevent false positives.
-  const stripped = code
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n\r]*/g, '')
-    .replace(/`(?:[^`\\]|\\.)*`/g, '""')
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, '""');
+  const stripped = blankCommentsAndStrings(code);
 
   const reasons: string[] = [];
   const checks: Array<{ pattern: RegExp; reason: string }> = [

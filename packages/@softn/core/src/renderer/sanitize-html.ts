@@ -205,6 +205,105 @@ export interface CssResourceScan {
 }
 
 /**
+ * Where a CSS string that opens at `at` ends: past its closing quote, or at
+ * the newline (or the end) that leaves it unclosed, as CSS reads a string.
+ */
+function endOfCssString(css: string, at: number): number {
+  const quote = css[at];
+  let i = at + 1;
+  while (i < css.length) {
+    const ch = css[i];
+    if (ch === quote) return i + 1;
+    if (ch === '\n' || ch === '\r' || ch === '\f') return i;
+    i += ch === '\\' ? 2 : 1;
+  }
+  return css.length;
+}
+
+/**
+ * CSS with its comments taken out, in one pass that reads strings as
+ * strings: each comment becomes `replacement` (a space, where it separates
+ * tokens), one left open runs to the end as the browser reads it, and a `/*`
+ * inside a quoted string stays where it is. Linear in the length: the
+ * regular expressions it replaces scanned to the end again from every `/*`
+ * that never closed, and a bundle's few kilobytes of them held the page.
+ *
+ * A comment that opens inside an unquoted `url(` takes the function's `)`
+ * with it; the resource passes then see a function that never closes, which
+ * they treat as covering the rest of the text, as the browser would.
+ */
+export function stripCssComments(css: string, replacement = ' '): string {
+  let out = '';
+  let kept = 0;
+  let i = 0;
+  while (i < css.length) {
+    const c = css.charCodeAt(i);
+    if (c === 47 /* / */ && css.charCodeAt(i + 1) === 42 /* * */) {
+      out += css.slice(kept, i) + replacement;
+      const end = css.indexOf('*/', i + 2);
+      i = end === -1 ? css.length : end + 2;
+      kept = i;
+    } else if (c === 34 /* " */ || c === 39 /* ' */) {
+      i = endOfCssString(css, i);
+    } else {
+      i++;
+    }
+  }
+  return out + css.slice(kept);
+}
+
+/**
+ * CSS with each `@import` rule replaced by `note`: from the at-keyword to its
+ * `;` outside a string, or to the end. One pass, so a run of `@import url(`
+ * that never closes costs no more than its length. Comments are expected to
+ * be gone already (stripCssComments).
+ */
+export function removeCssImports(css: string, note: string): string {
+  let out = '';
+  let kept = 0;
+  let i = 0;
+  while (i < css.length) {
+    const c = css.charCodeAt(i);
+    if (c === 34 || c === 39) {
+      i = endOfCssString(css, i);
+      continue;
+    }
+    if (c === 64 /* @ */ && css.slice(i + 1, i + 7).toLowerCase() === 'import' && !/[\w-]/.test(css[i + 7] ?? '')) {
+      out += css.slice(kept, i) + note;
+      let j = i + 7;
+      while (j < css.length && css[j] !== ';') {
+        const d = css.charCodeAt(j);
+        j = d === 34 || d === 39 ? endOfCssString(css, j) : j + 1;
+      }
+      i = Math.min(css.length, j + 1);
+      kept = i;
+      continue;
+    }
+    i++;
+  }
+  return out + css.slice(kept);
+}
+
+/**
+ * CSS with each call of `name` (matched without regard to case), with its
+ * arguments to the first `)` or to the end, replaced by `note`. One pass.
+ */
+export function removeCssFunction(css: string, name: string, note: string): string {
+  const opener = new RegExp(String.raw`${name}\s*\(`, 'gi');
+  let out = '';
+  let kept = 0;
+  let m: RegExpExecArray | null;
+  while ((m = opener.exec(css))) {
+    const close = css.indexOf(')', opener.lastIndex);
+    out += css.slice(kept, m.index) + note;
+    kept = close === -1 ? css.length : close + 1;
+    if (close === -1) break;
+    opener.lastIndex = kept;
+  }
+  return out + css.slice(kept);
+}
+
+/**
  * Every resource a declaration or an inline style would load.
  *
  * Comments are dropped and escapes undone first, because both are ways of
@@ -213,7 +312,7 @@ export interface CssResourceScan {
  * once the browser has read them.
  */
 export function cssResourceReferences(value: string): CssResourceScan {
-  const stripped = value.replace(/\/\*[\s\S]*?\*\//g, '');
+  const stripped = stripCssComments(value, '');
   const decoded = decodeCssEscapes(stripped);
   // An escape next to a function call could be hiding the function's name;
   // an escape in a value with no call at all — `content: "\201C"` — cannot,

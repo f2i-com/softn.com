@@ -72,6 +72,26 @@ describe('images', () => {
   });
 });
 
+describe('a note written to hold the page', () => {
+  // A note is whoever wrote the record's, a sync peer's or a server's as much
+  // as the app's: a `[` that never closes, or a run of blank lines, cost the
+  // square of its length and held the page for seconds.
+  it('is drawn in time that grows with its length', () => {
+    for (const note of ['['.repeat(80_000), '[a]('.repeat(20_000), '\n'.repeat(80_000), '![a]('.repeat(20_000)]) {
+      const started = performance.now();
+      render(note);
+      expect(performance.now() - started, JSON.stringify(note.slice(0, 8))).toBeLessThan(2000);
+    }
+  });
+
+  it('keeps a heading to its own line', () => {
+    const container = render('#\n\nnext');
+    expect(container.querySelector('h1')).toBeNull();
+    expect(render('# Title').querySelector('h1')?.textContent).toBe('Title');
+    expect(render('  - item').querySelector('li')?.textContent).toBe('item');
+  });
+});
+
 describe('remote images against the bundle permission', () => {
   // `safeLinkTarget` polices the scheme and nothing else, so a remote image
   // in the preview was fetched on first paint whether or not the bundle had

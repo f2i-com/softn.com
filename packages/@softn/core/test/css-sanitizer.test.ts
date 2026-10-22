@@ -123,6 +123,58 @@ describe('url() references a bundle legitimately uses', () => {
   });
 });
 
+describe('a style block written to take the page down', () => {
+  // Each of these held the main thread for seconds to minutes in every host,
+  // before the app was asked for consent: the separators between tokens were
+  // "whitespace or a comment" in a pattern that backtracked on runs of
+  // comments, and the passes after it scanned to the end from every opener
+  // that never closed. Read in one pass now, each takes a moment.
+  const within = (css: string, ms = 1500) => {
+    const started = performance.now();
+    sanitizeBundleCSS(css);
+    return performance.now() - started < ms;
+  };
+
+  it('is read in time that grows with its length', () => {
+    expect(within(';' + '/**/'.repeat(40) + 'x')).toBe(true);
+    expect(within('@import' + '/**/'.repeat(40) + 'x')).toBe(true);
+    expect(within(';/*'.repeat(80_000))).toBe(true);
+    expect(within('@import url('.repeat(40_000))).toBe(true);
+    expect(within('expression('.repeat(40_000))).toBe(true);
+    expect(within('/* '.repeat(80_000))).toBe(true);
+  });
+
+  it('still drops what the comments separated', () => {
+    expect(sanitizeBundleCSS('.a{' + '/**/'.repeat(40) + 'behavior:url(x.htc)}')).not.toContain('behavior:');
+    expect(sanitizeBundleCSS('@import' + '/**/'.repeat(40) + '"https://evil.test/x.css"; .a{color:red}')).toBe(
+      '/* @import removed */ .a{color:red}'
+    );
+  });
+
+  it('keeps a "/*" inside a string, and what follows it', () => {
+    const out = sanitizeBundleCSS('.a::before{content:"/* not a comment"}.b{color:red}');
+    expect(out).toContain('content:"/* not a comment"');
+    expect(out).toContain('.b{color:red}');
+  });
+
+  it('leaves nothing fetchable after a comment that opens inside a url() and never closes', () => {
+    const out = sanitizeBundleCSS('.a{background:url(https://evil.test/a/*b)}');
+    expect(out).not.toContain('evil.test');
+  });
+});
+
+describe('an inline style written to take the page down', () => {
+  it('is read in time that grows with its length', () => {
+    const started = performance.now();
+    cssResourceReferences('/* '.repeat(80_000));
+    expect(performance.now() - started).toBeLessThan(1500);
+  });
+
+  it('does not let a "/*" in a string hide a fetch after it', () => {
+    expect(remoteTargets('content:"/*"; background:url(https://evil.test/x)')).toEqual(['https://evil.test/x']);
+  });
+});
+
 /** The remote targets a browser would still fetch from a run of CSS: none, once sanitized. */
 function remoteTargets(css: string): string[] {
   return cssResourceReferences(css).urls.filter(isRemoteUrl);

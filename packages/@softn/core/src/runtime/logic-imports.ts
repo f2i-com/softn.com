@@ -29,8 +29,12 @@ export async function inlineLogicImports(
   expanding: Set<string>,
   currentPath?: string
 ): Promise<string> {
-  // Match import statements: import "./path.logic" or import './path.logic'
-  const importRegex = /^\s*import\s+["']([^"']+)["']\s*;?\s*$/gm;
+  // Match import statements: import "./path.logic" or import './path.logic'.
+  // Spaces and tabs only, never a line's end: `^\s*` under the `m` flag ran
+  // across every blank line after each line start, which made a file of blank
+  // lines cost the square of its length, and an import's match took the blank
+  // lines around it with it.
+  const importRegex = /^[ \t]*import[ \t]+["']([^"'\n]+)["'][ \t]*;?[ \t]*$/gm;
   const parts: string[] = [];
   let lastIndex = 0;
   let match;

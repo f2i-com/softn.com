@@ -25,7 +25,13 @@ import { createRenderCache, type SoftNRenderCache } from '../renderer/reuse';
 import { getDefaultRegistry } from '../renderer/registry';
 import { collectFirstScreenTags } from '../renderer/document-tags';
 import { rememberFirstDraw } from '../renderer/first-draw-memory';
-import { isRemoteUrl, rewriteCssResources } from '../renderer/sanitize-html';
+import {
+  isRemoteUrl,
+  removeCssFunction,
+  removeCssImports,
+  rewriteCssResources,
+  stripCssComments,
+} from '../renderer/sanitize-html';
 import { showBundleFilesInStyles } from '../renderer/html-elements';
 import {
   collectDrawnNames,
@@ -142,18 +148,17 @@ export function sanitizeBundleCSS(css: string): string {
   sanitized = sanitized.replace(/\\([^0-9a-fA-F\r\n\f])/g, (_match, ch: string) =>
     ch === '\\' ? '/' : ch
   );
-  // Remove @import rules (with or without url()).
-  //
-  // The separator is `\b` followed by any run of whitespace OR comments, not
-  // `\s+`. CSS does not require whitespace between an at-keyword and the token
-  // after it, and a comment is a valid separator, so `@import"…";`,
-  // `@import'…';` and `@import/**/"…";` all sailed past the old pattern and
-  // fetched the remote stylesheet. The `\b` is load-bearing: with the separator
-  // now optional, `@importurl(` would otherwise match as `@import` + `url(...)`.
-  sanitized = sanitized.replace(
-    /@import\b(?:\s|\/\*[\s\S]*?\*\/)*(?:url\s*\([^)]*\)|["'][^"']*["'])[^;]*;?/gi,
-    '/* @import removed */'
-  );
+  // Comments out, each a space as it separates tokens, in one pass that reads
+  // strings as strings. The passes below matched "whitespace or a comment"
+  // between tokens with a pattern that backtracked: twenty-eight empty
+  // comments in a row took a third of a second, forty would have held the
+  // page for minutes, and the style block is the bundle author's to write.
+  sanitized = stripCssComments(sanitized);
+  // Remove @import rules, whatever follows the keyword, to the rule's `;`.
+  // CSS needs no whitespace between an at-keyword and the token after it, so
+  // `@import"…";` and `@import'…';` are imports too; `@importurl(` is not
+  // (that is one at-keyword), and its url() is judged below like any other.
+  sanitized = removeCssImports(sanitized, '/* @import removed */');
   // Remove url() values that reference external or dangerous protocols, and
   // the image functions that take their targets as plain strings —
   // `image-set("https://…" 1x)` loads exactly what `url(https://…)` does and
@@ -177,12 +182,12 @@ export function sanitizeBundleCSS(css: string): string {
       /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/|\\)/i.test(target)
   );
   // Remove expression() (IE) — a code execution vector.
-  sanitized = sanitized.replace(/expression\s*\([^)]*\)/gi, '/* expression removed */');
+  sanitized = removeCssFunction(sanitized, 'expression', '/* expression removed */');
   // Match legacy properties at declaration boundaries, not the suffix of
   // scroll-behavior / overscroll-behavior. Preserve rule braces and separators:
   // a final declaration need not have a semicolon, even inside a media query.
   sanitized = sanitized.replace(
-    /((?:^|[;{])(?:\s|\/\*[\s\S]*?\*\/)*)(-moz-binding|behavior)\s*:[^;{}]*/gi,
+    /((?:^|[;{])\s*)(-moz-binding|behavior)\s*:[^;{}]*/gi,
     '$1/* $2 removed */'
   );
   return sanitized;

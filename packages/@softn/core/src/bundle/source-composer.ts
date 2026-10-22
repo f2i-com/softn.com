@@ -294,15 +294,166 @@ function anyCase(word: string): string {
 const TAG_ATTRIBUTES = String.raw`((?:[^>"']|"[^"]*"|'[^']*')*?)`;
 
 /**
- * A `<link>` tag: group 1 is its attributes. Written in lower case or all in
- * capitals, as HTML is; `<Link>` is a component.
+ * Where a page's start tags end, each worked out once for the page. A start
+ * tag ends at the first `>` outside a quoted value, and a quote that never
+ * closes leaves it unended, as TAG_ATTRIBUTES reads one. Read with that
+ * pattern, a tag's attributes were read again from every `<style`, `<link` or
+ * `<logic` that began one, so a page of them that never closed (a few
+ * kilobytes of a zip) held the main thread of every host for minutes before
+ * the app was asked for anything. Here the `>` and quote characters are
+ * found once, and where each one's walk ends is remembered, so no stretch of
+ * the page is read twice whatever starts in it.
  */
-const LINK_TAG = new RegExp(String.raw`<(?:link|LINK)(?=[\s/>])${TAG_ATTRIBUTES}\/?>`);
+class StartTagEnds {
+  /** The indices of `>`, `"` and `'`, in order. */
+  private readonly positions: Record<string, number[]> = { '>': [], '"': [], "'": [] };
+  /** Where the walk on from a `>` or a quote ends: a `>`'s index, or -1. */
+  private readonly ends = new Map<number, number>();
+
+  constructor(private readonly source: string) {
+    for (let i = 0; i < source.length; i++) {
+      const list = this.positions[source[i]];
+      if (list) list.push(i);
+    }
+  }
+
+  /** The index of the `>` that ends a start tag whose attributes begin at `at`, or -1. */
+  end(at: number): number {
+    const visited: number[] = [];
+    let result = -1;
+    let i = at;
+    for (;;) {
+      const special = this.nextSpecial(i);
+      if (special === -1) break;
+      const known = this.ends.get(special);
+      if (known !== undefined) {
+        result = known;
+        break;
+      }
+      visited.push(special);
+      const ch = this.source[special];
+      if (ch === '>') {
+        result = special;
+        break;
+      }
+      const close = this.next(ch, special + 1);
+      if (close === -1) break;
+      i = close + 1;
+    }
+    for (const special of visited) this.ends.set(special, result);
+    return result;
+  }
+
+  private nextSpecial(i: number): number {
+    let best = -1;
+    for (const ch of ['>', '"', "'"]) {
+      const at = this.next(ch, i);
+      if (at !== -1 && (best === -1 || at < best)) best = at;
+    }
+    return best;
+  }
+
+  /** The first index of `ch` at or after `i`, or -1. */
+  private next(ch: string, i: number): number {
+    const list = this.positions[ch];
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid] < i) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < list.length ? list[lo] : -1;
+  }
+}
+
+/** Whether `at` is in one of `spans` (in order, as textSpans gives them); `cursor` carries the search on. */
+function inSpan(spans: ReadonlyArray<[number, number]>, cursor: { k: number }, at: number): [number, number] | undefined {
+  while (cursor.k < spans.length && spans[cursor.k][1] <= at) cursor.k++;
+  const span = spans[cursor.k];
+  return span && span[0] <= at ? span : undefined;
+}
+
+/** A match shaped as a regular expression's, for the code that reads groups. */
+function tagMatch(source: string, index: number, past: number, groups: Array<string | undefined>): RegExpExecArray {
+  return Object.assign([source.slice(index, past), ...groups], { index, input: source }) as unknown as RegExpExecArray;
+}
+
+/**
+ * Each `<link>` tag of `source` outside `spans`: group 1 its attributes,
+ * read as TAG_ATTRIBUTES reads them. Written in lower case or all in
+ * capitals, as HTML is; `<Link>` is a component. One that would begin in a
+ * span is looked for again past it, so a tag in one (a `<link>` a script
+ * writes) cannot run on and swallow a real one.
+ */
+function* linkTags(source: string, spans: ReadonlyArray<[number, number]>): Generator<RegExpExecArray> {
+  const opener = /<(?:link|LINK)(?=[\s/>])/g;
+  const ends = new StartTagEnds(source);
+  const cursor = { k: 0 };
+  let m: RegExpExecArray | null;
+  while ((m = opener.exec(source))) {
+    const span = inSpan(spans, cursor, m.index);
+    if (span) {
+      opener.lastIndex = span[1];
+      continue;
+    }
+    const gt = ends.end(opener.lastIndex);
+    if (gt === -1) continue;
+    let attributes = source.slice(opener.lastIndex, gt);
+    if (attributes.endsWith('/')) attributes = attributes.slice(0, -1);
+    yield tagMatch(source, m.index, gt + 1, [attributes]);
+    opener.lastIndex = gt + 1;
+  }
+}
+
+/**
+ * Each `<logic>` or `<script>` tag of `source` outside `spans`, as
+ * LOGIC_TAG_PATTERN matches one: group 1 its name, group 2 its attributes,
+ * group 3 its content (none for one that closes itself). A tag with content
+ * and no end tag is not one, as the pattern has it; where the last end tag of
+ * each name is, is found once, so no tag looks for one past it.
+ */
+function* logicTags(source: string, spans: ReadonlyArray<[number, number]>): Generator<RegExpExecArray> {
+  const opener = /<(logic|script)(?=[\s/>])/gi;
+  const ends = new StartTagEnds(source);
+  const cursor = { k: 0 };
+  const lastEnd = new Map<string, number>();
+  for (const name of ['logic', 'script']) {
+    let last = -1;
+    for (const end of source.matchAll(new RegExp(String.raw`<\/${name}\s*>`, 'gi'))) last = end.index;
+    lastEnd.set(name, last);
+  }
+  let m: RegExpExecArray | null;
+  while ((m = opener.exec(source))) {
+    const span = inSpan(spans, cursor, m.index);
+    if (span) {
+      opener.lastIndex = span[1];
+      continue;
+    }
+    const from = opener.lastIndex;
+    const gt = ends.end(from);
+    if (gt === -1) continue;
+    const name = m[1];
+    const selfClosing = source.slice(from, gt).match(/\/\s*$/);
+    if (selfClosing) {
+      yield tagMatch(source, m.index, gt + 1, [name, source.slice(from, gt - selfClosing[0].length), undefined]);
+      opener.lastIndex = gt + 1;
+      continue;
+    }
+    if (gt + 1 > (lastEnd.get(name.toLowerCase()) ?? -1)) continue;
+    const endTag = new RegExp(String.raw`<\/${name}\s*>`, 'gi');
+    endTag.lastIndex = gt + 1;
+    const end = endTag.exec(source);
+    if (!end) continue;
+    yield tagMatch(source, m.index, endTag.lastIndex, [name, source.slice(from, gt), source.slice(gt + 1, end.index)]);
+    opener.lastIndex = endTag.lastIndex;
+  }
+}
 
 /** The app's stylesheets a page links with `<link rel="stylesheet" href>`, as written, in order. */
 export function pageStylesheetHrefs(source: string): string[] {
   const hrefs: string[] = [];
-  for (const match of matchesOutside(source, LINK_TAG, textSpans(source, true))) {
+  for (const match of linkTags(source, textSpans(source, true))) {
     const href = stylesheetHref(match[1]);
     if (href !== null) hrefs.push(href);
   }
@@ -343,7 +494,10 @@ export const UI_IMPORT_PATTERN = new RegExp(String.raw`<${anyCase('import')}\s+(
  * Both are built on the same reading of `from` now.
  */
 export const UI_IMPORT_DECLARATION_PATTERN = new RegExp(
-  String.raw`<${anyCase('import')}\s+(?:(\w+)\s+)?(?:\{([^}]+)\}\s*)?${IMPORT_FROM}\s*\/>`
+  // `[^}<]`: the names between braces, never a tag, so a `{` that does not
+  // close is looked past at the next `<` rather than read to the page's end
+  // from every `<import {` (the square of the page's length, run long enough).
+  String.raw`<${anyCase('import')}\s+(?:(\w+)\s+)?(?:\{([^}<]+)\}\s*)?${IMPORT_FROM}\s*\/>`
 );
 
 /**
@@ -405,6 +559,7 @@ function textSpans(source: string, code = false): Array<[number, number]> {
     String.raw`<!--|<!\[CDATA\[|<(${RAW_TEXT_NAMES}|${anyCase('style')}|${anyCase('script')}|${anyCase('logic')})(?=[\s/>])`,
     'g'
   );
+  const startTags = new StartTagEnds(source);
   let match: RegExpExecArray | null;
   while ((match = opener.exec(source)) !== null) {
     const start = match.index;
@@ -419,12 +574,10 @@ function textSpans(source: string, code = false): Array<[number, number]> {
       past = end === -1 ? source.length : end + 3;
     } else {
       // An element whose content is text: from its start tag's end to its end tag.
-      const startTag = new RegExp(String.raw`${TAG_ATTRIBUTES}(\/?)>`, 'y');
-      startTag.lastIndex = opener.lastIndex;
-      const tag = startTag.exec(source);
+      const gt = startTags.end(opener.lastIndex);
       // Ended by its own `/>`, or never: it holds nothing.
-      if (!tag || tag[2] === '/') continue;
-      from = startTag.lastIndex;
+      if (gt === -1 || (gt > opener.lastIndex && source[gt - 1] === '/')) continue;
+      from = gt + 1;
       const endTag = new RegExp(String.raw`<\/${match[1]}(?=[\s/>])`, 'gi');
       endTag.lastIndex = from;
       past = endTag.exec(source)?.index ?? source.length;
@@ -437,35 +590,15 @@ function textSpans(source: string, code = false): Array<[number, number]> {
   return spans;
 }
 
-/**
- * Each match of `pattern` in `source` that does not begin in one of `spans`.
- * One that would is looked for again past the span, so a tag in one (a
- * `<script>` shown in a textarea) cannot run on and swallow a real one.
- */
-function* matchesOutside(source: string, pattern: RegExp, spans: ReadonlyArray<[number, number]>): Generator<RegExpExecArray> {
-  const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(source)) !== null) {
-    const at = match.index;
-    const span = spans.find(([start, past]) => at >= start && at < past);
-    if (span) {
-      re.lastIndex = span[1];
-      continue;
-    }
-    yield match;
-  }
-}
-
-/** `source` with each match of `pattern` outside `spans` replaced by what `replace` makes of it. */
-function replaceOutside(
+/** `source` with each of `matches` (in order, from linkTags or logicTags) replaced by what `replace` makes of it. */
+function replaceMatches(
   source: string,
-  pattern: RegExp,
-  spans: ReadonlyArray<[number, number]>,
+  matches: Iterable<RegExpExecArray>,
   replace: (match: RegExpExecArray) => string
 ): string {
   let out = '';
   let last = 0;
-  for (const match of matchesOutside(source, pattern, spans)) {
+  for (const match of matches) {
     out += source.slice(last, match.index) + replace(match);
     last = match.index + match[0].length;
   }
@@ -493,7 +626,7 @@ function stylesheetFromRoot(rules: string, stylesheetPath: string): string {
 /** The files of code a page names, `<script src>` and `<logic src>`, as written, in order. */
 export function pageLogicSources(source: string): string[] {
   const sources: string[] = [];
-  for (const match of matchesOutside(source, LOGIC_TAG_PATTERN, textSpans(source))) {
+  for (const match of logicTags(source, textSpans(source))) {
     const reference = logicTagReference(match[1], match[2]);
     if (reference.kind === 'code' && reference.src) sources.push(reference.src);
   }
@@ -545,7 +678,7 @@ export function composeBundleSource(
   const collectLogic = (source: string, uiPath: string, main: boolean): string => {
     // See logicTagReference: what is left alone stays in the page, for the
     // parser.
-    return replaceOutside(source, LOGIC_TAG_PATTERN, textSpans(source), (match) => {
+    return replaceMatches(source, logicTags(source, textSpans(source)), (match) => {
       const [fullTag, tag, attributes, inlineCode] = match as unknown as [string, string, string, string | undefined];
       const reference = logicTagReference(tag, attributes);
       if (reference.kind === 'ignored') return fullTag;
@@ -614,7 +747,7 @@ export function composeBundleSource(
    * carry, said here. Lower case only: `<Link>` is a component.
    */
   const inlineStylesheets = (source: string, pagePath: string): string =>
-    replaceOutside(source, LINK_TAG, textSpans(source, true), (match) => {
+    replaceMatches(source, linkTags(source, textSpans(source, true)), (match) => {
       const [fullTag, attributes] = match as unknown as [string, string];
       const href = stylesheetHref(attributes);
       if (href === null) return fullTag;
