@@ -55,12 +55,12 @@ jobs:
       ZIPP_RELEASE: ${{ inputs.zipp-release }}
       ZIPP_SUMS_SHA256: ${{ inputs.zipp-sums-sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -139,12 +139,12 @@ jobs:
       ZIPP_RELEASE: ${{ inputs.zipp-release }}
       ZIPP_SUMS_SHA256: ${{ inputs.zipp-sums-sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -198,13 +198,13 @@ jobs:
     name: Test the XDB crate (Rust)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - name: Rust toolchain for the XDB crate
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo for the XDB crate
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -223,13 +223,13 @@ jobs:
     name: Test the private backend host (Rust)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - name: Rust toolchain for the private backend host
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo for the private backend host
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -250,13 +250,13 @@ jobs:
     name: Test the desktop loader (Rust)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/

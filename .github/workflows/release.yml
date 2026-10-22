@@ -94,7 +94,7 @@ jobs:
       zipp-latest: ${{ steps.zipp.outputs.zipp-latest }}
       zipp-older-allowed: ${{ steps.zipp.outputs.zipp-older-allowed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ inputs.tag || github.ref_name }}
           fetch-depth: 1
@@ -121,7 +121,7 @@ jobs:
           fi
       # Node built-ins only: no npm ci before the gate.
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Freeze the ZIPP release
@@ -168,11 +168,11 @@ jobs:
       ZIPP_RELEASE: ${{ needs.gate.outputs.zipp-release }}
       ZIPP_SUMS_SHA256: ${{ needs.gate.outputs.zipp-sums-sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.RELEASE_TAG }}
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -194,7 +194,7 @@ jobs:
         run: npm run e2e
       - name: Keep the traces of any failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-${{ env.RELEASE_TAG }}
           path: |
@@ -227,7 +227,7 @@ jobs:
       # Build the commit named by the tag, never whichever branch happened to
       # dispatch the workflow. Requiring an existing tag also prevents a typo
       # from publishing unrelated artifacts under a new release name.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.RELEASE_TAG }}
           fetch-depth: 0
@@ -273,7 +273,7 @@ jobs:
           echo "tag $RELEASE_TAG matches every manifest"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -446,7 +446,7 @@ jobs:
           python3 apps/softn-host-php/tests/apache-smoke.py --private --archive "$(ls release/softn-app-private-with-backend-linux-x64-v*.zip)"
 
       - name: Keep the archive with the workflow run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: website-${{ env.RELEASE_TAG }}
           path: |
@@ -457,7 +457,7 @@ jobs:
           if-no-files-found: error
 
       - name: Keep the single-app hosting ZIP with the workflow run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: single-app-${{ env.RELEASE_TAG }}
           path: |
@@ -473,7 +473,7 @@ jobs:
           if-no-files-found: error
 
       - name: Keep the FormLogic runtime archive with the workflow run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: formlogic-runtime-${{ env.RELEASE_TAG }}
           path: |
@@ -499,17 +499,17 @@ jobs:
         shell: bash
     steps:
       - name: Take the website archive, the guide and the notes
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: website-${{ env.RELEASE_TAG }}
           path: release
       - name: Take the single-app hosting archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: single-app-${{ env.RELEASE_TAG }}
           path: release
       - name: Take the FormLogic runtime archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: formlogic-runtime-${{ env.RELEASE_TAG }}
           path: release
