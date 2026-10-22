@@ -32,31 +32,31 @@ import { repoRoot as root } from '../lib/paths.mjs';
 import { npmCommand } from '../lib/npm.mjs';
 
 /**
- * Seconds on an ubuntu-latest runner (the v0.0.19 release's verify job; the
- * root patterns timed apart), with what the unit has to have built first.
- * `apps`: scripts/checks/host-js-isolation.test.mjs looks inside the built Builder,
- * Studio and web app and only skips when they are not there. `chromium`:
- * scripts/dev/dev-service-worker.test.mjs drives a real browser, and skips
- * without one. Each counts in the weight of the shard that has to do it.
+ * Seconds on an ubuntu-latest runner, the longer of two CI runs (39695484146
+ * and 39699535425, 22 October 2026, from the timings each shard prints), with
+ * what the unit has to have built first. `apps`: scripts/checks/host-js-isolation.test.mjs
+ * looks inside the built Builder, Studio and web app and only skips when they
+ * are not there. `chromium`: scripts/dev/dev-service-worker.test.mjs drives a
+ * real browser, and skips without one. Each counts in the weight of the
+ * shard that has to do it, at what that step took. A unit not listed took
+ * five seconds or less.
  */
 const WEIGHTS = {
-  'scripts/**/*.test.mjs': 60,
-  'packages/@softn/core/scripts/*.test.mjs': 95,
-  'docs/tests/*.test.mjs': 5,
-  'apps/formlogic-host/test/*.test.mjs': 5,
-  'test:host-js': 49,
-  '@softn/host-php': 73,
-  '@softn/core': 57,
-  '@softn/studio': 48,
-  '@softn/builder': 36,
-  '@softn/components': 24,
-  '@softn/api': 20,
-  '@softn/web': 8,
-  '@softn/site': 6,
+  '@softn/host-php': 98,
+  'packages/@softn/core/scripts/*.test.mjs': 90,
+  '@softn/core': 88,
+  'test:host-js': 75,
+  '@softn/studio': 61,
+  '@softn/builder': 51,
+  '@softn/components': 32,
+  '@softn/api': 24,
+  'scripts/**/*.test.mjs': 17,
+  '@softn/site': 12,
+  '@softn/web': 7,
 };
-const DEFAULT_WEIGHT = 10;
+const DEFAULT_WEIGHT = 3;
 const NEEDS = { 'scripts/**/*.test.mjs': ['apps', 'chromium'] };
-const SETUP_WEIGHT = { apps: 41, chromium: 19 };
+const SETUP_WEIGHT = { apps: 30, chromium: 20 };
 export const NEED_KINDS = Object.keys(SETUP_WEIGHT);
 
 function readJson(file) {

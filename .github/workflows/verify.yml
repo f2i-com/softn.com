@@ -179,7 +179,21 @@ jobs:
 
       # scripts/dev/dev-service-worker.test.mjs drives a real Chromium through a
       # stale service worker; it skips itself when no browser is installed,
-      # so this is what makes it run here rather than pass by skipping.
+      # so this is what makes it run here rather than pass by skipping. The
+      # browser is kept between runs for the Playwright version the lockfile
+      # pins: downloading it every time cost the shard 20 seconds, and a run
+      # failed when Playwright's CDN answered with another site's certificate.
+      # The system libraries it needs are installed every time either way.
+      - name: Which Playwright the lockfile pins
+        if: steps.needs.outputs.chromium == 'true'
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Keep Playwright's Chromium between runs
+        if: steps.needs.outputs.chromium == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Chromium for the browser-driven script tests
         if: steps.needs.outputs.chromium == 'true'
         run: npx playwright install --with-deps chromium
@@ -212,6 +226,9 @@ jobs:
             ~/.cargo/git/db/
             crates/softn-xdb/target/
           key: xdb-${{ runner.os }}-${{ hashFiles('crates/softn-xdb/Cargo.lock') }}
+          # A changed lock starts from the last build rather than from nothing,
+          # as the loader's cache below does; Cargo rebuilds what changed.
+          restore-keys: xdb-${{ runner.os }}-
       - name: Test the XDB crate
         run: cargo test --no-default-features --manifest-path crates/softn-xdb/Cargo.toml
 
@@ -237,6 +254,7 @@ jobs:
             ~/.cargo/git/db/
             apps/softn-host-rust/target/
           key: host-rust-${{ runner.os }}-${{ hashFiles('apps/softn-host-rust/Cargo.lock') }}
+          restore-keys: host-rust-${{ runner.os }}-
       - name: Test the private backend host
         run: cargo test --manifest-path apps/softn-host-rust/Cargo.toml
 
