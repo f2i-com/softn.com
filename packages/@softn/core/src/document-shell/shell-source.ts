@@ -3974,36 +3974,6 @@ var __softnShell = (function (win) {
     if (code < 0x10000) return [0xe0 | (code >> 12), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63)];
     return [0xf0 | (code >> 18), 0x80 | ((code >> 12) & 63), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63)];
   }
-  class TextEncoder {
-    get encoding() { return 'utf-8'; }
-    encode(text) {
-      var input = text === undefined ? '' : String(text);
-      var bytes = [];
-      for (var i = 0; i < input.length; i++) {
-        var code = input.codePointAt(i);
-        if (code > 0xffff) i++;
-        if (code < 0x80) bytes.push(code);
-        else bytes.push.apply(bytes, utf8(code));
-      }
-      return new Uint8Array(bytes);
-    }
-    // As much of text as fits in dest, whole characters only.
-    encodeInto(text, dest) {
-      var input = String(text);
-      var read = 0;
-      var written = 0;
-      for (var i = 0; i < input.length; i++) {
-        var code = input.codePointAt(i);
-        var bytes = utf8(code);
-        if (written + bytes.length > dest.length) break;
-        for (var b = 0; b < bytes.length; b++) dest[written++] = bytes[b];
-        var units = code > 0xffff ? 2 : 1;
-        read += units;
-        i += units - 1;
-      }
-      return { read: read, written: written };
-    }
-  }
 
   // Bytes read as UTF-8, as the Encoding Standard reads them: each part
   // that is not UTF-8 (a stray byte, a sequence cut short, too long, a
@@ -4062,50 +4032,6 @@ var __softnShell = (function (win) {
     }
     if (units.length) out += String.fromCharCode.apply(null, units);
     return { text: out, rest: rest };
-  }
-
-  var UTF8_LABELS = set('unicode-1-1-utf-8 unicode11utf8 unicode20utf8 utf-8 utf8 x-unicode20utf8');
-  class TextDecoder {
-    constructor(label, options) {
-      var name = label === undefined ? 'utf-8' : String(label).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '').toLowerCase();
-      if (!UTF8_LABELS[name]) throw new RangeError('Only UTF-8 is read here, not ' + label);
-      Object.defineProperty(this, '_fatal', { value: !!(options && options.fatal), enumerable: false });
-      Object.defineProperty(this, '_ignoreBOM', { value: !!(options && options.ignoreBOM), enumerable: false });
-      Object.defineProperty(this, '_pending', { value: [], writable: true, enumerable: false });
-      Object.defineProperty(this, '_started', { value: false, writable: true, enumerable: false });
-    }
-    get encoding() { return 'utf-8'; }
-    get fatal() { return this._fatal; }
-    get ignoreBOM() { return this._ignoreBOM; }
-    // A byte order mark at the start is taken off, unless ignoreBOM.
-    decode(input, options) {
-      var stream = !!(options && options.stream);
-      var bytes;
-      if (input === undefined) bytes = [];
-      else if (input instanceof ArrayBuffer) bytes = new Uint8Array(input);
-      else if (ArrayBuffer.isView(input)) bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-      else throw new TypeError('Failed to execute \'decode\' on \'TextDecoder\': The provided value is not of type \'(ArrayBuffer or ArrayBufferView)\'.');
-      if (this._pending.length) bytes = this._pending.concat(Array.prototype.slice.call(bytes));
-      var result;
-      try {
-        result = utf8Decode(bytes, this._fatal, stream);
-      } catch (error) {
-        this._pending = [];
-        this._started = false;
-        throw error;
-      }
-      this._pending = result.rest ? Array.prototype.slice.call(bytes, bytes.length - result.rest) : [];
-      var text = result.text;
-      if (!this._started && text.length > 0) {
-        if (!this._ignoreBOM && text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-        this._started = true;
-      }
-      if (!stream) {
-        this._started = false;
-        this._pending = [];
-      }
-      return text;
-    }
   }
 
   // crypto: random numbers a page can rely on. The engine has none of its
@@ -4756,7 +4682,10 @@ var __softnShell = (function (win) {
     cancelAnimationFrame: cancelAnimationFrame, structuredClone: structuredClone, sessionStorage: sessionStorage,
     alert: alert, confirm: confirm, prompt: prompt,
     EventTarget: EventTarget, DOMException: DOMException, AbortController: AbortController, AbortSignal: AbortSignal,
-    URL: URL, btoa: btoa, atob: atob, TextEncoder: TextEncoder, TextDecoder: TextDecoder, crypto: crypto,
+    URL: URL, btoa: btoa, atob: atob, crypto: crypto,
+    // The engine's own (ZIPP 0.0.28 and later), which the prelude leaves in place.
+    TextEncoder: typeof TextEncoder === 'function' ? TextEncoder : undefined,
+    TextDecoder: typeof TextDecoder === 'function' ? TextDecoder : undefined,
     MutationObserver: MutationObserver, ResizeObserver: ResizeObserver, IntersectionObserver: IntersectionObserver,
     matchMedia: matchMedia, history: history, HTMLOutputElement: HTMLOutputElement,
     HTMLTemplateElement: HTMLTemplateElement, HTMLDialogElement: HTMLDialogElement, DataTransfer: DataTransfer,
