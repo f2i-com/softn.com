@@ -50,6 +50,24 @@ export function adoptZippWasmSource(source: BufferSource | WebAssembly.Module): 
   if (!initializationStarted) configureZippWasmSource(source);
 }
 
+/**
+ * Whether the browser can answer for `url` without the network: its HTTP
+ * cache, or a service worker that holds it (SoftN Web's precache). Asked
+ * with `only-if-cached`, which never goes to the network, and the body is
+ * not read. A miss is a network error (the fetch rejects), so a rejection
+ * is "not here"; so is an engine on another origin, which the option cannot
+ * ask about, and which is then counted on every start.
+ */
+async function onThisDevice(url: URL): Promise<boolean> {
+  try {
+    const probe = await fetch(url, { cache: 'only-if-cached', mode: 'same-origin' });
+    void probe.body?.cancel().catch(() => undefined);
+    return probe.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** The engine compiled once for this realm: from the configured source, or fetched from beside this chunk. */
 const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
   if (suppliedSource instanceof WebAssembly.Module) return suppliedSource;
@@ -60,6 +78,7 @@ const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
   // copy: the page compiles the engine once and posts the module to every
   // worker it starts (`zippEngineForWorker`), so one file serves them all.
   const url = new URL('zipp_wasm_bg.wasm', import.meta.url);
+  const local = await onThisDevice(url);
   let response: Response;
   try {
     response = await fetch(url);
@@ -67,11 +86,14 @@ const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
     throw new Error(`The ZIPP engine (${url.pathname}) could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!response.ok) throw new Error(`The ZIPP engine (${url.pathname}) answered ${response.status}`);
-  // Counted for a host's progress bar (load-progress.ts) from a clone, so the
-  // response compiled below is the one fetched, address and all. Its size is
-  // the server's when it says it plainly, else the engine this build carries,
-  // which a compressed answer's length is not.
-  countResponse(response, trackLoad('engine', 'engine', { total: responseBodyLength(response) ?? ENGINE_BYTES }));
+  // A download, counted for a host's progress bar (load-progress.ts) from a
+  // clone, so the response compiled below is the one fetched, address and
+  // all. Not a copy already on this device: reading a clone beside the
+  // compile took 30 ms of a slowed CPU from every start from the cache, for
+  // a wait no one sees. Its size is the server's when it says it plainly,
+  // else the engine this build carries, which a compressed answer's length
+  // is not.
+  if (!local) countResponse(response, trackLoad('engine', 'engine', { total: responseBodyLength(response) ?? ENGINE_BYTES }));
   // Streaming only for a server that labels the file as WebAssembly, which
   // compileStreaming insists on; any other label still serves the right bytes.
   return typeof WebAssembly.compileStreaming === 'function' && response.headers.get('Content-Type') === 'application/wasm'

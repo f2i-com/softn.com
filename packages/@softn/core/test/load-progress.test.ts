@@ -81,6 +81,21 @@ describe('a download', () => {
   });
 });
 
+describe("a component's chunk", () => {
+  it('is on the list when something asks for it to draw, and not when a host loads it quietly', async () => {
+    const { ComponentRegistry } = await import('../src/renderer/registry');
+    const registry = new ComponentRegistry();
+    const Hello = () => null;
+    registry.registerLazy('LineChart', async () => Hello, { feature: 'charts' });
+    registry.registerLazy('Scene3D', async () => Hello, { feature: 'scene3d' });
+    await registry.load('Scene3D', { quiet: true });
+    await registry.retry('Scene3D', { quiet: true });
+    expect(item('components:scene3d')).toBeUndefined();
+    await registry.load('LineChart');
+    expect(item('components:charts')).toMatchObject({ kind: 'components', name: 'charts', done: true });
+  });
+});
+
 describe('counting a response', () => {
   it('reads a clone, so the response itself still has its whole body', async () => {
     const response = new Response(streamOf(3, 4, 5));
@@ -100,23 +115,34 @@ describe('counting a response', () => {
 });
 
 describe("the engine's download", () => {
-  it('is counted, and the response fetched is the one compiled', async () => {
+  /** A fresh loader whose fetch answers the engine, and says whether the browser already holds it. */
+  async function engineLoader(onDevice: boolean) {
     vi.resetModules();
     const fetched = new Response(streamOf(8, 8), {
       headers: { 'Content-Type': 'application/wasm', 'Content-Length': '16' },
     });
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fetched);
-    let compiled: unknown;
+    // As a browser answers it: a miss with `only-if-cached` is a network error.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      if (init?.cache !== 'only-if-cached') return fetched;
+      if (onDevice) return new Response('held');
+      throw new TypeError('Failed to fetch');
+    });
+    const seen: { compiled?: unknown } = {};
     const module = {} as WebAssembly.Module;
     vi.spyOn(WebAssembly, 'compileStreaming').mockImplementation(async (source) => {
-      compiled = await source;
-      await (compiled as Response).arrayBuffer();
+      seen.compiled = await source;
+      await (seen.compiled as Response).arrayBuffer();
       return module;
     });
     const loader = await import('../src/runtime/zipp-wasm-loader');
     const progress = await import('../src/runtime/load-progress');
+    return { fetched, fetchSpy, seen, module, loader, progress };
+  }
+
+  it('is counted when it comes over the network, and the response fetched is the one compiled', async () => {
+    const { fetched, seen, module, loader, progress } = await engineLoader(false);
     await expect(loader.zippEngineForWorker()).resolves.toBe(module);
-    expect(compiled).toBe(fetched);
+    expect(seen.compiled).toBe(fetched);
     await frame();
     expect(progress.loadProgressItems().find((entry) => entry.id === 'engine')).toMatchObject({
       kind: 'engine',
@@ -124,5 +150,15 @@ describe("the engine's download", () => {
       total: 16,
       done: true,
     });
+  });
+
+  it('is not counted, nor read beside the compile, when the browser already holds it', async () => {
+    const { fetched, fetchSpy, seen, module, loader, progress } = await engineLoader(true);
+    await expect(loader.zippEngineForWorker()).resolves.toBe(module);
+    expect(seen.compiled).toBe(fetched);
+    // Asked of the cache alone, never of the network.
+    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ cache: 'only-if-cached', mode: 'same-origin' });
+    await frame();
+    expect(progress.loadProgressItems().find((entry) => entry.id === 'engine')).toBeUndefined();
   });
 });

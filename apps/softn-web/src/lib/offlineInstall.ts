@@ -215,8 +215,13 @@ async function performInstall(
     // usual reason to be here at all.
     const componentNames = result.features.filter((name) => name !== SYNC_RUNTIME);
     const loads = componentNames.map((name) => {
+      // Quiet: the app is on screen and working, and a 3D chunk for a route
+      // it has not shown is not something it waits for, so the download bar
+      // over it (runtime-shell's LoadProgress) does not count it.
       const attempt =
-        registry.getLoadState(name) === 'error' ? registry.retry(name) : registry.load(name);
+        registry.getLoadState(name) === 'error'
+          ? registry.retry(name, { quiet: true })
+          : registry.load(name, { quiet: true });
       return attempt.then(
         () => undefined,
         () => undefined

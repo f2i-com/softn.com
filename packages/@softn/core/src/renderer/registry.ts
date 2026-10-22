@@ -20,6 +20,7 @@ import { svgChildElement } from './html-elements';
 import {
   LazyComponentEntry,
   type LazyComponentOptions,
+  type LazyLoadOptions,
   type LazyLoadState,
   type SoftNComponentLoader,
 } from './lazy-component';
@@ -214,14 +215,17 @@ export class ComponentRegistry {
   /**
    * Resolve a name to its component, running the loader if it has not run
    * for the current generation. Rejects for an unknown name and for a failed
-   * load; the rejection is the cached one until `retry()`.
+   * load; the rejection is the cached one until `retry()`. `quiet` keeps a
+   * load the host starts in the background (an offline install) off the
+   * page's download progress (load-progress.ts), which is for what an app
+   * on screen is waiting for.
    */
-  public load(name: string): Promise<SoftNComponent> {
+  public load(name: string, options: LazyLoadOptions = {}): Promise<SoftNComponent> {
     const eager = this.components.get(name);
     if (eager) return Promise.resolve(eager);
     const entry = this.lazyEntries.get(name);
     if (!entry) return Promise.reject(new Error(`Unknown component: ${name}`));
-    return entry.load();
+    return entry.load(options);
   }
 
   /**
@@ -278,12 +282,13 @@ export class ComponentRegistry {
    * Discard a lazy name's cached attempt — a rejection included — and load
    * it again. Every mounted use of the name re-renders around the new
    * attempt. Resolves to the eager component for an eager name and rejects
-   * for an unknown one, so a caller need not check first.
+   * for an unknown one, so a caller need not check first. `quiet` as for
+   * `load()`.
    */
-  public retry(name: string): Promise<SoftNComponent> {
+  public retry(name: string, options: LazyLoadOptions = {}): Promise<SoftNComponent> {
     const entry = this.lazyEntries.get(name);
-    if (!entry) return this.load(name);
-    return entry.retry();
+    if (!entry) return this.load(name, options);
+    return entry.retry(options);
   }
 }
 

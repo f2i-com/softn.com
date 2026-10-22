@@ -13,7 +13,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { createRegistry, type ComponentRegistry, type SoftNComponent } from '@softn/core';
+import {
+  createRegistry,
+  loadProgressItems,
+  resetLoadProgressForTests,
+  type ComponentRegistry,
+  type SoftNComponent,
+} from '@softn/core';
 import {
   installAppOffline,
   moduleReferences,
@@ -90,6 +96,24 @@ describe('requiredFeatures', () => {
 });
 
 describe('installAppOffline', () => {
+  it('loads in the background, off the download progress of the app on screen', async () => {
+    resetLoadProgressForTests();
+    let failing = true;
+    const registry = registryWith({
+      Scene3D: async () => Fake,
+      LineChart: async () => {
+        if (failing) throw new TypeError('Failed to fetch dynamically imported module');
+        return Fake;
+      },
+    });
+    await installAppOffline(app(), host(registry));
+    // The second install retries the failed chart, quietly too.
+    failing = false;
+    await installAppOffline(app(), host(registry));
+    expect(registry.getLoadState('LineChart')).toBe('loaded');
+    expect(loadProgressItems()).toEqual([]);
+  });
+
   it('is ready only once every feature has loaded', async () => {
     const scene = vi.fn(async () => Fake);
     const chart = vi.fn(async () => Fake);

@@ -32,6 +32,16 @@ export type SoftNComponentLoader = () => Promise<SoftNComponent>;
 /** Where a lazily registered component is in its life. */
 export type LazyLoadState = 'idle' | 'loading' | 'loaded' | 'error';
 
+/** How one load is asked for. */
+export interface LazyLoadOptions {
+  /**
+   * Started in the background, for nothing on screen (an offline install):
+   * kept off the page's download progress (load-progress.ts). A load already
+   * in flight is joined either way.
+   */
+  quiet?: boolean;
+}
+
 export interface LazyComponentOptions {
   /**
    * The feature module the loader fetches, e.g. `scene3d`. Informational: a
@@ -121,7 +131,7 @@ export class LazyComponentEntry {
    * failure, not silently kick off another fetch on every render. `retry()`
    * is the way to try again.
    */
-  load(): Promise<SoftNComponent> {
+  load(options: LazyLoadOptions = {}): Promise<SoftNComponent> {
     if (this.promise) return this.promise;
     const generation = this.generation;
     this.setState('loading');
@@ -141,18 +151,21 @@ export class LazyComponentEntry {
     }
     this.promise = promise;
     // Named for a host's progress (load-progress.ts) by its feature: every
-    // name of one feature is one chunk, and one item.
-    const progress = trackLoad(`components:${this.feature ?? this.name}`, 'components', { name: this.feature ?? this.name });
+    // name of one feature is one chunk, and one item. Not a load started in
+    // the background, which nothing on screen is waiting for.
+    const progress = options.quiet
+      ? undefined
+      : trackLoad(`components:${this.feature ?? this.name}`, 'components', { name: this.feature ?? this.name });
     promise.then(
       (component) => {
-        progress.finish();
+        progress?.finish();
         // A result from before a retry belongs to a generation nobody renders.
         if (generation !== this.generation) return;
         this.component = component;
         this.setState('loaded');
       },
       (error) => {
-        progress.fail();
+        progress?.fail();
         if (generation !== this.generation) return;
         this.error = error;
         this.setState('error');
@@ -167,7 +180,7 @@ export class LazyComponentEntry {
    * their subscription and remount their region around the new lazy
    * instance.
    */
-  retry(): Promise<SoftNComponent> {
+  retry(options: LazyLoadOptions = {}): Promise<SoftNComponent> {
     this.generation += 1;
     this.promise = null;
     this.component = null;
@@ -175,7 +188,7 @@ export class LazyComponentEntry {
     this.state = 'idle';
     this.lazy = this.createLazy();
     this.emit();
-    return this.load();
+    return this.load(options);
   }
 
   subscribe = (listener: () => void): (() => void) => {

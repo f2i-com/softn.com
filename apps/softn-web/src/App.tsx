@@ -584,7 +584,9 @@ function App(): React.ReactElement {
 
         let data: Uint8Array;
         try {
-          data = await fetchRemoteBundle(url, controller.signal, displayName);
+          // Named for the loading screen's progress only when this tab is the
+          // one on screen: a tab restored in the background is not.
+          data = await fetchRemoteBundle(url, controller.signal, isForeground() ? displayName : undefined);
         } catch (err) {
           // An abort is the user closing the tab, not a failure to report.
           if (controller.signal.aborted) return null;

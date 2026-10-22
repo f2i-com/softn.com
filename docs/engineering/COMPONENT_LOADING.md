@@ -40,8 +40,9 @@ draws it; `scripts/build/editor-offline.test.mjs` holds the two editors' builds 
 both halves. The Builder's entry fell from 2.4 MB to 1.1 MB. SoftN Web keeps
 the shell-only precache below, and installs each app it opens. Studio's agent check, which reads what a
 page shows, preloads every component the page names (on every branch) before
-it renders. The Builder's canvas draws the start-up set at once and any other
-component (a QRCode) as its stand-in until its feature has arrived.
+it renders. The Builder's canvas draws the minimal set at once (it imports
+`minimal` itself) and any other component (a QRCode) as its stand-in until
+its feature has arrived.
 
 Since 2026-10-22 the shell itself carries only the start-up set
 (`essentials`): the layout, text and images, a button, a text field, a form
@@ -268,12 +269,30 @@ script engine, the torch package and each on-demand feature's chunk, by an
 id that says what it is (`bundle:<address>`, `engine`, `torch`,
 `components:<feature>`). The engine and the torch package are counted from a
 clone of their response, so the response compiled is the one fetched and the
-browser's code cache for it still applies; the engine's size is written into
+browser's code cache for it still applies. The engine is counted only when
+it comes over the network: a fetch with `cache: 'only-if-cached'` asks first
+whether the browser holds it (its HTTP cache, or SoftN Web's service worker;
+a miss is a network error), because reading a clone beside the compile cost
+every start from the cache about 30 ms at four times slower CPU, measured on
+the engine's start-up (`softn:vm-init`) in both hosts. What remains is the
+start right after a counted download: in the bench, whose repeat visit
+comes a couple of seconds after the first, it is about 30 ms slower at four
+times slower CPU and about 5 ms at normal speed, once per engine version per
+browser (that start is not counted, and the ones after it are as before);
+four visits in Edge with a profile on disk, a few seconds apart, did not
+show it. An engine served from another origin cannot be asked about and is
+counted on every start; one served with no caching headers at all is held
+stale, so the question finds it, and the download that follows, a whole
+6.5 MB again, is not counted. The engine's size is written into
 core's build (`__SOFTN_ENGINE_BYTES__` in `tsup.config.ts`), because a server
 that compresses it gives only the compressed length. A bundle is counted
 through `readBoundedBody`'s `onChunk`, which is handed each piece's size. A
 component chunk comes through `import()`, which says nothing of its bytes:
 it is named, not measured. The list tells its listeners at most once a frame.
+It is for what an app on screen is waiting for: a load a host starts in the
+background is quiet (`registry.load(name, { quiet: true })`, as SoftN Web's
+offline install loads every component an app could draw) and is not on it,
+nor is a bundle downloading for a tab in the background.
 
 `@softn/runtime-shell/LoadProgress` shows it in two forms, in the standalone
 shell and in SoftN Web:

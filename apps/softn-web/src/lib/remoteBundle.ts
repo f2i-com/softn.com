@@ -21,7 +21,8 @@ export { resolveBundleUrl, bundleNameFromUrl } from '@softn/bundle-format/url';
 
 /**
  * Download a bundle, giving up rather than growing without bound. `name` is
- * what its loading screen calls it while it arrives.
+ * what its loading screen calls it while it arrives; without one, the
+ * download is not shown (a tab restored in the background).
  */
 export async function fetchRemoteBundle(url: URL, signal?: AbortSignal, name?: string): Promise<Uint8Array> {
   // The signal lets a closed tab stop its own download rather than leaving a
@@ -53,22 +54,24 @@ export async function fetchRemoteBundle(url: URL, signal?: AbortSignal, name?: s
   }
 
   // Counted for the tab's loading screen (core's load-progress), under the
-  // name the placeholder tab wears.
-  const counted = trackLoad(`bundle:${url.href}`, 'bundle', { name, total: responseBodyLength(response) });
+  // name the placeholder tab wears; a download with no name is one nothing
+  // on screen is waiting for, and is not counted.
+  const counted =
+    name === undefined ? undefined : trackLoad(`bundle:${url.href}`, 'bundle', { name, total: responseBodyLength(response) });
 
   // Content-Length is a claim, so the cap is enforced again against the bytes
   // that actually arrive; a chunked response carries no length at all.
   let data: Uint8Array | null;
   try {
-    data = await readBoundedBody(response, MAX_REMOTE_BUNDLE_BYTES, { onChunk: (size) => counted.advance(size) });
+    data = await readBoundedBody(response, MAX_REMOTE_BUNDLE_BYTES, { onChunk: (size) => counted?.advance(size) });
   } catch (error) {
-    counted.fail();
+    counted?.fail();
     throw error;
   }
   if (data === null) {
-    counted.fail();
+    counted?.fail();
     throw new Error(`${url.pathname} is larger than the ${MAX_MB} MB limit for bundles opened by URL.`);
   }
-  counted.finish();
+  counted?.finish();
   return data;
 }
