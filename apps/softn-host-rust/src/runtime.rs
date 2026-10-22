@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use zipp_vm::embed::{compile_script, HostValue, ScriptState};
+use zipp_vm::embed::{compile_script, compile_script_with_preamble, CompileOptions, HostValue, ScriptState};
 
 use crate::host;
 use crate::bundle::TransactionMode;
@@ -759,8 +759,12 @@ impl ServerRuntime {
         bridges: &Rc<RefCell<BridgeSet>>,
         guard: &CallGuard,
     ) -> Result<(ScriptState, HashMap<String, u32>), String> {
-        let full = format!("{PREAMBLE}\n{source}");
-        let mut state = compile_script(&full)?;
+        // One program, so the preamble's bindings are globals the script
+        // reaches by name, with the script's own directive prologue in force.
+        // Joined as text, the script's `"use strict"` came after the
+        // preamble's statements, was no directive, and strict server logic
+        // ran sloppy. Positions are those of the joined text, as before.
+        let mut state = compile_script_with_preamble(PREAMBLE, source, &CompileOptions::default())?;
 
         // The bridges outlive any one VM, so the closure holds a handle rather
         // than the set itself. Nothing a bridge does re-enters the VM, so the
@@ -1611,6 +1615,25 @@ mod isolation_tests {
         }, Some(1)).unwrap();
         let refused = top.init("setTimeout(function () {}, 1000);\nfunction ping(req) { return {status: 200, body: {}}; }".to_string()).unwrap_err();
         assert!(refused.contains("setTimeout is not available in server logic"), "{refused}");
+    }
+
+    /// Server logic that opens with `"use strict"` is strict, the host's own
+    /// bridges included, and logic that does not stays sloppy. The two used to
+    /// be one text with the preamble first, so the directive was an ordinary
+    /// string and strict logic ran sloppy: `this` in a plain call was the
+    /// global object and assigning an undeclared name made a global.
+    #[test]
+    fn a_scripts_use_strict_is_in_force_and_its_absence_too() {
+        const PROBE: &str = "function probe(req) {\n  var plainThis = (function () { return this === undefined; })();\n  var assigned;\n  try { undeclaredName = 1; assigned = 'made a global'; } catch (e) { assigned = e.name; }\n  var settings;\n  try { softn.config.development = true; settings = 'ignored'; } catch (e) { settings = e.name; }\n  var timer;\n  try { setTimeout(function () {}, 1); } catch (e) { timer = e.message; }\n  return {status: 200, body: {plainThis: plainThis, assigned: assigned, settings: settings, timer: timer, development: softn.config.development}};\n}\n";
+        for (prefix, strict) in [("\"use strict\";\n", true), ("// a comment first\n'use strict'\n", true), ("", false), ("var first = 1;\n\"use strict\";\n", false)] {
+            let runtime = one_worker(&format!("{prefix}{PROBE}"));
+            let body = runtime.call("probe", vec![serde_json::json!({})]).unwrap()["body"].clone();
+            assert_eq!(body["plainThis"], strict, "{prefix:?}: {body}");
+            assert_eq!(body["assigned"], if strict { "ReferenceError" } else { "made a global" }, "{prefix:?}: {body}");
+            assert_eq!(body["settings"], if strict { "TypeError" } else { "ignored" }, "{prefix:?}: {body}");
+            assert_eq!(body["development"], false, "{prefix:?}: {body}");
+            assert_eq!(body["timer"], "setTimeout is not available in server logic: nothing runs after the handler returns.", "{prefix:?}: {body}");
+        }
     }
 
     /// A regular expression that backtracks without end stops at the engine's

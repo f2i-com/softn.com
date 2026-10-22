@@ -145,7 +145,7 @@ const manifestZipp = { ...zipp, release: zippSource.release, revision: zippSourc
 
 const runtimeDir = path.join(root, 'apps/softn-host-php/runtime');
 const hostProtocol = readJson(path.join(runtimeDir, 'host-protocol.json'));
-const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'sql.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs'];
+const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'sql.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs', 'directive-prologue.mjs'];
 // The files the native runtime's own modules import, beside the ones this
 // archive writes itself (the engine under wasm/). A module added to the runtime
 // and imported by one listed here but left off the list shipped a runtime that

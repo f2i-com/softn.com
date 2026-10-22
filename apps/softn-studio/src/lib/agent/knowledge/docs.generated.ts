@@ -406,7 +406,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "what-runs",
     "title": "Two languages, one engine",
-    "text": "An app’s logic is JavaScript in `.logic` files or Python in `.py` files. Both run in ZIPP, an engine written in Rust and compiled to WebAssembly for the browser. The file name decides the language, and an app uses one language for all its logic: a bundle that mixes them is refused.\n\nThe engine runs the language; SoftN supplies the app integration: state, rendering and the host APIs it chooses to expose. Knowing JavaScript or Python does not mean every browser global, Node.js module, npm package or pip package is available."
+    "text": "An app’s logic is JavaScript in `.logic` files or Python in `.py` files. Both run in ZIPP, an engine written in Rust and compiled to WebAssembly for the browser. The file name decides the language, and an app uses one language for all its logic: a bundle that mixes them is refused. JavaScript logic is one classic script, sloppy unless it opens with `\"use strict\"` (comments may come before it), which then holds for all of it, in the browser and on the PHP and Rust hosts.\n\nThe engine runs the language; SoftN supplies the app integration: state, rendering and the host APIs it chooses to expose. Knowing JavaScript or Python does not mean every browser global, Node.js module, npm package or pip package is available."
    },
    {
     "id": "the-contract",

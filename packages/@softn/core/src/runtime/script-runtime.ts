@@ -25,6 +25,7 @@ import {
 import { SandboxHost } from './sandbox-host';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { LogicTimers, TIMER_TRAILER, timerPreamble } from './logic-timers';
+import { prologueIsStrict, STRICT_DIRECTIVE } from './directive-prologue';
 import { placeSyntaxError } from './logic-syntax';
 import { moduleSyntaxAsScript } from './module-syntax';
 import { inlineLogicImports } from './logic-imports';
@@ -46,6 +47,7 @@ import { deepEqual } from './vm-state';
 import {
   COMPUTED_PREFIX,
   COMPUTED_SETTLE_FUNCTION,
+  computedGlobalsSource,
   computedSource,
   extractComputedDeclarations,
   guardFirstValues,
@@ -639,8 +641,14 @@ export class SoftNScriptRuntime {
         console.warn('[SoftN] This page\u2019s code uses the document, which is given to code on the main thread only; in a worker, document is not defined.');
       }
 
+      // The app's `"use strict"` goes first: after the bridges it is an
+      // ordinary string, and the engine reads the directive off the start.
+      // Its `$:` names are then given globals to assign (computedGlobalsSource).
+      const strict = prologueIsStrict(resolvedCode)
+        ? STRICT_DIRECTIVE + computedGlobalsSource(computedDecls.map((declaration) => declaration.name))
+        : '';
       const bridges =
-        VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble + shellCode;
+        strict + VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble + shellCode;
       const scriptCode = bridges + resolvedCode + TIMER_TRAILER;
       const fullCode = computedPreamble
         ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble + TIMER_TRAILER

@@ -25,6 +25,16 @@ test('generic handler runs a second app and persists SQL across fresh VMs',()=>{
   const f=fixture('function handle(req){softn.sql.execute("UPDATE counter SET value=value+?",[req.body.by]);return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}');
   try{assert.deepEqual(f.run({by:2}),{status:200,body:{value:2}});assert.equal(f.run({by:3}).body.value,5);}finally{f.db.close();}
 });
+// The engine reads a directive off the start of what it compiles, and that
+// starts with the shim: strict logic ran sloppy until the host put the
+// logic's directive first. The shim's own bridges run strict with it.
+test('the logic\'s "use strict" is in force, and its absence too',()=>{
+  const probe='function handle(){var plainThis=(function(){return this===undefined;})();var assigned;try{undeclaredName=1;assigned="made a global";}catch(e){assigned=e.name;}return {status:200,body:{plainThis:plainThis,assigned:assigned,value:softn.sql.first("SELECT value FROM counter",[]).value}};}';
+  for(const [prefix,strict] of [['"use strict";\n',true],["// The app.\n'use strict'\n",true],['',false],['var first=1;\n"use strict";\n',false]]){
+    const f=fixture(prefix+probe);
+    try{assert.deepEqual(f.run().body,{plainThis:strict,assigned:strict?'ReferenceError':'made a global',value:0},JSON.stringify(prefix));}finally{f.db.close();}
+  }
+});
 test('guest has no host process, require, filesystem or decryption authority',()=>{
   const f=fixture('function handle(){return {status:200,body:{process:typeof process,require:typeof require,unseal:typeof softn.crypto.unseal}};}');
   try{assert.deepEqual(f.run().body,{process:'undefined',require:'undefined',unseal:'undefined'});}finally{f.db.close();}

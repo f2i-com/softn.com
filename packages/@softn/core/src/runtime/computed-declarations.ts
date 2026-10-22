@@ -474,6 +474,23 @@ export function computedSource(declarations: readonly ComputedDeclaration[], pla
 }
 
 /**
+ * What strict code needs for its `$:` values: a property of the global object
+ * for each name nothing has made one yet, made before the script runs.
+ *
+ * `$: double = n * 2` assigns a name the script need not declare. Sloppy code
+ * makes it a global the first time it runs; strict code refuses an
+ * undeclared name, so a strict script could not load. A global property is
+ * what the sloppy assignment would have made, and strict code may assign
+ * one; a name the script declares itself (`let double`) is not touched, and
+ * its own declaration is what the script reads. One line, with nothing after
+ * it, so no line of the script moves.
+ */
+export function computedGlobalsSource(names: readonly string[]): string {
+  if (names.length === 0) return '';
+  return `(function () { var g = globalThis, n = ${JSON.stringify([...new Set(names)])}; for (var i = 0; i < n.length; i++) if (!(n[i] in g)) g[n[i]] = undefined; })();`;
+}
+
+/**
  * The script with each top-level `$:` expression worked out, as it loads,
  * through the function generated for it.
  *

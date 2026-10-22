@@ -18,6 +18,7 @@ import {
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { adoptZippWasmSource } from './zipp-wasm-loader';
 import { TIMER_TRAILER, timerPreamble } from './logic-timers';
+import { prologueIsStrict, STRICT_DIRECTIVE } from './directive-prologue';
 import { deepEqual } from './vm-state';
 import { moduleSyntaxAsScript } from './module-syntax';
 import { inlineLogicImports } from './logic-imports';
@@ -282,8 +283,10 @@ self.onmessage = async (evt: MessageEvent) => {
       // Compile and run. The `softn.*` namespace and the timers are the same
       // preambles the main-thread runtime prepends; their calls queue in the
       // engine and the main thread drains them from every entry's result.
+      // The app's `"use strict"` goes first, as on the main thread.
       const externalPreamble = typeof payload.externalPreamble === 'string' ? payload.externalPreamble : '';
       const fullCode =
+        (prologueIsStrict(resolvedCode) ? STRICT_DIRECTIVE : '') +
         VM_BRIDGE_PREAMBLE +
         SOFTN_BRIDGE_PREAMBLE +
         timerPreamble(resolvedCode) +

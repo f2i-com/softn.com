@@ -2,6 +2,7 @@ import {readFileSync} from 'node:fs';
 import {createCrypto} from './crypto.mjs';
 import {createSql} from './sql.mjs';
 import {parseZoned,formatZoned} from './time.mjs';
+import {prologueIsStrict,STRICT_DIRECTIVE} from './directive-prologue.mjs';
 import {initSync,Engine,zippProfile} from './wasm/zipp_wasm.mjs';
 
 let initialized=false;
@@ -90,13 +91,23 @@ function scriptConfig(appConfig, development, photos) {
   return JSON.stringify({...appConfig,development:development===true,photos:photos===true});
 }
 
+/**
+ * What the engine compiles: the shim, the settings, then the logic. The
+ * logic's `"use strict"` goes first, where the engine reads a directive;
+ * after the shim it was an ordinary string and strict logic ran sloppy. The
+ * shim starts with a line break, so the directive moves no line.
+ */
+function hostedScript(config, source) {
+  return (prologueIsStrict(source)?STRICT_DIRECTIVE:'')+SHIM+'\nsoftn.config='+config+';\n'+source;
+}
+
 export function validateWasmSource(source, appConfig = {}, development = false, routes = [], photos = false) {
   initialize();
   const engine = new Engine();
   try {
     engine.setInstructionBudget(5_000_000);
     // No host bridge: validation cannot perform database, filesystem or network IO.
-    engine.initScript(SHIM+'\nsoftn.config='+scriptConfig(appConfig,development,photos)+';\n'+source);
+    engine.initScript(hostedScript(scriptConfig(appConfig,development,photos),source));
     for (const route of routes) {
       if (!/^[$A-Z_a-z][$\w]*$/.test(route.handler) || engine.evalInContext('typeof '+route.handler+' === "function"') !== true) throw new Error('Missing route handler');
     }
@@ -146,7 +157,7 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
         } catch(e){failed=true;failure??=e;return {__softnHostError:true,message:scriptReason(op,e)};}
       }});
       // The answer /api/meta gives: granted, and GD is there to do it.
-      engine.initScript(SHIM+'\nsoftn.config='+scriptConfig(appConfig,development,capabilities.includes('photos')&&request.photos===true)+';\n'+source);
+      engine.initScript(hostedScript(scriptConfig(appConfig,development,capabilities.includes('photos')&&request.photos===true),source));
       engine.evalInContext('typeof onStart === "function" ? onStart() : null');
       const result=engine.callFunction(route.handler,[{...request,context}]);
       if(!result||!Number.isInteger(result.status)||result.status<200||result.status>599||!Object.hasOwn(result,'body')||Buffer.byteLength(JSON.stringify(result))>3*1024*1024)throw new Error('Invalid response');

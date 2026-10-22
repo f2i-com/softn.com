@@ -30,7 +30,7 @@ const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
 const HOST_JS_ENGINE_MARK = fs
   .readFileSync(path.join(root, 'packages/@softn/core/src/runtime/host-js/host-js-adapter.ts'), 'utf8')
   .match(/export const HOST_JS_ENGINE_MARK = '([^']+)'/)?.[1];
-const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'sql.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs'];
+const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'sql.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs', 'directive-prologue.mjs'];
 
 test('every module the native runtime ships imports only files the archive carries', () => {
   // v0.0.16 shipped migrations.mjs and wasm-host.mjs importing ./sql.mjs without
