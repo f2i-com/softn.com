@@ -434,9 +434,13 @@ function* logicTags(source: string, spans: ReadonlyArray<[number, number]>): Gen
     const gt = ends.end(from);
     if (gt === -1) continue;
     const name = m[1];
-    const selfClosing = source.slice(from, gt).match(/\/\s*$/);
-    if (selfClosing) {
-      yield tagMatch(source, m.index, gt + 1, [name, source.slice(from, gt - selfClosing[0].length), undefined]);
+    // Closed by its own `/`, read back from the `>` over any spaces: the
+    // attributes are not sliced for a tag that is passed over, which every
+    // opener of a page whose tags all end at its last `>` would be.
+    let before = gt - 1;
+    while (before >= from && /\s/.test(source[before])) before--;
+    if (before >= from && source[before] === '/') {
+      yield tagMatch(source, m.index, gt + 1, [name, source.slice(from, before), undefined]);
       opener.lastIndex = gt + 1;
       continue;
     }

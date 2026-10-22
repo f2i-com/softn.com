@@ -72,7 +72,12 @@ describe('composing a page written to hold the page', () => {
       '<style '.repeat(80_000),
       '<link '.repeat(40_000),
       '<logic>'.repeat(40_000),
-      '<script x="'.repeat(20_000) + '>',
+      // Every tag of this one ends at its last `>`: the first fix still read
+      // each one's attributes to the end to see whether it closed itself,
+      // which took over three seconds on CI.
+      '<script x="'.repeat(80_000) + '>',
+      '<logic/ '.repeat(40_000) + '>',
+      '<script>'.repeat(40_000) + '</script>',
       '<style "x"'.repeat(20_000) + '">',
       '<import {'.repeat(40_000),
     ]) {
