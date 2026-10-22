@@ -139,6 +139,20 @@ describe('a page whose code is written for a browser', () => {
     expect($('#shown')!.textContent).toBe('clicked 2');
   });
 
+  // The engine has both (ZIPP 0.0.28); a page naming nothing else of a
+  // browser's used to load the whole document for them.
+  it('is not given the document for TextEncoder and TextDecoder alone', async () => {
+    await mount(
+      `<p id="shown">{report}</p>
+<script>
+  const bytes = new TextEncoder().encode('é€');
+  let report = typeof document + ' ' + Array.from(bytes).join(',') + ' ' + new TextDecoder().decode(bytes);
+</script>`,
+      () => ($('#shown')?.textContent ?? '').length > 0
+    );
+    expect($('#shown')!.textContent).toBe('undefined 195,169,226,130,172 é€');
+  });
+
   it('draws what the code writes only as the page’s own markup could be drawn', async () => {
     await mount(
       `<div id="box"></div>

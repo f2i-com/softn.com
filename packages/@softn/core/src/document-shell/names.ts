@@ -111,12 +111,16 @@ export function holdsShellNode(value: unknown, depth = 0): boolean {
  * (`user.location` is not one). Read roughly, comments and strings
  * included; a page that only mentions one gets a document it does not use,
  * which costs a little and changes nothing.
+ *
+ * `TextEncoder` and `TextDecoder` are not among them: the engine has its own
+ * (ZIPP 0.0.28), which the shell leaves in place, so code naming nothing else
+ * would be given a document for nothing.
  */
 export function usesDocument(code: string): boolean {
   return (
     /\bdocument\s*[.[]/.test(code) ||
     /(?<![.\w$])(?:fetch\s*\(|location\s*[.=[]|URLSearchParams\b|requestAnimationFrame\b|queueMicrotask\b|structuredClone\b|sessionStorage\b|(?:alert|confirm|prompt|btoa|atob|matchMedia)\s*\(|(?:crypto|history|URL|AbortSignal)\s*\.|inner(?:Width|Height)\b)/.test(code) ||
-    /\bnew\s+(?:URL|TextEncoder|TextDecoder|AbortController|EventTarget|MutationObserver|ResizeObserver|IntersectionObserver|DOMException)\b/.test(code) ||
+    /\bnew\s+(?:URL|AbortController|EventTarget|MutationObserver|ResizeObserver|IntersectionObserver|DOMException)\b/.test(code) ||
     /\bwindow\s*\.\s*(?:matchMedia|history|inner(?:Width|Height)|crypto|location|fetch|alert|btoa|atob)\b/.test(code)
   );
 }
