@@ -130,6 +130,10 @@ function sameOriginPath(value: string | null): string | null {
   }
   if (url.origin !== window.location.origin) return null;
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  // A path the parser has made start with `//` (`/.//evil.com`, whose dot
+  // segment it removes) is this origin's here and another host's as soon as
+  // it is navigated to: a browser reads `//evil.com` as a network path.
+  if (url.pathname.startsWith('//')) return null;
   return url.pathname + url.search + url.hash;
 }
 

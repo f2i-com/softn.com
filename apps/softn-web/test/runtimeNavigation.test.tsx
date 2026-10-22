@@ -129,6 +129,15 @@ describe('runtime entry and navigation ownership', () => {
     expect(container.querySelector('.softn-frame-home')).toBeNull();
   });
 
+  it('rejects a return destination that becomes another host once its dot segment is removed', async () => {
+    // `/.//evil.example/app` is this origin's as parsed, and its path is
+    // `//evil.example/app`, which location.assign() took to evil.example.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Example.softn') ? response(bundle('Example')) : emptyDirectory()));
+    await mount('/?open=/Example.softn&embed=1&back=%2F.%2F%2Fevil.example%2Fapp');
+    expect(window.location.pathname).toBe('/app/Example');
+    expect(window.location.search).toBe('?embed=1');
+  });
+
   it('keeps a cached local app’s initial page in its canonical URL', async () => {
     const bytes = bundle('Local notes');
     cache.apps = [{ id: 'local', name: 'Local notes', version: '1.0.0', bundleData: bytes, cachedAt: 1, lastOpened: 1 }];
