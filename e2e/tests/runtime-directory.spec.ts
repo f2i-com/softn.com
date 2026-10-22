@@ -22,6 +22,13 @@ test('directory apps open alongside the current app and stay in the runtime libr
   });
 
   try {
+    // The shelf shows the directory's six trending apps, and the seeded apps
+    // tie on everything but the second each was seeded in, which the
+    // machine's speed decides: Blockfall was on it in one run and not in the
+    // next. A run of it puts it first, as one would on a live directory.
+    const run = await page.request.post('/api/apps/blockfall/runs', { data: { stage: 'open' } });
+    expect(run.ok(), await run.text()).toBe(true);
+
     await page.goto('/web/?open=%2Fexamples%2FFieldnotes.softn');
     await expect(page.getByRole('heading', { name: 'Make space for what matters.', exact: true })).toBeVisible({ timeout: 60_000 });
     const draft = `${testInfo.project.name} keeps this unfinished task`;

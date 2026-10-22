@@ -64,7 +64,7 @@ describe('composing a page written to hold the page', () => {
     }
     pageLogicSources(page);
     pageStylesheetHrefs(page);
-    [...page.matchAll(new RegExp(UI_IMPORT_DECLARATION_PATTERN.source, 'g'))];
+    return [...page.matchAll(new RegExp(UI_IMPORT_DECLARATION_PATTERN.source, 'g'))].length;
   };
 
   it('is read in time that grows with its length', () => {
