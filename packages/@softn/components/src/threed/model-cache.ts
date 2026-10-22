@@ -128,17 +128,47 @@ function eachTexture(material: THREE.Material, fn: (texture: THREE.Texture) => v
   }
 }
 
+/**
+ * A texture's decoded image, where it is an ImageBitmap: GLTFLoader decodes
+ * images to bitmaps where the browser can, and three.js never closes one, so
+ * an evicted model's pixels stayed held until the collector found them.
+ * Templates are disposed only with no holder, so no instance still draws it.
+ */
+function closeBitmap(texture: THREE.Texture): void {
+  const image: unknown = texture.image;
+  if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) image.close();
+}
+
 /** The template's own resources: everything the loader made. */
 function disposeTemplate(root: THREE.Object3D): void {
   root.traverse((node) => {
     const mesh = node as THREE.Mesh;
     if (mesh.geometry && typeof mesh.geometry.dispose === 'function') mesh.geometry.dispose();
     eachMaterial(node, (material) => {
-      eachTexture(material, (texture) => texture.dispose());
+      eachTexture(material, (texture) => {
+        texture.dispose();
+        closeBitmap(texture);
+      });
       material.dispose();
     });
     const skinned = node as THREE.SkinnedMesh;
     if (skinned.isSkinnedMesh && skinned.skeleton) skinned.skeleton.dispose();
+  });
+}
+
+/**
+ * Let go of what renderers uploaded of a template no scene holds, keeping the
+ * template to clone again: three uploads a disposed geometry or texture
+ * afresh when it is next drawn. Each renderer leaves a listener on every
+ * geometry and texture it uploads, and its own dispose() does not take them
+ * off, so a closed scene's renderer, context and canvas stayed reachable from
+ * this page-wide cache for as long as the model was kept.
+ */
+function releaseUploads(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (mesh.geometry && typeof mesh.geometry.dispose === 'function') mesh.geometry.dispose();
+    eachMaterial(node, (material) => eachTexture(material, (texture) => texture.dispose()));
   });
 }
 
@@ -209,6 +239,8 @@ export class ModelTemplateCache {
       fresh.promise = load().then(
         (template) => {
           fresh.template = template;
+          // Built without parts that were refused: not kept past its use.
+          if (template.partial) fresh.keepIdle = false;
           return template;
         },
         (err: unknown) => {
@@ -309,6 +341,7 @@ export class ModelTemplateCache {
       this.drop(entry);
       return;
     }
+    if (entry.template) releaseUploads(entry.template.object);
     this.touch(entry);
     this.trimIdle();
   }

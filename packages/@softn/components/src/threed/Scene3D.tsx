@@ -479,7 +479,13 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
  * below is a few megabytes at most kept for reuse between scenes.
  */
 const PROCEDURAL_TEXTURE_IDLE_BUDGET = 24;
-const proceduralTextureCache = new BoundedTextureCache<THREE.CanvasTexture>(PROCEDURAL_TEXTURE_IDLE_BUDGET);
+// An idle texture's uploads are let go and the canvas kept, to upload again
+// when next used. Each renderer leaves a listener on a texture it uploads,
+// which its own dispose() does not take off: a closed scene's renderer,
+// context and canvas stayed reachable from this cache.
+const proceduralTextureCache = new BoundedTextureCache<THREE.CanvasTexture>(PROCEDURAL_TEXTURE_IDLE_BUDGET, (texture) =>
+  texture.dispose()
+);
 /** Set on each cached texture so a material's disposal can hand it back. */
 const TEXTURE_CACHE_KEY = '__softnTextureKey';
 
@@ -935,6 +941,10 @@ function disposeObject3D(obj: THREE.Object3D) {
   obj.traverse((child) => {
     if ((child as THREE.Mesh).isMesh || (child as THREE.Points).isPoints) {
       const mesh = child as THREE.Mesh;
+      // An instanced mesh's own dispose is what frees its instance matrices
+      // and colours on the GPU; without it they waited for the collector, at
+      // every rebuild of a count that changed.
+      if ((child as THREE.InstancedMesh).isInstancedMesh) (child as THREE.InstancedMesh).dispose();
       mesh.geometry?.dispose();
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       for (const mat of materials) {
@@ -974,21 +984,31 @@ function createParticles(obj: Scene3DObject): THREE.Points {
 function updateParticles(points: THREE.Points, obj: Scene3DObject): void {
   const geom = points.geometry;
   const positions = obj.particlePositions ?? [];
+  const colors = obj.particleColors && obj.particleColors.length > 0 ? obj.particleColors : null;
   const currentPos = geom.getAttribute('position');
-  if (!currentPos || currentPos.count !== Math.floor(positions.length / 3)) {
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  } else {
-    (currentPos as THREE.BufferAttribute).copyArray(positions);
-    currentPos.needsUpdate = true;
+  const currentCols = geom.getAttribute('color');
+  const count = Math.floor(positions.length / 3);
+  const resized =
+    !currentPos || currentPos.count !== count || (colors !== null && (!currentCols || currentCols.count !== Math.floor(colors.length / 3)));
+  if (resized) {
+    // Buffers of another size are new buffers, on a new geometry, and the old
+    // one is disposed: set on the old geometry, each one it replaced stayed on
+    // the GPU until the collector found it, which a count that changes every
+    // frame outran.
+    const next = new THREE.BufferGeometry();
+    next.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    if (colors) next.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    else if (currentCols && currentCols.count === count) next.setAttribute('color', currentCols.clone());
+    geom.dispose();
+    points.geometry = next;
+    next.computeBoundingSphere();
+    return;
   }
-  if (obj.particleColors && obj.particleColors.length > 0) {
-    const currentCols = geom.getAttribute('color');
-    if (!currentCols || currentCols.count !== Math.floor(obj.particleColors.length / 3)) {
-      geom.setAttribute('color', new THREE.Float32BufferAttribute(obj.particleColors, 3));
-    } else {
-      (currentCols as THREE.BufferAttribute).copyArray(obj.particleColors);
-      currentCols.needsUpdate = true;
-    }
+  (currentPos as THREE.BufferAttribute).copyArray(positions);
+  currentPos.needsUpdate = true;
+  if (colors && currentCols) {
+    (currentCols as THREE.BufferAttribute).copyArray(colors);
+    currentCols.needsUpdate = true;
   }
   geom.computeBoundingSphere();
 }

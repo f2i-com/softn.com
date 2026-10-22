@@ -46,7 +46,14 @@ export class BoundedTextureCache<T extends Disposable> {
   private readonly entries = new Map<string, Entry<T>>();
   private evicted = 0;
 
-  constructor(private readonly maxIdle: number) {
+  /**
+   * `onIdle` is called with a value as its last user lets it go, before it is
+   * kept for reuse: Scene3D frees the texture's uploads there.
+   */
+  constructor(
+    private readonly maxIdle: number,
+    private readonly onIdle?: (value: T) => void
+  ) {
     if (!Number.isInteger(maxIdle) || maxIdle < 0) throw new RangeError(`maxIdle must be a non-negative integer, not ${maxIdle}`);
   }
 
@@ -80,6 +87,7 @@ export class BoundedTextureCache<T extends Disposable> {
     if (!entry || entry.refs === 0) return;
     entry.refs -= 1;
     if (entry.refs === 0) {
+      this.onIdle?.(entry.value);
       this.touch(key, entry);
       this.trimIdle();
     }

@@ -426,4 +426,25 @@ describe('Image whose fallback also fails', () => {
     expect(img()).toBeNull();
     expect(container.textContent).toContain('Failed to load');
   });
+
+  // The fallback shown after a failure, then given as the src: the <img>
+  // already showed it, so no load event came, and the reset to "loading"
+  // left it at opacity 0 behind the placeholder.
+  it('shows the fallback when it becomes the src, with no load event to come', () => {
+    const fallback = 'https://cdn.example/b.png';
+    mount(<Image src="https://cdn.example/a.png" fallbackSrc={fallback} alt="x" />);
+    const img = () => container.querySelector('img')!;
+    act(() => {
+      img().dispatchEvent(new Event('error'));
+    });
+    Object.defineProperties(img(), { complete: { value: true }, naturalWidth: { value: 64 } });
+    act(() => {
+      img().dispatchEvent(new Event('load'));
+    });
+    expect(img().style.opacity).toBe('1');
+
+    mount(<Image src={fallback} fallbackSrc={fallback} alt="x" />);
+    expect(img().getAttribute('src')).toBe(fallback);
+    expect(img().style.opacity).toBe('1');
+  });
 });

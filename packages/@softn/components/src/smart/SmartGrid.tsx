@@ -267,11 +267,32 @@ export function SmartGrid<T extends Record<string, unknown>>({
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [currentPage, setCurrentPage] = useState(1);
-  const [editingRow, setEditingRow] = useState<T | null>(null);
+  const [editingRow, setEditingRowState] = useState<T | null>(null);
   const [editFormData, setEditFormData] = useState<Record<string, unknown>>({});
-  const [isAdding, setIsAdding] = useState(false);
+  const [isAdding, setIsAddingState] = useState(false);
   const [addFormData, setAddFormData] = useState<Record<string, unknown>>({});
-  const [confirmDelete, setConfirmDelete] = useState<T | null>(null);
+  const [confirmDelete, setConfirmDeleteState] = useState<T | null>(null);
+  // A save, add or delete closes its dialog when it is done only if that is
+  // still the dialog on screen, and nothing has been typed in it since. It
+  // closed whatever was open: saving row A, then Cancel and Edit on row B,
+  // shut B's dialog when A's save came back, and what was typed in it went.
+  const dialogGeneration = useRef(0);
+  const editFormDataRef = useRef(editFormData);
+  editFormDataRef.current = editFormData;
+  const addFormDataRef = useRef(addFormData);
+  addFormDataRef.current = addFormData;
+  const setEditingRow = useCallback((row: T | null) => {
+    dialogGeneration.current += 1;
+    setEditingRowState(row);
+  }, []);
+  const setIsAdding = useCallback((adding: boolean) => {
+    dialogGeneration.current += 1;
+    setIsAddingState(adding);
+  }, []);
+  const setConfirmDelete = useCallback((row: T | null) => {
+    dialogGeneration.current += 1;
+    setConfirmDeleteState(row);
+  }, []);
   const [hoveredRow, setHoveredRow] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const modalTitleId = useId();
@@ -404,50 +425,58 @@ export function SmartGrid<T extends Record<string, unknown>>({
     } else {
       setEditFormData({ ...row });
     }
-  }, []);
+  }, [setEditingRow]);
 
   const handleSaveEdit = useCallback(async () => {
     if (!editingRow || !onEdit || isSubmitting) return;
+    const generation = dialogGeneration.current;
+    const submitted = editFormData;
     setIsSubmitting(true);
     try {
-      await onEdit(editingRow, editFormData as Partial<T>);
-      setEditingRow(null);
-      setEditFormData({});
+      await onEdit(editingRow, submitted as Partial<T>);
+      if (dialogGeneration.current === generation && editFormDataRef.current === submitted) {
+        setEditingRow(null);
+        setEditFormData({});
+      }
     } catch (err) {
       console.error('[SmartGrid] Edit failed:', err);
     } finally {
       setIsSubmitting(false);
     }
-  }, [editingRow, editFormData, onEdit, isSubmitting]);
+  }, [editingRow, editFormData, onEdit, isSubmitting, setEditingRow]);
 
   const handleAdd = useCallback(async () => {
     if (!onAdd || isSubmitting) return;
+    const generation = dialogGeneration.current;
+    const submitted = addFormData;
     setIsSubmitting(true);
     try {
-      await onAdd(addFormData as Partial<T>);
-      setIsAdding(false);
-      setAddFormData({});
+      await onAdd(submitted as Partial<T>);
+      if (dialogGeneration.current === generation && addFormDataRef.current === submitted) setIsAdding(false);
+      // What was added is not offered again by the next Add, unless more was typed.
+      setAddFormData((current) => (current === submitted ? {} : current));
     } catch (err) {
       console.error('[SmartGrid] Add failed:', err);
     } finally {
       setIsSubmitting(false);
     }
-  }, [addFormData, onAdd, isSubmitting]);
+  }, [addFormData, onAdd, isSubmitting, setIsAdding]);
 
   const handleDelete = useCallback(
     async (row: T) => {
       if (!onDelete || isSubmitting) return;
+      const generation = dialogGeneration.current;
       setIsSubmitting(true);
       try {
         await onDelete(row);
-        setConfirmDelete(null);
+        if (dialogGeneration.current === generation) setConfirmDelete(null);
       } catch (err) {
         console.error('[SmartGrid] Delete failed:', err);
       } finally {
         setIsSubmitting(false);
       }
     },
-    [onDelete, isSubmitting]
+    [onDelete, isSubmitting, setConfirmDelete]
   );
 
   const getRowKey = (row: T, index: number): string => {

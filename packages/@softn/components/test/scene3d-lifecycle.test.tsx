@@ -157,10 +157,13 @@ describe('Scene3D resource ownership', () => {
       await settle();
     });
 
-    expect(disposeGeometry).not.toHaveBeenCalled();
+    // Kept idle, with what renderers uploaded of it let go; disposed for good
+    // only when it is evicted.
+    expect(disposeMaterial).not.toHaveBeenCalled();
+    expect(disposeGeometry).toHaveBeenCalledOnce();
     expect(modelTemplateCache.stats().idle).toBeGreaterThanOrEqual(1);
     modelTemplateCache.clearIdle();
-    expect(disposeGeometry).toHaveBeenCalledOnce();
+    expect(disposeGeometry).toHaveBeenCalledTimes(2);
     expect(disposeMaterial).toHaveBeenCalledOnce();
   });
 

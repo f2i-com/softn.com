@@ -197,3 +197,72 @@ describe('dialog focus and keyboard behavior', () => {
     expect(document.activeElement).toBe(deleteButton);
   });
 });
+
+// A save closed whatever dialog was open when it came back: save row A,
+// Cancel, Edit row B and type, and A's save shut B's dialog with the typing.
+describe('a save that comes back late', () => {
+  function pendingGrid() {
+    const answer: Array<() => void> = [];
+    const onEdit = vi.fn(() => new Promise<void>((resolve) => answer.push(resolve)));
+    const view = mount(<SmartGrid data={SERVICES} columns="name, price" editable onEdit={onEdit} />);
+    const editButtons = () =>
+      Array.from(view.container.querySelectorAll('button')).filter(
+        (b) => /edit|✏|✎/i.test(b.textContent ?? '') || b.getAttribute('title')?.toLowerCase().includes('edit')
+      );
+    const nameField = () => view.container.querySelector<HTMLInputElement>('[role="dialog"] input[type=text]');
+    const settle = (index: number) =>
+      act(async () => {
+        answer[index]();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    return { ...view, editButtons, nameField, settle };
+  }
+
+  it('leaves open the dialog opened after it', async () => {
+    const grid = pendingGrid();
+    click(grid.editButtons()[0]);
+    click(byText(grid.container, /^Save$/i));
+    click(byText(grid.container, /^Cancel$/i));
+    click(grid.editButtons()[1]);
+    type(grid.nameField(), 'Dye');
+    await grid.settle(0);
+    expect(grid.nameField()?.value).toBe('Dye');
+  });
+
+  it('stays open when more was typed in it while it saved', async () => {
+    const grid = pendingGrid();
+    click(grid.editButtons()[0]);
+    click(byText(grid.container, /^Save$/i));
+    type(grid.nameField(), 'Trim');
+    await grid.settle(0);
+    expect(grid.nameField()?.value).toBe('Trim');
+  });
+
+  it('leaves open an Add opened again while the last one saved', async () => {
+    const answer: Array<() => void> = [];
+    const onAdd = vi.fn(() => new Promise<void>((resolve) => answer.push(resolve)));
+    const { container } = mount(<SmartGrid data={SERVICES} columns="name, price" add onAdd={onAdd} />);
+    const addButton = () =>
+      Array.from(container.querySelectorAll('button')).find((button) => /add/i.test(button.textContent ?? ''))!;
+    click(addButton());
+    type(container.querySelector<HTMLInputElement>('[role="dialog"] input[type=text]'), 'Wash');
+    click(byText(container, /^Save$/i));
+    click(byText(container, /^Cancel$/i));
+    click(addButton());
+    await act(async () => {
+      answer[0]();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it('closes when nothing changed while it saved', async () => {
+    const grid = pendingGrid();
+    click(grid.editButtons()[0]);
+    click(byText(grid.container, /^Save$/i));
+    await grid.settle(0);
+    expect(grid.container.querySelector('[role="dialog"]')).toBeNull();
+  });
+});

@@ -111,15 +111,81 @@ describe('ModelTemplateCache', () => {
     one.release();
     expect(cache.refs(key)).toBe(1);
 
+    // The last holder gone, the template lets go of what renderers uploaded
+    // of it (each renderer's listener with it) and is kept to clone again.
     two.release();
     expect(cache.refs(key)).toBe(0);
-    expect(geometryDispose).not.toHaveBeenCalled();
+    expect(geometryDispose).toHaveBeenCalledOnce();
+    expect(textureDispose).toHaveBeenCalledOnce();
     expect(cache.stats()).toMatchObject({ entries: 1, idle: 1, referenced: 0 });
 
     expect(cache.clearIdle()).toBe(1);
-    expect(geometryDispose).toHaveBeenCalledOnce();
-    expect(textureDispose).toHaveBeenCalledOnce();
+    expect(geometryDispose).toHaveBeenCalledTimes(2);
+    expect(textureDispose).toHaveBeenCalledTimes(2);
     expect(cache.stats()).toMatchObject({ entries: 0, evicted: 1 });
+  });
+
+  // A renderer leaves a listener on each geometry and texture it uploads, and
+  // its own dispose() does not take it off: a closed scene stayed reachable
+  // from the cache for as long as its model was kept.
+  it('lets a closed scene go from a template it keeps idle', async () => {
+    const cache = new ModelTemplateCache(16);
+    const { calls, load } = loaderOf(makeTemplate);
+    const instance = await cache.acquire('k', load('k'));
+    const mesh = instance.object.children[0] as THREE.Mesh;
+    const map = (mesh.material as THREE.MeshStandardMaterial).map!;
+    let held = 0;
+    const renderer = () => {
+      held -= 1;
+    };
+    // What a renderer does as it uploads them.
+    mesh.geometry.addEventListener('dispose', renderer);
+    map.addEventListener('dispose', renderer);
+    held = 2;
+
+    instance.release();
+    expect(held).toBe(0);
+    const again = await cache.acquire('k', load('k'));
+    expect(calls).toHaveLength(1);
+    expect((again.object.children[0] as THREE.Mesh).geometry).toBe(mesh.geometry);
+    again.release();
+  });
+
+  // GLTFLoader decodes images to ImageBitmaps where it can, and three.js never
+  // closes one: an evicted model's pixels stayed until the collector came.
+  it('closes the decoded images of a template it lets go, and not before', async () => {
+    class FakeBitmap {
+      close = vi.fn();
+    }
+    vi.stubGlobal('ImageBitmap', FakeBitmap);
+    const bitmap = new FakeBitmap();
+    const cache = new ModelTemplateCache(16);
+    const { load } = loaderOf(() => {
+      const template = makeTemplate();
+      const material = (template.object.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+      material.map!.image = bitmap;
+      return template;
+    });
+    const instance = await cache.acquire('k', load('k'));
+    instance.release();
+    expect(bitmap.close).not.toHaveBeenCalled();
+    cache.clearIdle();
+    expect(bitmap.close).toHaveBeenCalledOnce();
+  });
+
+  // A model built while its textures were refused (asked for before the
+  // person chose Allow) was kept idle and came back untextured afterwards.
+  it('keeps a model built without refused parts only while it is in use', async () => {
+    const cache = new ModelTemplateCache(16);
+    const { calls, load } = loaderOf(() => ({ ...makeTemplate(), partial: true }));
+    const first = await cache.acquire('k', load('k'));
+    const second = await cache.acquire('k', load('k'));
+    expect(calls).toHaveLength(1);
+    first.release();
+    second.release();
+    expect(cache.has('k')).toBe(false);
+    (await cache.acquire('k', load('k'))).release();
+    expect(calls).toHaveLength(2);
   });
 
   it('bounds the idle set, evicting the least recently used first', async () => {
@@ -133,7 +199,9 @@ describe('ModelTemplateCache', () => {
       instance.release();
     }
     expect(cache.stats()).toMatchObject({ entries: 2, idle: 2, evicted: 1 });
-    expect(disposed).toEqual(['a']);
+    // Each let go of its uploads as it went idle; 'a', least recently used,
+    // was then disposed for good.
+    expect(disposed).toEqual(['a', 'b', 'c', 'a']);
     expect(cache.has('a')).toBe(false);
     expect(cache.has('b')).toBe(true);
     expect(cache.has('c')).toBe(true);

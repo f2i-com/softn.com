@@ -125,6 +125,14 @@ export function detectModelFormat(name: string): ModelFormat {
 export interface ModelTemplate {
   object: THREE.Object3D;
   animations: THREE.AnimationClip[];
+  /**
+   * Built without some of its parts, which were refused (a texture on a
+   * host the app may not reach, or asked for while the permission bar was
+   * still up). A cache keeps it only while it is in use, so the next load
+   * asks for them again; it was kept idle, and the model came back
+   * untextured after the person had chosen Allow.
+   */
+  partial?: boolean;
 }
 
 export interface ModelLoadRequest {
@@ -265,6 +273,7 @@ export async function loadModelTemplate(request: ModelLoadRequest): Promise<Mode
       `[Scene3D] Model ${url} loaded without ${resources.refused.length} refused ` +
         `subresource(s): ${resources.refused.map((r) => `${r.url} (${r.reason})`).join(', ')}`
     );
+    template.partial = true;
   }
   // A clip's tracks name the node they drive, and three's glTF loader names
   // a node the file left unnamed by its uuid. An instance is a clone, and a

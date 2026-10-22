@@ -87,10 +87,17 @@ export function Image({
   const [isLoading, setIsLoading] = React.useState(() => !isInstantSrc(safeSrc));
   const [hasError, setHasError] = React.useState(false);
   const [currentSrc, setCurrentSrc] = React.useState(safeSrc);
+  const imgRef = React.useRef<HTMLImageElement>(null);
 
   React.useEffect(() => {
     setCurrentSrc(safeSrc);
-    setIsLoading(!isInstantSrc(safeSrc));
+    // An image already showing this src, loaded, has no load event to come:
+    // the fallback shown after a failure that then became the src, or one the
+    // browser had in its cache and loaded before this ran. It waited at
+    // opacity 0, behind the placeholder, for good.
+    const img = imgRef.current;
+    const loaded = !!img && !!safeSrc && img.getAttribute('src') === safeSrc && img.complete && img.naturalWidth > 0;
+    setIsLoading(!isInstantSrc(safeSrc) && !loaded);
     setHasError(false);
   }, [safeSrc]);
 
@@ -195,6 +202,7 @@ export function Image({
         </div>
       ) : (
         <img
+          ref={imgRef}
           src={currentSrc}
           alt={alt}
           loading={loading}

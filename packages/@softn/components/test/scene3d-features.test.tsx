@@ -180,6 +180,33 @@ describe('Scene3D enhanced features', () => {
     expect(foundPoints).toBe(true);
   });
 
+  // A count that changes rebuilt the buffers, and the old ones waited on the
+  // GPU for the collector: three frees an instanced mesh's instance buffers
+  // only in its own dispose, and a geometry's replaced attribute never.
+  it('frees the buffers it replaces when an instance or particle count changes', () => {
+    const instanced = (instances: number[]): Scene3DObject => ({ id: 'crowd', type: 'instanced', shape: 'box', color: '#888888', instances });
+    const particles = (positions: number[]): Scene3DObject => ({ id: 'smoke', type: 'particles', particlePositions: positions });
+    const instancedDispose = vi.spyOn(THREE.InstancedMesh.prototype, 'dispose');
+    act(() => root.render(<Scene3D objects={[instanced([0, 0, 0, 1, 0, 0]), particles([0, 1, 0, 0, 2, 0])]} />));
+    const canvas = container.querySelector('canvas') as HTMLCanvasElement & { __softnScene: THREE.Scene };
+    const points = () => {
+      let found: THREE.Points | null = null;
+      canvas.__softnScene.traverse((child) => {
+        if ((child as THREE.Points).isPoints) found = child as THREE.Points;
+      });
+      return found! as THREE.Points;
+    };
+    const firstGeometry = points().geometry;
+    const geometryDispose = vi.spyOn(firstGeometry, 'dispose');
+
+    act(() => root.render(<Scene3D objects={[instanced([0, 0, 0, 1, 0, 0, 2, 0, 0]), particles([0, 1, 0, 0, 2, 0, 0, 3, 0])]} />));
+    expect(instancedDispose).toHaveBeenCalledTimes(1);
+    expect(geometryDispose).toHaveBeenCalledTimes(1);
+    expect(points().geometry).not.toBe(firstGeometry);
+    expect(points().geometry.getAttribute('position').count).toBe(3);
+    instancedDispose.mockRestore();
+  });
+
   it('configures directional light shadows with shadowCameraSize and shadowBias', () => {
     const lights: Scene3DLight[] = [
       {

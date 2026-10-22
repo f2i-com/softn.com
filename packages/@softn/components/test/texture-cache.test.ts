@@ -32,6 +32,23 @@ function cache(maxIdle: number) {
 }
 
 describe('BoundedTextureCache', () => {
+  // Scene3D frees a texture's uploads there: each renderer that drew it left a
+  // listener on it, and a closed scene stayed reachable through the cache.
+  it('tells its owner when the last user of an entry lets it go, and only then', () => {
+    const idle: string[] = [];
+    const c = new BoundedTextureCache<FakeTexture>(4, (texture) => idle.push(texture.key));
+    const make = () => new FakeTexture('shared');
+    c.acquire('shared', make);
+    c.acquire('shared', make);
+    c.release('shared');
+    expect(idle).toEqual([]);
+    c.release('shared');
+    expect(idle).toEqual(['shared']);
+    c.release('shared');
+    expect(idle).toEqual(['shared']);
+    expect(c.has('shared')).toBe(true);
+  });
+
   it('shares one texture between users of the same key', () => {
     const { c, get, made } = cache(4);
     const a = get('brick_#f00_1_1');
