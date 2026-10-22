@@ -177,7 +177,7 @@ function declaredTypes(sourceText) {
   const re = /export\s+(interface|type)\s+([A-Z]\w*)(?:<[^>{=]*>)?\s*(?:extends\s+[^{]+)?(=)?\s*/g;
   let match;
   while ((match = re.exec(clean)) !== null) {
-    let at = re.lastIndex;
+    const at = re.lastIndex;
     let body = '';
     if (match[1] === 'interface' || clean[at] === '{') {
       if (clean[at] !== '{') continue;

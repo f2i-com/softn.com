@@ -1,5 +1,5 @@
 import {readFile,writeFile,mkdir,lstat,rename,unlink} from 'node:fs/promises';
-import {resolve,join,dirname,relative,parse,sep} from 'node:path';
+import {resolve,join,dirname,parse,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash,randomUUID} from 'node:crypto';
 import {loadDocument,validateDocument} from './validate.mjs';

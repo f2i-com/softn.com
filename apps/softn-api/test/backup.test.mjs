@@ -238,7 +238,7 @@ test('restore into a deployed data folder: what the site ships there is not in t
   const plain = backup(['restore', archive, '--into', fresh]);
   assert.equal(plain.status, 0, plain.stderr + plain.stdout);
   assert.match(plain.stdout, /inventory matches/);
-  assert.equal(fs.readFileSync(path.join(fresh, 'README.txt'), 'utf8'), 'the source note\n', "the archive\'s copy replaced the one that was there");
+  assert.equal(fs.readFileSync(path.join(fresh, 'README.txt'), 'utf8'), 'the source note\n', "the archive's copy replaced the one that was there");
 
   // A live catalogue with its own apps, configuration and shipped files.
   const live = path.join(work, 'live');
@@ -252,7 +252,7 @@ test('restore into a deployed data folder: what the site ships there is not in t
   const forced = backup(['restore', archive, '--into', live, '--force']);
   assert.equal(forced.status, 0, forced.stderr + forced.stdout);
   assert.match(forced.stdout, /inventory matches/);
-  assert.deepEqual(fs.readdirSync(path.join(live, 'apps')).sort(), [...slugs].sort(), "the archive\'s apps, and only those");
+  assert.deepEqual(fs.readdirSync(path.join(live, 'apps')).sort(), [...slugs].sort(), "the archive's apps, and only those");
   assert.ok(!fs.existsSync(path.join(live, 'only-here.txt')), 'what the archive does not hold is gone');
   assert.notEqual(fs.readFileSync(path.join(live, 'config.json'), 'utf8'), '{"adminKey":"the-old-key"}');
   assert.ok(fs.existsSync(path.join(live, '.htaccess')), 'the deny rule is still there');

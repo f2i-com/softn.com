@@ -26,7 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { unzipSync, zipSync } from 'fflate';
+import { zipSync } from 'fflate';
 import { CURATED_NOTICES, INSTALLED_FILES, PACKAGE_INSTALLED_FILES, REPOSITORY, TORCH_DECLARATIONS, TORCH_LOADER, TORCH_PACKAGE, VARIANT_INSTALLED_FILES, WEB_VARIANT, ZippReleaseError, checkEngine, checkEngineOnline, ensureEngine, ensureReleaseEngine, installLocal, installRelease, moduleGlue, packageDir, packageModuleProblems, removeStaleLock, resolveRelease, sha256, variantDir, variantModuleProblems, verifyPackage, verifyRelease, verifyVariant, withInstallLock, writeInstall } from './fetch-zipp-release.mjs';
 import { wasmCustomSections, wasmExportNames, wasmImportNames, wasmStackBytes } from '../../../../scripts/lib/zipp-engine-copy.mjs';
 

@@ -27,7 +27,6 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { GRID, CORAL, MINT, CORNER, STROKE, DOT_R, BRACKETS, markSvg } from './brand-mark.mjs';
 import { repoRoot } from '../lib/paths.mjs';
 

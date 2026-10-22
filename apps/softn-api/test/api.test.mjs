@@ -244,7 +244,6 @@ test('an app has a detail, a bundle, a thumbnail and readable source', skip, asy
   assert.equal(byName.app.slug, 'snake-game');
 });
 
-let published = null;
 let editKey = '';
 
 test('publishing by multipart form returns an edit key and a unique slug', skip, async () => {
@@ -263,7 +262,6 @@ test('publishing by multipart form returns an edit key and a unique slug', skip,
   assert.equal(json.app.primary, '#3366ff');
   assert.equal(json.app.thumbnailKind, 'icon');
   assert.match(json.editKey, /^[0-9a-f]{40}$/);
-  published = json.app;
   editKey = json.editKey;
 
   const again = await api('POST', '/api/apps', { raw: makeBundle('Test Snake'), headers: { 'Content-Type': 'application/octet-stream' } });

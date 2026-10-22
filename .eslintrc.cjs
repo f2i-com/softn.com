@@ -22,6 +22,9 @@ module.exports = {
     // wasm-bindgen output — generated, and its own eslint-disable header
     // trips `reportUnusedDisableDirectives`.
     'packages/@softn/core/wasm-zipp/**',
+    // ZIPP's model stack, vendored as released (scripts/vendor-zipp-models);
+    // it is ZIPP's to lint, and WebGPU's globals are its own.
+    'packages/@softn/core/vendor/**',
   ],
   parser: '@typescript-eslint/parser',
   parserOptions: {
@@ -65,6 +68,20 @@ module.exports = {
       rules: {
         'no-console': 'off',
         '@typescript-eslint/no-explicit-any': 'off',
+      },
+    },
+    {
+      // The scripts (.mjs): the build, release, bench and dev tools, and the
+      // PHP host's Node runtime. They are command-line programs, so what they
+      // print is their output; an empty catch is how they say "best effort";
+      // a `while (true)` reads a stream until it ends; and the ones that log
+      // or pass on text strip its control characters on purpose.
+      files: ['**/*.mjs'],
+      rules: {
+        'no-console': 'off',
+        'no-empty': ['error', { allowEmptyCatch: true }],
+        'no-constant-condition': ['error', { checkLoops: false }],
+        'no-control-regex': 'off',
       },
     },
     {

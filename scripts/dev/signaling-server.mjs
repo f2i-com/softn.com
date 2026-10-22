@@ -24,7 +24,7 @@ const topics = new Map();
 function send(conn, msg) {
   try {
     if (conn.readyState === 1) conn.send(JSON.stringify(msg));
-  } catch (e) {
+  } catch {
     conn.close();
   }
 }
@@ -39,7 +39,7 @@ wss.on('connection', (conn) => {
       clearInterval(pingInterval);
     } else {
       pongReceived = false;
-      try { conn.ping(); } catch (e) { conn.close(); }
+      try { conn.ping(); } catch { conn.close(); }
     }
   }, 30000);
 

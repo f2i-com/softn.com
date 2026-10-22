@@ -688,7 +688,7 @@ export function variantModuleProblems(variantWasm, primaryWasm, { bundle = 'the 
  * its SOURCE.json, and the record the primary SOURCE.json carries for it.
  * Refuses with ZippReleaseError.
  */
-export async function verifyVariant({ release, sums, wasm, primary, id = WEB_VARIANT.id }) {
+export async function verifyVariant({ release, sums, wasm, primary }) {
   const version = release.slice(1);
   const expected = WEB_VARIANT;
   const bundle = moduleFileName(version, expected.variant);
