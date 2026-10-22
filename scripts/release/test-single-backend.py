@@ -6,7 +6,7 @@ lives under private/ rather than webroot/."""
 import argparse,zipfile,tempfile,json,subprocess,os,hashlib
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--archive',required=True);p.add_argument('--private',action='store_true');args=p.parse_args()
-repo=Path(__file__).resolve().parent.parent
+repo=Path(__file__).resolve().parents[2]  # scripts/release/ -> the repository
 assert Path(args.archive+'.sha256').read_text().split()[0]==hashlib.sha256(Path(args.archive).read_bytes()).hexdigest()
 root=Path(tempfile.mkdtemp(prefix='softn-backend-package-'))
 with zipfile.ZipFile(args.archive) as z:

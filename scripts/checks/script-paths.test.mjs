@@ -31,7 +31,9 @@ test('no file names a script by a path it has left', () => {
   const pattern = new RegExp(`(^|[^\\w@./-]|(?:\\.\\./)+)scripts/(${[...stale].map(escape).join('|')}|softn-apps/)(?![\\w-])`, 'm');
   const problems = [];
   for (const file of tracked) {
-    if (!/\.(mjs|js|cjs|ts|tsx|mts|json|md|yml|yaml|py|html)$|(^|\/)\.gitignore$/.test(file)) continue;
+    // Rust, PHP, TOML and shell name scripts in comments too (Cargo.toml named
+    // two that had moved).
+    if (!/\.(mjs|js|cjs|ts|tsx|mts|json|md|yml|yaml|py|html|rs|php|toml|sh|ps1)$|(^|\/)\.gitignore$/.test(file)) continue;
     if (file.startsWith('vendor/') || file === 'package-lock.json') continue;
     // Listed by git until its deletion is staged, but no longer there to name anything.
     if (!fs.existsSync(path.join(repoRoot, file))) continue;
@@ -42,6 +44,23 @@ test('no file names a script by a path it has left', () => {
     }
     const hit = text.match(pattern);
     if (hit) problems.push(`${file}: scripts/${hit[2]}`);
+  }
+  assert.deepEqual(problems, []);
+});
+
+// A script that finds the repository from where it lies counts the folders
+// up to it, and a move into a folder adds one. test-single-backend.py kept
+// counting from scripts/ and looked for the PHP host's tests under
+// scripts/apps/, which only the dispatched build ran, and failed.
+test('a Python script that finds the repository from its own path finds it', () => {
+  const problems = [];
+  for (const file of tracked.filter((f) => f.startsWith('scripts/') && f.endsWith('.py'))) {
+    const text = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+    for (const m of text.matchAll(/Path\(__file__\)\.resolve\(\)(\.parents\[(\d+)\]|(?:\.parent(?!s))+)/g)) {
+      const up = m[2] !== undefined ? Number(m[2]) + 1 : m[1].split('.parent').length - 1;
+      const dir = path.resolve(path.dirname(path.join(repoRoot, file)), ...Array(up - 1).fill('..'));
+      if (dir !== repoRoot) problems.push(`${file}: ${m[0]} is ${path.relative(repoRoot, dir) || '.'}, not the repository`);
+    }
   }
   assert.deepEqual(problems, []);
 });

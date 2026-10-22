@@ -131,8 +131,12 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
+          # Every step below calls scripts by their paths since scripts/ was
+          # arranged in folders (after v0.0.24). An earlier tag keeps the gate
+          # directly in scripts/ (v0.0.15 to v0.0.24) or has none at all, and
+          # is released by dispatching the release.yml of that tag.
           if [[ ! -f scripts/release/zipp-release-gate.mjs ]]; then
-            echo "::error::$TAG predates the ZIPP release gate (scripts/release/zipp-release-gate.mjs, first in v0.0.15); this workflow cannot release it." >&2
+            echo "::error::$TAG predates the scripts/ layout this workflow calls (scripts/release/, after v0.0.24); dispatch the release.yml of $TAG itself (gh workflow run release.yml --ref $TAG -f tag=$TAG) to release it." >&2
             exit 1
           fi
           node scripts/release/zipp-release-gate.mjs
