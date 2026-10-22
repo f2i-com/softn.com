@@ -366,6 +366,52 @@ export function shouldReseedPreviewData(previousKey: string, nextKey: string): b
   return previousKey !== nextKey;
 }
 
+/**
+ * The prefixes of the keys a preview kept in localStorage when it ran under
+ * the project's own id (`studio-preview-<project>`): its store's records, and
+ * what its script kept with the runtime's localStorage.
+ */
+const PERSISTED_PREVIEW_KEYS = ['xdb:studio-preview-', 'softn:studio-preview-'];
+let sweptPersistedPreviewStores = false;
+
+/** Remove each localStorage key that `matches`, from the last, so removing does not skip one. Best effort. */
+function removeKeys(storage: Storage | undefined, matches: (key: string) => boolean): void {
+  try {
+    if (!storage) return;
+    for (let i = storage.length - 1; i >= 0; i--) {
+      const key = storage.key(i);
+      if (key !== null && matches(key)) storage.removeItem(key);
+    }
+  } catch {
+    // Storage refused: what is there stays, as it did.
+  }
+}
+
+/**
+ * Remove what previews kept in localStorage while they ran under each
+ * project's id, once a session: the preview keeps its records in memory now,
+ * and those keys were left to count against the storage every app's records
+ * share.
+ */
+export function sweepPersistedPreviewStores(storage: Storage | undefined = globalThis.localStorage): void {
+  if (sweptPersistedPreviewStores) return;
+  sweptPersistedPreviewStores = true;
+  removeKeys(storage, (key) => PERSISTED_PREVIEW_KEYS.some((prefix) => key.startsWith(prefix)));
+}
+
+/**
+ * Remove what a preview's script kept in localStorage under its store's id
+ * (`softn:<id>:…`), as the store itself goes: a preview leaves nothing behind.
+ */
+export function forgetPreviewScriptStorage(appId: string, storage: Storage | undefined = globalThis.localStorage): void {
+  removeKeys(storage, (key) => key.startsWith(`softn:${appId}:`));
+}
+
+/** For tests: let the next call sweep again. */
+export function resetPreviewStoreSweepForTests(): void {
+  sweptPersistedPreviewStores = false;
+}
+
 /** Remove every collection owned by a disposable Studio preview. */
 export function clearPreviewXDBCollections(xdb: PreviewXDB, collections: Iterable<string>): void {
   xdb.suppressNotifications();

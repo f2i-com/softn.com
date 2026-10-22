@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useAIStore, useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { declarePythonPackage, getBundleEntryPath, MAIN_PAGE_PATH, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
-import { getXDB, SoftNWithXDB, type SoftNRendererProps } from '@softn/core';
+import { createEphemeralXDBScope, SoftNWithXDB, type SoftNRendererProps, type XDBService } from '@softn/core';
 import type { DevicePreset, ValidationError, VFSFile } from '../../types/studio';
 import { PreviewError } from './PreviewError';
 import { PAGE_PARSE, pageAndImports, pageParseProblems } from '../../lib/pageDiagnostics';
@@ -19,13 +19,14 @@ import { MediaView, mediaKindFor } from './MediaView';
 import { isLogicPath, isPagePath } from '../../lib/sourceKinds';
 import {
   buildPreviewXDBState,
-  clearPreviewXDBCollections,
   composePreviewProject,
   previewDataKey,
   declaredThemeMode,
   replacePreviewXDBCollections,
   stripTemplateComments,
   previewLinkTarget,
+  forgetPreviewScriptStorage,
+  sweepPersistedPreviewStores,
 } from '../../lib/previewProject';
 
 /**
@@ -328,7 +329,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   const [rendererRetry, setRendererRetry] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
   const seededPreviewRef = useRef<{
-    xdb: ReturnType<typeof getXDB>;
+    xdb: XDBService;
     collections: Set<string>;
   } | null>(null);
 
@@ -451,30 +452,38 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   // page as well, every collection under its own name, so a page that declared none still
   // drew its rows here and was empty everywhere else.
 
+  // The preview's records live in a store of its own, in memory, one for each project: made
+  // when the project opens here and let go when it closes, as the Builder's preview and the
+  // agent's check keep theirs. It was the browser's localStorage under the project's id, so
+  // what the app wrote in the preview stayed after Studio closed (the collections the app made
+  // itself were never cleared at all), counted against the storage every app's records share,
+  // and outlived the project. The page runs under the store's own id, which is how its <data>
+  // block and its script's `db` find the store, and what its script keeps in localStorage
+  // under that id goes with the store. Made in an effect, which StrictMode runs twice, and the
+  // page is drawn once it is there.
+  const [previewStore, setPreviewStore] = useState<ReturnType<typeof createEphemeralXDBScope> | null>(null);
   useEffect(() => {
-    let xdb: ReturnType<typeof getXDB>;
-    try {
-      xdb = getXDB(previewAppId);
-    } catch {
-      // Storage can be unavailable in privacy-restricted contexts.
-      return;
-    }
+    sweepPersistedPreviewStores();
+    const store = createEphemeralXDBScope();
+    setPreviewStore(store);
+    return () => {
+      store.dispose();
+      forgetPreviewScriptStorage(store.appId);
+      setPreviewStore((current) => (current === store ? null : current));
+    };
+  }, [previewAppId]);
+
+  useEffect(() => {
+    if (!previewStore) return;
+    const { xdb } = previewStore;
     let disposed = false;
     void xdb.isReady
       .then(() => {
         if (disposed) return;
         const previous = seededPreviewRef.current;
-        if (previous && previous.xdb !== xdb) {
-          clearPreviewXDBCollections(previous.xdb, previous.collections);
-        }
         const previousCollections = previous?.xdb === xdb ? previous.collections : [];
-        const ownedCollections = new Set([...previousCollections, ...previewXDBState.collections]);
-        seededPreviewRef.current = { xdb, collections: ownedCollections };
         replacePreviewXDBCollections(xdb, previewXDBState, previousCollections);
-        seededPreviewRef.current = {
-          xdb,
-          collections: new Set(previewXDBState.collections),
-        };
+        seededPreviewRef.current = { xdb, collections: new Set(previewXDBState.collections) };
       })
       .catch(() => {
         // Without the store the page has no records, here as in a runtime without one.
@@ -483,21 +492,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     return () => {
       disposed = true;
     };
-  }, [previewAppId, previewXDBState]);
-
-  useEffect(
-    () => () => {
-      const seeded = seededPreviewRef.current;
-      seededPreviewRef.current = null;
-      if (!seeded) return;
-      try {
-        clearPreviewXDBCollections(seeded.xdb, seeded.collections);
-      } catch {
-        // Disposable preview cleanup is best effort if storage is revoked.
-      }
-    },
-    []
-  );
+  }, [previewStore, previewXDBState]);
 
   // An asset is found from the page that names it; with no page open, from the app's main page.
   //
@@ -867,21 +862,24 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           {/* The app's own box: a side the project declares is written here, under Studio's notices and not on them. */}
           <div data-softn-theme-box={PREVIEW_THEME_BOX} style={styles.themeBox}>
           <ThemeProviderComponent followHost followSystem declaredMode={declaredThemeMode(manifest)} box={PREVIEW_THEME_BOX}>
-            <PreviewComponent
-              key={`${activeVFSFile}\u0000${refreshKey}`}
-              source={softNSource}
-              functions={rendererFunctions}
-              assetResolver={resolveAssetUrl}
-              importResolver={importResolver}
-              logicBasePath={composition?.logicBasePath}
-              preIncludedLogicPaths={composition?.preIncludedLogicPaths}
-              python={composition?.python}
-              appId={previewAppId}
-              scriptExecutionMode="main"
-              resumeSavedSyncRoom={false}
-              onLink={followPreviewLink}
-              error={previewError}
-            />
+            {previewStore && (
+              <PreviewComponent
+                key={`${activeVFSFile}\u0000${refreshKey}`}
+                source={softNSource}
+                functions={rendererFunctions}
+                assetResolver={resolveAssetUrl}
+                importResolver={importResolver}
+                logicBasePath={composition?.logicBasePath}
+                preIncludedLogicPaths={composition?.preIncludedLogicPaths}
+                python={composition?.python}
+                appId={previewStore.appId}
+                xdb={previewStore.xdb}
+                scriptExecutionMode="main"
+                resumeSavedSyncRoom={false}
+                onLink={followPreviewLink}
+                error={previewError}
+              />
+            )}
           </ThemeProviderComponent>
           </div>
           </div>
@@ -892,21 +890,24 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           <div style={rendererStyle}>
           {stopNotice}
           {capabilityNote}
-          <PreviewComponent
-            key={`${activeVFSFile}\u0000${refreshKey}`}
-            source={softNSource}
-            functions={rendererFunctions}
-            assetResolver={resolveAssetUrl}
-            importResolver={importResolver}
-            logicBasePath={composition?.logicBasePath}
-            preIncludedLogicPaths={composition?.preIncludedLogicPaths}
-            python={composition?.python}
-            appId={previewAppId}
-            scriptExecutionMode="main"
-            resumeSavedSyncRoom={false}
-            onLink={followPreviewLink}
-            error={previewError}
-          />
+          {previewStore && (
+            <PreviewComponent
+              key={`${activeVFSFile}\u0000${refreshKey}`}
+              source={softNSource}
+              functions={rendererFunctions}
+              assetResolver={resolveAssetUrl}
+              importResolver={importResolver}
+              logicBasePath={composition?.logicBasePath}
+              preIncludedLogicPaths={composition?.preIncludedLogicPaths}
+              python={composition?.python}
+              appId={previewStore.appId}
+              xdb={previewStore.xdb}
+              scriptExecutionMode="main"
+              resumeSavedSyncRoom={false}
+              onLink={followPreviewLink}
+              error={previewError}
+            />
+          )}
           </div>
         </>
       );

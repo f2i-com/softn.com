@@ -818,6 +818,10 @@ function openStudioDb(): Promise<IDBDatabase> {
     };
     req.onblocked = () => {
       clearTimeout(deadline);
+      // Refused now, so the connection the upgrade gives once the other tab
+      // lets go is nobody's either: closed when it comes, as a late one is,
+      // rather than held for the session, blocking the next upgrade in turn.
+      late = true;
       reject(new Error('IndexedDB open blocked'));
     };
   });

@@ -136,7 +136,13 @@ const ProviderTest: React.FC<{ provider: ProviderConfig; label: string }> = ({ p
   const [test, setTest] = useState<TestState | null>(null);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
-  useEffect(() => setTest(null), [provider]);
+  // A changed provider's test is a new question: one still running about the
+  // old address is stopped, or its answer would land under the new one.
+  useEffect(() => {
+    controller.current?.abort();
+    controller.current = null;
+    setTest(null);
+  }, [provider]);
   const run = async () => {
     controller.current?.abort();
     const current = new AbortController();

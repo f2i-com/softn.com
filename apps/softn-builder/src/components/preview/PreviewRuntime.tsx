@@ -36,7 +36,14 @@ export function PreviewRuntime({ projectId, records, assets = EMPTY_ASSETS, ...p
 
   useEffect(() => {
     const scope = createEphemeralXDBScope();
-    scope.xdb.import({ version: 1, exportedAt: new Date().toISOString(), collections: records }, { merge: false });
+    try {
+      scope.xdb.import({ version: 1, exportedAt: new Date().toISOString(), collections: records }, { merge: false });
+    } catch (error) {
+      // Seed records the store refuses are the preview's error to show, and
+      // the store made for them is let go, as it is when the preview closes.
+      scope.dispose();
+      throw error;
+    }
     setSession({ projectId, records, scope });
     return () => scope.dispose();
   }, [projectId, records]);

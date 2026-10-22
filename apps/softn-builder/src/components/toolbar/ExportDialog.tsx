@@ -359,8 +359,25 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
     };
   }, [isOpen, name, version, description, icon, permissions, pythonPackages, collections.error]);
 
+  // The dialog stays mounted while it is closed, so a run that finishes after
+  // a close would speak to the dialog opened next: a link to a bundle staged
+  // from the project as it was, or the closing timer of an export shutting
+  // it. Each close counts one more opening, and a run answers only the one
+  // it started in; the closing timer is cleared with it.
+  const opening = useRef(0);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const timers = closeTimer;
+    return () => {
+      if (timers.current !== null) clearTimeout(timers.current);
+    };
+  }, []);
+
   useEffect(() => {
     if (!isOpen) {
+      opening.current++;
+      if (closeTimer.current !== null) clearTimeout(closeTimer.current);
+      closeTimer.current = null;
       setError(null);
       setDone(null);
       setReady(null);
@@ -370,6 +387,8 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
 
   const run = useCallback(
     async (what: 'export' | 'run' | 'publish') => {
+      const started = opening.current;
+      const current = () => started === opening.current;
       try {
         setBusy(what);
         setError(null);
@@ -381,7 +400,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
           if (outcome.kind === 'cancelled') return;
           if (outcome.kind === 'failed') throw outcome.error;
           const said = exportMessage(outcome, bundleFileName(name));
-          setDone(said);
+          if (current()) setDone(said);
           // A copy that leaves changes unsaved is news, not a success to wave through.
           if (outcome.copy?.unsaved || outcome.stale || outcome.projectChanged) toast.warning(said);
           else toast.success(said);
@@ -391,14 +410,19 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
           if (!outcome.copy && outcome.sessionAssets === 'left-out' && !outcome.projectChanged) {
             toast.info('The local recovery copy was kept without the project’s pictures and other assets (this browser’s storage is full); the file itself was exported.');
           }
-          setTimeout(() => {
-            setDone(null);
-            onClose();
-          }, 1500);
+          if (current()) {
+            if (closeTimer.current !== null) clearTimeout(closeTimer.current);
+            closeTimer.current = setTimeout(() => {
+              closeTimer.current = null;
+              setDone(null);
+              onClose();
+            }, 1500);
+          }
           return;
         }
 
         const bytes = await buildProjectBundle();
+        if (!current()) return;
 
         // The runtime and the directory are pages of this origin; the bundle
         // is staged under an id addressed to the one chosen, and the dialog
@@ -407,6 +431,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
         // utils/handoff.ts. In development the pages can be other origins;
         // that is reported instead of opening a page that finds nothing.
         const outcome = await prepareHandoff(what === 'run' ? 'runtime' : 'publish', bytes, name);
+        if (!current()) return;
         if (!outcome.ok) {
           setError(outcome.message);
           return;
@@ -416,10 +441,10 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
         if (err instanceof Error && err.name === 'AbortError') return;
         console.error('[ExportDialog] failed:', err);
         const msg = err instanceof Error ? err.message : 'Export failed';
-        setError(msg);
+        if (current()) setError(msg);
         toast.error(msg);
       } finally {
-        setBusy(null);
+        if (current()) setBusy(null);
       }
     },
     [name, onClose, exportProject]

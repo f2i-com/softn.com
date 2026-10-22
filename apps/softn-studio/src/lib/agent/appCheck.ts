@@ -142,6 +142,26 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
     // A page that does not parse is reported by the render below.
   }
 
+  // The page's data the way a runtime gives it: a store holding the project's seed records,
+  // read through the page's own `<data>` block, so a collection has the name `as` gives it
+  // and is filtered, sorted and limited as the block says. The page used to be handed every
+  // record under its collection's name instead, which agrees with a runtime only for
+  // `<collection name="x" as="x" />` with nothing else on it. A store of this render's own,
+  // in memory: it does not find the last check's records, and leaves none behind.
+  //
+  // Made before the console is listened to below, and its refusal said as the check's answer:
+  // a seed it refuses (a collection named `app:tasks`) threw between the console's patching and
+  // the `finally` that undoes it, which left console.error the check's collector, heard by
+  // nothing, for the rest of the session.
+  const seed = buildPreviewXDBState(files).initialData;
+  const scope = createEphemeralXDBScope();
+  try {
+    scope.xdb.import({ version: 1, exportedAt: new Date().toISOString(), collections: seed }, { merge: false });
+  } catch (error) {
+    scope.dispose();
+    return { composeError: `its records could not be loaded: ${error instanceof Error ? error.message : String(error)}` };
+  }
+
   const errors: string[] = [];
   const warnings: string[] = [];
   const original = { error: console.error, warn: console.warn };
@@ -168,16 +188,6 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   } catch {
     // Storage may be unavailable; the render does not need it.
   }
-
-  // The page's data the way a runtime gives it: a store holding the project's seed records,
-  // read through the page's own `<data>` block, so a collection has the name `as` gives it
-  // and is filtered, sorted and limited as the block says. The page used to be handed every
-  // record under its collection's name instead, which agrees with a runtime only for
-  // `<collection name="x" as="x" />` with nothing else on it. A store of this render's own,
-  // in memory: it does not find the last check's records, and leaves none behind.
-  const seed = buildPreviewXDBState(files).initialData;
-  const scope = createEphemeralXDBScope();
-  scope.xdb.import({ version: 1, exportedAt: new Date().toISOString(), collections: seed }, { merge: false });
 
   const host = document.createElement('div');
   host.setAttribute('aria-hidden', 'true');
