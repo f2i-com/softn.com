@@ -574,7 +574,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "sync",
     "title": "Synchronisation is optional and host-dependent",
-    "text": "```javascript\nawait db.startSync('my-room-name')\n```\n(Start peer synchronisation. The host must support it and the app needs the sync capability.)\n\nA room name is not an authentication or privacy policy. Decide who may take part, how access is controlled and what the host provides before using sync for sensitive or multi-user records.\n\nLocal persistence, peer-to-peer sync and a private server database are not interchangeable. Choose the one that matches the app’s ownership, sharing and recovery needs."
+    "text": "```javascript\nawait db.startSync('my-room-name')\n```\n(Start peer synchronisation. The host must support it and the app needs the sync capability.)\n\nA room name is not an authentication or privacy policy. Decide who may take part, how access is controlled and what the host provides before using sync for sensitive or multi-user records.\n\nPeer sync runs while the app is on screen. Where a host keeps several apps open, as SoftN Web’s tabs do, an app’s rooms wait while another app is shown: nothing arrives from its peers and nothing is sent, and what the app writes meanwhile is exchanged when it is shown again. Closing the app leaves its rooms, and `db.getSavedSyncRoom()` still names the last one, so the app can start it again when it next opens.\n\nLocal persistence, peer-to-peer sync and a private server database are not interchangeable. Choose the one that matches the app’s ownership, sharing and recovery needs."
    }
   ]
  },

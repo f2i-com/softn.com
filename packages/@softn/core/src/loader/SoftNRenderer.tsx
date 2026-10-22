@@ -59,6 +59,7 @@ import { CapabilityProvider, type CapabilityState } from './consent-gate';
 import { AppScopeProvider, type AppAssetResolver, type AppScope } from './app-scope';
 import { getXDB, type XDBService } from '../runtime/xdb';
 import { readSavedSyncRoom } from '../runtime/xdb-sync-key';
+import { openAppView, type AppView } from '../runtime/sync-activity';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
 import type { BindingTarget, Expression, TemplateNode } from '../parser/ast';
@@ -938,6 +939,24 @@ export function SoftNRenderer({
   // (see app-scope.tsx); the instance is memoised per appId so a re-render
   // cannot move it, and the provider goes on at the render below.
   const scopedXdb = useMemo(() => xdbProp ?? getXDB(appId), [xdbProp, appId]);
+
+  // Peer-to-peer sync is for the app on screen (sync-activity.ts): its rooms
+  // wait while the host shows another of its apps, rejoin when it shows this
+  // one again, and close with it.
+  const appViewRef = useRef<AppView | null>(null);
+  const shownRef = useRef(active);
+  shownRef.current = active;
+  useEffect(() => {
+    const view = openAppView(appId, shownRef.current);
+    appViewRef.current = view;
+    return () => {
+      appViewRef.current = null;
+      view.close();
+    };
+  }, [appId]);
+  useEffect(() => {
+    appViewRef.current?.setShown(active);
+  }, [active]);
 
   // Parse source when provided directly
   useEffect(() => {

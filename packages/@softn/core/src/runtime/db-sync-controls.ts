@@ -21,6 +21,7 @@ import { bindSyncOptions } from './host-bound-sync-options';
 import { filterSignalingUrls } from './egress-policy';
 import { applyRoomSecurity, unmarkRoomShared } from './sync-room-security';
 import { readSavedSyncRoom } from './xdb-sync-key';
+import { appClosings } from './sync-activity';
 import type { PermissionConfig } from './script-runtime';
 
 type SyncModule = typeof import('./xdb-sync');
@@ -94,9 +95,12 @@ export function createSyncControls(options: SyncControlsOptions): SyncControls {
         else delete syncOpts.signaling;
       }
       applyRoomSecurity(syncOpts, { room, appId, permissionConfig, syncEncryptionKeyHex });
+      const closings = appClosings(appId);
       import('./xdb-sync')
         .then((mod) => {
           syncModuleCache = mod;
+          // The app closed while the module loaded: nothing would close the room.
+          if (appClosings(appId) !== closings) return;
           mod.startSync(syncOpts as unknown as import('./xdb-sync').XDBSyncOptions);
         })
         .catch((err) => {

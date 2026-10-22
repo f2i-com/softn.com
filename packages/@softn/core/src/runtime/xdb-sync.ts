@@ -114,6 +114,12 @@ export class XDBSyncAdapter {
   private persistenceListener: (() => void) | null = null;
   private updateHandler: (() => void) | null = null;
   private closed = false;
+  /** connect() was called, and disconnect() not since. */
+  private started = false;
+  /** Waiting while its app is not on screen (sync-activity.ts): no peers, the rest kept. */
+  private paused = false;
+  /** This peer's awareness as it paused, for resume(). */
+  private awarenessWhilePaused: Record<string, unknown> | null = null;
 
   constructor(xdb: XDBService, options: XDBSyncOptions) {
     this.xdb = xdb;
@@ -138,8 +144,33 @@ export class XDBSyncAdapter {
   connect(): void {
     if (this.closed) throw new Error('[XDB Sync] This adapter has been closed');
     // Guard against double-connect (y-webrtc throws if room already exists)
-    if (this.provider) return;
+    if (this.started) return;
+    this.started = true;
 
+    // 1–2. Join the room, unless the app is not on screen: then the provider,
+    // and the signaling connection it opens, wait until it is (resume).
+    if (!this.paused) this.openProvider();
+
+    // 3. Start observing Yjs changes FIRST (captures incoming data)
+    this.setupYjsObservers();
+
+    // 4. Wait for persistence to load before initial sync
+    //    This prevents races where we push stale local data into
+    //    a Y.Doc that hasn't loaded its IndexedDB state yet.
+    if (this.persistence) {
+      this.persistenceListener = () => {
+        this.performInitialSync();
+        this.setupXDBListener();
+      };
+      this.persistence.on('synced', this.persistenceListener);
+    } else {
+      this.performInitialSync();
+      this.setupXDBListener();
+    }
+  }
+
+  /** Create the WebRTC provider for this room, and say who we are in it. */
+  private openProvider(): void {
     // 1. Create WebRTC provider
     // Use encryptionKey (per-dapp derived key) if available, else fallback to password
     const effectivePassword = this.options.encryptionKey || this.options.password;
@@ -171,23 +202,20 @@ export class XDBSyncAdapter {
         name: this.options.displayName,
       });
     }
+  }
 
-    // 3. Start observing Yjs changes FIRST (captures incoming data)
-    this.setupYjsObservers();
-
-    // 4. Wait for persistence to load before initial sync
-    //    This prevents races where we push stale local data into
-    //    a Y.Doc that hasn't loaded its IndexedDB state yet.
-    if (this.persistence) {
-      this.persistenceListener = () => {
-        this.performInitialSync();
-        this.setupXDBListener();
-      };
-      this.persistence.on('synced', this.persistenceListener);
-    } else {
-      this.performInitialSync();
-      this.setupXDBListener();
-    }
+  /**
+   * Leave the signaling servers and the peers, keeping the provider to
+   * rejoin with. y-webrtc 10.3's disconnect() keeps its list of signaling
+   * connections, and connect() adds to it: a provider paused and resumed
+   * kept the socket it had let go beside the new one, and when it next left
+   * it struck that socket's URL from y-webrtc's shared table, though another
+   * room was still on the live socket for that URL.
+   */
+  private leaveRoom(provider: WebrtcProvider): void {
+    if (!provider.shouldConnect) return;
+    provider.disconnect();
+    provider.signalingConns = [];
   }
 
   /**
@@ -201,6 +229,38 @@ export class XDBSyncAdapter {
     this.setupYjsObservers();
     this.performInitialSync();
     this.setupXDBListener();
+  }
+
+  /**
+   * Stop looking for peers and let go of the ones it has, keeping the room,
+   * the document and its link to the app's records: an app behind another
+   * tab waits, and what it writes meanwhile goes into the document, to be
+   * exchanged when it is shown again (resume). Peer sync is for the app the
+   * person is using; one left in a background tab kept talking to its room,
+   * and writing what the room said into its records, until the page closed.
+   */
+  pause(): void {
+    this.paused = true;
+    const provider = this.provider;
+    if (!provider?.shouldConnect) return;
+    // Leaving clears this peer's awareness (the name it goes by), and
+    // rejoining does not bring it back.
+    this.awarenessWhilePaused = provider.awareness.getLocalState();
+    this.leaveRoom(provider);
+  }
+
+  /** Look for peers again, after pause(): the document's state is exchanged with each as it connects, as on any first connection. */
+  resume(): void {
+    if (this.closed || !this.paused) return;
+    this.paused = false;
+    if (!this.started) return;
+    if (!this.provider) {
+      this.openProvider();
+      return;
+    }
+    if (this.awarenessWhilePaused) this.provider.awareness.setLocalState(this.awarenessWhilePaused);
+    this.awarenessWhilePaused = null;
+    this.provider.connect();
   }
 
   /** Stop syncing — disconnect from peers. The document and its cache stay open. */
@@ -220,9 +280,16 @@ export class XDBSyncAdapter {
         this.persistence.off('synced', this.persistenceListener);
         this.persistenceListener = null;
       }
+      this.started = false;
+      this.awarenessWhilePaused = null;
       if (this.provider) {
-        this.provider.destroy();
+        const provider = this.provider;
         this.provider = null;
+        // Left first: destroy() alone keeps the provider on its signaling
+        // connections, and their sockets open, reconnecting, for the life of
+        // the page.
+        this.leaveRoom(provider);
+        provider.destroy();
       }
     } finally {
       // Always clean up observers and tracked state, even if provider.destroy() throws
@@ -275,7 +342,8 @@ export class XDBSyncAdapter {
     const webrtcPeers = internals?.room?.webrtcConns?.size ?? 0;
     return {
       connected,
-      peers: Math.max(awarenessSize - 1, webrtcPeers),
+      // A paused room has let its peers go; their awareness lingers until it times out.
+      peers: this.paused ? 0 : Math.max(awarenessSize - 1, webrtcPeers),
       room: this.options.room,
       peerId: String(this.ydoc.clientID),
     };
@@ -672,6 +740,7 @@ import { getXDB } from './xdb';
 // The key's spelling lives in a module that imports nothing, so the renderer
 // can read it without loading this one (and yjs behind it).
 import { getSyncRoomKey, readSavedSyncRoom } from './xdb-sync-key';
+import { isAppShown, onAppActivity } from './sync-activity';
 
 /** Adapters, keyed by app scope and room together. */
 const syncAdapters = new Map<string, XDBSyncAdapter>();
@@ -705,6 +774,7 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
     return existing;
   }
   const adapter = new XDBSyncAdapter(getXDB(options.appId), options);
+  if (!isAppShown(options.appId)) adapter.pause();
   adapter.connect();
   syncAdapters.set(key, adapter);
   try {
@@ -756,11 +826,7 @@ export function stopSync(room?: string, appId?: string): void {
       // localStorage may be unavailable in restricted contexts
     }
   } else {
-    for (const [key, adapter] of Array.from(syncAdapters.entries())) {
-      if (!inScope(key, appId)) continue;
-      syncAdapters.delete(key);
-      adapter.close();
-    }
+    closeAppRooms(appId);
     try {
       localStorage.removeItem(getSyncRoomKey(appId));
     } catch {
@@ -768,6 +834,32 @@ export function stopSync(room?: string, appId?: string): void {
     }
   }
 }
+
+/** Leave and release every room `appId` is in, keeping the room it saved. */
+function closeAppRooms(appId: string | undefined): void {
+  for (const [key, adapter] of Array.from(syncAdapters.entries())) {
+    if (!inScope(key, appId)) continue;
+    syncAdapters.delete(key);
+    adapter.close();
+  }
+}
+
+// An app's rooms follow its host (sync-activity.ts): they wait while it is
+// behind another app and close with it. They ran on in a background tab, and
+// after the app closed, talking to peers and writing what they said into its
+// records until the same app was opened again.
+onAppActivity((appKey, activity) => {
+  const appId = appKey === '' ? undefined : appKey;
+  if (activity === 'closed') {
+    closeAppRooms(appId);
+    return;
+  }
+  for (const [key, adapter] of syncAdapters) {
+    if (!inScope(key, appId)) continue;
+    if (activity === 'shown') adapter.resume();
+    else adapter.pause();
+  }
+});
 
 /**
  * Stop every adapter in every app scope. For a host tearing the page down —

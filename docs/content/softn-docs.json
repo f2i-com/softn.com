@@ -3062,6 +3062,10 @@
             },
             {
               "type": "paragraph",
+              "text": "Peer sync runs while the app is on screen. Where a host keeps several apps open, as SoftN Web’s tabs do, an app’s rooms wait while another app is shown: nothing arrives from its peers and nothing is sent, and what the app writes meanwhile is exchanged when it is shown again. Closing the app leaves its rooms, and `db.getSavedSyncRoom()` still names the last one, so the app can start it again when it next opens."
+            },
+            {
+              "type": "paragraph",
               "text": "Local persistence, peer-to-peer sync and a private server database are not interchangeable. Choose the one that matches the app’s ownership, sharing and recovery needs."
             }
           ]
