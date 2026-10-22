@@ -88,6 +88,32 @@ describe('a page whose first screen names a light on-demand component', () => {
     expect(recallFirstDraw('first-draw-light')).toEqual(['WaitPanel']);
   });
 
+  it('keeps the script’s functions when the script lands before the components the draw waited for', async () => {
+    const load = deferred<SoftNComponent>();
+    register('SlowPanel', () => load.promise, true);
+    const source = `<logic>
+function label() { return 'from the script'; }
+</logic>
+<div><p id="out">{label()}</p><SlowPanel><p id="inside">Inside</p></SlowPanel></div>`;
+    await mount(source, 'first-draw-after-script');
+    // The script lands while the draw is held for the panel; the panel comes
+    // after it. The draw used to put the stand-ins back over its functions.
+    await act(async () => {
+      await sleep(200);
+    });
+    await act(async () => {
+      load.resolve(Panel);
+      await sleep(20);
+    });
+    for (let i = 0; i < 100 && container.querySelector('#out')?.textContent !== 'from the script'; i++) {
+      await act(async () => {
+        await sleep(20);
+      });
+    }
+    expect(container.querySelector('#out')?.textContent).toBe('from the script');
+    expect(container.querySelector('section[data-panel] #inside')?.textContent).toBe('Inside');
+  });
+
   it('is drawn as it stands once the wait is over, the component still on its way', async () => {
     register('NeverPanel', () => new Promise<SoftNComponent>(() => {}), true);
     await mount(page('NeverPanel'), 'first-draw-never');

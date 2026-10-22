@@ -1013,6 +1013,11 @@ export function SoftNRenderer({
         let earlyShell: Promise<void> | null = null;
         // What the page calls before the script has loaded (declared-functions.ts).
         let standIns: Record<string, (...args: unknown[]) => unknown> = {};
+        // Whether the script's own functions are in the state: a first draw
+        // that waited (for the document, or for the first screen's
+        // components) can come after them, and must not put the stand-ins
+        // back over them.
+        let scriptLanded = false;
 
         if (codeBlock && !scriptInitializedRef.current) {
           scriptInitializedRef.current = true;
@@ -1480,6 +1485,7 @@ export function SoftNRenderer({
               }
 
               // Merge script state into componentState and set functions
+              scriptLanded = true;
               setState((prev) => {
                 // Script state provides defaults; prev.componentState (from initialState) wins
                 const mergedState =
@@ -1592,14 +1598,17 @@ export function SoftNRenderer({
         // resolves: with stand-ins that wait for the new one.
         // A page drawn from its document waits the moment it takes to make it.
         const showDocument = () => {
+          // A first draw that waited may come after the script: its functions
+          // stay, and the stand-ins are only for a draw that comes first.
+          const waiting = Boolean(codeBlock) && !scriptLanded;
           setState((prev) => ({
             ...prev,
             document: doc,
             loading: false,
             error: null,
-            scriptFunctions: codeBlock ? standIns : prev.scriptFunctions,
-            scriptSyncFunctions: codeBlock ? {} : prev.scriptSyncFunctions,
-            scriptComputed: codeBlock ? {} : prev.scriptComputed,
+            scriptFunctions: waiting ? standIns : prev.scriptFunctions,
+            scriptSyncFunctions: waiting ? {} : prev.scriptSyncFunctions,
+            scriptComputed: waiting ? {} : prev.scriptComputed,
           }));
           onLoadRef.current?.(doc);
         };
@@ -1613,9 +1622,18 @@ export function SoftNRenderer({
         if (earlyShell) holds.push(earlyShell as Promise<void>);
         if (firstDraw) holds.push(Promise.race([firstDraw, new Promise((resolve) => setTimeout(resolve, FIRST_DRAW_WAIT_MS))]));
         if (holds.length > 0) {
-          void Promise.all(holds).then(() => {
-            if (!stale && mountedRef.current) showDocument();
-          });
+          void Promise.all(holds)
+            .then(() => {
+              if (!stale && mountedRef.current) showDocument();
+            })
+            // What the immediate draw's catch below does: a host's onLoad that
+            // throws is the page's error, not an unhandled rejection.
+            .catch((err: unknown) => {
+              if (stale || !mountedRef.current) return;
+              const error = err instanceof Error ? err : new Error(String(err));
+              setState((prev) => ({ ...prev, document: null, loading: false, error }));
+              onErrorRef.current?.(error);
+            });
         } else {
           showDocument();
         }
