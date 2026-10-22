@@ -1003,6 +1003,11 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // rest: see LogicTimers.
     const calls = this.timers.take(Array.isArray(out.hostCalls) ? out.hostCalls : []);
     for (const call of calls) {
+      // Asked before each call, not only after one: the entry applied below
+      // returns early when the app closes during it, and the next queued call
+      // (a sound to loop, a sandbox to start) would then run for an app that
+      // has gone, on a host whose cleanup has already run.
+      if (this.disposed) return;
       if (++rounds.n > MAX_HOST_CALL_ROUNDS) {
         console.error(
           `[SoftN] Host call limit exceeded (${MAX_HOST_CALL_ROUNDS}) — aborting to prevent runaway callback chains`

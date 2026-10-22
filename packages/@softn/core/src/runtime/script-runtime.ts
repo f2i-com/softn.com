@@ -79,6 +79,7 @@ import { AppAudio } from './host-calls/audio';
 import { AppMicrophone } from './host-calls/microphone';
 import { QrReader } from './host-calls/qr';
 import { pickFile, readBase64, readText, readZipText, saveFile } from './host-calls/files';
+import { releaseFilesOf } from './file-registry';
 import { AppAI } from './host-calls/ai';
 import type { BundleFileProvider } from './ai-manager';
 import { debug } from './debug';
@@ -1870,6 +1871,10 @@ export class SoftNScriptRuntime {
     // load so a malformed image cannot keep an orphaned host call alive.
     this.qr.dispose();
 
+    // The files the person chose for this app (softn.files.pick): kept for
+    // the page's life before, after the app that could read them had gone.
+    releaseFilesOf(this.gate);
+
     // An app that has been closed no longer owns background network work.
     // Abort pending fetches so they cannot continue downloading into an
     // orphaned host-call continuation.
@@ -2004,6 +2009,9 @@ export class SoftNScriptRuntime {
    * instance that never loads a script serves them as they are.
    */
   executeHostCallExternal(call: PendingHostCall): Promise<unknown> {
+    // Nothing more for an app that has closed: its sounds, sandboxes and
+    // models were let go by cleanup(), and a call now would start them again.
+    if (this.disposed) return Promise.resolve({ error: 'The app has closed' });
     return this.executeHostCall(call);
   }
 

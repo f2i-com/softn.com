@@ -51,7 +51,8 @@ export async function pickFile(gate: HostGate, call: PendingHostCall): Promise<u
         name: f.name,
         size: f.size,
         type: f.type,
-        ref: registerFileRef(f),
+        // Owned by the app's gate, so closing the app lets them go.
+        ref: registerFileRef(f, gate),
       }));
       resolve(result);
     };

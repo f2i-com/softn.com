@@ -106,6 +106,10 @@ function parseUsageFlags(usage: string): number {
 
 export class GpuComputeManager {
   private device: GPUDevice | null = null;
+  /** The request for a device while one is on its way. */
+  private deviceRequest: Promise<GPUDevice> | null = null;
+  /** Counted up by releaseAll, so a device that arrives after a release is not kept. */
+  private generation = 0;
   private buffers = new Map<string, BufferEntry>();
   private shaders = new Map<string, ShaderEntry>();
   private pipelines = new Map<string, PipelineEntry>();
@@ -134,13 +138,21 @@ export class GpuComputeManager {
   // ── Device ──
 
   async requestDevice(options?: Record<string, unknown>): Promise<{ deviceId: string; limits: Record<string, number> }> {
-    if (this.device) {
-      return {
-        deviceId: 'device_0',
-        limits: this.extractLimits(),
-      };
+    if (!this.device) {
+      // One request at a time: two calls in a row each made a device, and the
+      // first was dropped without being destroyed.
+      this.deviceRequest ??= this.openDevice(options).finally(() => {
+        this.deviceRequest = null;
+      });
+      await this.deviceRequest;
     }
+    return {
+      deviceId: 'device_0',
+      limits: this.extractLimits(),
+    };
+  }
 
+  private async openDevice(options?: Record<string, unknown>): Promise<GPUDevice> {
     // `navigator` is absent in Node and `gpu` in most browsers, so both are
     // checked rather than assumed.
     const gpu = (globalThis.navigator as Navigator | undefined)?.gpu;
@@ -148,24 +160,36 @@ export class GpuComputeManager {
       throw new Error('WebGPU is not supported in this browser');
     }
 
+    const generation = this.generation;
     const adapter = await gpu.requestAdapter(options);
     if (!adapter) {
       throw new Error('Failed to get WebGPU adapter');
     }
 
     const device = await adapter.requestDevice();
+    // Released while the device was on its way (the app closed, or called
+    // releaseAll): a device kept now would be held by nothing that frees it.
+    if (generation !== this.generation) {
+      device.destroy();
+      throw new Error('The GPU was released while its device was being requested');
+    }
     this.device = device;
 
-    // Listen for device loss
+    // A device lost (a GPU reset, a tab in the background on a phone) takes
+    // what lived on it: buffers, shaders, pipelines, and the memory counted
+    // for them, which a new device would otherwise inherit as already spent.
+    // Only this manager's current device: one it released, or replaced, is not.
     device.lost.then((info) => {
+      if (this.device !== device) return;
       console.warn(`[GpuComputeManager] Device lost: ${info.message}`);
+      this.buffers.clear();
+      this.shaders.clear();
+      this.pipelines.clear();
+      this.totalBufferBytes = 0;
       this.device = null;
     });
 
-    return {
-      deviceId: 'device_0',
-      limits: this.extractLimits(),
-    };
+    return device;
   }
 
   private extractLimits(): Record<string, number> {
@@ -463,6 +487,8 @@ export class GpuComputeManager {
   }
 
   async releaseAll(): Promise<{ released: boolean }> {
+    // A device still being requested is destroyed when it arrives.
+    this.generation++;
     // Destroy all buffers
     for (const entry of this.buffers.values()) {
       entry.buffer.destroy();

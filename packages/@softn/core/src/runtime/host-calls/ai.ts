@@ -24,9 +24,18 @@ export class AppAI {
     private readonly bundleFileProvider: BundleFileProvider | null
   ) {}
 
+  /**
+   * The app's model host, made on its first use. Asked again after the
+   * chunk's import, both whether the app is still open (one closed while the
+   * chunk was on its way would have started a host nothing disposed: a model's
+   * download and a Worker for the rest of the page's life) and whether a call
+   * beside this one made the host first.
+   */
   private async getModelHost(): Promise<import('../models/model-host').ModelHost> {
+    if (this.modelHost) return this.modelHost;
+    const { ModelHost } = await import('../models/model-host');
+    if (this.gate.disposed()) throw new Error('The app has closed');
     if (!this.modelHost) {
-      const { ModelHost } = await import('../models/model-host');
       const permissions = this.gate.permissionConfig()?.permissions;
       // The net declaration rides along: a model URL is egress like any other.
       this.modelHost = new ModelHost({
@@ -86,11 +95,14 @@ export class AppAI {
     return { released: this.modelHost?.release(String(modelHandle ?? '')) ?? false };
   }
 
+  /** The app's GPU compute manager, made on its first use; asked again after the import, as getModelHost is. */
   private async getGpuComputeManager(): Promise<
     import('../ai-gpu-compute-manager').GpuComputeManager
   > {
+    if (this.gpuComputeManager) return this.gpuComputeManager;
+    const { GpuComputeManager } = await import('../ai-gpu-compute-manager');
+    if (this.gate.disposed()) throw new Error('The app has closed');
     if (!this.gpuComputeManager) {
-      const { GpuComputeManager } = await import('../ai-gpu-compute-manager');
       this.gpuComputeManager = new GpuComputeManager();
       if (this.bundleFileProvider) {
         this.gpuComputeManager.setBundleFileProvider(this.bundleFileProvider);

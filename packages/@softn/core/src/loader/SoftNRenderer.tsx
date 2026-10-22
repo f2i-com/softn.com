@@ -1667,6 +1667,11 @@ export function SoftNRenderer({
       // Clean up script runtime and sync poll on source change or unmount
       if (scriptRuntimeRef.current) {
         scriptRuntimeRef.current.cleanup();
+        // Let go of it too: a source that has no code next (an edit that
+        // removed the page's <logic>) runs no runtime of its own, and the
+        // effects below would hand the closed one the new page's element,
+        // which put it back in key-capture's map for the page's life.
+        scriptRuntimeRef.current = null;
       }
       if (syncPollRef.current) {
         clearInterval(syncPollRef.current);
