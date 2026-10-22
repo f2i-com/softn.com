@@ -59,6 +59,7 @@ import type { PermissionConfig } from '../src/runtime/script-runtime';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { SoftNRenderer } from '../src/loader/SoftNRenderer';
+import { SoftNWithXDB } from '../src/loader/xdb-bindings';
 
 const views: AppView[] = [];
 const view = (appId: string, shown = true): AppView => {
@@ -182,6 +183,7 @@ describe('the renderer', () => {
     const render = (active: boolean) =>
       act(async () => root.render(createElement(SoftNRenderer, { source: '<p>hi</p>', appId: 'rendered', active })));
     try {
+      await render(true);
       await render(false);
       expect(isAppShown('rendered')).toBe(false);
       await render(true);
@@ -191,6 +193,29 @@ describe('the renderer', () => {
       await act(async () => root.unmount());
       expect(appClosings('rendered')).toBe(1);
       expect(isAppShown('rendered')).toBe(true);
+    } finally {
+      container.remove();
+    }
+  });
+
+  // Mounting closed the app's saved room, taken for one a previous mount had
+  // left open; with the app open in another view, it was that view's room.
+  it("leaves the room another view of the app is in when it mounts", async () => {
+    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    view('twin');
+    sync('twin', 'shared-desk');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(SoftNWithXDB, { source: '<p>hi</p>', appId: 'twin' })));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(getSyncAdapter('shared-desk', 'twin')).not.toBeNull();
+      await act(async () => root.unmount());
+      // The first view is still open, so the app is too.
+      expect(getSyncAdapter('shared-desk', 'twin')).not.toBeNull();
     } finally {
       container.remove();
     }

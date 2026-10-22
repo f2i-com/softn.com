@@ -647,11 +647,11 @@ describe('closeSyncRoom', () => {
 });
 
 // The web runner seeds its sync control from the saved room — "the room this
-// app was last in" — and SoftNWithXDB closes any stale adapter for that room
-// when it mounts without `resumeSavedSyncRoom`. That cleanup went through
-// stopSync, which forgot the room it had just been asked about, so the room
-// survived exactly one reload. These mount the component the way the runner
-// does and read the key back.
+// app was last in". SoftNWithXDB used to close a stale adapter for that room
+// when it mounted without `resumeSavedSyncRoom`, through stopSync, which
+// forgot the room it had just been asked about, so the room survived exactly
+// one reload. These mount the component the way the runner does and read the
+// key back.
 describe('SoftNWithXDB mounting with a saved room', () => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   let container: HTMLElement;

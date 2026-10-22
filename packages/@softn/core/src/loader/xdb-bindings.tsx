@@ -549,43 +549,12 @@ export function SoftNWithXDB({
   // Auto-resume sync from localStorage on mount
   const syncResumedAppRef = useRef<string | null>(null);
 
-  // Clean up THIS app's stale sync adapter on mount.
-  // Fires when resumeSavedSyncRoom is not explicitly true (i.e., false or undefined).
-  //
-  // This used to call stopSync() with no arguments, which does not mean "drop my
-  // leftovers" — it iterates every adapter in the module-level map, calls
-  // provider.destroy() on each and clears it. softn-web keeps every open tab
-  // mounted in one realm (App.tsx renders all openTabs and toggles them with
-  // display), so opening a second app silently tore down the first one's live
-  // sync: no error, no callback, and the first app's writes stopped reaching its
-  // peers while still landing locally.
-  //
-  // It then called stopSync(saved, appId), which closes the adapter and also
-  // forgets the saved room — and the room it was closing was, by construction,
-  // the saved one. The web runner seeds its sync control from that key as "the
-  // room this app was last in", so the control came up filled in after one
-  // reload and empty after the next, unless the user had reconnected in
-  // between. closeSyncRoom releases the adapter and leaves the key alone; an
-  // app that leaves a room on purpose still goes through xdb_stopSync, which
-  // forgets it.
-  //
-  // The key is read before the import, not by it. Asking the sync module
-  // whether a room was saved meant loading the sync module to ask, and that
-  // module carries yjs: measured, every app on both hosts fetched the 195 KB
-  // xdb-sync chunk on every cold visit, whether or not it had ever synced.
-  // An app with nothing saved has no adapter to close and loads nothing.
-  useEffect(() => {
-    if (props.resumeSavedSyncRoom) return;
-    const saved = readSavedSyncRoom(props.appId);
-    if (!saved) return;
-    import('../runtime/xdb-sync')
-      .then(({ closeSyncRoom }) => {
-        closeSyncRoom(saved, props.appId);
-      })
-      .catch(() => {
-        // Ignore sync cleanup failures in constrained environments.
-      });
-  }, [props.resumeSavedSyncRoom, props.appId]);
+  // No room is closed here at mount. One used to be: the app's saved room,
+  // left open by a previous mount, since nothing closed an app's rooms when
+  // it closed. They close with it now (sync-activity.ts), so a room open at
+  // mount is another view's of this app, in use; and asking meant fetching
+  // the sync chunk (195 KB, yjs with it) on every open of an app that had
+  // ever synced.
 
   // Auto-resume sync only when explicitly opted in (resumeSavedSyncRoom === true).
   useEffect(() => {

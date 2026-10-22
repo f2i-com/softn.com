@@ -1,13 +1,13 @@
 /**
  * The sync runtime is not fetched to find out that nothing needs it.
  *
- * SoftNWithXDB's mount-time cleanup closes the adapter of a room a previous
- * mount left open. It used to do so by importing xdb-sync and asking it for
- * the saved room, so every app on both hosts fetched the sync chunk — 195 KB,
- * yjs included — on every cold visit, whether or not it had ever synced
- * (audit item X07). Now it reads the saved-room key first, through
- * runtime/xdb-sync-key.ts, which imports nothing, and only imports the sync
- * module when there is a room to close.
+ * SoftNWithXDB used to close, at mount, the adapter of a room a previous
+ * mount had left open. First it imported xdb-sync to ask for the saved room,
+ * so every app on both hosts fetched the sync chunk — 195 KB, yjs included —
+ * on every cold visit (audit item X07); then it read the key first and
+ * imported only when a room was saved, so an app that had ever synced still
+ * fetched it on every open. An app's rooms close with the app now
+ * (sync-activity.ts), and mounting closes nothing and imports nothing.
  *
  * The probe is the mock factory: vitest runs it the first time the module is
  * imported, so its call count is whether `import('../runtime/xdb-sync')`
@@ -23,15 +23,12 @@ import { getSyncRoomKey } from '../src/runtime/xdb-sync-key';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { syncModuleLoads, closeSyncRoom } = vi.hoisted(() => ({
-  syncModuleLoads: { count: 0 },
-  closeSyncRoom: vi.fn<(room: string, appId?: string) => boolean>(() => true),
-}));
+const { syncModuleLoads } = vi.hoisted(() => ({ syncModuleLoads: { count: 0 } }));
 
 vi.mock('../src/runtime/xdb-sync', () => {
   syncModuleLoads.count += 1;
   return {
-    closeSyncRoom,
+    closeSyncRoom: vi.fn(() => true),
     getSavedSyncRoom: () => null,
     startSync: vi.fn(),
     stopSync: vi.fn(),
@@ -51,7 +48,7 @@ async function mount(appId?: string): Promise<void> {
     root = createRoot(container!);
     root.render(<SoftNWithXDB source="<div>probe</div>" appId={appId} />);
   });
-  // The import, when it happens, settles over a few microtasks.
+  // An import, were one made, settles over a few microtasks.
   await act(async () => {
     for (let i = 0; i < 8; i++) await Promise.resolve();
   });
@@ -60,7 +57,6 @@ async function mount(appId?: string): Promise<void> {
 beforeEach(() => {
   localStorage.clear();
   syncModuleLoads.count = 0;
-  closeSyncRoom.mockClear();
 });
 
 afterEach(async () => {
@@ -74,7 +70,6 @@ describe('SoftNWithXDB and the sync runtime at mount', () => {
   it('does not import xdb-sync when no room is saved', async () => {
     await mount(APP);
     expect(syncModuleLoads.count).toBe(0);
-    expect(closeSyncRoom).not.toHaveBeenCalled();
   });
 
   it('does not import xdb-sync for the default scope either', async () => {
@@ -82,18 +77,11 @@ describe('SoftNWithXDB and the sync runtime at mount', () => {
     expect(syncModuleLoads.count).toBe(0);
   });
 
-  it("ignores another app's saved room", async () => {
-    localStorage.setItem(getSyncRoomKey('some-other-app'), 'lobby');
-    await mount(APP);
-    expect(syncModuleLoads.count).toBe(0);
-  });
-
-  it('imports xdb-sync once and closes the saved room when one is saved', async () => {
+  it('does not import xdb-sync for a saved room, and leaves the room saved', async () => {
     localStorage.setItem(getSyncRoomKey(APP), 'lobby');
     await mount(APP);
-    expect(syncModuleLoads.count).toBe(1);
-    expect(closeSyncRoom).toHaveBeenCalledWith('lobby', APP);
-    // Closing is not forgetting: the room is still there for the app to offer back.
+    expect(syncModuleLoads.count).toBe(0);
+    // The room is still there for the app to offer back.
     expect(localStorage.getItem(getSyncRoomKey(APP))).toBe('lobby');
   });
 });

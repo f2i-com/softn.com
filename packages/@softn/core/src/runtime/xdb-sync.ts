@@ -790,11 +790,12 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
  * what {@link getSavedSyncRoom} answers, the app's memory of where it last
  * was — is left where it is. Returns whether there was an adapter to close.
  *
- * For a host clearing a leftover at mount, not for an app leaving a room; an
- * app calls {@link stopSync}, and forgetting the room is part of leaving it.
- * The host's mount-time cleanup used `stopSync` for this, and because the
- * room it closed was the saved one, each mount erased the very room it was
- * there to offer back: a room survived exactly one reload.
+ * For a host closing one room, not for an app leaving a room; an app calls
+ * {@link stopSync}, and forgetting the room is part of leaving it. A host's
+ * mount-time cleanup once used `stopSync` for this, and because the room it
+ * closed was the saved one, each mount erased the very room it was there to
+ * offer back: a room survived exactly one reload. (That cleanup is gone: an
+ * app's rooms close with the app, sync-activity.ts.)
  */
 export function closeSyncRoom(room: string, appId?: string): boolean {
   const key = registryKey(appId, room);
