@@ -6,6 +6,7 @@
  * until it has proved to be a same-origin bundle of a plausible size.
  */
 
+import { responseBodyLength, trackLoad } from '@softn/core';
 import { readBoundedBody } from '@softn/runtime-shell/net';
 
 /** Refuse anything larger than this. Promptly Unemployed is about 18 MB. */
@@ -18,8 +19,11 @@ const MAX_MB = MAX_REMOTE_BUNDLE_BYTES / (1024 * 1024);
 // editors and the directory.
 export { resolveBundleUrl, bundleNameFromUrl } from '@softn/bundle-format/url';
 
-/** Download a bundle, giving up rather than growing without bound. */
-export async function fetchRemoteBundle(url: URL, signal?: AbortSignal): Promise<Uint8Array> {
+/**
+ * Download a bundle, giving up rather than growing without bound. `name` is
+ * what its loading screen calls it while it arrives.
+ */
+export async function fetchRemoteBundle(url: URL, signal?: AbortSignal, name?: string): Promise<Uint8Array> {
   // The signal lets a closed tab stop its own download rather than leaving a
   // bundle arriving for a tab that no longer exists.
   const response = await fetch(url.href, { credentials: 'same-origin', signal, cache: 'no-cache' });
@@ -48,11 +52,23 @@ export async function fetchRemoteBundle(url: URL, signal?: AbortSignal): Promise
     throw new Error(`${url.pathname} is not a bundle — the server returned a web page.`);
   }
 
+  // Counted for the tab's loading screen (core's load-progress), under the
+  // name the placeholder tab wears.
+  const counted = trackLoad(`bundle:${url.href}`, 'bundle', { name, total: responseBodyLength(response) });
+
   // Content-Length is a claim, so the cap is enforced again against the bytes
   // that actually arrive; a chunked response carries no length at all.
-  const data = await readBoundedBody(response, MAX_REMOTE_BUNDLE_BYTES);
+  let data: Uint8Array | null;
+  try {
+    data = await readBoundedBody(response, MAX_REMOTE_BUNDLE_BYTES, { onChunk: (size) => counted.advance(size) });
+  } catch (error) {
+    counted.fail();
+    throw error;
+  }
   if (data === null) {
+    counted.fail();
     throw new Error(`${url.pathname} is larger than the ${MAX_MB} MB limit for bundles opened by URL.`);
   }
+  counted.finish();
   return data;
 }

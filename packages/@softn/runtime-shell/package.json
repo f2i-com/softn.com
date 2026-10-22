@@ -15,6 +15,7 @@
     "./consent": "./src/consent.ts",
     "./PermissionBar": "./src/PermissionBar.tsx",
     "./PermissionPrompt": "./src/PermissionPrompt.tsx",
+    "./LoadProgress": "./src/LoadProgress.tsx",
     "./package.json": "./package.json"
   },
   "scripts": {

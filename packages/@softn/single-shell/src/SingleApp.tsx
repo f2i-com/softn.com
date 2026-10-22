@@ -16,6 +16,7 @@ import { createImportResolver } from '@softn/runtime-shell/bundleProcessor';
 import { hasSavedGrant, saveGrant, withheldPermissions } from '@softn/runtime-shell/consent';
 import { PermissionBar } from '@softn/runtime-shell/PermissionBar';
 import { describeFailure } from '@softn/runtime-shell/failure';
+import { LoadProgress } from '@softn/runtime-shell/LoadProgress';
 import type { AssetResolver } from '@softn/runtime-shell/bundleProcessor';
 import { loadApplication, type ConfigSource } from './load';
 import { watchForStall } from './stall';
@@ -79,9 +80,12 @@ export interface RunnableApplication {
 }
 export function Loading({ text = 'Loading…' }: { text?: string }) {
   return (
-    <div className="loading" role="status" aria-live="polite">
+    <div className="loading">
       <span className="wheel" aria-hidden="true" />
-      <span>{text}</span>
+      <span role="status" aria-live="polite">{text}</span>
+      {/* What is downloading, once the wait has gone on: the bundle, the
+          engine, the components the first screen draws. */}
+      <LoadProgress />
     </div>
   );
 }
@@ -382,6 +386,9 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
             />
           )}
         </div>
+        {/* What is still arriving once the app is drawn: on a first visit,
+            the script engine its taps wait for; later, a page's 3D. */}
+        <LoadProgress variant="bar" top="var(--softn-tab-bar-height)" />
         <div className="application-content" ref={content} tabIndex={-1} data-softn-theme-box={THEME_BOX}>
           <Boundary>
             <SoftNWithXDB

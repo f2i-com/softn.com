@@ -6,6 +6,7 @@ import { SoftNWithXDB, type AppAssetResolver, type PythonProject } from '@softn/
 import { Spinner, Box, Text } from '@softn/components/essentials';
 import { ThemeProvider } from '@softn/components/theme';
 import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
+import { LoadProgress } from '@softn/runtime-shell/LoadProgress';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
 import './AppRunner.css';
 
@@ -74,6 +75,9 @@ const APP_BOX_STYLE: React.CSSProperties = {
   contain: 'paint',
   isolation: 'isolate',
 };
+
+/** The loading screens' download panel, in their quieter text colour. */
+const LOAD_PROGRESS_STYLE: React.CSSProperties = { color: 'var(--dim)', width: 'min(320px, 80%)' };
 
 const ERROR_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -212,6 +216,11 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
             <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
               <span role="status">Opening {appName}…</span>
             </Text>
+            {/* What is downloading once the wait has gone on: the bundle,
+                then the engine and the first screen's components. */}
+            <div style={LOAD_PROGRESS_STYLE}>
+              <LoadProgress />
+            </div>
           </Box>
         </ThemeProvider>
       </div>
@@ -305,6 +314,9 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                   <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
                     <span role="status">Starting {appName}…</span>
                   </Text>
+                  <div style={LOAD_PROGRESS_STYLE}>
+                    <LoadProgress />
+                  </div>
                 </Box>
               }
               error={(err) => (
@@ -320,6 +332,11 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
           </ThemeProvider>
         </RunnerErrorBoundary>
       </div>
+      {/* What is still arriving once the app is drawn (on a first visit, the
+          script engine its taps wait for; later, a page's 3D): a thin line
+          over the top of the app, under the permission bar. Drawn after the
+          app's box, whose own stacking keeps everything the app draws below. */}
+      <LoadProgress variant="bar" top={consentBarHeight > 0 ? `${consentBarHeight}px` : undefined} />
     </div>
   );
 }

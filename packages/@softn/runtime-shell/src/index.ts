@@ -15,6 +15,8 @@
  * - `consent`: what a declaration asks for, the same bundle with all of it
  *   withheld, how an Allow is remembered, and what an update newly asks for;
  *   `PermissionBar` and `PermissionPrompt` are the bar and dialog that ask.
+ * - `LoadProgress`: what is downloading to run an app, on a loading screen
+ *   or as a thin bar over an app already drawn.
  *
  * These used to live in the web app (and consent in three copies), and the
  * other hosts imported them by path or duplicated them.
@@ -39,3 +41,5 @@ export { PermissionBar, CAPABILITY_PHRASE, DESKTOP_WORDING } from './PermissionB
 export type { ConsentRequest, ConsentWording, PermissionBarProps } from './PermissionBar';
 export { PermissionPrompt, PERMISSION_INFO, BROWSER_DEVICE_NOTE } from './PermissionPrompt';
 export type { PermissionPromptProps } from './PermissionPrompt';
+export { LoadProgress, FEATURE_LABELS } from './LoadProgress';
+export type { LoadProgressProps } from './LoadProgress';

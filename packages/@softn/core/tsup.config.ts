@@ -1,5 +1,5 @@
 import { defineConfig } from 'tsup';
-import { cpSync, existsSync, rmSync } from 'fs';
+import { cpSync, existsSync, rmSync, statSync } from 'fs';
 import { execFileSync } from 'node:child_process';
 import { copyWorkerFiles } from './scripts/worker-files.mjs';
 
@@ -31,6 +31,10 @@ export default defineConfig({
   sourcemap: true,
   external: ['react', 'react-dom'],
   treeshake: true,
+  // The engine's size, for the progress a host shows while it downloads
+  // (zipp-wasm-loader.ts): a server that compresses it says only the
+  // compressed length.
+  define: { __SOFTN_ENGINE_BYTES__: String(statSync('wasm-zipp/zipp_wasm_bg.wasm').size) },
   onSuccess: async () => {
     // Copy the engine's WASM to dist/ — tsup inlines the glue JS into a chunk,
     // and the glue uses `new URL('<name>_bg.wasm', import.meta.url)`, so the

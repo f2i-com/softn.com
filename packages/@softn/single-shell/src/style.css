@@ -56,6 +56,9 @@ html.softn-play-framed body {
   height: 100dvh;
   display: flex;
   flex-direction: column;
+  /* Where the thin download bar is drawn from: the top of the app, under
+     the chrome (runtime-shell's LoadProgress). */
+  position: relative;
 }
 .application-content {
   flex: 1;

@@ -38,7 +38,10 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
   mark('softn:bundle-fetch:start');
   // An inline configuration names a version-addressed bundle with its digest
   // pinned, so the browser's cache may answer; see fetchBytes.
-  const bytes = await fetchBytes(config.bundle, signal, 32 * 1024 * 1024, inline !== undefined ? 'default' : 'no-store', progress);
+  const bytes = await fetchBytes(config.bundle, signal, 32 * 1024 * 1024, inline !== undefined ? 'default' : 'no-store', progress, {
+    id: 'bundle:' + config.bundle,
+    name: config.title,
+  });
   mark('softn:bundle-fetch:end');
   mark('softn:digest:start');
   const hash = await digest(bytes);

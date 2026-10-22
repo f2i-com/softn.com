@@ -12,7 +12,7 @@ import { composeBundleSource } from '@softn/core';
 
 describe('@softn/runtime-shell', () => {
   it('exports the bundle pipeline, the warm-up, the frame bar and consent', () => {
-    for (const name of ['readZip', 'processBundle', 'loadXDBData', 'createAssetResolver', 'createImportResolver', 'judgeRemoteImport', 'readBoundedBody', 'resolveServerConfig', 'describeFailure', 'extractPermissions', 'requestedCapabilities', 'withheldPermissions', 'CAPABILITIES', 'warmFirstScreen', 'FrameBar', 'PermissionBar', 'PermissionPrompt', 'PERMISSION_INFO', 'grantKey', 'hasSavedGrant', 'saveGrant', 'grantCovers', 'diffCapabilities']) {
+    for (const name of ['readZip', 'processBundle', 'loadXDBData', 'createAssetResolver', 'createImportResolver', 'judgeRemoteImport', 'readBoundedBody', 'resolveServerConfig', 'describeFailure', 'extractPermissions', 'requestedCapabilities', 'withheldPermissions', 'CAPABILITIES', 'warmFirstScreen', 'FrameBar', 'PermissionBar', 'PermissionPrompt', 'PERMISSION_INFO', 'grantKey', 'hasSavedGrant', 'saveGrant', 'grantCovers', 'diffCapabilities', 'LoadProgress', 'FEATURE_LABELS']) {
       expect(typeof (shell as Record<string, unknown>)[name], name).toMatch(/function|object/);
     }
   });

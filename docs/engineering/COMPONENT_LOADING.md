@@ -260,6 +260,41 @@ first-screen set by construction, and it is what the per-app offline install
 below walks, because a route the user has not visited is exactly what has to
 be there when the network is not.
 
+## What a host shows while it waits
+
+Core keeps one list of what the page is downloading to run its apps
+(`packages/@softn/core/src/runtime/load-progress.ts`): the app's bundle, the
+script engine, the torch package and each on-demand feature's chunk, by an
+id that says what it is (`bundle:<address>`, `engine`, `torch`,
+`components:<feature>`). The engine and the torch package are counted from a
+clone of their response, so the response compiled is the one fetched and the
+browser's code cache for it still applies; the engine's size is written into
+core's build (`__SOFTN_ENGINE_BYTES__` in `tsup.config.ts`), because a server
+that compresses it gives only the compressed length. A bundle is counted
+through `readBoundedBody`'s `onChunk`, which is handed each piece's size. A
+component chunk comes through `import()`, which says nothing of its bytes:
+it is named, not measured. The list tells its listeners at most once a frame.
+
+`@softn/runtime-shell/LoadProgress` shows it in two forms, in the standalone
+shell and in SoftN Web:
+
+- **On a loading screen** (`panel`), under the spinner: a bar for the bytes
+  of the downloads whose size is known, and a line for each download ("Script
+  engine 2.4 MB of 6.5 MB", "Tables Ready"). It appears once the wait has
+  gone on 400 ms, counted from the screen's appearance or the oldest download
+  still arriving, whichever was sooner; a load from the cache is over first.
+- **Over an app already drawn** (`bar`): a thin line along the top of the
+  app, under any permission bar, with a small label at its right ("Script
+  engine · 34%"), while something it needs is still arriving after 400 ms. A
+  page is drawn before the engine is ready (its taps wait for the script),
+  and an app that draws its screen from its script's state is blank until
+  then, so on a first visit over a slow connection this is what says the
+  6.5 MB engine is still on its way; later it is a page's 3D arriving.
+
+The bar is a `progressbar` with its value when the sizes are known and a
+text of what is arriving; the lines are not a live region, so a screen
+reader is not read every piece.
+
 ## The PWA policy (softn-web)
 
 `apps/softn-web/vite.config.ts` defines three tiers. "The shell works

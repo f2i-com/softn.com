@@ -6,6 +6,11 @@ import initWasm, {
   type InitOutput,
 } from '../../wasm-zipp/zipp_wasm.js';
 import { retryableSingleFlight } from './retryable-single-flight';
+import { countResponse, responseBodyLength, trackLoad } from './load-progress';
+
+/** The engine's size in bytes, written in by core's build (tsup.config.ts); absent where core runs from source. */
+declare const __SOFTN_ENGINE_BYTES__: number | undefined;
+const ENGINE_BYTES: number | undefined = typeof __SOFTN_ENGINE_BYTES__ === 'number' ? __SOFTN_ENGINE_BYTES__ : undefined;
 
 let suppliedSource: BufferSource | WebAssembly.Module | undefined;
 let initializationStarted = false;
@@ -62,6 +67,11 @@ const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
     throw new Error(`The ZIPP engine (${url.pathname}) could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!response.ok) throw new Error(`The ZIPP engine (${url.pathname}) answered ${response.status}`);
+  // Counted for a host's progress bar (load-progress.ts) from a clone, so the
+  // response compiled below is the one fetched, address and all. Its size is
+  // the server's when it says it plainly, else the engine this build carries,
+  // which a compressed answer's length is not.
+  countResponse(response, trackLoad('engine', 'engine', { total: responseBodyLength(response) ?? ENGINE_BYTES }));
   // Streaming only for a server that labels the file as WebAssembly, which
   // compileStreaming insists on; any other label still serves the right bytes.
   return typeof WebAssembly.compileStreaming === 'function' && response.headers.get('Content-Type') === 'application/wasm'
@@ -222,6 +232,7 @@ async function torchPackageSource(): Promise<Uint8Array | WebAssembly.Module> {
     throw new Error(`${url.pathname} could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!response.ok) throw new Error(`${url.pathname} answered ${response.status}`);
+  countResponse(response, trackLoad('torch', 'torch', { total: responseBodyLength(response) }));
   // Bytes rather than compileStreaming: a server that labels the file with
   // another MIME type still serves the right bytes.
   return new Uint8Array(await response.arrayBuffer());

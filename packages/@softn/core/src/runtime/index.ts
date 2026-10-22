@@ -24,6 +24,16 @@ export { buildSyncCacheKey } from './sync-cache-key';
 export { bindSyncOptions } from './host-bound-sync-options';
 export { retryableSingleFlight } from './retryable-single-flight';
 export { configureZippTorchSource, configureZippWasmSource, preloadZippTorch, zippLanguages, zippTorchWasmUrl } from './zipp-wasm-loader';
+export {
+  countResponse,
+  loadProgressItems,
+  resetLoadProgressForTests,
+  responseBodyLength,
+  subscribeLoadProgress,
+  trackLoad,
+  type LoadProgressHandle,
+  type LoadProgressItem,
+} from './load-progress';
 export { configureLogicEngine, createLogicEngine, logicEngineThreads } from './vm-adapter';
 export type { LogicEngine, LogicEngineFactory, LogicEngineThreads, PythonProject } from './vm-adapter';
 export { preloadSyncRuntime } from './xdb-sync-preload';

@@ -1,4 +1,4 @@
-import { inspectDeclaration, sha256Hex, type PermissionConfig } from '@softn/core';
+import { inspectDeclaration, responseBodyLength, sha256Hex, trackLoad, type PermissionConfig } from '@softn/core';
 import { readBoundedBody } from '@softn/runtime-shell/net';
 /**
  * Where the app came from, when a directory served this shell for it: the
@@ -157,7 +157,10 @@ export async function fetchBytes(
   cache: RequestCache = 'no-store',
   // Told whenever something arrives, the answer and then each piece of the
   // body: what a stall deadline is reset by (see stall.ts).
-  progress?: () => void
+  progress?: () => void,
+  // The app's bundle, named for the loading screen's progress (core's
+  // load-progress); the small files are not.
+  download?: { id: string; name?: string }
 ): Promise<Uint8Array> {
   const response = await fetch(url, {
     signal,
@@ -167,14 +170,28 @@ export async function fetchBytes(
   });
   progress?.();
   if (!response.ok) throw Error('Required file could not be loaded');
+  const counted = download
+    ? trackLoad(download.id, 'bundle', { name: download.name, total: responseBodyLength(response) })
+    : undefined;
   // The bound is held against the declared length and then the bytes that
   // arrive (runtime-shell's readBoundedBody, which every host reads with).
-  const bytes = await readBoundedBody(response, limit, {
-    onChunk: () => {
-      progress?.();
-    },
-  });
-  if (bytes === null) throw Error('File exceeds size limit');
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await readBoundedBody(response, limit, {
+      onChunk: (size) => {
+        progress?.();
+        counted?.advance(size);
+      },
+    });
+  } catch (error) {
+    counted?.fail();
+    throw error;
+  }
+  if (bytes === null) {
+    counted?.fail();
+    throw Error('File exceeds size limit');
+  }
+  counted?.finish();
   return bytes;
 }
 /**

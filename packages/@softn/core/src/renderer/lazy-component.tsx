@@ -24,6 +24,7 @@
 import React, { Component, Suspense, useRef, useSyncExternalStore } from 'react';
 import type { SoftNProps } from '../types';
 import type { SoftNComponent } from './registry';
+import { trackLoad } from '../runtime/load-progress';
 
 /** Resolves to the component; typically `() => import('…').then((m) => m.Name)`. */
 export type SoftNComponentLoader = () => Promise<SoftNComponent>;
@@ -139,14 +140,19 @@ export class LazyComponentEntry {
       promise = Promise.reject(error);
     }
     this.promise = promise;
+    // Named for a host's progress (load-progress.ts) by its feature: every
+    // name of one feature is one chunk, and one item.
+    const progress = trackLoad(`components:${this.feature ?? this.name}`, 'components', { name: this.feature ?? this.name });
     promise.then(
       (component) => {
+        progress.finish();
         // A result from before a retry belongs to a generation nobody renders.
         if (generation !== this.generation) return;
         this.component = component;
         this.setState('loaded');
       },
       (error) => {
+        progress.fail();
         if (generation !== this.generation) return;
         this.error = error;
         this.setState('error');

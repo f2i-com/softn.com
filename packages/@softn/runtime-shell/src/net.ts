@@ -45,11 +45,12 @@ export function judgeRemoteImport(url: string, config: PermissionConfig | null |
 
 export interface BoundedReadOptions {
   /**
-   * Told when each piece of the body arrives. Returning `false` stops the
-   * read: the body is cancelled and the read gives null, as for one past the
-   * bound. A stall deadline is reset from here, and a disposed resolver stops.
+   * Told when each piece of the body arrives, with its size in bytes.
+   * Returning `false` stops the read: the body is cancelled and the read
+   * gives null, as for one past the bound. A stall deadline is reset from
+   * here, a disposed resolver stops, and a progress bar counts.
    */
-  onChunk?: () => boolean | void;
+  onChunk?: (bytes: number) => boolean | void;
   /** Handed the reader while it is in use, so its owner can cancel it; returns the release. */
   onReader?: (reader: ReadableStreamDefaultReader<Uint8Array>) => () => void;
 }
@@ -75,7 +76,7 @@ export async function readBoundedBody(
   }
   if (!response.body) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (options.onChunk?.() === false) return null;
+    if (options.onChunk?.(bytes.byteLength) === false) return null;
     return bytes.byteLength > limit ? null : bytes;
   }
   const reader = response.body.getReader();
@@ -87,7 +88,7 @@ export async function readBoundedBody(
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (options.onChunk?.() === false || size > limit) {
+      if (options.onChunk?.(value.byteLength) === false || size > limit) {
         await reader.cancel().catch(() => undefined);
         return null;
       }

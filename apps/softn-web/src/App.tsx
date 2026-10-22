@@ -584,7 +584,7 @@ function App(): React.ReactElement {
 
         let data: Uint8Array;
         try {
-          data = await fetchRemoteBundle(url, controller.signal);
+          data = await fetchRemoteBundle(url, controller.signal, displayName);
         } catch (err) {
           // An abort is the user closing the tab, not a failure to report.
           if (controller.signal.aborted) return null;
