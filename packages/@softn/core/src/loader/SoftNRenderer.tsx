@@ -1316,6 +1316,10 @@ export function SoftNRenderer({
               cleanup: () => {
                 mainRuntime.cleanup();
               },
+              // Without it the app's element was never named (key-capture.ts),
+              // and its window listeners heard every key and click aimed at
+              // the page outside an editable field, the host's own included.
+              setAppRoot: (element) => mainRuntime.setAppRoot?.(element),
             };
           } else if (effectiveMode === 'worker' && forceWorker) {
             runtime = createWorkerScriptRuntimeLazily(
@@ -1407,6 +1411,8 @@ export function SoftNRenderer({
               cleanup: () => {
                 mainRuntime.cleanup();
               },
+              // As in the hybrid handle above: SoftN Web's default mode.
+              setAppRoot: (element) => mainRuntime.setAppRoot?.(element),
             };
           } else {
             runtime = createScriptRuntime(
