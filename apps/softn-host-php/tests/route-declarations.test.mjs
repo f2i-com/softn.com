@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readdirSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {spawnSync,spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
@@ -401,6 +401,24 @@ test('a handler that throws and a read route that writes change nothing, and the
   assert.match(refused.stderr,/^softn: handler sneak: Read-only transaction\n$/);
   // A request that works leaves nothing to log.
   assert.equal(b.logged({method:'GET',path:'/api/value'}).stderr,'');
+});
+
+// The positions an error reports count from the logic's first line, under the
+// name `logic`, as on the Rust host: the shim and the settings ahead of it are
+// taken off (ZIPP 0.0.29). Before, a syntax error on line 2 was placed past
+// the shim's thirty-odd lines.
+test('an error\'s positions are the logic\'s own lines, strict or not',async t=>{
+  const b=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}]));
+  t.after(b.close);
+  const {validateWasmSource,createWasmHost}=await import(pathToFileURL(join(b.root,'wasm-host.mjs')).href);
+  for(const [prefix,first] of [['',1],['"use strict";\n',2]]){
+    assert.throws(()=>validateWasmSource(prefix+'function ok(){}\nlet c = ;\n'),e=>String(e)===`SyntaxError: unexpected token ';'\n    at logic:${first+1}:9`,JSON.stringify(prefix));
+    const db=new DatabaseSync(':memory:');
+    try{
+      const host=createWasmHost(db,{key:Buffer.alloc(32,7),cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'},capabilities:[],source:prefix+'function handle(req){\n  var e=new Error("x");\n  return {status:200,body:{stack:e.stack}};\n}\n'});
+      assert.match(host.invoke({},{handler:'handle',transaction:'read'}).body.stack,new RegExp(`at handle \\(logic:${first+1}:`),JSON.stringify(prefix));
+    }finally{db.close();}
+  }
 });
 
 test('a startup that fails names its stage on stderr, without the path that was missing',t=>{

@@ -39,14 +39,17 @@ describe('shipped ZIPP lifecycle through the Softn adapter', () => {
       expect(after.enginesDisposed - before.enginesDisposed).toBe(200);
       // B313 removed these disposed-program totals: the Program is owned.
       expect(after).not.toHaveProperty('programBytecodeBytes');
-      const retainedBytes = after.retainedFunctionBytes - before.retainedFunctionBytes;
-      if (dynamic) expect(retainedBytes).toBeGreaterThan(0);
-      else expect(retainedBytes).toBe(0);
+      // What the disposed engines' dynamic code came to: freed with each
+      // engine and counted in the instance's running totals as it goes (the
+      // `retained*` names are 0.0.29's deprecated aliases of these).
+      const disposedBytes = after.disposedDynamicFunctionBytes - before.disposedDynamicFunctionBytes;
+      if (dynamic) expect(disposedBytes).toBeGreaterThan(0);
+      else expect(disposedBytes).toBe(0);
       console.info('ZIPP lifecycle measurement', {
         profile: JSON.parse(zippProfile()).version,
         dynamic,
         cycles: 200,
-        retainedFunctionBytes: retainedBytes,
+        disposedDynamicFunctionBytes: disposedBytes,
         wasmCapacityGrowthBytes: memory.buffer.byteLength - pagesBefore,
         processRssGrowthBytes: process.memoryUsage().rss - rssBefore,
       });

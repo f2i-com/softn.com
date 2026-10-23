@@ -28,6 +28,7 @@ import { LogicTimers, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { prologueIsStrict, STRICT_DIRECTIVE } from './directive-prologue';
 import { blankCommentsAndStrings } from './code-text';
 import { placeSyntaxError } from './logic-syntax';
+import { endLine, logicOrigin } from './logic-origin';
 import { moduleSyntaxAsScript } from './module-syntax';
 import { inlineLogicImports } from './logic-imports';
 import { sanitizeArgs } from './vm-args';
@@ -644,8 +645,12 @@ export class SoftNScriptRuntime {
       const strict = prologueIsStrict(resolvedCode)
         ? STRICT_DIRECTIVE + computedGlobalsSource(computedDecls.map((declaration) => declaration.name))
         : '';
-      const bridges =
-        strict + VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble + shellCode;
+      // The logic starts a line of its own, and the engine counts its
+      // positions from there (logic-origin.ts).
+      const bridges = endLine(
+        strict + VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble + shellCode
+      );
+      const origin = logicOrigin(bridges);
       const scriptCode = bridges + resolvedCode + TIMER_TRAILER;
       const fullCode = computedPreamble
         ? bridges + guardFirstValues(resolvedCode, computedPlan) + '\n' + computedPreamble + TIMER_TRAILER
@@ -660,7 +665,7 @@ export class SoftNScriptRuntime {
       // them and evaluate those expressions one at a time instead.
       computedCompiled = computedPreamble !== '';
       try {
-        symbolMap = await this.vmEngine.initializeScript(fullCode);
+        symbolMap = await this.vmEngine.initializeScript(fullCode, origin);
       } catch (compileError) {
         if (!computedCompiled) throw await placeSyntaxError(compileError, resolvedCode);
         console.warn(
@@ -682,7 +687,7 @@ export class SoftNScriptRuntime {
         if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
         if (useHostBridges) this.installHostBridges();
         try {
-          symbolMap = await this.vmEngine.initializeScript(scriptCode);
+          symbolMap = await this.vmEngine.initializeScript(scriptCode, origin);
         } catch (error) {
           throw await placeSyntaxError(error, resolvedCode);
         }

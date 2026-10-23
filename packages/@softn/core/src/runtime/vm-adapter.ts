@@ -35,6 +35,7 @@ export type { SymbolScope, SymbolInfo } from './zipp-wasm-adapter';
 
 import { ZippWasmAdapter, type SymbolInfo } from './zipp-wasm-adapter';
 import type { DBNamespace } from './script-runtime';
+import type { ScriptOrigin } from './logic-origin';
 
 // ============================================================================
 // The engine seam
@@ -63,8 +64,12 @@ export interface LogicEngine {
   registerClipboardBridge(): void;
   /** Where a refused storage write is reported before it is thrown to the guest. */
   onStorageFailure: ((failure: { operation: string; key: string; error: Error }) => void) | null;
-  /** Compile and run a script, answering symbol name → `{ index, scope }`. */
-  initializeScript(code: string): Promise<Map<string, SymbolInfo>>;
+  /**
+   * Compile and run a script, answering symbol name → `{ index, scope }`.
+   * `origin` names the script and moves the positions its errors report
+   * (logic-origin.ts); an engine that reports none may ignore it.
+   */
+  initializeScript(code: string, origin?: ScriptOrigin): Promise<Map<string, SymbolInfo>>;
   /** Read one global by slot index, as a plain JS value. */
   getGlobal(index: number): unknown;
   /** Write one global by slot index; `undefined` means "the host holds none". */

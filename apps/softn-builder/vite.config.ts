@@ -74,7 +74,7 @@ export default defineConfig({
         // a page loads.
         globIgnores: [],
         // Every file fits inside 8 MiB — the largest is the ZIPP engine at
-        // ~6.2 MiB (javascript-python-base; torch is a package of ~2 MiB under
+        // ~6.3 MiB (javascript-python-base; torch is a package of ~2 MiB under
         // core-runtime/). Raise this rather than let Workbox skip a file,
         // because a skipped precache entry fails only offline.
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,

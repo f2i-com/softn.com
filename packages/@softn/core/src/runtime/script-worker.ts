@@ -22,6 +22,7 @@ import { prologueIsStrict, STRICT_DIRECTIVE } from './directive-prologue';
 import { deepEqual } from './vm-state';
 import { moduleSyntaxAsScript } from './module-syntax';
 import { inlineLogicImports } from './logic-imports';
+import { endLine, logicOrigin, placeEngineSyntaxError } from './logic-origin';
 import { BRIDGE_VARS } from './external-values';
 import { setEngineFaultSink } from './engine-output';
 import { readsOfDrawnFunctions } from './drawn-functions';
@@ -284,17 +285,24 @@ self.onmessage = async (evt: MessageEvent) => {
       // preambles the main-thread runtime prepends; their calls queue in the
       // engine and the main thread drains them from every entry's result.
       // The app's `"use strict"` goes first, as on the main thread.
+      // The logic starts a line of its own, its positions count from there,
+      // and a syntax error quotes its line, as on the main thread
+      // (logic-origin.ts, without acorn).
       const externalPreamble = typeof payload.externalPreamble === 'string' ? payload.externalPreamble : '';
-      const fullCode =
+      const prefix = endLine(
         (prologueIsStrict(resolvedCode) ? STRICT_DIRECTIVE : '') +
-        VM_BRIDGE_PREAMBLE +
-        SOFTN_BRIDGE_PREAMBLE +
-        timerPreamble(resolvedCode) +
-        externalPreamble +
-        resolvedCode +
-        TIMER_TRAILER;
+          VM_BRIDGE_PREAMBLE +
+          SOFTN_BRIDGE_PREAMBLE +
+          timerPreamble(resolvedCode) +
+          externalPreamble
+      );
+      const fullCode = prefix + resolvedCode + TIMER_TRAILER;
       mainStateDirty = false;
-      symbolMap = await wasmAdapter.initializeScript(fullCode);
+      try {
+        symbolMap = await wasmAdapter.initializeScript(fullCode, logicOrigin(prefix));
+      } catch (error) {
+        throw placeEngineSyntaxError(error, resolvedCode);
+      }
 
       // Extract state and functions. A variable the template cannot observe is
       // VM-owned: never read out, never written back — the main-thread

@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use zipp_vm::embed::{compile_script, compile_script_with_preamble, CompileOptions, HostValue, ScriptState};
+use zipp_vm::embed::{
+    compile_script, compile_script_with_preamble_and_origin, CompileOptions, HostValue, ScriptOrigin, ScriptState,
+};
 
 use crate::host;
 use crate::bundle::TransactionMode;
@@ -19,6 +21,9 @@ pub use crate::host::BridgeSet;
 
 /// Host bridge definitions prepended to every script. See `preamble.js`.
 const PREAMBLE: &str = include_str!("preamble.js");
+
+/// The script's name in the positions its errors report (`at f (logic:3:9)`).
+const LOGIC_SCRIPT_NAME: &str = "logic";
 
 // How a worker keeps one request's world from the next: it does not keep the
 // world. A VM that has run a handler is thrown away and built again from the
@@ -763,8 +768,11 @@ impl ServerRuntime {
         // reaches by name, with the script's own directive prologue in force.
         // Joined as text, the script's `"use strict"` came after the
         // preamble's statements, was no directive, and strict server logic
-        // ran sloppy. Positions are those of the joined text, as before.
-        let mut state = compile_script_with_preamble(PREAMBLE, source, &CompileOptions::default())?;
+        // ran sloppy. The positions an error reports count from the script's
+        // first line (ZIPP 0.0.29; they were the joined text's), under the
+        // name `logic`, as in the browser and on the PHP host.
+        let origin = ScriptOrigin { name: Some(LOGIC_SCRIPT_NAME.into()), ..ScriptOrigin::default() };
+        let mut state = compile_script_with_preamble_and_origin(PREAMBLE, source, &CompileOptions::default(), &origin)?;
 
         // The bridges outlive any one VM, so the closure holds a handle rather
         // than the set itself. Nothing a bridge does re-enters the VM, so the
@@ -1633,6 +1641,26 @@ mod isolation_tests {
             assert_eq!(body["settings"], if strict { "TypeError" } else { "ignored" }, "{prefix:?}: {body}");
             assert_eq!(body["development"], false, "{prefix:?}: {body}");
             assert_eq!(body["timer"], "setTimeout is not available in server logic: nothing runs after the handler returns.", "{prefix:?}: {body}");
+        }
+    }
+
+    /// The positions an error reports are the script's own lines, under the
+    /// name `logic`, strict or not: a syntax error says where it is, and a
+    /// stack's frames are where the script's code is. Up to ZIPP 0.0.28 both
+    /// counted the preamble's lines too, so line 2 was reported as one past
+    /// the preamble's length.
+    #[test]
+    fn an_errors_positions_are_the_scripts_own_lines() {
+        for (prefix, first) in [("", 1), ("\"use strict\";\n", 2)] {
+            let top = ServerRuntime::new(|| BridgeSet {
+                db: None, http: None, fs: None, env: None, sql: None, crypto: None,
+                allow_time: false, development: false, allow_photos: false, app_config: serde_json::Value::Null,
+            }, Some(1)).unwrap();
+            let refused = top.init(format!("{prefix}function ok(req) {{ return {{status: 200, body: {{}}}}; }}\nlet c = ;\n")).unwrap_err();
+            assert!(refused.ends_with(&format!("SyntaxError: unexpected token ';'\n    at logic:{}:9", first + 1)), "{prefix:?}: {refused}");
+            let runtime = one_worker(&format!("{prefix}function where(req) {{\n  var e = new Error('x');\n  return {{status: 200, body: {{stack: e.stack}}}};\n}}\n"));
+            let stack = runtime.call("where", vec![serde_json::json!({})]).unwrap()["body"]["stack"].as_str().unwrap_or_default().to_string();
+            assert!(stack.contains(&format!("at where (logic:{}:", first + 1)), "{prefix:?}: {stack}");
         }
     }
 

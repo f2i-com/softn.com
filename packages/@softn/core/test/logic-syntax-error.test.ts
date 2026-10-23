@@ -1,10 +1,12 @@
 /**
  * A `.logic` file that does not compile says where.
  *
- * ZIPP reports one as `SyntaxError: unexpected token Semi` and nothing else:
- * no line, no column. That is what the page showed, and what Studio's check
- * handed the AI, which then had the whole of the logic to search. The line
- * the error is on is now quoted with it (logic-syntax.ts).
+ * Up to 0.0.28 ZIPP reported one as `SyntaxError: unexpected token Semi` and
+ * nothing else: no line, no column. That is what the page showed, and what
+ * Studio's check handed the AI, which then had the whole of the logic to
+ * search. The line the error is on is quoted with it (logic-syntax.ts); since
+ * 0.0.29 the engine names that line itself, and its position, which counts
+ * lines of the logic as compiled, is not shown (logic-positions.test.ts).
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -16,6 +18,7 @@ import {
   type ScriptRuntimeHandle,
 } from '../src/runtime/script-runtime';
 import type { ScriptBlock } from '../src/parser/ast';
+import { logicEngineIsSandboxed } from '../src/runtime/vm-adapter';
 
 const runtimes: ScriptRuntimeHandle[] = [];
 afterEach(() => {
@@ -55,20 +58,23 @@ async function failure(code: string): Promise<string> {
 describe('logic that does not compile', () => {
   it('quotes the line the mistake is on', async () => {
     const said = await failure('let a = 1\nlet c = ;\nfunction ok() { return a }\n');
-    expect(said).toMatch(/SyntaxError/);
-    expect(said).toMatch(/at this line of the logic: let c = ;$/);
+    // The host-JavaScript engine (vitest.host-js.config.ts) words it its own way.
+    if (logicEngineIsSandboxed()) expect(said).toBe("SyntaxError: unexpected token ';', at this line of the logic: let c = ;");
+    else expect(said).toMatch(/^SyntaxError: [^\n]+, at this line of the logic: let c = ;$/);
   });
 
   it('quotes a name declared twice where it is declared again', async () => {
-    expect(await failure('let total = 0\nlet count = 1\nlet total = 2\n')).toMatch(
-      /at this line of the logic: let total = 2$/
+    expect(await failure('let total = 0\nlet count = 1\nlet total = 2\n')).toBe(
+      "SyntaxError: Identifier 'total' has already been declared, at this line of the logic: let total = 2"
     );
   });
 
   it('says a brace left open runs to the end', async () => {
-    expect(await failure('function add(a, b) {\n  return a + b\n\nlet total = 0\n')).toMatch(
-      /at the end of the logic: a brace, bracket or string opened before it is never closed$/
+    const said = await failure('function add(a, b) {\n  return a + b\n\nlet total = 0\n');
+    expect(said).toMatch(
+      /^SyntaxError: [^\n]*, at the end of the logic: a brace, bracket or string opened before it is never closed$/
     );
+    expect(said).not.toMatch(/ at (logic|<anonymous>):/);
   });
 
   it('says nothing more about a script that throws as it runs', async () => {

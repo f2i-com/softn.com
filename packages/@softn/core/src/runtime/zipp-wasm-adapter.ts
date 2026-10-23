@@ -24,6 +24,7 @@ import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
 
 import type { DBNamespace } from './script-runtime';
 import type { LogicEngine } from './vm-adapter';
+import type { ScriptOrigin } from './logic-origin';
 import { sanitizeArgs } from './vm-args';
 import { EVENT_METHODS_FUNCTION, EVENT_METHODS_SOURCE, holdsEvent } from './event-props';
 
@@ -613,9 +614,11 @@ export class ZippWasmAdapter {
    * Compile and execute a script, returning symbol name → { index, scope }.
    * Bridges must already be registered: a script's top level commonly reads
    * `localStorage` or queries `db`, and authority freezes here — nothing can be
-   * wired or granted once this has been entered.
+   * wired or granted once this has been entered. `origin` names the script and
+   * moves the positions its errors report, so they count from the app's logic
+   * rather than from the runtime's code ahead of it (logic-origin.ts).
    */
-  async initializeScript(code: string): Promise<Map<string, SymbolInfo>> {
+  async initializeScript(code: string, origin?: ScriptOrigin): Promise<Map<string, SymbolInfo>> {
     await ensureWasm();
 
     // The async functions the host may call, entered through a function of
@@ -628,6 +631,11 @@ export class ZippWasmAdapter {
     if (this.asyncFunctions.size > 0) code += asyncEntrySource(this.asyncFunctions);
     this.eventFunctions = declaredFunctionNames(code);
     if (this.eventFunctions.size > 0) code += eventEntrySource(this.eventFunctions, this.asyncFunctions);
+
+    // 0.0.29 and later; an engine before it counts from the top of `code`.
+    if (origin && typeof this.wasm.setScriptOrigin === 'function') {
+      this.wasm.setScriptOrigin(origin.name, origin.lineOffset, origin.columnOffset);
+    }
 
     // Grant exactly what registration wired, in the one call the engine allows.
     // This is the last statement before compilation on purpose: the allowlist is
