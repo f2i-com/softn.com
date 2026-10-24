@@ -93,14 +93,19 @@ snapshot `init` carries in `storage` (`src/storage.ts`). Each change goes to the
   seconds from when the app made it, waiting included. A save sent and not answered by then
   has an unknown outcome, and later saves throw `InvalidStateError` until the parent answers it
   or the app is opened again. At most 32 saves wait at once, and one save as sent is at most
-  32,768 characters. While saves are pending the frame says so and closing the page asks first.
+  32,768 characters. While saves are pending the frame says so, and closing the page asks
+  first where the browser lets a frame ask: not in a sandbox without `allow-modals`, which
+  FormLogic's frame is, so there the frame's own notice is all that shows.
   XDB's `createAsync`, `updateAsync` and `deleteAsync` resolve when their own save is
   confirmed, and an import goes as one `batch` the parent must commit whole.
 - A parent that does not (protocol 0) gets the storage it always had: a reply without `error`
-  is a save, one with `error` shows the failed-save alert, and nothing is refused, held back or
-  expired on the way. XDB cannot report a save there as made: its async writes update the
-  records and then reject with `persistence-unsupported`, imports and restores are refused,
-  its status is `degraded`, and closing the page asks first.
+  is a save, and one with `error` shows the failed-save alert. A save is an ordinary call there,
+  so it waits with the app's other calls under their limits: with four slow calls in flight it
+  can expire at the twenty-second waiting deadline, or be refused as busy when 32 are waiting,
+  and then it is not sent and the alert shows. XDB cannot report a save there as made: its
+  async writes update the records and then reject with `persistence-unsupported`, imports and
+  restores are refused, its status is `degraded`, and closing the page asks first where the
+  browser lets the frame ask (above).
 
 `{type: 'formlogic:dispose'}` on the port, or the page going away for good (a `pagehide` that
 does not keep it in the back/forward cache), ends the app: waiting saves and calls are
