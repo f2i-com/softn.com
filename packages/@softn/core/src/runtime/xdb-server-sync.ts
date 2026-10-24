@@ -138,6 +138,13 @@ const MAX_PUSH_BYTES = 1024 * 1024;
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 /** `{"type":"sync_push","ops":[...]}` around the ops, with room to spare. */
 const PUSH_ENVELOPE_BYTES = 64;
+/**
+ * How deep the host reads a message's objects and arrays, the message itself
+ * the first. A push carries each op two levels down (the message, its
+ * `ops`), so an op may be nested this much less two, its own object the first.
+ */
+const MAX_MESSAGE_DEPTH = 64;
+const MAX_OP_DEPTH = MAX_MESSAGE_DEPTH - 2;
 /** Distinct collections the host reads in one `sync_pull`; more and it refuses the pull. */
 const MAX_PULL_COLLECTIONS = 100;
 /**
@@ -177,6 +184,7 @@ export const SYNC_LIMITS = {
   maxMessageBytes: MAX_MESSAGE_BYTES,
   maxOpsPerPush: MAX_OPS_PER_PUSH,
   maxPushBytes: MAX_PUSH_BYTES,
+  maxMessageDepth: MAX_MESSAGE_DEPTH,
   maxPullCollections: MAX_PULL_COLLECTIONS,
   pageRows: INCREMENTAL_PULL_ROWS,
   collectionName: SYNCABLE_COLLECTION.source,
@@ -249,6 +257,36 @@ interface StoredRecord {
 /** One record's ops go to the host one at a time (see `flushPendingOps`). */
 function recordKey(op: SyncOp): string {
   return `${op.collection}\u0000${op.recordId}`;
+}
+
+/** Whether `value` nests objects and arrays more than `limit` deep, itself the first. Stops looking past the limit. */
+function nestedDeeperThan(value: unknown, limit: number): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (limit <= 0) return true;
+  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+    if (nestedDeeperThan(child, limit - 1)) return true;
+  }
+  return false;
+}
+
+/** A lone half of a UTF-16 pair, which is not text: a slice through an emoji leaves one. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * `value` with every string, keys too, as text the host's JSON reader takes:
+ * a lone half of a UTF-16 pair is U+FFFD. `JSON.stringify` writes one as
+ * `\ud83d`, which serde_json refuses, and it refused the whole push for it.
+ * Called only on a value nested no deeper than an op may be.
+ */
+function wellFormed(value: unknown): unknown {
+  if (typeof value === 'string') return value.replace(LONE_SURROGATE, '�');
+  if (Array.isArray(value)) return value.map(wellFormed);
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) out[key.replace(LONE_SURROGATE, '�')] = wellFormed(child);
+    return out;
+  }
+  return value;
 }
 
 /** The length of `text` in UTF-8, which is what the host's limits count. */
@@ -1074,9 +1112,18 @@ export class XDBServerSync {
         op.timestamp = new Date(made + this.clockOffset).toISOString();
         this.madeAt.delete(op.id);
       }
+      // A push the host cannot read is refused whole, with every op in it,
+      // and the client sent the same push again for ever after: one change
+      // nested past what the host reads, or holding half an emoji, stopped
+      // every change behind it reaching the host.
+      if (nestedDeeperThan(op, MAX_OP_DEPTH)) {
+        this.refuseOp(op, `This change to "${op.collection}" is nested more than ${MAX_OP_DEPTH - 1} levels deep, deeper than the sync host reads; it was not sent.`);
+        continue;
+      }
+      if (op.data !== undefined) op.data = wellFormed(op.data) as SyncOp['data'];
       const size = utf8Length(JSON.stringify(op)) + 1;
       if (PUSH_ENVELOPE_BYTES + size > MAX_MESSAGE_BYTES) {
-        this.refuseOp(op, size);
+        this.refuseOp(op, `This change to "${op.collection}" is ${size} bytes, more than the sync host takes in one message (${MAX_MESSAGE_BYTES}); it was not sent.`);
         continue;
       }
       if (batch.length > 0 && (batch.length >= MAX_OPS_PER_PUSH || bytes + size > MAX_PUSH_BYTES)) {
@@ -1328,16 +1375,16 @@ export class XDBServerSync {
 
   /**
    * An op the host can never take: a push of it alone is larger than the
-   * host lets a message be, and it closes the socket on one. Sent anyway, it
-   * went first after every reconnect and closed that socket too, and nothing
-   * queued behind it ever reached the host. It is dropped and reported as
-   * the host reports an op it refuses for good.
+   * host lets a message be, and it closes the socket on one, or nested
+   * deeper than it reads. Sent anyway, it went first after every reconnect
+   * and was refused again, and nothing queued behind it ever reached the
+   * host. It is dropped and reported as the host reports an op it refuses
+   * for good.
    */
-  private refuseOp(op: SyncOp, bytes: number): void {
+  private refuseOp(op: SyncOp, reason: string): void {
     this.pendingOps.delete(op.id);
     this.madeAt.delete(op.id);
     this.queueChanged();
-    const reason = `This change to "${op.collection}" is ${bytes} bytes, more than the sync host takes in one message (${MAX_MESSAGE_BYTES}); it was not sent.`;
     console.warn(`[XDBServerSync] ${reason}`);
     this.noteRefused(op, reason);
     this.listeners.reject.forEach((fn) => fn(op.id, reason));

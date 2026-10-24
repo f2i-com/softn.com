@@ -5,6 +5,7 @@
   "maxOpsPerPush": 1000,
   "maxOpDataBytes": 524288,
   "maxPushDataBytes": 4194304,
+  "maxMessageDepth": 64,
   "maxPullCollections": 100,
   "pageRows": 10000,
   "collectionName": "^[A-Za-z0-9_-]{1,64}$",

@@ -1376,6 +1376,8 @@ fn the_sync_limits_are_the_shared_ones() {
     let protocol: serde_json::Value = serde_json::from_str(include_str!("../sync-protocol.json")).unwrap();
     let number = |key: &str| protocol[key].as_u64().unwrap_or_else(|| panic!("{key}")) as usize;
     assert_eq!(number("maxMessageBytes"), crate::http::MAX_WS_MESSAGE_SIZE);
+    // How deep a message's objects and arrays may go (ws.rs reads every message with it).
+    assert_eq!(number("maxMessageDepth"), crate::util::MAX_JSON_DEPTH);
     assert_eq!(number("pieceBytes"), SYNC_PULL_CHUNK_BYTES);
     assert_eq!(number("maxOpsPerPush"), crate::ws::MAX_OPS_PER_PUSH);
     assert_eq!(number("maxOpDataBytes"), MAX_OP_DATA_BYTES);

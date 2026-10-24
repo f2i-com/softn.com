@@ -1799,7 +1799,11 @@ export class XDBService {
     if (keepLocalDelete && !existing) return;
     const xdbRecord: XDBRecord = {
       id: record.id,
-      collection: record.collection,
+      // The collection it is written to, whatever the server's copy says: a
+      // record of `notes` naming `secrets` was written there by a store that
+      // writes by the record's own (the desktop's), into a collection the
+      // server was never given.
+      collection,
       data: record.data,
       created_at: record.createdAt || existing?.created_at || new Date().toISOString(),
       updated_at: record.updatedAt || new Date().toISOString(),

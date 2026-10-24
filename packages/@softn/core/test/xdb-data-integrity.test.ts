@@ -171,6 +171,107 @@ describe('a change the sync host refuses', () => {
   });
 });
 
+describe('a change the sync host could not read', () => {
+  // The host parses a push whole. A change it could not read (half an emoji,
+  // or data nested past its 64 levels) had the whole push refused, every op
+  // in it was sent again later, and every change made after it with them:
+  // nothing more from this device ever reached the host.
+  beforeEach(() => {
+    FakeSocket.made = [];
+    vi.stubGlobal('WebSocket', FakeSocket);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const connected = (name: string) => {
+    const xdb = new XDBService(memory(), `xdb:${name}`, name, { backend: 'storage' });
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c1', serverTime: '2026-10-24T10:00:00.000Z' });
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    return { xdb, sync, socket };
+  };
+  /** The deepest the host's reader goes into a message's text, as util.rs counts it. */
+  const depthOf = (text: string) => {
+    let depth = 0;
+    let deepest = 0;
+    let inString = false;
+    let escape = false;
+    for (const ch of text) {
+      if (escape) escape = false;
+      else if (ch === '\\' && inString) escape = true;
+      else if (ch === '"') inString = !inString;
+      else if (!inString && (ch === '{' || ch === '[')) deepest = Math.max(deepest, ++depth);
+      else if (!inString && (ch === '}' || ch === ']')) depth--;
+    }
+    return deepest;
+  };
+
+  it('sends half an emoji as U+FFFD, and the changes after it with it', async () => {
+    const { xdb, sync, socket } = connected('wellformed');
+    const cut = 'Party 🎉 time'.slice(0, 7);
+    const first = xdb.create('notes', { excerpt: cut, [cut]: 'a key cut too' });
+    const second = xdb.create('notes', { excerpt: 'fine' });
+    await new Promise((r) => setTimeout(r, 0));
+    const pushed = socket.ops();
+    sync.disconnect();
+    const sent = pushed.find((o) => o.recordId === first.id)!;
+    expect(JSON.stringify(sent.data)).not.toMatch(/\\ud[89ab]/i);
+    expect((sent.data as Record<string, string>).excerpt).toBe('Party �');
+    expect((sent.data as Record<string, string>)['Party �']).toBe('a key cut too');
+    expect(pushed.some((o) => o.recordId === second.id)).toBe(true);
+  });
+
+  it('keeps a change nested deeper than the host reads, says so, and sends the changes after it', async () => {
+    const { xdb, sync, socket } = connected('toodeep');
+    let deep: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 70; i++) deep = { child: deep };
+    const nested = xdb.create('notes', { outline: deep });
+    let fine: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 50; i++) fine = { child: fine };
+    const ok = xdb.create('notes', { outline: fine });
+    await new Promise((r) => setTimeout(r, 0));
+    const pushes = socket.sent.filter((m) => m.type === 'sync_push');
+    const issue = xdb.getStorageStatus().issues.find((i) => i.kind === 'sync-refused');
+    sync.disconnect();
+    expect(socket.ops().some((o) => o.recordId === nested.id)).toBe(false);
+    expect(socket.ops().some((o) => o.recordId === ok.id)).toBe(true);
+    for (const push of pushes) expect(depthOf(JSON.stringify(push))).toBeLessThanOrEqual(64);
+    expect(issue?.message).toContain('nested more than 61 levels deep');
+    // Kept on this device as it was.
+    expect(xdb.get('notes', nested.id)).toBeTruthy();
+  });
+});
+
+it('a record the sync host sends for one collection is written to that collection, whatever it names', () => {
+  FakeSocket.made = [];
+  vi.stubGlobal('WebSocket', FakeSocket);
+  try {
+    const xdb = new XDBService(memory(), 'xdb:named', 'named', { backend: 'storage' });
+    const writes: Array<{ collection: string; record: { collection: string } }> = [];
+    const write = (xdb as unknown as { writeRecord: (c: string, r: { collection: string }) => void }).writeRecord.bind(xdb);
+    (xdb as unknown as { writeRecord: (c: string, r: { collection: string }) => void }).writeRecord = (collection, record) => {
+      writes.push({ collection, record });
+      write(collection, record);
+    };
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c1', serverTime: '2026-10-24T10:00:00.000Z' });
+    const record = { id: 'r1', collection: 'secrets', data: { text: 'in notes' }, createdAt: '2026-10-24T10:00:00.000Z', updatedAt: '2026-10-24T10:00:00.000Z', serverReceivedAt: '2026-10-24T10:00:00.000Z' };
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [record] });
+    socket.receive({ type: 'sync_delta', ops: [{ id: 'op1', type: 'update', operation: 'update', collection: 'notes', recordId: 'r1', data: { text: 'again' }, timestamp: '2026-10-24T10:00:01.000Z', clientId: 'c2' }] });
+    sync.disconnect();
+    expect(writes.length).toBeGreaterThan(0);
+    for (const w of writes) expect(w.record.collection).toBe('notes');
+    expect(xdb.getAll('secrets')).toEqual([]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 it('an adapter disconnected and connected again still sends local writes to the room', async () => {
   const xdb = new XDBService(memory(), 'xdb:rc', 'rc', { backend: 'storage' });
   const adapter = new XDBSyncAdapter(xdb, { room: 'r', appId: 'rc', signaling: [] });

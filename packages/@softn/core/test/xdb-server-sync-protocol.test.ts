@@ -117,6 +117,7 @@ describe('limits shared with the host', () => {
 
   it('are the ones this client holds to, or within them', () => {
     expect(SYNC_LIMITS.maxMessageBytes).toBe(protocol.maxMessageBytes);
+    expect(SYNC_LIMITS.maxMessageDepth).toBe(protocol.maxMessageDepth);
     expect(SYNC_LIMITS.maxPullCollections).toBe(protocol.maxPullCollections);
     expect(SYNC_LIMITS.pageRows).toBe(protocol.pageRows);
     expect(SYNC_LIMITS.collectionName).toBe(protocol.collectionName);
