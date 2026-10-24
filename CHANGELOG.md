@@ -8,6 +8,24 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+- SQL reads the same on every host. SQLite's `#name` parameter is counted and bound by name like `:name`, so value i is parameter i: the PHP host's scanner did not count it, and its value went to the next `?` (`SELECT #a, ?` with `[5]` answered null and 5), where the Rust host refused the bind count. A migration's statements are stepped to their end on the Rust host as on the PHP host, so a SELECT whose second row fails (an integer overflow) is refused on both, where the Rust host applied it. The Rust host counts a query's text before copying it, so one query of 200 columns of 2 MiB no longer held some 800 MB in the shared process before the 2 MiB result limit refused it. `sql-parity.json`, run on both hosts, holds the first two.
+- The Rust host, from an independent review of the multi-tenant server:
+  - `softn.time.format` of an instant near the ends of what chrono holds, moved past them by the zone's offset (`format(8210266876799, "+10:00")`), is the error "Invalid timestamp". It panicked the worker, and a client could keep a tenant's workers dying.
+  - Serving many apps, what a bundle asks for itself is held to its share of the one process:
+    - `workers` to the 200 threads divided among the bundles (one asking for 200, loaded first, left every later tenant unable to load; `--workers-per-tenant` is the operator's and is not held to it);
+    - `readPoolSize` to 16;
+    - `maxSyncConnections` to 1024;
+    - `maxStorageMB: 0`, which turned the storage quota off on a disk the apps share, reads as the 10 GiB cap there.
+  - An open sync socket is one of the 768 connections for as long as it is open. It was counted only until its upgrade, so the apps' sockets could pass the descriptor limit.
+  - An archive's tenant id is read from the entry that unpacks as `manifest.json` (`./manifest.json` too), and an archive with two entries for one file (by `./`, `..` or case) is refused. A bundle could claim another legacy tenant's id past the check that settles two claims.
+  - `app.softn` and `app.zip` no longer unpack over each other: the first by name is loaded, and the other refused.
+- The PHP host, from an independent review of its PHP side:
+  - A multipart POST is refused 415 like any body that is not JSON. PHP had parsed it before `http.php` ran, and the handler was run with `{}`.
+  - The operator's `"workers"` in `private/config.json` caps the manifest's `config.server.workers`, which only the app's owner could set.
+  - `setup.php` stops, naming the file to correct, rather than writing a `config.json` of one newline when the manifest holds a number past the doubles.
+  - A photo PHP's bundled GD could not decode within `memory_limit` is refused rather than ending PHP with a fatal error, its request uncounted.
+  - The nginx examples set `client_max_body_size 6m` on the API and leave `/.well-known/` served.
+
 ## v0.0.26
 
 - Upgrading from v0.0.25: the engine is still ZIPP v0.0.29, so a FormLogic that installs this release keeps the server sandbox it built for v0.0.25, and nothing a browser loads changes. On the server two fixes below change what an app's backend may notice: a request whose transaction SQLite ends under it (`INSERT OR ROLLBACK`) writes nothing more, on every host, and the PHP host's `softn.time.parseZoned` reads a fixed offset past 14 hours. FormLogic's native-app tests pass on this release's runtime under Node and under softn-runner. New is softn-runner (the next entry), which the FormLogic runtime archive now carries in `native-runtime/bin/` for Linux and Windows x86-64 (about 53 MB for the two) with its licences. A FormLogic from commit c3854f0d on starts it for native apps and needs no Node on the server for them (`FORMLOGIC_NATIVE_RUNNER=node` keeps Node); an older one, v0.1.12 among them, installs the archive as before, does not look in `bin/`, and runs `runner.mjs` under Node.
