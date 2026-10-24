@@ -545,6 +545,20 @@ export class XDBSyncAdapter {
 
   private markStored(collName: string, recordId: string): void {
     this.unstored.get(collName)?.delete(recordId);
+    this.olderHere.get(collName)?.delete(recordId);
+  }
+
+  /**
+   * Records this device holds an older copy of than the room because it
+   * could not keep the room's (writeAll, its budget share full). A refresh
+   * leaves the room's copy of each alone and does not try to take it again.
+   */
+  private olderHere = new Map<string, Set<string>>();
+
+  private markOlderHere(collName: string, recordId: string): void {
+    let ids = this.olderHere.get(collName);
+    if (!ids) this.olderHere.set(collName, (ids = new Set()));
+    ids.add(recordId);
   }
 
   /**
@@ -658,6 +672,7 @@ export class XDBSyncAdapter {
     const passedOver = (record: XDBRecord, err?: unknown) => {
       this.warnMalformed(collName, record.id, err);
       if (!local.has(record.id)) this.markUnstored(collName, record.id);
+      else this.markOlderHere(collName, record.id);
     };
     try {
       const passed = new Set(this.xdb.writePeerRecords(collName, records));
@@ -766,10 +781,27 @@ export class XDBSyncAdapter {
             // one a hard remove took — comes out of the map.
             if (event.records) {
               const listed = new Set<string>();
-              for (const record of this.xdb.getAllRaw(event.collection)) {
+              const now = Date.now();
+              const raw = this.xdb.getAllRaw(event.collection);
+              // The room's newer copies of records this device holds older:
+              // taken here, as the opening takes them (a restore puts back
+              // records with their old stamps).
+              const behind: XDBRecord[] = [];
+              for (const record of raw) {
                 listed.add(record.id);
                 const json = recordToJSON(record);
                 const existing = ymap.get(record.id);
+                // A newer copy the room holds stays: one this device could
+                // not keep (writeAll, its budget share full) left the older
+                // copy here, and every refresh wrote that back over the
+                // room's, off every peer. An edit made here is stamped after
+                // the copy it edits (editStamp), so it still goes.
+                const theirs = existing === undefined ? null : peerRecordShape(event.collection, record.id, existing);
+                if (theirs !== null && !isAhead(theirs, now) && isNewer(theirs, record)) {
+                  if (!this.olderHere.get(event.collection)?.has(record.id)) behind.push(theirs);
+                  this.xdb.forgetPendingRemoval?.(event.collection, record.id);
+                  continue;
+                }
                 if (existing === undefined || !deepEqual(existing, json)) {
                   ymap.set(record.id, json);
                 }
@@ -790,6 +822,14 @@ export class XDBSyncAdapter {
                 }
               }
               this.listedHere.set(event.collection, listed);
+              if (behind.length > 0) {
+                this.isSyncing = true;
+                try {
+                  this.writeAll(event.collection, behind, new Map(raw.map((r) => [r.id, r])));
+                } finally {
+                  this.isSyncing = false;
+                }
+              }
             }
             break;
 

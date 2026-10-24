@@ -103,6 +103,29 @@ describe('a peer whose store refused records of the room', () => {
     }));
 });
 
+describe('a restore of older records on a peer', () => {
+  it('takes the room\'s newer copies, as the room\'s peers have them', () =>
+    quiet(() => {
+      const xa = new XDBService(storage(), 'restore-a', undefined, { backend: 'storage' });
+      const xb = new XDBService(storage(), 'restore-b', undefined, { backend: 'storage' });
+      const a = new XDBSyncAdapter(xa, { room: 'r', signaling: [], persist: false });
+      const b = new XDBSyncAdapter(xb, { room: 'r', signaling: [], persist: false });
+      link(a, b);
+      a.attachLocal();
+      b.attachLocal();
+      const text = (x: XDBService, id: string) => (x.get('notes', id)?.data as { text?: string } | undefined)?.text;
+
+      const note = xa.create('notes', { text: 'first' });
+      const backup = xb.backup();
+      xa.update(note.id, { text: 'second' });
+      expect(text(xb, note.id)).toBe('second');
+
+      xb.restore(backup);
+      expect(text(xa, note.id)).toBe('second');
+      expect(text(xb, note.id)).toBe('second');
+    }));
+});
+
 describe('what peers send', () => {
   it('leaves room in the browser budget for the app\'s own writes', () =>
     quiet(() => {
@@ -134,6 +157,46 @@ describe('what peers send', () => {
       // And what B could not keep stays in the room, and on the peer that wrote it.
       expect(a.doc.getMap('notes').size).toBe(41);
       expect(xa.getAllRaw('notes').length).toBe(41);
+      localStorage.clear();
+    }));
+
+  it('that this device cannot keep does not have an older copy of it written back over it', () =>
+    quiet(() => {
+      localStorage.clear();
+      const xa = new XDBService(storage(), 'xdb:a', 'a', { backend: 'storage' });
+      const xb = new XDBService(undefined, 'xdb:b', 'b', { backend: 'storage' });
+      const a = new XDBSyncAdapter(xa, { room: 'r', signaling: [], persist: false });
+      const b = new XDBSyncAdapter(xb, { room: 'r', signaling: [], persist: false });
+      // A link A can leave: while A is here it puts its newer copy back over
+      // whatever B writes, and the two pass the note to and fro.
+      let together = true;
+      a.doc.on('update', (u: Uint8Array, origin: unknown) => {
+        if (together && origin !== 'peer') Y.applyUpdate(b.doc, u, 'peer');
+      });
+      b.doc.on('update', (u: Uint8Array, origin: unknown) => {
+        if (together && origin !== 'peer') Y.applyUpdate(a.doc, u, 'peer');
+      });
+      a.attachLocal();
+      b.attachLocal();
+
+      const note = xa.create('notes', { text: 'small' });
+      expect(xb.get('notes', note.id)).not.toBeNull();
+      // B fills its share of the budget with the room's notes...
+      for (let i = 0; i < 30; i++) xa.create('notes', { n: i, body: 'x'.repeat(100_000) });
+      // ...and cannot keep A's larger edit of the note it holds.
+      xa.update(note.id, { text: 'grown', body: 'y'.repeat(100_000) });
+      const text = (x: XDBService) => (x.get('notes', note.id)?.data as { text?: string } | undefined)?.text;
+      expect(text(xb)).toBe('small');
+
+      // A leaves; B writes to its notes in a script call: a refresh.
+      together = false;
+      xb.suppressNotifications();
+      xb.create('notes', { mine: true });
+      xb.resumeNotifications();
+
+      // The room, as B holds it for the peers still to come, keeps A's edit.
+      expect((b.doc.getMap('notes').get(note.id) as { data: { text: string } }).data.text).toBe('grown');
+      expect(text(xa)).toBe('grown');
       localStorage.clear();
     }));
 
