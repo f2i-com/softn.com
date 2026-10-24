@@ -580,12 +580,13 @@ describe('XDB Service (Tauri mode)', () => {
     xdb.writePeerRecords('public', [makeRecord('shared-id', 'public', { from: 'a peer' }), makeRecord('other', 'public', {})]);
     told.length = 0;
     invokeMock.mockClear();
-    for (const collections of [
+    const imports: Array<Record<string, XDBRecord[]>> = [
       { public: [makeRecord('shared-id', 'public', { mine: true })] },
       { public: [makeRecord('n', 'public', {})], '\ud800': [] },
       { public: [{ ...makeRecord('u', 'public', {}), data: undefined } as unknown as XDBRecord] },
       { public: [makeRecord('big', 'public', { n: BigInt(1) })] },
-    ]) {
+    ];
+    for (const collections of imports) {
       expect(() => xdb.import({ version: 1, exportedAt: '', collections })).toThrow(/Import refused/);
     }
     expect(invokeMock).not.toHaveBeenCalledWith('import_records', expect.anything());
