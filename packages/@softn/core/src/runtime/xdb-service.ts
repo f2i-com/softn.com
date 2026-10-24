@@ -132,19 +132,42 @@ export interface UnheardRemoval {
 }
 
 /**
- * A collection an import changed while no client listened, whose records the note could not
- * name one by one (the store refused it so long): the client sends every record of it, made
- * then. A create the host has had already is answered with its copy, which is kept.
+ * What an import made or changed in one collection while no client listened, when the note
+ * could not keep an entry a record (the store refused it so long): the ids it created and
+ * updated, without their stamps. The client sends each at the import's time, as a listening
+ * client does; one changed since is the edit's or the pull's (the host weighs it by that time).
  */
 export interface UnheardImport {
   collection: string;
   made: number;
+  creates: string[];
+  updates: string[];
+}
+
+interface ImportGroup {
+  collection: string;
+  made: number;
+  creates: Set<string>;
+  updates: Set<string>;
 }
 
 interface UnheardNote {
   edits: Map<string, UnheardEdit>;
   removals: Map<string, UnheardRemoval>;
-  imports: Map<string, UnheardImport>;
+  /** By collection and time (`importKey`). */
+  imports: Map<string, ImportGroup>;
+}
+
+const importKey = (collection: string, made: number) => `${collection}\u0000${made}`;
+
+/** Take a record out of the note's import lists: how the import had it, or null. */
+function takeFromImports(note: UnheardNote, collection: string, id: string): 'create' | 'update' | null {
+  for (const group of note.imports.values()) {
+    if (group.collection !== collection) continue;
+    if (group.creates.delete(id)) return 'create';
+    if (group.updates.delete(id)) return 'update';
+  }
+  return null;
 }
 
 /** What a server sync client reads of the note (`XDBService.readUnheardNote`). */
@@ -164,7 +187,9 @@ function mergeUnheard(note: UnheardNote, change: { edit: UnheardEdit } | { remov
   if ('edit' in change) {
     const { edit } = change;
     const key = `${edit.collection}\u0000${edit.id}`;
-    const before = note.edits.get(key);
+    // A record an import's list names is the edit's now, a create still if the import made it.
+    const listed = takeFromImports(note, edit.collection, edit.id);
+    const before = note.edits.get(key) ?? (listed === 'create' ? { kind: 'create' as const } : undefined);
     note.removals.delete(key);
     note.edits.delete(key);
     if (before?.kind === 'create' && edit.kind === 'delete') return;
@@ -173,10 +198,11 @@ function mergeUnheard(note: UnheardNote, change: { edit: UnheardEdit } | { remov
   }
   const { removal } = change;
   const key = `${removal.collection}\u0000${removal.id}`;
+  const listed = takeFromImports(note, removal.collection, removal.id);
   const before = note.edits.get(key);
   note.edits.delete(key);
   note.removals.delete(key);
-  if (before?.kind === 'create') return;
+  if (before?.kind === 'create' || listed === 'create') return;
   note.removals.set(key, removal);
 }
 
@@ -2470,12 +2496,13 @@ export class XDBService {
    * an import's records, at the backup's older stamps, were not found at all. Each entry is
    * what was seen as it was made; the client sends it only while the record still is so
    * (`readUnheardNote`), and forgets it once the op is saved with the queue
-   * (`forgetUnheardNote`). As much as the store takes, up to UNHEARD_NOTE_CHARS
-   * (`writeUnheardNoteMaps`): it was cut at 64 KB, oldest first, and an import or a clear of
-   * more than a few hundred records, of which the scan of stamps finds nothing, lost the rest.
+   * (`forgetUnheardNote`). As much as the store takes, within UNHEARD_NOTE_CHARS and half the
+   * room the app's budget leaves (`writeUnheardNoteMaps`): it was cut at 64 KB, oldest first,
+   * and an import or a clear of more than a few hundred records, of which the scan of stamps
+   * finds nothing, lost the rest.
    */
   private static readonly UNHEARD_NOTE = 'sync-unheard';
-  private static readonly UNHEARD_NOTE_CHARS = 4 * 1024 * 1024;
+  private static readonly UNHEARD_NOTE_CHARS = 1024 * 1024;
   private unheardNotePending: UnheardNote | null = null;
   private unheardNoteScheduled = false;
   private syncedWithHost = false;
@@ -2540,9 +2567,15 @@ export class XDBService {
           if (typeof id === 'string') note.removals.set(`${collection}\u0000${id}`, { collection, id, at, ...(typeof after === 'string' ? { after } : {}) });
         }
       }
+      // What an import made and changed (UnheardImport), [collection, made, [created], [updated]].
       for (const entry of Array.isArray(saved?.i) ? saved.i : []) {
-        const [collection, made] = Array.isArray(entry) ? entry : [];
-        if (typeof collection === 'string' && typeof made === 'number') note.imports.set(collection, { collection, made });
+        const [collection, made, creates, updates] = Array.isArray(entry) ? entry : [];
+        if (typeof collection !== 'string' || typeof made !== 'number' || !Array.isArray(creates) || !Array.isArray(updates)) continue;
+        const key = importKey(collection, made);
+        const group = note.imports.get(key) ?? { collection, made, creates: new Set<string>(), updates: new Set<string>() };
+        for (const id of creates) if (typeof id === 'string') group.creates.add(id);
+        for (const id of updates) if (typeof id === 'string') group.updates.add(id);
+        note.imports.set(key, group);
       }
     } catch {
       // Unreadable: an empty note, and the scan of stamps finds what it can.
@@ -2551,39 +2584,35 @@ export class XDBService {
   }
 
   /**
-   * Write the note, as much of it as the store takes. Past UNHEARD_NOTE_CHARS, or refused (an
-   * app's records and notes share its budget of the browser's storage), what else finds goes
+   * Write the note, as much of it as the store takes. Past UNHEARD_NOTE_CHARS or half the
+   * room the app's budget leaves (the rest is its records'), or refused, what else finds goes
    * first: an edit in this device's time, which the scan of stamps finds at its stamp (without
    * the offset); then one made after a copy it followed, found the same way; then an import's
-   * edits, kept as one mark of their collection (`UnheardImport`). Removals and deletions, of
-   * which nothing is left to find, go last, oldest first, and only while the store refuses even
-   * the rest.
+   * edits are kept as lists of the ids it made and changed (`UnheardImport`), without their
+   * stamps. Removals, deletions and those lists, of which nothing is left to find, go last,
+   * the older half at a time, only while even the rest will not fit.
    */
   private writeUnheardNoteMaps(note: UnheardNote): void {
     let edits = [...note.edits.values()];
     let removals = [...note.removals.values()];
-    const imports = new Map(note.imports);
+    let imports = new Map([...note.imports].map(([key, group]) => [key, { ...group, creates: new Set(group.creates), updates: new Set(group.updates) }]));
     const lasting = (e: UnheardEdit) => e.kind === 'delete';
     const imported = (e: UnheardEdit) => !lasting(e) && e.made !== undefined && e.after === undefined;
-    const steps: Array<() => boolean> = [
+    const steps: Array<() => void> = [
       () => {
-        const before = edits.length;
         edits = edits.filter((e) => lasting(e) || e.made !== undefined || e.after !== undefined);
-        return edits.length < before;
       },
       () => {
-        const before = edits.length;
         edits = edits.filter((e) => lasting(e) || imported(e));
-        return edits.length < before;
       },
       () => {
-        const marked = edits.filter(imported);
-        for (const e of marked) {
-          const kept = imports.get(e.collection);
-          imports.set(e.collection, { collection: e.collection, made: Math.max(kept?.made ?? -Infinity, e.made!) });
+        for (const e of edits.filter(imported)) {
+          const key = importKey(e.collection, e.made!);
+          const group = imports.get(key) ?? { collection: e.collection, made: e.made!, creates: new Set<string>(), updates: new Set<string>() };
+          (e.kind === 'create' ? group.creates : group.updates).add(e.id);
+          imports.set(key, group);
         }
         edits = edits.filter((e) => !imported(e));
-        return marked.length > 0;
       },
     ];
     for (;;) {
@@ -2593,20 +2622,34 @@ export class XDBService {
         step();
         continue;
       }
-      // The oldest half of what is left goes, removals and deletions alike.
-      const rest = edits.length + removals.length;
-      if (rest === 0) return;
-      const drop = Math.ceil(rest / 2);
-      const kept = [...removals.map((r) => ({ at: r.at, r })), ...edits.map((e) => ({ at: e.made ?? stampTime(e.stamp), e }))]
-        .sort((a, b) => a.at - b.at)
-        .slice(drop);
+      // The older half of what is left goes.
+      type Kept = { at: number; r: UnheardRemoval } | { at: number; e: UnheardEdit } | { at: number; group: ImportGroup; id: string; made: boolean };
+      const left: Kept[] = [
+        ...removals.map((r) => ({ at: r.at, r })),
+        ...edits.map((e) => ({ at: e.made ?? stampTime(e.stamp), e })),
+        ...[...imports.values()].flatMap((group) => [
+          ...[...group.creates].map((id) => ({ at: group.made, group, id, made: true })),
+          ...[...group.updates].map((id) => ({ at: group.made, group, id, made: false })),
+        ]),
+      ];
+      if (left.length === 0) return;
+      const kept = left.sort((a, b) => a.at - b.at).slice(Math.ceil(left.length / 2));
       removals = kept.flatMap((k) => ('r' in k ? [k.r] : []));
       edits = kept.flatMap((k) => ('e' in k ? [k.e] : []));
+      const next = new Map<string, ImportGroup>();
+      for (const k of kept) {
+        if (!('group' in k)) continue;
+        const key = importKey(k.group.collection, k.group.made);
+        const group = next.get(key) ?? { collection: k.group.collection, made: k.group.made, creates: new Set<string>(), updates: new Set<string>() };
+        (k.made ? group.creates : group.updates).add(k.id);
+        next.set(key, group);
+      }
+      imports = next;
     }
   }
 
   /** One try at writing the note (`writeUnheardNoteMaps`): false when it is too long or the store refuses it. */
-  private tryWriteUnheardNote(edits: UnheardEdit[], removals: UnheardRemoval[], imports: Map<string, UnheardImport>): boolean {
+  private tryWriteUnheardNote(edits: UnheardEdit[], removals: UnheardRemoval[], imports: Map<string, ImportGroup>): boolean {
     const e = edits.map((edit) => JSON.stringify([
       edit.collection, edit.id, edit.stamp, edit.kind, edit.own ? 1 : 0,
       ...(edit.after !== undefined ? [edit.made ?? null, edit.after] : edit.made !== undefined ? [edit.made] : []),
@@ -2620,9 +2663,17 @@ export class XDBService {
       groups.set(key, group);
     }
     const r = [...groups.values()].map((g) => JSON.stringify([g.collection, g.at, g.after, g.ids]));
-    const i = [...imports.values()].map((mark) => JSON.stringify([mark.collection, mark.made]));
+    const i = [...imports.values()]
+      .filter((group) => group.creates.size + group.updates.size > 0)
+      .map((group) => JSON.stringify([group.collection, group.made, [...group.creates], [...group.updates]]));
     const value = e.length + r.length + i.length > 0 ? `{"v":1,"e":[${e.join(',')}],"r":[${r.join(',')}],"i":[${i.join(',')}]}` : null;
-    if (value !== null && value.length > XDBService.UNHEARD_NOTE_CHARS) return false;
+    if (value !== null) {
+      if (value.length > XDBService.UNHEARD_NOTE_CHARS) return false;
+      // An app's records and notes share its budget of the browser's storage: the note takes no
+      // more than half the room left, so that the app's own writes are not refused for it.
+      const room = this.budget?.room(this.metaKey(XDBService.UNHEARD_NOTE));
+      if (room !== undefined && value.length > room / 2) return false;
+    }
     try {
       this.writeSyncMeta(XDBService.UNHEARD_NOTE, value);
       return true;
@@ -2634,7 +2685,13 @@ export class XDBService {
   /** The note of changes made while no client listened, for a server sync client to send. */
   readUnheardNote(): UnheardNoteRead {
     const note = this.readUnheardNoteMaps();
-    return { edits: [...note.edits.values()], removals: [...note.removals.values()], imports: [...note.imports.values()] };
+    return {
+      edits: [...note.edits.values()],
+      removals: [...note.removals.values()],
+      imports: [...note.imports.values()]
+        .filter((group) => group.creates.size + group.updates.size > 0)
+        .map((group) => ({ collection: group.collection, made: group.made, creates: [...group.creates], updates: [...group.updates] })),
+    };
   }
 
   /**
@@ -2653,8 +2710,11 @@ export class XDBService {
       const key = `${removal.collection}\u0000${removal.id}`;
       if (note.removals.get(key)?.at === removal.at) changed = note.removals.delete(key) || changed;
     }
-    for (const mark of read.imports ?? []) {
-      if (note.imports.get(mark.collection)?.made === mark.made) changed = note.imports.delete(mark.collection) || changed;
+    for (const list of read.imports ?? []) {
+      const group = note.imports.get(importKey(list.collection, list.made));
+      if (!group) continue;
+      for (const id of list.creates) changed = group.creates.delete(id) || changed;
+      for (const id of list.updates) changed = group.updates.delete(id) || changed;
     }
     if (changed) this.writeUnheardNoteMaps(note);
   }

@@ -200,10 +200,42 @@ describe('an app moved to another sync host', () => {
     vi.advanceTimersByTime(1000);
 
     const moved = connect(page(backing), MOVED);
+    const refused: string[] = [];
+    moved.sync.on('reject', (...args: unknown[]) => refused.push(String(args[0])));
     moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
     await tick();
-    const ops = (pushed(moved.socket) as unknown as Op[]).map((op) => [op.operation, op.data?.title]).sort();
-    expect(ops).toEqual([['create', 'made here'], ['create', 'v1']]);
+    // Each as an update, which this empty host has no record for: done, and the create follows.
+    const updates = pushed(moved.socket) as unknown as Op[];
+    expect(updates.map((op) => [op.operation, op.data?.title]).sort()).toEqual([['update', 'made here'], ['update', 'v1']]);
+    for (const op of updates) moved.socket.receive({ type: 'sync_reject', opId: op.id, reason: `Record not found: ${op.recordId}` });
+    await tick();
+    const creates = (pushed(moved.socket) as unknown as Op[]).slice(updates.length);
+    expect(creates.map((op) => [op.operation, op.data?.title]).sort()).toEqual([['create', 'made here'], ['create', 'v1']]);
+    expect(refused).toEqual([]);
+  });
+
+  // The whole pull wrote the host's older copy before any create went, and the host keeps the
+  // copy it has of an id a create names: the device's newer record was undone.
+  it('keeps a newer record than a host the records were moved to holds, and sends it there', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const before = connect(store);
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.updateInCollection('notes', 'n1', { title: 'newer here' });
+    await tick();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Op[]).map((op) => op.id) });
+    await tick();
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    // The new host was seeded from an older copy of the records.
+    const moved = connect(page(backing), MOVED);
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'seeded', '2026-02-01T00:00:00.000Z')] });
+    await tick();
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('newer here');
+    const first = (pushed(moved.socket) as unknown as Op[]).find((op) => op.recordId === 'n1');
+    expect([first?.operation, first?.data?.title]).toEqual(['update', 'newer here']);
   });
 
   it('sends what was queued for the old host too, before the record, and takes "not found" for it as done', async () => {
@@ -244,7 +276,7 @@ describe('an app moved to another sync host', () => {
 
 describe('a large change made while no client listened', () => {
   const many = (n: number, at: string) => Array.from({ length: n }, (_, i) => row(`r${i}`, `t${i}`, at));
-  type Op = { operation: string; recordId: string };
+  type Op = { operation: string; recordId: string; data?: { title?: string } };
 
   // The note was cut at 64 KB, oldest first: past a few hundred records, a clear's removals and
   // an import's records reached no host, and nothing else finds them.
@@ -298,22 +330,67 @@ describe('a large change made while no client listened', () => {
     expect(new Set(ops.filter((op) => op.operation === 'update').map((op) => op.recordId)).size).toBe(500);
   });
 
-  it("an import the store will not note record by record is sent by its collection's mark", async () => {
+  /** A store that refuses the note when it is longer than `chars`: the app's budget, nearly spent. */
+  const tight = (backing: ReturnType<typeof storage>, chars: number) => ({
+    ...backing,
+    setItem: (key: string, value: string) => {
+      if (key.endsWith('::sync-unheard') && value.length > chars) throw new DOMException('full', 'QuotaExceededError');
+      backing.setItem(key, value);
+    },
+  });
+  const older = '2026-02-15T00:00:00.000Z';
+  const backup = (records: Array<[string, string]>) => ({
+    version: 1,
+    exportedAt: older,
+    collections: { notes: records.map(([id, title]) => ({ id, collection: 'notes', data: { title }, created_at: older, updated_at: older, deleted: false })) },
+  });
+
+  it('an import the store will not note a record at a time is kept as the lists of what it made and changed, and all of it sent', async () => {
     const backing = storage();
     await synced(backing);
-    // The note may be no longer than this: the app's budget, nearly spent.
-    const tight = { ...backing, setItem: (key: string, value: string) => { if (key.endsWith('::sync-unheard') && value.length > 20_000) throw new DOMException('full', 'QuotaExceededError'); backing.setItem(key, value); } };
-    const older = '2026-02-15T00:00:00.000Z';
-    const records = Array.from({ length: 2000 }, (_, i) => ({ id: `i${i}`, collection: 'notes', data: { title: `t${i}` }, created_at: older, updated_at: older, deleted: false }));
-    page(tight).import({ version: 1, exportedAt: older, collections: { notes: records } }, { merge: true });
+    page(tight(backing, 40_000)).import(backup(Array.from({ length: 2000 }, (_, i) => [`i${i}`, `t${i}`] as [string, string])), { merge: true });
     await tick();
-    expect(page(backing).readUnheardNote().imports.map((mark) => mark.collection)).toEqual(['notes']);
+    const [list] = page(backing).readUnheardNote().imports;
+    expect([list.collection, list.creates.length, list.updates.length]).toEqual(['notes', 2000, 0]);
 
     const { socket } = await nextVisit(backing);
     const created = new Set((pushed(socket) as unknown as Op[]).filter((op) => op.operation === 'create').map((op) => op.recordId));
     for (let i = 0; i < 2000; i++) expect(created.has(`i${i}`)).toBe(true);
     await tick();
     expect(page(backing).readUnheardNote().imports).toEqual([]);
+  });
+
+  // Kept as a mark of the collection, every record of it went as a create, which the host
+  // answered with its own copy of each it had: the restore was undone on the device.
+  it('a restore the store will not note a record at a time goes as an update, and the restored record stays', async () => {
+    const backing = storage();
+    await synced(backing);
+    page(tight(backing, 150)).import(backup([['n1', 'restored'], ['n2', 'new']]), { merge: true });
+    await tick();
+    expect(page(backing).readUnheardNote().edits).toEqual([]);
+
+    const { socket } = await nextVisit(backing);
+    const ops = (pushed(socket) as unknown as Op[]).map((op) => [op.operation, op.recordId, op.data?.title]).sort();
+    expect(ops).toEqual([['create', 'n2', 'new'], ['update', 'n1', 'restored']]);
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('restored');
+  });
+
+  it("an edit of a record an import's list names goes as the edit, a create where the import made it", async () => {
+    const backing = storage();
+    await synced(backing);
+    const closed = page(tight(backing, 150));
+    closed.import(backup([['n9', 'new'], ['n8', 'gone soon']]), { merge: true });
+    await tick();
+    closed.updateInCollection('notes', 'n9', { title: 'edited after' });
+    closed.hardDelete('notes', 'n8');
+    await tick();
+    const note = page(backing).readUnheardNote();
+    expect(note.edits.map((e) => [e.id, e.kind])).toEqual([['n9', 'create']]);
+    expect(note.removals).toEqual([]);
+    expect(note.imports.flatMap((list) => [...list.creates, ...list.updates])).toEqual([]);
+
+    const { socket } = await nextVisit(backing);
+    expect((pushed(socket) as unknown as Op[]).map((op) => [op.operation, op.recordId, op.data?.title])).toEqual([['create', 'n9', 'edited after']]);
   });
 });
 
