@@ -160,21 +160,53 @@ test('the owner routes answer the site, its listed origins and the host itself; 
   // No Origin at all — curl, a script — is not a page and is not restricted.
   assert.equal((await s.api('PATCH', route, { body: { description: 'changed by a script' }, headers: { 'X-Edit-Key': editKey } })).status, 200);
 
-  // Everything anyone may call still answers any origin: reading, playing,
-  // publishing, remixing, commenting.
+  // What anyone may read still answers any origin: listing, an app, its
+  // bundle, and the app's own storage, which the apps call.
   for (const [method, path, init] of [
     ['GET', '/api/apps', {}],
     ['GET', route, {}],
     ['GET', `${route}/bundle.softn`, {}],
-    ['POST', `${route}/runs`, {}],
-    ['POST', `${route}/comments`, { body: { name: 'A', body: 'hello' } }],
-    ['POST', '/api/apps', { raw: makeBundle('Published From Elsewhere'), headers: { 'Content-Type': 'application/octet-stream' } }],
+    ['GET', `${route}/comments`, {}],
   ]) {
     const r = await s.api(method, path, { ...init, headers: { ...(init.headers ?? {}), Origin: ELSEWHERE } });
     assert.ok(r.status < 300, `${method} ${path}: ${r.status} ${r.text}`);
     assert.equal(r.headers.get('access-control-allow-origin'), '*', `${method} ${path}`);
   }
   assert.equal((await preflight(ELSEWHERE, 'GET', `${route}/bundle.softn`)).headers.get('access-control-allow-origin'), '*');
+});
+
+test('a page elsewhere cannot have its visitors rate, comment, count plays, suggest or publish', skip, async () => {
+  // Open to every origin, any page could make each of its visitors a voter
+  // and a rate-limit bucket of its own: an app's average, its trending place
+  // and its comments were the busiest page's to fill.
+  const { app } = await s.publish('Voted On');
+  const route = `/api/apps/${app.slug}`;
+  const writes = () => [
+    ['POST', `${route}/rating`, { body: { stars: 1 } }],
+    ['POST', `${route}/comments`, { body: { name: 'A', body: 'hello' } }],
+    ['POST', `${route}/runs`, {}],
+    ['POST', '/api/categories', { body: { name: `Suggested ${Math.random().toString(36).slice(2, 8)}` } }],
+    ['POST', '/api/apps', { raw: makeBundle('Published From Elsewhere'), headers: { 'Content-Type': 'application/octet-stream' } }],
+    ['POST', `${route}/remix`, { body: { name: 'Remixed From Elsewhere' } }],
+  ];
+  for (const [method, path, init] of writes()) {
+    const r = await s.api(method, path, { ...init, headers: { ...(init.headers ?? {}), Origin: ELSEWHERE } });
+    assert.equal(r.status, 403, `${method} ${path}: ${r.text}`);
+    assert.match(r.json.error, /allowedOrigins/);
+  }
+  const before = (await s.api('GET', route)).json.app;
+  assert.equal(before.rating.count, 0, 'no vote was counted');
+  assert.equal(before.runs, 0, 'no play was counted');
+  assert.equal(before.comments, 0, 'no comment was kept');
+  assert.equal((await s.api('GET', '/api/apps/published-from-elsewhere')).status, 404, 'nothing was published');
+  // The site's own pages, a listed origin and a script with no Origin: as before.
+  for (const origin of [SITE, STUDIO, null]) {
+    for (const [method, path, init] of writes()) {
+      const r = await s.api(method, path, { ...init, headers: { ...(init.headers ?? {}), ...(origin ? { Origin: origin } : {}) } });
+      assert.ok(r.status < 300, `${origin} ${method} ${path}: ${r.status} ${r.text}`);
+      if (origin) assert.equal(r.headers.get('access-control-allow-origin'), origin);
+    }
+  }
 });
 
 test('an address names a slug, never a name; a parent may be a name exactly one app has', skip, async () => {

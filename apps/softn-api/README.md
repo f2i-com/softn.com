@@ -379,14 +379,20 @@ address the site is reached at. Two things depend on it:
   `warnings` while it is unset.
 - The routes that take an edit key or the admin key — `PATCH` and `DELETE
   /api/apps/{slug}`, `POST .../versions`, `.../thumbnail` and `.../key`, everything
-  under `/api/admin/` — answer a browser page on the site's own origin only:
+  under `/api/admin/` — and the ones the site's own pages use to speak for a
+  visitor — `POST /api/apps` (publish), `.../remix`, `.../comments`,
+  `.../rating`, `.../runs` and `POST /api/categories` — answer a browser page
+  on the site's own origin only:
   `siteOrigin`, the origin the request was addressed to (so a site with no
   configuration works from its own pages), and any origin listed in
   `allowedOrigins` (`["https://studio.example"]`). A page elsewhere gets a
   `403` from them, at the preflight or at the request itself, whichever the
   browser sends first; a script with no `Origin` header is not a page and
-  is not restricted. Every other route still answers any origin, so apps,
-  the runtime and a page revalidating a bundle see no change. That includes
+  is not restricted. Open to every origin, the second group let any page on
+  the web have each of its visitors rate an app, comment on it, count a play
+  or publish, every visitor a new voter and a new rate-limit bucket. Every
+  other route still answers any origin, so apps, the runtime and a page
+  revalidating a bundle see no change. That includes
   `POST /api/apps/{slug}/storage`, which anyone running the app may call
   and which also accepts the edit key (a `publisher` collection, `clear`):
   a browser cannot tell the two apart at the preflight, so it stays open to

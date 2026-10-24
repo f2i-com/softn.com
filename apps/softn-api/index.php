@@ -29,11 +29,13 @@ set_error_handler(static function (int $no, string $str, string $file, int $line
 
 // The API is read from the site's own origin, from the runtime under /web/,
 // and by scripts publishing from anywhere; nothing here relies on a cookie,
-// so an open origin costs nothing on the routes anyone may call. The routes
-// that take an edit key or the admin key answer only the site's own origin
-// and the ones config.json lists (Cors in lib/http.php): a page elsewhere
-// gets a 403 from them, at the preflight or at the request. Apps never call
-// those routes across origins, so nothing published changes.
+// so an open origin costs nothing on the routes anyone may read. The routes
+// that take an edit key or the admin key, and the ones the site's pages use
+// to speak for a visitor (publish, remix, comment, rate, count a play,
+// suggest a category), answer only the site's own origin and the ones
+// config.json lists (Cors in lib/http.php): a page elsewhere gets a 403 from
+// them, at the preflight or at the request. Apps never call those routes
+// across origins, so nothing published changes.
 cors_headers();
 header('X-Content-Type-Options: nosniff');
 

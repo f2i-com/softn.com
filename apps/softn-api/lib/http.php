@@ -172,12 +172,22 @@ final class Limits
  */
 final class Cors
 {
-    /** The routes that take an edit key or the admin key. */
+    /**
+     * The routes a page elsewhere may not use: the ones that take an edit key
+     * or the admin key, and the ones the site's own pages use to speak for a
+     * visitor (publish, remix, comment, rate, count a play, suggest a
+     * category). Open to every origin, any page on the web could have its
+     * visitors' browsers rate an app, comment on it, count plays or publish,
+     * each visitor a new voter and a new rate-limit bucket: one busy page
+     * elsewhere filled an app's average, its trending place or its comments.
+     * A script with no Origin header still uses them all.
+     */
     public static function restricted(string $method, string $path): bool
     {
         if (str_starts_with($path, '/admin/')) return true;
         if ($method === 'PATCH' || $method === 'DELETE') return true;
-        return $method === 'POST' && (bool) preg_match('#^/apps/[^/]+/(versions|thumbnail|key)$#', $path);
+        if ($method === 'POST' && ($path === '/apps' || $path === '/categories')) return true;
+        return $method === 'POST' && (bool) preg_match('#^/apps/[^/]+/(versions|thumbnail|key|remix|comments|rating|runs)$#', $path);
     }
 
     /**
