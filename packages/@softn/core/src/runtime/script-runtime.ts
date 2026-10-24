@@ -46,6 +46,7 @@ import {
 import type { LocalSpeechHost } from './local-speech';
 import { clearCapturedKeys, parseCapturedKeys, setAppElement, setCapturedKeys } from './key-capture';
 import { deepEqual } from './vm-state';
+import { clipboardWriteRefusal } from './clipboard-gate';
 import {
   COMPUTED_PREFIX,
   COMPUTED_SETTLE_FUNCTION,
@@ -504,7 +505,10 @@ export class SoftNScriptRuntime {
     // not reproduced. Undefined means granted, matching how `storage` is read
     // one line up — no shipped manifest declares either key.
     if (perms.clipboard !== false) {
-      this.vmEngine.registerClipboardBridge();
+      // Read at the time of each copy: Allow replaces the config.
+      this.vmEngine.registerClipboardBridge({
+        refusal: () => clipboardWriteRefusal(this.permissionConfig?.consentPending === true),
+      });
     }
   }
 

@@ -116,7 +116,7 @@ export class PythonLogicAdapter implements LogicEngine {
     /* See above: no `localStorage` global exists in a Python state. */
   }
 
-  registerClipboardBridge(): void {
+  registerClipboardBridge(_options?: unknown): void {
     /* See above: no `navigator` global exists in a Python state. */
   }
 

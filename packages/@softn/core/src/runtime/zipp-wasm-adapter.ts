@@ -25,6 +25,7 @@ import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
 import type { DBNamespace } from './script-runtime';
 import type { LogicEngine } from './vm-adapter';
 import type { ScriptOrigin } from './logic-origin';
+import type { ClipboardBridgeOptions } from './clipboard-gate';
 import { sanitizeArgs } from './vm-args';
 import { EVENT_METHODS_FUNCTION, EVENT_METHODS_SOURCE, holdsEvent } from './event-props';
 
@@ -515,11 +516,20 @@ export class ZippWasmAdapter {
    * `navigator.clipboard.writeText()` — which four shipped bundles call for
    * their copy buttons — throws instead of copying.
    */
-  registerClipboardBridge(): void {
+  registerClipboardBridge(options: ClipboardBridgeOptions = {}): void {
     for (const op of CLIPBOARD_SYNC_OPS) this.pendingSyncCapabilities.add(op);
 
     this.wasm.setClipboardBridge({
+      // Held to the person's own action (clipboard-gate.ts); a refusal is
+      // thrown to the script, as a refused storage write is. In a worker the
+      // write is handed to the page, which holds it to the same rule.
       writeText: (text: string) => {
+        if (options.write) {
+          options.write(String(text));
+          return;
+        }
+        const refused = options.refusal?.() ?? null;
+        if (refused) throw new DOMException(refused, 'NotAllowedError');
         try {
           void navigator.clipboard?.writeText(String(text));
         } catch (e) {

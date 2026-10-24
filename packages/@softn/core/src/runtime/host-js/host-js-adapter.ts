@@ -66,6 +66,7 @@ import { giveEventMethods } from '../event-props';
 // into this entry, which is the one thing this entry must not contain.
 import type { LogicEngine, LogicEngineFactory, SymbolInfo, SymbolScope } from '../vm-adapter';
 import type { DBNamespace } from '../script-runtime';
+import type { ClipboardBridgeOptions } from '../clipboard-gate';
 
 /**
  * A string that is in a built bundle if and only if this adapter is.
@@ -465,10 +466,13 @@ export class HostJsAdapter implements LogicEngine {
     this.localStorageBridge = bridge;
   }
 
-  registerClipboardBridge(): void {
+  registerClipboardBridge(options: ClipboardBridgeOptions = {}): void {
     for (const op of CLIPBOARD_SYNC_OPS) this.capabilities.add(op);
     this.clipboard = {
       writeText: (text) => {
+        // Held to the person's own action, as on ZIPP (clipboard-gate.ts).
+        const refused = options.refusal?.() ?? null;
+        if (refused) throw new DOMException(refused, 'NotAllowedError');
         try {
           void navigator.clipboard?.writeText(String(text));
         } catch {

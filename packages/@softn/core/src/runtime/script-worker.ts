@@ -43,6 +43,8 @@ let engineArrived: () => void = () => {};
 const engine = new Promise<void>((resolve) => { engineArrived = resolve; });
 const dbBridge = new SnapshotDBBridge();
 const lsBridge = new SnapshotLocalStorageBridge();
+/** What the script copied during the entry; handed to the page by afterEntry. */
+const clipboardWrites: string[] = [];
 
 let symbolMap: Map<string, { index: number; scope: SymbolScope }> | null = null;
 let stateVarNames: string[] = [];
@@ -165,6 +167,7 @@ function afterEntry(): Record<string, unknown> {
     eventTypes: adapter.getEventListenerTypes(),
     dbMutations: dbBridge.flushMutations(),
     lsMutations: lsBridge.flushMutations(),
+    clipboardWrites: clipboardWrites.splice(0),
     faults: faults.splice(0),
   };
 }
@@ -252,7 +255,13 @@ self.onmessage = async (evt: MessageEvent) => {
       // Register snapshot-based bridges
       wasmAdapter.registerDBBridge(dbBridge as never);
       if (!permissions || permissions.storage !== false) {
+        if (typeof payload.lsPrefix === 'string') lsBridge.setBudgetPrefix(payload.lsPrefix);
         wasmAdapter.registerLocalStorageBridgeCustom(lsBridge);
+      }
+      // A worker has no clipboard: what the script copies goes to the page
+      // with the entry's other results, and the page writes it (applyClipboardWrites).
+      if (!permissions || permissions.clipboard !== false) {
+        wasmAdapter.registerClipboardBridge({ write: (text) => clipboardWrites.push(text) });
       }
       // The accelerator is a declared capability like the rest: a script that
       // did not ask for it gets a preamble whose `accel.*` throws.

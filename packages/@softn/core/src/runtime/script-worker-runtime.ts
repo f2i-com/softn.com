@@ -29,6 +29,8 @@ import { LogicTimers } from './logic-timers';
 import { printRuntimeLine } from './engine-output';
 import { getXDB } from './xdb-registry';
 import { zippEngineForWorker } from './zipp-wasm-loader';
+import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
+import { clipboardWriteRefusal } from './clipboard-gate';
 import type { XDBService } from './xdb-service';
 
 type WorkerPayloadMap = {
@@ -46,6 +48,8 @@ type EntryResult = {
   eventTypes?: string[];
   dbMutations?: DBMutation[];
   lsMutations?: LSMutation[];
+  /** Text the script copied, for the page to write to the clipboard (a worker has none). */
+  clipboardWrites?: string[];
   /** The runtime's lines the engine wrote in the worker, to be printed on the page. */
   faults?: string[];
   /** What the script code the entry ran threw; what it changed first is in the rest. */
@@ -168,6 +172,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private context: ScriptContext;
   private importResolver?: ImportResolver;
   private permissions?: AppPermissions;
+  /** The bundle's `permission.json` as granted; a grant replaces the runtime. */
+  private permissionConfig: PermissionConfig | null = null;
   private appId?: string;
   private logicBasePath?: string;
   private nextId = 1;
@@ -308,6 +314,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // default database rather than this app's. Routing it through the same
     // namespace the main-thread runtime uses gives it the same three things.
     const permissionConfig = options?.permissionConfig ?? null;
+    this.permissionConfig = permissionConfig;
     this.dbNamespace = createDBNamespace(() => permissionConfig, appId);
     this.hostExecutor = createHostCallExecutor(
       context,
@@ -626,6 +633,30 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   }
 
   /**
+   * What the worker's script copied. A worker has no clipboard, and copying
+   * there threw; the page writes the last copy of an entry, held to the
+   * rule the main thread holds it to (clipboard-gate.ts): it arrives while
+   * the click or key press that led to it is still the page's.
+   */
+  private applyClipboardWrites(writes: string[]): void {
+    const text = writes.at(-1);
+    if (text === undefined) return;
+    const refused = clipboardWriteRefusal(this.permissionConfig?.consentPending === true);
+    if (refused) {
+      console.warn(`[SoftN] A copy to the clipboard was not made: ${refused}`);
+      return;
+    }
+    try {
+      void navigator.clipboard?.writeText(String(text));
+    } catch (e) {
+      console.error('[Worker Bridge] clipboard.writeText error:', e);
+    }
+  }
+
+  /** The app's localStorage budget; undefined until the first write, null where there is no store. */
+  private lsBudget: StorageBudget | null | undefined = undefined;
+
+  /**
    * Apply localStorage mutations from the worker.
    */
   private applyLSMutations(mutations: LSMutation[]): void {
@@ -638,14 +669,28 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // host can do is know which ones did not. The snapshot the worker gets
     // next is taken from the browser's storage, not from this list, so the
     // script reads back what was actually kept.
+    // The app's share of the store, held here as on the main thread: the
+    // worker's own bridge refuses past it too, and this is the page's check
+    // on what a worker sends (StorageBudget).
+    if (this.lsBudget === undefined) {
+      try {
+        this.lsBudget = typeof localStorage === 'undefined' ? null : new StorageBudget(localStorage, prefix, LOCAL_STORAGE_BUDGET);
+      } catch {
+        this.lsBudget = null;
+      }
+    }
+    const budget = this.lsBudget;
     for (const m of mutations) {
       try {
         switch (m.type) {
           case 'setItem':
+            budget?.admit(prefix + m.key, m.value);
             localStorage.setItem(prefix + m.key, m.value);
+            budget?.wrote(prefix + m.key, m.value);
             break;
           case 'removeItem':
             localStorage.removeItem(prefix + m.key);
+            budget?.removed(prefix + m.key);
             break;
           case 'clear': {
             const keysToRemove: string[] = [];
@@ -653,7 +698,10 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
               const k = localStorage.key(i);
               if (k?.startsWith(prefix)) keysToRemove.push(k);
             }
-            for (const k of keysToRemove) localStorage.removeItem(k);
+            for (const k of keysToRemove) {
+              localStorage.removeItem(k);
+              budget?.removed(k);
+            }
             break;
           }
         }
@@ -802,6 +850,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       externalPreamble: buildExternalValuesPreamble(this.externalFunctions),
       dbSnapshot: this.getDBSnapshot(),
       lsSnapshot: this.getLocalStorageSnapshot(),
+      // The page's key prefix for the app, which the worker's storage budget counts under.
+      lsPrefix: `softn:${this.safeAppId}:`,
       syncStatus: this.getSyncStatus(),
       savedSyncRoom: this.getSavedSyncRoom(),
     });
@@ -997,6 +1047,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     for (const line of out.faults ?? []) printRuntimeLine(line);
     void this.applyDBMutations(out.dbMutations || []);
     this.applyLSMutations(out.lsMutations || []);
+    this.applyClipboardWrites(out.clipboardWrites || []);
     this.applyState(out.state || {});
     if (Array.isArray(out.eventTypes)) this.bridgeEventTypes(out.eventTypes);
     // Timers keep their own clock and are not run one after another with the

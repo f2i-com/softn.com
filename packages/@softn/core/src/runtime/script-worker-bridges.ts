@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from '../bundle/crypto';
+import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
 
 // ============================================================================
 // Mutation types
@@ -285,6 +286,37 @@ export class SnapshotDBBridge {
 export class SnapshotLocalStorageBridge {
   private store: Map<string, string> = new Map();
   private mutations: LSMutation[] = [];
+  /**
+   * The app's share of the browser's store, counted as the page counts it
+   * (zipp-wasm-adapter's bridge): under the page's prefix for the app, which
+   * the page sends (`lsPrefix`). A worker's writes went to the page unbudgeted,
+   * so `config.execution: "worker"` let an app with no permissions fill the
+   * store every app and the host share.
+   */
+  private prefix: string | null = null;
+  private budget: StorageBudget | null = null;
+
+  /** Count writes against the budget under `prefix`, from the next snapshot on. */
+  setBudgetPrefix(prefix: string): void {
+    this.prefix = prefix;
+    this.budget = null;
+  }
+
+  private counted(): StorageBudget | null {
+    if (this.prefix === null) return null;
+    if (!this.budget) {
+      // Counted once, from the snapshot as it is now; the budget follows each
+      // write after that.
+      const prefix = this.prefix;
+      const keys = [...this.store.keys()];
+      this.budget = new StorageBudget(
+        { length: keys.length, key: (i: number) => (i < keys.length ? prefix + keys[i] : null), getItem: (k: string) => this.store.get(k.slice(prefix.length)) ?? null },
+        prefix,
+        LOCAL_STORAGE_BUDGET
+      );
+    }
+    return this.budget;
+  }
 
   updateSnapshot(data: Record<string, string>): void {
     this.store.clear();
@@ -292,6 +324,7 @@ export class SnapshotLocalStorageBridge {
       this.store.set(k, v);
     }
     this.mutations = [];
+    this.budget = null;
   }
 
   flushMutations(): LSMutation[] {
@@ -305,17 +338,24 @@ export class SnapshotLocalStorageBridge {
   }
 
   setItem(key: string, value: string): void {
-    this.store.set(key, value);
-    this.mutations.push({ type: 'setItem', key, value });
+    const text = String(value);
+    // A write past the budget throws to the script, as on the page.
+    const budget = this.counted();
+    budget?.admit(this.prefix + key, text);
+    this.store.set(key, text);
+    budget?.wrote(this.prefix + key, text);
+    this.mutations.push({ type: 'setItem', key, value: text });
   }
 
   removeItem(key: string): void {
     this.store.delete(key);
+    this.budget?.removed(this.prefix + key);
     this.mutations.push({ type: 'removeItem', key });
   }
 
   clear(): void {
     this.store.clear();
+    this.budget = null;
     this.mutations.push({ type: 'clear' });
   }
 }

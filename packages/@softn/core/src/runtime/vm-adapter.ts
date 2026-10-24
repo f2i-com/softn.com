@@ -36,6 +36,7 @@ export type { SymbolScope, SymbolInfo } from './zipp-wasm-adapter';
 import { ZippWasmAdapter, type SymbolInfo } from './zipp-wasm-adapter';
 import type { DBNamespace } from './script-runtime';
 import type { ScriptOrigin } from './logic-origin';
+import type { ClipboardBridgeOptions } from './clipboard-gate';
 
 // ============================================================================
 // The engine seam
@@ -60,8 +61,8 @@ export interface LogicEngine {
   registerDBBridge(db: DBNamespace): void;
   /** Wire `localStorage.*`, scoped to `appId` so two bundles cannot collide. */
   registerLocalStorageBridge(appId?: string): void;
-  /** Wire `navigator.clipboard.*`. */
-  registerClipboardBridge(): void;
+  /** Wire `navigator.clipboard.*`, held to `options.refusal` (clipboard-gate.ts). */
+  registerClipboardBridge(options?: ClipboardBridgeOptions): void;
   /** Where a refused storage write is reported before it is thrown to the guest. */
   onStorageFailure: ((failure: { operation: string; key: string; error: Error }) => void) | null;
   /**
