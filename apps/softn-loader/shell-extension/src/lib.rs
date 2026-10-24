@@ -4,13 +4,19 @@
 //! Implements IThumbnailProvider to extract icons from the ZIP bundle.
 //! Reads manifest.json to find the icon path, supports PNG and SVG formats.
 
+mod archive;
+#[cfg(test)]
+mod test_zip;
+#[cfg(test)]
+mod thumbnail_tests;
+
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use flate2::read::DeflateDecoder;
 use serde::Deserialize;
 
 use image::GenericImageView;
@@ -29,8 +35,9 @@ static DLL_MODULE: AtomicUsize = AtomicUsize::new(0);
 const CLSID_SOFTN_THUMBNAIL: GUID = GUID::from_u128(0x7A8E4D21_5B3F_4C2E_9D1A_8F6E7C3B2A90);
 
 /// The most of a bundle read for its thumbnail: the runtime's own reader
-/// takes no more. Windows hands the stream of whatever file is shown.
-const MAX_BUNDLE_BYTES: u64 = 512 * 1024 * 1024;
+/// takes no more (archive.rs refuses a larger one). Windows hands the stream
+/// of whatever file is shown.
+const MAX_BUNDLE_BYTES: u64 = 200 * 1024 * 1024;
 /// The most a manifest or an icon may inflate to.
 const MAX_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
 /// The widest and tallest raster icon decoded.
@@ -59,111 +66,11 @@ impl SoftNThumbnailProvider {
         }
     }
 
-    /// Parse the ZIP central directory into a list of entries
-    fn read_central_directory(&self, data: &[u8]) -> Option<Vec<ZipEntry>> {
-        // Find end of central directory
-        let mut eocd_offset = None;
-        for i in (0..=(data.len().saturating_sub(22))).rev() {
-            if data[i..i + 4] == [0x50, 0x4b, 0x05, 0x06] {
-                eocd_offset = Some(i);
-                break;
-            }
-        }
-        let eocd_offset = eocd_offset?;
-
-        let cd_offset = u32::from_le_bytes([
-            data[eocd_offset + 16],
-            data[eocd_offset + 17],
-            data[eocd_offset + 18],
-            data[eocd_offset + 19],
-        ]) as usize;
-
-        let cd_count = u16::from_le_bytes([data[eocd_offset + 10], data[eocd_offset + 11]]) as usize;
-
-        let mut entries = Vec::with_capacity(cd_count);
-        let mut offset = cd_offset;
-
-        for _ in 0..cd_count {
-            if offset + 46 > data.len() {
-                break;
-            }
-            if data[offset..offset + 4] != [0x50, 0x4b, 0x01, 0x02] {
-                break;
-            }
-
-            let name_len = u16::from_le_bytes([data[offset + 28], data[offset + 29]]) as usize;
-            let extra_len = u16::from_le_bytes([data[offset + 30], data[offset + 31]]) as usize;
-            let comment_len = u16::from_le_bytes([data[offset + 32], data[offset + 33]]) as usize;
-            let local_offset =
-                u32::from_le_bytes([data[offset + 42], data[offset + 43], data[offset + 44], data[offset + 45]])
-                    as usize;
-
-            if offset + 46 + name_len > data.len() {
-                break;
-            }
-
-            let name = String::from_utf8_lossy(&data[offset + 46..offset + 46 + name_len])
-                .replace('\\', "/");
-
-            entries.push(ZipEntry { name, local_offset });
-            offset += 46 + name_len + extra_len + comment_len;
-        }
-
-        Some(entries)
-    }
-
-    /// Extract a file from the ZIP by name using the central directory entries
-    fn extract_entry(&self, data: &[u8], entries: &[ZipEntry], target: &str) -> Option<Vec<u8>> {
-        let entry = entries.iter().find(|e| e.name == target)?;
-        self.extract_file_from_local_header(data, entry.local_offset)
-    }
-
-    /// Extract file data from local header
-    fn extract_file_from_local_header(&self, data: &[u8], offset: usize) -> Option<Vec<u8>> {
-        if offset + 30 > data.len() {
-            return None;
-        }
-
-        // Check local header signature
-        if data[offset..offset + 4] != [0x50, 0x4b, 0x03, 0x04] {
-            return None;
-        }
-
-        let compression = u16::from_le_bytes([data[offset + 8], data[offset + 9]]);
-        let compressed_size =
-            u32::from_le_bytes([data[offset + 18], data[offset + 19], data[offset + 20], data[offset + 21]])
-                as usize;
-        let name_len = u16::from_le_bytes([data[offset + 26], data[offset + 27]]) as usize;
-        let extra_len = u16::from_le_bytes([data[offset + 28], data[offset + 29]]) as usize;
-
-        let data_offset = offset + 30 + name_len + extra_len;
-        if data_offset + compressed_size > data.len() {
-            return None;
-        }
-
-        let compressed_data = &data[data_offset..data_offset + compressed_size];
-
-        match compression {
-            0 => {
-                // Stored (uncompressed)
-                Some(compressed_data.to_vec())
-            }
-            8 => {
-                // DEFLATE compression, inflated no further than an icon or a
-                // manifest could need: a 1.56 MB entry inflated to 1.61 GB in
-                // the thumbnail process.
-                let mut decompressed = Vec::new();
-                DeflateDecoder::new(compressed_data)
-                    .take(MAX_ENTRY_BYTES + 1)
-                    .read_to_end(&mut decompressed)
-                    .ok()?;
-                if decompressed.len() as u64 > MAX_ENTRY_BYTES {
-                    return None;
-                }
-                Some(decompressed)
-            }
-            _ => None,
-        }
+    /// A file of the bundle, as the runtime reads it (archive.rs), inflated
+    /// no further than an icon or a manifest could need: a 1.56 MB entry
+    /// inflated to 1.61 GB in the thumbnail process.
+    fn extract_entry(&self, data: &[u8], entries: &HashMap<String, archive::Entry>, target: &str) -> Option<Vec<u8>> {
+        archive::read(data, entries.get(target)?, MAX_ENTRY_BYTES)
     }
 
     /// Convert image bytes (PNG, JPEG, etc.) to HBITMAP
@@ -349,16 +256,17 @@ impl SoftNThumbnailProvider {
             return None;
         }
 
-        let entries = self.read_central_directory(data)?;
+        // An archive the runtime would refuse has no thumbnail.
+        let entries = archive::entries(data)?;
 
-        // 1. Try manifest.json
+        // 1. Try manifest.json. The icon is the entry of the name the manifest
+        // writes, as the runtime finds it (a backslash is not a folder there).
         if let Some(manifest_data) = self.extract_entry(data, &entries, "manifest.json") {
             if let Ok(text) = std::str::from_utf8(&manifest_data) {
-                if let Ok(manifest) = serde_json::from_str::<Manifest>(text) {
+                if let Ok(manifest) = serde_json::from_str::<Manifest>(text.strip_prefix('\u{feff}').unwrap_or(text)) {
                     if let Some(icon_path) = &manifest.icon {
-                        let normalized = icon_path.replace('\\', "/");
-                        if let Some(icon_data) = self.extract_entry(data, &entries, &normalized) {
-                            return Some((icon_data, normalized));
+                        if let Some(icon_data) = self.extract_entry(data, &entries, icon_path) {
+                            return Some((icon_data, icon_path.clone()));
                         }
                     }
                 }
@@ -383,11 +291,6 @@ impl SoftNThumbnailProvider {
 
         None
     }
-}
-
-struct ZipEntry {
-    name: String,
-    local_offset: usize,
 }
 
 impl IInitializeWithFile_Impl for SoftNThumbnailProvider_Impl {
@@ -683,29 +586,5 @@ mod tests {
         unsafe {
             let _ = DeleteObject(bitmap);
         }
-    }
-
-    /// An entry is inflated no further than an icon or a manifest needs.
-    #[test]
-    fn an_entry_inflates_no_further_than_an_icon_needs() {
-        use std::io::Write;
-        let local = |content: &[u8]| {
-            let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
-            encoder.write_all(content).unwrap();
-            let packed = encoder.finish().unwrap();
-            let mut zip = vec![0x50, 0x4b, 0x03, 0x04, 20, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            zip.extend_from_slice(&(packed.len() as u32).to_le_bytes());
-            zip.extend_from_slice(&(content.len() as u32).to_le_bytes());
-            zip.extend_from_slice(&8u16.to_le_bytes());
-            zip.extend_from_slice(&0u16.to_le_bytes());
-            zip.extend_from_slice(b"icon.png");
-            zip.extend_from_slice(&packed);
-            zip
-        };
-        let provider = SoftNThumbnailProvider::new();
-        let small = local(&vec![0u8; 1024 * 1024]);
-        assert_eq!(provider.extract_file_from_local_header(&small, 0).map(|d| d.len()), Some(1024 * 1024));
-        let bomb = local(&vec![0u8; MAX_ENTRY_BYTES as usize + 1]);
-        assert!(provider.extract_file_from_local_header(&bomb, 0).is_none());
     }
 }
