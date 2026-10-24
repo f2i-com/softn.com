@@ -54,6 +54,12 @@ section here. Write the section before tagging. Headings are the tag
   - XDB: an import or a restore reaches the sync host as the writes it amounts to (an update for a record that was here, so a restore wins; a create for a new one; a delete for one a restore drops), where it stayed on the device it was made on. A record removed for good while the peer-to-peer room was not open is taken out of the room when the room next presents it, where the room's copy came back.
   - The Builder's export names the files of an opened bundle it carries but does not show, server logic first, which it wrote back unseen.
   - The directory refuses a publish, a remix, a new version or a storage write that adds, with a `507`, when it would leave its disk with less than `minFreeBytes` free (256 MB by default; `0` turns it off), and `/api/health` warns before then. Nothing bounded the whole.
+- The desktop runtime:
+  - A large bundle opens. Its bytes reached the page as JSON, a number for each byte: a 180 MB bundle, within the 200 MB the reader takes, held the window for over a minute and then crashed it. They go as bytes now, and the same bundle opens in seconds.
+  - A listed host that looks like a server on the internet but leads to this computer or the local network is a second question, naming the address. The person allowed "only these servers: api.example.com", and whoever runs that name could point it at their router or a program on their computer for the app to read. Every name is looked up natively, for every request, and the request goes to the addresses checked. The first question no longer offers this computer and the local network when the rules list no host, since those requests are refused; a listed host that is there is labelled so. On Android, which puts no question, such a request is refused.
+  - The page is granted what it calls of Tauri's own, events and the window's title. `core:default` gave it the image, menu, path, tray and resources APIs besides, reading an image from any path among them.
+  - A pre-upgrade backup is refused when it would leave less than 512 MiB free on the disk. Each is a whole copy of an app's database, kept for rollbacks, and a page asking again and again filled the disk every app's database is on.
+  - A delete that names its collection deletes from it alone. The native store keys records by id, and a removal heard from a peer or the sync server in one collection deleted a record of another collection that had the id. Core names the collection wherever it knows it.
 
 ## v0.0.26
 
