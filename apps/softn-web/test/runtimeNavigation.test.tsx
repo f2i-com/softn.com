@@ -239,7 +239,7 @@ describe('runtime entry and navigation ownership', () => {
       alpha.click();
     });
     await settle();
-    expect(document.title).toBe('Alpha');
+    await vi.waitFor(() => expect(document.title).toBe('Alpha'));
     expect(window.location.pathname).toBe('/app/Alpha');
     await click('.softn-frame-home');
     expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(2);
@@ -264,7 +264,9 @@ describe('runtime entry and navigation ownership', () => {
     await settle();
     expect(container.querySelector('[aria-label="Open Beta"]')).toBeTruthy();
     await click('[aria-label="Open Beta"]');
-    expect(document.title).toBe('Beta');
+    // Opening reads the cached bundle first, which on a loaded machine (CI)
+    // takes more turns than settle() gives it.
+    await vi.waitFor(() => expect(document.title).toBe('Beta'));
     expect(window.location.pathname).toBe('/app/Beta');
   });
 });
