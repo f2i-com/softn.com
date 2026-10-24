@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ApiError, getApp, getRating, listApps, rate, recordRun, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
+import { ApiError, getApp, getRating, listApps, rate, recordRun, updateListing, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
 import { savedKey } from '../lib/keyStore';
 import { launchApp } from '../lib/launch';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
@@ -169,6 +169,24 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
   const [showSource, setShowSource] = useState(false);
   const [sourceVersion, setSourceVersion] = useState<number | undefined>(undefined);
   const editable = Boolean(savedKey(slug));
+  const [remixBusy, setRemixBusy] = useState(false);
+  const [remixError, setRemixError] = useState<string | null>(null);
+
+  // The owner takes a remix off this page, or puts one back: anyone can
+  // publish a remix of any app, under any name.
+  const setHiddenRemixes = async (next: string[]) => {
+    const key = savedKey(slug);
+    if (!app || !key || remixBusy) return;
+    setRemixBusy(true);
+    setRemixError(null);
+    try {
+      setApp(await updateListing(app.slug, key, { hiddenRemixes: next }));
+    } catch (e) {
+      setRemixError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRemixBusy(false);
+    }
+  };
 
   useEffect(() => {
     const ac = new AbortController();
@@ -557,7 +575,7 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
             </section>
             )}
 
-            {(app.lineage.length > 0 || app.remixList.length > 0) && (
+            {(app.lineage.length > 0 || app.remixList.length > 0 || (editable && (app.hiddenRemixes?.length ?? 0) > 0)) && (
               <section className="side-card">
                 <h2 className="side-title">Lineage</h2>
                 {app.lineage.length > 0 && (
@@ -580,11 +598,47 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
                       {app.remixList.map((r) => (
                         <li key={r.slug}>
                           <a href={`/app/${r.slug}`}>{r.name}</a> <span className="muted">by {r.author}</span>
+                          {editable && (
+                            <>
+                              {' '}
+                              <button
+                                type="button"
+                                className="link-btn"
+                                disabled={remixBusy}
+                                aria-label={`Hide ${r.name} from this page`}
+                                onClick={() => void setHiddenRemixes([...(app.hiddenRemixes ?? []), r.slug])}
+                              >
+                                Hide
+                              </button>
+                            </>
+                          )}
                         </li>
                       ))}
                     </ul>
                   </>
                 )}
+                {editable && (app.hiddenRemixes?.length ?? 0) > 0 && (
+                  <>
+                    <p className="muted">Hidden from this page by you, and not counted:</p>
+                    <ul className="side-list">
+                      {(app.hiddenRemixes ?? []).map((hidden) => (
+                        <li key={hidden}>
+                          <a href={`/app/${hidden}`}>{hidden}</a>{' '}
+                          <button
+                            type="button"
+                            className="link-btn"
+                            disabled={remixBusy}
+                            aria-label={`Show ${hidden} on this page again`}
+                            onClick={() => void setHiddenRemixes((app.hiddenRemixes ?? []).filter((s) => s !== hidden))}
+                          >
+                            Show
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {remixError && <p className="form-error" role="alert">{remixError}</p>}
               </section>
             )}
 

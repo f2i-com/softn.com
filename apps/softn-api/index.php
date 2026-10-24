@@ -420,7 +420,7 @@ function handle(string $handler, array $args, Request $req): Response
             // admin key from data/config.json, fills a fresh directory in one
             // batch — a whole folder of bundles dropped on the publish page.
             if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) {
-                Db::rateLimit('publish', Config::limitKey($req->ip));
+                Db::rateLimit('publish', Config::publishKey($req->ip));
             }
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent. Upload a .softn as the multipart field "bundle", as the raw request body, or as JSON {"bundleBase64": ...}.');
@@ -580,7 +580,7 @@ function handle(string $handler, array $args, Request $req): Response
             // be a way to fill a folder to its version limit in a minute.
             $byAdmin = Config::isAdmin($req->credential('x-admin-key', 'adminKey'));
             if (!$byAdmin) {
-                Db::rateLimit('version', Config::limitKey($req->ip));
+                Db::rateLimit('version', Config::publishKey($req->ip));
             }
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent.');
@@ -612,7 +612,7 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'remix': {
             if (($req->field('website') ?? '') !== '') throw new ApiError(400, 'The remix was not accepted.');
-            Db::rateLimit('publish', Config::limitKey($req->ip));
+            Db::rateLimit('publish', Config::publishKey($req->ip));
             // Read before the catalogue is opened; see addVersion. The
             // picture too, and before the remix exists: see publish.
             $file = $req->bundleFile();

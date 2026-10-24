@@ -24,12 +24,13 @@ try {
  switch($job['op']) {
  case 'list':echo json_encode(Apps::list([]));break;
  case 'doc':$d=Catalog::doc($job['slug']);$d['comments']=Catalog::comments($job['slug']);echo json_encode($d);break;
- case 'run':for($i=0;$i<($job['count']??1);$i++){Social::recordRun($r,$job['slug']);Catalog::release();}break;
+ case 'run':foreach($job['ips']??array_fill(0,$job['count']??1,$job['ip']??'127.0.0.1') as $ip){$_SERVER['REMOTE_ADDR']=$ip;Social::recordRun(Request::fromGlobals(),$job['slug']);Catalog::release();}break;
  case 'comment':echo json_encode(Social::addComment($r,$job['slug']));break;
  case 'hide':Social::hideComment((int)$job['id']);break;
  case 'comments':echo json_encode(Social::comments($job['slug'],1,50));break;
  case 'rate':echo json_encode(Social::rate($r,$job['slug']));break;
- case 'patch':Apps::patch($job['slug'],$job['fields']);break;
+ case 'patch':echo json_encode(Apps::patch($job['slug'],$job['patch']??$job['fields']));break;
+ case 'bucket':echo json_encode([Net::limitBucket($job['ip']),Net::limitBucket($job['ip'],56),Config::publishKey($job['ip'])===Config::publishKey($job['other']),Config::limitKey($job['ip'])===Config::limitKey($job['other'])]);break;
  case 'version':Apps::addVersion($job['slug'],$job['bundle'],'parallel');break;
  case 'publish':echo json_encode(Apps::create($job['bundle'],['name'=>$job['name']??'Concurrent']));break;
  case 'skipped':echo json_encode(Catalog::skipped());break;
@@ -106,7 +107,8 @@ test('parallel processes preserve runs, comments, ratings, patches and unique ve
  const f=fixture();try{
   const bundle=f.add('busy');f.run({op:'list'});
   const jobs=[];
-  for(let n=0;n<8;n++)jobs.push(f.asyncRun({op:'run',slug:'busy',count:10,ip:`10.0.0.${n+1}`}));
+  // Eighty visitors, ten to a writer: a visitor's runs count once a day.
+  for(let n=0;n<8;n++)jobs.push(f.asyncRun({op:'run',slug:'busy',ips:Array.from({length:10},(_,i)=>`10.0.${n}.${i+1}`)}));
   for(let n=0;n<6;n++){
    jobs.push(f.asyncRun({op:'comment',slug:'busy',ip:`10.1.0.${n+1}`,fields:{name:`Visitor ${n}`,body:`Comment ${n}`}}));
    jobs.push(f.asyncRun({op:'rate',slug:'busy',ip:`10.1.0.${n+1}`,fields:{stars:4}}));
@@ -206,12 +208,12 @@ test('a folder with only app.json and a play_url is a linked app: listed, played
   const doc=JSON.parse(fs.readFileSync(path.join(dir,'app.json')));
   assert.equal(doc.app.play_url,'https://outerstead.com/');assert.equal('playUrl' in doc.app,false);assert.equal(doc.app.latest_version,0);
   const mtime=fs.statSync(path.join(dir,'app.json')).mtimeMs;f.run({op:'list'});assert.equal(fs.statSync(path.join(dir,'app.json')).mtimeMs,mtime);
-  // Play counts like any other app; the detail page has no versions or manifest; the bundle routes have nothing.
-  f.run({op:'run',slug:'outerstead',count:3});
+  // Play counts like any other app (once a day for each visitor); the detail page has no versions or manifest; the bundle routes have nothing.
+  f.run({op:'run',slug:'outerstead',count:3});f.run({op:'run',slug:'outerstead',ip:'192.0.2.8'});
   // Play on the site is a launch; for a linked app it is also the run, since no runtime will ever report one.
-  f.run({op:'launch',slug:'outerstead'});f.run({op:'launch',slug:'hosted'});
+  f.run({op:'launch',slug:'outerstead',ip:'192.0.2.9'});f.run({op:'launch',slug:'hosted'});
   const detail=f.run({op:'detail',slug:'outerstead'});
-  assert.equal(detail.runs,4);assert.equal(detail.launches,1);assert.equal(f.run({op:'doc',slug:'outerstead'}).runsDaily.reduce((n,r)=>n+r.count,0),4);
+  assert.equal(detail.runs,3);assert.equal(detail.launches,1);assert.equal(f.run({op:'doc',slug:'outerstead'}).runsDaily.reduce((n,r)=>n+r.count,0),3);
   const hostedCard=f.run({op:'card',slug:'hosted'});assert.equal(hostedCard.launches,1);assert.equal(hostedCard.runs,0,'a hosted app still waits for the runtime to report the run');assert.deepEqual(detail.versions,[]);assert.equal(detail.manifest,null);assert.deepEqual(detail.external,{url:'https://outerstead.com/',host:'outerstead.com'});
   const r=spawnSync('php',f.args({op:'bundle',slug:'outerstead'}),{encoding:'utf8'});assert.equal(r.status,1);assert.match(r.stderr,/404:This app plays on its own site/);
   assert.equal(f.run({op:'bundle',slug:'hosted'}).version,1);
@@ -225,5 +227,63 @@ test('a folder with only app.json and a play_url is a linked app: listed, played
   f.add('outerstead',1,'Outerstead');
   const both=f.run({op:'card',slug:'outerstead'});
   assert.equal(both.external.host,'outerstead.com');assert.equal(both.version,1);assert.equal(both.urls.bundle,null);
+ }finally{f.close();}
+});
+
+// One client counted 120 runs a minute, and runs weigh three in trending: an
+// app moved above the popular ones in a second and a half.
+test('a visitor\'s runs of an app count once a day, and only today\'s pairs are kept',skip,()=>{
+ const f=fixture();try{
+  f.add('pushed',1,'Pushed');f.add('other',1,'Other');
+  const cache=path.join(f.root,'cache');fs.mkdirSync(cache,{recursive:true});
+  fs.writeFileSync(path.join(cache,'runs-1.log'),'0123456789abcdef\n');
+  f.run({op:'run',slug:'pushed',count:50});
+  assert.equal(f.run({op:'card',slug:'pushed'}).runs,1,'fifty runs from one visitor');
+  // Another visitor counts; so does the same one on another app.
+  f.run({op:'run',slug:'pushed',ip:'198.51.100.4'});f.run({op:'run',slug:'other'});
+  // An IPv6 /64 is one visitor, as for every per-visitor limit.
+  f.run({op:'run',slug:'pushed',ip:'2001:db8:5:6::1'});f.run({op:'run',slug:'pushed',ip:'2001:db8:5:6::2'});
+  assert.equal(f.run({op:'card',slug:'pushed'}).runs,3);assert.equal(f.run({op:'card',slug:'other'}).runs,1);
+  assert.equal(f.run({op:'doc',slug:'pushed'}).runsDaily.reduce((n,r)=>n+r.count,0),3);
+  // The day's log, of hashes and nothing else; another day's is gone.
+  const logs=fs.readdirSync(cache).filter(n=>n.startsWith('runs-')&&n.endsWith('.log'));
+  assert.deepEqual(logs,[`runs-${Math.floor(Date.now()/86400000)}.log`]);
+  assert.match(fs.readFileSync(path.join(cache,logs[0]),'utf8'),/^([0-9a-f]{16}\n){4}$/);
+ }finally{f.close();}
+});
+
+// Anyone can publish a remix of any app, under any name, and the newest twelve
+// were on the parent's page, counted five each in trending, for good.
+test('an owner hides a remix from the app\'s page and its count, and can show it again',skip,()=>{
+ const f=fixture();try{
+  f.add('parent',1,'Parent');f.add('fan',1,'Fan remix');f.add('spam',1,'Spam remix');f.add('unrelated',1,'Unrelated');
+  for(const kid of ['fan','spam']){const file=path.join(f.root,'apps',kid,'app.json');f.run({op:'list'});const doc=JSON.parse(fs.readFileSync(file));doc.app.parent_slug='parent';doc.app.root_slug='parent';fs.writeFileSync(file,JSON.stringify(doc));}
+  assert.equal(f.run({op:'card',slug:'parent'}).remixes,2);
+  const updated=JSON.parse(fs.readFileSync(path.join(f.root,'apps/parent/app.json'))).app.updated_at;
+  // A name that is not a remix of this app is dropped, not an error: the list the page sends back always saves.
+  const hidden=f.run({op:'patch',slug:'parent',patch:{hiddenRemixes:['spam','unrelated','gone']}});
+  assert.deepEqual(hidden.hiddenRemixes,['spam']);
+  assert.deepEqual(hidden.remixList.map(r=>r.slug),['fan']);assert.equal(hidden.remixes,1);
+  assert.equal(f.run({op:'card',slug:'parent'}).remixes,1,'and out of the count trending reads');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.root,'apps/parent/app.json'))).app.updated_at,updated,'hiding is not an update of the app');
+  // The remix itself is untouched: listed, with its lineage.
+  assert.deepEqual(f.run({op:'detail',slug:'spam'}).lineage.map(l=>l.slug),['parent']);
+  const shown=f.run({op:'patch',slug:'parent',patch:{hiddenRemixes:[]}});
+  assert.deepEqual(shown.hiddenRemixes,[]);assert.equal(shown.remixes,2);
+  const r=spawnSync('php',f.args({op:'patch',slug:'parent',patch:{hiddenRemixes:'spam'}}),{encoding:'utf8'});
+  assert.equal(r.status,1);assert.match(r.stderr,/^400:hiddenRemixes must be a list/);
+ }finally{f.close();}
+});
+
+// A subscriber is often handed a /56: by the /64, one could publish 256 times the limit.
+test('publishing counts an IPv6 address by its /56, and votes by its /64',skip,()=>{
+ const f=fixture();try{
+  const [b64,b56,samePublisher,sameVoter]=f.run({op:'bucket',ip:'2001:db8:1:2::5',other:'2001:db8:1:ff::9'});
+  assert.equal(b64,'2001:db8:1:2::/64');assert.equal(b56,'2001:db8:1::/56');
+  assert.equal(samePublisher,true);assert.equal(sameVoter,false);
+  const [v4,v4as56]=f.run({op:'bucket',ip:'192.0.2.1',other:'192.0.2.2'});
+  assert.equal(v4,'192.0.2.1');assert.equal(v4as56,'192.0.2.1');
+  const source=fs.readFileSync(path.join(api,'index.php'),'utf8');
+  for(const bucket of ['publish','version'])assert.ok(!source.includes(`Db::rateLimit('${bucket}', Config::limitKey(`),`${bucket} is counted by the /64`);
  }finally{f.close();}
 });

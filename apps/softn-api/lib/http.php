@@ -825,17 +825,19 @@ final class Net
 
     /**
      * What a rate limit counts an address as: an IPv4 address itself, an
-     * IPv6 address as its /64 (`2001:db8:1:2::/64`). Anything that is not an
+     * IPv6 address as its /64 (`2001:db8:1:2::/64`), or as the shorter prefix
+     * `$v6Bits` names (a whole number of bytes). Anything that is not an
      * address is returned as it was.
      */
-    public static function limitBucket(string $ip): string
+    public static function limitBucket(string $ip, int $v6Bits = 64): string
     {
         $normal = self::normalize($ip);
         if ($normal === null) return $ip;
         $packed = inet_pton($normal);
         if ($packed === false || strlen($packed) !== 16) return $normal;
-        $prefix = inet_ntop(substr($packed, 0, 8) . str_repeat("\0", 8));
-        return (is_string($prefix) ? $prefix : $normal) . '/64';
+        $bytes = intdiv(max(8, min(128, $v6Bits)), 8);
+        $prefix = inet_ntop(substr($packed, 0, $bytes) . str_repeat("\0", 16 - $bytes));
+        return (is_string($prefix) ? $prefix : $normal) . '/' . ($bytes * 8);
     }
 
     /** `1.2.3.4:5678` and `[2001:db8::1]:443` without their ports; anything else as it was. */

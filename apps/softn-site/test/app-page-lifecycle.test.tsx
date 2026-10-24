@@ -3,12 +3,16 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDetail, Rating } from '../src/lib/api';
 
-const { getApp, getRating, rate } = vi.hoisted(() => ({ getApp: vi.fn(), getRating: vi.fn(), rate: vi.fn() }));
+const { getApp, getRating, rate, updateListing, keys } = vi.hoisted(() => ({ getApp: vi.fn(), getRating: vi.fn(), rate: vi.fn(), updateListing: vi.fn(), keys: {} as Record<string, string> }));
 vi.mock('../src/lib/api', async () => ({
   ...await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api'),
-  getApp, getRating, rate,
+  getApp, getRating, rate, updateListing,
   listApps: async () => ({ items: [] }),
   getComments: async () => ({ items: [], pages: 1, total: 0 }),
+}));
+vi.mock('../src/lib/keyStore', async () => ({
+  ...await vi.importActual<typeof import('../src/lib/keyStore')>('../src/lib/keyStore'),
+  savedKey: (slug: string) => keys[slug] ?? null,
 }));
 import { AppPage, breakdownAfterVote } from '../src/pages/AppPage';
 import { ApiError } from '../src/lib/api';
@@ -31,6 +35,7 @@ async function render(slug: string): Promise<void> {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  for (const slug of Object.keys(keys)) delete keys[slug];
   getApp.mockImplementation(async (slug: string) => app(slug));
   getRating.mockResolvedValue({ average: 0, count: 0, mine: null });
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
@@ -149,5 +154,34 @@ describe('breakdownAfterVote', () => {
   });
   it('never takes a bar below zero', () => {
     expect(breakdownAfterVote(empty, 2, 5, false)).toEqual({ ...empty, '5': 1 });
+  });
+});
+
+describe('the remixes an owner hides', () => {
+  const remix = (slug: string) => ({ slug, name: `${slug} remix`, author: 'Someone', createdAt: '2026-09-12T00:00:00Z' });
+  const withRemixes = (slug: string, shown: string[], hidden: string[]): AppDetail => ({ ...app(slug), remixes: shown.length, remixList: shown.map(remix), hiddenRemixes: hidden });
+  const button = (label: string) => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+
+  it('takes a remix off the page and puts it back, with the edit key', async () => {
+    keys.demo = 'key-for-demo';
+    getApp.mockResolvedValue(withRemixes('demo', ['fan', 'spam'], []));
+    updateListing.mockImplementation(async (_slug: string, _key: string, fields: { hiddenRemixes: string[] }) =>
+      withRemixes('demo', ['fan', 'spam'].filter((s) => !fields.hiddenRemixes.includes(s)), fields.hiddenRemixes));
+    await render('demo');
+    await act(async () => button('Hide spam remix from this page')!.click());
+    expect(updateListing).toHaveBeenLastCalledWith('demo', 'key-for-demo', { hiddenRemixes: ['spam'] });
+    expect(container.textContent).toContain('Hidden from this page by you');
+    expect(button('Hide spam remix from this page')).toBeNull();
+    await act(async () => button('Show spam on this page again')!.click());
+    expect(updateListing).toHaveBeenLastCalledWith('demo', 'key-for-demo', { hiddenRemixes: [] });
+    expect(button('Hide spam remix from this page')).not.toBeNull();
+  });
+
+  it('offers nothing to a visitor without the key', async () => {
+    getApp.mockResolvedValue(withRemixes('demo', ['fan'], ['spam']));
+    await render('demo');
+    expect(container.textContent).toContain('fan remix');
+    expect(button('Hide fan remix from this page')).toBeNull();
+    expect(container.textContent).not.toContain('Hidden from this page');
   });
 });

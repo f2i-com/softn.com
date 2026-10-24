@@ -260,7 +260,8 @@ final class Apps
         }
         $breakdown = [1=>0,2=>0,3=>0,4=>0,5=>0];
         foreach ($doc['ratings'] as $r) $breakdown[(int)$r['stars']]++;
-        $kids=array_values(array_filter($rows,fn($r)=>$r['parent_slug']===$slug && !$r['hidden']));
+        $hiddenRemixes=json_decode((string)($row['hidden_remixes']??'[]'),true)?:[];
+        $kids=array_values(array_filter($rows,fn($r)=>$r['parent_slug']===$slug && !$r['hidden'] && !in_array($r['slug'],$hiddenRemixes,true)));
         usort($kids,fn($a,$b)=>$b['created_at']<=>$a['created_at']);
         $remixes=[];
         foreach (array_slice($kids,0,12) as $r) $remixes[]=['slug'=>$r['slug'],'name'=>$r['name'],'author'=>$r['author'],'createdAt'=>gmdate('c',(int)$r['created_at'])];
@@ -278,6 +279,8 @@ final class Apps
         $card['versions'] = $versions;
         $card['ratingBreakdown'] = $breakdown;
         $card['remixList'] = $remixes;
+        // The remixes the owner took off this page, so the owner can put them back.
+        $card['hiddenRemixes'] = array_values($hiddenRemixes);
         $card['lineage'] = $lineage;
         // An app's page is not its storage: a store that will not open
         // (see Db::open) is reported here as unavailable rather than taking
@@ -625,11 +628,42 @@ final class Apps
             $sets[] = 'hidden = :hidden';
             $params[':hidden'] = $fields['hidden'] ? 1 : 0;
         }
+        // Not a change to the app itself, so its updated_at stays as it was.
+        if (array_key_exists('hiddenRemixes', $fields)) {
+            Catalog::patch($slug, ['hidden_remixes' => json_encode(self::hiddenRemixes($slug, $fields['hiddenRemixes']))]);
+            $row = self::row($slug, true);
+        }
         if (!$sets) return self::detail($row);
         $sets[] = 'updated_at = :now';
         $params[':now'] = time();
         unset($params[':slug']);$changes=[];foreach($params as $k=>$v){$field=substr($k,1);$field=match($field){'primary'=>'primary_color','now'=>'updated_at',default=>$field};$changes[$field]=$v;}Catalog::patch($slug,$changes);
         return self::detail(self::row($slug, true));
+    }
+
+    /** How many remixes an owner may hide from an app's page. */
+    private const MAX_HIDDEN_REMIXES = 500;
+
+    /**
+     * The remixes of `$slug` its owner takes off its page and out of its
+     * count. Anyone can publish a remix of any app, under any name and
+     * author, and the newest twelve were listed on the parent's page with
+     * nothing its owner could do about them. The list is the whole of what is
+     * hidden; a name in it that is not a remix of this app (one removed since,
+     * say) is dropped, so a list the page sends back can always be saved.
+     *
+     * @return list<string>
+     */
+    private static function hiddenRemixes(string $slug, mixed $value): array
+    {
+        if (!is_array($value) || !array_is_list($value)) throw new ApiError(400, 'hiddenRemixes must be a list of app names.');
+        $rows = Catalog::all();
+        $out = [];
+        foreach ($value as $child) {
+            if (!is_string($child)) throw new ApiError(400, 'hiddenRemixes must be a list of app names.');
+            if (($rows[$child]['parent_slug'] ?? null) === $slug) $out[$child] = true;
+        }
+        if (count($out) > self::MAX_HIDDEN_REMIXES) throw new ApiError(400, 'At most ' . self::MAX_HIDDEN_REMIXES . ' remixes can be hidden.');
+        return array_keys($out);
     }
 
     /** @param array{0: string, 1: string} $image */

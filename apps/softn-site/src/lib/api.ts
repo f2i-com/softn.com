@@ -76,6 +76,8 @@ export interface AppDetail extends AppCard {
   versions: AppVersion[];
   ratingBreakdown: Record<'1' | '2' | '3' | '4' | '5', number>;
   remixList: Array<{ slug: string; name: string; author: string; createdAt: string }>;
+  /** The remixes the owner took off this page (and out of `remixes`). Absent from an older directory. */
+  hiddenRemixes?: string[];
   lineage: Array<{ slug: string; name: string; author: string }>;
   storage: { collections: number; records: number; keys: number; bytes: number };
   manifest: { main: string | null; version: string | null; files: Record<string, number> } | null;
@@ -256,6 +258,8 @@ export interface ListingFields {
   category?: string;
   tags?: string;
   primary?: string;
+  /** The whole list of remixes to keep off the app's page. */
+  hiddenRemixes?: string[];
 }
 
 export async function updateListing(slug: string, editKey: string, fields: ListingFields): Promise<AppDetail> {

@@ -138,6 +138,17 @@ final class Config
     }
 
     /**
+     * The key publishing counts under: an IPv6 address by its /56. A
+     * subscriber is often handed a /56 (256 /64s), and counted by the /64 one
+     * could publish 256 times the limit's bundles and versions an hour. Votes,
+     * runs and comments stay per /64, where a neighbour's limit is not yours.
+     */
+    public static function publishKey(string $ip): string
+    {
+        return self::visitorHash(Net::limitBucket($ip, 56));
+    }
+
+    /**
      * Refuse a write of `$bytes` that would leave the data directory's disk
      * with less than `minFreeBytes` free (256 MiB unless config.json says;
      * 0 turns the check off). The limits are per visitor and per app, and

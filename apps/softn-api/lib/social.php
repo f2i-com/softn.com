@@ -117,11 +117,13 @@ final class Social
     public const RUN_DAYS = 90;
 
     public static function recordRun(Request $req, string $slug, string $stage = 'open'): void {
-        Db::rateLimit('run',Config::limitKey($req->ip));$doc=Catalog::doc($slug);
+        $visitor=Config::limitKey($req->ip);
+        Db::rateLimit('run',$visitor);$doc=Catalog::doc($slug);
         if($stage==='launch')$doc['app']['launches']++;
         // A linked app plays on its own site, so no runtime ever reports it up:
         // the press of Play is the only signal there is, and it is the run.
-        if($stage!=='launch' || !empty($doc['app']['play_url'])) {
+        // A visitor's run counts once a day for each app (firstRunToday).
+        if(($stage!=='launch' || !empty($doc['app']['play_url'])) && self::firstRunToday($visitor,$slug)) {
             $doc['app']['runs']++;$day=(int)floor(time()/86400);$found=false;
             foreach($doc['runsDaily'] as &$r)if((int)$r['day']===$day){$r['count']++;$found=true;}unset($r);
             if(!$found)$doc['runsDaily'][]=['slug'=>$slug,'day'=>$day,'count'=>1];
@@ -130,5 +132,37 @@ final class Social
             $doc['runsDaily']=array_values(array_filter($doc['runsDaily'],fn($r)=>(int)$r['day']>$day-self::RUN_DAYS));
         }
         Catalog::put($slug,$doc);
+    }
+
+    /** How much of today's run log is kept: some 490,000 visitor-and-app pairs. */
+    private const RUN_LOG_BYTES = 8 * 1024 * 1024;
+
+    /**
+     * Whether this is the first run of `$slug` by `$visitor` (a limit key)
+     * today, noting it if so. The run limit let one visitor count 120 runs a
+     * minute, and runs weigh three times in trending: a single client moved
+     * any app above the popular ones in a second and a half. Today's pairs
+     * are kept as hashes, one line each, in a file of the day's own under
+     * cache/ (the rest are removed), so nothing grows past a day. A log that
+     * has reached its size counts no new visitor until the next day, rather
+     * than counting every run again.
+     */
+    private static function firstRunToday(string $visitor, string $slug): bool {
+        // As without a log, where there can be none.
+        $dir=Config::dataDir().'/cache';
+        if(!is_dir($dir)&&!@mkdir($dir,0775,true))return true;
+        $lock=@fopen("$dir/runs.lock",'c');
+        if(!$lock||!flock($lock,LOCK_EX)){if($lock)fclose($lock);return true;}
+        try {
+            $day=(int)floor(time()/86400);$path="$dir/runs-$day.log";
+            foreach(glob("$dir/runs-*.log")?:[] as $old)if($old!==$path)@unlink($old);
+            $line=substr(hash('sha256',"$visitor|$slug"),0,16)."\n";
+            $seen=is_file($path)?(string)file_get_contents($path):'';
+            if(str_contains("\n".$seen,"\n".$line))return false;
+            if(strlen($seen)>=self::RUN_LOG_BYTES)return false;
+            // A log that cannot be written counts the run, as before there was one.
+            @file_put_contents($path,$line,FILE_APPEND);
+            return true;
+        } finally {flock($lock,LOCK_UN);fclose($lock);}
     }
 }

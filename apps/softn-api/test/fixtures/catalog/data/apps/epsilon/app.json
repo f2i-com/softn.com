@@ -21,6 +21,7 @@
       "notes": "owner-write",
       "*": "public"
     },
+    "hidden_remixes": "[]",
     "thumb": null,
     "icon": null,
     "primary_color": null,

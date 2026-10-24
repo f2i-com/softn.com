@@ -365,7 +365,9 @@ rating, run, storage) a limit on nothing. IPv4 addresses are counted one by
 one, as before. A rating is counted the same way, one per /64 (an IPv6
 rating made before that change was keyed by the full address, so its
 visitor may vote once more); a comment still records the full address's
-hash.
+hash. Publishing (a new app, a version, a remix) is counted by the /56,
+which a subscriber is often handed whole: by the /64, one could publish 256
+times the limit.
 
 ## The site's own address, and who may use the owner routes
 
@@ -595,14 +597,14 @@ Nothing else about a visitor is kept.
 | `GET /api/categories` | Categories with counts. The site-owned ones (Games, Examples, …) are refreshed on every request so renamed core categories reach existing directories |
 | `POST /api/apps` | Publish. The bundle goes as a multipart field named `bundle`, as the raw request body, or as `bundleBase64` in JSON; other fields are `name`, `description`, `author`, `category`, `tags`, `notes`, `primary`, `parent`, `thumbnail`. `parent` is the slug of the app remixed, or its name when exactly one app has it. Answers with the listing and its `editKey` |
 | `POST /api/apps/{slug}/versions` | A new version of the bundle (`X-Edit-Key`) |
-| `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`) |
+| `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`). `hiddenRemixes`, a list of the app's remixes, takes those off its page and out of its remix count (in trending too) without changing `updated_at`; it is the whole list, and a name in it that is not a remix of the app is dropped. The page's detail names them as `hiddenRemixes`, so the owner can put them back |
 | `POST /api/apps/{slug}/thumbnail` | Replace the picture (`X-Edit-Key`) |
 | `DELETE /api/apps/{slug}` | Unpublish (`X-Edit-Key`): the app is hidden and keeps its slug. With `?purge=1` and `X-Admin-Key`, its folder is removed, and its slug is listed in `retired-slugs.json` and never given to another app: visitors' browsers keep a `/play/` app's records and settings by its address, so the next app of that name would have had them. A demo the seed retired takes its own slug back when it is filed again |
 | `POST /api/apps/{slug}/key` | Replace the edit key (`X-Edit-Key`, or `X-Admin-Key` for a lost one). Answers with the new key; the old one is refused from then on. See "Ownership" |
 | `POST /api/apps/{slug}/remix` | Publish a new app that records this one as its parent. Same fields as publish; the bundle is optional and defaults to the parent's |
 | `POST /api/apps/{slug}/comments` | `{name, body}` |
 | `POST /api/apps/{slug}/rating` | `{stars}`, one per visitor |
-| `POST /api/apps/{slug}/runs` | Counts a play |
+| `POST /api/apps/{slug}/runs` | Counts a play: once a day for each visitor and app, so one client cannot move an app up the trending order (runs weigh three there). The day's visitor-and-app pairs are kept as hashes in `cache/runs-<day>.log`, which is removed the next day; past 8 MB in a day no new pair is counted. Always `204` |
 | `POST /api/apps/{slug}/storage` | The app's own storage, see below |
 | `GET /api/apps/{slug}/storage`, `/storage/{collection}` | What an app has stored: collection names and counts, then a page of one collection |
 | `GET /api/README.md` | This file |

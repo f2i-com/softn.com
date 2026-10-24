@@ -2159,6 +2159,7 @@
           "createdAt": "2025-01-01T01:00:00+00:00"
         }
       ],
+      "hiddenRemixes": [],
       "lineage": [],
       "storage": {
         "collections": 0,
@@ -2241,6 +2242,7 @@
         "5": 0
       },
       "remixList": [],
+      "hiddenRemixes": [],
       "lineage": [
         {
           "slug": "alpha",
@@ -2319,6 +2321,7 @@
         "5": 0
       },
       "remixList": [],
+      "hiddenRemixes": [],
       "lineage": [],
       "storage": {
         "collections": 0,
@@ -2397,6 +2400,7 @@
         "5": 0
       },
       "remixList": [],
+      "hiddenRemixes": [],
       "lineage": [],
       "storage": {
         "collections": 0,
@@ -2474,6 +2478,7 @@
         "5": 0
       },
       "remixList": [],
+      "hiddenRemixes": [],
       "lineage": [],
       "storage": {
         "collections": 0,
@@ -2506,6 +2511,7 @@
       "capabilities": "[]",
       "execution": "main",
       "storage_policies": "{}",
+      "hidden_remixes": "[]",
       "thumb": null,
       "icon": null,
       "primary_color": "#3366cc",
@@ -2536,6 +2542,7 @@
       "capabilities": "[]",
       "execution": "main",
       "storage_policies": "{}",
+      "hidden_remixes": "[]",
       "thumb": null,
       "icon": null,
       "primary_color": null,
@@ -2566,6 +2573,7 @@
       "capabilities": "[]",
       "execution": "main",
       "storage_policies": "{}",
+      "hidden_remixes": "[]",
       "thumb": null,
       "icon": null,
       "primary_color": null,
@@ -2596,6 +2604,7 @@
       "capabilities": "[\"net\",\"storage\"]",
       "execution": "main",
       "storage_policies": "{\"notes\":\"owner-write\",\"*\":\"public\"}",
+      "hidden_remixes": "[]",
       "thumb": null,
       "icon": null,
       "primary_color": null,
@@ -2626,6 +2635,7 @@
       "capabilities": "[]",
       "execution": "main",
       "storage_policies": "{}",
+      "hidden_remixes": "[]",
       "thumb": null,
       "icon": null,
       "primary_color": null,

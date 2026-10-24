@@ -173,7 +173,7 @@ final class Catalog
             $doc['app']=array_replace(self::defaults($slug),$doc['app']);
             foreach(['versions','comments','ratings','runsDaily'] as $field)if(!array_key_exists($field,$doc))$doc[$field]=[];
             foreach(['thumb','icon'] as $field)if($doc['app'][$field]!==null && (!is_string($doc['app'][$field]) || basename($doc['app'][$field])!==$doc['app'][$field] || str_contains($doc['app'][$field],'\\')))throw new ApiError(503,"Invalid image filename in $slug/app.json.");
-            foreach (['tags','capabilities','storage_policies'] as $field) if (is_array($doc['app'][$field] ?? null)) $doc['app'][$field] = json_encode($field==='storage_policies'?(object)$doc['app'][$field]:$doc['app'][$field]);
+            foreach (['tags','capabilities','storage_policies','hidden_remixes'] as $field) if (is_array($doc['app'][$field] ?? null)) $doc['app'][$field] = json_encode($field==='storage_policies'?(object)$doc['app'][$field]:$doc['app'][$field]);
             foreach (['versions','comments','ratings','runsDaily'] as $field) if (!is_array($doc[$field] ?? null)) throw new ApiError(503, "Invalid $field in $slug/app.json.");
             self::validate($slug,$doc);
             self::$docs[$slug] = $doc;
@@ -192,7 +192,7 @@ final class Catalog
         if($app['play_url']!==null && !self::validPlayUrl($app['play_url']))throw new ApiError(503,"Invalid play_url in $slug/app.json: it must be an http(s) address of at most 300 characters.");
         foreach(['runs','launches','remixes','rating_sum','rating_count','comments','size','created_at','updated_at','latest_version'] as $field)if(!is_int($app[$field])||$app[$field]<0)$fail();
         if(!in_array($app['hidden'],[0,1,false,true],true))$fail();
-        foreach(['tags','capabilities','storage_policies'] as $field)if(!is_string($app[$field])||!is_array(json_decode($app[$field],true)))$fail();
+        foreach(['tags','capabilities','storage_policies','hidden_remixes'] as $field)if(!is_string($app[$field])||!is_array(json_decode($app[$field],true)))$fail();
         foreach(['versions','comments','ratings','runsDaily'] as $field)if(!array_is_list($doc[$field]))$fail();
         foreach($doc['versions'] as $v)if(!is_array($v)||!is_int($v['version']??null)||$v['version']<1||!is_string($v['file']??null)||basename($v['file'])!==$v['file']||str_contains($v['file'],'\\'))$fail();
         foreach($doc['comments'] as $c)if(!self::validComment($c))$fail();
@@ -294,9 +294,13 @@ final class Catalog
         // A remix counts for its parent while a visitor can open it. Every
         // folder naming the parent used to be counted, so an app kept the
         // remixes their owners had unpublished: a count, and a place in the
-        // "most remixed" order, with nothing in the list beside it.
+        // "most remixed" order, with nothing in the list beside it. Nor does
+        // one the parent's owner hid from its page (`hidden_remixes`): anyone
+        // can publish a remix of any app, and each counted five in trending.
         $remixes = [];
-        foreach ($out as $row) { $p = $row['parent_slug'] ?? null; if (is_string($p) && !$row['hidden']) $remixes[$p] = ($remixes[$p] ?? 0) + 1; }
+        $hiddenBy = [];
+        foreach ($out as $slug => $row) $hiddenBy[$slug] = array_flip(json_decode((string) $row['hidden_remixes'], true) ?: []);
+        foreach ($out as $slug => $row) { $p = $row['parent_slug'] ?? null; if (is_string($p) && !$row['hidden'] && !isset($hiddenBy[$p][$slug])) $remixes[$p] = ($remixes[$p] ?? 0) + 1; }
         foreach ($out as $slug => $row) $out[$slug]['remixes'] = $remixes[$slug] ?? 0;
         return self::$rows = $out;
     }
@@ -390,7 +394,7 @@ final class Catalog
     public static function categories(): array { self::boot(); return self::readJson(Config::dataDir() . '/categories.json'); }
     public static function saveCategories(array $rows): void { self::boot(); self::writeJson(Config::dataDir() . '/categories.json', $rows); }
     public static function defaults(string $slug): array {
-        return ['slug'=>$slug,'name'=>$slug,'description'=>'','author'=>'Anonymous','category'=>'other','tags'=>'[]','parent_slug'=>null,'root_slug'=>null,'latest_version'=>1,'capabilities'=>'[]','execution'=>'main','storage_policies'=>'{}','thumb'=>null,'icon'=>null,'primary_color'=>null,'edit_key_hash'=>null,'play_url'=>null,'source'=>'folder','runs'=>0,'launches'=>0,'remixes'=>0,'rating_sum'=>0,'rating_count'=>0,'comments'=>0,'size'=>0,'hidden'=>0,'created_at'=>time(),'updated_at'=>time()];
+        return ['slug'=>$slug,'name'=>$slug,'description'=>'','author'=>'Anonymous','category'=>'other','tags'=>'[]','parent_slug'=>null,'root_slug'=>null,'latest_version'=>1,'capabilities'=>'[]','execution'=>'main','storage_policies'=>'{}','hidden_remixes'=>'[]','thumb'=>null,'icon'=>null,'primary_color'=>null,'edit_key_hash'=>null,'play_url'=>null,'source'=>'folder','runs'=>0,'launches'=>0,'remixes'=>0,'rating_sum'=>0,'rating_count'=>0,'comments'=>0,'size'=>0,'hidden'=>0,'created_at'=>time(),'updated_at'=>time()];
     }
     private static function discover(string $slug): void {
         $dir = self::path($slug); $old = self::$docs[$slug] ?? null;
