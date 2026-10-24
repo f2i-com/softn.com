@@ -55,9 +55,10 @@ pub async fn delete_record(
     app_id: Option<String>,
     id: String,
     collection: Option<String>,
+    updated_at: Option<String>,
 ) -> Result<bool, String> {
     let app_id = identity.require(app_id.as_deref())?;
-    xdb::tauri::delete_record(db_manager, network, Some(app_id), id, collection).await
+    xdb::tauri::delete_record(db_manager, network, Some(app_id), id, collection, updated_at).await
 }
 
 #[tauri::command]
@@ -70,6 +71,18 @@ pub async fn upsert_record(
 ) -> Result<Record, String> {
     let app_id = identity.require(app_id.as_deref())?;
     xdb::tauri::upsert_record(db_manager, network, Some(app_id), record).await
+}
+
+#[tauri::command]
+pub async fn upsert_records(
+    db_manager: State<'_, SharedDbManager>,
+    network: State<'_, SharedNetworkState>,
+    identity: State<'_, DataIdentity>,
+    app_id: Option<String>,
+    records: Vec<Record>,
+) -> Result<Vec<String>, String> {
+    let app_id = identity.require(app_id.as_deref())?;
+    xdb::tauri::upsert_records(db_manager, network, Some(app_id), records).await
 }
 
 #[tauri::command]

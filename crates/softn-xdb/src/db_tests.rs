@@ -1049,3 +1049,122 @@ fn a_record_sent_for_one_collection_does_not_replace_another_collections() {
     db.upsert_record(Record { collection: "private".into(), ..note("shared-id", "edited") }).unwrap();
     assert_eq!(db.get_record("shared-id").unwrap().data, json!({ "title": "edited" }));
 }
+
+/// A reset epoch past what SQLite's integer holds was kept as -1 and read back as 0: the
+/// collection was cleared, and a peer's updates from before the reset applied again.
+#[test]
+fn a_reset_epoch_past_what_is_kept_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "epochs.sqlite");
+    db.upsert_record(note("kept", "still here")).unwrap();
+    assert!(!db.apply_remote_reset("notes", u64::MAX, "a peer").unwrap());
+    assert_eq!(db.get_epoch("notes").unwrap(), 0);
+    assert_eq!(live_ids(&db, "notes"), vec!["kept"]);
+    // An epoch that fits is adopted as before.
+    assert!(db.apply_remote_reset("notes", i64::MAX as u64, "a peer").unwrap());
+    assert_eq!(db.get_epoch("notes").unwrap(), i64::MAX as u64);
+    let stale = db.apply_remote_update_at_epoch("notes", 0, &[]).unwrap();
+    assert!(matches!(stale, RemoteApplyOutcome::StaleEpoch { .. }), "{stale:?}");
+}
+
+/// An import wrote by id alone: a record of `private` imported into `public` was moved
+/// there, out of `private` with no tombstone, as upsert_record refuses to do.
+#[test]
+fn an_import_does_not_take_a_record_of_another_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "import.sqlite");
+    db.upsert_record(Record { collection: "private".into(), ..note("shared-id", "my secret") }).unwrap();
+    let batch = CollectionImport {
+        collection: "public".into(),
+        replace: false,
+        records: vec![
+            Record { collection: "public".into(), ..note("fine", "fine") },
+            Record { collection: "public".into(), ..note("shared-id", "planted") },
+        ],
+    };
+    assert!(matches!(db.import_records(vec![batch]), Err(DbError::InvalidOperation(_))));
+    let kept = db.get_record("shared-id").unwrap();
+    assert_eq!((kept.collection.as_str(), &kept.data), ("private", &json!({ "title": "my secret" })));
+    // All or nothing: the record that was fine is not written either.
+    assert!(live_ids(&db, "public").is_empty());
+}
+
+/// A peer names any collection it likes, and each one asked about was a document made and
+/// kept in memory.
+#[test]
+fn asking_about_a_collection_this_database_never_held_makes_no_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "unknown.sqlite");
+    db.upsert_record(note("one", "held")).unwrap();
+    let before = db.docs.len();
+    for n in 0..200 {
+        let name = format!("never-{n}");
+        db.get_state_vector(&name).unwrap();
+        db.get_updates_since(&name, &yrs::StateVector::default().encode_v1()).unwrap();
+    }
+    assert_eq!(db.docs.len(), before);
+    // A collection it holds answers as before, from its saved state after a reopen too.
+    drop(db);
+    let mut db = database(&dir, "unknown.sqlite");
+    let mut peer = database(&dir, "peer.sqlite");
+    peer.apply_remote_update("notes", &db.get_full_state("notes").unwrap()).unwrap();
+    assert_eq!(live_ids(&peer, "notes"), vec!["one"]);
+    assert_ne!(db.get_state_vector("notes").unwrap(), yrs::StateVector::default().encode_v1());
+}
+
+/// Peer sync on the desktop wrote a room's records one call each, and each rewrote the
+/// collection's whole document.
+#[test]
+fn several_records_from_sync_are_written_at_once_and_none_of_another_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "batch.sqlite");
+    db.upsert_record(Record { collection: "private".into(), ..note("shared-id", "my secret") }).unwrap();
+    let (written, refused) = db
+        .upsert_records(vec![
+            note("a", "first"),
+            Record { collection: "notes".into(), ..note("shared-id", "planted") },
+            note("b", "second"),
+        ])
+        .unwrap();
+    assert_eq!(written.iter().map(|(r, _)| r.id.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+    assert_eq!(refused, vec!["shared-id".to_string()]);
+    assert_eq!(live_ids(&db, "notes"), vec!["a", "b"]);
+    assert_eq!(db.get_record("shared-id").unwrap().collection, "private");
+    // What a peer gets from the saved document: both, after a reopen.
+    drop(db);
+    let mut db = database(&dir, "batch.sqlite");
+    let mut peer = database(&dir, "peer.sqlite");
+    peer.apply_remote_update("notes", &db.get_full_state("notes").unwrap()).unwrap();
+    assert_eq!(live_ids(&peer, "notes"), vec!["a", "b"]);
+}
+
+/// The page stamps an edit after the copy it edits, and after a sync room's copy, which only
+/// the page knows: the stamp this side gave the edit (this clock's time) replaced it.
+#[test]
+fn an_edit_is_stamped_after_what_it_edits_and_no_earlier_than_the_page_says() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "stamps.sqlite");
+    let time = |text: &str| chrono::DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&chrono::Utc);
+    let now = chrono::Utc::now();
+
+    // A record its author stamped two hours ahead is followed by a millisecond.
+    let ahead = (now + chrono::Duration::hours(2)).to_rfc3339();
+    db.upsert_record(Record { updated_at: ahead.clone(), ..note("ahead", "theirs") }).unwrap();
+    let (edited, _) = db.update_record("ahead", json!({ "title": "mine" })).unwrap();
+    assert_eq!(time(&edited.updated_at), time(&ahead) + chrono::Duration::milliseconds(1));
+
+    // The page's stamp, after a room's copy three hours ahead, is taken.
+    db.upsert_record(note("plain", "theirs")).unwrap();
+    let asked = (now + chrono::Duration::hours(3)).to_rfc3339();
+    let (edited, _) = db.update_record_at("plain", json!({ "title": "mine" }), Some(&asked)).unwrap();
+    assert_eq!(time(&edited.updated_at), time(&asked));
+    db.delete_record_at("plain", Some(&(now + chrono::Duration::hours(4)).to_rfc3339())).unwrap();
+    let gone = db.conn.query_row("SELECT updated_at FROM records WHERE id = 'plain'", [], |row| row.get::<_, String>(0)).unwrap();
+    assert_eq!(time(&gone), now + chrono::Duration::hours(4));
+
+    // A stamp past a day ahead is neither followed nor taken: no peer takes one.
+    let far = (now + chrono::Duration::hours(30)).to_rfc3339();
+    db.upsert_record(Record { updated_at: far.clone(), ..note("far", "theirs") }).unwrap();
+    let (edited, _) = db.update_record_at("far", json!({ "title": "mine" }), Some(&far)).unwrap();
+    assert!(time(&edited.updated_at) < now + chrono::Duration::minutes(1), "{}", edited.updated_at);
+}

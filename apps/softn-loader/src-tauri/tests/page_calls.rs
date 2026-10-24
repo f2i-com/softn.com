@@ -110,8 +110,10 @@ fn with_app_a_data(name: &str) -> Page {
             softn_loader_lib::scoped_xdb::get_collections,
             softn_loader_lib::scoped_xdb::clear_collection,
             softn_loader_lib::scoped_xdb::create_record,
+            softn_loader_lib::scoped_xdb::update_record,
             softn_loader_lib::scoped_xdb::delete_record,
             softn_loader_lib::scoped_xdb::upsert_record,
+            softn_loader_lib::scoped_xdb::upsert_records,
             softn_loader_lib::scoped_xdb::import_records,
             softn_loader_lib::scoped_xdb::backup_database,
         ])
@@ -221,6 +223,83 @@ fn a_write_for_one_collection_does_not_replace_another_collections_record() {
     assert!(page.call("upsert_record", serde_json::json!({ "appId": b, "record": planted })).is_err());
     let record = page.manager.get_db(&b).unwrap().lock().unwrap().get_record(kept["id"].as_str().unwrap()).unwrap();
     assert_eq!((record.collection.as_str(), &record.data), ("private", &serde_json::json!({ "secret": 1 })));
+}
+
+/// What the page's peer sync brings in from a room is written in one call, for the app open
+/// now alone, and not over a record another collection holds. One call a record rewrote the
+/// collection's whole document each time.
+#[test]
+fn records_from_sync_are_written_at_once_for_the_app_open_now() {
+    let page = with_app_a_data("upsert-many");
+    let b = page.open_own("b.softn", b"app B");
+    let kept = page
+        .call("create_record", serde_json::json!({ "appId": b, "payload": { "collection": "private", "data": { "secret": 1 } } }))
+        .unwrap();
+    let kept_id = kept["id"].as_str().unwrap().to_string();
+    let record = |id: &str| {
+        serde_json::json!({
+            "id": id, "collection": "notes", "data": { "from": "a peer" },
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "deleted": false
+        })
+    };
+    let refused = page
+        .call("upsert_records", serde_json::json!({ "appId": b, "records": [record("r1"), record(&kept_id), record("r2")] }))
+        .unwrap();
+    assert_eq!(refused, serde_json::json!([kept_id]));
+    assert_eq!(page.notes_of(&b), 2);
+    let private = page.manager.get_db(&b).unwrap().lock().unwrap().get_record(&kept_id).unwrap();
+    assert_eq!((private.collection.as_str(), &private.data), ("private", &serde_json::json!({ "secret": 1 })));
+
+    let outcome = page.call("upsert_records", serde_json::json!({ "appId": APP_A, "records": [record("r3")] }));
+    assert!(outcome.as_ref().err().and_then(|error| error.as_str()).is_some_and(|error| error.starts_with("Refused")), "{:?}", outcome);
+    assert_eq!(page.notes_of(APP_A), 1);
+}
+
+/// An ISO time `ahead_ms` from now, written as the page writes one, never on a whole second.
+fn page_stamp(ahead_ms: u64) -> String {
+    let mut ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + ahead_ms;
+    if ms % 1000 == 0 {
+        ms += 1;
+    }
+    let (secs, millis) = (ms / 1000, ms % 1000);
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    // The civil date of a day count (Howard Hinnant's days_from_civil, inverted).
+    let z = days + 719_468;
+    let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", year, month, day, rem / 3600, rem % 3600 / 60, rem % 60, millis)
+}
+
+/// The page stamps an edit after the copy it edits, a sync room's copy included, which only
+/// the page knows of. The stamp this side gave the edit, its own clock's, replaced the page's,
+/// and the edit lost to the room's copy on every peer.
+#[test]
+fn an_edit_from_the_page_keeps_the_stamp_the_page_gave_it() {
+    let page = with_app_a_data("stamps");
+    let b = page.open_own("b.softn", b"app B");
+    let note = page
+        .call("create_record", serde_json::json!({ "appId": b, "payload": { "collection": "notes", "data": { "text": "first" } } }))
+        .unwrap();
+    let id = note["id"].as_str().unwrap().to_string();
+    // The stamp, to the millisecond; this side writes the same time with its own offset.
+    let to_the_ms = |stamp: &str| stamp[..23].to_string();
+
+    let ahead = page_stamp(3 * 60 * 60 * 1000);
+    let edited = page
+        .call("update_record", serde_json::json!({ "appId": b, "payload": { "id": id, "data": { "text": "mine" }, "updated_at": ahead } }))
+        .unwrap();
+    assert_eq!(to_the_ms(edited["updated_at"].as_str().unwrap()), to_the_ms(&ahead));
+
+    let later = page_stamp(4 * 60 * 60 * 1000);
+    page.call("delete_record", serde_json::json!({ "appId": b, "id": id, "collection": "notes", "updatedAt": later })).unwrap();
+    let gone = page.manager.get_db(&b).unwrap().lock().unwrap().get_record(&id).unwrap();
+    assert!(gone.deleted);
+    assert_eq!(to_the_ms(&gone.updated_at), to_the_ms(&later));
 }
 
 /// A snapshot is taken only of the data of the app open now.

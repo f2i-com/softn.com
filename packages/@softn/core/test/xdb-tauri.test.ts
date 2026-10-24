@@ -71,14 +71,15 @@ describe('XDB Service (Tauri mode)', () => {
           return record;
         }
         case 'update_record': {
-          const payload = args?.payload as { id: string; data: Record<string, unknown> };
+          const payload = args?.payload as { id: string; data: Record<string, unknown>; updated_at?: string };
           for (const [collection, records] of backend.entries()) {
             const index = records.findIndex((r) => r.id === payload.id);
             if (index !== -1) {
               const updated = {
                 ...records[index],
                 data: { ...records[index].data, ...payload.data },
-                updated_at: new Date().toISOString(),
+                // As XDB's command: no earlier than the page's stamp for the edit.
+                updated_at: payload.updated_at ?? new Date().toISOString(),
               };
               records[index] = updated;
               backend.set(collection, records);
@@ -98,7 +99,7 @@ describe('XDB Service (Tauri mode)', () => {
               records[index] = {
                 ...records[index],
                 deleted: true,
-                updated_at: new Date().toISOString(),
+                updated_at: (args?.updatedAt as string | undefined) ?? new Date().toISOString(),
               };
               backend.set(collection, records);
               return true;
@@ -117,6 +118,17 @@ describe('XDB Service (Tauri mode)', () => {
           }
           backend.set(record.collection, records);
           return record;
+        }
+        case 'upsert_records': {
+          const list = args?.records as XDBRecord[];
+          for (const record of list) {
+            const records = backend.get(record.collection) ?? [];
+            const index = records.findIndex((r) => r.id === record.id);
+            if (index !== -1) records[index] = record;
+            else records.push(record);
+            backend.set(record.collection, records);
+          }
+          return [];
         }
         case 'get_record': {
           const id = String(args?.id ?? '');
@@ -174,6 +186,48 @@ describe('XDB Service (Tauri mode)', () => {
     listeners.clear();
     backend.clear();
     delete (globalThis as any).__TAURI__;
+  });
+
+  // One native call a record, and each rewrote the collection's whole stored
+  // document: joining a room of a few thousand records cost gigabytes of writes.
+  it('writes what a room brings in one native call', async () => {
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await flushPromises();
+    await flushPromises();
+    const records = [1, 2, 3].map((n) => makeRecord(`p${n}`, 'notes', { n }));
+    expect(xdb.writePeerRecords('notes', records)).toEqual([]);
+    expect(xdb.getAll('notes')).toHaveLength(3);
+    await flushPromises();
+    const commands = invokeMock.mock.calls.map(([cmd]: [string]) => cmd);
+    expect(commands.filter((cmd: string) => cmd === 'upsert_records')).toHaveLength(1);
+    expect(commands).not.toContain('upsert_record');
+    expect(backend.get('notes')).toHaveLength(3);
+  });
+
+  // The native store stamped an edit with its own clock, and its answer
+  // replaced the record: the stamp the page chose, after a sync room's copy,
+  // was lost, and the edit lost to the room's copy on every peer.
+  it("sends the stamp it gave an edit and a deletion, after a room's copy too", async () => {
+    backend.set('notes', [makeRecord('n1', 'notes', { text: 'a' })]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await flushPromises();
+    await flushPromises();
+    const ahead = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const stop = xdb.addStampSource((collection, id) => (collection === 'notes' && id === 'n1' ? ahead : undefined));
+    try {
+      xdb.update('n1', { text: 'b' });
+      await flushPromises();
+      const update = invokeMock.mock.calls.find(([cmd]: [string]) => cmd === 'update_record');
+      expect(Date.parse(update[1].payload.updated_at)).toBe(Date.parse(ahead) + 1);
+      expect(xdb.get('notes', 'n1')?.updated_at).toBe(update[1].payload.updated_at);
+
+      xdb.delete('n1');
+      await flushPromises();
+      const remove = invokeMock.mock.calls.find(([cmd]: [string]) => cmd === 'delete_record');
+      expect(Date.parse(remove[1].updatedAt)).toBeGreaterThan(Date.parse(update[1].payload.updated_at));
+    } finally {
+      stop();
+    }
   });
 
   it('hydrates from SQLite backend into in-memory cache', async () => {

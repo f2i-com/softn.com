@@ -639,6 +639,15 @@ export class XDBService {
     };
   }
 
+  /** The cache's live record with this id, in whichever collection holds it. */
+  private cachedLive(id: string): XDBRecord | undefined {
+    for (const coll of this.memoryStore.values()) {
+      const record = coll.get(id);
+      if (record && !record.deleted) return record;
+    }
+    return undefined;
+  }
+
   /** The stamp of an edit made now to `record`: after its own and after every room's copy of it. */
   private stampAfter(record: XDBRecord): string {
     let latest = record.updated_at;
@@ -1083,7 +1092,7 @@ export class XDBService {
             if (currentOptimistic) {
               c.set(serverRecord.id, { ...serverRecord, data: { ...serverRecord.data, ...currentOptimistic.data }, deleted: true, updated_at: currentOptimistic.updated_at });
             }
-            this.native<boolean>('delete_record', { id: serverRecord.id, collection })
+            this.native<boolean>('delete_record', { id: serverRecord.id, collection, updatedAt: currentOptimistic?.updated_at })
               .then(() => this.nativeWriteLanded(collection))
               .catch((err) => this.nativeWriteFailed('delete a record', collection, err));
             return;
@@ -1340,15 +1349,33 @@ export class XDBService {
       // and whether its own create was still in flight when this was sent:
       // by the time SQLite answers, the create may have landed.
       let touched: string | undefined;
-      // What this update put in the cache, set below before SQLite can answer.
+      // What this update puts in the cache, made before SQLite is asked so
+      // that its stamp goes with the request. Stamped after a sync room's
+      // copy as well (stampAfter), which SQLite knows nothing of: it stamped
+      // the edit with its own clock, its answer replaced this record, and the
+      // edit lost to the room's copy.
       let applied: XDBRecord | undefined;
+      for (const [collection, coll] of this.memoryStore) {
+        let record = coll.get(id);
+        if (!record && id !== resolvedId) record = coll.get(resolvedId);
+        if (record && !record.deleted) {
+          touched = collection;
+          applied = {
+            ...record,
+            data: storedData({ ...objectData(record), ...data }),
+            updated_at: this.stampAfter(record),
+          };
+          coll.set(record.id, applied);
+          break;
+        }
+      }
       // While the record's own create is in flight SQLite has no row to
       // address: the change is kept in the cache and the create callback
       // sends it, merged, once the row exists. Sending it now could only fail.
       if (!this.pendingCreateIds.has(id)) {
         // Async update via Tauri - fire and forget
         this.native<XDBRecord>('update_record', {
-          payload: { id: resolvedId, data },
+          payload: { id: resolvedId, data, updated_at: applied?.updated_at },
         })
           .then((serverRecord) => {
             this.nativeWriteLanded(serverRecord.collection);
@@ -1371,23 +1398,11 @@ export class XDBService {
           });
       }
 
-      // Return optimistic result — try both the original and resolved IDs
-      for (const [collection, coll] of this.memoryStore) {
-        let record = coll.get(id);
-        if (!record && id !== resolvedId) record = coll.get(resolvedId);
-        if (record && !record.deleted) {
-          touched = collection;
-          const updatedRecord: XDBRecord = {
-            ...record,
-            data: storedData({ ...objectData(record), ...data }),
-            updated_at: this.stampAfter(record),
-          };
-          coll.set(record.id, updatedRecord);
-          applied = updatedRecord;
-          this.emit({ type: 'update', collection, record: updatedRecord });
-          this.notifyMutation('update', collection, record.id, updatedRecord.data);
-          return updatedRecord;
-        }
+      // Return optimistic result
+      if (applied && touched !== undefined) {
+        this.emit({ type: 'update', collection: touched, record: applied });
+        this.notifyMutation('update', touched, applied.id, applied.data);
+        return applied;
       }
       return null;
     }
@@ -1434,8 +1449,10 @@ export class XDBService {
     storableText(data);
     if (this.useTauri) {
       try {
+        // Stamped after the cache's copy and a room's, as update() stamps it.
+        const held = this.cachedLive(id);
         const record = await this.native<XDBRecord>('update_record', {
-          payload: { id, data },
+          payload: { id, data, updated_at: held ? this.stampAfter(held) : undefined },
         });
         this.getOrCreateCollection(record.collection).set(record.id, record);
         this.emit({ type: 'update', collection: record.collection, record });
@@ -1483,7 +1500,7 @@ export class XDBService {
       // A scoped edit is still a local mutation: persist it just like update(),
       // while keeping the optimistic cache change in the requested collection.
       this.native<XDBRecord>('update_record', {
-        payload: { id: record.id, data },
+        payload: { id: record.id, data, updated_at: updatedRecord.updated_at },
       }).then((serverRecord) => {
         if (serverRecord.collection !== collection || serverRecord.id !== record.id) return;
         // A newer edit/deletion wins even if the older request finishes last.
@@ -1530,12 +1547,26 @@ export class XDBService {
       // The collection of the record this touched, for the failure report,
       // and whether its own create was still in flight when this was sent.
       let touched: string | undefined;
+      // The tombstone, made before SQLite is asked so that its stamp goes
+      // with the request, as an update's does.
+      let tombstone: { id: string; record: XDBRecord } | undefined;
+      for (const [collection, coll] of this.memoryStore) {
+        const lookupId = coll.has(id) ? id : (id !== resolvedId && coll.has(resolvedId) ? resolvedId : null);
+        if (!lookupId) continue;
+        const record = coll.get(lookupId);
+        if (record && !record.deleted) {
+          touched = collection;
+          tombstone = { id: lookupId, record: { ...record, deleted: true, updated_at: this.stampAfter(record) } };
+          coll.set(lookupId, tombstone.record);
+          break;
+        }
+      }
       // A record whose create is still in flight has no row to delete yet;
       // the tombstone below stays in the cache and the create callback
       // deletes the row once SQLite has written it.
       if (!this.pendingCreateIds.has(id)) {
         // Async delete via Tauri - fire and forget
-        this.native<boolean>('delete_record', { id: resolvedId })
+        this.native<boolean>('delete_record', { id: resolvedId, updatedAt: tombstone?.record.updated_at })
           .then(() => {
             this.nativeWriteLanded(touched);
             // Announced once, below, when the cache took the delete: told
@@ -1552,22 +1583,9 @@ export class XDBService {
       }
 
       // Optimistically update in-memory cache — try both original and resolved IDs
-      for (const [collection, coll] of this.memoryStore) {
-        const lookupId = coll.has(id) ? id : (id !== resolvedId && coll.has(resolvedId) ? resolvedId : null);
-        if (!lookupId) continue;
-        const record = coll.get(lookupId);
-        if (record && !record.deleted) {
-          touched = collection;
-          const deletedRecord = {
-            ...record,
-            deleted: true,
-            updated_at: this.stampAfter(record),
-          };
-          coll.set(lookupId, deletedRecord);
-          this.emit({ type: 'delete', collection, record: deletedRecord });
-          this.notifyMutation('delete', collection, lookupId);
-          break;
-        }
+      if (tombstone && touched !== undefined) {
+        this.emit({ type: 'delete', collection: touched, record: tombstone.record });
+        this.notifyMutation('delete', touched, tombstone.id);
       }
 
       return true; // Optimistic
@@ -1609,11 +1627,13 @@ export class XDBService {
   async deleteAsync(id: string): Promise<boolean> {
     if (this.useTauri) {
       try {
-        await this.native<boolean>('delete_record', { id });
+        const held = this.cachedLive(id);
+        const stamp = held ? this.stampAfter(held) : undefined;
+        await this.native<boolean>('delete_record', { id, updatedAt: stamp });
         for (const [collection, coll] of this.memoryStore) {
           const record = coll.get(id);
           if (record) {
-            const deleted = { ...record, deleted: true, updated_at: this.stampAfter(record) };
+            const deleted = { ...record, deleted: true, updated_at: stamp ?? this.stampAfter(record) };
             coll.set(id, deleted);
             this.emit({ type: 'delete', collection, record: deleted });
             this.notifyMutation('delete', collection, id);
@@ -1647,7 +1667,7 @@ export class XDBService {
       this.notifyMutation('delete', collection, record.id);
       // A row still being created is deleted by the create callback instead.
       if (!this.pendingCreateIds.has(record.id)) {
-        this.native<boolean>('delete_record', { id: record.id, collection })
+        this.native<boolean>('delete_record', { id: record.id, collection, updatedAt: deleted.updated_at })
           .then(() => this.nativeWriteLanded(collection))
           .catch((err) => this.nativeWriteFailed('delete a record', collection, err));
       }
@@ -1890,8 +1910,34 @@ export class XDBService {
    */
   writeRecords(collection: string, list: readonly XDBRecord[]): void {
     if (list.length === 0) return;
-    if (this.useTauri || list.length === 1) {
-      for (const record of list) this.writeRecord(collection, record);
+    if (list.length === 1) {
+      this.writeRecord(collection, list[0]);
+      return;
+    }
+    if (this.useTauri) {
+      // One native call for the lot, one rewrite of the collection's stored
+      // document (upsert_records). One call a record rewrote the whole
+      // document each time: a room of a few thousand records cost
+      // gigabytes of writes to join on the desktop.
+      this.knownCollections.add(collection);
+      const coll = this.getOrCreateCollection(collection);
+      const events: XDBEvent[] = list.map((record) => {
+        const event: XDBEvent = { type: coll.has(record.id) ? 'update' : 'create', collection, record };
+        coll.set(record.id, record);
+        return event;
+      });
+      this.native<string[]>('upsert_records', { records: list })
+        .then((refused) => {
+          // Not written, as upsert_record refuses one: a record another
+          // collection holds under the same id.
+          if (Array.isArray(refused) && refused.length > 0) {
+            this.nativeWriteFailed('save a record', collection, new Error(`${refused.length === 1 ? 'a record' : `${refused.length} records`} of another collection here`));
+          } else {
+            this.nativeWriteLanded(collection);
+          }
+        })
+        .catch((err) => this.nativeWriteFailed('save a record', collection, err));
+      for (const event of events) this.emit(event);
       return;
     }
     this.knownCollections.add(collection);

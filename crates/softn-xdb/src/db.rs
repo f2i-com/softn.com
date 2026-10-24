@@ -33,6 +33,38 @@ pub enum DbError {
 
 pub type DbResult<T> = Result<T, DbError>;
 
+/// How far ahead of this clock a record's stamp may be for an edit to follow it: as far
+/// ahead as a peer-to-peer room takes a stamp (STAMP_AHEAD_LIMIT_MS in the page's
+/// packages/@softn/core/src/runtime/xdb-service.ts).
+const STAMP_AHEAD_LIMIT_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// The stamp of an edit made now to a record stamped `previous`, as the page stamps one
+/// (xdb-service.ts `editStamp`): later than it, following a stamp up to a day ahead of this
+/// clock by a millisecond, else this clock's time. `asked` is the stamp the page gave the
+/// edit, which is after a sync room's copy of the record as well, a copy only the page
+/// knows of; it is taken when it is later still and no further ahead than that.
+///
+/// An edit was stamped with this clock alone. The newer stamp wins where records meet, so
+/// on a computer whose clock ran behind the device that last wrote a record, an edit lost
+/// to the copy it edited, and the page's answer from here undid the stamp it had chosen.
+fn edit_stamp(previous: &str, asked: Option<&str>) -> String {
+    let now = chrono::Utc::now();
+    let limit = now + chrono::Duration::milliseconds(STAMP_AHEAD_LIMIT_MS + 1);
+    let time = |text: &str| chrono::DateTime::parse_from_rfc3339(text).ok().map(|at| at.with_timezone(&chrono::Utc));
+    let mut at = now;
+    if let Some(previous) = time(previous) {
+        if previous >= at && previous < limit {
+            at = previous + chrono::Duration::milliseconds(1);
+        }
+    }
+    if let Some(asked) = asked.and_then(time) {
+        if asked > at && asked <= limit {
+            at = asked;
+        }
+    }
+    at.to_rfc3339()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
     pub id: String,
@@ -805,17 +837,20 @@ impl XdbDatabase {
         id: &str,
         data: serde_json::Value,
     ) -> DbResult<(Record, Vec<u8>)> {
-        let id = id.to_string();
-        let data = data.clone();
-        self.with_transaction(|this| this.update_record_inner(&id, data))
+        self.update_record_at(id, data, None)
     }
 
-    fn update_record_inner(
+    /// `update_record`, stamped no earlier than `stamp`, the stamp the page gave the edit
+    /// (see `edit_stamp`).
+    pub fn update_record_at(
         &mut self,
         id: &str,
         data: serde_json::Value,
+        stamp: Option<&str>,
     ) -> DbResult<(Record, Vec<u8>)> {
-        self.update_record_batched(id, data, true)
+        let id = id.to_string();
+        let stamp = stamp.map(str::to_string);
+        self.with_transaction(|this| this.update_record_batched(&id, data, true, stamp.as_deref()))
     }
 
     /// `persist_doc = false` defers the CRDT snapshot write to the caller
@@ -825,14 +860,14 @@ impl XdbDatabase {
         id: &str,
         data: serde_json::Value,
         persist_doc: bool,
+        stamp: Option<&str>,
     ) -> DbResult<(Record, Vec<u8>)> {
-        let now = chrono::Utc::now().to_rfc3339();
-
         // Get existing record (need current data for merge)
         let existing = self.get_record(id)?;
         if existing.deleted {
             return Err(DbError::NotFound(id.to_string()));
         }
+        let now = edit_stamp(&existing.updated_at, stamp);
         let collection = existing.collection.clone();
 
         // Merge incoming data with existing data (shallow merge, incoming wins)
@@ -888,7 +923,7 @@ impl XdbDatabase {
             let mut out = Vec::with_capacity(updates.len());
             let mut touched: Vec<String> = Vec::new();
             for (id, data) in updates {
-                let (record, update) = this.update_record_batched(&id, data, false)?;
+                let (record, update) = this.update_record_batched(&id, data, false, None)?;
                 if !touched.contains(&record.collection) {
                     touched.push(record.collection.clone());
                 }
@@ -905,21 +940,23 @@ impl XdbDatabase {
 
     /// Soft delete a record
     pub fn delete_record(&mut self, id: &str) -> DbResult<Vec<u8>> {
-        let id = id.to_string();
-        self.with_transaction(|this| this.delete_record_inner(&id))
+        self.delete_record_at(id, None)
     }
 
-    fn delete_record_inner(&mut self, id: &str) -> DbResult<Vec<u8>> {
-        self.delete_record_batched(id, true)
+    /// `delete_record`, stamped no earlier than `stamp`, the stamp the page gave the
+    /// deletion (see `edit_stamp`).
+    pub fn delete_record_at(&mut self, id: &str, stamp: Option<&str>) -> DbResult<Vec<u8>> {
+        let id = id.to_string();
+        let stamp = stamp.map(str::to_string);
+        self.with_transaction(|this| this.delete_record_batched(&id, true, stamp.as_deref()))
     }
 
     /// `persist_doc = false` defers the CRDT snapshot write to the caller (one
     /// save per collection per batch instead of one per record, audit XD-04).
-    fn delete_record_batched(&mut self, id: &str, persist_doc: bool) -> DbResult<Vec<u8>> {
-        let now = chrono::Utc::now().to_rfc3339();
-
+    fn delete_record_batched(&mut self, id: &str, persist_doc: bool, stamp: Option<&str>) -> DbResult<Vec<u8>> {
         let mut record = self.get_record(id)?;
         let collection = record.collection.clone();
+        let now = edit_stamp(&record.updated_at, stamp);
 
         self.conn.execute(
             "UPDATE records SET deleted = 1, updated_at = ?1 WHERE id = ?2",
@@ -962,6 +999,37 @@ impl XdbDatabase {
             )));
         }
         self.upsert_record_batched(record, true)
+    }
+
+    /// `upsert_record` for several records, in ONE transaction with one CRDT snapshot per
+    /// collection touched: what a page's peer sync brings in at once. One call a record
+    /// re-encoded and rewrote the collection's whole document every time, so a room of a
+    /// few thousand records cost gigabytes of writes to join. A record another collection
+    /// holds is passed over, as `upsert_record` refuses it, and its id is answered with the
+    /// written records' deltas, to be published after this returns.
+    pub fn upsert_records(&mut self, records: Vec<Record>) -> DbResult<(Vec<(Record, Vec<u8>)>, Vec<String>)> {
+        self.with_transaction(|this| {
+            let mut written = Vec::with_capacity(records.len());
+            let mut refused = Vec::new();
+            let mut touched: Vec<String> = Vec::new();
+            for record in records {
+                if this.held_by_another_collection(&record)? {
+                    refused.push(record.id);
+                    continue;
+                }
+                if !touched.contains(&record.collection) {
+                    touched.push(record.collection.clone());
+                }
+                let update = this.upsert_record_batched(record.clone(), false)?;
+                written.push((record, update));
+            }
+            for collection in touched {
+                if let Some(doc) = this.docs.get(&collection) {
+                    Self::save_crdt_state_to_db(&this.conn, &collection, doc)?;
+                }
+            }
+            Ok((written, refused))
+        })
     }
 
     /// Whether `record`'s id is a record of another collection here. Records are kept by id
@@ -1106,6 +1174,12 @@ impl XdbDatabase {
         epoch: u64,
         origin: &str,
     ) -> DbResult<bool> {
+        // Epochs are kept as SQLite integers. One past i64::MAX was kept as a negative number
+        // and read back as 0: the collection was cleared, and then a peer's updates from
+        // before the reset applied again, the very records a reset is there to keep out.
+        if epoch > i64::MAX as u64 {
+            return Ok(false);
+        }
         let collection = collection.to_string();
         let origin = origin.to_string();
         self.with_transaction(|this| {
@@ -1195,7 +1269,7 @@ impl XdbDatabase {
                     let existing = this.get_collection(&batch.collection)?;
                     for record in existing {
                         if !incoming.contains_key(record.id.as_str()) {
-                            let update = this.delete_record_batched(&record.id, false)?;
+                            let update = this.delete_record_batched(&record.id, false, None)?;
                             deltas.push((batch.collection.clone(), epoch, update));
                             tombstoned += 1;
                         }
@@ -1203,6 +1277,15 @@ impl XdbDatabase {
                 }
                 let mut imported = 0u64;
                 for record in batch.records {
+                    // Records are kept by id alone: one another collection holds would be
+                    // moved into this one, out of the other with no tombstone, as
+                    // upsert_record refuses to do. The whole import is refused instead.
+                    if this.held_by_another_collection(&record)? {
+                        return Err(DbError::InvalidOperation(format!(
+                            "Record '{}' imported into '{}' is a record of another collection here",
+                            record.id, record.collection
+                        )));
+                    }
                     let update = this.upsert_record_batched(record, false)?;
                     deltas.push((batch.collection.clone(), epoch, update));
                     imported += 1;
@@ -1422,11 +1505,29 @@ impl XdbDatabase {
         Ok(records)
     }
 
+    /// The collection's document when this database has one, in memory or saved; None for
+    /// a collection it has never held. Asking about a collection makes none: a peer names
+    /// any collection it likes (up to 200 an announcement), and each name it asked after was
+    /// a document made and kept in memory for as long as the database was open.
+    fn held_doc(&mut self, collection: &str) -> DbResult<Option<&mut Doc>> {
+        let held = self.docs.contains_key(collection)
+            || self
+                .conn
+                .query_row("SELECT 1 FROM crdt_state WHERE collection = ?1", params![collection], |_| Ok(()))
+                .optional()?
+                .is_some();
+        if !held {
+            return Ok(None);
+        }
+        self.get_or_create_doc(collection).map(Some)
+    }
+
     /// Get current state vector for syncing
     pub fn get_state_vector(&mut self, collection: &str) -> DbResult<Vec<u8>> {
-        let doc = self.get_or_create_doc(collection)?;
-        let txn = doc.transact();
-        Ok(txn.state_vector().encode_v1())
+        match self.held_doc(collection)? {
+            Some(doc) => Ok(doc.transact().state_vector().encode_v1()),
+            None => Ok(yrs::StateVector::default().encode_v1()),
+        }
     }
 
     /// Get updates since a given state vector
@@ -1435,19 +1536,18 @@ impl XdbDatabase {
         collection: &str,
         state_vector: &[u8],
     ) -> DbResult<Vec<u8>> {
-        let doc = self.get_or_create_doc(collection)?;
-        let txn = doc.transact();
         let sv =
             yrs::StateVector::decode_v1(state_vector).map_err(|e| DbError::Crdt(e.to_string()))?;
-        Ok(txn.encode_state_as_update_v1(&sv))
+        match self.held_doc(collection)? {
+            Some(doc) => Ok(doc.transact().encode_state_as_update_v1(&sv)),
+            None => Ok(Doc::new().transact().encode_state_as_update_v1(&sv)),
+        }
     }
 
     /// Get full state for initial sync
     #[allow(dead_code)]
     pub fn get_full_state(&mut self, collection: &str) -> DbResult<Vec<u8>> {
-        let doc = self.get_or_create_doc(collection)?;
-        let txn = doc.transact();
-        Ok(txn.encode_state_as_update_v1(&yrs::StateVector::default()))
+        self.get_updates_since(collection, &yrs::StateVector::default().encode_v1())
     }
 
     /// LOCAL cache reset: hard-delete the collection's records and CRDT state on

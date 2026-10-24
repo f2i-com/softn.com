@@ -61,6 +61,11 @@ pub struct CreateRecordPayload {
 pub struct UpdateRecordPayload {
     pub id: String,
     pub data: serde_json::Value,
+    /// The stamp the page gave the edit (after a sync room's copy of the record as well as
+    /// the one here): the edit is stamped no earlier, within a day of this clock (db.rs
+    /// `edit_stamp`). A page that sends none is stamped as before.
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 /// Honest network status (audit XD-01/XD-02): what is ENABLED, what is
@@ -872,7 +877,7 @@ pub async fn update_record(
     let (record, update, epoch) = {
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
         let (record, update) = db_lock
-            .update_record(&payload.id, payload.data)
+            .update_record_at(&payload.id, payload.data, payload.updated_at.as_deref())
             .map_err(|e| e.to_string())?;
         let epoch = db_lock.get_epoch(&record.collection).unwrap_or(0);
         (record, update, epoch)
@@ -935,6 +940,7 @@ pub async fn delete_record(
     app_id: Option<String>,
     id: String,
     collection: Option<String>,
+    updated_at: Option<String>,
 ) -> Result<bool, String> {
     let app_id = app_id.unwrap_or_default();
     let db = db_manager.get_db(&app_id)?;
@@ -947,7 +953,8 @@ pub async fn delete_record(
         if collection.is_some_and(|named| named != record.collection) {
             return Ok(false);
         }
-        let update = db_lock.delete_record(&id).map_err(|e| e.to_string())?;
+        // Stamped no earlier than the page's stamp for it, as an update is.
+        let update = db_lock.delete_record_at(&id, updated_at.as_deref()).map_err(|e| e.to_string())?;
         let epoch = db_lock.get_epoch(&record.collection).unwrap_or(0);
         (record.collection, update, epoch)
     };
@@ -982,6 +989,43 @@ pub async fn upsert_record(
     broadcast_scoped_update(&network, &app_id, &record.collection, epoch, update).await;
 
     Ok(record)
+}
+
+/// Several records from a sync source in ONE transaction, one CRDT snapshot per collection
+/// (db.rs `upsert_records`): a page's peer sync brought a room's records in one
+/// `upsert_record` call each, every one of which rewrote the collection's whole document.
+/// Answers the ids of the records not written, which another collection holds.
+#[tauri::command]
+pub async fn upsert_records(
+    db_manager: State<'_, SharedDbManager>,
+    network: State<'_, SharedNetwork>,
+    app_id: Option<String>,
+    records: Vec<Record>,
+) -> Result<Vec<String>, String> {
+    let app_id = app_id.unwrap_or_default();
+    let db = db_manager.get_db(&app_id)?;
+    let (deltas, refused) = {
+        let mut db_lock = db.lock().map_err(|e| e.to_string())?;
+        let (written, refused) = db_lock.upsert_records(records).map_err(|e| e.to_string())?;
+        let mut deltas = Vec::with_capacity(written.len());
+        for (record, update) in written {
+            let epoch = db_lock.get_epoch(&record.collection).unwrap_or(0);
+            deltas.push((record.collection, epoch, update));
+        }
+        (deltas, refused)
+    };
+
+    let mut touched: Vec<String> = deltas.iter().map(|(collection, _, _)| collection.clone()).collect();
+    touched.sort_unstable();
+    touched.dedup();
+    for collection in &touched {
+        db_manager.emit_change(&app_id, "upsert", Some(collection));
+    }
+    for (collection, epoch, update) in deltas {
+        broadcast_scoped_update(&network, &app_id, &collection, epoch, update).await;
+    }
+
+    Ok(refused)
 }
 
 /// Bulk import in ONE transaction (audit SN-01): validates the whole batch,
