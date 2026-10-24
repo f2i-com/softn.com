@@ -571,22 +571,11 @@ export function parseBundle(data: Uint8Array): {
   // Debug: log all paths in the bundle
   debug('[parseBundle] Files in bundle:', Array.from(files.keys()));
 
-  // Try to find manifest.json with different path variations
-  let manifestData = files.get('manifest.json');
-  if (!manifestData) {
-    // Try with forward slash prefix
-    manifestData = files.get('/manifest.json');
-  }
-  if (!manifestData) {
-    // Search for manifest.json anywhere in the paths
-    for (const [path, content] of files) {
-      if (path.endsWith('manifest.json') || path === 'manifest.json') {
-        debug('[parseBundle] Found manifest at:', path);
-        manifestData = content;
-        break;
-      }
-    }
-  }
+  // The manifest at the root, the one every runtime and the directory read.
+  // The first path anywhere that ended in `manifest.json` was taken for it
+  // (`assets/manifest.json`, `notmanifest.json`), and the Builder opened, and
+  // exported with that manifest at its root, a bundle no runtime opens.
+  const manifestData = files.get('manifest.json');
   if (!manifestData) {
     throw new Error('Invalid bundle: missing manifest.json');
   }

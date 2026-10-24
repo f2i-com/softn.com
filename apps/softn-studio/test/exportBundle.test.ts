@@ -87,6 +87,30 @@ describe('the export and paths it cannot write', () => {
     expect(Object.keys(archive).some((k) => /builder/i.test(k))).toBe(false);
   });
 
+  it('reports a file where another path needs a folder of the same name, however it is spelled', () => {
+    for (const [file, inside] of [['ui', 'ui/main.ui'], ['UI', 'ui/main.ui'], ['assets/img', 'Assets/IMG/logo.png']]) {
+      const vfs = toVfs([
+        { path: 'manifest.json', content: manifestWith({}) },
+        { path: 'ui/main.ui', content: '<App></App>' },
+        { path: file, content: 'x' },
+        ...(inside === 'ui/main.ui' ? [] : [{ path: inside, content: new Uint8Array([1]) }]),
+      ]);
+      const collisions = planBundle(vfs).problems.filter((p) => p.type === 'path-collision');
+      expect(collisions.map((p) => p.file), file).toEqual([file]);
+      expect(collisions[0].message).toContain(`"${inside}" needs a folder`);
+      expect(() => buildBundle(vfs), file).toThrow(/needs a folder of the same name/);
+      expect(validateProject(vfs, null).some((e) => e.type === 'path-collision' && e.file === file), file).toBe(true);
+    }
+    // A name that only begins like a folder's is another name.
+    const fine = toVfs([
+      { path: 'manifest.json', content: manifestWith({}) },
+      { path: 'ui/main.ui', content: '<App></App>' },
+      { path: 'u', content: 'x' },
+      { path: 'ui.txt', content: 'x' },
+    ]);
+    expect(planBundle(fine).problems.filter((p) => p.type === 'path-collision')).toEqual([]);
+  });
+
   it('refuses a file at the root named __proto__, by name, and archives one anywhere else', () => {
     const files = [
       { path: 'manifest.json', content: manifestWith({}) },

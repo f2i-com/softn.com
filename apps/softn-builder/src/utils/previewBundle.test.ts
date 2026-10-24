@@ -97,6 +97,30 @@ describe('portable Builder preview', () => {
   });
 });
 
+describe('folders whose paths differ by a slash and an underscore', () => {
+  it('are two folders, each with its own files, through open and export', async () => {
+    const first = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1]);
+    const second = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 2]);
+    const bundle = zipSync({
+      'manifest.json': strToU8(JSON.stringify({ name: 'Folders', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: [], xdb: [], assets: ['a/b/x.png', 'a_b/y.png'] } })),
+      'ui/main.ui': strToU8('<App></App>'),
+      'a/b/x.png': first,
+      'a_b/y.png': second,
+    });
+    commitProjectSnapshot(prepareProjectSnapshot(await loadBundle(bundle)));
+    const nodes = [...useFilesStore.getState().nodes.values()];
+    const folders = nodes.filter((node) => node.type === 'folder');
+    expect(new Set(folders.map((folder) => folder.id)).size).toBe(folders.length);
+    expect(folders.map((folder) => folder.path)).toEqual(expect.arrayContaining(['a', 'a/b', 'a_b']));
+    const parentOf = (path: string) => useFilesStore.getState().nodes.get(nodes.find((node) => node.path === path)!.parentId!)?.path;
+    expect(parentOf('a/b/x.png')).toBe('a/b');
+    expect(parentOf('a_b/y.png')).toBe('a_b');
+    const out = parseBundle(await buildProjectBundle());
+    expect(out.files.get('a/b/x.png')).toEqual(first);
+    expect(out.files.get('a_b/y.png')).toEqual(second);
+  });
+});
+
 describe('the helpers the preview runs', () => {
   it('are the exported manifest\'s logic list, in its order, as Run composes them', async () => {
     const { previewSourceFor } = await import('./previewSource');

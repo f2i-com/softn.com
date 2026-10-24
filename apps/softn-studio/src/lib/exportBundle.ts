@@ -71,6 +71,26 @@ function collectEntries(files: Map<string, VFSFile>): Collected {
     entries.set(verdict.path, typeof file.content === 'string' ? encoder.encode(file.content) : file.content);
     sources.set(verdict.path, rawPath);
   }
+  // A name is a file or a folder, never both: a file `ui` beside `UI/main.ui`
+  // went into the archive, and every host that unpacks one to a disk (the
+  // desktop runtime, the PHP and Rust hosts) could not write it out.
+  const folders = new Map<string, string>();
+  for (const [key, rawPath] of byKey) {
+    for (let at = key.indexOf('/'); at !== -1; at = key.indexOf('/', at + 1)) {
+      if (!folders.has(key.slice(0, at))) folders.set(key.slice(0, at), rawPath);
+    }
+  }
+  for (const [key, rawPath] of byKey) {
+    const inside = folders.get(key);
+    if (inside === undefined) continue;
+    problems.push({
+      file: rawPath,
+      level: 'error',
+      type: 'path-collision',
+      message: `"${rawPath}" is a file where "${inside}" needs a folder of the same name; a disk can hold only one of them.`,
+      suggestion: 'Rename the file or the folder.',
+    });
+  }
   return { entries, sources, keys, problems };
 }
 

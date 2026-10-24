@@ -1313,12 +1313,15 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     const nodes = new Map<string, ProjectFileNode>();
     const rootFolders: string[] = [];
 
-    // Helper to ensure folder exists
+    // Helper to ensure folder exists. Each folder is found by its path in a
+    // map of its own and has an id no other node has: `a/b` and `a_b` were
+    // given one id, and the second took the first's place in the Files tree,
+    // which no longer had the first. The look-up was a search of every node,
+    // for each file.
+    const folderIds = new Map<string, string>();
     const ensureFolder = (path: string): string => {
-      const existingNode = Array.from(nodes.values()).find(
-        (n) => n.type === 'folder' && n.path === path
-      );
-      if (existingNode) return existingNode.id;
+      const existingId = folderIds.get(path);
+      if (existingId !== undefined) return existingId;
 
       const { parent, name } = parsePath(path);
       let parentId: string | null = null;
@@ -1327,7 +1330,9 @@ export const useFilesStore = create<FilesStore>((set, get) => {
         parentId = ensureFolder(parent);
       }
 
-      const id = `folder_${path.replace(/\//g, '_')}`;
+      let id = `folder_${path.replace(/\//g, '_')}`;
+      while (nodes.has(id)) id = `${id}_`;
+      folderIds.set(path, id);
       nodes.set(id, {
         id,
         name,

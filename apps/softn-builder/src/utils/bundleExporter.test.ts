@@ -68,6 +68,12 @@ describe('parseBundle', () => {
     );
     expect([...files.keys()].some((k) => k.includes('..'))).toBe(false);
   });
+
+  it('reads the manifest at the root and nowhere else, as the runtime does', () => {
+    for (const path of ['assets/manifest.json', 'notmanifest.json', 'app/manifest.json']) {
+      expect(() => parseBundle(bundle({ [path]: MANIFEST, 'ui/main.ui': '<Stack></Stack>' })), path).toThrow(/missing manifest\.json/);
+    }
+  });
 });
 
 describe('an export and a file named __proto__', () => {
