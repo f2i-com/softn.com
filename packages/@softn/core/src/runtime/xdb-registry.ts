@@ -73,12 +73,41 @@ function forgetScriptStorage(appId: string): void {
   }
 }
 
+/** How old a scope's id may be before its script storage, left by a page that closed, is swept. */
+const STALE_SCOPE_MS = 24 * 60 * 60 * 1000;
+let staleScopesSwept = false;
+
+/**
+ * Remove, once a page, the script storage of scopes made more than a day ago.
+ * A preview whose page closed is never disposed, and what its script kept
+ * stayed for good. A scope's id holds when it was made, so one still open in
+ * another tab, made within the day, is left alone.
+ */
+function sweepStaleScopes(now: number): void {
+  if (staleScopesSwept) return;
+  staleScopesSwept = true;
+  const head = `softn:${EPHEMERAL_XDB_PREFIX}`;
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return;
+    for (let i = storage.length - 1; i >= 0; i--) {
+      const key = storage.key(i);
+      if (!key?.startsWith(head)) continue;
+      const made = /^([0-9a-z]+)_\d+:/.exec(key.slice(head.length));
+      if (made && now - parseInt(made[1], 36) > STALE_SCOPE_MS) storage.removeItem(key);
+    }
+  } catch {
+    // Storage refused: what is there stays.
+  }
+}
+
 /**
  * Create a registered, memory-only database for an editor preview. Seed `xdb`
  * before mounting the renderer, then use this appId for the preview's lifetime.
  * It never hydrates or writes native SQLite, even inside the desktop Builder.
  */
 export function createEphemeralXDBScope(): EphemeralXDBScope {
+  sweepStaleScopes(Date.now());
   let appId: string;
   do {
     appId = `${EPHEMERAL_XDB_PREFIX}${Date.now().toString(36)}_${++ephemeralXDBSequence}`;
