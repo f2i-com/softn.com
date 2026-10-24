@@ -15,8 +15,8 @@
 // resolved for zipp-vm (crates/zipp-wasm/src/preamble.js beside it), never
 // copied by hand, and the checkout must be the commit of the engine SoftN
 // installs (packages/@softn/core/wasm-zipp/SOURCE.json), so both runners run
-// one engine. Both crates pin Rust 1.92.0, ZIPP's release toolchain
-// (rust-toolchain.toml).
+// one engine. The guest pins Rust 1.92.0, ZIPP's release toolchain, and the
+// runner its own (each crate's rust-toolchain.toml).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';

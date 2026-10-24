@@ -1,4 +1,5 @@
 [toolchain]
-# As the guest: ZIPP's release toolchain. wasmtime 44's minimum is 1.92.0.
-channel = "1.92.0"
+# The guest is built with ZIPP's release toolchain (guest/rust-toolchain.toml);
+# the runner around it is not tied to it. wasmtime 45 needs 1.93 or newer.
+channel = "1.99.0"
 profile = "minimal"

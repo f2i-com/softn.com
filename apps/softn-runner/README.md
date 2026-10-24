@@ -56,10 +56,11 @@ node apps/softn-runner/build.mjs                                   # this machin
 node apps/softn-runner/build.mjs --target x86_64-unknown-linux-musl  # static Linux, as released
 ```
 
-The runner is written to `dist/softn-runner-<platform>`. Rust 1.92.0 (ZIPP's
-release toolchain) is pinned in both crates; the guest needs the
-`wasm32-wasip1` target, a static Linux build `x86_64-unknown-linux-musl` and
-musl's C compiler (`musl-tools`).
+The runner is written to `dist/softn-runner-<platform>`. Each crate pins its
+Rust (`rust-toolchain.toml`): the guest 1.92.0, ZIPP's release toolchain, with
+the `wasm32-wasip1` target; the runner 1.99.0 (wasmtime 45 needs 1.93 or
+newer). A static Linux build needs `x86_64-unknown-linux-musl` for the
+runner's toolchain and musl's C compiler (`musl-tools`).
 
 ## Testing
 

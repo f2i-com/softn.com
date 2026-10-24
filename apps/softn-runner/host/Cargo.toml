@@ -29,8 +29,8 @@ path = "src/main.rs"
 [dependencies]
 # Runtime only: the guest is compiled at build time (build.rs) and embedded,
 # so a request deserialises it instead of compiling 5 MB of wasm.
-wasmtime = { version = "44", default-features = false, features = ["runtime", "std"] }
-wasmtime-wasi = { version = "44", default-features = false, features = ["p1"] }
+wasmtime = { version = "45", default-features = false, features = ["runtime", "std"] }
+wasmtime-wasi = { version = "45", default-features = false, features = ["p1"] }
 # The app's database, as node:sqlite opens it for the Node runner.
 rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
 serde = "1"
@@ -53,4 +53,4 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 
 [build-dependencies]
 # The compiler half, for build.rs only: Cranelift never reaches the runner.
-wasmtime = { version = "44", default-features = false, features = ["cranelift", "std"] }
+wasmtime = { version = "45", default-features = false, features = ["cranelift", "std"] }

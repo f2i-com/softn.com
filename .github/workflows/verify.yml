@@ -285,9 +285,10 @@ jobs:
         run: npm ci
       - name: Install the ZIPP release
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
-      # The toolchain is the crates' own (rust-toolchain.toml, 1.92.0, with
-      # the guest's wasm32-wasip1); the static Linux target and musl's C
-      # compiler, for SQLite and wasmtime's helpers, are added here.
+      # Each crate brings its own toolchain (rust-toolchain.toml: the guest's
+      # 1.92.0 with wasm32-wasip1, the runner's 1.99.0); the runner's static
+      # Linux target and musl's C compiler, for SQLite and wasmtime's helpers,
+      # are added here.
       - name: The static Linux target
         run: |
           sudo apt-get update
