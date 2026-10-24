@@ -93,15 +93,61 @@ function markAlive(appId: string, at: number | null): void {
 }
 
 /**
+ * The browser's Web Locks, where it has them: a live scope holds one named for it
+ * (`softn-preview:<id>`) until it is let go, and the page's, asleep or frozen,
+ * holds it as long as the page lives.
+ */
+type PreviewLocks = {
+  request: (name: string, callback: () => Promise<void>) => Promise<unknown>;
+  query: () => Promise<{ held?: Array<{ name?: string }> }>;
+};
+const LOCK_PREFIX = 'softn-preview:';
+
+function previewLocks(): PreviewLocks | null {
+  try {
+    const locks = (globalThis.navigator as { locks?: Partial<PreviewLocks> } | undefined)?.locks;
+    return locks && typeof locks.request === 'function' && typeof locks.query === 'function' ? (locks as PreviewLocks) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Hold the scope's lock while it lives; the returned function lets it go. */
+function holdWhileOpen(appId: string): () => void {
+  const locks = previewLocks();
+  if (!locks) return () => {};
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  locks.request(`${LOCK_PREFIX}${appId}`, () => held).catch(() => {});
+  return () => release();
+}
+
+/**
  * Remove, once a page, the script storage of scopes not seen for a day. A
  * preview whose page closed is never disposed, and what its script kept stayed
  * for good. A live scope says it is open every hour (`markAlive`), so one open
  * in another tab is left alone however long ago it was made; one that never
- * said (a page from before) goes by when it was made, which its id holds.
+ * said (a page from before) goes by when it was made, which its id holds. And
+ * one whose lock is held (`holdWhileOpen`) is open, however long its page has
+ * slept: a laptop shut for two days missed its hourly marks, and another tab
+ * swept a preview still open in it.
  */
 function sweepStaleScopes(now: number): void {
   if (staleScopesSwept) return;
   staleScopesSwept = true;
+  const locks = previewLocks();
+  if (!locks) {
+    sweepScopes(now, new Set());
+    return;
+  }
+  locks.query().then(
+    (state) => sweepScopes(now, new Set((state.held ?? []).flatMap((lock) => (lock.name?.startsWith(LOCK_PREFIX) ? [lock.name.slice(LOCK_PREFIX.length)] : [])))),
+    () => sweepScopes(now, new Set()),
+  );
+}
+
+/** `sweepStaleScopes`, the scopes in `open` passed over. */
+function sweepScopes(now: number, open: ReadonlySet<string>): void {
   const head = `softn:${EPHEMERAL_XDB_PREFIX}`;
   try {
     const storage = globalThis.localStorage;
@@ -113,14 +159,14 @@ function sweepStaleScopes(now: number): void {
     for (let i = storage.length - 1; i >= 0; i--) {
       const key = storage.key(i);
       if (key?.startsWith(ALIVE_PREFIX)) {
-        if (!(now - Number(storage.getItem(key)) <= STALE_SCOPE_MS)) storage.removeItem(key);
+        if (!open.has(key.slice(ALIVE_PREFIX.length)) && !(now - Number(storage.getItem(key)) <= STALE_SCOPE_MS)) storage.removeItem(key);
         continue;
       }
       if (!key?.startsWith(head)) continue;
       const made = /^([0-9a-z]+)_(\d+):/.exec(key.slice(head.length));
       if (!made) continue;
       const id = `${EPHEMERAL_XDB_PREFIX}${made[1]}_${made[2]}`;
-      if (now - lastSeen(id, parseInt(made[1], 36)) > STALE_SCOPE_MS) storage.removeItem(key);
+      if (!open.has(id) && now - lastSeen(id, parseInt(made[1], 36)) > STALE_SCOPE_MS) storage.removeItem(key);
     }
   } catch {
     // Storage refused: what is there stays.
@@ -152,6 +198,7 @@ export function createEphemeralXDBScope(): EphemeralXDBScope {
   markAlive(appId, Date.now());
   const alive = setInterval(() => markAlive(appId, Date.now()), ALIVE_EVERY_MS);
   (alive as { unref?: () => void }).unref?.();
+  const letGo = holdWhileOpen(appId);
 
   return {
     appId,
@@ -160,6 +207,7 @@ export function createEphemeralXDBScope(): EphemeralXDBScope {
       if (disposed) return;
       disposed = true;
       clearInterval(alive);
+      letGo();
       if (xdbInstances.get(appId) === xdb) xdbInstances.delete(appId);
       xdb.destroy();
       values.clear();
