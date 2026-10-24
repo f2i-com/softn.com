@@ -246,34 +246,39 @@ describe('two apps open on one page', () => {
     expect('__shared' in realWin).toBe(false);
   });
 
-  // A component's key that one app's script wrote first was that app's: every
-  // other app read nothing of what the component set after it.
-  it("hear what a component sets on a key another app's script wrote first", async () => {
+  // Scene3D keeps the window's yaw when a scene mounts and puts it back when
+  // the last one goes, so a component's write can be another app's value. A
+  // claim that lapsed whenever the window held something its app had not
+  // just written handed that value to the next app that read the key.
+  it("never read another app's value that a component put back on the window", async () => {
+    const b = await app('app-b', `
+      function init() { window.__scene3dYaw = 0 }
+      function tick() { window.__scene3dYaw = { records: ["B1", "B2"] } }
+    `);
     const a = await app('app-a', `
       let seen = "nothing"
-      function init() { window.__component = "" }
-      function tick() { seen = String(window.__component) }
+      function init() { window.__scene3dYaw = 0 }
+      function tick() { seen = JSON.stringify(window.__scene3dYaw) }
     `);
-    const b = await app('app-b', `
-      function init() { window.__component = "" }
-      function tick() { window.__component = "b" }
-    `);
-    await a.result.functions.init();
     await b.result.functions.init();
-    realWin.__component = 'idle';
+    await a.result.functions.init();
+    realWin.__scene3dYaw = 0;
     await b.result.functions.tick();
     await b.result.functions.tick();
-    expect(realWin.__component).toBe('b');
+    expect(realWin.__scene3dYaw).toEqual({ records: ['B1', 'B2'] });
 
-    // What Scene3D does: set it on the real window.
-    realWin.__component = 'locked';
+    // A's scene mounts: the component keeps B's value and writes A's yaw.
+    const kept = realWin.__scene3dYaw;
+    realWin.__scene3dYaw = 0.5;
     await a.result.functions.tick();
-    expect(a.runtime.state.seen).toBe('locked');
-    // B's claim lapsed with it, so B's going leaves the component's value.
-    b.runtime.cleanup();
-    expect(realWin.__component).toBe('locked');
+    // A's scene goes: the component puts back what it kept.
+    realWin.__scene3dYaw = kept;
+    await a.result.functions.tick();
+    expect(a.runtime.state.seen).not.toContain('B1');
+
     a.runtime.cleanup();
-    delete realWin.__component;
+    b.runtime.cleanup();
+    delete realWin.__scene3dYaw;
   });
 
   it('both hear a key only a component sets', async () => {

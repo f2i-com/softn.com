@@ -23,12 +23,9 @@ const HOST_WINDOW_NAME = /^__(?:tauri|react|softn|vite|webpack|playwright|vue|ne
  * it until the last of its runtimes that wrote it closes; meanwhile no other
  * app's script reads it or writes it. Two views of one app are one owner. A
  * key no script has written, as a component sets one (Scene3D's
- * `__scene3dLocked`), is every app's as before; and a claim lapses once the
- * window holds a value its app did not write there (`value`): a component's
- * key that one app's script wrote first kept every other app from reading
- * what the component then set.
+ * `__scene3dLocked`), is every app's as before.
  */
-const windowKeyOwners = new Map<string, { app: string | null; writers: Set<WindowBridge>; value: unknown }>();
+const windowKeyOwners = new Map<string, { app: string | null; writers: Set<WindowBridge> }>();
 
 /**
  * Run the script's listeners for an event the page's window heard.
@@ -103,16 +100,10 @@ export class WindowBridge {
     );
   }
 
-  /** Whether another app's script owns `key` (windowKeyOwners), as long as what it wrote is what the window holds. */
+  /** Whether another app's script owns `key` (windowKeyOwners). */
   private ownedElsewhere(key: string): boolean {
     const owner = windowKeyOwners.get(key);
-    if (owner === undefined || owner.app === this.app) return false;
-    if (typeof window !== 'undefined' && !Object.is((window as unknown as Record<string, unknown>)[key], owner.value)) {
-      // Set since by something else, a component or the host: no app's now.
-      windowKeyOwners.delete(key);
-      return false;
-    }
-    return true;
+    return owner !== undefined && owner.app !== this.app;
   }
 
   /**
@@ -280,9 +271,8 @@ export class WindowBridge {
       if (this.ownedElsewhere(key)) continue;
       realWin[key] = value;
       let owner = windowKeyOwners.get(key);
-      if (!owner) windowKeyOwners.set(key, (owner = { app: this.app, writers: new Set(), value }));
+      if (!owner) windowKeyOwners.set(key, (owner = { app: this.app, writers: new Set() }));
       owner.writers.add(this);
-      owner.value = value;
       this.windowKeysWritten.add(key);
       this.windowSyncSeen.set(key, value);
     }
@@ -312,11 +302,8 @@ export class WindowBridge {
     const released: string[] = [];
     for (const key of this.windowKeysWritten) {
       const owner = windowKeyOwners.get(key);
-      // A claim that lapsed, or that another app has made since: what the
-      // window holds is not this app's to take away.
-      if (!owner || !owner.writers.has(this)) continue;
-      owner.writers.delete(this);
-      if (owner.writers.size > 0) continue;
+      owner?.writers.delete(this);
+      if (owner && owner.writers.size > 0) continue;
       windowKeyOwners.delete(key);
       released.push(key);
     }
