@@ -25,6 +25,12 @@ section here. Write the section before tagging. Headings are the tag
   - `setup.php` stops, naming the file to correct, rather than writing a `config.json` of one newline when the manifest holds a number past the doubles.
   - A photo PHP's bundled GD could not decode within `memory_limit` is refused rather than ending PHP with a fatal error, its request uncounted.
   - The nginx examples set `client_max_body_size 6m` on the API and leave `/.well-known/` served.
+- XDB, from an independent review of its browser data:
+  - A peer-to-peer peer that could not keep some of the room's records (a browser over its 3 MB budget) no longer takes them out of the room at its next write. They went off every peer, the one that wrote them included.
+  - Bundled seed records the person removed (clearing the collection, a prune, a hard delete) stay removed; they came back at every opening. Which seeds were added is kept beside the records, and a seed a later version of the app adds is still added.
+  - A change the sync host refuses is a `sync-refused` issue in the storage status, which the notice bar shows. It was told to no one, and a refused update was quietly undone by the host's copy.
+  - A peer-to-peer adapter disconnected and connected again sends local writes to the room again.
+  - Studio's agent seeds records with ids no other collection uses (`task-1`, not `1`): `db.update(id)` and `db.delete(id)` act on the first collection that has the id, so seeding `1` in two collections sent changes to the wrong record.
 
 ## v0.0.26
 
