@@ -7,7 +7,7 @@
  * This replaces P2P sync (xdb-sync.ts) when a server URL is configured.
  */
 
-import type { UnheardEdit, UnheardRemoval, XDBService } from './xdb';
+import type { UnheardNoteRead, UnheardRemoval, XDBService } from './xdb';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -466,7 +466,7 @@ export class XDBServerSync {
    * (XDBService.readUnheardNote), taken out of the note once the queue holding what it sent of
    * them is saved (`save`): a page that closed between the two leaves the note for the next.
    */
-  private noteRead: { edits: UnheardEdit[]; removals: UnheardRemoval[] } | null = null;
+  private noteRead: UnheardNoteRead | null = null;
   /**
    * The desktop's store loads its records from the native database after it starts, and a
    * client started before that read an empty store: its scan found nothing changed while no
@@ -1809,7 +1809,7 @@ export class XDBServerSync {
       getAllRaw?: (collection: string) => unknown;
       takeFirstUnheardChange?: () => number | null;
       takeUnheardRemovals?: () => UnheardRemoval[];
-      readUnheardNote?: () => { edits: UnheardEdit[]; removals: UnheardRemoval[] };
+      readUnheardNote?: () => Partial<UnheardNoteRead>;
       isOwnStamp?: (collection: string, id: string, stamp: unknown) => boolean;
     };
     this.markHeld = false;
@@ -1821,12 +1821,13 @@ export class XDBServerSync {
     // it gives are saved (`save`).
     // Of a collection the store loaded: one it could not is left in the note, for a client that
     // can read it.
-    const whole = typeof store.readUnheardNote === 'function' ? store.readUnheardNote() : { edits: [], removals: [] };
-    const note = {
-      edits: whole.edits.filter((edit) => this.storeLoaded(edit.collection)),
-      removals: whole.removals.filter((removal) => this.storeLoaded(removal.collection)),
+    const whole = typeof store.readUnheardNote === 'function' ? store.readUnheardNote() : {};
+    const note: UnheardNoteRead = {
+      edits: (whole.edits ?? []).filter((edit) => this.storeLoaded(edit.collection)),
+      removals: (whole.removals ?? []).filter((removal) => this.storeLoaded(removal.collection)),
+      imports: (whole.imports ?? []).filter((mark) => this.storeLoaded(mark.collection)),
     };
-    if (note.edits.length + note.removals.length > 0) this.noteRead = note;
+    if (note.edits.length + note.removals.length + note.imports.length > 0) this.noteRead = note;
     // And what was removed for good meanwhile, which leaves nothing to look for: by this page,
     // and by any that wrote it in the note. One record, one removal.
     const removedBy = new Map<string, Map<string, { at: number; after?: string }>>();
@@ -1899,6 +1900,20 @@ export class XDBServerSync {
       // this is done when the host has no such record (`movedHost`).
       found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, how, ...(this.movedHost ? { removal: true } : {}) });
       if (!this.movedHost) noted.add(`${edit.collection}\u0000${edit.id}`);
+    }
+    // A collection an import changed past what the note could name (UnheardImport): every live
+    // record of it the note and the queue say nothing of goes as a create, made then. The host
+    // takes the ones it has no copy of, and answers the rest with its own.
+    for (const { collection, made } of note.imports) {
+      if (!SYNCABLE_COLLECTION.test(collection)) continue;
+      for (const record of recordsOf(collection).values()) {
+        const key = `${collection}\u0000${String(record.id)}`;
+        const queued = this.lastOpFor.get(key) ?? '';
+        if (typeof record.id !== 'string' || record.deleted === true || noted.has(key) || this.pendingOps.has(queued) || this.inflightOps.has(queued)) continue;
+        const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
+        found.push({ made, change: { type: 'create', collection, recordId: record.id, data } });
+        noted.add(key);
+      }
     }
     for (const collection of this.syncedCollections()) {
       // One the store could not load is looked at by a later client (`markHeld`).
@@ -2131,7 +2146,7 @@ export class XDBServerSync {
     if (this.noteRead && !this.queueDirty) {
       const read = this.noteRead;
       this.noteRead = null;
-      const store = this.xdb as { forgetUnheardNote?: (read: { edits: UnheardEdit[]; removals: UnheardRemoval[] }) => void };
+      const store = this.xdb as { forgetUnheardNote?: (read: UnheardNoteRead) => void };
       try {
         store.forgetUnheardNote?.(read);
       } catch {

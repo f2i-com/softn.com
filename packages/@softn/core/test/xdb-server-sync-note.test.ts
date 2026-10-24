@@ -242,6 +242,81 @@ describe('an app moved to another sync host', () => {
   });
 });
 
+describe('a large change made while no client listened', () => {
+  const many = (n: number, at: string) => Array.from({ length: n }, (_, i) => row(`r${i}`, `t${i}`, at));
+  type Op = { operation: string; recordId: string };
+
+  // The note was cut at 64 KB, oldest first: past a few hundred records, a clear's removals and
+  // an import's records reached no host, and nothing else finds them.
+  it('a clear of 5,000 records reaches the host whole', async () => {
+    const backing = storage();
+    const first = connect(page(backing));
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: many(5000, '2026-02-01T00:00:00.000Z') });
+    await tick();
+    first.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+    page(backing).clear('notes');
+    await tick();
+
+    const { socket } = await nextVisit(backing);
+    const deleted = new Set((pushed(socket) as unknown as Op[]).filter((op) => op.operation === 'delete').map((op) => op.recordId));
+    expect(deleted.size).toBe(5000);
+  });
+
+  it('an import of 5,000 records reaches the host whole', async () => {
+    const backing = storage();
+    await synced(backing);
+    const older = '2026-02-15T00:00:00.000Z';
+    const records = Array.from({ length: 5000 }, (_, i) => ({ id: `i${i}`, collection: 'notes', data: { title: `t${i}` }, created_at: older, updated_at: older, deleted: false }));
+    page(backing).import({ version: 1, exportedAt: older, collections: { notes: records } }, { merge: true });
+    await tick();
+
+    const { socket } = await nextVisit(backing);
+    const created = new Set((pushed(socket) as unknown as Op[]).filter((op) => op.operation === 'create').map((op) => op.recordId));
+    expect(created.size).toBe(5000);
+  });
+
+  it('refused by the store, sheds the edits the scan of stamps finds, and keeps the removals', async () => {
+    const backing = storage();
+    const first = connect(page(backing));
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: many(1000, '2026-02-01T00:00:00.000Z') });
+    await tick();
+    first.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+    const tight = { ...backing, setItem: (key: string, value: string) => { if (key.endsWith('::sync-unheard') && value.length > 10_000) throw new DOMException('full', 'QuotaExceededError'); backing.setItem(key, value); } };
+    const closed = page(tight);
+    for (let i = 0; i < 500; i++) closed.updateInCollection('notes', `r${i}`, { title: `edited ${i}` });
+    for (let i = 500; i < 800; i++) closed.hardDelete('notes', `r${i}`);
+    await tick();
+    const note = page(backing).readUnheardNote();
+    expect(note.removals).toHaveLength(300);
+    expect(note.edits.length).toBeLessThan(500);
+
+    const { socket } = await nextVisit(backing);
+    const ops = pushed(socket) as unknown as Op[];
+    expect(new Set(ops.filter((op) => op.operation === 'delete').map((op) => op.recordId)).size).toBe(300);
+    expect(new Set(ops.filter((op) => op.operation === 'update').map((op) => op.recordId)).size).toBe(500);
+  });
+
+  it("an import the store will not note record by record is sent by its collection's mark", async () => {
+    const backing = storage();
+    await synced(backing);
+    // The note may be no longer than this: the app's budget, nearly spent.
+    const tight = { ...backing, setItem: (key: string, value: string) => { if (key.endsWith('::sync-unheard') && value.length > 20_000) throw new DOMException('full', 'QuotaExceededError'); backing.setItem(key, value); } };
+    const older = '2026-02-15T00:00:00.000Z';
+    const records = Array.from({ length: 2000 }, (_, i) => ({ id: `i${i}`, collection: 'notes', data: { title: `t${i}` }, created_at: older, updated_at: older, deleted: false }));
+    page(tight).import({ version: 1, exportedAt: older, collections: { notes: records } }, { merge: true });
+    await tick();
+    expect(page(backing).readUnheardNote().imports.map((mark) => mark.collection)).toEqual(['notes']);
+
+    const { socket } = await nextVisit(backing);
+    const created = new Set((pushed(socket) as unknown as Op[]).filter((op) => op.operation === 'create').map((op) => op.recordId));
+    for (let i = 0; i < 2000; i++) expect(created.has(`i${i}`)).toBe(true);
+    await tick();
+    expect(page(backing).readUnheardNote().imports).toEqual([]);
+  });
+});
+
 describe('an import made while no client listened', () => {
   it('is sent at the next visit, a record new here as a create and one changed as an update', async () => {
     const backing = storage();
