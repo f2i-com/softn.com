@@ -518,7 +518,7 @@ function demandZip(level = 6): Uint8Array {
 }
 
 describe('readZip demand semantics', () => {
-  it('reads text at open and each binary once, on the first get that asks', () => {
+  it('reads nothing at open: each text entry and each binary once, on the first get that asks', () => {
     const { textFiles, binaryFiles, archive } = readZip(demandZip());
     expect([...textFiles.keys()]).toEqual(['manifest.json', 'ui/main.ui']);
     expect([...binaryFiles.keys()]).toEqual(['assets/a.png', 'assets/b.glb', 'assets/icon.png']);
@@ -553,8 +553,11 @@ describe('readZip demand semantics', () => {
     const visited: string[] = [];
     binaryFiles.forEach((bytes, path) => visited.push(`${path}:${bytes.byteLength}`));
     expect(visited).toEqual(['assets/a.png:2048', 'assets/b.glb:4096', 'assets/icon.png:256']);
-    // Everything produced once: the archive has let go of the bundle bytes
-    // and still answers every binary from what it holds.
+    // The text not read yet keeps the bundle bytes. Once it is, everything
+    // has been produced once: the archive lets go of them and still answers
+    // every binary from what it holds.
+    expect(archive.compacted).toBe(false);
+    expect([...textFiles.values()]).toHaveLength(2);
     expect(archive.compacted).toBe(true);
     expect(archive.released).toBe(false);
     expect(binaryFiles.get('assets/b.glb')).toHaveLength(4096);
@@ -581,9 +584,28 @@ describe('readZip demand semantics', () => {
     }
     expect(archive.heldBytes()).toBe(0);
     expect(archive.compacted).toBe(false);
+    expect(textFiles.get('manifest.json')).toBe(MANIFEST);
+    expect(textFiles.get('ui/main.ui')).toBe('<div />');
     binaryFiles.get('assets/a.png');
     expect(archive.heldBytes()).toBe(2048);
     expect(archive.compacted).toBe(true);
+  });
+
+  // A 451 KB bundle with nine 50 MB `.json` entries held some 600 MB from
+  // its open, before the person had allowed anything, for the tab's life.
+  it('decodes a text entry only when something reads it', () => {
+    const zip = makeZip({ 'manifest.json': MANIFEST, 'ui/main.ui': '<div />', 'data/huge.json': '[' + '1,'.repeat(1000) + '1]' }, 0);
+    // Its bytes made unreadable: an entry nothing reads costs nothing, and is no failure.
+    const at = indexOfBytes(zip, new TextEncoder().encode('1,1,1,1,1,1'));
+    expect(at).toBeGreaterThan(0);
+    const broken = zip.slice();
+    broken.fill(0xff, at, at + 8);
+    const { textFiles } = readZip(broken);
+    expect(textFiles.has('data/huge.json')).toBe(true);
+    expect(textFiles.size).toBe(3);
+    expect([...textFiles.keys()]).toEqual(['manifest.json', 'ui/main.ui', 'data/huge.json']);
+    expect(textFiles.get('ui/main.ui')).toBe('<div />');
+    expect(() => textFiles.get('data/huge.json')).toThrow();
   });
 
   it('opens a bundle whose binary is corrupt and fails only that asset', () => {

@@ -168,6 +168,96 @@ function createBinaryStore(archive: BundleArchive, names: string[]): BundleBinar
   return store;
 }
 
+/**
+ * A bundle's text entries, each decoded when it is first read rather than all
+ * of them at the open. Every reader asks for a file by name (the composer, the
+ * manifest and permission reads, the seed data, imports, `asset()`), so the
+ * ones nothing asks for are never inflated. They were: a 451 KB bundle with
+ * nine 50 MB `.json` entries held some 600 MB from the moment it was opened,
+ * before the person had allowed anything, for as long as the tab lived.
+ *
+ * A Map still, for every caller that takes one: `get`, `has` and `size` answer
+ * from the index; `keys` lists names without reading; iterating the entries or
+ * the values reads whatever is left. A decoded entry's bytes are let go
+ * (`forget`), as before, and a corrupt one fails the read that asks for it
+ * rather than the open.
+ */
+class BundleTextFiles extends Map<string, string> {
+  private readonly unread: Set<string>;
+  private readonly order: string[];
+  private readonly decoder = new TextDecoder();
+
+  constructor(private readonly archive: BundleArchive, names: string[]) {
+    super();
+    this.unread = new Set(names);
+    this.order = [...names];
+  }
+
+  override get(name: string): string | undefined {
+    if (super.has(name)) return super.get(name);
+    if (!this.unread.has(name)) return undefined;
+    const bytes = this.archive.read(name);
+    const text = bytes === undefined ? '' : this.decoder.decode(bytes);
+    // The string is what everything downstream reads; the bytes it was
+    // decoded from would be a second copy held for nothing, and for the
+    // text-classified formats that are not small — a .obj or a .gltf of
+    // tens of megabytes — the bytes plus a UTF-16 string is three times
+    // the file. Nothing reads text through the archive after this.
+    this.archive.forget(name);
+    this.unread.delete(name);
+    super.set(name, text);
+    return text;
+  }
+
+  override has(name: string): boolean {
+    return super.has(name) || this.unread.has(name);
+  }
+
+  override get size(): number {
+    return super.size + this.unread.size;
+  }
+
+  override set(name: string, text: string): this {
+    if (!this.has(name)) this.order.push(name);
+    this.unread.delete(name);
+    return super.set(name, text);
+  }
+
+  override delete(name: string): boolean {
+    const had = this.unread.delete(name) || super.has(name);
+    super.delete(name);
+    if (had) this.order.splice(this.order.indexOf(name), 1);
+    return had;
+  }
+
+  override clear(): void {
+    this.unread.clear();
+    this.order.length = 0;
+    super.clear();
+  }
+
+  override keys(): ReturnType<Map<string, string>['keys']> {
+    return this.order.slice()[Symbol.iterator]() as unknown as ReturnType<Map<string, string>['keys']>;
+  }
+
+  override entries(): ReturnType<Map<string, string>['entries']> {
+    const all = this.order.map((name) => [name, this.get(name) as string] as [string, string]);
+    return all[Symbol.iterator]() as unknown as ReturnType<Map<string, string>['entries']>;
+  }
+
+  override values(): ReturnType<Map<string, string>['values']> {
+    return this.order.map((name) => this.get(name) as string)[Symbol.iterator]() as unknown as ReturnType<Map<string, string>['values']>;
+  }
+
+  override forEach(callback: (value: string, key: string, map: Map<string, string>) => void, thisArg?: unknown): void {
+    for (const [name, text] of this.entries()) callback.call(thisArg, text, name, this);
+  }
+
+  override [Symbol.iterator](): ReturnType<Map<string, string>['entries']> {
+    return this.entries();
+  }
+}
+
 // ── Core Functions ───────────────────────────────────────────────────
 
 /**
@@ -178,33 +268,25 @@ function createBinaryStore(archive: BundleArchive, names: string[]): BundleBinar
  * copies of a security check are two chances to fix only one — and the
  * builder had none at all.
  *
- * Text entries are read here because the composer needs all of them before
- * anything renders, and they are small. Binary entries are only indexed:
+ * Nothing is inflated here. Text entries are decoded when first read
+ * (BundleTextFiles): the composer asks for the ones it composes, and a data
+ * file nothing asks for is never decoded. Binary entries are only indexed:
  * an image or a model is inflated — and checksummed — on the first `get`
  * that asks for it, which for most of a large bundle is never. A corrupt
- * binary entry therefore no longer fails the open; it fails the read that
- * touches it, and the asset resolves to nothing. The bytes are never handed
- * on unverified either way.
+ * entry therefore does not fail the open; it fails the read that touches
+ * it, and an asset resolves to nothing. The bytes are never handed on
+ * unverified either way.
  */
 export function readZip(data: Uint8Array): ZipResult {
   const archive = openBundleArchive(data);
-  const textFiles = new Map<string, string>();
+  const textNames: string[] = [];
   const binaryNames: string[] = [];
-  const decoder = new TextDecoder();
 
   for (const name of archive.names()) {
-    if (isBinaryFile(name)) {
-      binaryNames.push(name);
-    } else {
-      textFiles.set(name, decoder.decode(archive.read(name)));
-      // The string is what everything downstream reads; the bytes it was
-      // decoded from would be a second copy held for nothing, and for the
-      // text-classified formats that are not small — a .obj or a .gltf of
-      // tens of megabytes — the bytes plus a UTF-16 string is three times
-      // the file. Nothing reads text through the archive after this.
-      archive.forget(name);
-    }
+    if (isBinaryFile(name)) binaryNames.push(name);
+    else textNames.push(name);
   }
+  const textFiles = new BundleTextFiles(archive, textNames);
 
   debug('[SoftN] Loaded files:', Array.from(textFiles.keys()));
 

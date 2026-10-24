@@ -226,7 +226,8 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
   try {
     if (isForeground()) host.setError(null);
 
-    // Indexes the archive and reads its text; binaries are read when an
+    // Indexes the archive. A text file is decoded when something reads it
+    // (the manifest, the composer, an import); binaries are read when an
     // asset() asks for them, or by the warm-up below.
     let zip: ZipResult;
     mark('softn:zip:start');

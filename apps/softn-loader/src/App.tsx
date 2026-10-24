@@ -414,9 +414,9 @@ function App(): React.ReactElement {
         const data = new Uint8Array(rawData);
         const resolvedAppId = await computeBundleAppId(data);
         if (!active) return;
-        // Indexes the archive and reads its text; binaries are read, and
-        // checked, when the icon or an asset() asks for them. Disposing the
-        // asset resolver releases the archive.
+        // Indexes the archive; a text file is decoded, and a binary read and
+        // checked, when something asks for it (the manifest, the composer,
+        // the icon, an asset()). Disposing the asset resolver releases the archive.
         const { textFiles, binaryFiles } = readZip(data);
 
         // The one manifest read every host shares (core's readManifest): a

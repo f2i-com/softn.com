@@ -46,7 +46,9 @@ describe('bundle integrity', () => {
     const body = 'X'.repeat(1000);
     const zip = zipSync({ 'big.txt': strToU8(body) });
     const lying = patchU32(zip, 1000, 42);
-    expect(() => readZip(lying)).toThrow(/checksum mismatch|size mismatch/i);
+    // Text is decoded when it is read, so the read is what fails.
+    const { textFiles } = readZip(lying);
+    expect(() => textFiles.get('big.txt')).toThrow(/checksum mismatch|size mismatch/i);
   });
 
   it('rejects two central-directory entries sharing one local header', () => {
