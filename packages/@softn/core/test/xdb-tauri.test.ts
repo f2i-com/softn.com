@@ -585,12 +585,77 @@ describe('XDB Service (Tauri mode)', () => {
       { public: [makeRecord('n', 'public', {})], '\ud800': [] },
       { public: [{ ...makeRecord('u', 'public', {}), data: undefined } as unknown as XDBRecord] },
       { public: [makeRecord('big', 'public', { n: BigInt(1) })] },
+      // Tauri's IPC calls this key's value as a function on any object it sends.
+      { public: [makeRecord('k', 'public', { words: { __TAURI_TO_IPC_KEY__: 'a word a person typed' } })] },
     ];
     for (const collections of imports) {
       expect(() => xdb.import({ version: 1, exportedAt: '', collections })).toThrow(/Import refused/);
     }
     expect(invokeMock).not.toHaveBeenCalledWith('import_records', expect.anything());
     expect(told).toEqual([]);
+  });
+
+  const storageStub = () => {
+    const kept = new Map<string, string>();
+    return {
+      getItem: (key: string) => kept.get(key) ?? null,
+      setItem: (key: string, value: string) => { kept.set(key, value); },
+      removeItem: (key: string) => { kept.delete(key); },
+    };
+  };
+
+  // A field Tauri's IPC reads as its own failed every desktop write of the
+  // record after the cache and sync had taken it.
+  it('refuses a record holding the key the IPC reserves, as every store does', async () => {
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    invokeMock.mockClear();
+    expect(() => xdb.create('words', { __TAURI_TO_IPC_KEY__: 'a word' })).toThrow(/IPC/);
+    expect(() => xdb.create('words', { list: [{ __TAURI_TO_IPC_KEY__: 1 }] })).toThrow(/IPC/);
+    expect(invokeMock).not.toHaveBeenCalledWith('create_record', expect.anything());
+    const browser = new XDBService(storageStub(), 'browser-xdb', undefined, { backend: 'storage' });
+    expect(() => browser.create('words', { __TAURI_TO_IPC_KEY__: 'a word' })).toThrow(/IPC/);
+  });
+
+  // A collection that failed to load and is then cleared away kept the store
+  // unloaded through every retry, and every import refused.
+  it('counts as loaded once a collection that failed is no longer there', async () => {
+    backend.set('gone', [makeRecord('g', 'gone', {})]);
+    backend.set('kept', [makeRecord('k', 'kept', {})]);
+    const answer = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_collection' && args?.collection === 'gone') throw new Error('unreadable');
+      return answer(cmd, args);
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    expect(xdb.isHydrated()).toBe(false);
+    backend.delete('gone');
+    await xdb.retryHydration();
+    expect(xdb.isHydrated()).toBe(true);
+    errors.mockRestore();
+  });
+
+  // After the native store refused an import, the cache was reloaded over
+  // the import: the merge kept what the import had deleted and what it had
+  // stamped newer, neither of which the native store held.
+  it('puts the cache back as it was when the native store refuses an import', async () => {
+    backend.set('tasks', [makeRecord('a', 'tasks', { title: 'A' }), makeRecord('b', 'tasks', { title: 'B' })]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    failNextImport = true;
+    const later = new Date(Date.now() + 60_000).toISOString();
+    const { persisted } = xdb.import({
+      version: 1,
+      exportedAt: '',
+      collections: { tasks: [makeRecord('a', 'tasks', { title: 'A' }, { deleted: true, updated_at: later }), makeRecord('b', 'tasks', { title: 'B, imported' }, { updated_at: later })] },
+    });
+    await expect(persisted).rejects.toThrow(/SQLITE_FULL/);
+    expect(xdb.get('tasks', 'a')?.data).toEqual({ title: 'A' });
+    expect(xdb.get('tasks', 'b')?.data).toEqual({ title: 'B' });
+    errors.mockRestore();
   });
 
   it('restoreAsync refuses a partial restore unless the caller accepts it', async () => {

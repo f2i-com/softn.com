@@ -88,12 +88,29 @@ function storedData<T>(data: T): T {
  * patch sets to undefined is a field removed, as JSON drops it.
  */
 function storableText(data: unknown): string | undefined {
+  let reserved = false;
+  let text: string | undefined;
   try {
-    return JSON.stringify(data);
+    text = JSON.stringify(data, (key, value: unknown) => {
+      if (key === TAURI_IPC_KEY) reserved = true;
+      return value;
+    });
   } catch (err) {
     throw new XDBStorageError('invalid-data', `This record cannot be saved: its data is not something JSON can hold (${err instanceof Error ? err.message : String(err)}).`);
   }
+  if (reserved) {
+    throw new XDBStorageError('invalid-data', `This record cannot be saved: a field named ${TAURI_IPC_KEY} is one the desktop app's IPC takes for its own, and a record holding it could not be stored there or carried to it.`);
+  }
+  return text;
 }
+
+/**
+ * A key Tauri's IPC reads as its own on any object it is handed: it calls the
+ * value as a function, so a record with such a field (a key a person typed)
+ * failed on the desktop before reaching the native store, after the cache
+ * and sync had taken it.
+ */
+const TAURI_IPC_KEY = '__TAURI_TO_IPC_KEY__';
 
 /**
  * How far ahead of this clock a record's stamp may be: what peer sync takes
@@ -175,7 +192,7 @@ function readableByNative(value: unknown, depth: number): boolean {
   // JSON has no BigInt: the request would not be written at all.
   if (typeof value === 'bigint') return false;
   if (typeof value !== 'object' || value === null) return true;
-  if (depth > 100) return false;
+  if (depth > 100 || TAURI_IPC_KEY in value) return false;
   if (Array.isArray(value)) return value.every((item) => readableByNative(item, depth + 1));
   return Object.entries(value).every(([key, item]) => !LONE_SURROGATE.test(key) && readableByNative(item, depth + 1));
 }
@@ -440,6 +457,11 @@ export class XDBService {
       return;
     }
     this.hydrationFailed.delete('*');
+    // A collection that failed to load and is no longer there (a peer's
+    // reset cleared it) has nothing left to load: kept as failed, the store
+    // stayed unloaded through every retry, and every import was refused.
+    const listed = new Set(collections);
+    for (const failed of [...this.hydrationFailed]) if (!listed.has(failed)) this.hydrationFailed.delete(failed);
     for (const collection of collections) {
       try {
         const records = await tauriInvoke<XDBRecord[]>('get_collection', this.tauriArgs({ collection }));
@@ -2732,9 +2754,12 @@ export class XDBService {
         if (!record.deleted) own(record.id, plan.collection);
       }
     }
+    // Each collection's cache as the import found it, for a refusal to put back.
+    const untouched = new Map<string, Map<string, XDBRecord>>();
     for (const plan of plans) {
       const before = this.getAllCollectionData(plan.collection);
       const after = XDBService.mergePlan(before, plan);
+      untouched.set(plan.collection, new Map(this.memoryStore.get(plan.collection) ?? []));
       this.setCollectionData(plan.collection, after);
       importedCollections.push(plan.collection);
       this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
@@ -2753,6 +2778,11 @@ export class XDBService {
         .catch(async (err: unknown) => {
           console.error('[XDB] Native import was not committed; reloading the affected collections:', err);
           for (const collection of importedCollections) {
+            // From the cache as it was before the import: reloaded over the
+            // import, the merge below kept what it had deleted and what it
+            // stamped newer, neither of which the native store holds.
+            const was = untouched.get(collection);
+            if (was) this.memoryStore.set(collection, was);
             try { await this.getAllAsync(collection); } catch { /* the hydration issue is already recorded */ }
             this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection), reload: true });
           }
