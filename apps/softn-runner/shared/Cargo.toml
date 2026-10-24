@@ -1,0 +1,18 @@
+[package]
+name = "softn-runner-shared"
+version = "0.0.25"
+edition = "2021"
+description = "The Rust host's softn.time, compiled into softn-runner from where it is kept"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+# The file's own tests run the Rust host's script runtime, which is not here;
+# they run with that host (apps/softn-host-rust).
+test = false
+doctest = false
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+serde_json = "1"

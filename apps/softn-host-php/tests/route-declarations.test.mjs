@@ -27,6 +27,14 @@ const [major,minor]=process.versions.node.split('.').map(Number);
 const skip=!existsSync(join(wasmDir,'zipp_wasm_bg.wasm'))?'packages/@softn/core/wasm-zipp is not installed (npm run fetch:zipp)':major<24||major===24&&minor<19?'Node 24.19 or newer (node:sqlite)':false;
 if(skip)console.warn(`WARNING: tests/route-declarations.test.mjs skipped: ${skip}. See apps/softn-host-php/README.md, Validation.`);
 const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
+/**
+ * The runner under test: runtime/runner.mjs under this Node, or, when
+ * SOFTN_TEST_RUNNER names it, the softn-runner binary (apps/softn-runner),
+ * which takes the same request and answers it the same way without Node.
+ * Node's own flags mean nothing to the binary.
+ */
+const binary=process.env.SOFTN_TEST_RUNNER||null;
+const runner=(root,flags=['--disable-proto=throw'])=>binary?[binary,[]]:[process.execPath,[...flags,join(root,'runner.mjs')]];
 
 const SOURCE=`
 function ping(req){return {status:200,body:{ok:true,path:req.path}};}
@@ -81,14 +89,14 @@ function backend(manifest,{capabilities=['sql']}={}){
   writeFileSync(join(root,'app/server/migrations/001.sql'),'CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0);');
   writeFileSync(join(root,'private/config.json'),JSON.stringify({appId:manifest.id,development:false,keyHex:'ab'.repeat(32),capabilities,cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'}}));
   const run=(request)=>{
-    const r=spawnSync(process.execPath,['--disable-proto=throw',join(root,'runner.mjs')],{input:JSON.stringify({query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false,...request}),encoding:'utf8',timeout:30000,env:{...process.env,SOFTN_BACKEND_ROOT:root,NODE_NO_WARNINGS:'1'}});
+    const r=spawnSync(...runner(root),{input:JSON.stringify({query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false,...request}),encoding:'utf8',timeout:30000,env:{...process.env,SOFTN_BACKEND_ROOT:root,NODE_NO_WARNINGS:'1'}});
     assert.equal(r.status,0,r.stderr);
     return r;
   };
   const raw=request=>run(request).stdout;
   const invoke=request=>JSON.parse(raw(request));
   /** The runner fed text as it stands, with any Node flags: what http.php writes, byte for byte. */
-  const fed=(input,flags=['--disable-proto=throw'])=>spawnSync(process.execPath,[...flags,join(root,'runner.mjs')],{input,encoding:'utf8',timeout:30000,maxBuffer:64*1024*1024,env:{...process.env,SOFTN_BACKEND_ROOT:root,NODE_NO_WARNINGS:'1'}});
+  const fed=(input,flags=['--disable-proto=throw'])=>spawnSync(...runner(root,flags),{input,encoding:'utf8',timeout:30000,maxBuffer:64*1024*1024,env:{...process.env,SOFTN_BACKEND_ROOT:root,NODE_NO_WARNINGS:'1'}});
   /** The answer, and what the runner wrote for the operator's log. */
   const logged=request=>{const r=run(request);return {...JSON.parse(r.stdout),stderr:r.stderr};};
   return {root,raw,invoke,logged,fed,close:()=>rmSync(root,{recursive:true,force:true})};
@@ -480,7 +488,7 @@ test('a migration the deadline stops is named in the log, and after three stops 
   t.after(b.close);
   const slow='CREATE TABLE slow(n INTEGER); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 4000000000) INSERT INTO slow SELECT count(*) FROM c;';
   writeFileSync(join(b.root,'app/server/migrations/002.sql'),slow);
-  const ask=(path='/api/ping')=>spawnSync(process.execPath,['--disable-proto=throw',join(b.root,'runner.mjs')],{
+  const ask=(path='/api/ping')=>spawnSync(...runner(b.root),{
     input:JSON.stringify({path,method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}),encoding:'utf8',timeout:30000,
     env:{...process.env,SOFTN_BACKEND_ROOT:b.root,NODE_NO_WARNINGS:'1',SOFTN_RUNNER_DEADLINE_MS:'1500'}});
   for(const attempt of [1,2,3]) {
@@ -518,7 +526,7 @@ test('only a migration the runner\'s own deadline stopped is counted: not one en
   writeFileSync(join(b.root,'app/server/migrations/002.sql'),'CREATE TABLE slow(n INTEGER); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 4000000000) INSERT INTO slow SELECT count(*) FROM c;');
   const note=join(b.root,'private/data/migration-stopped.json');
   const start=deadline=>{
-    const child=spawn(process.execPath,['--disable-proto=throw',join(b.root,'runner.mjs')],{stdio:['pipe','pipe','pipe'],
+    const child=spawn(...runner(b.root),{stdio:['pipe','pipe','pipe'],
       env:{...process.env,SOFTN_BACKEND_ROOT:b.root,NODE_NO_WARNINGS:'1',SOFTN_RUNNER_DEADLINE_MS:String(deadline)}});
     let said='';child.stderr.on('data',chunk=>said+=chunk);child.stdout.resume();
     child.stdin.end(JSON.stringify({path:'/api/ping',method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}));
@@ -559,7 +567,7 @@ test('setup\'s run may be given longer, and applies a migration no request can, 
   t.after(b.close);
   writeFileSync(join(b.root,'app/server/migrations/002.sql'),'CREATE TABLE slow(n INTEGER); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 40000000) INSERT INTO slow SELECT count(*) FROM c;');
   const note=join(b.root,'private/data/migration-stopped.json');
-  const ask=(extra={})=>spawnSync(process.execPath,['--disable-proto=throw',join(b.root,'runner.mjs')],{
+  const ask=(extra={})=>spawnSync(...runner(b.root),{
     input:JSON.stringify({path:'/api/ping',method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}),encoding:'utf8',timeout:180000,
     env:{...process.env,SOFTN_BACKEND_ROOT:b.root,NODE_NO_WARNINGS:'1',SOFTN_RUNNER_DEADLINE_MS:'1500',...extra}});
   for(const attempt of [1,2,3])assert.ok(ask().stderr.includes(`was stopped at the 1.5 s deadline (${attempt} of 3)`));

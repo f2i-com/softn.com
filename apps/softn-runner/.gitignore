@@ -1,0 +1,7 @@
+# Built by build.mjs, never committed.
+guest/target/
+guest/generated/
+host/target/
+host/softn-runner-guest.wasm
+shared/target/
+dist/

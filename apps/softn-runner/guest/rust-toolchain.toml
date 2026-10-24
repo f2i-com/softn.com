@@ -1,0 +1,6 @@
+[toolchain]
+# ZIPP's release toolchain (RUSTUP_TOOLCHAIN in its release-build.yml at the
+# tag the guest builds), which also builds FormLogic's sandbox guest.
+channel = "1.92.0"
+targets = ["wasm32-wasip1"]
+profile = "minimal"

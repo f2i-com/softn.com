@@ -1,0 +1,4 @@
+[toolchain]
+# As the guest: ZIPP's release toolchain. wasmtime 44's minimum is 1.92.0.
+channel = "1.92.0"
+profile = "minimal"

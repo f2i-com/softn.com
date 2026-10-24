@@ -1,0 +1,16 @@
+# This crate is only a WebAssembly guest; a native build of it would run app
+# logic with none of the isolation. A bare `cargo build` here makes the
+# artifact the runner embeds.
+[build]
+target = "wasm32-wasip1"
+
+[target.wasm32-wasip1]
+# As ZIPP's javascript-python-base module, which the Node runner runs: a
+# 16 MiB stack (its zipp.meta stackBytes), and a linear-memory maximum above
+# the engine's own 512 MiB heap accounting, so running out surfaces as a
+# catchable RangeError inside the engine. The runner's StoreLimits is the hard
+# ceiling on a process.
+rustflags = [
+  "-C", "link-arg=--max-memory=1073741824",
+  "-C", "link-arg=-zstack-size=16777216",
+]

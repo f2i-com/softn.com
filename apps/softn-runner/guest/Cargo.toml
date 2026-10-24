@@ -1,0 +1,39 @@
+[package]
+name = "softn-runner-guest"
+version = "0.0.25"
+edition = "2021"
+description = "SoftN's server-logic guest: the ZIPP engine compiled to WebAssembly (WASI), run by softn-runner under wasmtime"
+publish = false
+
+# Its own workspace, as FormLogic's sandbox guest is: Cargo unifies features
+# within a workspace, and zipp-vm here must resolve with the browser engine's
+# profile and nothing else (no `jit`, no native module loader).
+[workspace]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# An integer wrap in VM bookkeeping stops the guest instead of becoming an
+# index or a limit bypass. Under wasm a panic is a trap, which the runner
+# reports as a failed request.
+overflow-checks = true
+panic = "abort"
+strip = true
+
+[[bin]]
+name = "softn-runner-guest"
+path = "src/main.rs"
+
+[dependencies]
+# The engine the PHP host's Node runner runs (packages/@softn/core/wasm-zipp,
+# ZIPP's javascript-python-base release module), from the same tag and with
+# the same zipp-vm features as that module's JavaScript core
+# (crates/zipp-wasm/Cargo.toml at the tag): the safe-sandbox interpreter, no
+# filesystem module loader, no test262 agent threads, the compact regex
+# matchers. build.mjs holds the tag to wasm-zipp/SOURCE.json.
+zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.29", default-features = false, features = ["safe-sandbox", "meter-only", "wasm-no-fs-loader", "wasm-single-agent", "wasm-compact-regex"] }
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+ryu = "1"

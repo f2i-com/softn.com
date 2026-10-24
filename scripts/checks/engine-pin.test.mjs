@@ -62,3 +62,24 @@ test('Cargo.lock resolves zipp-vm, zipp-regress and every other ZIPP crate to th
     assert.equal(pinned[3], source.revision, `${name} is locked at commit ${pinned[3]}, the installed engine was built from ${source.revision}`);
   }
 });
+
+// softn-runner's guest (apps/softn-runner) is the PHP host's server engine
+// compiled for WASI, so it moves with the other two: its build refuses any
+// other commit, and this says so before anyone builds it.
+test('softn-runner\'s guest takes zipp-vm from the same release and commit, with the browser engine\'s profile', () => {
+  const guestCargo = fs.readFileSync(new URL('../../apps/softn-runner/guest/Cargo.toml', import.meta.url), 'utf8');
+  const guestLock = fs.readFileSync(new URL('../../apps/softn-runner/guest/Cargo.lock', import.meta.url), 'utf8');
+  const dependency = guestCargo.match(/^zipp-vm\s*=\s*\{([^}]*)\}/m);
+  assert.ok(dependency, 'apps/softn-runner/guest/Cargo.toml declares zipp-vm');
+  assert.equal(dependency[1].match(/tag\s*=\s*"([^"]+)"/)?.[1], source.release, 'the guest\'s zipp-vm tag');
+  assert.ok(/features\s*=\s*\[[^\]]*"safe-sandbox"/.test(dependency[1]) && /default-features\s*=\s*false/.test(dependency[1]), 'the guest runs on safe-sandbox, without the JIT');
+  const sources = [...guestLock.matchAll(/^source = "(git\+[^"]+)"$/gm)].map((entry) => entry[1]);
+  assert.ok(sources.length > 0, 'the guest\'s Cargo.lock takes crates from ZIPP');
+  const repository = source.repository.replace(/\.git$/, '');
+  for (const entry of sources) {
+    const pinned = entry.match(/^git\+([^?#]+)\?tag=([^#]+)#([0-9a-f]{40})$/);
+    assert.ok(pinned && pinned[1].replace(/\.git$/, '') === repository, `the guest takes git crates only from ZIPP's tags: ${entry}`);
+    assert.equal(pinned[2], source.release, 'locked at the release tag');
+    assert.equal(pinned[3], source.revision, `locked at commit ${pinned[3]}, the installed engine was built from ${source.revision}`);
+  }
+});

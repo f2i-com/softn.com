@@ -1,0 +1,56 @@
+[package]
+name = "softn-runner"
+version = "0.0.25"
+edition = "2021"
+description = "SoftN's server runner without Node: the PHP host's runner contract, with app logic in a WebAssembly guest under wasmtime"
+publish = false
+
+# Its own workspace: the runner and the guest it embeds are built apart from
+# the Rust host (apps/softn-host-rust), which runs ZIPP natively.
+[workspace]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+overflow-checks = true
+# Unwind, not abort: a fault in the runner (a library that panics on input a
+# script chose) is caught as a failed host call or a failed request and
+# answered, where an abort left PHP with no answer and the operator with a
+# crash report.
+panic = "unwind"
+strip = true
+
+[[bin]]
+name = "softn-runner"
+path = "src/main.rs"
+
+[dependencies]
+# Runtime only: the guest is compiled at build time (build.rs) and embedded,
+# so a request deserialises it instead of compiling 5 MB of wasm.
+wasmtime = { version = "44", default-features = false, features = ["runtime", "std"] }
+wasmtime-wasi = { version = "44", default-features = false, features = ["p1"] }
+# The app's database, as node:sqlite opens it for the Node runner.
+rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+ryu = "1"
+sha2 = "0.10"
+hmac = "0.12"
+aes-gcm = "0.10"
+base64 = "0.22"
+rand = "0.8"
+subtle = "2"
+# The Rust host's softn.time (bridges/time.rs), held to the same parity list.
+softn-runner-shared = { path = "../shared" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[build-dependencies]
+# The compiler half, for build.rs only: Cranelift never reaches the runner.
+wasmtime = { version = "44", default-features = false, features = ["cranelift", "std"] }

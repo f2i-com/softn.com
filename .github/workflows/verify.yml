@@ -16,7 +16,7 @@ name: Verify
 # shards by scripts/checks/test-shards.mjs (every workspace suite, every root test
 # pattern and core's suite on the host JavaScript engine, each in exactly one
 # shard, which scripts/checks/test-shards.test.mjs holds); the XDB crate; the Rust
-# backend host; and the desktop loader's Rust side. One job ran all of it in a
+# backend host; the runner without Node; and the desktop loader's Rust side. One job ran all of it in a
 # row, eleven minutes, most of it the suites one after another.
 #
 # `ref` is what to verify. Empty means the ref that triggered the caller,
@@ -257,6 +257,58 @@ jobs:
           restore-keys: host-rust-${{ runner.os }}-
       - name: Test the private backend host
         run: cargo test --manifest-path apps/softn-host-rust/Cargo.toml
+
+  # softn-runner (apps/softn-runner): an app's private server logic without
+  # Node, the ZIPP engine compiled to WebAssembly and run under wasmtime. Built
+  # as a release carries it (static Linux, musl) and held to the Node runner's
+  # own suite, which runs the binary when SOFTN_TEST_RUNNER names it. Its guest
+  # is built from the ZIPP tag the engine install names, so that install comes
+  # first (build.mjs refuses any other commit).
+  runner:
+    name: Build and test the runner without Node (Rust)
+    runs-on: ubuntu-latest
+    env:
+      ZIPP_RELEASE: ${{ inputs.zipp-release }}
+      ZIPP_SUMS_SHA256: ${{ inputs.zipp-sums-sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      # Node runs build.mjs, the engine install and the suite, all of which
+      # need nothing but Node itself: no npm install.
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install the ZIPP release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
+      # The toolchain is the crates' own (rust-toolchain.toml, 1.92.0, with
+      # the guest's wasm32-wasip1); the static Linux target and musl's C
+      # compiler, for SQLite and wasmtime's helpers, are added here.
+      - name: The static Linux target
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cd apps/softn-runner/host && rustup target add x86_64-unknown-linux-musl
+      - name: Cache Cargo for the runner
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            apps/softn-runner/guest/target/
+            apps/softn-runner/host/target/
+          key: runner-${{ runner.os }}-${{ hashFiles('apps/softn-runner/guest/Cargo.lock', 'apps/softn-runner/host/Cargo.lock') }}
+          restore-keys: runner-${{ runner.os }}-
+      - name: Build the runner
+        run: node apps/softn-runner/build.mjs --target x86_64-unknown-linux-musl
+      - name: Test the runner's own parts
+        run: cargo test --release --locked --manifest-path apps/softn-runner/host/Cargo.toml
+      - name: The Node runner's suite, on the runner
+        env:
+          SOFTN_TEST_RUNNER: ${{ github.workspace }}/apps/softn-runner/dist/softn-runner-linux-x86_64
+        run: node --test apps/softn-host-php/tests/route-declarations.test.mjs
 
   # The desktop loader's Rust side, with XDB's Tauri commands compiled in (the
   # XDB job above tests the crate without them), so a change that breaks those
