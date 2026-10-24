@@ -593,11 +593,26 @@ the log says for how many of them it ran. Prefer `onBeforeSyncBatch` and
 permit is let go once its ops are stored, so its after-hooks do not keep the
 next push waiting.
 
-An update is merged into the record it names, and the merged record is held
-to what one op may carry (512 KB of data): an update that would take a record
-past it is refused (`sync_reject`, "Record too large after this update"). A
-few updates of new keys used to grow one record without end. A record already
-past the limit can still be made smaller.
+An update's data is the record's whole data, as the runtime's client sends
+it: a key it leaves out is removed from the record. Updates used to be merged
+into the record, so a key removed on a device (a field set to `undefined`, a
+restored backup) stayed on the server and came back at every device's next
+pull. An update with no `data` changes the record's time alone. A client of
+your own that sends only the fields it changes must send the whole record.
+
+A key a before-sync hook takes out of an update's data keeps the record's
+value: the hook does not see the stored record, and deleting a key is how it
+keeps a client from changing it (`delete op.data.role`). A hook that hands
+back only some keys keeps the others as stored. A key a client leaves out
+altogether is removed whatever the hook does with it; a hook that must keep a
+field can refuse an update without it (`return false`). Every client, the
+one that pushed included, is sent the record as stored.
+
+The record an update leaves is held to what one op may carry (512 KB of
+data): one that a hook's kept keys would take past it is refused
+(`sync_reject`, "Record too large after this update"). A few merged updates
+of new keys used to grow one record without end. A record already past the
+limit can still be made smaller.
 
 A pull is read a message at a time, and a connection holds two of its
 messages at most: the one leaving and the next, which is read once the one

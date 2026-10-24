@@ -144,12 +144,12 @@ impl SyncSettings {
 const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 
 /// Maximum byte size of an individual SyncOp's `data` field (512KB), and of
-/// the record an update merges into (see the "update" arm of
-/// `store_sync_push`). The 4 MiB message limit (http.rs MAX_WS_MESSAGE_SIZE)
-/// already bounds what one push carries; this bounds one record. Without it
-/// one op could be the whole 4 MiB, a record could grow past any message the
-/// client takes by merged updates of new keys, and the hooks, the CRDT
-/// document and every pull would carry it.
+/// the record an update leaves (see the "update" arm of `store_sync_push`).
+/// The 4 MiB message limit (http.rs MAX_WS_MESSAGE_SIZE) already bounds what
+/// one push carries; this bounds one record. Without it one op could be the
+/// whole 4 MiB, a record could grow past any message the client takes (by
+/// merged updates of new keys, when updates were merged), and the hooks, the
+/// CRDT document and every pull would carry it.
 pub(crate) const MAX_OP_DATA_BYTES: usize = 512 * 1024;
 
 /// Maximum total bytes of all op data payloads in a single sync_push batch.
@@ -255,18 +255,37 @@ impl Refused {
     }
 }
 
-/// An update's fields laid over the record's, as xdb's `update_record`
-/// merges them: one name at a time, the update's winning; anything but an
-/// object on either side, and the update's data replaces the record's.
-fn merged(existing: serde_json::Value, incoming: serde_json::Value) -> serde_json::Value {
+/// An update's data in place of the record's. A client sends the record's
+/// whole data with every update (what its own store holds after the edit),
+/// so a key it leaves out is one it removed: merged into the record, as
+/// xdb's `update_record` merges, a removed key stayed on the server and came
+/// back to every device at its next pull, the one that removed it included.
+/// A key a before-sync hook took out of what the client sent (`taken_out`)
+/// keeps the record's value, as it did when updates were merged: deleting a
+/// key is how a hook, which never sees the stored record, keeps a client
+/// from changing it.
+fn replaced(existing: serde_json::Value, incoming: serde_json::Value, taken_out: &[String]) -> serde_json::Value {
     match (existing, incoming) {
-        (serde_json::Value::Object(mut fields), serde_json::Value::Object(incoming)) => {
-            for (name, value) in incoming {
-                fields.insert(name, value);
+        (serde_json::Value::Object(mut stored), serde_json::Value::Object(mut fields)) => {
+            for name in taken_out {
+                if let Some(value) = stored.remove(name) {
+                    fields.insert(name.clone(), value);
+                }
             }
             serde_json::Value::Object(fields)
         }
         (_, incoming) => incoming,
+    }
+}
+
+/// The keys of what a client sent that a before-sync hook's data lacks:
+/// the keys it took out (`replaced`).
+fn keys_taken_out(sent: Option<&serde_json::Value>, kept: &serde_json::Value) -> Vec<String> {
+    match (sent, kept) {
+        (Some(serde_json::Value::Object(sent)), serde_json::Value::Object(kept)) => {
+            sent.keys().filter(|name| !kept.contains_key(*name)).cloned().collect()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -1171,9 +1190,10 @@ impl SyncManager {
         // Ops refused for good that name a record the pusher has applied
         // them to: it is sent the record as it stands (see below).
         let mut refused: Vec<Refused> = Vec::new();
-        // Ops whose data a before-hook changed: their pusher is sent the
-        // record as stored.
-        let mut hook_changed: HashSet<String> = HashSet::new();
+        // Ops whose data a before-hook changed, with the keys it took out of
+        // what the client sent (`replaced`): their pusher is sent the record
+        // as stored.
+        let mut hook_changed: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
 
         // Phase 1: Validate and run onBeforeSync hooks (no DB lock held).
         // This ensures hooks don't block the database and all validation
@@ -1321,8 +1341,8 @@ impl SyncManager {
                         refused.extend(Refused::of(&op));
                     }
                     Ok((true, Some(new_data))) => {
+                        hook_changed.insert(op.id.clone(), keys_taken_out(op.data.as_ref(), &new_data));
                         op.data = Some(new_data);
-                        hook_changed.insert(op.id.clone());
                         accepted.push(op);
                     }
                     Ok((true, None)) => accepted.push(op),
@@ -1398,7 +1418,7 @@ impl SyncManager {
                 // pusher is sent the record as stored.
                 let mut batch_hooked: Vec<(String, String)> = Vec::new();
 
-                for op in validated_ops {
+                for mut op in validated_ops {
                     // xdb finds a record by id alone. An op names a collection,
                     // and that is what a before-sync hook authorized; an id that
                     // lives in another collection would otherwise let an op
@@ -1500,16 +1520,22 @@ impl SyncManager {
                         // create always has: that is what the next edit is
                         // weighed against. xdb's update_record and
                         // delete_record stamp the server's clock instead, so
-                        // the row is written whole here, with update_record's
-                        // merge, and its creation time kept.
+                        // the row is written whole here, its data the
+                        // update's (`replaced`) and its creation time kept.
                         "update" => match existing {
                             Some(record) if !record.deleted => {
                                 // A record is held to what one op may carry, as
                                 // the op was: merged updates of new keys grew
-                                // one without end. One already past it, from
-                                // before, may still be made smaller.
+                                // one without end, and the keys a hook keeps
+                                // are added to what was checked. One already
+                                // past it, from before, may still be made smaller.
                                 let before = record.data.to_string().len();
-                                let data = merged(record.data, op.data.clone().unwrap_or(serde_json::json!({})));
+                                let taken_out = hook_changed.get(&op.id).map(Vec::as_slice).unwrap_or(&[]);
+                                // An update with no data changes its stamp alone.
+                                let data = match op.data.clone() {
+                                    Some(incoming) => replaced(record.data, incoming, taken_out),
+                                    None => record.data,
+                                };
                                 let after = data.to_string().len();
                                 if after > MAX_OP_DATA_BYTES && after > before {
                                     batch_rejected.push((op.id.clone(), format!(
@@ -1519,6 +1545,11 @@ impl SyncManager {
                                     refused.extend(Refused::of(&op));
                                     continue;
                                 }
+                                // Other clients take a server update as the
+                                // record's whole data, and the after-sync hooks
+                                // see what was stored: the op carries it, the
+                                // values a hook kept included.
+                                op.data = Some(data.clone());
                                 db.upsert_record(xdb::Record { data, updated_at: op.timestamp.clone(), ..record }).map(|_| ())
                             }
                             _ => Err(xdb::DbError::NotFound(op.record_id.clone())),
@@ -1534,7 +1565,7 @@ impl SyncManager {
 
                     match result {
                         Ok(()) => {
-                            if hook_changed.contains(&op.id) {
+                            if hook_changed.contains_key(&op.id) {
                                 batch_hooked.push((op.record_id.clone(), op.id.clone()));
                             }
                             batch_accepted.push(op);
@@ -1686,13 +1717,13 @@ impl SyncManager {
     /// or enrich data (e.g. trimming strings, adding server-computed fields).
     ///
     /// The ops it refuses are added to `refused`, and those whose data it
-    /// changed to `changed`.
+    /// changed to `changed`, with the keys it took out of each.
     fn call_before_sync_batch(
         &self,
         ops: Vec<SyncOp>,
         responses: &mut Vec<ServerMessage>,
         refused: &mut Vec<Refused>,
-        changed: &mut HashSet<String>,
+        changed: &mut std::collections::HashMap<String, Vec<String>>,
     ) -> Vec<SyncOp> {
         let rt = match self.runtime.as_ref() {
             Some(r) => r,
@@ -1812,8 +1843,8 @@ impl SyncManager {
                                 retried.insert(op.id.clone());
                                 continue;
                             }
+                            changed.insert(op.id.clone(), keys_taken_out(op.data.as_ref(), new_data));
                             op.data = Some(new_data.clone());
-                            changed.insert(op.id.clone());
                         }
                     }
                     accepted.retain(|op| !retried.contains(&op.id));

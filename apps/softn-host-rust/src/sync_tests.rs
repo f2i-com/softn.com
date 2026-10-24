@@ -266,14 +266,14 @@ fn told(responses: &[ServerMessage]) -> Vec<SyncOp> {
 fn the_pusher_of_an_overtaken_edit_is_sent_the_record_as_it_stands() {
     let (sync, _db) = manager(None);
     sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first", "body":"b"})), 60)], "a");
-    let newer = stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final"})), 10);
+    let newer = stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"final", "body":"b"})), 10);
     sync.handle_sync_push(vec![newer.clone()], "b");
     // An edit in time is answered as ever: acknowledged, nothing sent back.
     assert!(told(&sync.handle_sync_push(vec![stamped(op("c2", "notes", "create", "n2", serde_json::json!({"title":"x"})), 5)], "a")).is_empty());
 
     let mut others = sync.broadcast_tx.subscribe();
     for stale in [
-        stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft"})), 30),
+        stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"draft", "body":"b"})), 30),
         stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 20),
     ] {
         let answer = sync.handle_sync_push(vec![stale.clone()], "a");
@@ -390,7 +390,9 @@ fn an_edit_stamped_by_a_clock_behind_the_servers_loses_to_a_server_write() {
     assert_eq!(acked(&behind), vec!["u1"], "{behind:?}");
     assert_eq!(told(&behind).len(), 1, "{behind:?}");
     assert_eq!(db.write().get_record("n1").unwrap().data["title"], "first", "the edit was applied");
-    let in_server_time = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"edited"})), 0)], "a");
+    // The device was sent the record as it stands, the server's write in it,
+    // and its next edit carries the whole of it, as every update does.
+    let in_server_time = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"edited", "seen": true})), 0)], "a");
     assert_eq!(acked(&in_server_time), vec!["u2"]);
     assert!(told(&in_server_time).is_empty(), "{in_server_time:?}");
     assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"edited", "seen": true}));
@@ -438,16 +440,17 @@ fn an_update_sent_again_after_a_lost_ack_is_harmless() {
 fn updates_in_order_still_apply_and_keep_their_time() {
     let (sync, db) = manager(None);
     sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first", "body":"b"})), 60)], "a");
-    let second = stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"third"})), 20);
+    // A client sends the record's whole data with each update.
+    let second = stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"third", "body":"b"})), 20);
     let pushed = sync.handle_sync_push(vec![
-        stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"second"})), 30),
+        stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"second", "body":"b"})), 30),
         second.clone(),
     ], "a");
     let mut ids = acked(&pushed);
     ids.sort();
     assert_eq!(ids, vec!["u1", "u2"]);
     let record = db.write().get_record("n1").unwrap();
-    assert_eq!(record.data, serde_json::json!({"title":"third", "body":"b"}), "an update still merges into the record");
+    assert_eq!(record.data, serde_json::json!({"title":"third", "body":"b"}));
     assert_eq!(record.updated_at, second.timestamp);
     // An op the client did not stamp is stamped by the server, now, and applies.
     let unstamped = sync.handle_sync_push(vec![op("u3", "notes", "update", "n1", serde_json::json!({"title":"fourth"}))], "b");
@@ -455,25 +458,28 @@ fn updates_in_order_still_apply_and_keep_their_time() {
     assert_eq!(db.write().get_record("n1").unwrap().data["title"], "fourth");
 }
 
-/// An update is merged into the record it names, and a record may be no
-/// larger than one op may carry: each op was held to that, and a record
-/// was not, so a few updates of new keys grew one record without end,
-/// until every op on it, and every pull of it, was a copy of all of it.
-/// The op that would take a record past the limit is refused with the
-/// reason; one that keeps it within the limit, or makes a record that is
-/// already past it (from before this) smaller, applies.
+/// A record may be no larger than one op may carry: each op was held to
+/// that, and a record was not, so a few updates of new keys grew one record
+/// without end, until every op on it, and every pull of it, was a copy of
+/// all of it. An update is the record's whole data now, but the keys a
+/// before-hook takes out keep the record's values, and can take it past the
+/// limit. The op that would is refused with the reason; one that keeps it
+/// within the limit, or makes a record already past it (from before) smaller,
+/// applies.
 #[test]
 fn an_update_cannot_grow_a_record_past_what_one_op_may_carry() {
-    let (sync, db) = manager(None);
+    // A hook that keeps `k0` as stored, whatever an update sends for it.
+    let (sync, db) = manager(Some("function onBeforeSync(op) { if (op.operation !== 'update' || !op.data) return true; var d = {}; for (var k in op.data) { if (k !== 'k0') d[k] = op.data[k]; } return { data: d }; }"));
     let big = "x".repeat(400 * 1024);
     sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"k0": big})), 60)], "a");
-    let grown = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"k1": big})), 50)], "a");
+    let grown = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"k0": "", "k1": big})), 50)], "a");
     assert_eq!(rejected(&grown), vec!["u1"], "{grown:?}");
     let reason = grown.iter().find_map(|m| match m { ServerMessage::SyncReject { reason, .. } => Some(reason.clone()), _ => None }).unwrap();
     assert!(reason.contains("too large") && reason.contains(&MAX_OP_DATA_BYTES.to_string()), "{reason}");
     assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"k0": big}));
-    let within = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"k1": "small"})), 40)], "a");
+    let within = sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"k0": "", "k1": "small"})), 40)], "a");
     assert_eq!(acked(&within), vec!["u2"], "{within:?}");
+    assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"k0": big, "k1": "small"}));
 
     // A record already past the limit: written before records were held to it.
     let huge = "y".repeat(MAX_OP_DATA_BYTES + 1024);
@@ -481,11 +487,74 @@ fn an_update_cannot_grow_a_record_past_what_one_op_may_carry() {
         id: "n2".into(), collection: "notes".into(), data: serde_json::json!({"k0": huge, "k1": "z"}),
         created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
     }).unwrap();
-    let more = sync.handle_sync_push(vec![stamped(op("u3", "notes", "update", "n2", serde_json::json!({"k2": "more"})), 30)], "a");
+    let more = sync.handle_sync_push(vec![stamped(op("u3", "notes", "update", "n2", serde_json::json!({"k0": "", "k1": "z", "k2": "more"})), 30)], "a");
     assert_eq!(rejected(&more), vec!["u3"], "{more:?}");
-    let smaller = sync.handle_sync_push(vec![stamped(op("u4", "notes", "update", "n2", serde_json::json!({"k0": "short"})), 20)], "a");
+    let smaller = sync.handle_sync_push(vec![stamped(op("u4", "notes", "update", "n2", serde_json::json!({"k0": ""})), 20)], "a");
     assert_eq!(acked(&smaller), vec!["u4"], "{smaller:?}");
-    assert_eq!(db.write().get_record("n2").unwrap().data, serde_json::json!({"k0": "short", "k1": "z"}));
+    assert_eq!(db.write().get_record("n2").unwrap().data, serde_json::json!({"k0": huge}));
+}
+
+/// A client sends the record's whole data with every update, so a key it
+/// leaves out is one it removed. Updates were merged into the record, and a
+/// removed key stayed on the server and came back to every device at its
+/// next pull. The other clients are sent what was stored; an update that
+/// carries no data changes the record's stamp alone.
+#[test]
+fn an_update_is_the_records_whole_data() {
+    let (sync, db) = manager(None);
+    sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title": "a", "body": "b", "tag": "old"})), 60)], "a");
+    let mut stream = sync.subscribe();
+    let pushed = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title": "a2", "body": "b"})), 50)], "a");
+    assert_eq!(acked(&pushed), vec!["u1"], "{pushed:?}");
+    assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title": "a2", "body": "b"}));
+    let to_b: Vec<SyncOp> = reaching(&drained(&mut stream), "b").into_iter().flat_map(|m| match m { ServerMessage::SyncDelta { ops } => ops, _ => Vec::new() }).collect();
+    assert_eq!(to_b.iter().map(|o| o.data.clone()).collect::<Vec<_>>(), vec![Some(serde_json::json!({"title": "a2", "body": "b"}))]);
+
+    let mut bare = stamped(op("u2", "notes", "update", "n1", serde_json::json!({})), 40);
+    bare.data = None;
+    assert_eq!(acked(&sync.handle_sync_push(vec![bare.clone()], "a")), vec!["u2"]);
+    let record = db.write().get_record("n1").unwrap();
+    assert_eq!(record.data, serde_json::json!({"title": "a2", "body": "b"}));
+    assert_eq!(record.updated_at, bare.timestamp);
+}
+
+/// A before-sync hook never sees the stored record: it keeps a client from
+/// changing a field by taking the field out of what the client sent, and
+/// the record keeps its value, as it did when updates were merged. Laid
+/// over the client's data instead, a field a hook deleted would come back
+/// from the client. A hook that hands back only some fields (a whitelist)
+/// keeps the rest as stored. Every client, the pusher included, is sent the
+/// record as stored.
+#[test]
+fn a_key_a_before_hook_takes_out_keeps_the_records_value() {
+    let seed = |db: &ServerDb, data: serde_json::Value| {
+        db.write().upsert_record(xdb::Record {
+            id: "n1".into(), collection: "notes".into(), data,
+            created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(), deleted: false,
+        }).unwrap();
+    };
+    for script in [
+        "function onBeforeSync(op) { if (op.data) delete op.data.role; return { data: op.data }; }",
+        "function onBeforeSyncBatch(ops) { return { ops: ops.map(function (op) { if (op.data) delete op.data.role; return { id: op.id, data: op.data }; }) }; }",
+    ] {
+        let (sync, db) = manager(Some(script));
+        seed(&db, serde_json::json!({"title": "x", "role": "user"}));
+        let mut stream = sync.subscribe();
+        let pushed = sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title": "y", "role": "admin"})), 10)], "a");
+        assert!(rejected(&pushed).is_empty(), "{script}: {pushed:?}");
+        let stored = serde_json::json!({"title": "y", "role": "user"});
+        assert_eq!(db.write().get_record("n1").unwrap().data, stored, "{script}");
+        let items = drained(&mut stream);
+        for client in ["a", "b"] {
+            let data: Vec<Option<serde_json::Value>> = reaching(&items, client).into_iter().flat_map(|m| match m { ServerMessage::SyncDelta { ops } => ops, _ => Vec::new() }).map(|o| o.data).collect();
+            assert_eq!(data, vec![Some(stored.clone())], "{script}: what reaches {client}");
+        }
+    }
+
+    let (sync, db) = manager(Some("function onBeforeSync(op) { if (op.data && op.data.title) return { data: { title: op.data.title.trim(), stampedBy: 'server' } }; return true; }"));
+    seed(&db, serde_json::json!({"title": "a", "body": "kept"}));
+    sync.handle_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title": "  b  ", "body": "changed"})), 10)], "a");
+    assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title": "b", "stampedBy": "server", "body": "kept"}));
 }
 
 /// The per-op after-sync hooks of a push stop being started once their
@@ -1152,8 +1221,8 @@ fn records_written_between_the_steps_of_a_pull_are_neither_lost_nor_sent_for_eve
     take(sync.pull_step(&mut pull).unwrap(), &mut sent);
     assert_eq!(sent.len(), 500);
     let pushed = sync.handle_sync_push(vec![
-        op("u-unread", "notes", "update", "n0800", serde_json::json!({"edited": true})),
-        op("u-sent", "notes", "update", "n0010", serde_json::json!({"edited": true})),
+        op("u-unread", "notes", "update", "n0800", serde_json::json!({"n": 800, "edited": true})),
+        op("u-sent", "notes", "update", "n0010", serde_json::json!({"n": 10, "edited": true})),
         op("d-unread", "notes", "delete", "n0900", serde_json::json!({})),
     ], "b");
     assert_eq!(acked(&pushed).len(), 3, "{pushed:?}");
