@@ -242,8 +242,9 @@ describe('a record written while no client listened', () => {
     // An older client left a place and no mark of where listening stopped.
     const shared = storage();
     shared.setItem('upgraded::sync-pulled', JSON.stringify({ v: 1, url: WS_URL, collections: { notes: { at: '2025-12-01T00:00:00.000Z', id: 'x' } } }));
+    // Written on an earlier visit: one made on this page with no client listening is sent.
+    new XDBService(shared, 'upgraded').create('notes', { title: 'synced long ago' });
     const store = new XDBService(shared, 'upgraded');
-    store.create('notes', { title: 'synced long ago' });
     const { sync, socket } = connected(store, { collections: ['notes'] });
     try {
       socket.receive({ type: 'sync_state', collection: 'notes', records: [] });

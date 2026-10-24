@@ -2151,9 +2151,44 @@ export class XDBService {
     return () => { this.mutationListeners.delete(listener); };
   }
 
+  private firstUnheard: number | null = null;
+
+  /**
+   * The stamp of the first change this page made while no server sync client listened, or
+   * null; taken by the client that starts listening, whose scan looks back to it as well as to
+   * the store's mark of where listening last stopped. Another tab of the app moves that mark on
+   * with its own saves, past what this page wrote before its client listened (an app writes
+   * while the person is asked to allow sync, and while the client's module loads), and the scan
+   * started after it: the change was never sent.
+   */
+  takeFirstUnheardChange(): number | null {
+    const at = this.firstUnheard;
+    this.firstUnheard = null;
+    return at;
+  }
+
+  private noteUnheardChange(collection: string, recordId: string): void {
+    if (this.firstUnheard !== null || this._mutationSource === 'server') return;
+    // The record's stamp, which a scan by stamp finds it at: no later than now, and taken a
+    // moment before the change is announced. Now, for a record no longer kept.
+    let at = Date.now();
+    try {
+      const held = this.getAllCollectionData(collection).find((record) => record.id === recordId);
+      const stamp = Date.parse(String(held?.updated_at));
+      if (stamp < at) at = stamp;
+    } catch {
+      // Unreadable: the time now.
+    }
+    this.firstUnheard = at;
+  }
+
   /** Notify mutation listeners (called internally after create/update/delete). */
   private notifyMutation(type: string, collection: string, recordId: string, data?: Record<string, unknown>): void {
-    if (this.mutationListeners.size === 0) return;
+    // Server sync is the one listener.
+    if (this.mutationListeners.size === 0) {
+      this.noteUnheardChange(collection, recordId);
+      return;
+    }
     const event = { type, collection, recordId, data, source: this._mutationSource };
     for (const listener of this.mutationListeners) {
       try { listener(event); } catch { /* ignore */ }

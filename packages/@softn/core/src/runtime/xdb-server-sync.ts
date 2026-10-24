@@ -425,6 +425,12 @@ export class XDBServerSync {
    */
   private stampOf = new Map<string, { floor?: number; asIs?: boolean }>();
   /**
+   * Ops this client is done with since it last saved the queue: answered, refused, or replaced
+   * by a newer op of their record. The saved queue is the app's, which another tab of it saves
+   * into too, so what is saved leaves out these and keeps every other op found there (`save`).
+   */
+  private finished = new Set<string>();
+  /**
    * The newest op queued for each record, by `recordKey`: an update not yet
    * sent is replaced by the next update or delete of its record, rather than
    * waiting its turn behind it (one op per record at a time).
@@ -872,6 +878,7 @@ export class XDBServerSync {
           // and broadcast it a second time.
           if (this.inflightOps.delete(id) || this.pendingOps.delete(id)) {
             this.forgetMade(id);
+            this.finished.add(id);
             this.queueChanged();
           }
         }
@@ -1413,6 +1420,7 @@ export class XDBServerSync {
     this.pendingOps.delete(opId);
     this.inflightOps.delete(opId);
     this.forgetMade(opId);
+    this.finished.add(opId);
     this.queueChanged();
     this.listeners.reject.forEach((fn) => fn(opId, reason));
     // The change stays here as it was made; this client keeps no copy of
@@ -1438,6 +1446,7 @@ export class XDBServerSync {
   private refuseOp(op: SyncOp, reason: string): void {
     this.pendingOps.delete(op.id);
     this.forgetMade(op.id);
+    this.finished.add(op.id);
     this.queueChanged();
     console.warn(`[XDBServerSync] ${reason}`);
     this.noteRefused(op, reason);
@@ -1513,6 +1522,7 @@ export class XDBServerSync {
     if (before && before.operation === 'update' && this.madeAt.has(before.id) && op.operation !== 'create') {
       this.pendingOps.delete(before.id);
       this.forgetMade(before.id);
+      this.finished.add(before.id);
     }
 
     // Queued whether or not the socket is up. The connected check used to
@@ -1544,9 +1554,12 @@ export class XDBServerSync {
    * device), is a create the host acknowledges and does not apply.
    */
   private queueUnsyncedChanges(): void {
-    const store = this.xdb as { getAllRaw?: (collection: string) => unknown };
+    const store = this.xdb as { getAllRaw?: (collection: string) => unknown; takeFirstUnheardChange?: () => number | null };
+    // And no later than the first change this page made while nothing listened: another tab
+    // of the app moves the mark on with its own saves, past such a change.
+    const unheard = typeof store.takeFirstUnheardChange === 'function' ? store.takeFirstUnheardChange() : null;
     if (typeof store.getAllRaw !== 'function') return;
-    const since = this.watched;
+    const since = this.watched === null || unheard === null ? this.watched : Math.min(this.watched, unheard);
     const found: Array<{ made: number; change: LocalChange }> = [];
     for (const collection of this.syncedCollections()) {
       let records: unknown;
@@ -1671,13 +1684,33 @@ export class XDBServerSync {
     }
     if (this.queueDirty) {
       // Every op not yet answered, in the order it would go: those sent first.
-      const ops = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
+      const ops: unknown[] = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
         const made = this.madeAt.get(op.id);
         return made === undefined ? op : { ...op, made, ...this.stampOf.get(op.id) };
       });
+      // The queue is saved under the app's name, and another tab of the app saves its own
+      // there: each wrote its queue over the other's, so a change one tab made offline was gone
+      // once the other saved (with nothing left to send, it saved none), and the next visit
+      // never sent it. What another client saved is kept as it was, but for what this one is
+      // done with. The next client to start sends it all: one still open sends its own as well,
+      // and the host answers an op it has had again without applying it again, and keeps the
+      // newer of two edits by their stamps.
+      const own = new Set([...this.inflightOps.keys(), ...this.pendingOps.keys()]);
+      try {
+        const saved = JSON.parse(meta.readSyncMeta(QUEUE_META) ?? 'null') as { ops?: unknown } | null;
+        const others = Array.isArray(saved?.ops) ? saved.ops : [];
+        ops.unshift(...others.filter((entry) => {
+          const op = savedOp(entry);
+          return op !== null && !own.has(op.id) && !this.finished.has(op.id);
+        }));
+      } catch {
+        // Unreadable: there is nothing it can be trusted to say.
+      }
       try {
         meta.writeSyncMeta(QUEUE_META, ops.length > 0 ? JSON.stringify({ v: 1, ops }) : null);
         this.queueDirty = false;
+        // Not in what is saved now; one found there later is another client's, still to go.
+        this.finished.clear();
       } catch (err) {
         console.warn('[XDBServerSync] Changes waiting for the server could not be saved for the next visit:', err);
       }
