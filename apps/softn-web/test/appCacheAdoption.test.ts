@@ -66,6 +66,7 @@ describe('adopting a record under its new identity', () => {
     // And of an app called "Notes:", whose collection key reads like a note of Notes's.
     localStorage.setItem('xdb:Notes::tasks', '[3]');
     localStorage.setItem('xdb-sync-active-room:Notes', 'lobby');
+    localStorage.setItem('xdb-sync-shared:Notes:lobby', 'true');
     localStorage.setItem('xdb-sync-shared:Notes:Pro:club', 'true');
 
     const adopted = await adopt('Notes', false);
@@ -79,9 +80,12 @@ describe('adopting a record under its new identity', () => {
     expect(localStorage.getItem('xdb:Notes:Pro::collections')).toBe('["tasks"]');
     expect(localStorage.getItem('xdb:Notes::tasks')).toBe('[3]');
     expect(Object.keys(localStorage).filter((key) => key.startsWith(`xdb:${NEW}:`)).sort()).toEqual([`xdb:${NEW}::collections`, `xdb:${NEW}:notes`]);
-    // Its room goes with it; Notes:Pro's room keys and caches are left.
+    // Its room goes with it; Notes:Pro's room keys and caches are left, and none is copied.
     expect(localStorage.getItem(`xdb-sync-active-room:${NEW}`)).toBe('lobby');
     expect(localStorage.getItem('xdb-sync-shared:Notes:Pro:club')).toBe('true');
+    expect(localStorage.getItem(`xdb-sync-shared:${NEW}:Pro:club`)).toBeNull();
+    // Its saved room's own mark is carried, named in full.
+    expect(localStorage.getItem(`xdb-sync-shared:${NEW}:lobby`)).toBe('true');
     expect(deleted).toEqual([]);
   });
 });

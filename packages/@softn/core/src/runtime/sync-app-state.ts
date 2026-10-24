@@ -118,8 +118,12 @@ function deleteDatabase(idb: IDBFactory, name: string): Promise<void> {
  * peers were not. What the destination has of its own is kept. The rooms'
  * offline caches are not carried (they are filled again from the room);
  * a move deletes the source's. Answers how many keys were carried.
+ *
+ * `exact`: only the saved room's keys, each named in full, for an identity
+ * that may begin another's (a manifest's name: `Notes` begins `Notes:Pro`,
+ * whose rooms' marks a search by beginning found as Notes's). Not with `move`.
  */
-export async function carryAppSync(from: string, to: string, options: { move: boolean }): Promise<number> {
+export async function carryAppSync(from: string, to: string, options: { move: boolean; exact?: boolean }): Promise<number> {
   if (!from || !to || from === to) return 0;
   let carried = 0;
   const store = storage();
@@ -129,11 +133,18 @@ export async function carryAppSync(from: string, to: string, options: { move: bo
         [getSyncRoomKey(from), getSyncRoomKey(to)],
         [legacySharedFlagKey(from), legacySharedFlagKey(to)],
       ];
-      const prefixes: Array<[string, string]> = [
+      if (options.exact) {
+        const saved = store.getItem(getSyncRoomKey(from));
+        if (saved !== null) {
+          pairs.push([sharedRoomFlagKey(from, saved), sharedRoomFlagKey(to, saved)]);
+          pairs.push([roomCollectionsKey(from, saved), roomCollectionsKey(to, saved)]);
+        }
+      }
+      const prefixes: Array<[string, string]> = options.exact ? [] : [
         [sharedRoomFlagKey(from, ''), sharedRoomFlagKey(to, '')],
         [roomCollectionsKey(from, ''), roomCollectionsKey(to, '')],
       ];
-      for (let i = 0; i < store.length; i++) {
+      for (let i = 0; i < store.length && prefixes.length > 0; i++) {
         const key = store.key(i);
         if (key === null) continue;
         for (const [source, target] of prefixes) {
@@ -150,7 +161,7 @@ export async function carryAppSync(from: string, to: string, options: { move: bo
       // Storage that refuses: the rooms are joined afresh, as before.
     }
   }
-  if (options.move) await forgetAppSync(from);
+  if (options.move && !options.exact) await forgetAppSync(from);
   return carried;
 }
 
