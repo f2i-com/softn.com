@@ -11,6 +11,7 @@ vi.mock('y-indexeddb', () => ({ IndexeddbPersistence: class {} }));
 
 import { XDBService } from '../src/runtime/xdb';
 import { XDBSyncAdapter } from '../src/runtime/xdb-sync';
+import { editStamp } from '../src/runtime/xdb-service';
 
 function storage() {
   const store = new Map<string, string>();
@@ -229,5 +230,42 @@ describe('a peer\'s stamp ahead of this clock', () => {
         expect((adapter.doc.getMap('notes').get(mine.id) as { data: { text: string } }).data.text, stamp).toBe('newer in the room');
         expect(text(xdb, mine.id), stamp).toBe(taken ? 'newer in the room' : 'older here');
       }
+    }));
+});
+
+// An edit was stamped with this device's clock alone: where another device's
+// clock ran an hour fast, the person's own edit, made after, was older than
+// what it edited and lost to it on both devices.
+describe('an edit made here', () => {
+  it('is later than the record it edits, from a clock up to an hour behind', () => {
+    const now = Date.parse('2026-10-24T12:00:00.000Z');
+    expect(editStamp('2026-10-24T12:30:00.000Z', now)).toBe('2026-10-24T12:30:00.001Z');
+    expect(editStamp('2026-10-24T12:00:00.000Z', now)).toBe('2026-10-24T12:00:00.001Z');
+    // Not copied onto the edit from further ahead: a peer would refuse it.
+    expect(editStamp('2026-10-26T12:00:00.000Z', now)).toBe('2026-10-24T12:00:00.000Z');
+    // A record from the past, or with no stamp, is edited now.
+    expect(editStamp('2026-10-24T11:00:00.000Z', now)).toBe('2026-10-24T12:00:00.000Z');
+    expect(editStamp(undefined, now)).toBe('2026-10-24T12:00:00.000Z');
+  });
+
+  it('wins over a copy from a device whose clock is an hour fast', () =>
+    quiet(() => {
+      const net = new Net();
+      const a = peer('fast-a');
+      const b = peer('fast-b');
+      net.join(a.adapter.doc);
+      net.join(b.adapter.doc);
+      a.adapter.attachLocal();
+      b.adapter.attachLocal();
+      // A's clock is an hour fast: its record carries that stamp.
+      const fast = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      a.xdb.writeRecord('notes', { id: 'r1', collection: 'notes', data: { text: 'A' }, created_at: fast, updated_at: fast, deleted: false });
+      a.adapter.doc.getMap('notes').set('r1', { id: 'r1', collection: 'notes', data: { text: 'A' }, created_at: fast, updated_at: fast, deleted: false });
+      net.flush();
+      expect(text(b.xdb, 'r1')).toBe('A');
+      b.xdb.update('r1', { text: 'B edited after' });
+      net.flush();
+      expect(text(a.xdb, 'r1')).toBe('B edited after');
+      expect(text(b.xdb, 'r1')).toBe('B edited after');
     }));
 });

@@ -95,6 +95,25 @@ function storableText(data: unknown): string | undefined {
   }
 }
 
+/** How far ahead of this clock a record's stamp may be for an edit to follow it (editStamp). */
+const FOLLOW_AHEAD_MS = 60 * 60 * 1000;
+
+/**
+ * The stamp of an edit made here to a record stamped `previous`: later than
+ * it. The newer stamp wins wherever records meet (peer sync, the sync host),
+ * and an edit was stamped with this clock alone, so on a device whose clock
+ * ran behind the one that last wrote the record, the person's own edit was
+ * older than what it edited and lost to it on every peer. A stamp up to an
+ * hour ahead is followed by a millisecond; one further ahead is not copied
+ * onto the edit (a peer refuses a stamp a day ahead of its clock), and the
+ * edit takes this clock's time.
+ */
+export function editStamp(previous: string | undefined, now = Date.now()): string {
+  const at = previous ? Date.parse(previous) : NaN;
+  if (Number.isFinite(at) && at >= now && at - now <= FOLLOW_AHEAD_MS) return new Date(at + 1).toISOString();
+  return new Date(now).toISOString();
+}
+
 /** A record's data when it is an object, else nothing: an imported row's `data` may be anything. */
 function objectData(record: XDBRecord): Record<string, unknown> {
   const data = record.data as unknown;
@@ -1302,7 +1321,7 @@ export class XDBService {
           const updatedRecord: XDBRecord = {
             ...record,
             data: storedData({ ...objectData(record), ...data }),
-            updated_at: new Date().toISOString(),
+            updated_at: editStamp(record.updated_at),
           };
           coll.set(record.id, updatedRecord);
           applied = updatedRecord;
@@ -1333,7 +1352,7 @@ export class XDBService {
         const updatedRecord: XDBRecord = {
           ...record,
           data: storedData({ ...objectData(record), ...data }),
-          updated_at: new Date().toISOString(),
+          updated_at: editStamp(record.updated_at),
         };
 
         records[index] = updatedRecord;
@@ -1396,7 +1415,7 @@ export class XDBService {
       const updatedRecord: XDBRecord = {
         ...record,
         data: storedData({ ...objectData(record), ...data }),
-        updated_at: new Date().toISOString(),
+        updated_at: editStamp(record.updated_at),
       };
       coll.set(record.id, updatedRecord);
       this.emit({ type: 'update', collection, record: updatedRecord });
@@ -1428,7 +1447,7 @@ export class XDBService {
     const updatedRecord: XDBRecord = {
       ...record,
       data: storedData({ ...objectData(record), ...data }),
-      updated_at: new Date().toISOString(),
+      updated_at: editStamp(record.updated_at),
     };
 
     records[index] = updatedRecord;
@@ -1483,7 +1502,7 @@ export class XDBService {
           const deletedRecord = {
             ...record,
             deleted: true,
-            updated_at: new Date().toISOString(),
+            updated_at: editStamp(record.updated_at),
           };
           coll.set(lookupId, deletedRecord);
           this.emit({ type: 'delete', collection, record: deletedRecord });
@@ -1511,7 +1530,7 @@ export class XDBService {
       if (index !== -1) {
         const record = records[index];
         record.deleted = true;
-        record.updated_at = new Date().toISOString();
+        record.updated_at = editStamp(record.updated_at);
 
         const persisted = this.setCollectionData(collection, records);
 
@@ -1535,7 +1554,7 @@ export class XDBService {
         for (const [collection, coll] of this.memoryStore) {
           const record = coll.get(id);
           if (record) {
-            const deleted = { ...record, deleted: true, updated_at: new Date().toISOString() };
+            const deleted = { ...record, deleted: true, updated_at: editStamp(record.updated_at) };
             coll.set(id, deleted);
             this.emit({ type: 'delete', collection, record: deleted });
             this.notifyMutation('delete', collection, id);
@@ -1563,7 +1582,7 @@ export class XDBService {
       const resolvedId = this.optimisticIdMap.get(id) || id;
       const record = coll?.get(id) ?? coll?.get(resolvedId);
       if (!record || record.deleted) return false;
-      const deleted = { ...record, deleted: true, updated_at: new Date().toISOString() };
+      const deleted = { ...record, deleted: true, updated_at: editStamp(record.updated_at) };
       coll!.set(record.id, deleted);
       this.emit({ type: 'delete', collection, record: deleted });
       this.notifyMutation('delete', collection, record.id);
@@ -1583,7 +1602,7 @@ export class XDBService {
 
     const record = records[index];
     record.deleted = true;
-    record.updated_at = new Date().toISOString();
+    record.updated_at = editStamp(record.updated_at);
 
     this.setCollectionData(collection, records);
 
