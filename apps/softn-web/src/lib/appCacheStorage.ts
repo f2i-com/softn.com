@@ -20,14 +20,33 @@
 /** The two places a build keeps state, by name. */
 export type AppDataStore = 'xdb' | 'local';
 
+/** One store of a build: the prefix its keys are under, and which keys under it are its own. */
+export interface AppDataStoreKeys {
+  store: AppDataStore;
+  prefix: string;
+  owns: (rest: string) => boolean;
+}
+
 /** The prefix each store keeps one build's keys under. */
-export function appDataStores(origin: string): Array<{ store: AppDataStore; prefix: string }> {
+export function appDataStores(origin: string): AppDataStoreKeys[] {
   return [
-    { store: 'xdb', prefix: `xdb:${origin}:` },
+    // A key under `xdb:<origin>:` is the build's when what follows is one of
+    // its collections (a collection name has no ":") or its store's own note
+    // (`xdb:<origin>::<name>`). An identity an earlier build had, the
+    // manifest's name, may begin another's: `xdb:Notes:` began the records of
+    // an app called "Notes:Pro" (`xdb:Notes:Pro:tasks`), and moving Notes's
+    // data to its digest took them too, under a name no collection reads.
+    { store: 'xdb', prefix: `xdb:${origin}:`, owns: (rest) => !rest.includes(':') || rest.startsWith(':') },
     // The bridge folds anything outside [A-Za-z0-9_-] to `_` before it
     // prefixes. A digest never has any, but the two spellings must agree.
-    { store: 'local', prefix: `softn:${origin.replace(/[^a-zA-Z0-9_-]/g, '_')}:` },
+    // Folded, the prefix has no ":" in it to run into another's.
+    { store: 'local', prefix: `softn:${origin.replace(/[^a-zA-Z0-9_-]/g, '_')}:`, owns: () => true },
   ];
+}
+
+/** The keys of one store of a build: under its prefix, and its own. */
+export function storeKeys({ prefix, owns }: Pick<AppDataStoreKeys, 'prefix' | 'owns'>): string[] {
+  return keysWithPrefix(prefix).filter((key) => owns(key.slice(prefix.length)));
 }
 
 /** The outcome of moving or copying one app's stored keys to another identity. */
@@ -90,14 +109,14 @@ export function transferStorageKeys(
  * pair was written.
  */
 function transferStorageRuns(
-  runs: Array<{ from: string; to: string }>,
+  runs: Array<{ from: string; to: string; owns?: (rest: string) => boolean }>,
   options: { move: boolean; overwrite: boolean }
 ): DataTransferResult {
   const result: DataTransferResult = { ok: false, copied: 0, total: 0, skipped: 0 };
   let keys: Array<{ key: string; target: string }>;
   try {
     keys = runs.flatMap((run) =>
-      keysWithPrefix(run.from).map((key) => ({ key, target: run.to + key.slice(run.from.length) }))
+      storeKeys({ prefix: run.from, owns: run.owns ?? (() => true) }).map((key) => ({ key, target: run.to + key.slice(run.from.length) }))
     );
   } catch (err) {
     result.error = `Stored data could not be read: ${describeError(err)}`;
@@ -170,7 +189,7 @@ function transferAppData(
 ): DataTransferResult {
   const to = appDataStores(toOrigin);
   return transferStorageRuns(
-    appDataStores(fromOrigin).map((from, i) => ({ from: from.prefix, to: to[i].prefix })),
+    appDataStores(fromOrigin).map((from, i) => ({ from: from.prefix, to: to[i].prefix, owns: from.owns })),
     options
   );
 }
@@ -199,7 +218,7 @@ export function copyAppData(fromOrigin: string, toOrigin: string): DataTransferR
 export function hasStoredData(origin: string | undefined): boolean {
   if (!origin) return false;
   try {
-    return appDataStores(origin).some(({ prefix }) => keysWithPrefix(prefix).length > 0);
+    return appDataStores(origin).some((store) => storeKeys(store).length > 0);
   } catch {
     return false;
   }
@@ -234,8 +253,8 @@ export function removeAppData(origin: string | undefined): number {
   if (!origin) return 0;
   let removed = 0;
   try {
-    for (const { prefix } of appDataStores(origin)) {
-      for (const key of keysWithPrefix(prefix)) {
+    for (const store of appDataStores(origin)) {
+      for (const key of storeKeys(store)) {
         localStorage.removeItem(key);
         removed += 1;
       }

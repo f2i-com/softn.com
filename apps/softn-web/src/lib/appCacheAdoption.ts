@@ -114,8 +114,12 @@ export async function applyAdoption(store: AppStore, adoption: Adoption, origin:
   // Its sync rooms' keys go with its records: left under the old identity,
   // the app no longer went back to its room. The keys move before this
   // returns; the old identity's room caches are deleted after, unawaited,
-  // as nothing may hold this write transaction open.
-  void carryAppSync(adoption.fromAppId, origin, { move: true });
+  // as nothing may hold this write transaction open. From a manifest's name
+  // they are copied and nothing is deleted: sync's keys are found by what
+  // they begin with, and a name may begin another app's (`Notes` and
+  // `Notes:Pro`, whose rooms' keys and caches the move took). A digest
+  // begins no other identity.
+  void carryAppSync(adoption.fromAppId, origin, { move: /^[0-9a-f]+$/.test(adoption.fromAppId) });
   debug(
     `[SoftN Web] "${current!.name}" ${adoption.why}${moved.copied ? `, moving ${moved.copied} stored keys` : ''}.`
   );
