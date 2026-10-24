@@ -670,16 +670,19 @@ host for the length of 500 such writes. The one save per collection is the
 XDB crate's `with_batch` (`crates/softn-xdb`).
 
 Sync hooks: what `onBeforeSync` or `onBeforeSyncBatch` hands back as an op's
-`data` must be an object no larger than a client may send (512 KB). Anything
-else is not applied, and the client is told to retry, as when the hook
-throws: a string or a number would have replaced the whole record. An op a
-client sends with `data` that is not an object (in a create or an update) is
-refused for good (`sync_reject`), for the same reason.
+`data` must be an object no larger than a client may send (512 KB);
+`null` or `undefined` keeps the op's own data. Anything else is not applied,
+and the client is told to retry, as when the hook throws: a string or a
+number would have replaced the whole record. An op a client sends with `data`
+that is not an object (in a create or an update) is refused for good
+(`sync_reject`), for the same reason.
 
 `onBeforeSync(op)` answers `false` to reject its op, and `null`, `undefined`,
-`true` or an object to take it (`{ data }` to change its data). Any other
-answer (a number, a string, a list) rejects the op: the `0` or `''` of
-`return a && b` used to take it.
+`true`, `{}` or an object with `data` (`{ data }` to change it, or the op
+itself) to take it. Any other answer rejects the op, with a reason saying the
+host does not read it: a number, a string, a list, or an object saying no in
+words of its own (`{ allowed: false }`). The `0` or `''` of `return a && b`,
+and such objects, used to take it.
 
 `onBeforeSyncBatch(ops)` answers with the ids of the ops it rejects (`op.id`,
 not `op.recordId`): a list of them, where `null`, `true` and `false` name no
@@ -688,9 +691,11 @@ op (`ops.map(o => bad(o) ? o.id : null)`), or `{ rejected: [...] }`.
 and rejects none: an op it leaves out is taken as it came. `null`,
 `undefined`, `true`, `{}` and `{ rejected: undefined }` reject none, and
 `false` rejects them all, as `onBeforeSync`'s `false` rejects its op. Any
-other answer refuses the whole push: a list naming anything but this push's
-op ids (the ops themselves, `[{ id }]`, the records' ids), `false` and a
-number used to reject nothing and let every op through.
+other answer refuses the whole push: a list, or an `ops` entry, naming
+anything but this push's op ids (the ops themselves, `[{ id }]`, the
+records' ids, an id that is also another op's record id), an `ops` entry
+with no `data`, `false` and a number used to reject nothing, or change
+nothing, and let every op through as the client sent it.
 
 ### Sync protocol
 

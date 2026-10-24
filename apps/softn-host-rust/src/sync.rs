@@ -233,6 +233,16 @@ fn as_it_stands(record: xdb::Record, answering: String) -> SyncOp {
     }
 }
 
+/// What a per-op before-hook's answer says of its op (`read_before_sync`).
+enum BeforeSync {
+    /// Taken, with the data the hook changed it to, if it did.
+    Take(Option<serde_json::Value>),
+    /// `false`.
+    Reject,
+    /// An answer the host does not read, refused as `false` is.
+    Unread,
+}
+
 /// An update or a delete refused for good, by the record it names. Its pusher
 /// has applied it to its own copy already, and is sent the record as it
 /// stands, which puts that copy right: a refused edit used to stay on the
@@ -1346,20 +1356,24 @@ impl SyncManager {
                 };
                 checked += 1;
                 match answer.and_then(|result| Self::read_before_sync(&op, result)) {
-                    Ok((false, _)) => {
+                    Ok(refusal @ (BeforeSync::Reject | BeforeSync::Unread)) => {
                         tracing::info!("onBeforeSync rejected op {}", op.id);
                         responses.push(ServerMessage::SyncReject {
                             op_id: op.id.clone(),
-                            reason: "Rejected by onBeforeSync hook".into(),
+                            reason: if matches!(refusal, BeforeSync::Unread) {
+                                "onBeforeSync returned an answer it does not read (expected false, null, true, {} or { data })".into()
+                            } else {
+                                "Rejected by onBeforeSync hook".into()
+                            },
                         });
                         refused.extend(Refused::of(&op));
                     }
-                    Ok((true, Some(new_data))) => {
+                    Ok(BeforeSync::Take(Some(new_data))) => {
                         hook_changed.insert(op.id.clone(), keys_taken_out(op.data.as_ref(), &new_data));
                         op.data = Some(new_data);
                         accepted.push(op);
                     }
-                    Ok((true, None)) => accepted.push(op),
+                    Ok(BeforeSync::Take(None)) => accepted.push(op),
                     Err(e) => {
                         // Hook execution error — use SyncRetry so the client
                         // retains the op. A server redeploy may fix the script
@@ -1774,12 +1788,16 @@ impl SyncManager {
         // rejected nothing and let every op through: for a hook that is there
         // to keep some out, the wrong way to fail.
         let op_ids: std::collections::HashSet<&str> = ops.iter().map(|op| op.id.as_str()).collect();
+        // An op of this push, named by its id: not a string that is also another
+        // op's record id, which a client choosing its op ids could make of one,
+        // so that a hook answering with record ids named the wrong op.
+        let names_op = |id: &str| op_ids.contains(id) && !ops.iter().any(|op| op.record_id == id && op.id != id);
         let ids_of = |arr: &Vec<serde_json::Value>| -> Option<std::collections::HashSet<String>> {
             let mut ids = std::collections::HashSet::new();
             for entry in arr {
                 match entry {
                     serde_json::Value::Null | serde_json::Value::Bool(_) => {}
-                    serde_json::Value::String(id) if op_ids.contains(id.as_str()) => {
+                    serde_json::Value::String(id) if names_op(id) => {
                         ids.insert(id.clone());
                     }
                     _ => return None,
@@ -1787,8 +1805,20 @@ impl SyncManager {
             }
             Some(ids)
         };
+        // `ops: [{ id, data }]` is held to the same: an entry naming anything but
+        // an op of this push (its record's id), or with no `data`, changed no
+        // data, and the op was stored as the client sent it, past the hook that
+        // was there to clean it. `data: undefined` (null) keeps the op's own.
+        let changes_readable = |obj: &serde_json::Map<String, serde_json::Value>| match obj.get("ops") {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::Array(list)) => list.iter().all(|entry| {
+                entry.get("id").and_then(|id| id.as_str()).is_some_and(|id| names_op(id)) && entry.get("data").is_some()
+            }),
+            Some(_) => false,
+        };
         let read: Option<std::collections::HashSet<String>> = match &result {
             serde_json::Value::Array(arr) => ids_of(arr),
+            serde_json::Value::Object(obj) if !changes_readable(obj) => None,
             serde_json::Value::Object(obj) => match obj.get("rejected") {
                 Some(serde_json::Value::Array(arr)) => ids_of(arr),
                 // `{ rejected: undefined, ops }`: undefined crosses as null.
@@ -1810,12 +1840,12 @@ impl SyncManager {
             // client can surface the error and move on.
             tracing::warn!(
                 "onBeforeSyncBatch returned an answer it does not read (expected a list of op ids, \
-                 {{ rejected: [...] }}, null, true or false) — permanently rejecting batch"
+                 {{ rejected: [...], ops: [{{ id, data }}] }}, null, true or false) — permanently rejecting batch"
             );
             for op in &ops {
                 responses.push(ServerMessage::SyncReject {
                     op_id: op.id.clone(),
-                    reason: "Hook returned unrecognized schema (expected { rejected: [...] })".into(),
+                    reason: "Hook returned unrecognized schema (expected op ids, { rejected: [...] } or { ops: [{ id, data }] })".into(),
                 });
                 refused.extend(Refused::of(op));
             }
@@ -1911,13 +1941,15 @@ impl SyncManager {
     /// What a per-op before-hook's answer says of its op: `(accepted, optional_mutated_data)`.
     /// If the hook returns an object with a `data` field, that data overrides
     /// the original op's data (enabling sanitization/enrichment).
-    /// An explicit `false` rejects; null/undefined/true or an object accepts.
-    /// Anything else (a number, a string, a list) rejects, as an answer this
-    /// does not read: taken as accepting, the `0` or `''` of `return a && b`
-    /// let through the op the hook was there to keep out.
-    fn read_before_sync(op: &SyncOp, result: serde_json::Value) -> Result<(bool, Option<serde_json::Value>), String> {
+    /// An explicit `false` rejects; null/undefined/true, `{}` or an object with
+    /// `data` (the op itself, handed back) accepts. Anything else (a number, a
+    /// string, a list, `{ allowed: false }`) rejects, as an answer this does
+    /// not read: taken as accepting, the `0` or `''` of `return a && b`, or an
+    /// object saying no in words of its own, let through the op the hook was
+    /// there to keep out.
+    fn read_before_sync(op: &SyncOp, result: serde_json::Value) -> Result<BeforeSync, String> {
         match &result {
-            serde_json::Value::Bool(false) => Ok((false, None)),
+            serde_json::Value::Bool(false) => Ok(BeforeSync::Reject),
             // `{ data: clean(op.data) }` where `clean` falls off the end of a
             // branch: undefined crosses as null, and applying that replaced
             // the record's whole payload with JSON null and broadcast the
@@ -1928,21 +1960,22 @@ impl SyncManager {
                     "onBeforeSync returned no data for an op — keeping the original payload \
                      rather than nulling the record"
                 );
-                Ok((true, None))
+                Ok(BeforeSync::Take(None))
             }
             serde_json::Value::Object(obj) if obj.contains_key("data") => {
                 let data = obj.get("data").cloned().unwrap_or_default();
                 // Handed back as it came: nothing to check, nothing changed.
                 if op.data.as_ref() == Some(&data) {
-                    return Ok((true, None));
+                    return Ok(BeforeSync::Take(None));
                 }
                 Self::check_hook_data(&data)?;
-                Ok((true, Some(data)))
+                Ok(BeforeSync::Take(Some(data)))
             }
-            serde_json::Value::Null | serde_json::Value::Bool(true) | serde_json::Value::Object(_) => Ok((true, None)),
+            serde_json::Value::Null | serde_json::Value::Bool(true) => Ok(BeforeSync::Take(None)),
+            serde_json::Value::Object(obj) if obj.is_empty() => Ok(BeforeSync::Take(None)),
             _ => {
-                tracing::warn!(op = %op.id, "onBeforeSync returned an answer it does not read (expected false, null, true or an object) — rejecting the op");
-                Ok((false, None))
+                tracing::warn!(op = %op.id, "onBeforeSync returned an answer it does not read (expected false, null, true, {{}} or {{ data }}) — rejecting the op");
+                Ok(BeforeSync::Unread)
             }
         }
     }

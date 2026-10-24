@@ -1519,6 +1519,10 @@ fn a_batch_hook_answer_that_names_no_op_ids_lets_nothing_through() {
         // The records' ids, not the ops'.
         "ops.map(function (o) { return o.recordId; })",
         "{ rejected: ops.map(function (o) { return o.recordId; }) }",
+        // Data changes naming the records, or with no data: the change was lost, the raw data kept.
+        "{ ops: ops.map(function (o) { return { id: o.recordId, data: { title: 'clean' } }; }) }",
+        "{ ops: ops.map(function (o) { return { id: o.id }; }) }",
+        "{ ops: 'all' }",
         "{ rejected: ops }",
         "{ rejected: 'c1' }",
         "false",
@@ -1558,18 +1562,31 @@ fn a_batch_hook_answer_that_names_no_op_ids_lets_nothing_through() {
         assert_eq!((acked(&responses), rejected(&responses)), (vec!["c1".to_string()], vec!["c2".to_string()]), "{answer}: {responses:?}");
         assert!(db.write().get_record("n1").is_ok() && db.write().get_record("n2").is_err(), "{answer}");
     }
+    // An op given the id of another op's record: a hook answering with record ids named the
+    // wrong op, and the one it meant went through. Such an answer is not read.
+    let (sync, db) = manager(Some("function onBeforeSyncBatch(ops) { return ops.filter(function (o) { return o.data.bad; }).map(function (o) { return o.recordId; }); }"));
+    let responses = sync.handle_sync_push(vec![
+        op("rB", "notes", "create", "n1", serde_json::json!({"title": "decoy"})),
+        op("c2", "notes", "create", "rB", serde_json::json!({"title": "out", "bad": true})),
+    ], "a");
+    let mut refused = rejected(&responses);
+    refused.sort();
+    assert_eq!(refused, vec!["c2", "rB"], "{responses:?}");
+    assert!(db.write().get_record("rB").is_err());
 }
 
 /// The per-op hook took any answer but `false` as accepting: the `0` or `''`
 /// of `return a && b` let through an op the hook was there to keep out.
 #[test]
 fn a_per_op_hook_answer_it_does_not_read_rejects_the_op() {
-    for answer in ["0", "''", "'yes'", "[]", "1"] {
+    for answer in ["0", "''", "'yes'", "[]", "1", "{ allowed: false }", "{ reject: true }"] {
         let script = format!("function onBeforeSync(op) {{ return {answer}; }}");
         let (sync, db) = manager(Some(script.as_str()));
         let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");
         assert_eq!(rejected(&responses), vec!["c1"], "{answer}: {responses:?}");
         assert!(db.write().get_record("n1").is_err(), "{answer}");
+        // Told apart from a `false`: the hook's answer is not one the host reads.
+        assert!(responses.iter().any(|m| matches!(m, ServerMessage::SyncReject { reason, .. } if reason.contains("does not read"))), "{answer}: {responses:?}");
     }
     for answer in ["true", "null", "undefined", "{}", "op", "{ data: op.data }"] {
         let script = format!("function onBeforeSync(op) {{ return {answer}; }}");
