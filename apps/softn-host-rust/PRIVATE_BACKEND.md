@@ -699,8 +699,10 @@ change nothing, and let every op through as the client sent it.
 
 Either hook's answer holding, anywhere, a value that cannot cross as data (a
 `Set`, a `Map`, a `Date`, a function, a Promise) is one the host does not
-read: the op, or the push, is refused. Such a value crossed as the `null` of
-`undefined`, so `{ rejected: new Set(ids) }` rejected none.
+read: the op, or the push, is refused. Nested, such a value crossed as the
+`null` of `undefined`, so `{ rejected: new Set(ids) }` rejected none. An
+`async` hook answers with a Promise, so every op it is asked about is
+refused: the hooks must be synchronous.
 
 ### Sync protocol
 
