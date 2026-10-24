@@ -1506,3 +1506,47 @@ fn the_sync_limits_are_the_shared_ones() {
         assert!(!is_valid_collection_name(name.as_str().unwrap()), "{name}");
     }
 }
+
+/// A batch hook's answer that is not a list of op ids (the ops themselves, ids
+/// in objects), or `false`, rejected nothing and let every op through: a hook
+/// there to keep some out failed open. It is refused, as an object the host
+/// does not read is; `false` rejects every op, as onBeforeSync's does its op.
+#[test]
+fn a_batch_hook_answer_that_names_no_op_ids_lets_nothing_through() {
+    for answer in ["ops", "ops.map(function (o) { return { id: o.id }; })", "{ rejected: ops }", "{ rejected: 'c1' }", "false", "1"] {
+        let script = format!("function onBeforeSyncBatch(ops) {{ return {answer}; }}");
+        let (sync, db) = manager(Some(script.as_str()));
+        let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");
+        assert_eq!(rejected(&responses), vec!["c1"], "{answer}: {responses:?}");
+        assert!(db.write().get_record("n1").is_err(), "{answer}");
+    }
+    for answer in ["null", "undefined", "true", "[]", "{}", "{ rejected: [] }"] {
+        let script = format!("function onBeforeSyncBatch(ops) {{ return {answer}; }}");
+        let (sync, db) = manager(Some(script.as_str()));
+        let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");
+        assert_eq!(acked(&responses), vec!["c1"], "{answer}: {responses:?}");
+        assert!(db.write().get_record("n1").is_ok(), "{answer}");
+    }
+}
+
+/// A record's data is an object. A string, a number or a list sent as a
+/// create's or an update's data became the record's whole data, and every
+/// other client was sent it.
+#[test]
+fn an_op_whose_data_is_not_an_object_is_refused() {
+    let (sync, db) = manager(None);
+    sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title": "kept"})), 60)], "a");
+    let responses = sync.handle_sync_push(vec![
+        stamped(op("u1", "notes", "update", "n1", serde_json::json!("wiped")), 30),
+        op("c2", "notes", "create", "n2", serde_json::json!([1, 2])),
+        op("c3", "notes", "create", "n3", serde_json::json!(7)),
+    ], "b");
+    let mut refused = rejected(&responses);
+    refused.sort();
+    assert_eq!(refused, vec!["c2", "c3", "u1"], "{responses:?}");
+    assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title": "kept"}));
+    assert!(db.write().get_record("n2").is_err());
+    // A delete's data is not read.
+    let deleted = sync.handle_sync_push(vec![stamped(op("d1", "notes", "delete", "n1", serde_json::json!("anything")), 10)], "b");
+    assert_eq!(acked(&deleted), vec!["d1"], "{deleted:?}");
+}

@@ -672,7 +672,17 @@ XDB crate's `with_batch` (`crates/softn-xdb`).
 Sync hooks: what `onBeforeSync` or `onBeforeSyncBatch` hands back as an op's
 `data` must be an object no larger than a client may send (512 KB). Anything
 else is not applied, and the client is told to retry, as when the hook
-throws: a string or a number would have replaced the whole record.
+throws: a string or a number would have replaced the whole record. An op a
+client sends with `data` that is not an object (in a create or an update) is
+refused the same way, for the same reason.
+
+`onBeforeSyncBatch(ops)` answers with the ids of the ops it rejects: a list
+of them, or `{ rejected: [...] }` (with `ops: [{ id, data }]` beside it to
+change an op's data); `null`, `undefined`, `true` or `{}` reject none, and
+`false` rejects them all, as `onBeforeSync`'s `false` rejects its op. Any
+other answer refuses the whole push: a list that is not of op ids (the ops
+themselves, or `[{ id }]`), `false` and a number used to reject nothing and
+let every op through.
 
 ### Sync protocol
 

@@ -1306,6 +1306,20 @@ impl SyncManager {
                 continue;
             }
 
+            // A record's data is an object, as the runtime's client sends it and as
+            // what a before-hook hands back is held to (check_hook_data). A string,
+            // a number or a list in a create or an update became the record's whole
+            // data (`replaced`), the hooks were handed it, and every other client
+            // was sent it. A delete's data is not read.
+            if op.operation != "delete" && op.data.as_ref().is_some_and(|data| !data.is_object()) {
+                responses.push(ServerMessage::SyncReject {
+                    op_id: op.id.clone(),
+                    reason: "Op data must be an object".into(),
+                });
+                refused.extend(Refused::of(&op));
+                continue;
+            }
+
             basic_valid_ops.push(op);
         }
 
@@ -1751,38 +1765,47 @@ impl SyncManager {
         // Supported formats:
         //   - ["id1", "id2"]          (array of rejected IDs)
         //   - { rejected: ["id1"] }   (object with rejected field)
-        //   - null / undefined        (accept all)
-        let rejected_ids: std::collections::HashSet<String> = match &result {
-            serde_json::Value::Array(arr) => {
-                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+        //   - null / undefined / true (accept all)
+        //   - false                   (reject all, as onBeforeSync's false rejects its op)
+        // Anything else is a hook that meant something this does not read, and
+        // the batch is refused (below). A list that was not of op ids (the ops
+        // themselves, `[{ id }]`), or `false`, rejected nothing and let every
+        // op through: for a hook that is there to keep some out, the wrong way
+        // to fail.
+        let ids_of = |arr: &Vec<serde_json::Value>| -> Option<std::collections::HashSet<String>> {
+            arr.iter().map(|v| v.as_str().map(String::from)).collect()
+        };
+        let read: Option<std::collections::HashSet<String>> = match &result {
+            serde_json::Value::Array(arr) => ids_of(arr),
+            serde_json::Value::Object(obj) => match obj.get("rejected") {
+                Some(serde_json::Value::Array(arr)) => ids_of(arr),
+                Some(_) => None,
+                // Empty object {} or { ops: [...] } — no rejections.
+                // If `ops` is present, data mutations are applied below.
+                None if obj.is_empty() || obj.contains_key("ops") => Some(std::collections::HashSet::new()),
+                None => None,
+            },
+            serde_json::Value::Null | serde_json::Value::Bool(true) => Some(std::collections::HashSet::new()),
+            serde_json::Value::Bool(false) => Some(ops.iter().map(|op| op.id.clone()).collect()),
+            _ => None,
+        };
+        let Some(rejected_ids) = read else {
+            // Not an answer this reads (e.g. a { reject: [...] } typo). This is a
+            // deterministic developer bug — retrying won't resolve it and would
+            // jam the client's sync queue indefinitely. Use SyncReject so the
+            // client can surface the error and move on.
+            tracing::warn!(
+                "onBeforeSyncBatch returned an answer it does not read (expected a list of op ids, \
+                 {{ rejected: [...] }}, null, true or false) — permanently rejecting batch"
+            );
+            for op in &ops {
+                responses.push(ServerMessage::SyncReject {
+                    op_id: op.id.clone(),
+                    reason: "Hook returned unrecognized schema (expected { rejected: [...] })".into(),
+                });
+                refused.extend(Refused::of(op));
             }
-            serde_json::Value::Object(obj) => {
-                if let Some(arr) = obj.get("rejected").and_then(|v| v.as_array()) {
-                    arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                } else if obj.is_empty() || obj.contains_key("ops") {
-                    // Empty object {} or { ops: [...] } — no rejections.
-                    // If `ops` is present, data mutations are applied below.
-                    std::collections::HashSet::new()
-                } else {
-                    // Object doesn't match expected schema (e.g. { reject: [...] }
-                    // typo). This is a deterministic developer bug — retrying won't
-                    // resolve it and would jam the client's sync queue indefinitely.
-                    // Use SyncReject so the client can surface the error and move on.
-                    tracing::warn!(
-                        "onBeforeSyncBatch returned unrecognized object schema \
-                         (expected {{ rejected: [...] }}) — permanently rejecting batch"
-                    );
-                    for op in &ops {
-                        responses.push(ServerMessage::SyncReject {
-                            op_id: op.id.clone(),
-                            reason: "Hook returned unrecognized schema (expected { rejected: [...] })".into(),
-                        });
-                        refused.extend(Refused::of(op));
-                    }
-                    return Vec::new();
-                }
-            }
-            _ => std::collections::HashSet::new(),
+            return Vec::new();
         };
 
         let mut accepted = Vec::new();
