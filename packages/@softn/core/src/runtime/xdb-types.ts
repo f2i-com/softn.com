@@ -132,7 +132,9 @@ export type XDBStorageIssueKind =
   /** The hosted parent cannot acknowledge saves (no storage protocol 1): records are cached, and no save can be reported as made. */
   | 'persistence-unsupported'
   /** A write the synchronous API had already answered for was refused, by the native database (SQLite) or by the hosted parent; the in-memory record and the stored one disagree. */
-  | 'write-failed';
+  | 'write-failed'
+  /** The sync host refused a change, or it could never be sent: it is on this device only, or the host has put the record back as it stands there. */
+  | 'sync-refused';
 
 export interface XDBStorageIssue {
   kind: XDBStorageIssueKind;

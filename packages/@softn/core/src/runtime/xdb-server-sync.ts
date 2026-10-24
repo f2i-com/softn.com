@@ -1308,6 +1308,7 @@ export class XDBServerSync {
 
   /** Handle a rejected sync operation — remove from pending and notify. */
   private handleSyncReject(opId: string, reason: string): void {
+    this.noteRefused(this.pendingOps.get(opId) ?? this.inflightOps.get(opId), reason);
     this.pendingOps.delete(opId);
     this.inflightOps.delete(opId);
     this.madeAt.delete(opId);
@@ -1338,7 +1339,25 @@ export class XDBServerSync {
     this.queueChanged();
     const reason = `This change to "${op.collection}" is ${bytes} bytes, more than the sync host takes in one message (${MAX_MESSAGE_BYTES}); it was not sent.`;
     console.warn(`[XDBServerSync] ${reason}`);
+    this.noteRefused(op, reason);
     this.listeners.reject.forEach((fn) => fn(op.id, reason));
+  }
+
+  /**
+   * A change the host will not take, said where the person sees it: the
+   * storage status the app's notice bar watches. It was said only to `reject`
+   * listeners, and the one host component (SoftNWithXDB) listens for `error`,
+   * so a refused create stayed on this device and every later edit of it was
+   * refused as unknown, and a refused update was undone by the record the
+   * host sent back, with nothing shown either time.
+   */
+  private noteRefused(op: SyncOp | undefined, reason: string): void {
+    const what = op ? `A change to "${op.collection}"` : 'A change';
+    this.xdb._noteIssue({
+      kind: 'sync-refused',
+      ...(op ? { collection: op.collection } : {}),
+      message: `${what} was not taken by the sync host (${String(reason).slice(0, 200)}). It is kept on this device only, or the host's copy has replaced it.`,
+    });
   }
 
   /** Listen for local XDB mutations and push them to the server. */

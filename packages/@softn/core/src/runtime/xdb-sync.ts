@@ -157,8 +157,12 @@ export class XDBSyncAdapter {
     // 4. Wait for persistence to load before initial sync
     //    This prevents races where we push stale local data into
     //    a Y.Doc that hasn't loaded its IndexedDB state yet.
-    if (this.persistence) {
+    //    The cache says `synced` once, when it has loaded: connected again
+    //    after a disconnect, the adapter waited for it for ever, and local
+    //    writes stopped reaching the room while the peers' still came in.
+    if (this.persistence && !this.persistenceLoaded && (this.persistence as { synced?: boolean }).synced !== true) {
       this.persistenceListener = () => {
+        this.persistenceLoaded = true;
         this.performInitialSync();
         this.setupXDBListener();
       };
@@ -439,6 +443,29 @@ export class XDBSyncAdapter {
   /** Collections a malformed value has already been reported for. */
   private warnedMalformed = new Set<string>();
 
+  /** Whether the room's cache (y-indexeddb) has loaded: it says so once. */
+  private persistenceLoaded = false;
+
+  /**
+   * The room's records this device holds no copy of because it could not
+   * store or read them (its storage budget full, a value it cannot apply).
+   * A `refresh` lists what the device holds and takes out of the room what
+   * it lacks; without this, a peer over its 3 MB browser budget took every
+   * record it could not keep out of the room, and so off every other peer,
+   * the one that wrote them included, at its next write.
+   */
+  private unstored = new Map<string, Set<string>>();
+
+  private markUnstored(collName: string, recordId: string): void {
+    let ids = this.unstored.get(collName);
+    if (!ids) this.unstored.set(collName, (ids = new Set()));
+    ids.add(recordId);
+  }
+
+  private markStored(collName: string, recordId: string): void {
+    this.unstored.get(collName)?.delete(recordId);
+  }
+
   /**
    * Say once per collection that a peer's value could not be applied. Once,
    * because a document with a thousand bad rows is reported at every update
@@ -472,6 +499,7 @@ export class XDBSyncAdapter {
         // document were never discovered. It is skipped instead.
         if (!isRecordJSON(val)) {
           this.warnMalformed(collName, recordId);
+          if (!local.has(recordId)) this.markUnstored(collName, recordId);
           return;
         }
         try {
@@ -484,8 +512,10 @@ export class XDBSyncAdapter {
           } else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), val)) {
             this.xdb.writeRecord(collName, record);
           }
+          this.markStored(collName, recordId);
         } catch (err) {
           this.warnMalformed(collName, recordId, err);
+          if (!local.has(recordId)) this.markUnstored(collName, recordId);
         }
       });
     } finally {
@@ -570,8 +600,11 @@ export class XDBSyncAdapter {
                   ymap.set(record.id, json);
                 }
               }
+              // A key this device lacks because it could not keep the record
+              // is not one it removed, and stays in the room.
+              const unstored = this.unstored.get(event.collection);
               for (const k of Array.from(ymap.keys())) {
-                if (!listed.has(k)) ymap.delete(k);
+                if (!listed.has(k) && !unstored?.has(k)) ymap.delete(k);
               }
             }
             break;
@@ -625,7 +658,10 @@ export class XDBSyncAdapter {
               // Same rule as projectCollection: a value that is not a record
               // is skipped, not thrown at the rest of the batch.
               if (!isRecordJSON(val)) {
-                if (val !== undefined) this.warnMalformed(collName, recordId);
+                if (val !== undefined) {
+                  this.warnMalformed(collName, recordId);
+                  if (!this.xdb.getAllRaw(collName).some((r) => r.id === recordId)) this.markUnstored(collName, recordId);
+                }
                 continue;
               }
               // Weighed as projectCollection weighs it. Two peers that set
@@ -639,12 +675,15 @@ export class XDBSyncAdapter {
               const mine = local.get(recordId);
               if (mine && isNewer(mine, record)) newer.push(mine);
               else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), val)) this.xdb.writeRecord(collName, record);
+              this.markStored(collName, recordId);
             } else if (change.action === 'delete') {
               // Remote hard-delete
+              this.markStored(collName, recordId);
               this.xdb.removeRecord(collName, recordId);
             }
           } catch (err) {
             this.warnMalformed(collName, recordId, err);
+            if (change.action !== 'delete' && !local?.has(recordId)) this.markUnstored(collName, recordId);
           }
         }
       } finally {

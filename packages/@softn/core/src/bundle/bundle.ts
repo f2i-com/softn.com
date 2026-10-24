@@ -557,16 +557,31 @@ export function parseXDBFile(path: string, content: string): XDBBundleData {
 /**
  * Add bundled seed rows without replacing user data or reviving tombstones.
  * Returns the number of rows that were actually inserted.
+ *
+ * A seed is added once. Which were is kept beside the records (`seeded:` meta,
+ * per collection), so one the person removed since, by clearing the
+ * collection, a prune or a hard delete, which leave no record to find, stays
+ * removed: it came back at every opening. A seed a later version of the app
+ * adds is still added. A store with no mark yet (seeded before marks were
+ * kept) is seeded as it was, once, and marked.
  */
 export function seedXDBBundleData(
-  xdb: Pick<XDBService, 'getAllRaw' | 'writeRecord'>,
+  xdb: Pick<XDBService, 'getAllRaw' | 'writeRecord'> & Partial<Pick<XDBService, 'readSyncMeta' | 'writeSyncMeta'>>,
   data: XDBBundleData
 ): number {
   const existingIds = new Set(xdb.getAllRaw(data.collection).map((record) => record.id));
+  const mark = `seeded:${data.collection}`;
+  let applied: Set<string> | null = null;
+  try {
+    const saved: unknown = JSON.parse(xdb.readSyncMeta?.(mark) ?? 'null');
+    if (Array.isArray(saved)) applied = new Set(saved.filter((id): id is string => typeof id === 'string'));
+  } catch {
+    // An unreadable mark is no mark.
+  }
   let inserted = 0;
 
   for (const record of data.records) {
-    if (existingIds.has(record.id)) continue;
+    if (existingIds.has(record.id) || applied?.has(record.id)) continue;
 
     xdb.writeRecord(data.collection, {
       ...record,
@@ -575,6 +590,15 @@ export function seedXDBBundleData(
     });
     existingIds.add(record.id);
     inserted += 1;
+  }
+
+  const seeded = new Set([...(applied ?? []), ...data.records.map((record) => record.id)]);
+  if (xdb.writeSyncMeta && (!applied || seeded.size !== applied.size)) {
+    try {
+      xdb.writeSyncMeta(mark, JSON.stringify([...seeded]));
+    } catch {
+      // Without the mark the seeds are added as before; the records are written.
+    }
   }
 
   return inserted;
