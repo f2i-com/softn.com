@@ -404,7 +404,7 @@ export class SoftNScriptRuntime {
     this.audio = new AppAudio(gate, () => this.externalFunctions?.asset);
     this.microphone = new AppMicrophone(gate);
     this.qr = new QrReader(gate);
-    this.ai = new AppAI(gate, (path) => this.network.readBlob(path), bundleFileProvider ?? null);
+    this.ai = new AppAI(gate, (path) => this.network.readBlob(path));
   }
 
   /** Set the permission config for this runtime (from permission.json). */

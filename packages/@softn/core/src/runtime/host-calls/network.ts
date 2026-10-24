@@ -14,6 +14,18 @@ import type { HostGate } from './permissions';
 /** The most a response may be before it is refused. */
 const MAX_NET_RESPONSE_BYTES = 10 * 1024 * 1024;
 
+/**
+ * Whether an address the asset resolver gave for one of the app's files is
+ * read without the network rules: a `blob:` (a bundle's file), a `data:` (a
+ * file the host holds as text, as Studio's preview gives every one), or a
+ * path on the page's own site. Any other scheme, or `//host`, would be a
+ * fetch past `net`. `data:` was refused with the rest, so in Studio's preview
+ * a page's `fetch('data.json')` was not found, and a model it ships too.
+ */
+function isOwnFileUrl(url: string): boolean {
+  return /^(?:blob|data):/i.test(url) || !/^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(url);
+}
+
 export interface AppNetworkOptions {
   /** Where the app's own files are, as its markup's `src="images/x.png"` finds them. */
   assetResolver: ((path: string) => string) | null;
@@ -157,7 +169,7 @@ export class AppNetwork {
     const notFound = { ok: false, status: 404, statusText: 'Not Found', body: '', headers: {} };
     const path = String(call.args[0] ?? '').replace(/[?#].*$/, '').replace(/^\.\//, '');
     const url = path && this.assetResolver ? this.assetResolver(path) : '';
-    if (!url || (!/^blob:/i.test(url) && /^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(url))) return notFound;
+    if (!url || !isOwnFileUrl(url)) return notFound;
     try {
       const resp = await fetch(url, { redirect: 'error' });
       if (!resp.ok) return { ...notFound, status: resp.status, statusText: resp.statusText };
@@ -182,7 +194,7 @@ export class AppNetwork {
       return data ? new Blob([data]) : null;
     }
     const url = this.assetResolver ? this.assetResolver(clean) : '';
-    if (!url || (!/^blob:/i.test(url) && /^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(url))) return null;
+    if (!url || !isOwnFileUrl(url)) return null;
     const resp = await fetch(url, { redirect: 'error' });
     return resp.ok ? resp.blob() : null;
   }

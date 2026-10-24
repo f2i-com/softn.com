@@ -15,13 +15,13 @@ export class AppAI {
   private gpuComputeManager: import('../ai-gpu-compute-manager').GpuComputeManager | null = null;
 
   /**
-   * @param readBundleFile One of the app's own files, for a model it ships.
-   * @param bundleFileProvider The bundle's files, when the host supplies them.
+   * @param readBundleFile One of the app's own files, for a model or a shader
+   *   it ships: from the bundle provider a host supplied, else where the app's
+   *   markup finds its files (NetworkHost.readBlob).
    */
   constructor(
     private readonly gate: HostGate,
-    private readonly readBundleFile: (path: string) => Promise<Blob | null>,
-    private readonly bundleFileProvider: BundleFileProvider | null
+    private readonly readBundleFile: (path: string) => Promise<Blob | null>
   ) {}
 
   /**
@@ -104,9 +104,18 @@ export class AppAI {
     if (this.gate.disposed()) throw new Error('The app has closed');
     if (!this.gpuComputeManager) {
       this.gpuComputeManager = new GpuComputeManager();
-      if (this.bundleFileProvider) {
-        this.gpuComputeManager.setBundleFileProvider(this.bundleFileProvider);
-      }
+      // A shader the app ships is read as its models are. Only a bundle
+      // provider was asked, and no host supplies one, so every
+      // `createShader({ bundle })` failed with "No bundle file provider".
+      const read = this.readBundleFile;
+      const files: BundleFileProvider = {
+        readFile: async (path) => {
+          const blob = await read(path);
+          return blob ? blob.arrayBuffer() : null;
+        },
+        hasFile: async (path) => (await read(path)) !== null,
+      };
+      this.gpuComputeManager.setBundleFileProvider(files);
       const gpu = this.gate.permissionConfig()?.permissions.gpu;
       if (gpu) {
         this.gpuComputeManager.setPermissionConfig(gpu);
