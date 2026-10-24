@@ -419,6 +419,7 @@ export class XDBSyncAdapter {
 
         const ymap = this.ydoc.getMap(collName);
         const records = this.xdb.getAllRaw(collName);
+        this.listedHere.set(collName, new Set(records.map((r) => r.id)));
 
         // What was removed here for good while the room was not open: the
         // room is told now, where it holds the record (see removalToTell).
@@ -500,6 +501,24 @@ export class XDBSyncAdapter {
   }
 
   /**
+   * The records this device listed for each collection when it last looked:
+   * a `refresh` takes out of the room only what was listed here and no
+   * longer is, which is what this device removed. It used to take out every
+   * key the device did not list, and a device lists less than it holds: on
+   * the desktop, after its native store was read again, a deleted record (the
+   * store lists live ones) and a peer's record whose write had not landed;
+   * after a collection could not be read, everything. Each was taken out of
+   * the room, and so off every peer.
+   */
+  private listedHere = new Map<string, Set<string>>();
+
+  private listed(collName: string): Set<string> {
+    let ids = this.listedHere.get(collName);
+    if (!ids) this.listedHere.set(collName, (ids = new Set()));
+    return ids;
+  }
+
+  /**
    * Say once per collection that a peer's value could not be applied. Once,
    * because a document with a thousand bad rows is reported at every update
    * otherwise, and the message is the same each time.
@@ -553,6 +572,7 @@ export class XDBSyncAdapter {
           } else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), recordToJSON(record))) {
             this.xdb.writeRecord(collName, record);
           }
+          this.listed(collName).add(recordId);
           this.markStored(collName, recordId);
         } catch (err) {
           this.warnMalformed(collName, recordId, err);
@@ -612,6 +632,7 @@ export class XDBSyncAdapter {
           case 'update':
             if (event.record) {
               ymap.set(event.record.id, recordToJSON(event.record));
+              this.listed(event.collection).add(event.record.id);
               // Made here again after a removal: that removal is not the room's to hear.
               this.xdb.forgetPendingRemoval?.(event.collection, event.record.id);
             }
@@ -622,7 +643,9 @@ export class XDBSyncAdapter {
               if (event.record.deleted && !event.removed) {
                 // Soft delete: update the record in Y.Map with deleted flag
                 ymap.set(event.record.id, recordToJSON(event.record));
+                this.listed(event.collection).add(event.record.id);
               } else {
+                this.listedHere.get(event.collection)?.delete(event.record.id);
                 // Hard delete: remove from Y.Map entirely. Told by `removed`,
                 // not by the record: one deleted first and then removed for
                 // good is announced as it was, deleted, and was kept in the
@@ -665,15 +688,21 @@ export class XDBSyncAdapter {
                 }
                 this.xdb.forgetPendingRemoval?.(event.collection, record.id);
               }
-              // A key this device lacks because it could not keep the record
-              // is not one it removed, and stays in the room.
+              // What this device listed before and no longer does, it removed.
+              // A key it never listed is not one it removed (`listedHere`),
+              // nor one it lacks because it could not keep the record; and a
+              // reload of storage removes nothing (XDBEvent.reload).
+              const before = this.listedHere.get(event.collection);
               const unstored = this.unstored.get(event.collection);
-              for (const k of Array.from(ymap.keys())) {
-                if (!listed.has(k) && !unstored?.has(k)) {
-                  ymap.delete(k);
-                  this.xdb.forgetPendingRemoval?.(event.collection, k);
+              if (!event.reload && before) {
+                for (const k of Array.from(ymap.keys())) {
+                  if (!listed.has(k) && before.has(k) && !unstored?.has(k)) {
+                    ymap.delete(k);
+                    this.xdb.forgetPendingRemoval?.(event.collection, k);
+                  }
                 }
               }
+              this.listedHere.set(event.collection, listed);
             }
             break;
 
@@ -749,6 +778,7 @@ export class XDBSyncAdapter {
               const mine = local.get(recordId);
               if (mine && isNewer(mine, record)) newer.push(mine);
               else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), recordToJSON(record))) this.xdb.writeRecord(collName, record);
+              this.listed(collName).add(recordId);
               this.markStored(collName, recordId);
             } else if (change.action === 'delete') {
               // Remote hard-delete

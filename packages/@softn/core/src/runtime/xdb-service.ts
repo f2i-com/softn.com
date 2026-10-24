@@ -13,6 +13,7 @@ import type { XDBRecord } from '../types';
 import { isTauri, tauriInvoke, tauriListen } from './xdb-native-transport';
 import { XDBStorageError } from './xdb-types';
 import { RECORD_STORAGE_BUDGET, StorageBudget } from './storage-budget';
+import { deepEqual } from './vm-state';
 import type {
   XDBEvent,
   XDBEventListener,
@@ -373,7 +374,7 @@ export class XDBService {
         }
         this.knownCollections.add(collection);
         this.hydrationFailed.delete(collection);
-        this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
+        this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection), reload: true });
       } catch (err) {
         console.error('[XDB] Failed to hydrate collection:', collection, err);
         this.hydrationFailed.add(collection);
@@ -896,12 +897,18 @@ export class XDBService {
     this._batchDepth--;
     if (this._batchDepth === 0 && this._batchDirty.size > 0) {
       const dirty = [...this._batchDirty];
+      const written = new Set(this._batchWritten);
       this._batchDirty.clear();
+      this._batchWritten.clear();
       for (const collection of dirty) {
-        this.emitNow({ type: 'refresh', collection, records: this.getCollectionData(collection) });
+        // A collection only read again during the batch is announced as a reload.
+        this.emitNow({ type: 'refresh', collection, records: this.getCollectionData(collection), ...(written.has(collection) ? {} : { reload: true }) });
       }
     }
   }
+
+  /** Collections changed during the batch by something other than a reload (`XDBEvent.reload`). */
+  private _batchWritten = new Set<string>();
 
   /**
    * Emit an event to listeners (or defer if batching)
@@ -910,6 +917,7 @@ export class XDBService {
     if (this._batchDepth > 0) {
       // Batching: just track which collections changed
       this._batchDirty.add(event.collection);
+      if (!event.reload) this._batchWritten.add(event.collection);
       return;
     }
     this.emitNow(event);
@@ -1167,6 +1175,7 @@ export class XDBService {
       try {
         const records = await tauriInvoke<XDBRecord[]>('get_collection', this.tauriArgs({ collection }));
         const coll = this.getOrCreateCollection(collection);
+        let changed = false;
         // Build a set of server IDs for cleanup
         const serverIds = new Set(records.map(r => r.id));
         // Merge: server records update cache, but preserve optimistic records
@@ -1175,18 +1184,26 @@ export class XDBService {
           const existing = coll.get(r.id);
           // Never revive a record that was locally deleted (delete was async, backend is stale)
           if (existing?.deleted) continue;
-          if (!existing || existing.updated_at <= r.updated_at) {
+          if (!existing || (existing.updated_at <= r.updated_at && !deepEqual(existing, r))) {
             coll.set(r.id, r);
+            changed = true;
           }
         }
         // Remove stale local records whose server-assigned IDs are no longer in backend
-        // (but keep optimistic records that haven't been resolved yet)
-        for (const localId of coll.keys()) {
-          if (!serverIds.has(localId) && !this.isOptimisticId(localId)) {
+        // (but keep optimistic records that haven't been resolved yet). A
+        // deleted one is kept: the native store lists live records only, and
+        // its tombstone is what tells peer sync and server sync it is gone.
+        for (const [localId, local] of coll) {
+          if (!serverIds.has(localId) && !this.isOptimisticId(localId) && !local.deleted) {
             coll.delete(localId);
+            changed = true;
           }
         }
-        this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
+        // Announced only when it changed something. Every <data> read on the
+        // desktop comes here and every announcement starts another one: a
+        // mounted <data> block re-read SQLite every 120 ms for as long as it
+        // was shown, and each read went to peer sync as a fresh `refresh`.
+        if (changed) this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection), reload: true });
         return records;
       } catch {
         // Expected after webview reload when stale callbacks exist. Local cache is still valid.
@@ -2429,7 +2446,7 @@ export class XDBService {
           console.error('[XDB] Native import was not committed; reloading the affected collections:', err);
           for (const collection of importedCollections) {
             try { await this.getAllAsync(collection); } catch { /* the hydration issue is already recorded */ }
-            this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
+            this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection), reload: true });
           }
           throw err instanceof Error ? err : new Error(String(err));
         });

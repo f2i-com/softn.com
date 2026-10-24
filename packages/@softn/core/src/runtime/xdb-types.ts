@@ -25,6 +25,14 @@ export interface XDBEvent {
    * deleted one: a record moved to the trash first, then emptied from it.
    */
   removed?: boolean;
+  /**
+   * On a `refresh`: the collection as storage holds it, read again (a page
+   * load, the desktop's native store). It lists what storage lists, which is
+   * not what this device changed: on the desktop a deleted record, or one
+   * whose write has not landed, is not listed. Peer sync removes nothing on
+   * one.
+   */
+  reload?: boolean;
 }
 
 /**
