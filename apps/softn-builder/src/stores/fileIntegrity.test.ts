@@ -69,6 +69,22 @@ describe('names a bundle cannot hold', () => {
     // A dot or two apart is a name like any other.
     expect(() => store().createFile('ui', 'v1.2.ui', 'ui')).not.toThrow();
   });
+
+  // A session saved before names were checked may hold the entry file renamed to `../main.ui`,
+  // at `ui/../main.ui`. Renamed by its path's folder (`ui/..`), it could never leave it, and the
+  // entry file cannot be deleted: the project could not be saved.
+  it('lets a file an earlier Builder named with a slash be renamed out of it', () => {
+    useFilesStore.setState((state) => {
+      const nodes = new Map(state.nodes);
+      nodes.set('main_ui', { ...nodes.get('main_ui')!, name: '../main.ui', path: 'ui/../main.ui' });
+      const uiFiles = new Map(state.uiFiles);
+      uiFiles.set('main_ui', { ...uiFiles.get('main_ui')!, path: 'ui/../main.ui' });
+      return { nodes, uiFiles };
+    });
+    store().renameFile('main_ui', 'main.ui');
+    expect(store().nodes.get('main_ui')?.path).toBe('ui/main.ui');
+    expect(store().uiFiles.get('main_ui')?.path).toBe('ui/main.ui');
+  });
 });
 
 describe('two files at one path', () => {

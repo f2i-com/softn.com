@@ -113,6 +113,17 @@ function parsePath(fullPath: string): { parent: string; name: string } {
   return { parent, name };
 }
 
+/**
+ * The folder a node is in, by the tree: what a rename keeps it in. Read from
+ * its path, a name an earlier Builder let through with a slash in it
+ * (`../main.ui`, at `ui/../main.ui`) gave `ui/..`, so the node could never be
+ * renamed out of a path no bundle can hold: its project could not be saved.
+ */
+function folderOf(nodes: Map<string, ProjectFileNode>, node: ProjectFileNode): string {
+  const folder = node.parentId ? nodes.get(node.parentId) : undefined;
+  return folder?.type === 'folder' ? folder.path : parsePath(node.path).parent;
+}
+
 // Normalize path (remove leading/trailing slashes, handle ..)
 function normalizePath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
@@ -726,7 +737,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     const folder = current.nodes.get(id);
     if (!folder || folder.type !== 'folder') return;
     const oldPath = folder.path;
-    const { parent } = parsePath(oldPath);
+    const parent = folderOf(current.nodes, folder);
     const newPath = parent ? `${parent}/${newName}` : newName;
     if (newPath === oldPath) return;
     const taken = nameReason(newName, newPath) ?? pathTakenReason(current.nodes, newPath, id);
@@ -899,10 +910,10 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   },
 
   renameFile: (id, newName) => {
-    const node = get().nodes.get(id);
+    const nodes = get().nodes;
+    const node = nodes.get(id);
     if (!node || node.type !== 'file') return;
-    const { parent } = parsePath(node.path);
-    get().moveFile(id, parent, newName);
+    get().moveFile(id, folderOf(nodes, node), newName);
   },
 
   moveFile: (id, newParentPath, newName) => {
