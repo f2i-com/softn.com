@@ -9,7 +9,7 @@ import { PAGE_PARSE, pageAndImports, pageParseProblems } from '../../lib/pageDia
 import { describeProblem, isSyntaxError, LOGIC_SYNTAX, logicSyntaxProblems } from '../../lib/logicCheck';
 import type { ThemeProviderProps } from '@softn/components';
 import { createPreviewAssetResolver } from '../../lib/previewAssets';
-import { declaredCapabilities } from '../../lib/declaredCapabilities';
+import { previewDeclaration, previewPermissionConfig } from '../../lib/previewPermissions';
 import { CodeFile, FileEditor } from './FileEditor';
 import { useEditStore } from '../../stores/editStore';
 import { confirmLeaveDraft, confirmShowing } from '../../lib/handEdit';
@@ -350,6 +350,26 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   }, [projectId, projectName, blueprint?.appName]);
 
   const manifest = resolveManifest(files);
+  // What the preview runs the app under (lib/previewPermissions.ts): what it
+  // asks for, withheld until it is allowed here, for this project and this
+  // declaration of it, and for as long as Studio is open. Kept by its text,
+  // so an edit to another file leaves it, and the devices it governs, as
+  // they are.
+  const permissionFile = files.get('permission.json')?.content;
+  const permissionText = typeof permissionFile === 'string' ? permissionFile : undefined;
+  const legacyPermissions = JSON.stringify(manifest?.permissions ?? null);
+  const declaration = useMemo(
+    () => previewDeclaration(permissionText, JSON.parse(legacyPermissions), projectId ?? ''),
+    [permissionText, legacyPermissions, projectId]
+  );
+  const [allowedKey, setAllowedKey] = useState<string | null>(null);
+  // An Allow answers the declaration it was given for: another project, or
+  // an edit to what this one asks for, is asked about afresh.
+  useEffect(() => {
+    setAllowedKey((allowed) => (allowed === declaration.key ? allowed : null));
+  }, [declaration.key]);
+  const previewAllowed = declaration.requested.length > 0 && allowedKey === declaration.key;
+  const previewPermissions = useMemo(() => previewPermissionConfig(declaration, allowedKey), [declaration, allowedKey]);
   const manifestPages = Array.isArray(manifest?.pages)
     ? (manifest.pages as Array<Record<string, unknown>>)
     : [];
@@ -803,18 +823,31 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     }
 
     if (isSoftNUIFile && softNSource && PreviewComponent) {
-      // The preview grants nothing: a call to the network, storage or a
-      // device fails here whatever permission.json declares, because there
-      // is no consent bar to grant it and a design preview is not the place
-      // to reach out from. That used to be silent — the failure named a
-      // missing permission.json the project did have — so the declared
-      // capabilities are named here, with where to run them for real.
-      const declared = declaredCapabilities(files.get('permission.json')?.content);
+      // What the project asks for is withheld until the person allows it
+      // here, as a runtime withholds it until they allow it there: a call to
+      // the network, storage or a device fails, and the page's pictures and
+      // files from other sites wait. The capabilities are named, with the
+      // Allow that grants them to this preview.
+      const requested = declaration.requested;
       const capabilityNote =
-        declared.length > 0 ? (
-          <div role="note" style={styles.capabilityNote}>
-            Preview grants no capabilities: {declared.join(', ')} {declared.length === 1 ? 'is' : 'are'} declared in permission.json, but calls to{' '}
-            {declared.length === 1 ? 'it' : 'them'} fail here. Use Run to open the bundle in the runtime, where they can be allowed.
+        requested.length > 0 ? (
+          <div role="note" style={styles.capabilityNote} data-preview-capabilities={previewAllowed ? 'allowed' : 'withheld'}>
+            {previewAllowed ? (
+              <>
+                Allowed in this preview: {requested.join(', ')}, until the project or its permission.json changes.{' '}
+                <button type="button" className="st-btn st-btn-sm" onClick={() => setAllowedKey(null)}>
+                  Withhold again
+                </button>
+              </>
+            ) : (
+              <>
+                This project asks for {requested.join(', ')}. {requested.length === 1 ? 'It is' : 'They are'} withheld here until you allow{' '}
+                {requested.length === 1 ? 'it' : 'them'}: calls to {requested.length === 1 ? 'it' : 'them'} fail, and nothing is fetched from another site.{' '}
+                <button type="button" className="st-btn st-btn-sm st-btn-primary" onClick={() => setAllowedKey(declaration.key)}>
+                  Allow in preview
+                </button>
+              </>
+            )}
           </div>
         ) : null;
       // The app's logic has stopped: said above the app, which still shows its last state and
@@ -864,7 +897,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           <ThemeProviderComponent followHost followSystem declaredMode={declaredThemeMode(manifest)} box={PREVIEW_THEME_BOX}>
             {previewStore && (
               <PreviewComponent
-                key={`${activeVFSFile}\u0000${refreshKey}`}
+                key={`${activeVFSFile}\u0000${refreshKey}\u0000${previewAllowed ? 'allowed' : 'withheld'}`}
                 source={softNSource}
                 functions={rendererFunctions}
                 assetResolver={resolveAssetUrl}
@@ -874,6 +907,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
                 python={composition?.python}
                 appId={previewStore.appId}
                 xdb={previewStore.xdb}
+                permissionConfig={previewPermissions}
                 scriptExecutionMode="main"
                 resumeSavedSyncRoom={false}
                 onLink={followPreviewLink}
@@ -892,7 +926,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           {capabilityNote}
           {previewStore && (
             <PreviewComponent
-              key={`${activeVFSFile}\u0000${refreshKey}`}
+              key={`${activeVFSFile}\u0000${refreshKey}\u0000${previewAllowed ? 'allowed' : 'withheld'}`}
               source={softNSource}
               functions={rendererFunctions}
               assetResolver={resolveAssetUrl}
@@ -902,6 +936,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
               python={composition?.python}
               appId={previewStore.appId}
               xdb={previewStore.xdb}
+              permissionConfig={previewPermissions}
               scriptExecutionMode="main"
               resumeSavedSyncRoom={false}
               onLink={followPreviewLink}
@@ -1077,9 +1112,6 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     </div>
   );
 };
-
-// Kept here for what has always imported it from the canvas; it lives with the check's use of it now.
-export { declaredCapabilities };
 
 const styles: Record<string, React.CSSProperties> = {
   canvasArea: {

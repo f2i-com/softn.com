@@ -12,7 +12,7 @@ import { debug } from '../../utils/debug';
 import { buildPermissionJson } from '../../utils/permissions';
 import type { CollectionDef } from '../../types/builder';
 import { previewSourceFor, undeclaredPythonPackage } from '../../utils/previewSource';
-import type { PermissionConfig } from '@softn/core';
+import { inspectDeclaration, type PermissionConfig } from '@softn/core';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
 import { PreviewProblems } from './PreviewProblems';
@@ -21,6 +21,9 @@ import { previewThemeProps } from '../../utils/previewTheme';
 // Three.js included, where main.tsx registers them to be fetched as a page
 // draws them.
 import { ThemeProvider } from '@softn/components/theme';
+
+/** Nothing declared: the preview enforces, and grants nothing, as a runtime would. */
+const NOTHING_DECLARED: PermissionConfig = Object.freeze({ permissions: Object.freeze({}) }) as PermissionConfig;
 
 // Error boundary to catch rendering errors in the preview
 interface ErrorBoundaryProps {
@@ -320,11 +323,29 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   const { projectId, logicSource, collections: projectCollections, themeMode, permissions, pythonPackages, setPythonPackages, source: retainedSource, assets: projectAssets } = useProjectStore();
   // The preview runs under the project's own declaration, as the runtime
   // will: a call the app has not declared fails here too, not first in the
-  // runtime after export.
-  const previewPermissionConfig = useMemo<PermissionConfig | undefined>(() => {
+  // runtime after export. And what it declares is withheld until it is
+  // allowed here, as a runtime withholds it until it is allowed there: the
+  // declaration was handed over as granted, so a declared `net` reached its
+  // hosts and a Camera opened the camera with nobody asked, and with nothing
+  // declared none was handed over, which core reads as a host enforcing
+  // nothing at all. An Allow answers this project's declaration as it
+  // stands, until it changes.
+  const declaration = useMemo(() => {
     const json = buildPermissionJson(permissions);
-    return json ? (JSON.parse(json) as PermissionConfig) : undefined;
-  }, [permissions]);
+    const declared = json ? (JSON.parse(json) as PermissionConfig) : null;
+    return { declared, requested: declared ? inspectDeclaration(declared).requested : [], key: `${projectId}\u0000${json ?? ''}` };
+  }, [permissions, projectId]);
+  const [allowedKey, setAllowedKey] = useState<string | null>(null);
+  useEffect(() => {
+    setAllowedKey((allowed) => (allowed === declaration.key ? allowed : null));
+  }, [declaration.key]);
+  const previewAllowed = declaration.requested.length > 0 && allowedKey === declaration.key;
+  const previewPermissionConfig = useMemo<PermissionConfig>(() => {
+    const { declared, requested } = declaration;
+    if (!declared) return NOTHING_DECLARED;
+    if (requested.length === 0 || previewAllowed) return declared;
+    return { app: declared.app, permissions: {}, consentPending: true };
+  }, [declaration, previewAllowed]);
   const { entities, seedData, recordIdentity } = useSchemaStore();
   const { activeFileId, uiFiles, logicFiles, assetFiles, nodes } = useFilesStore();
   const previewAssets = useMemo(() => new Map(
@@ -569,11 +590,14 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       );
 
       // Each start of the app has boundaries of its own, so a restart starts
-      // again a page that could not be drawn as well as an engine.
+      // again a page that could not be drawn as well as an engine. An Allow,
+      // and a Withhold, is a start too: the app is handed its declaration as
+      // it begins.
+      const startKey = `${run}:${previewAllowed ? 'allowed' : 'withheld'}`;
       const preview = (
-        <PreviewErrorBoundary key={run} fallback={renderError}>
+        <PreviewErrorBoundary key={startKey} fallback={renderError}>
           <PreviewComponent
-            key={run}
+            key={startKey}
             source={cleanSource}
             loading={loadingFallback}
             error={errorFallback}
@@ -600,7 +624,7 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
 
       return (
         <DeviceViewport width={dimensions.width} height={dimensions.height}>
-          <PreviewErrorBoundary key={run} fallback={renderError}>
+          <PreviewErrorBoundary key={startKey} fallback={renderError}>
             {/* The project's theme as its declaration, as a runtime is
                 handed it, and not as an editor's switch (utils/previewTheme.ts). */}
             <ThemeProvider {...previewThemeProps(themeMode)}>{preview}</ThemeProvider>
@@ -680,6 +704,26 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       <PreviewProblems run={run} onRestart={() => setRun((n) => n + 1)} onStopped={setStopped} />
       {sourceInfo && <div style={styles.infoBanner}>{sourceInfo}</div>}
       {collections.length > 0 && <div style={styles.infoBanner}>Try your app here. Records you add in the preview are thrown away when you leave it; the app’s saved records are edited in Data.</div>}
+      {declaration.requested.length > 0 && (
+        <div style={styles.infoBanner} role="note" data-preview-capabilities={previewAllowed ? 'allowed' : 'withheld'}>
+          {previewAllowed ? (
+            <>
+              Allowed in this preview: {declaration.requested.join(', ')}, until the app’s permissions change.{' '}
+              <button type="button" className="bl-btn bl-btn-sm" onClick={() => setAllowedKey(null)}>
+                Withhold again
+              </button>
+            </>
+          ) : (
+            <>
+              This app asks for {declaration.requested.join(', ')}. {declaration.requested.length === 1 ? 'It is' : 'They are'} withheld here until you allow{' '}
+              {declaration.requested.length === 1 ? 'it' : 'them'}, as the runtime asks first.{' '}
+              <button type="button" className="bl-btn bl-btn-sm bl-btn-primary" onClick={() => setAllowedKey(declaration.key)}>
+                Allow in preview
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       <div style={styles.previewWrapper}>
         <div

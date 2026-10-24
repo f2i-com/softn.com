@@ -93,14 +93,46 @@ describe('StablePreviewSurface', () => {
 });
 
 describe('declaredCapabilities', () => {
-  // The preview grants nothing, and used to say nothing: a declared
+  // The check grants nothing, and used to say nothing: a declared
   // capability failed with a message about a missing permission.json the
-  // project did have. The note names what is declared and where to run it.
+  // project did have.
   it('names only the capabilities a permission.json turns on', async () => {
-    const { declaredCapabilities } = await import('../src/components/canvas/VisualCanvas');
+    const { declaredCapabilities } = await import('../src/lib/declaredCapabilities');
     expect(declaredCapabilities(JSON.stringify({ permissions: { storage: { enabled: true }, net: { enabled: false }, mic: { enabled: 'true' } } }))).toEqual(['storage']);
     expect(declaredCapabilities(undefined)).toEqual([]);
     expect(declaredCapabilities('{not json')).toEqual([]);
     expect(declaredCapabilities(new Uint8Array([1]))).toEqual([]);
+  });
+});
+
+describe('what the preview runs an app under', () => {
+  // The preview was handed no declaration, which core reads as a host that
+  // enforces nothing: markup fetched any address it named and a Camera opened
+  // the camera, for a project opened from a link as for one's own.
+  it('grants nothing for a project that declares nothing, and enforces that', async () => {
+    const { previewDeclaration, previewPermissionConfig } = await import('../src/lib/previewPermissions');
+    const none = previewDeclaration(undefined, null, 'p1');
+    expect(none.declared).toBeNull();
+    expect(previewPermissionConfig(none, null)).toEqual({ permissions: {} });
+  });
+
+  it('withholds what is declared until it is allowed, for that project and that declaration only', async () => {
+    const { previewDeclaration, previewPermissionConfig } = await import('../src/lib/previewPermissions');
+    const json = JSON.stringify({ permissions: { net: { enabled: true, allowed_hosts: ['api.example.com'] }, storage: { enabled: true } } });
+    const declared = previewDeclaration(json, null, 'p1');
+    expect(declared.requested.sort()).toEqual(['net', 'storage']);
+    expect(previewPermissionConfig(declared, null)).toEqual({ permissions: {}, consentPending: true });
+    expect(previewPermissionConfig(declared, declared.key)).toEqual(JSON.parse(json));
+    // Another project, or another declaration of this one, is not what was allowed.
+    expect(previewPermissionConfig(previewDeclaration(json, null, 'p2'), declared.key)).toMatchObject({ consentPending: true });
+    const more = JSON.stringify({ permissions: { net: { enabled: true }, storage: { enabled: true } } });
+    expect(previewPermissionConfig(previewDeclaration(more, null, 'p1'), declared.key)).toMatchObject({ consentPending: true });
+  });
+
+  it('reads the manifest’s old permissions block where there is no permission.json, as the runtimes do', async () => {
+    const { previewDeclaration, previewPermissionConfig } = await import('../src/lib/previewPermissions');
+    const legacy = previewDeclaration(undefined, { network: true }, 'p1');
+    expect(legacy.requested).toEqual(['net']);
+    expect(previewPermissionConfig(legacy, null)).toMatchObject({ consentPending: true, permissions: {} });
   });
 });

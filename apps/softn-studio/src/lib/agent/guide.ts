@@ -434,7 +434,7 @@ ${torch ? `
 ${PYTHON_TORCH_SECTION}` : PYTHON_TORCH_UNDECLARED}` : JAVASCRIPT_LOGIC_SECTION}
 
 ## Capabilities (softn.*)
-\`softn.net.fetch\` (net), \`softn.camera.*\` (camera), \`softn.mic.*\` (mic), \`softn.files.*\` (files), \`softn.qr.*\` (qr), \`softn.ai.*\` (ai; \`softn.ai.gpu.*\` needs gpu), \`softn.storage.*\` (storage — server storage for a published app), \`db.startSync\` (sync). Each needs its capability in permission.json. \`softn.backend.call\`, \`softn.audio.*\` for bundle sounds and \`softn.input.captureKeys\` need none. The preview grants no capabilities, so these calls fail there; Run opens the app in the runtime.
+\`softn.net.fetch\` (net), \`softn.camera.*\` (camera), \`softn.mic.*\` (mic), \`softn.files.*\` (files), \`softn.qr.*\` (qr), \`softn.ai.*\` (ai; \`softn.ai.gpu.*\` needs gpu), \`softn.storage.*\` (storage — server storage for a published app), \`db.startSync\` (sync). Each needs its capability in permission.json. \`softn.backend.call\`, \`softn.audio.*\` for bundle sounds and \`softn.input.captureKeys\` need none. The preview withholds them until the person presses Allow in preview above the app, so these calls fail there until then; Run opens the app in the runtime.
 
 ## Common mistakes and the errors they cause
 - \`<script src="app${logicExt}"></script>\` naming a file that is not there: "app${logicExt} is referenced by index.html but is not in the bundle".

@@ -2,10 +2,10 @@
  * What a project's permission.json declares, and what to say of a call that
  * Studio did not grant.
  *
- * Neither the preview nor the agent's check grants a capability: there is no
- * consent bar to grant it, and a design preview is not the place to reach
- * out from. So a call to storage, the network or a device fails in both,
- * whatever permission.json declares.
+ * The agent's check grants no capability: there is nobody there to ask, so a
+ * call to storage, the network or a device fails in it, whatever
+ * permission.json declares. (The preview withholds them until the person
+ * allows them in it: previewPermissions.ts.)
  */
 
 /** The capabilities a permission.json turns on, by name; nothing for a file that is missing or not JSON. */
