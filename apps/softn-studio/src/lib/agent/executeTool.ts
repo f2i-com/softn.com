@@ -23,6 +23,7 @@ import { lineDiff, type LineDiff } from './diff';
 import { lookupComponents, readDocs } from './knowledge';
 import type { AgentToolCall, CheckReport, PlanItem } from './types';
 import { isLogicPath, isPagePath } from '../sourceKinds';
+import { SEARCH_DEADLINE_MS, searchProject } from './searchLines';
 
 export interface ToolContext {
   /** What the model has read in this run, and at which version: the "seen" rule. */
@@ -299,16 +300,17 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
         return fail(pattern, `The pattern is not a valid regular expression: ${err instanceof Error ? err.message : String(err)}. Pass regex: false to search for plain text.`);
       }
       const prefix = fromRoot(str(input, 'path_prefix') ?? '');
-      const hits: string[] = [];
-      let more = 0;
+      const searched: Array<[string, string]> = [];
       for (const [path, file] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
         if (isPrivatePath(path) || !path.startsWith(prefix) || typeof file.content !== 'string') continue;
-        file.content.split('\n').forEach((line, index) => {
-          if (!re.test(line)) return;
-          if (hits.length < 50) hits.push(`${path}:${index + 1}: ${line.trim().slice(0, 200)}`);
-          else more++;
-        });
+        searched.push([path, file.content]);
       }
+      // Off the page, and ended at a deadline (searchLines.ts says why).
+      const found = await searchProject(re.source, re.flags, searched);
+      if ('timedOut' in found) {
+        return fail(pattern, `The pattern took longer than ${SEARCH_DEADLINE_MS / 1000} seconds to search the project and was stopped: it backtracks too much (nested repetition such as (a+)+ or (\\w+\\s?)*). Search with a simpler pattern, or pass regex: false to search for plain text.`);
+      }
+      const { hits, more } = found;
       return { content: hits.length === 0 ? `No matches for ${pattern}.` : `${hits.join('\n')}${more > 0 ? `\n… ${more} more match(es)` : ''}`, isError: false, subject: pattern };
     }
 
