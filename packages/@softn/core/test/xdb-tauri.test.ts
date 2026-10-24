@@ -50,6 +50,12 @@ describe('XDB Service (Tauri mode)', () => {
     failNextImport = false;
     refuse = new Set();
     invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+      // As Tauri's IPC serialises a call's arguments (scripts/process-ipc-message-fn.js): an
+      // object holding `__TAURI_TO_IPC_KEY__` has that value called, and the whole call fails.
+      JSON.stringify(args ?? {}, (_key, value: unknown) =>
+        typeof value === 'object' && value !== null && '__TAURI_TO_IPC_KEY__' in value
+          ? (value as { __TAURI_TO_IPC_KEY__: () => unknown }).__TAURI_TO_IPC_KEY__()
+          : value);
       if (refuse.has(cmd)) throw new Error('SQLITE_READONLY: attempt to write a readonly database');
       switch (cmd) {
         case 'get_collections':
@@ -942,6 +948,34 @@ describe('XDB Service (Tauri mode)', () => {
       // An id already in use is not reused.
       const again = xdb.create('tasks', { title: 'other' }, { id: stored.id });
       expect(again.id).not.toBe(stored.id);
+    });
+  });
+
+  // A record a peer or the sync host brings, holding the key Tauri's IPC takes for its own,
+  // failed the native write it was in: one peer's record kept every record of its batch out of
+  // SQLite (each was in the cache alone, gone at the next start), and the store said writes failed.
+  describe("a record the native store cannot take, from a room or the host", () => {
+    const bad = () => makeRecord('bad', 'notes', { text: { __TAURI_TO_IPC_KEY__: 'x' } });
+
+    it('is passed over by a peer write, and the rest of the batch is stored', async () => {
+      const xdb = new XDBService(undefined, 'peer-ipc', 'peer-ipc-app');
+      await xdb.isReady;
+      const passed = xdb.writePeerRecords('notes', [makeRecord('a', 'notes', { text: 'a' }), bad(), makeRecord('b', 'notes', { text: 'b' })]);
+      expect(passed.map((record) => record.id)).toEqual(['bad']);
+      await flushPromises();
+      expect((backend.get('notes') ?? []).map((record) => record.id).sort()).toEqual(['a', 'b']);
+      expect(xdb.getAll('notes').map((record) => record.id).sort()).toEqual(['a', 'b']);
+      expect(xdb.getStorageStatus().issues).toEqual([]);
+    });
+
+    it('is not taken from the sync host', async () => {
+      const xdb = new XDBService(undefined, 'server-ipc', 'server-ipc-app');
+      await xdb.isReady;
+      const record = bad();
+      xdb.upsertFromServer('notes', { id: record.id, collection: 'notes', data: record.data, createdAt: record.created_at, updatedAt: record.updated_at });
+      await flushPromises();
+      expect(xdb.get('notes', 'bad')).toBeNull();
+      expect(xdb.getStorageStatus().issues).toEqual([]);
     });
   });
 

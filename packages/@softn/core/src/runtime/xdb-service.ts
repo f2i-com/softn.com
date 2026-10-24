@@ -2043,8 +2043,13 @@ export class XDBService {
   writePeerRecords(collection: string, list: readonly XDBRecord[]): XDBRecord[] {
     if (list.length === 0) return [];
     if (this.useTauri) {
-      this.writeRecords(collection, list);
-      return [];
+      // Passed over, as browser storage passes over a record JSON cannot hold:
+      // what the native store cannot read (a field named as Tauri's IPC's own,
+      // text it cannot hold, nesting past 100) failed the whole native write it
+      // was in, so one peer's record kept a room's batch out of SQLite.
+      const passed = list.filter((record) => !readableByNative(record, 0));
+      this.writeRecords(collection, passed.length === 0 ? list : list.filter((record) => !passed.includes(record)));
+      return passed;
     }
     const records = this.getAllCollectionData(collection);
     const at = new Map(records.map((r, i) => [r.id, i]));
@@ -2275,6 +2280,13 @@ export class XDBService {
     // Removed here for good (`hardDelete`) and not yet answered: there is no
     // row to keep deleted, and writing one brought the record back to life.
     if (keepLocalDelete && !existing) return;
+    // Not taken on the desktop when its native store cannot read it (a field
+    // named as Tauri's IPC's own, at any depth): the write failed after the
+    // cache had it, and the store said its writes were failing.
+    if (this.useTauri && !readableByNative(record.data, 1)) {
+      console.warn(`[XDB] A record from the sync host was not kept: the desktop's store cannot hold "${record.id}" of "${collection}".`);
+      return;
+    }
     const xdbRecord: XDBRecord = {
       id: record.id,
       // The collection it is written to, whatever the server's copy says: a
