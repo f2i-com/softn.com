@@ -102,11 +102,22 @@ fn mono_ms() -> f64 {
 fn main() {
     // A WASI guest has the runner's clock, so `Date` is the real time.
     zipp_vm::install_clock(epoch_ms, mono_ms);
-    let outcome = match exchange(ASK_JOB, &[]).and_then(|job| serde_json::from_slice::<serde_json::Value>(&job).ok()) {
+    let outcome = match exchange(ASK_JOB, &[]).and_then(|job| read_job(&job)) {
         Some(job) => run(&job),
         None => failed("the runner sent no job"),
     };
     let _ = exchange(ASK_DONE, outcome.to_string().as_bytes());
+}
+
+/// The runner's job, with no nesting limit of serde_json's own (128): the
+/// runner has held the request to its depth (worker.rs MAX_REQUEST_DEPTH),
+/// and json_to_host gives the logic nothing past 64 levels.
+fn read_job(job: &[u8]) -> Option<serde_json::Value> {
+    let mut parser = serde_json::Deserializer::from_slice(job);
+    parser.disable_recursion_limit();
+    let value: serde_json::Value = serde::Deserialize::deserialize(&mut parser).ok()?;
+    parser.end().ok()?;
+    Some(value)
 }
 
 fn failed(message: &str) -> serde_json::Value {
@@ -491,7 +502,13 @@ fn write_char(c: char, out: &mut String) {
         '\n' => out.push_str("\\n"),
         '\r' => out.push_str("\\r"),
         '\t' => out.push_str("\\t"),
-        c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+        c if (c as u32) < 0x20 => {
+            // \u00XX written in place, not one allocation per character.
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            out.push_str("\\u00");
+            out.push(HEX[(c as usize) >> 4] as char);
+            out.push(HEX[(c as usize) & 0xf] as char);
+        }
         c => out.push(c),
     }
 }

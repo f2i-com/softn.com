@@ -63,11 +63,17 @@ impl Guest {
         // this configuration and embedded at build time. It is never data
         // that arrived at run time.
         let module = unsafe { Module::deserialize(&engine, GUEST) }.map_err(|e| HostError::Library(format!("guest did not load: {e}")))?;
-        // One tick at the soft deadline (main.rs) trips every instance's deadline of one.
+        // From the soft deadline (main.rs) on, a tick every few milliseconds:
+        // an instance's deadline is one tick past the epoch it started at, so
+        // one tick alone would never stop an instance started after it (a
+        // request that waited for the database lock, or for migrations).
         let ticker = engine.clone();
         std::thread::spawn(move || {
             std::thread::sleep(crate::soft_deadline().saturating_duration_since(std::time::Instant::now()));
-            ticker.increment_epoch();
+            loop {
+                ticker.increment_epoch();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         });
         Ok(Self { engine, module })
     }
@@ -75,6 +81,11 @@ impl Guest {
     /// Run one job and return the guest's outcome. `call` answers its
     /// `db.query` calls; a job with no grant never makes one.
     pub fn run(&self, job: &Value, call: CallHandler) -> Result<Value, HostError> {
+        // Past the soft deadline (a long lock wait, slow migrations) there is
+        // no time left to run the logic and still answer.
+        if std::time::Instant::now() >= crate::soft_deadline() {
+            return Err(HostError::Library("the logic ran until the deadline".into()));
+        }
         let limits = StoreLimitsBuilder::new()
             .memory_size(MEMORY_BYTES)
             .instances(1)

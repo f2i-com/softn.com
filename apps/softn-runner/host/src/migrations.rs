@@ -336,7 +336,18 @@ fn execute_statement(db: &Connection, slice: &Slice, sql: &str) -> Result<(), Ho
         None => db.authorizer(Some(|ctx: AuthContext<'_>| migration_authorize(&ctx))),
     };
     installed.map_err(HostError::sqlite)?;
-    let result = db.execute_batch(text);
+    // Each statement stepped to its end, as node:sqlite's exec (sqlite3_exec)
+    // runs it: rusqlite's execute_batch steps once, so a SELECT whose second
+    // row fails (an integer overflow) passed here and failed there.
+    let result = (|| -> rusqlite::Result<()> {
+        use rusqlite::fallible_iterator::FallibleIterator as _;
+        let mut batch = rusqlite::Batch::new(db, text);
+        while let Some(mut statement) = batch.next()? {
+            let mut rows = statement.raw_query();
+            while rows.next()?.is_some() {}
+        }
+        Ok(())
+    })();
     let cleared = clear(db);
     result.map_err(HostError::sqlite)?;
     cleared

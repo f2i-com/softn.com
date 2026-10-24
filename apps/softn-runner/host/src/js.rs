@@ -174,7 +174,14 @@ pub fn write_string(s: &str, out: &mut String) {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 => {
+                // \u00XX, written in place: one allocation per character made
+                // a string of control characters many times slower than Node.
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.push_str("\\u00");
+                out.push(HEX[(c as usize) >> 4] as char);
+                out.push(HEX[(c as usize) & 0xf] as char);
+            }
             c => out.push(c),
         }
     }

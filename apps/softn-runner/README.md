@@ -43,11 +43,19 @@ so a request deserialises it rather than compiling it.
   5,000,000 steps a request, as in the Node runner.
 - The whole process has the Node runner's 20-second deadline, which ends it
   whatever it is doing, SQLite included. A quarter of a second before it, the
-  app's logic and any SQL statement of the request still running are stopped,
-  so the request fails, rolls back and is answered rather than killed.
-- SQLite keeps its temporary tables and sorts in memory, and the process's
-  SQLite memory is capped at 1 GiB, so a statement cannot fill the disk or
-  the machine's memory before the deadline comes.
+  app's logic and any SQL statement of the request still running are stopped
+  and no further host call runs, so the request fails, rolls back and is
+  answered rather than killed (a request still waiting for the database lock
+  then is not: that wait is SQLite's).
+- Once SQLite has ended a request's transaction under it (a statement's
+  `ON CONFLICT ROLLBACK`, an error it rolls back for, a write the deadline
+  interrupted), no further host call runs: each would commit by itself. The
+  request answers host_error, or its own answer if it asked for the rollback.
+  The Node runner and the Rust host do the same.
+- SQLite keeps its temporary tables and sorts in memory, and its memory is
+  capped at 1 GiB for the process, so a statement cannot fill the disk; a
+  query result past its 2 MiB is refused before the runner copies the values
+  that put it there.
 
 ## Building
 
@@ -84,6 +92,10 @@ on the static Linux build (`.github/workflows/verify.yml`, job `runner`).
 - The soft deadline and SQLite's memory above: under the Node runner a
   request that ran to the deadline was killed with no answer, and SQLite
   could spill to temporary files.
+- A request nested more than 1,000 levels deep is refused as invalid, where
+  JSON.parse takes any depth. No host sends one: PHP's json_decode passes on
+  none past 512 levels (FormLogic), and the PHP host none past 63. The logic
+  sees nothing past 64 levels on either runner.
 - `softn.time` is the Rust host's, on chrono, whose range ends before
   JavaScript's: `softn.time.format` of a time within two days of chrono's
   ends (the years 262,142 and -262,143) or past them is a failed host call,

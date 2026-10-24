@@ -29,6 +29,52 @@ use crate::{
 /// How many times the deadline may stop one migration before it is not started again.
 const MIGRATION_ATTEMPTS: u32 = 3;
 const MAX_INPUT_BYTES: usize = 6_000_000;
+/// How deep a request may nest: well past the 512 levels PHP's json_decode
+/// passes on (FormLogic's body parser; the PHP host stops at 63), and
+/// shallow enough to parse on the request thread's stack. JSON.parse has no
+/// limit; the logic sees nothing past 64 levels on either runner.
+const MAX_REQUEST_DEPTH: usize = 1000;
+
+/// The request as JSON.parse reads it, to MAX_REQUEST_DEPTH (serde_json's
+/// own limit, 128, refused a body FormLogic can send).
+pub(crate) fn parse_request(input: &str) -> Option<Value> {
+    if nesting_depth(input) > MAX_REQUEST_DEPTH {
+        return None;
+    }
+    let mut parser = serde_json::Deserializer::from_str(input);
+    parser.disable_recursion_limit();
+    let value: Value = serde::Deserialize::deserialize(&mut parser).ok()?;
+    parser.end().ok()?;
+    Some(value)
+}
+
+/// How deep the arrays and objects of JSON text nest, read without parsing
+/// it (strings skipped); for text that is not JSON the parse decides.
+fn nesting_depth(text: &str) -> usize {
+    let (mut depth, mut deepest, mut quoted, mut escaped) = (0usize, 0usize, false, false);
+    for byte in text.bytes() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'[' | b'{' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    deepest
+}
 
 pub struct Answer {
     pub status: u16,
@@ -303,8 +349,8 @@ fn handle(
     if input.len() > MAX_INPUT_BYTES {
         return Err(HostError::own("Input limit"));
     }
-    let mut request: Map<String, Value> = match serde_json::from_str(input) {
-        Ok(Value::Object(map)) => map,
+    let mut request: Map<String, Value> = match parse_request(input) {
+        Some(Value::Object(map)) => map,
         _ => return Err(HostError::own("Invalid request")),
     };
     let request_path = request.get("path").and_then(Value::as_str).unwrap_or("").to_string();

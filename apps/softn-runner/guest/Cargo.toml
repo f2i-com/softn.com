@@ -35,5 +35,5 @@ path = "src/main.rs"
 # matchers. build.mjs holds the tag to wasm-zipp/SOURCE.json.
 zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.29", default-features = false, features = ["safe-sandbox", "meter-only", "wasm-no-fs-loader", "wasm-single-agent", "wasm-compact-regex"] }
 serde = "1"
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "unbounded_depth"] }
 ryu = "1"

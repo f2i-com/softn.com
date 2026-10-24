@@ -267,6 +267,10 @@ test('a body 62 levels deep reaches the handler whole, which is why http.php tak
   assert.deepEqual(seen(nested(62,'"leaf"')),{levels:62,leaf:'leaf'});
   assert.deepEqual(seen(nested(61,'{}')),{levels:62,leaf:'missing'});
   assert.deepEqual(seen(nested(63,'"leaf"')),{levels:62,leaf:null},'what the runner would be handed if http.php let it through');
+  // And deeper, as a host whose body parser takes 512 levels hands it on
+  // (FormLogic's): answered the same way. softn-runner refused a body past
+  // serde_json's 128 levels.
+  assert.deepEqual(seen(nested(600,'"leaf"')),{levels:62,leaf:null});
 });
 
 test('object keys keep their order in and out, which the Rust host is held to as well',t=>{

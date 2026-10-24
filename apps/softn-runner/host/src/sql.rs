@@ -30,6 +30,9 @@ use crate::{js::MAX_SAFE, record_events::RecordEvents, HostError};
 /// and nothing that would make data an app already stored unreadable.
 pub const VDBE_OP_LIMIT: i32 = 100_000;
 
+/// sql.mjs: a query's rows, as JSON, may come to 2 MiB.
+const RESULT_LIMIT: usize = 2 * 1024 * 1024;
+
 /// Open the app's database as request-worker.mjs opens it.
 pub fn open(path: &Path) -> Result<Connection, HostError> {
     let conn = Connection::open(path).map_err(HostError::sqlite)?;
@@ -135,10 +138,18 @@ pub fn migration_authorize(ctx: &AuthContext<'_>) -> Authorization {
     })
 }
 
+/// What `scan_statement` reads of a statement.
+pub struct Scan {
+    pub keyword: String,
+    /// How many parameters it has, as SQLite numbers them.
+    pub parameters: usize,
+    /// Its :name, @name and $name parameters, each with its number.
+    pub named: Vec<(usize, String)>,
+}
+
 /// One statement, as the Rust host's `single_statement` reads it, with its
-/// leading keyword and its parameter count as SQLite numbers them
-/// (sql.mjs `scanStatement`).
-pub fn scan_statement(sql: &str) -> Result<(String, usize), HostError> {
+/// leading keyword and its parameters (sql.mjs `scanStatement`).
+pub fn scan_statement(sql: &str) -> Result<Scan, HostError> {
     if sql.is_empty() || sql.len() > 20_000 || sql.contains('\0') {
         return Err(HostError::own("SQL text exceeds host limits"));
     }
@@ -147,7 +158,7 @@ pub fn scan_statement(sql: &str) -> Result<(String, usize), HostError> {
     let space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\u{c}' | '\r');
     let id_char = |c: Option<&char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$' || (*c as u32) >= 0x80);
     let starts = |i: usize, s: &str| s.chars().enumerate().all(|(k, c)| chars.get(i + k) == Some(&c));
-    let mut named: Vec<String> = Vec::new();
+    let mut named: Vec<(usize, String)> = Vec::new();
     let (mut i, mut ended, mut parameters, mut keyword): (usize, bool, usize, Option<String>) = (0, false, 0, None);
     while i < n {
         let c = chars[i];
@@ -228,9 +239,9 @@ pub fn scan_statement(sql: &str) -> Result<(String, usize), HostError> {
             }
             if count > 0 {
                 let name: String = chars[i..j].iter().collect();
-                if !named.contains(&name) {
-                    named.push(name);
+                if !named.iter().any(|(_, known)| *known == name) {
                     parameters = parameters.saturating_add(1);
+                    named.push((parameters, name));
                 }
             }
             i = j.max(i + 1);
@@ -254,7 +265,7 @@ pub fn scan_statement(sql: &str) -> Result<(String, usize), HostError> {
     if parameters > 100 {
         return Err(HostError::own("SQL allows at most 100 binds"));
     }
-    Ok((keyword.unwrap_or_default(), parameters))
+    Ok(Scan { keyword: keyword.unwrap_or_default(), parameters, named })
 }
 
 /// sql.mjs FORGET_LAST_INSERT: the id an execute reports is its own row's.
@@ -322,7 +333,7 @@ impl Sql {
         let Some(Value::String(text)) = text else {
             return Err(HostError::own("SQL text exceeds host limits"));
         };
-        let (keyword, parameters) = scan_statement(text)?;
+        let Scan { keyword, parameters, named } = scan_statement(text)?;
         let allowed: &[&str] = if kind == "execute" { &["INSERT", "UPDATE", "DELETE", "REPLACE", "WITH"] } else { &["SELECT", "WITH", "VALUES"] };
         if !allowed.contains(&keyword.as_str()) {
             return Err(HostError::own(if kind == "execute" { "execute requires a DML statement" } else { "query requires a read-only statement" }));
@@ -374,7 +385,7 @@ impl Sql {
         // request fails and rolls back with an answer, rather than by the kill.
         let deadline = crate::soft_deadline();
         conn.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline)).map_err(HostError::sqlite)?;
-        let result = Self::run(conn, &mut statement, kind, values);
+        let result = Self::run(conn, &mut statement, kind, values, &named);
         drop(statement);
         let _ = conn.progress_handler(0, None::<fn() -> bool>);
         let cleared = clear(conn);
@@ -383,27 +394,57 @@ impl Sql {
         Ok(value)
     }
 
-    fn run(conn: &Connection, statement: &mut rusqlite::Statement<'_>, kind: &str, values: Vec<SqlValue>) -> Result<Value, HostError> {
-        // sql.mjs binds a statement with :name, @name or $name parameters by
-        // name, and node:sqlite then refuses two parameters whose names match
-        // without their first character (`:a` and `$a`, `?1` and `:1`).
-        {
-            let names: Vec<&str> = (1..=statement.parameter_count()).filter_map(|i| statement.parameter_name(i)).collect();
-            if names.iter().any(|name| name.starts_with([':', '@', '$'])) {
-                let mut bare: HashMap<&str, &str> = HashMap::new();
-                for full in names {
-                    if let Some(existing) = bare.insert(&full[1..], full).filter(|existing| *existing != full) {
-                        return Err(HostError::library(format!(
-                            "Cannot create bare named parameter '{}' because of conflicting names '{existing}' and '{full}'.",
-                            &full[1..]
-                        )));
-                    }
-                }
+    /// Bind as sql.mjs `bindArguments` hands the values to node:sqlite and as
+    /// node:sqlite binds them: the value for each :name, @name or $name the
+    /// scan found by that name, the others in order to the parameters
+    /// SQLite gives no name or a `?NNN` one. Where the scan and SQLite number
+    /// the parameters alike, value i is parameter i; they part only at a
+    /// parameter the scan does not know (SQLite's `#name`), which node:sqlite
+    /// passes over and leaves null.
+    fn bind(statement: &mut rusqlite::Statement<'_>, values: Vec<SqlValue>, named: &[(usize, String)]) -> Result<(), HostError> {
+        let mut by_name = Vec::new();
+        let mut positional = Vec::new();
+        for (i, value) in values.into_iter().enumerate() {
+            match named.iter().find(|(number, _)| *number == i + 1) {
+                Some((_, name)) => by_name.push((name, value)),
+                None => positional.push(value),
             }
         }
-        for (i, value) in values.into_iter().enumerate() {
-            statement.raw_bind_parameter(i + 1, value).map_err(HostError::sqlite)?;
+        if !by_name.is_empty() {
+            // Bound by name, node:sqlite first refuses two parameters whose
+            // names match without their first character (`:a` and `$a`,
+            // `?1` and `:1`).
+            let names: Vec<&str> = (1..=statement.parameter_count()).filter_map(|i| statement.parameter_name(i)).collect();
+            let mut bare: HashMap<&str, &str> = HashMap::new();
+            for full in names {
+                if let Some(existing) = bare.insert(&full[1..], full).filter(|existing| *existing != full) {
+                    return Err(HostError::library(format!(
+                        "Cannot create bare named parameter '{}' because of conflicting names '{existing}' and '{full}'.",
+                        &full[1..]
+                    )));
+                }
+            }
+            for (name, value) in by_name {
+                let index = statement
+                    .parameter_index(name)
+                    .map_err(HostError::sqlite)?
+                    .ok_or_else(|| HostError::library(format!("Unknown named parameter '{name}'")))?;
+                statement.raw_bind_parameter(index, value).map_err(HostError::sqlite)?;
+            }
         }
+        let mut index = 1;
+        for value in positional {
+            while statement.parameter_name(index).is_some_and(|name| !name.starts_with('?')) {
+                index += 1;
+            }
+            statement.raw_bind_parameter(index, value).map_err(HostError::sqlite)?;
+            index += 1;
+        }
+        Ok(())
+    }
+
+    fn run(conn: &Connection, statement: &mut rusqlite::Statement<'_>, kind: &str, values: Vec<SqlValue>, named: &[(usize, String)]) -> Result<Value, HostError> {
+        Self::bind(statement, values, named)?;
         if kind == "execute" {
             let changes = statement.raw_execute().map_err(HostError::sqlite)?;
             let id = conn.last_insert_rowid();
@@ -419,10 +460,23 @@ impl Sql {
         while let Some(row) = rows.next().map_err(HostError::sqlite)? {
             let mut object = Map::new();
             // node:sqlite reads the whole row, refusing an integer past the
-            // safe range as it goes; sql.mjs refuses a BLOB in what it read.
-            let mut binary = false;
+            // safe range as it goes; sql.mjs refuses a BLOB in what it read,
+            // then a result past 2 MiB. A text's JSON is at least as long as
+            // the text, so once the texts alone are past the limit the answer
+            // is that limit, known without copying them: a single SELECT
+            // could otherwise make the runner hold gigabytes.
+            let (mut binary, mut over) = (false, false);
+            let mut raw = bytes;
             for (i, name) in columns.iter().enumerate() {
                 let value = match row.get_ref(i).map_err(HostError::sqlite)? {
+                    ValueRef::Text(v) if over || raw + v.len() > RESULT_LIMIT => {
+                        over = true;
+                        Value::Null
+                    }
+                    ValueRef::Text(v) => {
+                        raw += v.len();
+                        String::from_utf8_lossy(v).into_owned().into()
+                    }
                     ValueRef::Null => Value::Null,
                     ValueRef::Integer(v) => {
                         if v.unsigned_abs() as f64 > MAX_SAFE {
@@ -431,7 +485,6 @@ impl Sql {
                         v.into()
                     }
                     ValueRef::Real(v) => serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number),
-                    ValueRef::Text(v) => String::from_utf8_lossy(v).into_owned().into(),
                     ValueRef::Blob(_) => {
                         binary = true;
                         Value::Null
@@ -442,9 +495,12 @@ impl Sql {
             if binary {
                 return Err(HostError::own("Binary SQL values are not supported"));
             }
+            if over {
+                return Err(HostError::own("Query result limit"));
+            }
             let row = Value::Object(object);
             bytes += crate::js::stringify(&row).len();
-            if bytes > 2 * 1024 * 1024 || output.len() >= 1000 {
+            if bytes > RESULT_LIMIT || output.len() >= 1000 {
                 return Err(HostError::own("Query result limit"));
             }
             if kind == "first" {
@@ -471,9 +527,11 @@ mod tests {
 
     #[test]
     fn statements_are_scanned_as_the_node_runner_scans_them() {
-        assert_eq!(scan_statement("select ?, ?3, :a, :a, @b").unwrap(), ("SELECT".into(), 5));
-        assert_eq!(scan_statement("  -- note\n with x as (select 1) select * from x; -- tail").unwrap().0, "WITH");
-        assert_eq!(scan_statement("select 'a;b'").unwrap().0, "SELECT");
+        let scan = scan_statement("select ?, ?3, :a, :a, @b").unwrap();
+        assert_eq!((scan.keyword.as_str(), scan.parameters), ("SELECT", 5));
+        assert_eq!(scan.named, vec![(4, ":a".to_string()), (5, "@b".to_string())]);
+        assert_eq!(scan_statement("  -- note\n with x as (select 1) select * from x; -- tail").unwrap().keyword, "WITH");
+        assert_eq!(scan_statement("select 'a;b'").unwrap().keyword, "SELECT");
         assert!(scan_statement("select 1; select 2").is_err());
         assert!(scan_statement("select /* open").is_err());
         // A parameter number past any count is refused, not an overflow.
@@ -511,5 +569,12 @@ mod tests {
         let big = "Value is too large to be represented as a JavaScript number: 9007199254740993";
         library("SELECT x'00' AS a, 9007199254740993 AS b", serde_json::json!([]), big);
         assert!(matches!(q("SELECT x'00' AS a, 1 AS b", serde_json::json!([])), Err(HostError::Own(m)) if m == "Binary SQL values are not supported"));
+        // SQLite's #name is a parameter the scan does not count: node:sqlite
+        // passes over it, and the value goes to the `?` after it.
+        assert_eq!(q("SELECT #a AS x, ? AS y", serde_json::json!([5])).unwrap(), serde_json::json!([{"x": null, "y": 5}]));
+        // A text past the result limit is that limit, read without copying it.
+        conn.execute("INSERT INTO items(name) VALUES(?1)", [ "x".repeat(RESULT_LIMIT + 1) ]).unwrap();
+        assert!(matches!(q("SELECT name FROM items", serde_json::json!([])), Err(HostError::Own(m)) if m == "Query result limit"));
+        assert!(matches!(q("SELECT x'00' AS b, name FROM items", serde_json::json!([])), Err(HostError::Own(m)) if m == "Binary SQL values are not supported"));
     }
 }
