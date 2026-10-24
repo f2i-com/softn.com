@@ -140,6 +140,21 @@ export function editStamp(previous: string | undefined, now = Date.now()): strin
  */
 export type StampSource = (collection: string, id: string) => string | undefined;
 
+/**
+ * Why the native store's import would refuse `record` for `collection`, or
+ * null: its `Record` takes every field, of these types, and import_records
+ * refuses an id of spaces and a record that names another collection.
+ */
+function nativeImportRefusal(record: XDBRecord, collection: string): string | null {
+  const row = record as unknown as Record<string, unknown>;
+  if (typeof row.id !== 'string' || row.id.trim() === '') return 'has no id';
+  if (row.collection !== collection) return `names ${JSON.stringify(row.collection)} as its collection`;
+  if (typeof row.created_at !== 'string' || typeof row.updated_at !== 'string' || typeof row.deleted !== 'boolean' || !('data' in row)) {
+    return 'is not a whole record (id, collection, data, created_at, updated_at, deleted)';
+  }
+  return null;
+}
+
 /** A record's data when it is an object, else nothing: an imported row's `data` may be anything. */
 function objectData(record: XDBRecord): Record<string, unknown> {
   const data = record.data as unknown;
@@ -2650,20 +2665,30 @@ export class XDBService {
       };
     }
 
-    // The native store keeps records by id alone and refuses an import that
-    // holds a record of another collection (import_records), but it answers
-    // after the cache below has changed and peer sync has carried the import
-    // into the room, where it stayed, and the next opening brought it back.
-    // So that refusal is made here, before anything changes.
+    // What the native store would refuse of this import (import_records),
+    // refused here before anything changes: it answers after the cache below
+    // has changed and sync has been told of the import, so a refusal there
+    // left the import in the room and on the sync server, a replacement's
+    // dropped records dropped with it, and the next sync brought them back
+    // here. A record must be one its native shape takes, with a real id, of
+    // the collection it is imported into; and records are kept by id alone,
+    // so not a live record of another collection (a deleted one it writes
+    // over), here or earlier in this import.
     const owner = new Map<string, string>();
-    for (const [collection, coll] of this.memoryStore) for (const id of coll.keys()) owner.set(id, collection);
+    for (const [collection, coll] of this.memoryStore) {
+      for (const [id, record] of coll) if (!record.deleted) owner.set(id, collection);
+    }
     for (const plan of plans) {
+      if (plan.collection.trim() === '') {
+        throw new XDBStorageError('invalid-data', 'Import refused: a collection has no name; nothing was changed.');
+      }
       for (const record of plan.records) {
-        const held = owner.get(record.id);
-        if (held !== undefined && held !== plan.collection) {
-          throw new XDBStorageError('invalid-data', `Import refused: record "${record.id}" for "${plan.collection}" is a record of "${held}" here; nothing was changed.`, plan.collection);
+        const refusal = nativeImportRefusal(record, plan.collection)
+          ?? (owner.has(record.id) && owner.get(record.id) !== plan.collection ? `is a record of "${owner.get(record.id)}" here` : null);
+        if (refusal !== null) {
+          throw new XDBStorageError('invalid-data', `Import refused: record "${record.id}" for "${plan.collection}" ${refusal}; nothing was changed.`, plan.collection);
         }
-        owner.set(record.id, plan.collection);
+        if (!record.deleted) owner.set(record.id, plan.collection);
       }
     }
     for (const plan of plans) {

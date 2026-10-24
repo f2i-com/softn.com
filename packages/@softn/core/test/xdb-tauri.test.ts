@@ -56,7 +56,8 @@ describe('XDB Service (Tauri mode)', () => {
           return Array.from(backend.keys());
         case 'get_collection': {
           const collection = String(args?.collection ?? '');
-          return backend.get(collection) ?? [];
+          // As XDB's command: live records alone (`deleted = 0`).
+          return (backend.get(collection) ?? []).filter((r) => !r.deleted);
         }
         case 'create_record': {
           const payload = args?.payload as { collection: string; data: Record<string, unknown> };
@@ -476,6 +477,35 @@ describe('XDB Service (Tauri mode)', () => {
     expect(heard).toEqual([]);
     expect(xdb.getAll('public')).toEqual([]);
     expect(xdb.get('private', 'shared-id')?.data).toEqual({ secret: 1 });
+  });
+
+  // What the native store refuses of an import was refused after the cache
+  // had changed and sync had been told: refused here first, by the native
+  // rules. A record another collection deleted in an earlier session is not
+  // in the cache, and the native store writes over it (db.rs).
+  it('refuses up front what the native store would, and takes a record another collection deleted', async () => {
+    backend.set('private', [makeRecord('gone-id', 'private', { old: true }, { deleted: true })]);
+    backend.set('public', [makeRecord('keep1', 'public', {}), makeRecord('keep2', 'public', {})]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    const heard: string[] = [];
+    xdb.subscribeAll((event) => heard.push(`${event.type}:${event.collection}`));
+    invokeMock.mockClear();
+    for (const bad of [
+      { ...makeRecord('named-private', 'public', {}), collection: 'private' },
+      makeRecord('   ', 'public', {}),
+      { id: 'half', collection: 'public', data: {} } as unknown as XDBRecord,
+    ]) {
+      expect(() => xdb.import({ version: 1, exportedAt: '', collections: { public: [bad] } }, { merge: false })).toThrow(/Import refused/);
+    }
+    expect(invokeMock).not.toHaveBeenCalledWith('import_records', expect.anything());
+    expect(heard).toEqual([]);
+    expect(xdb.getAll('public').map((r) => r.id).sort()).toEqual(['keep1', 'keep2']);
+
+    const { persisted } = xdb.import({ version: 1, exportedAt: '', collections: { public: [makeRecord('gone-id', 'public', { imported: true })] } });
+    await persisted;
+    expect(invokeMock).toHaveBeenCalledWith('import_records', expect.anything());
+    expect(xdb.get('public', 'gone-id')?.data).toEqual({ imported: true });
   });
 
   it('restoreAsync refuses a partial restore unless the caller accepts it', async () => {

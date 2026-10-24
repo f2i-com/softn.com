@@ -1094,6 +1094,20 @@ fn an_import_does_not_take_a_record_of_another_collection() {
     assert_eq!((kept.collection.as_str(), &kept.data), ("private", &json!({ "title": "my secret" })));
     // All or nothing: the record that was fine is not written either.
     assert!(live_ids(&db, "public").is_empty());
+
+    // A record another collection deleted is written over: the page, which holds live
+    // records alone after loading, cannot refuse it before it has changed anything.
+    db.upsert_record(Record { collection: "private".into(), ..note("gone-id", "deleted") }).unwrap();
+    db.delete_record("gone-id").unwrap();
+    let batch = CollectionImport {
+        collection: "public".into(),
+        replace: false,
+        records: vec![Record { collection: "public".into(), ..note("gone-id", "imported") }],
+    };
+    db.import_records(vec![batch]).unwrap();
+    let moved = db.get_record("gone-id").unwrap();
+    assert_eq!((moved.collection.as_str(), moved.deleted), ("public", false));
+    assert_eq!(live_ids(&db, "public"), vec!["gone-id"]);
 }
 
 /// A peer names any collection it likes, and each one asked about was a document made and

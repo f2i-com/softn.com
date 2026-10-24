@@ -1047,6 +1047,19 @@ impl XdbDatabase {
         })
     }
 
+    /// Whether `record`'s id is a live record of another collection here: what an import
+    /// refuses. A deleted one (a tombstone) is written over, moved into the import's
+    /// collection: the page refuses such an import before it changes anything, by the records
+    /// it holds, and after loading it holds live records alone, so a refusal here for a
+    /// tombstone came after the page had changed its records and told sync of the import.
+    fn live_in_another_collection(&self, record: &Record) -> DbResult<bool> {
+        let held: Option<String> = self
+            .conn
+            .query_row("SELECT collection FROM records WHERE id = ?1 AND deleted = 0", params![&record.id], |row| row.get(0))
+            .optional()?;
+        Ok(held.is_some_and(|collection| collection != record.collection))
+    }
+
     /// Whether `record`'s id is a record of another collection here. Records are kept by id
     /// alone, so writing it would replace that record and move it into `record`'s collection:
     /// a peer or a sync server writing in one collection reached a record of another, one
@@ -1297,7 +1310,7 @@ impl XdbDatabase {
                     // Records are kept by id alone: one another collection holds would be
                     // moved into this one, out of the other with no tombstone, as
                     // upsert_record refuses to do. The whole import is refused instead.
-                    if this.held_by_another_collection(&record)? {
+                    if this.live_in_another_collection(&record)? {
                         return Err(DbError::InvalidOperation(format!(
                             "Record '{}' imported into '{}' is a record of another collection here",
                             record.id, record.collection
