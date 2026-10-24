@@ -2650,6 +2650,22 @@ export class XDBService {
       };
     }
 
+    // The native store keeps records by id alone and refuses an import that
+    // holds a record of another collection (import_records), but it answers
+    // after the cache below has changed and peer sync has carried the import
+    // into the room, where it stayed, and the next opening brought it back.
+    // So that refusal is made here, before anything changes.
+    const owner = new Map<string, string>();
+    for (const [collection, coll] of this.memoryStore) for (const id of coll.keys()) owner.set(id, collection);
+    for (const plan of plans) {
+      for (const record of plan.records) {
+        const held = owner.get(record.id);
+        if (held !== undefined && held !== plan.collection) {
+          throw new XDBStorageError('invalid-data', `Import refused: record "${record.id}" for "${plan.collection}" is a record of "${held}" here; nothing was changed.`, plan.collection);
+        }
+        owner.set(record.id, plan.collection);
+      }
+    }
     for (const plan of plans) {
       const before = this.getAllCollectionData(plan.collection);
       const after = XDBService.mergePlan(before, plan);

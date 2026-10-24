@@ -460,6 +460,24 @@ describe('XDB Service (Tauri mode)', () => {
     errors.mockRestore();
   });
 
+  // The native store refuses an import holding a record of another collection,
+  // but answered after the cache had changed and peer sync had carried the
+  // import into the room, which kept it.
+  it('refuses, before changing anything, an import holding a record of another collection', async () => {
+    backend.set('private', [makeRecord('shared-id', 'private', { secret: 1 })]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    const heard: string[] = [];
+    xdb.subscribeAll((event) => heard.push(`${event.type}:${event.collection}`));
+    invokeMock.mockClear();
+    const planted = makeRecord('shared-id', 'public', { planted: true });
+    expect(() => xdb.import({ version: 1, exportedAt: '', collections: { public: [makeRecord('fine', 'public', {}), planted] } })).toThrow(/record of "private"/);
+    expect(invokeMock).not.toHaveBeenCalledWith('import_records', expect.anything());
+    expect(heard).toEqual([]);
+    expect(xdb.getAll('public')).toEqual([]);
+    expect(xdb.get('private', 'shared-id')?.data).toEqual({ secret: 1 });
+  });
+
   it('restoreAsync refuses a partial restore unless the caller accepts it', async () => {
     const xdb = new XDBService(undefined, 'test-xdb');
     await xdb.isReady;
