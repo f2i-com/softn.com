@@ -36,7 +36,10 @@ self.addEventListener('install', function (event) {
 self.addEventListener('activate', function (event) {
   event.waitUntil(
     caches.keys().then(function (keys) {
-      return Promise.all(keys.filter(function (key) { return key !== VERSION; }).map(function (key) { return caches.delete(key); }));
+      // This worker's older caches, not the app's downloaded models (core's
+      // model-host.ts keeps them in softn-models-v1), which every bump of
+      // VERSION threw away.
+      return Promise.all(keys.filter(function (key) { return key !== VERSION && key !== 'softn-models-v1'; }).map(function (key) { return caches.delete(key); }));
     }).then(function () { return self.clients.claim(); })
   );
 });

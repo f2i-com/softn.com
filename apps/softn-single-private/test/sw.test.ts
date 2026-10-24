@@ -12,14 +12,16 @@ import { describe, expect, it } from 'vitest';
 const source = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
 const SCOPE = 'https://app.test/';
 
-type FetchHandler = (event: { request: Request; respondWith(answer: Promise<Response>): void }) => void;
+type FetchHandler = (event: { request: Request; respondWith(answer: Promise<Response>): void; waitUntil(work: Promise<unknown>): void }) => void;
 
 function install(stores: Record<string, Record<string, () => Response>>, network: (request: Request) => Promise<Response>) {
   const handlers: Record<string, FetchHandler> = {};
+  const deleted: string[] = [];
   const version = /var VERSION = '([^']+)'/.exec(source)![1];
   const self = {
     registration: { scope: SCOPE },
     location: { origin: new URL(SCOPE).origin },
+    clients: { claim: async () => {} },
     addEventListener: (type: string, listener: FetchHandler) => { handlers[type] = listener; },
   };
   const open = async (name: string) => ({
@@ -29,6 +31,10 @@ function install(stores: Record<string, Record<string, () => Response>>, network
   const caches = {
     keys: async () => Object.keys(stores),
     open,
+    delete: async (name: string) => {
+      deleted.push(name);
+      return delete stores[name];
+    },
     match: async (request: Request | string) => {
       for (const name of Object.keys(stores)) {
         const found = await (await open(name)).match(request);
@@ -40,10 +46,16 @@ function install(stores: Record<string, Record<string, () => Response>>, network
   new Function('self', 'caches', 'fetch', source)(self, caches, network);
   const fetchFor = async (request: Request) => {
     let answer: Promise<Response> | undefined;
-    handlers.fetch({ request, respondWith: (promise) => { answer = promise; } });
+    handlers.fetch({ request, respondWith: (promise) => { answer = promise; }, waitUntil: () => {} });
     return answer!;
   };
-  return { fetchFor, version };
+  const activate = async () => {
+    let work: Promise<unknown> = Promise.resolve();
+    handlers.activate({ request: new Request(SCOPE), respondWith: () => {}, waitUntil: (promise) => { work = promise; } });
+    await work;
+    return deleted;
+  };
+  return { fetchFor, version, activate };
 }
 
 describe('the private host\'s service worker', () => {
@@ -62,5 +74,13 @@ describe('the private host\'s service worker', () => {
     const { version } = install({}, async () => new Response(''));
     const { fetchFor } = install({ [version]: { [asset]: () => new Response('cached runtime') } }, async () => { throw new TypeError('offline'); });
     expect(await (await fetchFor(new Request(asset))).text()).toBe('cached runtime');
+  });
+
+  // Every cache but this worker's own went when it activated, and with them
+  // the models apps had downloaded, at every bump of VERSION.
+  it('keeps the downloaded models when a new version of it activates', async () => {
+    const { version } = install({}, async () => new Response(''));
+    const { activate } = install({ 'softn-serve-sw-1': {}, [version]: {}, 'softn-models-v1': {} }, async () => new Response(''));
+    expect(await activate()).toEqual(['softn-serve-sw-1']);
   });
 });
