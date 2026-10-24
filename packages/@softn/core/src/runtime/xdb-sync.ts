@@ -70,6 +70,13 @@ export interface XDBSyncOptions {
    */
   roomScope?: string;
   /**
+   * The name the room is joined under on the wire, in place of
+   * `<roomScope>/<room>`: for a private room with no key, one derived from
+   * its name, which is then its password (sync-room-security.ts,
+   * privateRoomSecret). Set by the host, never by a script.
+   */
+  wireRoom?: string;
+  /**
    * The collections the room carries, both ways (sync-room-security.ts sets
    * it from the bundle's `permissions.sync.roomCollections` and the script's
    * option). Without it a room carries every collection whose name does not
@@ -240,9 +247,8 @@ export class XDBSyncAdapter {
       // Empty array prevents y-webrtc from using its built-in public servers
       providerOptions.signaling = [];
     }
-    const wireRoom = this.options.roomScope
-      ? `${this.options.roomScope}/${this.options.room}`
-      : this.options.room;
+    const wireRoom = this.options.wireRoom
+      ?? (this.options.roomScope ? `${this.options.roomScope}/${this.options.room}` : this.options.room);
     debug('[XDB Sync] Connecting to room:', this.options.room,
       '| password:', effectivePassword ? '(encrypted)' : '(none)',
       '| signaling:', providerOptions.signaling);

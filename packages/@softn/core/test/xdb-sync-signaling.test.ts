@@ -23,10 +23,14 @@ class FakeSocket {
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: (() => void) | null = null;
+  /** What was sent: the signalling server's view. */
+  sent: string[] = [];
   constructor(readonly url: string) {
     FakeSocket.made.push(this);
   }
-  send(): void {}
+  send(message: unknown): void {
+    this.sent.push(String(message));
+  }
   close(): void {
     this.closed = true;
   }
@@ -73,6 +77,24 @@ describe('the signaling sockets of apps that sync', () => {
 
     for (const opened of views.splice(0)) opened.close();
     expect(openSockets()).toBe(0);
+  });
+});
+
+describe('a private room given its secret', () => {
+  // What sync-room-security.ts's privateRoomSecret hands the adapter.
+  it('is known to the signalling server by the derived name alone, and nothing it is sent names the room', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket);
+    views.push(openAppView('secret-app'));
+    const wire = 'ab'.repeat(32);
+    startSync({ room: 'family-notes-7f3k', appId: 'secret-app', roomScope: 'secret-app', wireRoom: wire, password: 'family-notes-7f3k', signaling: [SIGNALING], persist: false });
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.onopen?.();
+    // The announcement is sealed with a key from the password, which takes a moment.
+    await vi.waitFor(() => expect(socket.sent.some((m) => m.includes('"publish"'))).toBe(true));
+    expect(socket.sent.some((m) => m.includes('"subscribe"') && m.includes(wire))).toBe(true);
+    const seen = socket.sent.join('\n');
+    expect(seen).not.toMatch(/family|secret-app/);
+    expect(seen).not.toContain('"announce"');
   });
 });
 

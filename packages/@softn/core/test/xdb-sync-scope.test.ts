@@ -114,6 +114,13 @@ describe('two apps that choose the same room label', () => {
     expect(wireRooms[2]).toBe('lobby');
   });
 
+  it('join a private room under the name the host derived for it, where it gives one', () => {
+    startSync({ room: 'lobby', appId: 'AppA', roomScope: 'com.example.a', wireRoom: 'f'.repeat(64), password: 'lobby', signaling: [] });
+    expect(wireRooms).toEqual(['f'.repeat(64)]);
+    expect(getSyncAdapter('lobby', 'AppA')?.getStatus().room).toBe('lobby');
+    expect(persistenceNames).toEqual([persistenceNameFor('AppA', 'lobby')]);
+  });
+
   it('keep separate offline caches', () => {
     startSync({ room: 'lobby', appId: 'AppA', signaling: [] });
     startSync({ room: 'lobby', appId: 'AppB', signaling: [] });

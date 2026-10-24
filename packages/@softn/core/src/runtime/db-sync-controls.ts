@@ -19,7 +19,7 @@
 
 import { bindSyncOptions } from './host-bound-sync-options';
 import { filterSignalingUrls } from './egress-policy';
-import { applyRoomSecurity, forgetRoomCollections, unmarkRoomShared } from './sync-room-security';
+import { applyRoomSecurity, forgetRoomCollections, privateRoomSecret, unmarkRoomShared } from './sync-room-security';
 import { readSavedSyncRoom } from './xdb-sync-key';
 import { appClosings } from './sync-activity';
 import type { PermissionConfig } from './script-runtime';
@@ -35,6 +35,46 @@ export function getSyncModuleCache(): SyncModule | null {
 
 export function setSyncModuleCache(mod: SyncModule): void {
   syncModuleCache = mod;
+}
+
+/**
+ * Starts on their way, so that a stop wins over a start made before it. A
+ * start waits for the sync module and, for a private room, for its secret
+ * (PBKDF2, some tens of milliseconds); a `stopSync` in that time ran first,
+ * found no room to close, and the start then opened it. Counted per app and
+ * room, and per app for a `stopSync()` of every room, across every surface
+ * (the namespace and the renderer's helpers are separate objects).
+ */
+const roomStarts = new Map<string, number>();
+const appStops = new Map<string, number>();
+
+interface StartTicket {
+  key: string;
+  app: string;
+  start: number;
+  stops: number;
+}
+
+function startTicket(appId: string | undefined, room: string): StartTicket {
+  const key = JSON.stringify([appId ?? null, room]);
+  const start = (roomStarts.get(key) ?? 0) + 1;
+  roomStarts.set(key, start);
+  const app = appId ?? '';
+  return { key, app, start, stops: appStops.get(app) ?? 0 };
+}
+
+function startStillWanted(ticket: StartTicket): boolean {
+  return roomStarts.get(ticket.key) === ticket.start && (appStops.get(ticket.app) ?? 0) === ticket.stops;
+}
+
+function cancelStarts(appId: string | undefined, room?: string): void {
+  if (room === undefined) {
+    const app = appId ?? '';
+    appStops.set(app, (appStops.get(app) ?? 0) + 1);
+    return;
+  }
+  const key = JSON.stringify([appId ?? null, room]);
+  roomStarts.set(key, (roomStarts.get(key) ?? 0) + 1);
 }
 
 export interface SyncStatusShape {
@@ -94,13 +134,17 @@ export function createSyncControls(options: SyncControlsOptions): SyncControls {
         if (allowed.length > 0) syncOpts.signaling = allowed;
         else delete syncOpts.signaling;
       }
-      applyRoomSecurity(syncOpts, { room, appId, permissionConfig, syncEncryptionKeyHex });
+      const shared = applyRoomSecurity(syncOpts, { room, appId, permissionConfig, syncEncryptionKeyHex });
       const closings = appClosings(appId);
-      import('./xdb-sync')
-        .then((mod) => {
+      const ticket = startTicket(appId, room);
+      Promise.all([import('./xdb-sync'), privateRoomSecret(syncOpts, shared)])
+        .then(([mod]) => {
           syncModuleCache = mod;
           // The app closed while the module loaded: nothing would close the room.
           if (appClosings(appId) !== closings) return;
+          // Stopped, or started again, while the module loaded or the room's
+          // secret was worked out: the stop came first, and must hold.
+          if (!startStillWanted(ticket)) return;
           mod.startSync(syncOpts as unknown as import('./xdb-sync').XDBSyncOptions);
         })
         .catch((err) => {
@@ -109,6 +153,7 @@ export function createSyncControls(options: SyncControlsOptions): SyncControls {
     },
 
     stopSync: (room) => {
+      cancelStarts(appId, room);
       // A stopped room may be reopened private, or carrying other collections:
       // the shared mark and the list go with it.
       unmarkRoomShared(appId, room);

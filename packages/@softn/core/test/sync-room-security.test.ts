@@ -29,6 +29,7 @@ import {
   isRoomMarkedShared,
   legacySharedFlagKey,
   markRoomShared,
+  privateRoomWireName,
   sharedRoomFlagKey,
   unmarkRoomShared,
 } from '../src/runtime/sync-room-security';
@@ -191,6 +192,91 @@ describe('the collections a room carries', () => {
     await flush();
     expect(started[0].collections).toEqual(['scores']);
     expect('collections' in started[1]).toBe(false);
+  });
+});
+
+describe('a private room with no key', () => {
+  // SoftN's own hosts give no per-user key, so this is every private room.
+  const keyless = () => createDBNamespace(() => granted, APP);
+  const settled = () => new Promise((resolve) => setTimeout(resolve, 400));
+
+  it('is joined under a name derived from its own, and encrypted with its own', async () => {
+    keyless().startSync('family-notes-7f3k');
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    const opts = started[0];
+    expect(opts.wireRoom).toMatch(/^[0-9a-f]{64}$/);
+    expect(String(opts.wireRoom)).not.toContain('family');
+    expect(opts.password).toBe('family-notes-7f3k');
+    // The app, and its offline cache, still know the room by its name.
+    expect(opts.room).toBe('family-notes-7f3k');
+    expect(opts.roomScope).toBe(APP);
+  });
+
+  it('derives it with PBKDF2-SHA-256 over the name, salted with the scope: one name for one room of one app', async () => {
+    // The derivation is what peers meet by; a change to it is a migration.
+    const { pbkdf2Sync } = await import('node:crypto');
+    const expected = pbkdf2Sync('lobby', 'softn-room-v2:com.example.a', 100_000, 32, 'sha256').toString('hex');
+    expect(await privateRoomWireName('com.example.a', 'lobby')).toBe(expected);
+    expect(await privateRoomWireName('com.example.b', 'lobby')).not.toBe(expected);
+    expect(await privateRoomWireName('com.example.a', 'lobby2')).not.toBe(expected);
+  });
+
+  // One start at a time: vitest hands a dynamic import of the mocked sync
+  // module the real one when another is in flight (so do the tests above).
+  it('is the only room given one: a shared room, and one with a key, are as they were', async () => {
+    keyless().startSync('open', { sharedRoom: true });
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    createDBNamespace(() => granted, APP, 'host-key').startSync('hosted');
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    keyless().startSync('own', { password: 'the script’s own' });
+    await vi.waitFor(() => expect(started).toHaveLength(3));
+    for (const opts of started) expect(opts.wireRoom).toBeUndefined();
+    expect(started.find((o) => o.room === 'open')?.password).toBe('softn-shared:open');
+    expect(started.find((o) => o.room === 'own')?.password).toBe('the script’s own');
+  });
+
+  it('cannot be named on the wire by the script', async () => {
+    keyless().startSync('lobby', { sharedRoom: true, wireRoom: 'com.other.app/lobby' });
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    expect(started[0].wireRoom).toBeUndefined();
+  });
+
+  it('is not opened when it is stopped while its secret is worked out', async () => {
+    const ns = keyless();
+    ns.startSync('lobby');
+    ns.stopSync('lobby');
+    await settled();
+    ns.startSync('other');
+    await flush();
+    // Every room of the app, while the secret of `other` is still being worked out.
+    ns.stopSync();
+    await settled();
+    expect(started).toEqual([]);
+  });
+
+  it('is opened when it is started again after a stop', async () => {
+    const ns = keyless();
+    ns.startSync('lobby');
+    ns.stopSync('lobby');
+    await flush();
+    ns.startSync('lobby');
+    await settled();
+    expect(started.map((o) => o.room)).toEqual(['lobby']);
+  });
+
+  it('is joined under its name, unencrypted, where the page has no Web Crypto, and the console says so', async () => {
+    vi.stubGlobal('crypto', {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      keyless().startSync('lobby');
+      await vi.waitFor(() => expect(started).toHaveLength(1));
+      expect(started[0].wireRoom).toBeUndefined();
+      expect(started[0].password).toBeUndefined();
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/not a secure context/);
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

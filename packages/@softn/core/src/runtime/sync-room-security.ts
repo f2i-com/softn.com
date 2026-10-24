@@ -31,12 +31,21 @@
  *    it belongs to whoever wrote it.
  * 4. Otherwise the room is private and takes the host's per-user key when it
  *    offers one and the options name none.
+ * 5. A private room with no key at all (no host key, no `password` or
+ *    `encryptionKey` in the options, which is every private room on SoftN's
+ *    own hosts) takes its name as its secret (privateRoomSecret): it is
+ *    joined under a name derived from it, so the signalling server never
+ *    sees it, and encrypted with it, so only a peer who knows it can join.
+ *    It was joined under its name, in the clear, with no key: anyone who
+ *    learned the name, the signalling server included, was a peer.
  *
  * What stays exactly as it was, so peers on an older build still meet: the
  * shared password (`softn-shared:<room>`), the wire scope (the bundle's
- * declared `app.id`, else the host's app id), and which callers offer a
- * per-user key (the renderer's helpers do; the script runtime's namespace is
- * created without one and its rooms carry only the key the options name).
+ * declared `app.id`, else the host's app id), a private room with a key, and
+ * which callers offer a per-user key (the renderer's helpers do; the script
+ * runtime's namespace is created without one and its rooms carry only the
+ * key the options name). A private room without one (rule 5) does not meet
+ * its peers on a build before it.
  */
 
 import type { PermissionConfig } from './script-runtime';
@@ -207,6 +216,9 @@ export interface RoomSecurityContext {
  */
 export function applyRoomSecurity(opts: Record<string, unknown>, context: RoomSecurityContext): boolean {
   const { room, appId, permissionConfig, syncEncryptionKeyHex } = context;
+  // The wire name is decided here (privateRoomSecret), never by the script:
+  // one that named it could join any app's room.
+  delete opts.wireRoom;
   // The room label is what peers agree on; the app is who is agreeing. On the
   // wire the two are joined, so two apps that both chose "lobby" are in two
   // rooms — by the stable identity the bundle declares, so that compatible
@@ -229,6 +241,50 @@ export function applyRoomSecurity(opts: Record<string, unknown>, context: RoomSe
   delete opts.noEncrypt;
   delete opts.sharedRoom;
   return shared;
+}
+
+/** PBKDF2 rounds for a private room's wire name: y-webrtc's own for the key it derives from a password. */
+const ROOM_NAME_ITERATIONS = 100_000;
+
+/**
+ * The name a private room with no key is joined under (rule 5 above): 64
+ * hex characters of PBKDF2-SHA-256 over the room's name, salted with the
+ * wire scope, so two apps that pick one name are two rooms. It holds no part
+ * of the name, and a guess at the name costs as much to check as y-webrtc's
+ * key does. Null where the page has no Web Crypto (not a secure context).
+ */
+export async function privateRoomWireName(scope: string | undefined, room: string): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return null;
+  const encoder = new TextEncoder();
+  const key = await subtle.importKey('raw', encoder.encode(room), 'PBKDF2', false, ['deriveBits']);
+  const bits = await subtle.deriveBits(
+    { name: 'PBKDF2', salt: encoder.encode(`softn-room-v2:${scope ?? ''}`), iterations: ROOM_NAME_ITERATIONS, hash: 'SHA-256' },
+    key,
+    256
+  );
+  return Array.from(new Uint8Array(bits), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Give a private room with no key its secret, after applyRoomSecurity: the
+ * derived wire name (`opts.wireRoom`) and the room's name as the password,
+ * which y-webrtc turns into the key its signalling is encrypted with. A
+ * shared room, or one with a key, is left as it is. On a page with no Web
+ * Crypto (plain HTTP away from this machine), where y-webrtc can use no
+ * password either, the room is joined under its name as before, and the
+ * console says so.
+ */
+export async function privateRoomSecret(opts: Record<string, unknown>, shared: boolean): Promise<void> {
+  if (shared || opts.encryptionKey || opts.password) return;
+  const room = String(opts.room);
+  const wire = await privateRoomWireName(typeof opts.roomScope === 'string' ? opts.roomScope : undefined, room);
+  if (wire === null) {
+    console.warn(`[XDB Sync] This page is not a secure context, so private room "${room}" is joined under its name, unencrypted: anyone who learns the name can join it.`);
+    return;
+  }
+  opts.wireRoom = wire;
+  opts.password = room;
 }
 
 /**
