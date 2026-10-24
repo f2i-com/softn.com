@@ -3016,7 +3016,7 @@
                 },
                 {
                   "term": "db.startSync(room, options?) / db.stopSync(room?) / db.getSyncStatus(room?)",
-                  "description": "Optional peer synchronisation; see below."
+                  "description": "Optional peer synchronisation; see below. `options` reach the room from a `.ui` page's script; from `.logic`, `db.startSync` takes the room alone."
                 }
               ]
             },

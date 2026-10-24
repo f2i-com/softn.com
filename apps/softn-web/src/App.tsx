@@ -16,7 +16,7 @@ import { AppRunner } from './components/AppRunner';
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
 import { ProductBar } from '@softn/brand';
 import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn/core';
-import { debug } from '@softn/core';
+import { debug, forgetAppSync } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
 import { installAppOffline } from './lib/offlineInstall';
@@ -834,6 +834,9 @@ function App(): React.ReactElement {
     if (!going || !canChangeAppData(going)) return;
     if (!window.confirm(`Remove “${going.name}” v${going.version} and its saved data from this browser? Export its data first if you want to keep a backup.`)) return;
     const dropped = removeAppData(going?.origin);
+    // Its rooms' keys and offline caches too, which hold a copy of every
+    // record the rooms carried.
+    if (going.origin) await forgetAppSync(going.origin);
     await removeCachedApp(id);
     if (dropped > 0) {
       debug(`[SoftN Web] Removed "${going?.name}" v${going?.version} and its ${dropped} saved keys.`);

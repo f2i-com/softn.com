@@ -23,6 +23,20 @@ export function getSyncRoomKey(appId?: string): string {
 }
 
 /**
+ * Where the offline CRDT cache for an app's room lives (an IndexedDB database).
+ *
+ * Named by app and room. The default instance keeps the name it always had,
+ * so a document that only ever ran one app finds its cache where it left it;
+ * an app-scoped adapter never reads a cache it cannot prove is its own — a
+ * legacy `xdb-sync-<room>` store may belong to any app that used that label.
+ * Here rather than in xdb-sync.ts so that a host removing an app can name its
+ * caches without loading the sync runtime.
+ */
+export function persistenceNameFor(appId: string | undefined, room: string): string {
+  return appId ? `xdb-sync:${appId}:${room}` : `xdb-sync-${room}`;
+}
+
+/**
  * The room an app was last in, or null: none saved, or no localStorage (a
  * restricted context, a worker, Node). Never throws.
  */

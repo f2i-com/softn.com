@@ -104,17 +104,8 @@ export interface XDBSyncStatus {
   peerId: string;
 }
 
-/**
- * Where the offline CRDT cache for an app's room lives.
- *
- * Named by app and room. The default instance keeps the name it always had,
- * so a document that only ever ran one app finds its cache where it left it;
- * an app-scoped adapter never reads a cache it cannot prove is its own — a
- * legacy `xdb-sync-<room>` store may belong to any app that used that label.
- */
-export function persistenceNameFor(appId: string | undefined, room: string): string {
-  return appId ? `xdb-sync:${appId}:${room}` : `xdb-sync-${room}`;
-}
+/** Where the offline CRDT cache for an app's room lives (xdb-sync-key.ts). */
+export { persistenceNameFor };
 
 /**
  * Last-writer-wins by `updated_at`. XDB stamps every write with an ISO time,
@@ -1054,7 +1045,7 @@ function peerRecordShape(collName: string, key: string, val: unknown): XDBRecord
 import { getXDB } from './xdb';
 // The key's spelling lives in a module that imports nothing, so the renderer
 // can read it without loading this one (and yjs behind it).
-import { getSyncRoomKey, readSavedSyncRoom } from './xdb-sync-key';
+import { getSyncRoomKey, persistenceNameFor, readSavedSyncRoom } from './xdb-sync-key';
 import { isAppShown, onAppActivity } from './sync-activity';
 
 /** Adapters, keyed by app scope and room together. */

@@ -220,6 +220,33 @@ describe('runtime app-data actions', () => {
     expect(removeCachedApp).toHaveBeenCalledWith(current.id);
   });
 
+  it("removing a stopped app removes what its sync rooms kept: their keys and offline caches", async () => {
+    const deleted: string[] = [];
+    vi.stubGlobal('indexedDB', {
+      databases: async () => [`xdb-sync:${current.origin}:lobby`, `xdb-sync:${older.origin}:lobby`].map((name) => ({ name, version: 1 })),
+      deleteDatabase(name: string) {
+        const request: { onsuccess: (() => void) | null } = { onsuccess: null };
+        deleted.push(name);
+        setTimeout(() => request.onsuccess?.(), 0);
+        return request;
+      },
+    });
+    localStorage.setItem(`xdb-sync-active-room:${current.origin}`, 'lobby');
+    localStorage.setItem(`xdb-sync-shared:${current.origin}:lobby`, 'true');
+    localStorage.setItem(`xdb-sync-collections:${current.origin}:lobby`, '["scores"]');
+    localStorage.setItem(`xdb-sync-active-room:${older.origin}`, 'lobby');
+    confirm.mockReturnValue(true);
+    await mount();
+    await click('[aria-label="Remove Data guard test"]');
+    expect(removeCachedApp).toHaveBeenCalledWith(current.id);
+    expect(localStorage.getItem(`xdb-sync-active-room:${current.origin}`)).toBeNull();
+    expect(localStorage.getItem(`xdb-sync-shared:${current.origin}:lobby`)).toBeNull();
+    expect(localStorage.getItem(`xdb-sync-collections:${current.origin}:lobby`)).toBeNull();
+    expect(deleted).toEqual([`xdb-sync:${current.origin}:lobby`]);
+    // The other build's are its own.
+    expect(localStorage.getItem(`xdb-sync-active-room:${older.origin}`)).toBe('lobby');
+  });
+
   it('cancelled backup replacement keeps data; a confirmed stopped-app import replaces it', async () => {
     localStorage.setItem(dataKey(current), 'original note');
     await mount();
