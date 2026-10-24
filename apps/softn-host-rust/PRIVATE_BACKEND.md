@@ -599,6 +599,10 @@ into the record, so a key removed on a device (a field set to `undefined`, a
 restored backup) stayed on the server and came back at every device's next
 pull. An update with no `data` changes the record's time alone. A client of
 your own that sends only the fields it changes must send the whole record.
+The record is the last writer's, whole, as every client already takes a
+server update: a field a route's `db.update` added is gone again if a client
+then sends an update made on a copy from before that write. A route that
+adds fields clients must keep can keep them in a record of its own.
 
 A key a before-sync hook takes out of an update's data keeps the record's
 value: the hook does not see the stored record, and deleting a key is how it

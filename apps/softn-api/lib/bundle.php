@@ -510,7 +510,9 @@ final class Bundle
             $entry = $declared[$cap] ?? null;
             if (is_array($entry) && ($entry['enabled'] ?? null) === true) $capabilities[] = $cap;
         }
-        self::readRoomCollections($declared['sync'] ?? null);
+        // Decoded again with objects kept as objects: decoded as arrays,
+        // `"roomCollections": {}` is `[]`, which the runtime does not take.
+        self::readRoomCollections(json_decode(self::jsonText($permText), false, 16)->permissions->sync ?? null);
         return ['capabilities' => $capabilities, 'storagePolicies' => self::readStoragePolicies($declared['storage'] ?? null)];
     }
 
@@ -524,8 +526,8 @@ final class Bundle
      */
     private static function readRoomCollections(mixed $sync): void
     {
-        if (!is_array($sync) || !array_key_exists('roomCollections', $sync)) return;
-        $list = $sync['roomCollections'];
+        if (!$sync instanceof \stdClass || !property_exists($sync, 'roomCollections')) return;
+        $list = $sync->roomCollections;
         $ok = is_array($list) && array_is_list($list);
         foreach ($ok ? $list : [] as $name) {
             if (!is_string($name) || $name === '' || str_contains($name, ':') || str_starts_with($name, '_')) $ok = false;

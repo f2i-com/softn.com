@@ -1098,7 +1098,7 @@ test('storage collection policies: who may do what, per collection', skip, async
 test('a room\'s collections are a list of names, or the publication is refused', skip, async () => {
   resetRateLimits();
   // The runtime does not start a room whose list is not one.
-  for (const roomCollections of [['_prefs'], 'scores', ['a:b'], [''], [7]]) {
+  for (const roomCollections of [['_prefs'], 'scores', ['a:b'], [''], [7], {}, { 0: 'scores' }]) {
     const fd = new FormData();
     fd.append('bundle', new Blob([makeBundle('Bad Rooms', { permissions: { sync: { enabled: true, roomCollections } } })]), 'rooms.softn');
     const r = await api('POST', '/api/apps', { body: fd });
