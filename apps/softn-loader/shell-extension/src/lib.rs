@@ -28,6 +28,16 @@ static DLL_MODULE: AtomicUsize = AtomicUsize::new(0);
 // {7A8E4D21-5B3F-4C2E-9D1A-8F6E7C3B2A90}
 const CLSID_SOFTN_THUMBNAIL: GUID = GUID::from_u128(0x7A8E4D21_5B3F_4C2E_9D1A_8F6E7C3B2A90);
 
+/// The most of a bundle read for its thumbnail: the runtime's own reader
+/// takes no more. Windows hands the stream of whatever file is shown.
+const MAX_BUNDLE_BYTES: u64 = 512 * 1024 * 1024;
+/// The most a manifest or an icon may inflate to.
+const MAX_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
+/// The widest and tallest raster icon decoded.
+const MAX_ICON_SIDE: u32 = 4096;
+/// The stack an SVG icon is parsed and drawn on.
+const SVG_STACK_BYTES: usize = 64 * 1024 * 1024;
+
 /// Minimal manifest structure — only the icon field is needed
 #[derive(Deserialize)]
 struct Manifest {
@@ -139,10 +149,17 @@ impl SoftNThumbnailProvider {
                 Some(compressed_data.to_vec())
             }
             8 => {
-                // DEFLATE compression
-                let mut decoder = DeflateDecoder::new(compressed_data);
+                // DEFLATE compression, inflated no further than an icon or a
+                // manifest could need: a 1.56 MB entry inflated to 1.61 GB in
+                // the thumbnail process.
                 let mut decompressed = Vec::new();
-                decoder.read_to_end(&mut decompressed).ok()?;
+                DeflateDecoder::new(compressed_data)
+                    .take(MAX_ENTRY_BYTES + 1)
+                    .read_to_end(&mut decompressed)
+                    .ok()?;
+                if decompressed.len() as u64 > MAX_ENTRY_BYTES {
+                    return None;
+                }
                 Some(decompressed)
             }
             _ => None,
@@ -151,7 +168,15 @@ impl SoftNThumbnailProvider {
 
     /// Convert image bytes (PNG, JPEG, etc.) to HBITMAP
     fn raster_to_hbitmap(&self, img_data: &[u8], cx: u32) -> Option<HBITMAP> {
-        let img = image::load_from_memory(img_data).ok()?;
+        // Held to an icon's size: a 500 KB, 16000×8000 PNG took 556 MB to
+        // decode under the image crate's default limits.
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(img_data)).with_guessed_format().ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_ICON_SIDE);
+        limits.max_image_height = Some(MAX_ICON_SIDE);
+        limits.max_alloc = Some(MAX_ENTRY_BYTES * 8);
+        reader.limits(limits);
+        let img = reader.decode().ok()?;
         let img = img.resize_exact(cx, cx, image::imageops::FilterType::Lanczos3);
         let rgba = img.to_rgba8();
         let (width, height) = img.dimensions();
@@ -160,7 +185,38 @@ impl SoftNThumbnailProvider {
 
     /// Render SVG bytes to HBITMAP using resvg
     fn svg_to_hbitmap(&self, svg_data: &[u8], cx: u32) -> Option<HBITMAP> {
-        let tree = resvg::usvg::Tree::from_data(svg_data, &resvg::usvg::Options::default()).ok()?;
+        // Parsed and drawn on a thread of its own with a large stack: an SVG
+        // of some 700 nested groups (16 KB) overflowed the shell's 1 MB
+        // thread stack and ended the process showing the folder.
+        let svg = svg_data.to_vec();
+        let pixels = std::thread::Builder::new()
+            .stack_size(SVG_STACK_BYTES)
+            .spawn(move || render_svg(&svg, cx))
+            .ok()?
+            .join()
+            .ok()??;
+        self.raw_bgra_to_hbitmap(&pixels, cx, cx)
+    }
+}
+
+/// An SVG icon names images only inside itself (`data:` URLs). usvg's
+/// default resolver reads any path an `<image>` names: the thumbnail of a
+/// crafted `.softn` drew local files, and with `\\host\share\a.png` made
+/// Windows connect to that share, the user's NTLM credentials with it, for no
+/// more than showing the file in a folder.
+fn svg_options() -> resvg::usvg::Options<'static> {
+    let mut options = resvg::usvg::Options::default();
+    options.image_href_resolver = resvg::usvg::ImageHrefResolver {
+        resolve_data: resvg::usvg::ImageHrefResolver::default_data_resolver(),
+        resolve_string: Box::new(|_, _| None),
+    };
+    options
+}
+
+/// The icon drawn into a cx×cx square of premultiplied BGRA, for Windows.
+fn render_svg(svg_data: &[u8], cx: u32) -> Option<Vec<u8>> {
+    {
+        let tree = resvg::usvg::Tree::from_data(svg_data, &svg_options()).ok()?;
         let size = tree.size();
         // Compute scale to fit the requested thumbnail size
         let scale = cx as f32 / size.width().max(size.height());
@@ -198,8 +254,11 @@ impl SoftNThumbnailProvider {
             bgra[off + 3] = pixels[off + 3]; // A
         }
 
-        self.raw_bgra_to_hbitmap(&bgra, cx, cx)
+        Some(bgra)
     }
+}
+
+impl SoftNThumbnailProvider {
 
     /// Convert RGBA image buffer to HBITMAP
     fn rgba_to_hbitmap(&self, rgba: &image::RgbaImage, width: u32, height: u32) -> Option<HBITMAP> {
@@ -274,9 +333,12 @@ impl SoftNThumbnailProvider {
         let path = self.file_path.borrow();
         let path = path.as_ref()?;
 
-        let mut file = File::open(path).ok()?;
+        let file = File::open(path).ok()?;
         let mut data = Vec::new();
-        file.read_to_end(&mut data).ok()?;
+        file.take(MAX_BUNDLE_BYTES + 1).read_to_end(&mut data).ok()?;
+        if data.len() as u64 > MAX_BUNDLE_BYTES {
+            return None;
+        }
 
         self.find_icon_with_name_in_zip(&data)
     }
@@ -359,6 +421,10 @@ impl IInitializeWithStream_Impl for SoftNThumbnailProvider_Impl {
                 break;
             }
             data.extend_from_slice(&buffer[..bytes_read as usize]);
+            // Past what a bundle may be there is no thumbnail to draw.
+            if data.len() as u64 > MAX_BUNDLE_BYTES {
+                return Err(E_FAIL.into());
+            }
         }
 
         *self.stream_data.borrow_mut() = Some(data);
@@ -549,4 +615,97 @@ fn unregister_server() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn red_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 0, 0, 255]));
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                out.push(if i <= chunk.len() { ABC[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            }
+        }
+        out
+    }
+
+    fn svg_with_image(href: &str) -> Vec<u8> {
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="8" height="8"><image width="8" height="8" xlink:href="{href}"/></svg>"#).into_bytes()
+    }
+
+    fn drawn(pixels: &[u8]) -> bool {
+        pixels.chunks(4).any(|pixel| pixel[3] != 0)
+    }
+
+    /// An `<image>` naming a file or a share draws nothing, and reaches for
+    /// neither: the thumbnail read local files, and a `\\host\share` path made
+    /// Windows connect to that host with the user's credentials.
+    #[test]
+    fn an_svg_icon_draws_no_file_it_names() {
+        let file = std::env::temp_dir().join(format!("softn-thumb-{}.png", std::process::id()));
+        std::fs::write(&file, red_png()).unwrap();
+        let local = render_svg(&svg_with_image(&file.to_string_lossy()), 32).unwrap();
+        std::fs::remove_file(&file).ok();
+        assert!(!drawn(&local), "a local file was drawn into the thumbnail");
+        let started = std::time::Instant::now();
+        let share = render_svg(&svg_with_image(r"\\192.0.2.1\share\a.png"), 32).unwrap();
+        assert!(!drawn(&share));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "the share was reached for");
+        // An image inside the icon itself is drawn.
+        let inside = render_svg(&svg_with_image(&format!("data:image/png;base64,{}", base64(&red_png()))), 32).unwrap();
+        assert!(drawn(&inside));
+    }
+
+    /// Thousands of nested groups are drawn on the icon's own stack; they
+    /// overflowed the thread the shell called on, and ended its process.
+    #[test]
+    fn a_deeply_nested_svg_icon_does_not_end_the_process() {
+        // Under the XML parser's own nesting limit, so it is the drawing that recurses.
+        let depth = 1000;
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8">{}<rect width="8" height="8" fill="red"/>{}</svg>"#,
+            "<g>".repeat(depth),
+            "</g>".repeat(depth)
+        );
+        let provider = SoftNThumbnailProvider::new();
+        let bitmap = provider.svg_to_hbitmap(svg.as_bytes(), 32).expect("the icon was drawn");
+        unsafe {
+            let _ = DeleteObject(bitmap);
+        }
+    }
+
+    /// An entry is inflated no further than an icon or a manifest needs.
+    #[test]
+    fn an_entry_inflates_no_further_than_an_icon_needs() {
+        use std::io::Write;
+        let local = |content: &[u8]| {
+            let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+            encoder.write_all(content).unwrap();
+            let packed = encoder.finish().unwrap();
+            let mut zip = vec![0x50, 0x4b, 0x03, 0x04, 20, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            zip.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+            zip.extend_from_slice(&(content.len() as u32).to_le_bytes());
+            zip.extend_from_slice(&8u16.to_le_bytes());
+            zip.extend_from_slice(&0u16.to_le_bytes());
+            zip.extend_from_slice(b"icon.png");
+            zip.extend_from_slice(&packed);
+            zip
+        };
+        let provider = SoftNThumbnailProvider::new();
+        let small = local(&vec![0u8; 1024 * 1024]);
+        assert_eq!(provider.extract_file_from_local_header(&small, 0).map(|d| d.len()), Some(1024 * 1024));
+        let bomb = local(&vec![0u8; MAX_ENTRY_BYTES as usize + 1]);
+        assert!(provider.extract_file_from_local_header(&bomb, 0).is_none());
+    }
 }
