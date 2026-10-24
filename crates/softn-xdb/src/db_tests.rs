@@ -1084,11 +1084,11 @@ fn a_reset_epoch_past_what_is_kept_is_refused() {
     assert_eq!(db.get_epoch("notes").unwrap(), MAX_EPOCH);
 }
 
-/// A restore whose epochs would pass the largest kept is refused: an authoritative one
-/// before its plan is journaled (it was refused in staging, after, and sync stayed paused),
-/// and one that keeps a snapshot's epochs as they are.
+/// An authoritative restore whose plan would pass the largest epoch kept is refused before
+/// its plan is journaled; one that keeps a snapshot's epochs brings an epoch past it down to
+/// it, where a refusal left a journaled restore that could neither complete nor roll back.
 #[test]
-fn a_restore_past_the_largest_epoch_is_refused_before_anything_changes() {
+fn a_restore_past_the_largest_epoch_is_refused_or_brought_down_to_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut source = database(&dir, "source.sqlite");
     source.upsert_record(note("theirs", "from the backup")).unwrap();
@@ -1116,9 +1116,10 @@ fn a_restore_past_the_largest_epoch_is_refused_before_anything_changes() {
     source.export_to_file(&past).unwrap();
     let mut db = database(&dir, "live-2.sqlite");
     db.upsert_record(note("mine", "here")).unwrap();
-    assert!(db.replace_from_file(&past).is_err());
-    assert_eq!(live_ids(&db, "notes"), vec!["mine"]);
-    assert_eq!(db.get_epoch("notes").unwrap(), 0);
+    assert!(db.plan_authoritative_restore(&past).is_err());
+    db.replace_from_file(&past).unwrap();
+    assert_eq!(live_ids(&db, "notes"), vec!["theirs"]);
+    assert_eq!(db.get_epoch("notes").unwrap(), MAX_EPOCH);
 }
 
 /// An import wrote by id alone: a record of `private` imported into `public` was moved

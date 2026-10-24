@@ -397,17 +397,12 @@ impl XdbDatabase {
                     .map_err(|e| DbError::Crdt(e.to_string()))?;
                 Self::records_from_doc(&collection, &doc)?;
             }
-            // A snapshot's epochs become this database's: one past MAX_EPOCH (a file
-            // from a build before the cap, or a made one) left no reset of its own after it.
-            let largest: Option<i64> = staging.query_row("SELECT MAX(epoch) FROM collection_epochs", [], |row| row.get(0))?;
-            if let Some(epoch) = largest {
-                if epoch < 0 || epoch as u64 > MAX_EPOCH {
-                    return Err(DbError::InvalidOperation(format!(
-                        "Unsupported snapshot: a reset epoch of {epoch} is past the largest kept ({MAX_EPOCH})"
-                    )));
-                }
-            }
         }
+        // A snapshot's epochs become this database's. One past MAX_EPOCH (from a build
+        // before the cap, or a made file) is brought down to it rather than refused: a
+        // refused snapshot left a journaled restore that could neither complete nor roll
+        // back. (A negative one, which a wrap under that build stored, already reads as 0.)
+        staging.execute("UPDATE collection_epochs SET epoch = ?1 WHERE epoch > ?1", params![MAX_EPOCH as i64])?;
 
         // 3. The caller's preparation (reset epochs for an authoritative
         //    restore) is written into the staging copy and re-validated, so
