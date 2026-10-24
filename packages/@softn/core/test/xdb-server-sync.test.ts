@@ -200,7 +200,7 @@ describe('XDBServerSync', () => {
     sync.disconnect();
   });
 
-  it('does not replay the session on reconnect', () => {
+  it('does not replay the session on reconnect', async () => {
     vi.useFakeTimers();
     const sync = new XDBServerSync(xdb, {
       wsUrl: 'wss://sync.example.test/sync',
@@ -213,6 +213,8 @@ describe('XDBServerSync', () => {
     authOk(first);
     xdb.create('notes', { text: 'one' });
     xdb.create('notes', { text: 'two' });
+    // The first at once, the second with the rest of the task's changes.
+    await Promise.resolve();
     expect(first.ofType('sync_push')).toHaveLength(2);
     // The host stored both.
     for (const push of first.ofType('sync_push')) {
@@ -460,7 +462,7 @@ describe("an edit is stamped in the host's time", () => {
   const pushed = (socket: FakeSocket) =>
     socket.ofType('sync_push').flatMap((push) => push.ops as Array<{ data: { text: string }; timestamp: string }>);
 
-  it('when the device clock is behind, made offline or online, and sent again unchanged', () => {
+  it('when the device clock is behind, made offline or online, and sent again unchanged', async () => {
     vi.useFakeTimers({ now: new Date(device) });
     const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', reconnectDelay: 10 });
     sync.connect();
@@ -473,6 +475,7 @@ describe("an edit is stamped in the host's time", () => {
       first.receive({ type: 'auth_ok', clientId: 'c1', serverTime: later(device, 11 * minute) });
       first.receive({ type: 'sync_state', collection: 'notes', records: [] });
       xdb.create('notes', { text: 'online' });
+      await Promise.resolve();
       const stamps = pushed(first).map((op) => [op.data.text, op.timestamp]);
       expect(stamps).toEqual([
         ['offline', later(device, 10 * minute)],
@@ -534,7 +537,7 @@ describe('an edit made here that the server has not answered', () => {
   const stamp = '2026-01-02T00:00:00Z';
   const before = { id: 'n1', collection: 'notes', data: { title: 'old', body: 'b' }, createdAt: stamp, updatedAt: stamp };
 
-  it('is not undone by the pull of a reconnect, and the next edit sends it on', () => {
+  it('is not undone by the pull of a reconnect, and the next edit sends it on', async () => {
     vi.useFakeTimers();
     const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'], reconnectDelay: 10 });
     sync.connect();
@@ -558,6 +561,7 @@ describe('an edit made here that the server has not answered', () => {
       second.receive({ type: 'sync_ack', opIds: sent.map((op) => op.id) });
 
       xdb.updateInCollection('notes', 'n1', { body: 'b2' });
+      await Promise.resolve();
       expect(pushedOps(second).at(-1)?.data).toEqual({ title: 'new', body: 'b2' });
     } finally {
       sync.disconnect();
@@ -628,7 +632,7 @@ describe('a record removed for good here', () => {
   const stamp = '2026-01-02T00:00:00Z';
   const row = (id: string) => ({ id, collection: 'notes', data: { title: id }, createdAt: stamp, updatedAt: stamp });
 
-  it('is deleted on the server, and a pull answered before that does not bring it back', () => {
+  it('is deleted on the server, and a pull answered before that does not bring it back', async () => {
     vi.useFakeTimers();
     const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'], reconnectDelay: 10 });
     sync.connect();
@@ -640,6 +644,8 @@ describe('a record removed for good here', () => {
       const made = xdb.create('notes', { title: 'c' });
       xdb.hardDelete('notes', made.id);
       xdb.hardDelete('notes', 'a');
+      // Pushed at the end of the task.
+      await Promise.resolve();
       // The delete of the record just made waits for its create to be answered.
       first.receive({ type: 'sync_ack', opIds: [pushedOps(first)[0].id] });
       expect(pushedOps(first).map((op) => [op.operation, op.recordId])).toEqual([
@@ -683,6 +689,7 @@ describe('a record removed for good here', () => {
       await db.ready();
       expect(db.prune('log', 1)).toBe(2);
       db.clearCollection('log');
+      await Promise.resolve();
       expect(pushedOps(socket).map((op) => [op.operation, op.recordId])).toEqual([
         ['delete', 'x'],
         ['delete', 'y'],
@@ -702,7 +709,7 @@ describe('a record removed for good here', () => {
  * here was taken for the server's and never pushed.
  */
 describe('a server write that fails', () => {
-  it('leaves the edits made here after it to be pushed', () => {
+  it('leaves the edits made here after it to be pushed', async () => {
     const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
     sync.connect();
     const socket = FakeSocket.made[0];
@@ -722,6 +729,7 @@ describe('a server write that fails', () => {
       });
       socket.receive({ type: 'sync_delta', ops: [{ ...op, id: 'd2', operation: 'delete' }] });
       xdb.create('notes', { text: 'after a failed delete' });
+      await Promise.resolve();
       expect(pushedOps(socket).map((o) => o.data?.text)).toEqual(['after a failed write', 'after a failed delete']);
     } finally {
       sync.disconnect();
@@ -860,7 +868,7 @@ describe('a change to a record whose earlier change is unanswered', () => {
     });
   }
 
-  it('goes as the newest of the changes made while it waited, one op for them all', () => {
+  it('goes as the newest of the changes made while it waited, one op for them all', async () => {
     const sync = new XDBServerSync(xdb, { wsUrl: WS_URL, appVersion: '1' });
     sync.connect();
     const socket = FakeSocket.made[0];
@@ -871,6 +879,7 @@ describe('a change to a record whose earlier change is unanswered', () => {
       xdb.update('n1', { title: 'b' });
       xdb.update('n1', { title: 'c' });
       xdb.create('notes', { title: 'other' }, { id: 'n2' });
+      await Promise.resolve();
       // Another record is not held back by this one.
       expect(pushedOps(socket).map((op) => [op.operation, op.recordId])).toEqual([['create', 'n1'], ['create', 'n2']]);
       socket.receive({ type: 'sync_ack', opIds: [pushedOps(socket)[0].id] });
@@ -1065,13 +1074,14 @@ describe('a pull from where the last one ended', () => {
  * the server kept every record, and the next pull brought them all back.
  */
 describe('a collection cleared here', () => {
-  it('is deleted on the server record by record, and a pull answered before that does not bring it back', () => {
+  it('is deleted on the server record by record, and a pull answered before that does not bring it back', async () => {
     const stamp = '2026-01-02T00:00:00Z';
     const row = (id: string) => ({ id, collection: 'notes', data: { title: id }, createdAt: stamp, updatedAt: stamp });
     const { store, sync, socket } = visit(createTestStorage());
     try {
       socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a'), row('b')] });
       store.clear('notes');
+      await Promise.resolve();
       expect(pushedOps(socket).map((op) => [op.operation, op.recordId])).toEqual([['delete', 'a'], ['delete', 'b']]);
       socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a'), row('b')] });
       expect(store.query('notes')).toEqual([]);
@@ -1154,7 +1164,7 @@ describe('a pulled record that cannot be saved here', () => {
  * the host. It is reported as refused, and the rest go.
  */
 describe('a change larger than the host takes in one message', () => {
-  it('is refused and reported, and the changes after it are pushed', () => {
+  it('is refused and reported, and the changes after it are pushed', async () => {
     const sync = new XDBServerSync(xdb, { wsUrl: WS_URL, appVersion: '1' });
     const refused: string[] = [];
     sync.on('reject', (opId) => refused.push(String(opId)));
@@ -1167,6 +1177,7 @@ describe('a change larger than the host takes in one message', () => {
       // 1.5 million characters, 4.5 MB as UTF-8.
       xdb.create('notes', { blob: '日'.repeat(1_500_000) }, { id: 'huge' });
       xdb.create('notes', { title: 'small' }, { id: 'n2' });
+      await Promise.resolve();
       expect(pushedOps(socket).map((op) => op.recordId)).toEqual(['n2']);
       expect(refused).toHaveLength(1);
       expect(warn).toHaveBeenCalled();

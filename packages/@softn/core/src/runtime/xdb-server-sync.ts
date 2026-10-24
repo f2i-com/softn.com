@@ -275,6 +275,19 @@ function recordKey(op: SyncOp): string {
   return `${op.collection}\u0000${op.recordId}`;
 }
 
+/** A record a delta or a pull writes here, as XDBService.upsertFromServer takes it. */
+interface DeltaUpsert {
+  record: { id: string; collection: string; data: Record<string, unknown>; createdAt: string; updatedAt: string };
+  keepLocalDelete: boolean;
+}
+
+/** A run of one kind of a delta's ops of one collection (`handleSyncDelta`), with the upserts of one of upserts. */
+interface DeltaRun {
+  kind: 'upsert' | 'delete';
+  ops: SyncOp[];
+  upserts: DeltaUpsert[];
+}
+
 /** Whether two stamps name one time (XDBService's `sameStamp`): the desktop's store writes `+00:00` where a page writes `Z`. */
 function sameTime(a: unknown, b: unknown): boolean {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -1412,20 +1425,50 @@ export class XDBServerSync {
     // document), so a first pull of thousands of records held the tab. What
     // becomes of each is decided first, the lot written, and the place moved
     // after, in order, as each was written.
-    const batch: Parameters<XDBServerSync['applyPulled']>[3] = [];
+    const batch: DeltaUpsert[] = [];
     const batched: ServerRecord[] = [];
+    // And the records it says were deleted, removed at once (each removed alone read and wrote
+    // its collection, and on the desktop was a native call that rewrote its stored document).
+    const deleted: ServerRecord[] = [];
     const outcome = new Map<ServerRecord, { held: true } | { failed: unknown }>();
     for (const record of list) {
       if (!record || typeof record.id !== 'string') continue;
       // One this connection has had live is passed over: what is here is no
       // older (`heardLive`).
       if (live?.has(record.id)) continue;
+      if (record.deleted === true) {
+        // Deleted on the host since this device last pulled. A change made
+        // here to it is answered by the host with the record as it stands,
+        // deleted, so there is nothing here to wait for.
+        deleted.push(record);
+        continue;
+      }
       try {
         const before = batch.length;
-        if (!this.applyPulled(collection, record, changed.get(`${collection}\u0000${record.id}`), batch)) outcome.set(record, { held: true });
+        if (!this.applyPulled(record, changed.get(`${collection}\u0000${record.id}`), batch)) outcome.set(record, { held: true });
         else if (batch.length > before) batched.push(record);
       } catch (err) {
         outcome.set(record, { failed: err });
+      }
+    }
+    if (deleted.length > 0) {
+      const each = () => {
+        for (const record of deleted) {
+          try {
+            this.xdb.deleteFromServer(collection, record.id);
+          } catch (err) {
+            outcome.set(record, { failed: err });
+          }
+        }
+      };
+      if (typeof this.xdb.deleteManyFromServer !== 'function') each();
+      else {
+        try {
+          this.xdb.deleteManyFromServer(collection, deleted.map((record) => record.id));
+        } catch {
+          // Refused whole: each on its own, so the rest are removed.
+          each();
+        }
       }
     }
     if (batch.length > 0) {
@@ -1519,22 +1562,10 @@ export class XDBServerSync {
   }
 
   /**
-   * One record of a pull, written here unless a change made here is still
-   * waiting on it; false when it was passed over for that reason.
+   * One live record of a pull, written here unless a change made here is
+   * still waiting on it; false when it was passed over for that reason.
    */
-  private applyPulled(
-    collection: string,
-    record: ServerRecord,
-    here: 'update' | 'delete' | undefined,
-    batch: Array<{ record: { id: string; collection: string; data: Record<string, unknown>; createdAt: string; updatedAt: string }; keepLocalDelete: boolean }>
-  ): boolean {
-    if (record.deleted === true) {
-      // Deleted on the host since this device last pulled. A change made
-      // here to it is answered by the host with the record as it stands,
-      // deleted, so there is nothing here to wait for.
-      this.xdb.deleteFromServer(collection, record.id);
-      return true;
-    }
+  private applyPulled(record: ServerRecord, here: 'update' | 'delete' | undefined, batch: DeltaUpsert[]): boolean {
     if (here === 'update') return false;
     if (typeof record.data !== 'object' || record.data === null || Array.isArray(record.data)) return true;
     // Written with the rest of the message's records (handleSyncState).
@@ -1569,9 +1600,13 @@ export class XDBServerSync {
     this.saveSoon();
     const answered = new Set(list.filter((op) => op.clientId === 'server').map((op) => op.id));
     const changed = this.unansweredChanges(answered);
+    // Written a collection at a time, each run of upserts or of deletions at once: a delta
+    // carries another client's whole push, and each op written alone read and wrote its whole
+    // collection (on the desktop, a native call that rewrote its stored document). A run ends
+    // where the other kind begins, so each record's ops stay in order.
+    const runs = new Map<string, DeltaRun>();
     for (const op of list) {
       const here = changed.get(`${op.collection}\u0000${op.recordId}`);
-      const deletedHere = here === 'delete';
       // Another device's edit to a record edited here is left to the answer
       // to this device's edit: the host weighs the two, and sends the record
       // as it stands if the edit made here lost.
@@ -1579,18 +1614,56 @@ export class XDBServerSync {
         this.noteHeardLive(op.collection, op.recordId);
         continue;
       }
-      // One op that cannot be written here (a full store) no longer takes
-      // the rest of the delta with it. Nor is it heard live: a pull may
-      // still bring it.
-      try {
-        this.applyDelta(op, deletedHere);
+      const entry = this.deltaEntry(op, here === 'delete');
+      if (!entry) {
         this.noteHeardLive(op.collection, op.recordId);
-      } catch (err) {
-        console.warn(`[XDBServerSync] A change to "${op.collection}" from the server could not be saved here:`, err);
+        continue;
       }
+      const kind = 'record' in entry ? 'upsert' : 'delete';
+      let run = runs.get(op.collection);
+      if (run && run.kind !== kind) {
+        this.writeDeltaRun(op.collection, run);
+        run = undefined;
+      }
+      if (!run) runs.set(op.collection, (run = { kind, ops: [], upserts: [] }));
+      run.ops.push(op);
+      if ('record' in entry) run.upserts.push(entry);
     }
+    for (const [collection, run] of runs) this.writeDeltaRun(collection, run);
     // The host has these records: an edit kept for another client's create of one goes now.
     if (this.awaitingCreate.size > 0) this.releaseAwaiting(new Set(list.map(recordKey)));
+  }
+
+  /**
+   * One run of a delta's ops of one collection (`handleSyncDelta`), written at once. One op
+   * that cannot be written here (a full store) does not take the rest with it: a run the store
+   * refuses whole is written op by op. Nor is it heard live: a pull may still bring it.
+   */
+  private writeDeltaRun(collection: string, run: DeltaRun): void {
+    const heard = (op: SyncOp) => this.noteHeardLive(op.collection, op.recordId);
+    const each = () => {
+      run.ops.forEach((op, index) => {
+        try {
+          if (run.kind === 'delete') this.xdb.deleteFromServer(collection, op.recordId);
+          else this.xdb.upsertFromServer(collection, run.upserts[index].record, run.upserts[index].keepLocalDelete);
+          heard(op);
+        } catch (err) {
+          console.warn(`[XDBServerSync] A change to "${op.collection}" from the server could not be saved here:`, err);
+        }
+      });
+    };
+    const many = run.kind === 'delete' ? typeof this.xdb.deleteManyFromServer === 'function' : typeof this.xdb.upsertManyFromServer === 'function';
+    if (run.ops.length === 1 || !many) {
+      each();
+      return;
+    }
+    try {
+      if (run.kind === 'delete') this.xdb.deleteManyFromServer(collection, run.ops.map((op) => op.recordId));
+      else this.xdb.upsertManyFromServer(collection, run.upserts);
+      run.ops.forEach(heard);
+    } catch {
+      each();
+    }
   }
 
   /** How many records of one collection `heardLive` keeps; past that, a pull's copy is written as before. */
@@ -1602,43 +1675,21 @@ export class XDBServerSync {
     if (ids.size < XDBServerSync.HEARD_LIVE_KEPT) ids.add(id);
   }
 
-  /** One op of a delta, written here. */
-  private applyDelta(op: SyncOp, deletedHere: boolean): void {
-    switch (op.operation) {
-      case 'create':
-        if (op.data) {
-          this.xdb.upsertFromServer(
-            op.collection,
-            {
-              id: op.recordId,
-              collection: op.collection,
-              data: op.data,
-              createdAt: op.timestamp,
-              updatedAt: op.timestamp,
-            },
-            deletedHere
-          );
-        }
-        break;
-      case 'update':
-        if (op.data) {
-          this.xdb.upsertFromServer(
-            op.collection,
-            {
-              id: op.recordId,
-              collection: op.collection,
-              data: op.data,
-              createdAt: '',
-              updatedAt: op.timestamp,
-            },
-            deletedHere
-          );
-        }
-        break;
-      case 'delete':
-        this.xdb.deleteFromServer(op.collection, op.recordId);
-        break;
-    }
+  /** What one op of a delta writes here: a record, a deletion, or nothing. */
+  private deltaEntry(op: SyncOp, deletedHere: boolean): DeltaUpsert | { deleted: true } | null {
+    if (op.operation === 'delete') return { deleted: true };
+    if ((op.operation !== 'create' && op.operation !== 'update') || !op.data) return null;
+    return {
+      record: {
+        id: op.recordId,
+        collection: op.collection,
+        data: op.data,
+        // An update carries no creation time: the record here keeps its own.
+        createdAt: op.operation === 'create' ? op.timestamp : '',
+        updatedAt: op.timestamp,
+      },
+      keepLocalDelete: deletedHere,
+    };
   }
 
   /** Forget when an op was made and what bounds its stamp: it is stamped, answered or gone. */
@@ -1785,7 +1836,7 @@ export class XDBServerSync {
     this.lastOpFor.set(key, opId);
     this.written.add(change.collection);
     this.queueChanged();
-    this.flushPendingOps();
+    this.flushSoon();
     // A hidden app at rest opens its socket to send this.
     this.wakeToSend();
   }
@@ -2052,6 +2103,26 @@ export class XDBServerSync {
       // Unreadable: every collection is pulled whole, as on a first visit.
     }
   }
+
+  /**
+   * Push a change just queued: the first of a task at once, and those after it in the same task
+   * together at its end. Each was pushed as it was queued, so an import or a script's loop of a
+   * thousand writes went as a thousand pushes, each its own message and its own transaction on
+   * the host; now they go in as few as the host's limits allow (`flushPendingOps`).
+   */
+  private flushSoon(): void {
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    this.flushPendingOps();
+    const run = () => {
+      this.flushScheduled = false;
+      this.flushPendingOps();
+    };
+    if (typeof queueMicrotask === 'function') queueMicrotask(run);
+    else void Promise.resolve().then(run);
+  }
+
+  private flushScheduled = false;
 
   /** The queue changed: saved at the end of this task, once however many changes it made. */
   private queueChanged(): void {

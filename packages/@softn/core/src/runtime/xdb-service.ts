@@ -2306,6 +2306,56 @@ export class XDBService {
     }
   }
 
+  /**
+   * `removeRecord` for many records of one collection: in browser storage the collection is
+   * read and written once, and on the desktop the records the cache holds go to the native
+   * store as tombstones in one call (upsert_records), as delete_record writes each. A pull's
+   * deletions were removed a record at a time, each re-reading and rewriting the collection,
+   * and on the desktop each a native call that rewrote its stored document.
+   */
+  removeRecords(collection: string, ids: readonly string[]): void {
+    if (ids.length <= 1) {
+      if (ids.length === 1) this.removeRecord(collection, ids[0]);
+      return;
+    }
+    this.assertWritable(collection, true);
+    if (this.useTauri) {
+      const coll = this.memoryStore.get(collection);
+      const tombstones: XDBRecord[] = [];
+      const events: XDBEvent[] = [];
+      for (const id of ids) {
+        const removed = coll?.get(id);
+        if (!removed) {
+          // Not held here: the native store is asked by id, as before.
+          this.removeRecord(collection, id);
+          continue;
+        }
+        coll!.delete(id);
+        tombstones.push({ ...removed, deleted: true, updated_at: editStamp(removed.updated_at) });
+        events.push({ type: 'delete', collection, record: removed, removed: true });
+      }
+      if (tombstones.length > 0) {
+        this.native<string[]>('upsert_records', { records: tombstones })
+          .then((refused) => {
+            if (Array.isArray(refused) && refused.length > 0) {
+              this.nativeWriteFailed('remove a record', collection, new Error(`${refused.length === 1 ? 'a record' : `${refused.length} records`} of another collection here`));
+            } else {
+              this.nativeWriteLanded(collection);
+            }
+          })
+          .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
+      }
+      for (const event of events) this.emit(event);
+      return;
+    }
+    const gone = new Set(ids);
+    const records = this.getAllCollectionData(collection);
+    const kept = records.filter((record) => !gone.has(record.id));
+    if (kept.length === records.length) return;
+    this.setCollectionData(collection, kept);
+    for (const record of records) if (gone.has(record.id)) this.emit({ type: 'delete', collection, record, removed: true });
+  }
+
   emitEvent(event: XDBEvent): void {
     this.emit(event);
   }
@@ -2762,6 +2812,18 @@ export class XDBService {
     try {
       this.removeRecord(collection, recordId);
       this.notifyMutation('delete', collection, recordId);
+    } finally {
+      this._mutationSource = undefined;
+    }
+  }
+
+  /** `deleteFromServer` for many records of one collection, removed at once (`removeRecords`). */
+  deleteManyFromServer(collection: string, recordIds: readonly string[]): void {
+    if (recordIds.length === 0) return;
+    this._mutationSource = 'server';
+    try {
+      this.removeRecords(collection, recordIds);
+      for (const id of recordIds) this.notifyMutation('delete', collection, id);
     } finally {
       this._mutationSource = undefined;
     }

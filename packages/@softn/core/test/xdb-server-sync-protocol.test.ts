@@ -175,7 +175,7 @@ describe('the socket', () => {
  * host refused every later edit of them ("Record not found").
  */
 describe('a record written while no client listened', () => {
-  it('reaches the server when the client connects, and so do its later edits', () => {
+  it('reaches the server when the client connects, and so do its later edits', async () => {
     const early = xdb.create('notes', { title: 'before sync started' });
     const { sync, socket } = connected(xdb, { collections: ['notes'] });
     try {
@@ -184,6 +184,8 @@ describe('a record written while no client listened', () => {
       expect([create.operation, create.recordId, create.data]).toEqual(['create', early.id, { title: 'before sync started' }]);
       socket.receive({ type: 'sync_ack', opIds: [create.id] });
       xdb.update(early.id, { title: 'edited' });
+      // Pushed at the end of the task, with whatever else it changed.
+      await Promise.resolve();
       expect(pushed(socket).map((op) => [op.operation, op.recordId])).toEqual([['create', early.id], ['update', early.id]]);
     } finally {
       sync.disconnect();
@@ -526,14 +528,15 @@ describe('a client with a list of collections', () => {
  * connected again.
  */
 describe('a collection first used while connected', () => {
-  it('is pulled then, once', () => {
+  it('is pulled then, once', async () => {
     const { sync, socket } = connected(xdb);
     try {
       expect(socket.ofType('sync_pull')).toEqual([]);
       xdb.create('notes', { title: 'first' });
       xdb.create('notes', { title: 'second' });
       expect(socket.ofType('sync_pull')).toEqual([{ type: 'sync_pull', collections: ['notes'] }]);
-      // And pushed as well: the pull does not hold it back.
+      // And pushed as well: the pull does not hold it back (the second with the rest of the task's).
+      await Promise.resolve();
       expect(pushed(socket)).toHaveLength(2);
     } finally {
       sync.disconnect();

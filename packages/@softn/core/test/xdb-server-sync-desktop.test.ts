@@ -253,6 +253,35 @@ describe("an edit made on the desktop while no client listened, its stamp writte
   });
 });
 
+describe("a pull's deletions on the desktop", () => {
+  // One native call a record, each rewriting the collection's stored document.
+  it('go to the native store in one call', async () => {
+    const at = nativeStamp(Date.now() - 120_000);
+    for (const id of ['a', 'b', 'c']) rows.set(id, { id, collection: 'notes', data: { title: id }, created_at: at, updated_at: at, deleted: false });
+    const store = page(storage());
+    await store.isReady;
+    const sync = client(store);
+    sync.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c1', serverTime: new Date().toISOString() });
+    invoke.mockClear();
+    const gone = new Date().toISOString();
+    socket.receive({
+      type: 'sync_state',
+      collection: 'notes',
+      records: ['a', 'b', 'c'].map((id) => ({ id, collection: 'notes', data: {}, createdAt: at, updatedAt: gone, serverReceivedAt: gone, deleted: true })),
+    });
+    await settle();
+    const commands = invoke.mock.calls.map(([cmd]) => cmd);
+    expect(commands.filter((cmd) => cmd === 'upsert_records')).toHaveLength(1);
+    expect(commands).not.toContain('delete_record');
+    expect(['a', 'b', 'c'].map((id) => rows.get(id)?.deleted)).toEqual([true, true, true]);
+    expect(store.query('notes')).toEqual([]);
+    sync.disconnect();
+  });
+});
+
 describe('a client that starts before the store has loaded', () => {
   // It read an empty store: the note's changes were skipped and forgotten, and the mark of
   // where listening stopped moved past them.
