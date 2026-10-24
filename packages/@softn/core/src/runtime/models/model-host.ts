@@ -266,13 +266,24 @@ export async function fetchModel(url: string, label: string, maxBytes: number, r
       throw attempt.aborted() ? attempt.reason() : error;
     }
   };
-  if (!cache || !(await roomFor(first.declared))) return held(first);
+  // A file larger than the whole cache is not kept: room was made for it by
+  // emptying the cache of every other app's models, and it was kept anyway.
+  if (!cache || (first.declared !== null && first.declared > CACHE_BYTES) || !(await roomFor(first.declared))) return held(first);
   try {
     // Room first; a cache that cannot be listed is written to all the same.
     await evictForRoom(cache, url, first.declared).catch(() => {});
-    await cache.put(url, new Response(first.body, { headers: { 'content-type': 'application/octet-stream' } }));
+    // What is kept is held to the cache's size as it arrives, whatever the
+    // server said (or did not say): past it, the file is fetched again and
+    // held for this load alone.
+    await cache.put(url, new Response(capped(first.body, CACHE_BYTES, label), { headers: { 'content-type': 'application/octet-stream' } }));
     const stored = await cache.match(url);
-    if (stored) return stored.blob();
+    if (stored) {
+      const blob = await stored.blob();
+      // A size the server did not give counted as nothing when room was
+      // made; it is counted now that it has arrived.
+      if (first.declared === null) await evictForRoom(cache, url, blob.size).catch(() => {});
+      return blob;
+    }
   } catch (error) {
     await cache.delete(url).catch(() => false);
     // Past the limit is the app's answer, and a closed app or a stalled
@@ -377,6 +388,8 @@ export class ModelHost {
   #abort = new AbortController();
   #next = 1;
   #closed = false;
+  /** Workers still opening a model, which a closing app stops too. */
+  #opening = new Set<ModelWorker>();
 
   constructor(private readonly config: ModelHostConfig) {}
 
@@ -410,7 +423,12 @@ export class ModelHost {
       if (net?.enabled !== true) throw new Error('Downloading a model from a URL needs net in permission.json');
       const verdict = describeNetDestination(parsed.url!, net);
       if (!verdict.allowed) throw new Error(`Model URL not allowed: ${verdict.reason}`);
-      if (!/\.gguf(?:[?#]|$)/i.test(parsed.url!)) throw new Error('A model URL names a .gguf file');
+      // The path names the file, not the address as written: `…/web/?.gguf`
+      // and `…/web/#.gguf` passed a test of the whole string, and the copy
+      // kept under that address (Cache Storage drops the fragment, and the
+      // offline shell matches without the query) was what SoftN Web's
+      // service worker answered its own page with.
+      if (!/\.gguf$/i.test(new URL(parsed.url!).pathname)) throw new Error('A model URL names a .gguf file');
       return { blob: await fetchModel(parsed.url!, parsed.url!, maxBytes, 'error', () => true, this.#abort.signal), label: parsed.url! };
     }
     // The hub: its API lists the repository, and the file comes from its
@@ -445,11 +463,14 @@ export class ModelHost {
       if (this.#closed) throw new Error('The app has closed');
       const worker = new ModelWorker((this.config.createWorker ?? defaultWorker)());
       let info: ModelInfo;
+      this.#opening.add(worker);
       try {
         info = (await worker.request({ type: 'open', blob, engine, backend: device as ModelBackend, context: num(options.context) }, OPEN_TIMEOUT).done) as ModelInfo;
       } catch (error) {
         worker.fail(error instanceof Error ? error : new Error(String(error)));
         throw error;
+      } finally {
+        this.#opening.delete(worker);
       }
       if (this.#closed) { worker.fail(new Error('The app has closed')); throw new Error('The app has closed'); }
       const handle = `model-${this.#next++}`;
@@ -508,5 +529,9 @@ export class ModelHost {
     this.#closed = true;
     this.#abort.abort(new Error('The app has closed'));
     this.releaseAll();
+    // A model still opening went on compiling and uploading its weights for
+    // up to OPEN_TIMEOUT after its app had gone.
+    for (const worker of this.#opening) worker.fail(new Error('The app has closed'));
+    this.#opening.clear();
   }
 }

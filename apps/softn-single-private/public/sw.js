@@ -6,7 +6,7 @@
  * cookie-gated answers from the server and a redeployed application is seen on
  * the next visit. Paths are taken from the registration scope, so a deployment
  * under a sub-directory works unchanged. Bump VERSION when this file changes. */
-var VERSION = 'softn-serve-sw-1';
+var VERSION = 'softn-serve-sw-2';
 var base = new URL(self.registration.scope).pathname;
 var precache = [
   base + 'pwa-icons/icon-192.png',
@@ -66,7 +66,9 @@ self.addEventListener('fetch', function (event) {
   var relative = url.pathname.slice(base.length);
   if (relative.indexOf('assets/') === 0 || relative.indexOf('pwa-icons/') === 0 || precache.indexOf(url.pathname) >= 0) {
     event.respondWith(
-      caches.match(request).then(function (cached) {
+      // This worker's own cache: an app's model downloads share the origin's
+      // Cache Storage, under addresses its script names (core's model-host.ts).
+      caches.open(VERSION).then(function (cache) { return cache.match(request); }).then(function (cached) {
         if (cached) return cached;
         return fetch(request).then(function (response) {
           if (response.ok) {

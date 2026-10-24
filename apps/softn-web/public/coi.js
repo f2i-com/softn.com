@@ -21,14 +21,28 @@
 //
 // Nothing here is declared at the top level: this file is imported into the
 // generated sw.js (importScripts), whose global scope it shares.
+//
+// The copy comes from the site's own caches, never the model cache: an app's
+// script names what goes in that one, by address (core's model-host.ts), and
+// a page or a worker script answered from it was whatever file an app had
+// had fetched under that name.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.mode !== 'navigate' && req.destination !== 'worker' && req.destination !== 'sharedworker') return;
   const NETWORK_WAIT_MS = 3000;
+  const MODEL_CACHE = 'softn-models-v1';
+  const fromSiteCaches = async (request) => {
+    for (const name of await caches.keys()) {
+      if (name === MODEL_CACHE) continue;
+      const res = await (await caches.open(name)).match(request, { ignoreSearch: true });
+      if (res) return res;
+    }
+    return undefined;
+  };
   const cachedCopy = async () => {
-    const res = await caches.match(req, { ignoreSearch: true });
+    const res = await fromSiteCaches(req);
     if (res || req.mode !== 'navigate') return res;
-    return caches.match(new URL('./index.html', self.registration.scope).href, { ignoreSearch: true });
+    return fromSiteCaches(new URL('./index.html', self.registration.scope).href);
   };
   event.respondWith(
     (async () => {
