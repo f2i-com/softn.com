@@ -31,7 +31,8 @@
 //! after a second question, when it looks like a server on the internet and
 //! leads to the local network, which the first question did not say
 //! (consent.rs). Its owner can point it anywhere, and a router or a printer
-//! answers to anyone who reaches it.
+//! answers to anyone who reaches it. Android, which puts neither question,
+//! reaches it as listed.
 //!
 //! A proxy the system or the environment sets (`HTTPS_PROXY`, the system's
 //! proxy settings) is used as the client finds it, and then the proxy looks the
@@ -311,15 +312,12 @@ pub async fn net_fetch(
         .require_net(&app, &crate::consent::NetPolicy::new(request.allow_http, &request.allowed_hosts))
         .await?;
     let destination = destination(&request, system_lookup).await?;
+    // Asked of the person on the desktop. Android puts no network question, and reaches a
+    // listed name as it did, at the addresses checked: refusing it there would break an
+    // HTTPS intranet name, which cannot be listed as an address instead.
+    #[cfg(desktop)]
     if let Destination::Name { name, local: Some(address), .. } = &destination {
-        // Asked of the person on the desktop; nothing asks it elsewhere, so it is refused.
-        #[cfg(desktop)]
         consent.require_local_host(&app, name, *address).await?;
-        #[cfg(not(desktop))]
-        return Err(format!(
-            "Host not allowed: {} leads to {}, which is on this device or its local network. Name that address in net.allowed_hosts to reach it.",
-            name, address
-        ));
     }
     #[cfg(not(desktop))]
     let _ = (&app, &consent);
