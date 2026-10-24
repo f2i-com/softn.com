@@ -293,6 +293,95 @@ describe('an app moved to another sync host', () => {
     expect(pushed(moved.socket)).toEqual([]);
   });
 
+  /** A store whose last visit pulled n0…n(count-1) from the old host and edited n1 there, answered. */
+  async function editedOnTheOldHost(backing: ReturnType<typeof storage>, count = 2) {
+    const store = page(backing);
+    const before = connect(store);
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: Array.from({ length: count }, (_, i) => row(`n${i}`, `v${i}`, '2026-02-01T00:00:00.000Z')) });
+    store.updateInCollection('notes', 'n1', { title: 'newer here' });
+    await tick();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Op[]).map((op) => op.id) });
+    await tick();
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+  }
+
+  // Each record newer here read the whole collection again.
+  it("reads the collection once for a pull's records, however many are newer here", async () => {
+    const backing = storage();
+    let reads = 0;
+    const counting = { ...backing, getItem: (key: string) => { if (key === 'xdb:app:notes') reads++; return backing.getItem(key); } };
+    const store = page(counting);
+    const before = connect(store);
+    const rows = (at: string) => Array.from({ length: 200 }, (_, i) => row(`n${i}`, `v${i}`, at));
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: rows('2026-02-01T00:00:00.000Z') });
+    await tick();
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const moved = connect(page(counting), MOVED);
+    reads = 0;
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: rows('2026-01-01T00:00:00.000Z') });
+    expect(reads).toBeLessThanOrEqual(3);
+    await tick();
+    expect((pushed(moved.socket) as unknown as Op[]).filter((op) => op.operation === 'update')).toHaveLength(200);
+  });
+
+  // An update at the scan's time took the place of the edit, stamped before it.
+  it('sends an edit made while the move waits at its own time', async () => {
+    const backing = storage();
+    await synced(backing);
+    await editedOnTheOldHost(backing);
+    const store = page(backing);
+    const moved = connect(store, MOVED);
+    vi.advanceTimersByTime(65_000);
+    const editedAt = Date.now();
+    store.updateInCollection('notes', 'n1', { title: 'edited while moving' });
+    await tick();
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'seeded', '2026-01-01T00:00:00.000Z')] });
+    await tick();
+    const ops = (pushed(moved.socket) as unknown as Array<Op & { timestamp: string }>).filter((op) => op.recordId === 'n1');
+    expect(ops.map((op) => [op.operation, op.data?.title])).toEqual([['update', 'edited while moving']]);
+    expect(Date.parse(ops[0].timestamp)).toBeGreaterThanOrEqual(editedAt);
+  });
+
+  it("keeps a newer record here when another client's older change of it arrives while the move waits", async () => {
+    const backing = storage();
+    await synced(backing);
+    await editedOnTheOldHost(backing);
+    const moved = connect(page(backing), MOVED);
+    moved.socket.receive({ type: 'sync_delta', ops: [{ id: 'd1', collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'older elsewhere' }, timestamp: '2026-01-15T00:00:00.000Z', clientId: 'c9' }] });
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('newer here');
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'older elsewhere', '2026-01-15T00:00:00.000Z')] });
+    await tick();
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('newer here');
+    expect((pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1').map((op) => [op.operation, op.data?.title])).toEqual([['update', 'newer here']]);
+  });
+
+  // Let go before its creates were queued, a collection pulled after another sent its held
+  // changes first, which the host refused, and the person was told a change was not taken.
+  it('sends the creates of a collection pulled after another before the changes that waited', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const sync = new XDBServerSync(store, { wsUrl: MOVED, appVersion: '1', collections: ['tasks', 'notes'], reconnectDelay: 60_000 });
+    const refused: string[] = [];
+    sync.on('reject', (...args: unknown[]) => refused.push(String(args[0])));
+    sync.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c-moved', serverTime: hostTime() });
+    store.updateInCollection('notes', 'n1', { title: 'edited while moving' });
+    await tick();
+    socket.receive({ type: 'sync_state', collection: 'tasks', records: [] });
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    const ops = (pushed(socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
+    expect(ops.map((op) => [op.operation, op.data?.title])).toEqual([['create', 'edited while moving']]);
+    expect(refused).toEqual([]);
+    sync.disconnect();
+  });
+
   it('sends what was queued for the old host too, after the create of a record the new host has no copy of', async () => {
     const backing = storage();
     await synced(backing);

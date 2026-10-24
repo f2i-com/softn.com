@@ -275,6 +275,20 @@ function recordKey(op: SyncOp): string {
   return `${op.collection}\u0000${op.recordId}`;
 }
 
+/** A record as the store holds it, as far as server sync reads one (`XDBService.getAllRaw`). */
+interface HeldRecord {
+  id: string;
+  data?: unknown;
+  updated_at?: unknown;
+  deleted?: boolean;
+}
+
+/** A stamp as a time to weigh by, or -Infinity for none that can be read. */
+function stampAt(stamp: unknown): number {
+  const at = Date.parse(String(stamp));
+  return Number.isFinite(at) ? at : -Infinity;
+}
+
 /** A record's data as an op carries it: an object, or none. */
 function objectData(data: unknown): Record<string, unknown> {
   return data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
@@ -1425,11 +1439,13 @@ export class XDBServerSync {
     // its collection, and on the desktop was a native call that rewrote its stored document).
     const deleted: ServerRecord[] = [];
     const outcome = new Map<ServerRecord, { held: true } | { failed: unknown }>();
+    let heldHere: Map<string, HeldRecord> | null = null;
+    const held = () => (heldHere ??= this.heldRecords(collection));
     for (const record of list) {
       if (!record || typeof record.id !== 'string') continue;
       // A host the store has not synced with holds this one: newer here, it is sent, and the
       // host's copy is not written (`movedPending`).
-      if (this.reconcileMoved(collection, record)) continue;
+      if (this.reconcileMoved(collection, record, held)) continue;
       // One this connection has had live is passed over: what is here is no
       // older (`heardLive`).
       if (live?.has(record.id)) continue;
@@ -1560,58 +1576,70 @@ export class XDBServerSync {
   }
 
   /**
-   * A record of a pull from a host the store has not synced with (`movedPending`), weighed
-   * against the copy here by their stamps: true when the one here is newer, and goes to the host
-   * (an update, or the deletion of one deleted here) in place of the host's being written. One
-   * the queue or the note sends a change of is theirs, held by it as any change made here is.
+   * A record of a pull or a delta from a host the store has not synced with (`movedPending`),
+   * weighed against the copy here as it is now, by their stamps: true when the one here is
+   * newer, and goes to the host (an update, or the deletion of one deleted here) in place of the
+   * host's being written. One the queue or the note sends a change of is theirs, held by it as
+   * any change made here is; so is one changed here since the scan, at its own time (an update
+   * at the scan's took the change's place, stamped before it). `held`: the collection's records,
+   * read once for a message.
    */
-  private reconcileMoved(collection: string, record: ServerRecord): boolean {
+  private reconcileMoved(collection: string, theirs: { id: string; updatedAt?: unknown; deleted?: boolean }, held: () => Map<string, HeldRecord>): boolean {
     const pending = this.movedPending.get(collection);
-    const mine = pending?.get(record.id);
+    const mine = pending?.get(theirs.id);
     if (!pending || !mine) return false;
-    pending.delete(record.id);
-    if (mine.covered || record.deleted === true) return false;
-    const time = (stamp: unknown) => {
-      const at = Date.parse(String(stamp));
-      return Number.isFinite(at) ? at : -Infinity;
-    };
-    if (!(time(mine.stamp) > time(record.updatedAt))) return false;
-    const held = this.heldRecords(collection).find((r) => r.id === record.id);
-    if (!held) return false;
+    pending.delete(theirs.id);
+    if (mine.covered || theirs.deleted === true) return false;
+    const queued = this.lastOpFor.get(`${collection}\u0000${theirs.id}`) ?? '';
+    if (this.pendingOps.has(queued) || this.inflightOps.has(queued)) return false;
+    const record = held().get(theirs.id);
+    if (!record) return false;
+    const { made, how } = this.stampOfHeld(collection, record);
+    if (!(made > stampAt(theirs.updatedAt))) return false;
     this.queueChange(
-      held.deleted ? { type: 'delete', collection, recordId: record.id } : { type: 'update', collection, recordId: record.id, data: objectData(held.data) },
-      mine.made,
-      mine.how,
+      record.deleted ? { type: 'delete', collection, recordId: theirs.id } : { type: 'update', collection, recordId: theirs.id, data: objectData(record.data) },
+      made,
+      how,
     );
     return true;
   }
 
-  /** The records the store holds of `collection`, deleted ones too; none when it cannot say. */
-  private heldRecords(collection: string): Array<{ id: string; data?: unknown; deleted?: boolean }> {
+  /** How a change of a record as the store holds it is stamped: at its stamp, with the offset where this page gave it. */
+  private stampOfHeld(collection: string, record: HeldRecord): { made: number; how?: { asIs: true } } {
+    const at = stampAt(record.updated_at);
+    const store = this.xdb as { isOwnStamp?: (collection: string, id: string, stamp: unknown) => boolean };
+    const own = typeof store.isOwnStamp === 'function' && store.isOwnStamp(collection, record.id, record.updated_at);
+    return { made: Number.isFinite(at) ? at : Date.now(), ...(own ? {} : { how: { asIs: true as const } }) };
+  }
+
+  /** The records the store holds of `collection`, deleted ones too, by id; none when it cannot say. */
+  private heldRecords(collection: string): Map<string, HeldRecord> {
     const store = this.xdb as { getAllRaw?: (collection: string) => unknown };
     try {
       const raw = typeof store.getAllRaw === 'function' ? store.getAllRaw(collection) : [];
-      return (Array.isArray(raw) ? raw : []).filter((r): r is { id: string; data?: unknown; deleted?: boolean } => !!r && typeof (r as { id?: unknown }).id === 'string');
+      const records = (Array.isArray(raw) ? raw : []).filter((r): r is HeldRecord => !!r && typeof (r as { id?: unknown }).id === 'string');
+      return new Map(records.map((record) => [record.id, record]));
     } catch {
-      return [];
+      return new Map();
     }
   }
 
   /**
    * A collection's pull from a host the store has not synced with is whole: each live record
    * here it did not send goes as a create, as it is now, ahead of any change of it queued
-   * since, which waited (`flushPendingOps`).
+   * since, which waited (`flushPendingOps`). The collection waits until they are queued and in
+   * front: let go first, the first create's push sent those changes ahead of it.
    */
   private finishMoved(collection: string): void {
     const pending = this.movedPending.get(collection);
     if (!pending) return;
-    this.movedPending.delete(collection);
-    const held = new Map(this.heldRecords(collection).map((record) => [record.id, record]));
+    const held = this.heldRecords(collection);
     const creates = new Set<string>();
-    for (const [id, mine] of pending) {
+    for (const id of pending.keys()) {
       const record = held.get(id);
       if (!record || record.deleted) continue;
-      this.queueChange({ type: 'create', collection, recordId: id, data: objectData(record.data) }, mine.made, mine.how);
+      const { made, how } = this.stampOfHeld(collection, record);
+      this.queueChange({ type: 'create', collection, recordId: id, data: objectData(record.data) }, made, how);
       const opId = this.lastOpFor.get(`${collection}\u0000${id}`);
       if (opId) creates.add(opId);
     }
@@ -1619,6 +1647,7 @@ export class XDBServerSync {
       const all = [...this.pendingOps];
       this.pendingOps = new Map([...all.filter(([id]) => creates.has(id)), ...all.filter(([id]) => !creates.has(id))]);
     }
+    this.movedPending.delete(collection);
     // The mark of where listening stopped may move on, once no collection waits.
     if (this.movedPending.size === 0) this.saveSoon();
   }
@@ -1667,7 +1696,18 @@ export class XDBServerSync {
     // collection (on the desktop, a native call that rewrote its stored document). A run ends
     // where the other kind begins, so each record's ops stay in order.
     const runs = new Map<string, DeltaRun>();
+    const heldBy = new Map<string, Map<string, HeldRecord>>();
     for (const op of list) {
+      // A host the store has not synced with holds this one, as its pull does: newer here, it is
+      // sent, and the host's copy is not written (`movedPending`).
+      if (this.movedPending.get(op.collection)?.has(op.recordId)) {
+        const held = () => {
+          let records = heldBy.get(op.collection);
+          if (!records) heldBy.set(op.collection, (records = this.heldRecords(op.collection)));
+          return records;
+        };
+        if (this.reconcileMoved(op.collection, { id: op.recordId, updatedAt: op.timestamp, deleted: op.operation === 'delete' }, held)) continue;
+      }
       const here = changed.get(`${op.collection}\u0000${op.recordId}`);
       // Another device's edit to a record edited here is left to the answer
       // to this device's edit: the host weighs the two, and sends the record
