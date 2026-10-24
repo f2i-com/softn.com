@@ -16,7 +16,7 @@ use crate::bundle::{self, ServerManifest};
 use crate::pool::ServerDb;
 use crate::runtime::{BridgeSet, ServerRuntime};
 use crate::sync::SyncManager;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -122,8 +122,25 @@ impl TenantManager {
         }
         candidates.sort();
 
+        // `app.softn` and `app.zip` both unpack to `app_bundle`
+        // (bundle.rs `extract_softn_zip`): the second replaced the first's
+        // files under it, and the first tenant served the second's. The
+        // first by name is kept.
+        let mut stems = HashSet::new();
+        candidates.retain(|(_, path)| {
+            let Some(stem) = path.is_file().then(|| path.file_stem()).flatten() else { return true };
+            if stems.insert(stem.to_string_lossy().to_lowercase()) {
+                return true;
+            }
+            let reason = "another archive of the same name is unpacked to the same directory; rename one of them";
+            tracing::error!("Failed to load bundle {}: {}", path.display(), reason);
+            errors.push(format!("{}: {}", path.display(), reason));
+            false
+        });
+
         // Two bundles that claim one id: decided before either is loaded.
         let losers = contested_losers(&candidates, data_dir);
+        let fair_workers = fair_workers(candidates.len());
 
         for (name, path) in candidates {
             if tenants.len() >= MAX_TENANTS {
@@ -160,7 +177,7 @@ impl TenantManager {
                 }
                 None
             };
-            match load_tenant(&path, data_dir, workers_per_tenant, allow_all_capabilities, &shutdown, &refuse_id) {
+            match load_tenant(&path, data_dir, workers_per_tenant, fair_workers, allow_all_capabilities, &shutdown, &refuse_id) {
                 Ok(tenant) => {
                     let id = tenant.tenant_id.clone();
                     tracing::info!(
@@ -211,6 +228,12 @@ impl TenantManager {
     }
 }
 
+/// Each bundle's share of the process's worker threads, of that many to load
+/// (no more than MAX_TENANTS of them are).
+fn fair_workers(bundles: usize) -> usize {
+    (crate::runtime::MAX_GLOBAL_WORKER_THREADS / bundles.clamp(1, MAX_TENANTS)).max(1)
+}
+
 /// The file in a tenant's data directory that names the bundle which last
 /// served it: the bundle's own name in the bundles directory.
 const OWNER_FILE: &str = ".bundle";
@@ -258,7 +281,17 @@ fn peek_tenant_id(path: &Path) -> Option<String> {
     } else {
         use std::io::Read;
         let mut archive = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
-        let entry = archive.by_name("manifest.json").ok()?;
+        // The entry unpacking writes as `manifest.json` (bundle.rs
+        // `extract_softn_zip`, by its enclosed name, which `./manifest.json`
+        // is too), found as Windows and macOS find that file. Looked up by
+        // its exact name, `./manifest.json` was missed here and still
+        // unpacked, so a bundle could claim another tenant's id unseen.
+        let index = (0..archive.len()).find(|&i| {
+            archive.by_index_raw(i).ok().is_some_and(|entry| {
+                !entry.is_dir() && entry.enclosed_name().is_some_and(|name| bundle::entry_file_key(&name) == "manifest.json")
+            })
+        })?;
+        let entry = archive.by_index(index).ok()?;
         let mut bytes = Vec::new();
         entry.take(1024 * 1024).read_to_end(&mut bytes).ok()?;
         bytes
@@ -336,6 +369,7 @@ fn load_tenant(
     bundle_path: &Path,
     data_dir_base: Option<&Path>,
     workers_per_tenant: Option<usize>,
+    fair_workers: usize,
     allow_all_capabilities: bool,
     shutdown: &tokio::sync::watch::Sender<bool>,
     refuse_id: &dyn Fn(&str) -> Option<String>,
@@ -400,7 +434,9 @@ fn load_tenant(
         .and_then(|c| c.get("server"))
         .and_then(|s| s.get("readPoolSize"))
         .and_then(|v| v.as_u64())
-        .map(|n| (n as u32).clamp(2, 64))
+        // 16 read connections, file descriptors of the shared process, at
+        // most: a bundle could ask for 64 of them, each tenant.
+        .map(|n| (n as u32).clamp(2, 16))
         .unwrap_or(4);
     let db = ServerDb::new(shared_db, &db_path, read_pool_size)?;
 
@@ -437,12 +473,16 @@ fn load_tenant(
 
         // Worker count: prefer explicit per-tenant, then manifest, then auto-size.
         // Multi-tenant default: 4 workers (vs single-tenant default of 16-50).
+        // What a bundle asks for itself is held to its share of the
+        // process-wide budget: one bundle asking for 200, loaded first, took
+        // every thread, and each tenant after it failed to load. The
+        // operator's --workers-per-tenant is not held to it.
         let configured_workers = workers_per_tenant.or_else(|| {
             manifest.config.as_ref()
                 .and_then(|c| c.get("server"))
                 .and_then(|s| s.get("workers"))
                 .and_then(|v| v.as_u64())
-                .map(|n| n as usize)
+                .map(|n| (n as usize).min(fair_workers))
         }).or(Some(4)); // Multi-tenant default
 
         // Capabilities
@@ -579,7 +619,7 @@ mod tests {
         // The rule itself, on its own: dots alone are refused, a name that
         // only ends in them is not.
         let (shutdown, _) = tokio::sync::watch::channel(false);
-        let alone = |dir: &str| load_tenant(&bundles.join(dir), Some(&root.join("alone")), Some(1), false, &shutdown, &|_| None).err();
+        let alone = |dir: &str| load_tenant(&bundles.join(dir), Some(&root.join("alone")), Some(1), 4, false, &shutdown, &|_| None).err();
         assert!(alone("d").is_some_and(|e| e.contains("dots alone")), "{:?}", alone("d"));
         assert!(alone("e").is_none(), "{:?}", alone("e"));
         let _ = std::fs::remove_dir_all(&root);
@@ -669,6 +709,47 @@ mod tests {
         zip.finish().unwrap();
         assert_eq!(version(&bundles), "real");
         assert!(!bundles.join("a-shop_bundle").exists(), "the refused archive was unpacked to find out its id");
+        // Its manifest stored as `./manifest.json`, which unpacks as
+        // `manifest.json`: read as unpacking reads it, and refused the same.
+        std::fs::remove_file(bundles.join("a-shop.softn")).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(bundles.join("a-shop.softn")).unwrap());
+        zip.start_file("./manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(br#"{"id":"shop","name":"shop","version":"hidden impostor"}"#).unwrap();
+        zip.finish().unwrap();
+        assert_eq!(peek_tenant_id(&bundles.join("a-shop.softn")).as_deref(), Some("shop"));
+        assert_eq!(version(&bundles), "real");
+        assert!(!bundles.join("a-shop_bundle").exists(), "the refused archive was unpacked");
+    }
+
+    /// `game.softn` and `game.zip` would unpack to one directory: the first
+    /// by name is loaded, and the other refused before it is unpacked over it.
+    #[test]
+    fn two_archives_of_one_name_are_not_unpacked_over_each_other() {
+        let root = crate::test_dirs::temp_path("softn-tenants-stem", "");
+        let bundles = root.join("bundles");
+        std::fs::create_dir_all(&bundles).unwrap();
+        for (file, id) in [("game.softn", "game"), ("game.zip", "other")] {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(bundles.join(file)).unwrap());
+            zip.start_file("manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(serde_json::json!({"id": id, "name": id, "version": "1"}).to_string().as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let manager = TenantManager::load(&bundles, Some(&root.join("data")), Some(1), false).unwrap();
+        assert_eq!(manager.tenant_ids(), vec!["game"]);
+        let unpacked = std::fs::read_to_string(bundles.join("game_bundle").join("manifest.json")).unwrap();
+        assert!(unpacked.contains(r#""id":"game""#), "{unpacked}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A bundle's own `workers` is held to its share of the process's 200:
+    /// with fifty bundles, the default four each.
+    #[test]
+    fn each_bundle_has_a_fair_share_of_the_worker_threads() {
+        assert_eq!(fair_workers(1), 200);
+        assert_eq!(fair_workers(3), 66);
+        assert_eq!(fair_workers(50), 4);
+        assert_eq!(fair_workers(500), 4);
+        assert_eq!(fair_workers(0), 200);
     }
 
     /// The record settles a dispute and nothing else: a bundle renamed or

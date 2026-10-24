@@ -390,9 +390,14 @@ where
         let mut signal_rx = signal_rx.clone();
         let close_rx = close_rx.clone();
         tokio::spawn(async move {
-            let _place = place;
+            // Held by the connection, and by a sync socket it is upgraded to
+            // (`upgrade_response`): hyper's connection ends at the upgrade,
+            // and the place with it, so open sync sockets, each a
+            // descriptor, went uncounted beside the connections limit.
+            let place = Arc::new(place);
             let service = hyper::service::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
                 request.extensions_mut().insert(ConnectInfo(peer));
+                request.extensions_mut().insert(ConnectionPlace(place.clone()));
                 tower::ServiceExt::oneshot(router.clone(), request.map(axum::body::Body::new))
             });
             let mut builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
@@ -1293,10 +1298,17 @@ async fn issue_ticket(
     ticket_response(&ctx.sync_manager, &policy, info.0, &proxy, &headers)
 }
 
+/// A connection's place under the server's connections limit
+/// (`serve_router_with`), handed to each of its requests.
+#[derive(Clone)]
+pub(crate) struct ConnectionPlace(#[allow(dead_code)] Arc<tokio::sync::OwnedSemaphorePermit>);
+
 /// `GET /sync`: authorize the handshake, claim a connection slot, upgrade.
+/// The upgraded socket keeps the connection's place until it closes.
 #[allow(clippy::too_many_arguments)]
 fn upgrade_response(
     ws: WebSocketUpgrade,
+    place: Option<ConnectionPlace>,
     sync: Arc<crate::sync::SyncManager>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     peer: SocketAddr,
@@ -1336,7 +1348,10 @@ fn upgrade_response(
     // default frame limit is 16 MiB, buffered before the message check runs.
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
         .max_frame_size(MAX_WS_MESSAGE_SIZE)
-        .on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx, cid, conn_tx, slot))
+        .on_upgrade(move |socket| async move {
+            let _place = place;
+            ws::handle_ws(socket, sync, shutdown_rx, cid, conn_tx, slot).await
+        })
         .into_response()
 }
 
@@ -1350,8 +1365,9 @@ async fn ws_upgrade(
     axum::Extension(conn_tx): axum::Extension<tokio::sync::mpsc::Sender<()>>,
     axum::Extension(proxy): axum::Extension<TrustedProxy>,
     axum::Extension(policy): axum::Extension<RequestPolicy>,
+    place: Option<axum::Extension<ConnectionPlace>>,
 ) -> axum::response::Response {
-    upgrade_response(ws, ctx.sync_manager.clone(), ctx.shutdown.subscribe(), info.0, &params, &headers, conn_tx, &proxy, &policy)
+    upgrade_response(ws, place.map(|axum::Extension(p)| p), ctx.sync_manager.clone(), ctx.shutdown.subscribe(), info.0, &params, &headers, conn_tx, &proxy, &policy)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1435,8 +1451,9 @@ async fn tenant_ws_upgrade(
     axum::Extension(conn_tx): axum::Extension<tokio::sync::mpsc::Sender<()>>,
     axum::Extension(proxy): axum::Extension<TrustedProxy>,
     axum::Extension(policy): axum::Extension<RequestPolicy>,
+    place: Option<axum::Extension<ConnectionPlace>>,
 ) -> axum::response::Response {
-    upgrade_response(ws, tenant.sync_manager.clone(), tenant.shutdown.subscribe(), info.0, &params, &headers, conn_tx, &proxy, &policy)
+    upgrade_response(ws, place.map(|axum::Extension(p)| p), tenant.sync_manager.clone(), tenant.shutdown.subscribe(), info.0, &params, &headers, conn_tx, &proxy, &policy)
 }
 
 #[allow(clippy::too_many_arguments)]

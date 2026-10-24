@@ -229,7 +229,7 @@ const WATCHDOG_TICK: Duration = Duration::from_millis(250);
 /// Prevents accidental thread exhaustion if multiple runtimes are created
 /// (e.g. during testing or future multi-tenancy). Each OS thread consumes
 /// ~8MB of stack, so 200 threads ≈ 1.6GB of stack alone.
-const MAX_GLOBAL_WORKER_THREADS: usize = 200;
+pub(crate) const MAX_GLOBAL_WORKER_THREADS: usize = 200;
 static GLOBAL_WORKER_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Process start, so deadlines can live in an `AtomicU64` as milliseconds.

@@ -285,6 +285,24 @@ fn read_bounded(reader: &mut impl Read, declared: u64, limit: u64) -> Result<Vec
     Ok(buf)
 }
 
+/// The file an archive entry's enclosed name is written to, as Windows and
+/// macOS name files: `.` dropped, `..` taken back, case set aside.
+/// `./manifest.json`, `a/../manifest.json` and `MANIFEST.JSON` are all
+/// `manifest.json`.
+pub(crate) fn entry_file_key(name: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for component in name.components() {
+        match component {
+            std::path::Component::Normal(part) => parts.push(part.to_string_lossy().to_lowercase()),
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            _ => {}
+        }
+    }
+    parts.join("/")
+}
+
 pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
     let file = fs::File::open(zip_path)
         .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
@@ -317,6 +335,12 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
     }
 
     let mut total_bytes: u64 = 0;
+    // The paths written so far, as Windows and macOS compare them. Two
+    // entries for one path (`manifest.json` and `./manifest.json`, or
+    // `MANIFEST.JSON` there) left the last one written, which need not be
+    // the entry the tenant's id was read from before unpacking
+    // (tenant.rs `peek_tenant_id`).
+    let mut written = std::collections::HashSet::new();
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -353,6 +377,9 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
 
         if entry.size() > MAX_FILE_BYTES {
             return Err(format!("File too large in bundle: {} ({}B)", safe_name.display(), entry.size()));
+        }
+        if !written.insert(entry_file_key(&safe_name)) {
+            return Err(format!("Bundle has two files at {}", safe_name.display()));
         }
 
         let out_path = temp_dir.join(&safe_name);
@@ -663,6 +690,28 @@ mod tests {
         let out = extract_softn_zip(&path).unwrap();
         assert_eq!(std::fs::read(out.join("assets/blank.bin")).unwrap().len(), 256 * 1024);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Two entries for one file, by name (`./`) or by case: which one is the
+    /// file was which came last. Refused, and nothing is unpacked.
+    #[test]
+    fn an_archive_with_two_entries_for_one_file_is_refused() {
+        use std::io::Write;
+        for twin in ["./manifest.json", "MANIFEST.JSON"] {
+            let dir = crate::test_dirs::temp_path("softn-bundle-twin", "");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("app.softn");
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            zip.start_file("manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(br#"{"id":"app","name":"app","version":"1"}"#).unwrap();
+            zip.start_file(twin, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(br#"{"id":"victim","name":"victim","version":"1"}"#).unwrap();
+            zip.finish().unwrap();
+            let refused = extract_softn_zip(&path);
+            assert!(refused.as_ref().is_err_and(|e| e.contains("two files at")), "{twin}: {refused:?}");
+            assert!(!dir.join("app_bundle").exists(), "{twin}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     #[test]

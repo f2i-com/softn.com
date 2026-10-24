@@ -478,7 +478,12 @@ the environment wins), `allowedOrigins` (origins such as
 warning), `maxBodySize` (1-16777216), `workers`, `readPoolSize`,
 `syncPermits`, `maxStorageMB`, `maxSyncConnections`,
 `maxSyncConnectionsPerVisitor`, `requestsPerMinute` (whole numbers),
-`bodyTimeoutSeconds` (1-600) and `forceServerTimestamps` (boolean).
+`bodyTimeoutSeconds` (1-600) and `forceServerTimestamps` (boolean). Serving
+many apps (`serve-multi`), what a bundle may ask for itself is held to its
+share of the one process: `workers` to the 200 worker threads divided among
+the bundles (4 each for 50; `--workers-per-tenant` is the operator's and is
+not held to it), `readPoolSize` to 16, `maxSyncConnections` to 1024, and
+`maxStorageMB` cannot be 0 (no quota) there, which reads as the 10 GiB cap.
 
 Connections: request headers must arrive within 30 seconds, and a request's
 whole body within `bodyTimeoutSeconds` of them (60 by default, which is about
@@ -520,7 +525,10 @@ is left behind, where the process used to wait on it for ever).
 
 Connections: 768 are served at once and the rest wait in the listen queue
 (the process needs a file-descriptor limit above that; the default 1024 is
-enough). A response the client does not read is dropped when 30 seconds pass
+enough). An open sync socket is one of the 768 for as long as it is open, as
+a kept-alive connection is: it used to be counted only until its upgrade, so
+the sockets of the apps on one host could pass the descriptor limit and
+leave none for anything else. A response the client does not read is dropped when 30 seconds pass
 without the client taking a byte, on plain requests and on sync sockets
 alike; a slow client is not affected, only one that has stopped. One sync
 message has two minutes to leave at most.

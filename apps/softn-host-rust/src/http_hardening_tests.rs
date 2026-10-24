@@ -951,6 +951,33 @@ async fn connections_past_the_limit_wait_their_turn() {
     assert_eq!(&answer, b"HTTP/1.1 200");
 }
 
+/// An open sync socket holds its connection's place: it was given back at
+/// the upgrade, so sockets went uncounted beside the limit, each a
+/// descriptor of the process.
+#[tokio::test]
+async fn an_open_sync_socket_keeps_its_place() {
+    let limits = ServeLimits { connections: 1, ..ServeLimits::with_header_timeout(std::time::Duration::from_secs(30)) };
+    let (_stop, stopped) = tokio::sync::oneshot::channel();
+    let (addr, _server) = serve_with(legacy_app(serde_json::json!({})), limits, stopped).await;
+    let host = addr.to_string();
+    let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+    socket.write_all(upgrade(&host, "", &format!("http://{host}")).as_bytes()).await.unwrap();
+    let mut switched = [0u8; 12];
+    socket.read_exact(&mut switched).await.unwrap();
+    assert_eq!(&switched, b"HTTP/1.1 101");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut next = tokio::net::TcpStream::connect(addr).await.unwrap();
+    next.write_all(format!("GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut answer = [0u8; 12];
+    let early = tokio::time::timeout(std::time::Duration::from_millis(400), next.read_exact(&mut answer)).await;
+    assert!(early.is_err(), "a connection was served while the sync socket held the only place");
+    // The socket closes, and its place comes free.
+    drop(socket);
+    tokio::time::timeout(std::time::Duration::from_secs(5), next.read_exact(&mut answer)).await
+        .expect("the place never came back when the socket closed").unwrap();
+    assert_eq!(&answer, b"HTTP/1.1 200");
+}
+
 /// Shutdown gives the requests in flight their time and then returns.
 #[tokio::test]
 async fn shutdown_does_not_wait_for_ever_on_a_connection_that_will_not_finish() {

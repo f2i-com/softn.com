@@ -5,7 +5,7 @@
 //! there by route-declarations.test.mjs. The PHP host's zones are whatever its
 //! `Intl` takes, so this one takes the same spellings: an IANA name in any
 //! case, or an offset from UTC.
-use chrono::{DateTime, Datelike, FixedOffset, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use std::{collections::HashMap, sync::OnceLock};
 
@@ -16,12 +16,16 @@ enum Zone {
 }
 
 impl Zone {
-    /// The wall clock in this zone at an instant.
-    fn local(&self, at: DateTime<Utc>) -> NaiveDateTime {
-        match self {
-            Zone::Named(tz) => at.with_timezone(tz).naive_local(),
-            Zone::Offset(offset) => at.with_timezone(offset).naive_local(),
-        }
+    /// The wall clock in this zone at an instant, or None past the last (or
+    /// before the first) date chrono can write: an instant chrono can hold,
+    /// near its year 262,142, moved east by the zone's offset. chrono's own
+    /// `naive_local` panics there, and a script chose the instant.
+    fn local(&self, at: DateTime<Utc>) -> Option<NaiveDateTime> {
+        let offset = match self {
+            Zone::Named(tz) => tz.offset_from_utc_datetime(&at.naive_utc()).fix(),
+            Zone::Offset(offset) => *offset,
+        };
+        at.naive_utc().checked_add_offset(offset)
     }
 
     /// The instant a wall-clock time names in this zone: one, two (a time the
@@ -97,13 +101,13 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "June", "July", "
 /// The place is the last part of the zone as the caller spelt it, its
 /// underscores as spaces. This host used to write "Thu, 1 Jan 2026, 11:00 PM
 /// AEDT" for the same call.
-fn format(at: DateTime<Utc>, zone: &Zone, named: &str) -> String {
-    let local = zone.local(at);
+fn format(at: DateTime<Utc>, zone: &Zone, named: &str) -> Option<String> {
+    let local = zone.local(at)?;
     let hour = match local.hour() % 12 {
         0 => 12,
         hour => hour,
     };
-    format!(
+    Some(format!(
         "{}, {} {}, {}:{:02} {} \u{b7} {}",
         WEEKDAYS[local.weekday().num_days_from_sunday() as usize],
         local.day(),
@@ -112,7 +116,7 @@ fn format(at: DateTime<Utc>, zone: &Zone, named: &str) -> String {
         local.minute(),
         if local.hour() < 12 { "am" } else { "pm" },
         named.rsplit('/').next().unwrap_or(named).replace('_', " "),
-    )
+    ))
 }
 
 pub fn dispatch(kind: &str, a: &str, b: &str, c: &str) -> Result<serde_json::Value, String> {
@@ -162,14 +166,15 @@ pub fn dispatch(kind: &str, a: &str, b: &str, c: &str) -> Result<serde_json::Val
                 .timestamp_opt(seconds as i64, 0)
                 .single()
                 .ok_or("Invalid timestamp")?;
-            format(at, &zone(b)?, b).into()
+            format(at, &zone(b)?, b).ok_or("Invalid timestamp")?.into()
         }
         _ => return Err("Unknown time operation".into()),
     })
 }
 
 fn calendar_age(birth: NaiveDate, now: DateTime<Utc>, zone: &Zone) -> i32 {
-    let today = zone.local(now).date();
+    // Today is never near chrono's ends.
+    let today = zone.local(now).unwrap_or_else(|| now.naive_utc()).date();
     today.year()
         - birth.year()
         - i32::from((today.month(), today.day()) < (birth.month(), birth.day()))
@@ -178,6 +183,19 @@ fn calendar_age(birth: NaiveDate, now: DateTime<Utc>, zone: &Zone) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The last second chrono holds, written east of UTC, and the first,
+    /// written west of it: past the dates chrono can write, refused, where
+    /// putting them in the zone panicked the worker. Just inside, answered.
+    #[test]
+    fn a_time_past_the_dates_chrono_writes_is_refused_not_a_panic() {
+        for (seconds, zone) in [("8210266876799", "+10:00"), ("8210266876799", "Australia/Melbourne"), ("-8334601228800", "-10:00"), ("-8334601228800", "America/New_York")] {
+            let answered = std::panic::catch_unwind(|| dispatch("time.format", seconds, zone, ""));
+            assert!(matches!(&answered, Ok(Err(e)) if e == "Invalid timestamp"), "{seconds} {zone}: {answered:?}");
+        }
+        assert!(dispatch("time.format", "8210266876799", "-10:00", "").is_ok());
+        assert!(dispatch("time.format", "8210266876799", "UTC", "").is_ok());
+    }
+
     #[test]
     fn rejects_invalid_dates_and_dst_fold_and_gap() {
         assert_eq!(dispatch("time.age", "2025-02-29", "", "").unwrap(), -1);

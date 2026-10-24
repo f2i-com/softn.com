@@ -110,8 +110,11 @@ impl SyncSettings {
     pub fn from_manifest(manifest: &crate::bundle::ServerManifest, multi_tenant: bool) -> Self {
         let server = manifest.config.as_ref().and_then(|c| c.get("server"));
         let number = |key: &str| server.and_then(|s| s.get(key)).and_then(|v| v.as_u64());
+        // Capped at 10 GiB. Only a host serving one app may turn the quota
+        // off (0): among many, a bundle that did could fill the disk they
+        // share, and 0 is the cap there.
         let max_storage_bytes = number("maxStorageMB")
-            .map(|mb| mb.min(10 * 1024) * 1024 * 1024) // cap at 10 GiB
+            .map(|mb| (if multi_tenant && mb == 0 { 10 * 1024 } else { mb.min(10 * 1024) }) * 1024 * 1024)
             .unwrap_or(512 * 1024 * 1024);
         let sync_permits = if multi_tenant {
             number("syncPermits").map(|n| (n as usize).clamp(4, 64)).unwrap_or(16)
@@ -120,8 +123,10 @@ impl SyncSettings {
                 std::thread::available_parallelism().map(|n| (n.get() * 4).min(64)).unwrap_or(32)
             })
         };
+        // Among many apps, one may not open more than the default: each socket
+        // is a descriptor of the process they share.
         let max_connections = number("maxSyncConnections")
-            .map(|n| (n as usize).clamp(1, 65_536))
+            .map(|n| (n as usize).clamp(1, if multi_tenant { DEFAULT_MAX_SYNC_CONNECTIONS } else { 65_536 }))
             .unwrap_or(DEFAULT_MAX_SYNC_CONNECTIONS);
         let max_connections_per_visitor = number("maxSyncConnectionsPerVisitor")
             .map(|n| n.min(65_536) as usize)
