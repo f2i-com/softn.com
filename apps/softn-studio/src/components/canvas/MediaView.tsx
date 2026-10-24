@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { classifyAsset } from '@softn/core';
+import { assetObjectUrl, classifyAsset } from '@softn/core';
 import { Icon } from '../common/Icon';
 import '../../styles/code.css';
 
@@ -36,25 +36,24 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
- * An object URL for the file's bytes, typed with core's MIME for its name,
- * created in an effect and revoked when the file changes or the view goes —
- * never in render, where an abandoned render would leak it. Text content (an
- * SVG kept as text) becomes a Blob too, so it is shown through <img> and never
- * put into this document.
+ * A URL for the file's bytes, as the runtime hands the app one (core's
+ * assetObjectUrl): an object URL typed with core's MIME for its name, and an
+ * SVG as a `data:` URL, which "Open image in new tab" cannot open as a page of
+ * Studio, the bundle's script in it. Created in an effect and revoked when the
+ * file changes or the view goes — never in render, where an abandoned render
+ * would leak it. Text content (an SVG kept as text) is shown through <img> too,
+ * never put into this document.
  */
-function useObjectUrl(content: string | Uint8Array, mime: string): string | null {
+function useObjectUrl(path: string, content: string | Uint8Array): string | null {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
-    const part: BlobPart = typeof content === 'string'
-      ? content
-      : content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength) as ArrayBuffer;
-    const next = URL.createObjectURL(new Blob([part], { type: mime }));
+    const next = assetObjectUrl(path, content);
     setUrl(next);
     return () => {
-      URL.revokeObjectURL(next);
+      if (next.startsWith('blob:')) URL.revokeObjectURL(next);
       setUrl(null);
     };
-  }, [content, mime]);
+  }, [path, content]);
   return url;
 }
 
@@ -119,7 +118,7 @@ interface MediaViewProps {
 export function MediaView({ path, content }: MediaViewProps): React.ReactElement {
   const kind = mediaKindFor(path);
   const { mime } = classifyAsset(path);
-  const url = useObjectUrl(content, mime);
+  const url = useObjectUrl(path, content);
   const name = path.split('/').pop() ?? path;
   const size = useMemo(
     () => (typeof content === 'string' ? new TextEncoder().encode(content).byteLength : content.byteLength),

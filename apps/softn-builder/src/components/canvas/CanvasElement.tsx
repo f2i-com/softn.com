@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { assetObjectUrl } from '@softn/core';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
@@ -619,11 +620,10 @@ export const CanvasElement = React.memo(function CanvasElement({
       return;
     }
 
-    const objectUrl = URL.createObjectURL(
-      new Blob([Uint8Array.from(matchedAsset.data)], {
-        type: matchedAsset.type || 'application/octet-stream',
-      })
-    );
+    // As the app will be handed it, by its name (core assetObjectUrl): an SVG
+    // as a `data:` URL, which "Open image in new tab" cannot open as a page of
+    // the Builder, the bundle's script in it.
+    const objectUrl = assetObjectUrl(matchedAsset.name, Uint8Array.from(matchedAsset.data));
     setImagePreviewUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
   }, [elementComponentType, imageSource, imageExpressionProps, assets, resolvedLogicStrings, picturesShown]);

@@ -575,6 +575,17 @@ describe('a component the canvas draws as itself', () => {
       expect(drawing(mary.id).querySelector('img')).toBeNull();
       expect(drawing(mary.id).textContent).toBe('MS');
     });
+
+    it('is an SVG drawn from a data: URL, which no one can open as a page of the Builder', () => {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+      act(() => useProjectStore.getState().setAssets([{ name: 'logo.svg', bundlePath: 'assets/logo.svg', type: 'image/svg+xml', data: new TextEncoder().encode(svg) }]));
+      open('<App><Image src={asset("assets/logo.svg")} alt="logo" /></App>');
+      mount();
+      const src = element(all('Image')[0].id).querySelector('img')?.getAttribute('src') ?? '';
+      expect(src.startsWith('data:image/svg+xml;base64,')).toBe(true);
+      expect(atob(src.split(',')[1])).toBe(svg);
+      expect(made).toHaveLength(0);
+    });
   });
 
   it('is drawn in the project\'s theme, on an artboard that is the app\'s page in that theme', () => {

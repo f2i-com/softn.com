@@ -17,7 +17,7 @@ import { AppScopeProvider, type AppScope } from '../loader/app-scope';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNRenderContext, SoftNDocument } from '../types';
 import { parseStatePath } from '../runtime/state-path';
-import { classifyAsset } from './asset-classification';
+import { assetObjectUrl, classifyAsset } from './asset-classification';
 
 // ============================================================================
 // Bundle Runtime
@@ -145,12 +145,9 @@ export function createBundleRuntime(
     // Create object URL for binary data
     const content = file.content;
     if (content instanceof Uint8Array) {
-      const mimeType = getMimeType(normalizedPath);
-      // Create a new ArrayBuffer copy to ensure type compatibility
-      const buffer = new ArrayBuffer(content.byteLength);
-      new Uint8Array(buffer).set(content);
-      const blob = new Blob([buffer], { type: mimeType });
-      const url = URL.createObjectURL(blob);
+      // A copy of the bytes, of the asset's own type, never an active
+      // document on the page's origin (assetObjectUrl).
+      const url = assetObjectUrl(normalizedPath, new Uint8Array(content));
       assetUrls.set(normalizedPath, url);
       return url;
     }

@@ -66,12 +66,17 @@ describe('MediaView', () => {
     expect(container.textContent).toContain('4 B');
   });
 
-  it('draws an SVG kept as text through an image blob, never into the page', () => {
+  it('draws an SVG kept as text through an <img> of a data: URL, never into the page nor at a blob: URL of Studio', () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><rect width="4" height="4"/></svg>';
     act(() => root.render(<MediaView path="assets/logo.svg" content={svg} />));
-    expect(container.querySelector('img')?.getAttribute('src')).toBe(created[0].url);
-    expect(created[0].blob.type).toBe('image/svg+xml');
+    const src = container.querySelector('img')?.getAttribute('src') ?? '';
+    expect(src.startsWith('data:image/svg+xml;base64,')).toBe(true);
+    expect(atob(src.split(',')[1])).toBe(svg);
+    expect(created).toHaveLength(0);
     expect(container.querySelector('svg, script, rect')).toBeNull();
+    act(() => root.unmount());
+    expect(revoked).toEqual([]);
+    root = createRoot(container);
   });
 
   it('revokes the URL when the file changes and when the view goes', () => {

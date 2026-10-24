@@ -4,7 +4,7 @@
 
 import React, { lazy, Suspense, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ProductBar } from '@softn/brand';
-import { classifyAsset } from '@softn/core';
+import { assetObjectUrl, classifyAsset } from '@softn/core';
 import { Toolbar } from './components/toolbar/Toolbar';
 import { NarrowScreenNotice } from './components/NarrowScreenNotice';
 import { ExportDialog } from './components/toolbar/ExportDialog';
@@ -603,11 +603,9 @@ function App() {
       setActiveAssetPreviewUrl(null);
       return;
     }
-    const objectUrl = URL.createObjectURL(
-      new Blob([Uint8Array.from(activeAsset.data)], {
-        type: activeAsset.type || classifyAsset(activeAsset.name).mime,
-      })
-    );
+    // An SVG as a `data:` URL (core assetObjectUrl), which "Open image in new
+    // tab" cannot open as a page of the Builder, the bundle's script in it.
+    const objectUrl = assetObjectUrl(activeAsset.name, Uint8Array.from(activeAsset.data));
     setActiveAssetPreviewUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
   }, [isAssetFileActive, activeAsset]);

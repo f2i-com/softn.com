@@ -1,4 +1,4 @@
-import { classifyAsset, composeBundleSource, rewriteBundleLogicImports, type AppAssetResolver } from '@softn/core';
+import { assetObjectUrl, composeBundleSource, rewriteBundleLogicImports, type AppAssetResolver } from '@softn/core';
 import type { AssetFile } from '../types/builder';
 
 /**
@@ -40,7 +40,8 @@ export function createPreviewAssets(files: ReadonlyMap<string, AssetFile>): AppA
     if (cached) return cached;
     const file = files.get(canonical);
     if (!file) return '';
-    const url = URL.createObjectURL(new Blob([new Uint8Array(file.data)], { type: classifyAsset(canonical).mime }));
+    // Never an active document on the Builder's origin (core assetObjectUrl).
+    const url = assetObjectUrl(canonical, new Uint8Array(file.data));
     urls.set(canonical, url);
     paths.set(url, canonical);
     return url;

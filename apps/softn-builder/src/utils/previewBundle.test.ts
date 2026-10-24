@@ -74,17 +74,26 @@ describe('portable Builder preview', () => {
   });
 
   it('provides real image URLs and releases them when preview assets are replaced', () => {
-    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview-logo');
+    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview-photo');
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-    const assets = createPreviewAssets(new Map([['images/logo.svg', { name: 'logo.svg', type: 'image/svg+xml', data: svg }]]));
-    expect(assets('images/logo.svg')).toBe('blob:preview-logo');
-    expect(assets('./images/logo.svg')).toBe('blob:preview-logo');
-    expect(assets.pathOf?.('blob:preview-logo')).toBe('images/logo.svg');
-    expect((create.mock.calls[0][0] as Blob).type).toBe('image/svg+xml');
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const assets = createPreviewAssets(new Map([
+      ['images/photo.png', { name: 'photo.png', type: 'image/png', data: png }],
+      ['images/logo.svg', { name: 'logo.svg', type: 'image/svg+xml', data: svg }],
+    ]));
+    expect(assets('images/photo.png')).toBe('blob:preview-photo');
+    expect(assets('./images/photo.png')).toBe('blob:preview-photo');
+    expect(assets.pathOf?.('blob:preview-photo')).toBe('images/photo.png');
+    expect((create.mock.calls[0][0] as Blob).type).toBe('image/png');
+    // An SVG is a data: URL, which the preview draws and no one can open as
+    // a page of the Builder's origin, the bundle's script in it.
+    const logo = assets('images/logo.svg');
+    expect(logo.startsWith('data:image/svg+xml;base64,')).toBe(true);
+    expect(assets.pathOf?.(logo)).toBe('images/logo.svg');
     expect(create).toHaveBeenCalledTimes(1);
     assets.dispose?.();
-    expect(revoke).toHaveBeenCalledWith('blob:preview-logo');
-    expect(assets('images/logo.svg')).toBe('');
+    expect(revoke).toHaveBeenCalledWith('blob:preview-photo');
+    expect(assets('images/photo.png')).toBe('');
   });
 });
 

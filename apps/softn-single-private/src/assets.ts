@@ -1,4 +1,4 @@
-import { classifyAsset } from '@softn/core';
+import { assetObjectUrl } from '@softn/core';
 import type { AssetResolver } from '@softn/single-shell';
 
 /**
@@ -60,11 +60,14 @@ export function createServedAssetResolver(
       const text = textFiles.get(path);
       if (text === undefined) return '';
       try {
-        url = URL.createObjectURL(new Blob([text], { type: classifyAsset(path).mime }));
+        // Never an active document on the site's origin (core assetObjectUrl):
+        // the entries the endpoint serves carry `sandbox`, and a text asset
+        // made here has nothing of the kind.
+        url = assetObjectUrl(path, text);
       } catch {
         return '';
       }
-      blobs.push(url);
+      if (url.startsWith('blob:')) blobs.push(url);
     }
     urls.set(path, url);
     paths.set(url, path);

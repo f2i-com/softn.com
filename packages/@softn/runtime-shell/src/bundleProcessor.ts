@@ -12,6 +12,7 @@ import {
   getXDB,
   openBundleArchive,
   classifyAsset,
+  assetObjectUrl,
   ASSET_CLASSIFICATIONS,
   parseXDBFile,
   seedXDBBundleData,
@@ -559,7 +560,6 @@ export function createAssetResolver(
     // A MIME miss used to return '' here, so a .glb whose bytes were sitting
     // in the bundle resolved to an empty URL with nothing logged. An unknown
     // format is served as opaque bytes instead, and says so once.
-    const { mime } = classifyAsset(path);
     warnUnknownAssetExtension(path);
 
     // A demand read: the entry is inflated and checksummed here if this is
@@ -581,10 +581,9 @@ export function createAssetResolver(
     if (!binary && text === undefined) return '';
 
     try {
-      const blob = binary
-        ? new Blob([binary as BlobPart], { type: mime })
-        : new Blob([text as string], { type: mime });
-      const url = URL.createObjectURL(blob);
+      // Of the asset's own type, never an active document on the site's
+      // origin (core assetObjectUrl).
+      const url = assetObjectUrl(path, binary ?? (text as string));
       urls.set(path, url);
       paths.set(url, path);
       return url;

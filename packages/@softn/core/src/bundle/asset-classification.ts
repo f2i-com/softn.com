@@ -127,3 +127,36 @@ export function classifyAsset(path: string): AssetClassification {
     }
   );
 }
+
+/**
+ * Types a browser opens as an active document: an asset of one of them is
+ * handed out as plain text.
+ */
+const DOCUMENT_TYPES = new Set(['text/html', 'application/xhtml+xml', 'application/xml', 'text/xml', 'application/javascript', 'text/javascript']);
+
+function base64Of(content: Uint8Array | string): string {
+  const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(binary);
+}
+
+/**
+ * The address a bundle's asset is handed out at (`asset("…")`).
+ *
+ * A `blob:` URL belongs to the page that made it, and opened as a page (a
+ * link to it, the address pasted into a tab) it is a page of this site. An
+ * `.html`, `.xml` or `.svg` asset was the bundle's own document there, on the
+ * site's origin, held back by nothing but the page's `<meta>` CSP, and not by
+ * that in a new tab, where its script ran. So an SVG is handed out as a
+ * `data:` URL, which an `<img>` and CSS draw and a browser will not open as a
+ * page of any site; a document type as plain text, which opens as text.
+ * Everything else is a `blob:` URL of its own type, as it was. A `blob:` URL
+ * is revoked with `URL.revokeObjectURL`, which leaves a `data:` URL alone.
+ */
+export function assetObjectUrl(path: string, content: Uint8Array | string): string {
+  const { mime } = classifyAsset(path);
+  if (mime === 'image/svg+xml') return `data:image/svg+xml;base64,${base64Of(content)}`;
+  const type = DOCUMENT_TYPES.has(mime) ? 'text/plain;charset=utf-8' : mime;
+  return URL.createObjectURL(new Blob([content as BlobPart], { type }));
+}

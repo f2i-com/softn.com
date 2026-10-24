@@ -86,8 +86,8 @@ export function isRemoteUrl(value: string): boolean {
 /**
  * Schemes that name a host to connect to. `data:` and `blob:` are excluded on
  * purpose: they carry their bytes with them, and `asset()` hands bundle files
- * out as `blob:`, so treating them as egress would break every bundle's own
- * sounds and images for no gain.
+ * out as `blob:` (an SVG as `data:`), so treating them as egress would break
+ * every bundle's own sounds and images for no gain.
  */
 const REMOTE_URL_SCHEMES = new Set(['http', 'https', 'ftp', 'ftps', 'ws', 'wss']);
 
