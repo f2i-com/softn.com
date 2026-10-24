@@ -72,9 +72,28 @@ impl NetPolicy {
     }
 }
 
-/// A name from the page or from a file, safe to put in a dialog: one line, and not long.
+/// Characters that show nothing, or turn the text around them the other way: a bundle's file
+/// name `invoice\u{202E}cod.softn` read as `invoicenffos.doc`, and a host named with them
+/// can show as another one. Not control characters, so the filter below let them through.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+    )
+}
+
+/// A name from the page or from a file, safe to put in a dialog: one line, not long, and
+/// reading as what it is.
 pub(crate) fn printable(text: &str) -> String {
-    let cleaned: String = text.chars().filter(|c| !c.is_control()).take(HOST_CHARS_SHOWN).collect();
+    let cleaned: String = text.chars().filter(|c| !c.is_control() && !is_invisible(*c)).take(HOST_CHARS_SHOWN).collect();
     if text.chars().count() > HOST_CHARS_SHOWN {
         format!("{}...", cleaned)
     } else {
@@ -481,6 +500,17 @@ mod tests {
         assert!(text.contains("and 28 more"), "{}", text);
         let (_, _, text) = consent.net_question(&policy(false, &["evil.example\n\nAllow this, it is safe"]));
         assert!(!text.contains("evil.example\n"), "{}", text);
+    }
+
+    #[test]
+    fn a_name_cannot_turn_the_question_around_or_hide_in_it() {
+        let consent = Consent::default();
+        consent.bundle_opened(Path::new("invoice\u{202E}cod.softn"));
+        let (_, _, text) = consent.peer_sync_question();
+        assert!(text.contains("\"invoicecod.softn\""), "{}", text);
+        let (_, _, text) = consent.net_question(&policy(false, &["api.exa\u{200B}mple.com", "\u{2067}evil.example\u{2069}"]));
+        assert!(text.contains("api.example.com") && text.contains("evil.example"), "{}", text);
+        assert!(!text.chars().any(is_invisible), "{:?}", text);
     }
 
     #[test]
