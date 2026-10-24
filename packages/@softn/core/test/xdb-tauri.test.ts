@@ -534,7 +534,7 @@ describe('XDB Service (Tauri mode)', () => {
       { public: [makeRecord('\u0085', 'public', {})] },
       { public: [makeRecord('cut', 'public', { text: 'half an emoji \ud83d' })] },
     ];
-    expect(() => xdb.import({ version: 1, exportedAt: '', collections: imports[0] }, { merge: false })).toThrow(/not been loaded/);
+    expect(() => xdb.import({ version: 1, exportedAt: '', collections: imports[0] }, { merge: false })).toThrow(/not finished loading/);
     expect(heard).toEqual([]);
     privateLoads = true;
     await xdb.retryHydration();
@@ -551,6 +551,45 @@ describe('XDB Service (Tauri mode)', () => {
     xdb.import({ version: 1, exportedAt: '', collections: { public: [makeRecord('whole', 'public', { text: 'a whole emoji 😀' })] } });
     expect(invokeMock).toHaveBeenCalledWith('import_records', expect.anything());
     errors.mockRestore();
+  });
+
+  // More of what the check let through: a collection still loading (only a
+  // failed one was refused), an id the cache holds live in two collections
+  // (a peer's record the native store refused stays in the cache), a
+  // collection named with half a surrogate pair, `data` JSON leaves out, a BigInt.
+  it('refuses up front while loading, and what else the native store cannot take', async () => {
+    backend.set('private', [makeRecord('shared-id', 'private', { secret: 1 })]);
+    backend.set('public', [makeRecord('keep', 'public', {})]);
+    const answer = invokeMock.getMockImplementation()!;
+    let loaded!: () => void;
+    const slow = new Promise<void>((resolve) => { loaded = resolve; });
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_collection' && args?.collection === 'private') await slow;
+      return answer(cmd, args);
+    });
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await flushPromises();
+    const told: string[] = [];
+    xdb.onMutation((event) => told.push(`${event.type}:${event.collection}`));
+    expect(() => xdb.import({ version: 1, exportedAt: '', collections: { public: [makeRecord('shared-id', 'public', {})] } }, { merge: false }))
+      .toThrow(/not finished loading/);
+    loaded();
+    await xdb.isReady;
+
+    // A peer's `shared-id` in `public`, which the native store would refuse, sits in the cache beside `private`'s.
+    xdb.writePeerRecords('public', [makeRecord('shared-id', 'public', { from: 'a peer' }), makeRecord('other', 'public', {})]);
+    told.length = 0;
+    invokeMock.mockClear();
+    for (const collections of [
+      { public: [makeRecord('shared-id', 'public', { mine: true })] },
+      { public: [makeRecord('n', 'public', {})], '\ud800': [] },
+      { public: [{ ...makeRecord('u', 'public', {}), data: undefined } as unknown as XDBRecord] },
+      { public: [makeRecord('big', 'public', { n: BigInt(1) })] },
+    ]) {
+      expect(() => xdb.import({ version: 1, exportedAt: '', collections })).toThrow(/Import refused/);
+    }
+    expect(invokeMock).not.toHaveBeenCalledWith('import_records', expect.anything());
+    expect(told).toEqual([]);
   });
 
   it('restoreAsync refuses a partial restore unless the caller accepts it', async () => {

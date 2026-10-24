@@ -149,7 +149,8 @@ function nativeImportRefusal(record: XDBRecord, collection: string): string | nu
   const row = record as unknown as Record<string, unknown>;
   if (typeof row.id !== 'string' || isBlankToRust(row.id)) return 'has no id';
   if (row.collection !== collection) return `names ${JSON.stringify(row.collection)} as its collection`;
-  if (typeof row.created_at !== 'string' || typeof row.updated_at !== 'string' || typeof row.deleted !== 'boolean' || !('data' in row)) {
+  // `data: undefined` is a field JSON leaves out, and the Record then has none.
+  if (typeof row.created_at !== 'string' || typeof row.updated_at !== 'string' || typeof row.deleted !== 'boolean' || row.data === undefined) {
     return 'is not a whole record (id, collection, data, created_at, updated_at, deleted)';
   }
   if (!readableByNative(row, 0)) return 'holds text the native store cannot read (half of a surrogate pair) or is nested past 100 levels';
@@ -171,6 +172,8 @@ const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?:^|[^\ud800-\udbff]
  */
 function readableByNative(value: unknown, depth: number): boolean {
   if (typeof value === 'string') return !LONE_SURROGATE.test(value);
+  // JSON has no BigInt: the request would not be written at all.
+  if (typeof value === 'bigint') return false;
   if (typeof value !== 'object' || value === null) return true;
   if (depth > 100) return false;
   if (Array.isArray(value)) return value.every((item) => readableByNative(item, depth + 1));
@@ -2696,25 +2699,35 @@ export class XDBService {
     // the collection it is imported into; and records are kept by id alone,
     // so not a live record of another collection (a deleted one it writes
     // over), here or earlier in this import: which the cache can say only
-    // when every collection has loaded.
-    if (this.hydrationFailed.size > 0) {
-      throw new XDBStorageError('unhydrated', 'Import refused: a collection has not been loaded from the native database, and a record of it could be one this import holds. Retry loading first; nothing was changed.');
+    // once every collection has loaded (not while one is still loading, nor
+    // after one failed to).
+    if (!this.isHydrated()) {
+      throw new XDBStorageError('unhydrated', 'Import refused: the native database has not finished loading, and a record not yet loaded could be one this import holds. Wait for it, or retry loading; nothing was changed.');
     }
-    const owner = new Map<string, string>();
+    // Every collection that holds each id live: a peer's record the native
+    // store refused stays in the cache under its own collection beside the
+    // one that really holds it.
+    const owners = new Map<string, Set<string>>();
+    const own = (id: string, collection: string) => {
+      let held = owners.get(id);
+      if (!held) owners.set(id, (held = new Set()));
+      held.add(collection);
+    };
     for (const [collection, coll] of this.memoryStore) {
-      for (const [id, record] of coll) if (!record.deleted) owner.set(id, collection);
+      for (const [id, record] of coll) if (!record.deleted) own(id, collection);
     }
     for (const plan of plans) {
-      if (isBlankToRust(plan.collection)) {
-        throw new XDBStorageError('invalid-data', 'Import refused: a collection has no name; nothing was changed.');
+      if (isBlankToRust(plan.collection) || !readableByNative(plan.collection, 0)) {
+        throw new XDBStorageError('invalid-data', 'Import refused: a collection has no name, or one the native store cannot read; nothing was changed.');
       }
       for (const record of plan.records) {
+        const elsewhere = [...(owners.get(record.id) ?? [])].find((collection) => collection !== plan.collection);
         const refusal = nativeImportRefusal(record, plan.collection)
-          ?? (owner.has(record.id) && owner.get(record.id) !== plan.collection ? `is a record of "${owner.get(record.id)}" here` : null);
+          ?? (elsewhere !== undefined ? `is a record of "${elsewhere}" here` : null);
         if (refusal !== null) {
           throw new XDBStorageError('invalid-data', `Import refused: record "${record.id}" for "${plan.collection}" ${refusal}; nothing was changed.`, plan.collection);
         }
-        if (!record.deleted) owner.set(record.id, plan.collection);
+        if (!record.deleted) own(record.id, plan.collection);
       }
     }
     for (const plan of plans) {
