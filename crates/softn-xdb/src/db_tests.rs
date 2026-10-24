@@ -1018,3 +1018,34 @@ fn a_batch_that_fails_or_panics_leaves_nothing_and_the_database_as_it_was() {
     assert_eq!(ids, vec!["fifth", "first", "fourth", "sixth"]);
     assert_eq!(replica, rows);
 }
+
+/// Records are kept by id alone. A record a peer or a sync server sends for one collection,
+/// under the id of a record of another collection here, replaced that record and moved it
+/// into the collection it came in: a room or a server reached a collection never shared
+/// with it.
+#[test]
+fn a_record_sent_for_one_collection_does_not_replace_another_collections() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "mine.sqlite");
+    db.upsert_record(Record { collection: "private".into(), ..note("shared-id", "my secret") }).unwrap();
+
+    // Sync's write: refused, and the record is as it was.
+    let refused = db.upsert_record(Record { collection: "public".into(), ..note("shared-id", "planted") });
+    assert!(matches!(refused, Err(DbError::InvalidOperation(_))), "{refused:?}");
+    let kept = db.get_record("shared-id").unwrap();
+    assert_eq!((kept.collection.as_str(), &kept.data), ("private", &json!({ "title": "my secret" })));
+
+    // A peer's update for `public`: that record is skipped, and the rest of it is written.
+    let mut peer = database(&dir, "peer.sqlite");
+    peer.upsert_record(Record { collection: "public".into(), ..note("shared-id", "planted") }).unwrap();
+    peer.upsert_record(Record { collection: "public".into(), ..note("their-own", "fine") }).unwrap();
+    let written = db.apply_remote_update("public", &peer.get_full_state("public").unwrap()).unwrap();
+    assert_eq!(written.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["their-own"]);
+    let kept = db.get_record("shared-id").unwrap();
+    assert_eq!((kept.collection.as_str(), &kept.data), ("private", &json!({ "title": "my secret" })));
+    assert_eq!(live_ids(&db, "public"), vec!["their-own"]);
+
+    // A record of the same collection is written over as before.
+    db.upsert_record(Record { collection: "private".into(), ..note("shared-id", "edited") }).unwrap();
+    assert_eq!(db.get_record("shared-id").unwrap().data, json!({ "title": "edited" }));
+}

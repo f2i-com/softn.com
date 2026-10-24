@@ -111,6 +111,7 @@ fn with_app_a_data(name: &str) -> Page {
             softn_loader_lib::scoped_xdb::clear_collection,
             softn_loader_lib::scoped_xdb::create_record,
             softn_loader_lib::scoped_xdb::delete_record,
+            softn_loader_lib::scoped_xdb::upsert_record,
             softn_loader_lib::scoped_xdb::import_records,
             softn_loader_lib::scoped_xdb::backup_database,
         ])
@@ -202,6 +203,24 @@ fn a_delete_naming_a_collection_does_not_reach_another() {
         .unwrap();
     assert_eq!(page.call("delete_record", serde_json::json!({ "appId": b, "id": other["id"] })), Ok(serde_json::json!(true)));
     assert_eq!(private(&page), 0);
+}
+
+/// What sync writes for one collection does not replace a record of another under the same
+/// id: it moved that record into the collection it came in, data and all.
+#[test]
+fn a_write_for_one_collection_does_not_replace_another_collections_record() {
+    let page = with_app_a_data("upsert-collection");
+    let b = page.open_own("b.softn", b"app B");
+    let kept = page
+        .call("create_record", serde_json::json!({ "appId": b, "payload": { "collection": "private", "data": { "secret": 1 } } }))
+        .unwrap();
+    let planted = serde_json::json!({
+        "id": kept["id"], "collection": "public", "data": { "planted": true },
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2099-01-01T00:00:00Z", "deleted": false
+    });
+    assert!(page.call("upsert_record", serde_json::json!({ "appId": b, "record": planted })).is_err());
+    let record = page.manager.get_db(&b).unwrap().lock().unwrap().get_record(kept["id"].as_str().unwrap()).unwrap();
+    assert_eq!((record.collection.as_str(), &record.data), ("private", &serde_json::json!({ "secret": 1 })));
 }
 
 /// A snapshot is taken only of the data of the app open now.

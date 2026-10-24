@@ -953,7 +953,27 @@ impl XdbDatabase {
     }
 
     fn upsert_record_inner(&mut self, record: Record) -> DbResult<Vec<u8>> {
+        // What sync hands over names its collection, and a record of another one here is
+        // not that collection's to replace (the Rust host refuses such an op the same way).
+        if self.held_by_another_collection(&record)? {
+            return Err(DbError::InvalidOperation(format!(
+                "record {} belongs to another collection than {}",
+                record.id, record.collection
+            )));
+        }
         self.upsert_record_batched(record, true)
+    }
+
+    /// Whether `record`'s id is a record of another collection here. Records are kept by id
+    /// alone, so writing it would replace that record and move it into `record`'s collection:
+    /// a peer or a sync server writing in one collection reached a record of another, one
+    /// never shared with it included.
+    fn held_by_another_collection(&self, record: &Record) -> DbResult<bool> {
+        let held: Option<String> = self
+            .conn
+            .query_row("SELECT collection FROM records WHERE id = ?1", params![&record.id], |row| row.get(0))
+            .optional()?;
+        Ok(held.is_some_and(|collection| collection != record.collection))
     }
 
     /// `persist_doc = false` defers the CRDT snapshot write to the caller (audit XD-04).
@@ -1294,8 +1314,14 @@ impl XdbDatabase {
             Self::records_from_doc_keys(collection, doc, &keys)?
         };
 
-        // Now update SQLite with the extracted records
-        for record in &updated_records {
+        // Now update SQLite with the extracted records: those of this collection, and not
+        // over a record another collection holds under the same id (`upsert_record`).
+        let mut written = Vec::with_capacity(updated_records.len());
+        for record in updated_records {
+            if self.held_by_another_collection(&record)? {
+                tracing::warn!("Remote update for {} skips record {}: it is a record of another collection here", collection, record.id);
+                continue;
+            }
             self.conn.execute(
                 "INSERT OR REPLACE INTO records (id, collection, data, created_at, updated_at, deleted) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
@@ -1307,6 +1333,7 @@ impl XdbDatabase {
                     record.deleted as i32
                 ],
             )?;
+            written.push(record);
         }
 
         // Save CRDT state
@@ -1316,7 +1343,7 @@ impl XdbDatabase {
             .ok_or_else(|| DbError::NotFound(collection.to_string()))?;
         Self::save_crdt_state_to_db(&self.conn, collection, doc)?;
 
-        Ok(updated_records)
+        Ok(written)
     }
 
     /// Validated records for the given map keys only (keys no longer present
