@@ -1363,3 +1363,69 @@ describe('XDBServerSync with a token', () => {
     );
   });
 });
+
+// The host sends a pull's pieces and the stream of edits on one socket in no
+// fixed order: a piece read before an edit could arrive after the edit's
+// delta, or after this client's own edit was acknowledged, and put the older
+// record back. The client's next edit then sent it to the host whole.
+describe('a pull piece that arrives after a live change', () => {
+  const row = (id: string, title: string) => ({ id, collection: 'notes', data: { title }, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:01Z', serverReceivedAt: '2026-01-01T00:00:01Z' });
+  const otherEdit = (recordId: string, operation: 'update' | 'delete', title?: string) => ({
+    type: 'sync_delta',
+    ops: [{ id: `op-${recordId}-${operation}`, clientId: 'c2', collection: 'notes', recordId, operation, data: title === undefined ? undefined : { title }, timestamp: '2026-01-01T00:00:09Z' }],
+  });
+  const title = (id: string) => (xdb.get('notes', id)?.data as { title?: string } | undefined)?.title;
+  function connected() {
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made.at(-1)!;
+    socket.open();
+    authOk(socket);
+    return { sync, socket };
+  }
+
+  it('keeps another client\'s edit that came before the piece', () => {
+    const { sync, socket } = connected();
+    try {
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('r1', 'v0'), row('r2', 'v0')] });
+      socket.receive(otherEdit('r1', 'update', 'B edit'));
+      // A piece of the same pull, read before B's edit.
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('r1', 'v0'), row('r3', 'v0')] });
+      expect(title('r1')).toBe('B edit');
+      // The rest of the piece is written.
+      expect(title('r3')).toBe('v0');
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('keeps this client\'s own acknowledged edit, and a delete heard live', () => {
+    const { sync, socket } = connected();
+    try {
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('r1', 'v0'), row('r2', 'v0')] });
+      xdb.updateInCollection('notes', 'r1', { title: 'A edit' });
+      const [push] = socket.ofType('sync_push').flatMap((p) => p.ops as Array<{ id: string }>);
+      socket.receive({ type: 'sync_ack', opIds: [push.id] });
+      socket.receive(otherEdit('r2', 'delete'));
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('r1', 'v0'), row('r2', 'v0')] });
+      expect(title('r1')).toBe('A edit');
+      expect(xdb.get('notes', 'r2')).toBeNull();
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  it('writes what a new connection\'s pull brings', () => {
+    const first = connected();
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('r1', 'v0')] });
+    first.socket.receive(otherEdit('r1', 'update', 'B edit'));
+    first.sync.disconnect();
+    const { sync, socket } = connected();
+    try {
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('r1', 'v9')] });
+      expect(title('r1')).toBe('v9');
+    } finally {
+      sync.disconnect();
+    }
+  });
+});

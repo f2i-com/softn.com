@@ -455,6 +455,19 @@ export class XDBServerSync {
   private pullHeld = new Set<string>();
   /** How far this connection's pull of each collection has read, whatever was written here. */
   private readTo = new Map<string, PullCursor>();
+  /**
+   * The records, by collection, a live version of which reached this client
+   * on this connection: a delta written here, or the acknowledgement of an
+   * edit made here. A pull's records are read while the host goes on taking
+   * edits, and the host sends a pull's pieces and the stream of edits on one
+   * socket in no fixed order, so a piece read before an edit could arrive
+   * after that edit's delta (or after this client's own edit was answered)
+   * and put the older record back; this client's next edit then sent it to
+   * the host whole. The connection hears every edit from its start, so once
+   * a record has come live, a pull's copy of it is never newer, and is passed
+   * over. A new connection starts again (`onAuthenticated`).
+   */
+  private heardLive = new Map<string, Set<string>>();
   /** Records received per collection of a pull that named a point to start from. */
   private sincePulled = new Map<string, number>();
   /**
@@ -837,6 +850,9 @@ export class XDBServerSync {
 
       case 'sync_ack':
         for (const id of Array.isArray(msg.opIds) ? msg.opIds : []) {
+          // The record as edited here is the host's now (`heardLive`).
+          const op = this.inflightOps.get(id) ?? this.pendingOps.get(id);
+          if (op) this.noteHeardLive(op.collection, op.recordId);
           // Put back in the queue by an error that was not about it, and
           // not sent again yet: it is done, and is not sent again. It used
           // to go again once the error had moved it, and the host applied
@@ -964,6 +980,7 @@ export class XDBServerSync {
     this.pullStuck.clear();
     this.pullHeld.clear();
     this.readTo.clear();
+    this.heardLive.clear();
     this.sincePulled.clear();
     this.clearPullRetry();
     this.pullRetryAttempts = 0;
@@ -1180,6 +1197,7 @@ export class XDBServerSync {
     // A collection pulled whole on this connection is placed no later than
     // its floor (`floors`), whichever pull this message answers.
     const floor = this.floors.get(collection);
+    const live = this.heardLive.get(collection);
     for (const record of list) {
       if (!record || typeof record.id !== 'string') continue;
       // Records the host has no receipt time for come first in a whole pull
@@ -1189,9 +1207,10 @@ export class XDBServerSync {
       // One record that could not be written here (a full store) threw out
       // of this loop: the rest of the pull was never written, and the first
       // pull never counted as done, so nothing made here was pushed again.
-      // It is passed over, and the pull goes on.
+      // It is passed over, and the pull goes on. So is one this connection
+      // has had live: what is here is no older (`heardLive`).
       try {
-        if (!this.applyPulled(collection, record, changed.get(`${collection}\u0000${record.id}`))) {
+        if (!live?.has(record.id) && !this.applyPulled(collection, record, changed.get(`${collection}\u0000${record.id}`))) {
           this.pullHeld.add(collection);
           continue;
         }
@@ -1303,15 +1322,29 @@ export class XDBServerSync {
       // Another device's edit to a record edited here is left to the answer
       // to this device's edit: the host weighs the two, and sends the record
       // as it stands if the edit made here lost.
-      if (here === 'update' && op.operation !== 'delete') continue;
+      if (here === 'update' && op.operation !== 'delete') {
+        this.noteHeardLive(op.collection, op.recordId);
+        continue;
+      }
       // One op that cannot be written here (a full store) no longer takes
-      // the rest of the delta with it.
+      // the rest of the delta with it. Nor is it heard live: a pull may
+      // still bring it.
       try {
         this.applyDelta(op, deletedHere);
+        this.noteHeardLive(op.collection, op.recordId);
       } catch (err) {
         console.warn(`[XDBServerSync] A change to "${op.collection}" from the server could not be saved here:`, err);
       }
     }
+  }
+
+  /** How many records of one collection `heardLive` keeps; past that, a pull's copy is written as before. */
+  private static readonly HEARD_LIVE_KEPT = 50_000;
+
+  private noteHeardLive(collection: string, id: string): void {
+    let ids = this.heardLive.get(collection);
+    if (!ids) this.heardLive.set(collection, (ids = new Set()));
+    if (ids.size < XDBServerSync.HEARD_LIVE_KEPT) ids.add(id);
   }
 
   /** One op of a delta, written here. */
