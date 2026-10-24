@@ -25,21 +25,24 @@ export function declaredCapabilities(content: string | Uint8Array | undefined): 
 
 /** The runtime's words for a call made with nothing granted and no declaration handed to it. */
 const NO_DECLARATION = /\b([a-z][\w-]*) access not permitted: this bundle ships no permission\.json/i;
+/** Its words for one made under a declaration that does not grant it, which is what a check hands it. */
+const NOT_GRANTED = /\bnot permitted\. Add ([a-z][\w-]*)\.enabled to permission\.json/i;
 
 /**
  * Lines the runtime printed during a check, with what it says of a call that
  * was not granted put right for this project.
  *
- * The check hands the runtime no declaration, so the runtime's line for a
- * refused call is "this bundle ships no permission.json. Declare the
- * capabilities it needs". That is the right advice for a project that has
- * not declared the capability, and it is passed on as it stands. For one
- * that has, it told the model at every check to declare a file the project
- * already has, in words that say the file is missing: Studio writes a
- * permission.json into every app, so any app that reads its storage as it
- * starts was told this. Said once for each capability, as what is true: the
- * call did not run because a check grants nothing, and there is nothing to
- * fix. Every other line is left exactly as it was.
+ * The check hands the runtime a declaration that grants nothing, so the
+ * runtime's line for a refused call is "… not permitted. Add storage.enabled
+ * to permission.json" (or, from a runtime handed no declaration at all, "this
+ * bundle ships no permission.json"). That is the right advice for a project
+ * that has not declared the capability, and it is passed on as it stands.
+ * For one that has, it told the model at every check to declare what the
+ * project already declares: Studio writes a permission.json into every app,
+ * so any app that reads its storage as it starts was told this. Said once
+ * for each capability, as what is true: the call did not run because a
+ * check grants nothing, and there is nothing to fix. Every other line is
+ * left exactly as it was.
  */
 export function explainUngrantedCalls(lines: string[], permissionJson: string | Uint8Array | undefined): string[] {
   const declared = new Set(declaredCapabilities(permissionJson));
@@ -47,7 +50,7 @@ export function explainUngrantedCalls(lines: string[], permissionJson: string | 
   const said = new Set<string>();
   const out: string[] = [];
   for (const line of lines) {
-    const capability = NO_DECLARATION.exec(line)?.[1].toLowerCase();
+    const capability = (NO_DECLARATION.exec(line) ?? NOT_GRANTED.exec(line))?.[1].toLowerCase();
     if (!capability || !declared.has(capability)) {
       out.push(line);
       continue;

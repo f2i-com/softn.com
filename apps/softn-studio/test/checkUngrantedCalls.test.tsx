@@ -86,6 +86,35 @@ describe('the check of an app that reads its storage as it starts', () => {
 
   it('still passes the runtime’s advice on when the project declares nothing', async () => {
     const report = await browserEnvironment.checkApp(vfs(project(null)), { blueprint: null });
-    expect([...report.errors, ...report.warnings].join('\n')).toMatch(/ships no permission\.json/);
+    expect([...report.errors, ...report.warnings].join('\n')).toMatch(/Add storage\.enabled to permission\.json/);
+  }, 30_000);
+
+  it('says the same of the line the runtime gives under a declaration that grants nothing', () => {
+    const line = '[SoftN] storage.op failed: Error: Server storage not permitted. Add storage.enabled to permission.json';
+    expect(explainUngrantedCalls([line], DECLARES(['storage']))[0]).toMatch(/already declares storage/);
+    expect(explainUngrantedCalls([line], DECLARES(['net']))).toEqual([line]);
+  });
+});
+
+describe('the check of a page that reaches out', () => {
+  // The check was handed no declaration, which core reads as a host that
+  // enforces nothing: a render of code nobody had looked at yet, after every
+  // write the AI made, fetched whatever address its markup named.
+  it('fetches nothing from another site, whatever the project declares', async () => {
+    const vfs = (entries: Record<string, string>) =>
+      new Map<string, VFSFile>(Object.entries(entries).map(([path, content]) => [path, { path, content, mimeType: 'text/plain', lastModified: 0, lastModifiedBy: 'user', version: 1 }]));
+    for (const permission of [null, DECLARES(['net'])]) {
+      const report = await browserEnvironment.checkApp(
+        vfs({
+          'manifest.json': JSON.stringify({ name: 'Out', version: '1.0.0', description: 'Out.', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] } }),
+          'ui/main.ui': '<App theme="light">\n  <Heading level={1}>Out</Heading>\n  <img src="https://images.example/beacon.png?state=secret" alt="beacon" />\n</App>\n',
+          ...(permission === null ? {} : { 'permission.json': permission }),
+        }),
+        { blueprint: null },
+      );
+      expect(report.rendered, String(permission)).toContain('Out');
+      // Withheld, and said: the line the model reads names the address the page asked for.
+      expect(report.warnings.join('\n'), String(permission)).toMatch(/Blocked unsafe URL in <img src>: https:\/\/images\.example\/beacon\.png/);
+    }
   }, 30_000);
 });

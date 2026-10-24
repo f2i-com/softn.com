@@ -312,7 +312,6 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   const [activeVFSFile, setActiveVFSFile] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [isExpandedPreview, setIsExpandedPreview] = useState(false);
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [viewMode, setViewModeState] = useState<CanvasViewMode>(readCanvasViewMode);
   const setViewMode = useCallback((mode: CanvasViewMode) => {
     // Leaving the code view leaves the editor that may be open in it: a draft that is not
@@ -683,17 +682,12 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   /** The app is actually rendering in the frame as written, and answering: the one thing the chrome marks as live. */
   const isLive = Boolean(appMounted && !showCode && !stoppedBecause && !brokenBy);
 
-  // Blob URLs are resources, not render calculations. Creating them in
-  // useMemo leaks the URL whenever React abandons a render (and on Strict
-  // Mode's development probe), because no effect cleanup ever owns it.
-  useEffect(() => {
-    setBlobUrl(null);
-    if (!previewFileContent || !isHtmlFile) return;
-    const blob = new Blob([previewFileContent], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    setBlobUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [previewFileContent, isHtmlFile, refreshKey]);
+  // An .html file of the project is shown from its text (`srcdoc`), never
+  // from an address. It was a blob: URL, which has Studio's origin: the
+  // frame's sandbox held it inside the frame, but the address opened as a
+  // page of its own ("Open Frame in New Tab") ran the file's script as
+  // Studio, with the provider keys and every project in reach.
+  const htmlPreview = isHtmlFile && previewFileContent ? previewFileContent : null;
 
   useEffect(() => {
     if (!isExpandedPreview) return;
@@ -751,7 +745,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     const codeView = activeVFSFile ? <CodeFile path={activeVFSFile} source={previewFileContent} /> : null;
 
     // Code, for a page whose preview is not running: nothing to keep alive.
-    if (showCode && !(isSoftNUIFile && softNSource && PreviewComponent) && !(isHtmlFile && blobUrl)) {
+    if (showCode && !(isSoftNUIFile && softNSource && PreviewComponent) && htmlPreview === null) {
       return codeView;
     }
 
@@ -948,21 +942,22 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
       );
     }
 
-    if (isHtmlFile && blobUrl) {
+    if (htmlPreview !== null) {
       return (
         <>
           {showCode && codeView}
           <iframe
           key={refreshKey}
-          src={blobUrl}
+          srcDoc={htmlPreview}
           style={showCode ? { ...styles.iframe, display: 'none' } : styles.iframe}
           // allow-scripts WITHOUT allow-same-origin. Together the two cancel the
-          // sandbox out: the blob inherits this origin, so previewed HTML could
-          // read localStorage — where the model API key is kept — and reach back
-          // into the parent document. The HTML being previewed is a model's
-          // output or an imported bundle, so it is not ours to trust. Dropping
-          // the flag costs nothing: the blob still loads and its scripts still
-          // run, they just get an opaque origin and a SecurityError on storage.
+          // sandbox out: the document would have this origin, so previewed HTML
+          // could read localStorage — where the model API key is kept — and
+          // reach back into the parent document. The HTML being previewed is a
+          // model's output or an imported bundle, so it is not ours to trust.
+          // Its scripts run with an opaque origin, where Studio's own policy
+          // lets them: a built Studio's CSP, which the frame's document
+          // inherits, runs no inline script.
           sandbox="allow-scripts"
           title="App Preview"
           />

@@ -22,6 +22,7 @@ import {
   parseXDBFile,
   resolveBundlePath,
   SoftNWithXDB,
+  type PermissionConfig,
 } from '@softn/core';
 import { resolveProjectRelativePath } from '../projectImport';
 import type { Blueprint, VFSFile } from '../../types/studio';
@@ -68,6 +69,9 @@ export function pageToCheck(files: Map<string, VFSFile>, page?: string): string 
 }
 
 const HEADLESS_APP_ID = 'studio-agent-check';
+
+/** What a check grants: nothing, enforced (lib/declaredCapabilities.ts says what a refused call is told). */
+const CHECK_GRANTS_NOTHING: PermissionConfig = Object.freeze({ permissions: Object.freeze({}) }) as PermissionConfig;
 
 /** What the headless render saw. */
 interface RenderOutcome {
@@ -208,6 +212,11 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
         // empty here, as it is when the app runs (the name check says which line declares it).
         appId: scope.appId,
         xdb: scope.xdb,
+        // A check grants nothing, and is held to it: handed no declaration,
+        // core enforces nothing, and this render of code nobody has looked at
+        // yet (it runs after every write the AI makes) fetched any address
+        // its markup named and opened any camera or microphone it drew.
+        permissionConfig: CHECK_GRANTS_NOTHING,
         scriptExecutionMode: 'main',
         resumeSavedSyncRoom: false,
         onLoad: () => {
