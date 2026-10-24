@@ -137,6 +137,27 @@ final class Config
         return self::visitorHash(Net::limitBucket($ip));
     }
 
+    /**
+     * Refuse a write of `$bytes` that would leave the data directory's disk
+     * with less than `minFreeBytes` free (256 MiB unless config.json says;
+     * 0 turns the check off). The limits are per visitor and per app, and
+     * nothing bounded the whole: enough addresses publishing bundles,
+     * versions and store writes at the limits' pace filled the disk, and a
+     * full disk fails every write the directory makes, its own metadata's
+     * among them. A disk whose free space cannot be read is not refused.
+     */
+    public static function requireRoom(int $bytes = 0): void
+    {
+        $floor = (int) self::get('minFreeBytes', 256 * 1024 * 1024);
+        if ($floor <= 0) return;
+        $free = @disk_free_space(self::dataDir());
+        if ($free === false) return;
+        if ($free - max(0, $bytes) < $floor) {
+            error_log(sprintf('softn-api: refused a write of %d bytes: %d bytes free, below minFreeBytes (%d)', $bytes, (int) $free, $floor));
+            throw new ApiError(507, 'The directory has no room for this right now. Try again later.');
+        }
+    }
+
     public static function isAdmin(?string $presented): bool
     {
         $key = self::get('adminKey');

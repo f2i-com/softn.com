@@ -323,6 +323,8 @@ SQL);
         $op = is_string($body['op'] ?? null) ? $body['op'] : '';
         $writes = ['insert', 'update', 'set', 'remove', 'clear', 'kvSet', 'kvRemove'];
         Db::rateLimit(in_array($op, $writes, true) ? 'storageWrite' : 'storageRead', Config::limitKey($req->ip) . "|$slug");
+        // A write that adds (a removal frees room, and is let through).
+        if (in_array($op, ['insert', 'update', 'set', 'kvSet'], true)) Config::requireRoom();
         $limits = Config::get('storage');
         // Everything the catalogue has to say: whose app, what it declared,
         // and whether this request carries its key. Then the catalogue is

@@ -367,6 +367,12 @@ function handle(string $handler, array $args, Request $req): Response
             if ($forwardedUntrusted) {
                 $warnings[] = 'This request carried X-Forwarded-For but no proxy is trusted, so every visitor behind the proxy shares one address for rate limits and ratings. List the proxy in trustedProxies (see README, Trusted proxies).';
             }
+            // Said before uploads are refused for it (Config::requireRoom), not after.
+            $floor = (int) Config::get('minFreeBytes', 256 * 1024 * 1024);
+            $free = @disk_free_space(Config::dataDir());
+            if ($floor > 0 && $free !== false && $free < 2 * $floor) {
+                $warnings[] = sprintf('The data directory\'s disk has %d MB free. Below minFreeBytes (%d MB) publishing, new versions and storage writes are refused.', (int) ($free / 1048576), (int) ($floor / 1048576));
+            }
             return Response::json([
                 'ok' => $writable,
                 'siteOrigin' => $siteOrigin,
@@ -418,6 +424,8 @@ function handle(string $handler, array $args, Request $req): Response
             }
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent. Upload a .softn as the multipart field "bundle", as the raw request body, or as JSON {"bundleBase64": ...}.');
+            // Room on the disk for it, whatever the limits allow (Config::requireRoom).
+            Config::requireRoom((int) @filesize($file));
             // The picture is checked before the app exists. Read afterwards,
             // a picture that was refused (not an image, too large) answered
             // 400 for a publish that had already happened: the app was
@@ -576,6 +584,7 @@ function handle(string $handler, array $args, Request $req): Response
             }
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent.');
+            Config::requireRoom((int) @filesize($file));
             $info = Bundle::inspect($file);
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireOwner($req, $slug);
@@ -622,6 +631,7 @@ function handle(string $handler, array $args, Request $req): Response
                 else $file = Config::dataDir() . '/apps/' . $parentSlug . '/' . $ver['file'];
                 $copied = true;
             }
+            Config::requireRoom((int) @filesize($file));
             $result = Apps::create($file, [
                 'name' => $req->field('name') ?: ($parent['name'] . ' remix'),
                 'description' => $req->field('description') ?: $parent['description'],

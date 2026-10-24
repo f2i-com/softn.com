@@ -269,6 +269,7 @@ the rest of an oversized body is never read into memory. The limits are in
 | `maxThumbnailBytes` | 2 MB | An image, the same three ways |
 | `maxThumbnailSide` | 8192 | The longest side an image may declare, in pixels |
 | `maxThumbnailPixels` | 16,000,000 | The most pixels (width × height) an image may declare |
+| `minFreeBytes` | 256 MB | The free space a write must leave on the data directory's disk: a publish, a remix or a new version past it is refused with a `507`, and so is a storage write that adds. `0` turns the check off. The other limits are per visitor and per app, and nothing else bounds the whole; `GET /api/health` warns once free space is below twice it |
 
 From those, two envelopes: the JSON body of a route that takes a bundle
 (`POST /api/apps`, `/versions`, `/remix`) may be as large as the bundle and

@@ -305,6 +305,29 @@ echo json_encode($out);`,
   }
 });
 
+test('nothing is written that would leave the disk with less than minFreeBytes free, and health says so first', skip, async () => {
+  // The limits are per visitor and per app; nothing bounded the whole, and
+  // a full disk fails every write the directory makes, its own included.
+  const full = await startServer({ config: { minFreeBytes: 10 ** 18 }, prefix: 'softn-hardening-full-' });
+  try {
+    const published = await full.api('POST', '/api/apps', { raw: makeBundle('No Room'), headers: { 'Content-Type': 'application/octet-stream' } });
+    assert.equal(published.status, 507, published.text);
+    assert.match(published.json.error, /no room/);
+    assert.equal((await full.api('GET', '/api/apps/no-room')).status, 404);
+    const health = (await full.api('GET', '/api/health')).json;
+    assert.ok(health.warnings.some((w) => /minFreeBytes/.test(w)), JSON.stringify(health.warnings));
+  } finally {
+    full.stop();
+  }
+  // 0 turns it off, and the ordinary floor lets an ordinary disk publish.
+  const off = await startServer({ config: { minFreeBytes: 0 }, prefix: 'softn-hardening-off-' });
+  try {
+    assert.equal((await off.api('POST', '/api/apps', { raw: makeBundle('Room Enough'), headers: { 'Content-Type': 'application/octet-stream' } })).status, 201);
+  } finally {
+    off.stop();
+  }
+});
+
 test('a purged app leaves nothing behind, subfolders included', skip, async () => {
   const { app, editKey } = await s.publish('Purged With Extras');
   const folder = path.join(s.dataDir, 'apps', app.slug);
