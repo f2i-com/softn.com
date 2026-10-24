@@ -397,6 +397,8 @@ export class XDBSyncAdapter {
    * newer. Equal stamps with equal contents are left alone.
    */
   private performInitialSync(): void {
+    // From now on a removal made here is kept until the room is told of it.
+    this.xdb.markJoinedRoom?.();
     const collections = this.xdb.getCollections();
 
     // Push: local records the document lacks, or has an older copy of.
@@ -406,6 +408,17 @@ export class XDBSyncAdapter {
 
         const ymap = this.ydoc.getMap(collName);
         const records = this.xdb.getAllRaw(collName);
+
+        // What was removed here for good while the room was not open: the
+        // room is told now, where it holds the record (see removalToTell).
+        const here = new Set(records.map((r) => r.id));
+        for (const id of this.xdb.pendingRemovals?.(collName) ?? []) {
+          if (here.has(id)) this.xdb.forgetPendingRemoval(collName, id);
+          else if (ymap.has(id)) {
+            ymap.delete(id);
+            this.xdb.forgetPendingRemoval(collName, id);
+          }
+        }
 
         for (const record of records) {
           const existing = ymap.get(record.id) as Record<string, unknown> | undefined;
@@ -490,10 +503,16 @@ export class XDBSyncAdapter {
     this.isSyncing = true;
     // Local records newer than the document's copy, which go back into it.
     const newer: XDBRecord[] = [];
+    // Records the room holds that were removed here for good, unheard.
+    const removed: string[] = [];
     try {
       // Build a map of local records once (avoids O(n*m) re-reads from storage)
       const local = new Map(this.xdb.getAllRaw(collName).map((r) => [r.id, r]));
       ymap.forEach((val, recordId) => {
+        if (this.removalToTell(collName, recordId, local)) {
+          removed.push(recordId);
+          return;
+        }
         // One bad value from a peer used to throw out of here, inside Yjs's
         // update dispatch, and the collections after this one in the
         // document were never discovered. It is skipped instead.
@@ -521,10 +540,30 @@ export class XDBSyncAdapter {
     } finally {
       this.isSyncing = false;
     }
-    if (newer.length > 0) {
+    if (newer.length > 0 || removed.length > 0) {
       this.ydoc.transact(() => {
         for (const record of newer) ymap.set(record.id, recordToJSON(record));
+        this.tellRemovals(collName, ymap, removed);
       });
+    }
+  }
+
+  /**
+   * Whether a record the room holds was removed here for good while the room
+   * was not open (XDBService.pendingRemovals), and not made here again: then
+   * the room is told, and the record is not written back into the store. A
+   * room can only lose a key it holds, so the removal waits until the room
+   * presents it, at the opening or from a peer later.
+   */
+  private removalToTell(collName: string, recordId: string, local: Map<string, XDBRecord>): boolean {
+    return this.xdb.isPendingRemoval?.(collName, recordId) === true && !local.has(recordId);
+  }
+
+  /** Take the keys out of the room, a transaction of this device's own, and forget the removals told. */
+  private tellRemovals(collName: string, ymap: Y.Map<unknown>, ids: string[]): void {
+    for (const id of ids) {
+      ymap.delete(id);
+      this.xdb.forgetPendingRemoval(collName, id);
     }
   }
 
@@ -551,6 +590,8 @@ export class XDBSyncAdapter {
           case 'update':
             if (event.record) {
               ymap.set(event.record.id, recordToJSON(event.record));
+              // Made here again after a removal: that removal is not the room's to hear.
+              this.xdb.forgetPendingRemoval?.(event.collection, event.record.id);
             }
             break;
 
@@ -565,6 +606,7 @@ export class XDBSyncAdapter {
                 // good is announced as it was, deleted, and was kept in the
                 // room as a tombstone, its data still in it.
                 ymap.delete(event.record.id);
+                this.xdb.forgetPendingRemoval?.(event.collection, event.record.id);
               }
             }
             break;
@@ -599,12 +641,16 @@ export class XDBSyncAdapter {
                 if (existing === undefined || !deepEqual(existing, json)) {
                   ymap.set(record.id, json);
                 }
+                this.xdb.forgetPendingRemoval?.(event.collection, record.id);
               }
               // A key this device lacks because it could not keep the record
               // is not one it removed, and stays in the room.
               const unstored = this.unstored.get(event.collection);
               for (const k of Array.from(ymap.keys())) {
-                if (!listed.has(k) && !unstored?.has(k)) ymap.delete(k);
+                if (!listed.has(k) && !unstored?.has(k)) {
+                  ymap.delete(k);
+                  this.xdb.forgetPendingRemoval?.(event.collection, k);
+                }
               }
             }
             break;
@@ -649,11 +695,18 @@ export class XDBSyncAdapter {
       this.isSyncing = true;
       // Local records newer than what the document now holds for them.
       const newer: XDBRecord[] = [];
+      // Records a peer brought that were removed here for good, unheard (removalToTell).
+      const removed: string[] = [];
       try {
         let local: Map<string, XDBRecord> | null = null;
         for (const [recordId, change] of event.changes.keys) {
           try {
             if (change.action === 'add' || change.action === 'update') {
+              if (!local) local = new Map(this.xdb.getAllRaw(collName).map((r) => [r.id, r]));
+              if (this.removalToTell(collName, recordId, local)) {
+                removed.push(recordId);
+                continue;
+              }
               const val = ymap.get(recordId);
               // Same rule as projectCollection: a value that is not a record
               // is skipped, not thrown at the rest of the batch.
@@ -690,9 +743,10 @@ export class XDBSyncAdapter {
         this.isSyncing = false;
       }
       // A transaction of our own (origin null), which this observer passes over.
-      if (newer.length > 0) {
+      if (newer.length > 0 || removed.length > 0) {
         this.ydoc.transact(() => {
           for (const record of newer) ymap.set(record.id, recordToJSON(record));
+          this.tellRemovals(collName, ymap, removed);
         });
       }
     };

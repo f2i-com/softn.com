@@ -1606,6 +1606,7 @@ export class XDBService {
       // `removed`: a record deleted first and then removed is announced as
       // it was, deleted, and peer sync took that for a soft delete and kept
       // it in the room.
+      this.noteRemovedForGood(collection, id);
       this.emit({ type: 'delete', collection, record, removed: true });
       if (!stillBeingCreated) this.notifyMutation('delete', collection, id);
       return true;
@@ -1643,6 +1644,7 @@ export class XDBService {
     this.setCollectionData(collection, records.filter((r) => !wanted.has(r.id)));
     // Announced in the order asked for (oldest first, for a prune).
     const gone = [...wanted].flatMap((id) => found.get(id) ?? []);
+    for (const record of gone) this.noteRemovedForGood(collection, record.id);
 
     const together = gone.length > 1;
     if (together) this.suppressNotifications();
@@ -1653,6 +1655,92 @@ export class XDBService {
     }
     for (const record of gone) this.notifyMutation('delete', collection, record.id);
     return gone.length;
+  }
+
+  // --------------------------------------------------------------------------
+  // Removals kept for the peer-to-peer room
+  // --------------------------------------------------------------------------
+
+  /**
+   * Records removed for good here that peer sync has not told the room, by
+   * collection: an id is noted as it goes, and taken off once the room is
+   * told (xdb-sync.ts). Peer sync tells the room as a removal is made, while
+   * it is open; one made while it was not (the app closed to its room, or
+   * offline before it joined) reached nobody, and the room's copy came back
+   * at the next opening, written into this store as a record it lacked.
+   * Kept only by a store that has been in a room, at most this many to a
+   * collection, oldest going first, beside the records.
+   */
+  private static readonly PENDING_REMOVALS_KEPT = 2000;
+  private pendingRemovalSets = new Map<string, Set<string>>();
+  private pendingRemovalsDirty = new Set<string>();
+  private pendingRemovalsScheduled = false;
+  private joinedRoom: boolean | null = null;
+
+  /** Peer sync says so on joining a room: from then on a removal is kept for it. */
+  markJoinedRoom(): void {
+    this.joinedRoom = true;
+    try {
+      if (this.readSyncMeta('p2p-room') !== '1') this.writeSyncMeta('p2p-room', '1');
+    } catch {
+      // Not kept: removals are kept for this page's life.
+    }
+  }
+
+  private pendingRemovalSet(collection: string): Set<string> {
+    let set = this.pendingRemovalSets.get(collection);
+    if (set) return set;
+    set = new Set();
+    try {
+      const saved: unknown = JSON.parse(this.readSyncMeta(`removals:${collection}`) ?? '[]');
+      if (Array.isArray(saved)) for (const id of saved) if (typeof id === 'string') set.add(id);
+    } catch {
+      // An unreadable list is an empty one.
+    }
+    this.pendingRemovalSets.set(collection, set);
+    return set;
+  }
+
+  private noteRemovedForGood(collection: string, id: string): void {
+    if (this.joinedRoom === null) this.joinedRoom = this.readSyncMeta('p2p-room') === '1';
+    if (!this.joinedRoom) return;
+    const set = this.pendingRemovalSet(collection);
+    set.delete(id);
+    set.add(id);
+    while (set.size > XDBService.PENDING_REMOVALS_KEPT) set.delete(set.values().next().value as string);
+    this.pendingRemovalsChanged(collection);
+  }
+
+  /** The removals of a collection the room has not been told. */
+  pendingRemovals(collection: string): string[] {
+    return [...this.pendingRemovalSet(collection)];
+  }
+
+  isPendingRemoval(collection: string, id: string): boolean {
+    return this.pendingRemovalSet(collection).has(id);
+  }
+
+  /** The room has been told, or the record was made here again. */
+  forgetPendingRemoval(collection: string, id: string): void {
+    if (this.pendingRemovalSet(collection).delete(id)) this.pendingRemovalsChanged(collection);
+  }
+
+  private pendingRemovalsChanged(collection: string): void {
+    this.pendingRemovalsDirty.add(collection);
+    if (this.pendingRemovalsScheduled) return;
+    this.pendingRemovalsScheduled = true;
+    // Written once for a batch: a prune of thousands notes each id.
+    queueMicrotask(() => {
+      this.pendingRemovalsScheduled = false;
+      for (const name of this.pendingRemovalsDirty) {
+        try {
+          this.writeSyncMeta(`removals:${name}`, JSON.stringify([...this.pendingRemovalSet(name)]));
+        } catch {
+          // Kept for this page's life.
+        }
+      }
+      this.pendingRemovalsDirty.clear();
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -2166,6 +2254,37 @@ export class XDBService {
     return { plans, skipped, replace };
   }
 
+  /**
+   * What an import changed in a collection, said as the writes it amounts
+   * to: a record new here a create, one changed an update, one gone (a
+   * replacement drops what the backup does not hold) a delete. An import
+   * said only `refresh`, which server sync does not hear, so an import or a
+   * restore stayed on the device it was made on, and the next pull took it
+   * back. A record that was here goes as an update, which the host weighs by
+   * its time and keeps; one new here as a create, which the host keeps its
+   * own copy of where it has one.
+   */
+  private announceImport(collection: string, before: XDBRecord[], after: XDBRecord[]): void {
+    if (this.mutationListeners.size === 0) return;
+    const was = new Map(before.map((record) => [record.id, record]));
+    const now = new Set<string>();
+    for (const record of after) {
+      now.add(record.id);
+      const previous = was.get(record.id);
+      const live = previous !== undefined && !previous.deleted;
+      if (record.deleted) {
+        if (live) this.notifyMutation('delete', collection, record.id);
+      } else if (!live) {
+        this.notifyMutation('create', collection, record.id, record.data);
+      } else if (JSON.stringify(previous.data) !== JSON.stringify(record.data)) {
+        this.notifyMutation('update', collection, record.id, record.data);
+      }
+    }
+    for (const [id, previous] of was) {
+      if (!now.has(id) && !previous.deleted) this.notifyMutation('delete', collection, id);
+    }
+  }
+
   /** The records a collection holds after applying one plan to `existing`. */
   private static mergePlan(existing: XDBRecord[], plan: ImportPlan): XDBRecord[] {
     if (plan.replace) return plan.records;
@@ -2200,12 +2319,13 @@ export class XDBService {
       // Phase 1: read and prepare everything. Nothing is written yet, so a
       // failure here (an unreadable key, a corrupt previous value) leaves
       // every collection exactly as it was.
-      const prepared: Array<{ collection: string; previous: string | null; records: XDBRecord[] }> = [];
+      const prepared: Array<{ collection: string; previous: string | null; before: XDBRecord[]; records: XDBRecord[] }> = [];
       for (const plan of plans) {
         try {
           const previous = this.storage.getItem(this.collectionKey(plan.collection));
-          const records = XDBService.mergePlan(this.getAllCollectionData(plan.collection), plan);
-          prepared.push({ collection: plan.collection, previous, records });
+          const before = this.getAllCollectionData(plan.collection);
+          const records = XDBService.mergePlan(before, plan);
+          prepared.push({ collection: plan.collection, previous, before, records });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           throw new XDBStorageError(
@@ -2229,6 +2349,7 @@ export class XDBService {
           this.knownCollections.add(plan.collection);
           this.acknowledged.delete(plan.collection);
           this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
+          this.announceImport(plan.collection, plan.before, plan.records);
         }
         const persisted = completion.then(() => ({ backend: 'storage' as const, collections: [...persistedCollections], imported, tombstoned: 0 }));
         // Synchronous import/restore may ignore durable completion safely;
@@ -2275,6 +2396,9 @@ export class XDBService {
         importedCollections.push(plan.collection);
         this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
       }
+      // Said once every collection is written: a failure part-way puts the
+      // earlier ones back, and what was put back was never imported.
+      for (const plan of prepared) this.announceImport(plan.collection, plan.before, plan.records);
       return {
         imported,
         collections: importedCollections,
@@ -2283,9 +2407,12 @@ export class XDBService {
     }
 
     for (const plan of plans) {
-      this.setCollectionData(plan.collection, XDBService.mergePlan(this.getAllCollectionData(plan.collection), plan));
+      const before = this.getAllCollectionData(plan.collection);
+      const after = XDBService.mergePlan(before, plan);
+      this.setCollectionData(plan.collection, after);
       importedCollections.push(plan.collection);
       this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
+      this.announceImport(plan.collection, before, after);
     }
     const batches = plans.map(plan => ({ collection: plan.collection, replace: plan.replace, records: plan.records }));
     const persisted: Promise<XDBPersistResult> = batches.length === 0

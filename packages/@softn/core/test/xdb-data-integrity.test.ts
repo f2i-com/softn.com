@@ -41,6 +41,7 @@ vi.mock('y-indexeddb', () => ({
   },
 }));
 
+import * as Y from 'yjs';
 import { XDBService, setDefaultXDB } from '../src/runtime/xdb';
 import { XDBSyncAdapter } from '../src/runtime/xdb-sync';
 import { XDBServerSync } from '../src/runtime/xdb-server-sync';
@@ -244,6 +245,52 @@ describe('a change the sync host could not read', () => {
   });
 });
 
+describe('an import or a restore', () => {
+  // An import said only `refresh`, which server sync does not hear: what it
+  // brought stayed on the device it was made on, and the next pull took it back.
+  beforeEach(() => {
+    FakeSocket.made = [];
+    vi.stubGlobal('WebSocket', FakeSocket);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reaches the sync host as the writes it amounts to', async () => {
+    const xdb = new XDBService(memory(), 'xdb:imports', 'imports', { backend: 'storage' });
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c1', serverTime: '2026-10-24T10:00:00.000Z' });
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    const kept = xdb.create('notes', { text: 'before' });
+    const same = xdb.create('notes', { text: 'unchanged' });
+    await new Promise((r) => setTimeout(r, 0));
+    socket.receive({ type: 'sync_ack', opIds: socket.ops().map((o) => o.id) });
+    const sentBefore = socket.ops().length;
+
+    const at = '2026-10-24T10:00:00.000Z';
+    xdb.import({ collections: { notes: [
+      { id: kept.id, collection: 'notes', data: { text: 'from the backup' }, created_at: at, updated_at: at },
+      { id: same.id, collection: 'notes', data: { text: 'unchanged' }, created_at: at, updated_at: at },
+      { id: 'new-one', collection: 'notes', data: { text: 'new' }, created_at: at, updated_at: at },
+    ] } } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    const imported = socket.ops().slice(sentBefore).map((o) => [o.type ?? o.operation, o.recordId]);
+    expect(imported).toEqual(expect.arrayContaining([['update', kept.id], ['create', 'new-one']]));
+    expect(imported.some(([, id]) => id === same.id), 'an unchanged record is not sent').toBe(false);
+    socket.receive({ type: 'sync_ack', opIds: socket.ops().map((o) => o.id) });
+    const sentAfterImport = socket.ops().length;
+
+    // A restore holds what the backup holds: the record it lacks is deleted.
+    xdb.restore({ collections: { notes: [{ id: 'new-one', collection: 'notes', data: { text: 'new' }, created_at: at, updated_at: at }] } } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    const restored = socket.ops().slice(sentAfterImport).map((o) => [o.type ?? o.operation, o.recordId]);
+    sync.disconnect();
+    expect(restored).toEqual(expect.arrayContaining([['delete', kept.id], ['delete', same.id]]));
+    expect(restored.some(([, id]) => id === 'new-one')).toBe(false);
+  });
+});
+
 it('a record the sync host sends for one collection is written to that collection, whatever it names', () => {
   FakeSocket.made = [];
   vi.stubGlobal('WebSocket', FakeSocket);
@@ -270,6 +317,69 @@ it('a record the sync host sends for one collection is written to that collectio
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+describe('a record removed for good while the room was not open', () => {
+  // Peer sync told the room of a removal as it was made, while it was open.
+  // One made while it was not reached nobody, and at the next opening the
+  // room's copy was written back into the store as a record it lacked.
+  const roomWith = async (name: string) => {
+    const storage = memory();
+    const xdb = new XDBService(storage, `xdb:${name}`, name, { backend: 'storage' });
+    const first = new XDBSyncAdapter(xdb, { room: 'r', appId: name, signaling: [] });
+    first.connect();
+    await new Promise((r) => setTimeout(r, 5));
+    const note = xdb.create('notes', { text: 'to remove' });
+    const kept = xdb.create('notes', { text: 'to keep' });
+    const room = Y.encodeStateAsUpdate(first.doc);
+    first.close();
+    setDefaultXDB(xdb, name);
+    const db = createDBNamespace(undefined, name);
+    await db.ready();
+    db.hardDelete('notes', note.id);
+    await new Promise((r) => setTimeout(r, 0));
+    return { xdb, note, kept, room };
+  };
+
+  it('is taken out of the room at the next opening, where the room holds it', async () => {
+    const { xdb, note, kept, room } = await roomWith('removed-open');
+    const next = new XDBSyncAdapter(xdb, { room: 'r', appId: 'removed-open', signaling: [] });
+    Y.applyUpdate(next.doc, room, 'cache');
+    next.connect();
+    await new Promise((r) => setTimeout(r, 5));
+    const notes = next.doc.getMap('notes');
+    next.close();
+    expect(notes.has(note.id)).toBe(false);
+    expect(notes.has(kept.id)).toBe(true);
+    expect(xdb.get('notes', note.id)).toBeNull();
+    expect(xdb.pendingRemovals('notes')).toEqual([]);
+  });
+
+  it('is taken out when a peer brings it later, and not written back', async () => {
+    const { xdb, note, room } = await roomWith('removed-peer');
+    const next = new XDBSyncAdapter(xdb, { room: 'r', appId: 'removed-peer', signaling: [] });
+    next.connect();
+    await new Promise((r) => setTimeout(r, 5));
+    Y.applyUpdate(next.doc, room, 'peer');
+    await new Promise((r) => setTimeout(r, 0));
+    const notes = next.doc.getMap('notes');
+    next.close();
+    expect(xdb.get('notes', note.id)).toBeNull();
+    expect(notes.has(note.id)).toBe(false);
+  });
+
+  it('is not the room’s to hear once the record is made here again', async () => {
+    const { xdb, note, room } = await roomWith('removed-again');
+    xdb.writeRecord('notes', { id: note.id, collection: 'notes', data: { text: 'back' }, created_at: '2026-10-24T11:00:00.000Z', updated_at: '2099-01-01T00:00:00.000Z', deleted: false });
+    const next = new XDBSyncAdapter(xdb, { room: 'r', appId: 'removed-again', signaling: [] });
+    Y.applyUpdate(next.doc, room, 'cache');
+    next.connect();
+    await new Promise((r) => setTimeout(r, 5));
+    const notes = next.doc.getMap('notes');
+    next.close();
+    expect(notes.has(note.id)).toBe(true);
+    expect(xdb.get('notes', note.id)?.data).toEqual({ text: 'back' });
+  });
 });
 
 it('an adapter disconnected and connected again still sends local writes to the room', async () => {
