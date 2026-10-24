@@ -54,9 +54,10 @@ pub async fn delete_record(
     identity: State<'_, DataIdentity>,
     app_id: Option<String>,
     id: String,
+    collection: Option<String>,
 ) -> Result<bool, String> {
     let app_id = identity.require(app_id.as_deref())?;
-    xdb::tauri::delete_record(db_manager, network, Some(app_id), id).await
+    xdb::tauri::delete_record(db_manager, network, Some(app_id), id, collection).await
 }
 
 #[tauri::command]

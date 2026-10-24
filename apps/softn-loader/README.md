@@ -48,7 +48,7 @@ the version that has it, before any bundle had been read.
 | `choose_data_identity(bundleId, candidates)` | The upgrade question, in a native dialog: use the data of the most recently updated installed app of the same name, open as a new app, or cancel. |
 | `backup_database(appId)` | The app open now only. Writes a `pre-upgrade-*.sqlite` snapshot beside the database and returns its path; the page never chooses a location. |
 | `restore_database(appId, backup)` | The app open now only. Restores only such a snapshot from the database's own directory, local scope. |
-| XDB record commands | The data bound for the app open now, and only when the page names that app's id; see `src-tauri/src/scoped_xdb.rs`. |
+| XDB record commands | The data bound for the app open now, and only when the page names that app's id; see `src-tauri/src/scoped_xdb.rs`. A `delete_record` that names its collection deletes from that collection only. |
 
 The raw `get_db_path`, `export_database` and `import_database` commands are
 not registered, on the desktop or on Android.

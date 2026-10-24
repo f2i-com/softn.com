@@ -89,7 +89,10 @@ describe('XDB Service (Tauri mode)', () => {
         }
         case 'delete_record': {
           const id = String(args?.id ?? '');
+          // As XDB's command: a named collection is the only one deleted from.
+          const named = args?.collection as string | undefined;
           for (const [collection, records] of backend.entries()) {
+            if (named !== undefined && collection !== named) continue;
             const index = records.findIndex((r) => r.id === id);
             if (index !== -1) {
               records[index] = {
@@ -326,6 +329,23 @@ describe('XDB Service (Tauri mode)', () => {
     xdb.writeRecord('tasks', record);
 
     expect(invokeMock).toHaveBeenCalledWith('upsert_record', { record });
+  });
+
+  it('removes a record a peer or the server names from that collection only', async () => {
+    // SQLite keys records by id alone: a removal heard in one collection,
+    // sent by id, reached the record of another collection that has the id.
+    backend.set('private', [makeRecord('shared-id', 'private', { secret: 'kept' })]);
+    backend.set('public', [makeRecord('mine', 'public', { title: 'Mine' })]);
+    const xdb = new XDBService(undefined, 'remove-by-collection');
+    await xdb.isReady;
+    xdb.removeRecord('public', 'shared-id');
+    xdb.deleteFromServer('public', 'shared-id');
+    xdb.removeRecord('public', 'mine');
+    await flushPromises();
+    expect(backend.get('private')![0].deleted).toBe(false);
+    expect(xdb.getAll('private').map((r) => r.id)).toEqual(['shared-id']);
+    expect(backend.get('public')![0].deleted).toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith('delete_record', expect.objectContaining({ id: 'shared-id', collection: 'public' }));
   });
 
   // ── Audit SN-01: import/restore acknowledge committed data ──

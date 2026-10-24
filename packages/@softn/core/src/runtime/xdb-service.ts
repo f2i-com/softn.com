@@ -997,7 +997,7 @@ export class XDBService {
             if (currentOptimistic) {
               c.set(serverRecord.id, { ...serverRecord, data: { ...serverRecord.data, ...currentOptimistic.data }, deleted: true, updated_at: currentOptimistic.updated_at });
             }
-            this.native<boolean>('delete_record', { id: serverRecord.id })
+            this.native<boolean>('delete_record', { id: serverRecord.id, collection })
               .then(() => this.nativeWriteLanded(collection))
               .catch((err) => this.nativeWriteFailed('delete a record', collection, err));
             return;
@@ -1552,7 +1552,7 @@ export class XDBService {
       this.notifyMutation('delete', collection, record.id);
       // A row still being created is deleted by the create callback instead.
       if (!this.pendingCreateIds.has(record.id)) {
-        this.native<boolean>('delete_record', { id: record.id })
+        this.native<boolean>('delete_record', { id: record.id, collection })
           .then(() => this.nativeWriteLanded(collection))
           .catch((err) => this.nativeWriteFailed('delete a record', collection, err));
       }
@@ -1598,7 +1598,7 @@ export class XDBService {
         // create, so there is no delete to announce either.
         this.abandonedCreates.add(id);
       } else {
-        this.native<boolean>('delete_record', { id })
+        this.native<boolean>('delete_record', { id, collection })
           .then(() => this.nativeWriteLanded(collection))
           .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
       }
@@ -1794,7 +1794,8 @@ export class XDBService {
         coll!.delete(id);
         this.emit({ type: 'delete', collection, record: removed, removed: true });
       }
-      this.native<boolean>('delete_record', { id })
+      // Named, so an id another collection holds is not deleted from it.
+      this.native<boolean>('delete_record', { id, collection })
         .then(() => this.nativeWriteLanded(collection))
         .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
       return;

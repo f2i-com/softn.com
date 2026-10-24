@@ -176,6 +176,34 @@ fn the_app_open_before_is_refused_once_the_next_one_is_bound() {
     assert_eq!(page.notes_of(&second), 0);
 }
 
+/// A delete that names its collection deletes from that collection alone. Records are kept by
+/// id across collections, and a removal heard in one collection (from a peer, or the sync
+/// server) reached the record of another that had the id.
+#[test]
+fn a_delete_naming_a_collection_does_not_reach_another() {
+    let page = with_app_a_data("delete-collection");
+    let b = page.open_own("b.softn", b"app B");
+    let kept = page
+        .call("create_record", serde_json::json!({ "appId": b, "payload": { "collection": "private", "data": { "secret": 1 } } }))
+        .unwrap();
+    let id = kept["id"].as_str().unwrap().to_string();
+    let private = |page: &Page| page.manager.get_db(&b).unwrap().lock().unwrap().get_collection("private").unwrap().len();
+
+    let outcome = page.call("delete_record", serde_json::json!({ "appId": b, "id": id, "collection": "public" }));
+    assert_eq!(outcome, Ok(serde_json::json!(false)));
+    assert_eq!(private(&page), 1, "a delete in `public` removed a record of `private`");
+
+    page.call("delete_record", serde_json::json!({ "appId": b, "id": id, "collection": "private" })).unwrap();
+    assert_eq!(private(&page), 0);
+
+    // A page from before names no collection, and deletes by id as it did.
+    let other = page
+        .call("create_record", serde_json::json!({ "appId": b, "payload": { "collection": "private", "data": {} } }))
+        .unwrap();
+    assert_eq!(page.call("delete_record", serde_json::json!({ "appId": b, "id": other["id"] })), Ok(serde_json::json!(true)));
+    assert_eq!(private(&page), 0);
+}
+
 /// A snapshot is taken only of the data of the app open now.
 #[test]
 fn a_backup_is_only_of_the_app_open_now() {

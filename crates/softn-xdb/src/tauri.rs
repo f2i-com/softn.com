@@ -934,12 +934,19 @@ pub async fn delete_record(
     network: State<'_, SharedNetwork>,
     app_id: Option<String>,
     id: String,
+    collection: Option<String>,
 ) -> Result<bool, String> {
     let app_id = app_id.unwrap_or_default();
     let db = db_manager.get_db(&app_id)?;
     let (collection, update, epoch) = {
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
         let record = db_lock.get_record(&id).map_err(|e| e.to_string())?;
+        // A caller that names the collection deletes from it alone. The id by itself
+        // reached the record in whichever collection held it: a peer's removal heard
+        // in one collection deleted a record of another.
+        if collection.is_some_and(|named| named != record.collection) {
+            return Ok(false);
+        }
         let update = db_lock.delete_record(&id).map_err(|e| e.to_string())?;
         let epoch = db_lock.get_epoch(&record.collection).unwrap_or(0);
         (record.collection, update, epoch)
