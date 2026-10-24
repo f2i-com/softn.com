@@ -146,7 +146,10 @@ export function applyRoomSecurity(opts: Record<string, unknown>, context: RoomSe
   const shared = !!opts.sharedRoom || !!opts.noEncrypt || isRoomMarkedShared(appId, room);
   if (shared) {
     // Derive the key from the room name — all peers use the same key.
-    // y-webrtc runs PBKDF2(password, roomName) to produce AES-256-GCM.
+    // y-webrtc runs PBKDF2(password, roomName) to produce AES-256-GCM. It is
+    // no secret: anyone who knows the room's name can work it out, the
+    // signalling server, which relays that name, included. A shared room is
+    // public to whoever knows its name (the guide says so).
     opts.password = SHARED_ROOM_PASSWORD_PREFIX + room;
     delete opts.encryptionKey;
     markRoomShared(appId, room);
