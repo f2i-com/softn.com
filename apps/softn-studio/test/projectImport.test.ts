@@ -237,13 +237,17 @@ describe('a bundle zipped by hand', () => {
 
   // A name with two dots inside it is a file of the project's (Studio's export wrote them), and
   // the reader leaves it out: the project opened without it, and nothing said so.
-  it("refuses an archive with a file the reader leaves out for two dots in its name, naming it, in a folder or not", () => {
-    expect(() => readProjectArchive(zipSync({ 'manifest.json': strToU8(MANIFEST), 'ui/main.ui': strToU8(PAGE), 'assets/version..png': new Uint8Array([1]) })))
-      .toThrow(/^Archive contains assets\/version\.\.png, whose name has two dots in a row/);
-    expect(() => readProjectArchive(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/ui/..hidden.ui': strToU8(PAGE) })))
-      .toThrow(/Tasks\/ui\/\.\.hidden\.ui/);
-    // The Mac's litter of such a file is left out as the rest of it is.
-    expect(paths(zipSync({ 'manifest.json': strToU8(MANIFEST), '__MACOSX/assets/._version..png': strToU8('x') }))).toEqual(['manifest.json']);
+  it('says which file the reader left out for two dots in its name, in a folder or not, and opens the rest', () => {
+    const told: string[][] = [];
+    const tell = (names: string[]) => told.push(names);
+    const flat = readProjectArchive(zipSync({ 'manifest.json': strToU8(MANIFEST), 'ui/main.ui': strToU8(PAGE), 'assets/version..png': new Uint8Array([1]) }), tell);
+    expect(flat.map((entry) => entry.path).sort()).toEqual(['manifest.json', 'ui/main.ui']);
+    const wrapped = readProjectArchive(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/ui/..hidden.ui': strToU8(PAGE) }), tell);
+    expect(wrapped.map((entry) => entry.path)).toEqual(['manifest.json']);
+    expect(told).toEqual([['assets/version..png'], ['Tasks/ui/..hidden.ui']]);
+    // Escapes, and the Mac's litter of such a file, are left out as they were, unremarked.
+    readProjectArchive(zipSync({ 'manifest.json': strToU8(MANIFEST), '__MACOSX/assets/._version..png': strToU8('x'), '../outside.ui': strToU8('x') }), tell);
+    expect(told).toHaveLength(2);
   });
 
   it('still refuses names that collide by case, checked on the paths the project will have', () => {

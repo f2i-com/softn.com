@@ -57,7 +57,7 @@ export function hasZipSignature(data: Uint8Array): boolean {
  * Studio used to call fflate's `unzipSync` directly, which let a small archive
  * allocate its declared inflated size before Studio had a chance to inspect it.
  */
-export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
+export function readProjectArchive(data: Uint8Array, leftOut?: (names: string[]) => void): ProjectImportEntry[] {
   const decoder = new TextDecoder();
   let archive: Map<string, Uint8Array>;
   let dropped: string[];
@@ -70,15 +70,14 @@ export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
   }
   // The reader leaves out every name it takes for a way out of the bundle. An escape (`../x`,
   // `/x`) is no file of the project's and goes unremarked; but a name with two dots inside it
-  // is one (`assets/version..png`, which Studio's export wrote), and the project opened without
-  // it and without a word.
-  const lost = dropped.find((name) => {
+  // is one (`assets/version..png`, which Studio's export wrote): the project opens without it,
+  // as it does wherever SoftN opens the bundle, and `leftOut` is told which, where the project
+  // opened without it and without a word.
+  const lost = dropped.filter((name) => {
     const path = normalizeProjectPath(name);
     return path !== null && !isArchiveLitter(path);
   });
-  if (lost !== undefined) {
-    throw new Error(`Archive contains ${lost}, whose name has two dots in a row: SoftN takes ".." anywhere in a path for a way out of the bundle, and leaves the file out wherever it opens one. Rename it in the archive, then import it again.`);
-  }
+  if (lost.length > 0) leftOut?.(lost);
   // Every path is judged before anything is set aside, so an unsafe one refuses the archive
   // wherever it sits, as it always has.
   const safe: Array<{ path: string; rawPath: string; content: Uint8Array }> = [];

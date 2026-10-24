@@ -275,8 +275,10 @@ const App: React.FC = () => {
       // Try as ZIP first. The shared reader verifies sizes and checksums before
       // allocating entry buffers, so a small archive cannot inflate without a
       // bound just because it was opened in Studio rather than the runtime.
+      // Files the archive reader left out, said once the project is open.
+      let leftOut: string[] = [];
       try {
-        const entryList = readProjectArchive(data);
+        const entryList = readProjectArchive(data, (names) => { leftOut = names; });
         batch.push(...entryList);
         zipParsed = true;
       } catch (err) {
@@ -313,6 +315,9 @@ const App: React.FC = () => {
       // nothing took the workspace while the decode ran.
       if (!ownsWorkspace(generation)) return { ok: true };
       openImportedInStores(file.name, batch, { name: openerName });
+      for (const name of leftOut) {
+        useWorkspaceStore.getState().addConsoleOutput(`${name} was left out: its name has two dots in a row, which SoftN takes for a way out of the bundle wherever it opens one. Add the file again under another name.`);
+      }
       setView('editor');
       void refreshRecent();
       return { ok: true };
