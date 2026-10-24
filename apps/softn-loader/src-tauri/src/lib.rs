@@ -57,9 +57,15 @@ fn is_on_this_machine(path: &Path) -> bool {
     #[cfg(windows)]
     {
         use std::path::{Component, Prefix};
-        match path.components().next() {
+        let mut components = path.components();
+        match components.next() {
             Some(Component::Prefix(prefix)) => {
                 matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+            }
+            // `\??\` is Windows's own namespace, which it takes as written: `\??\UNC\host\share`
+            // is a share on another machine, where Rust reads a folder `??` at the root.
+            Some(Component::RootDir) => {
+                components.next() != Some(Component::Normal(std::ffi::OsStr::new("??")))
             }
             _ => true,
         }
@@ -677,6 +683,8 @@ mod tests {
             r"\\?\UNC\files.example.net\share\app.softn",
             r"\\.\pipe\app.softn",
             r"\\?\GLOBALROOT\Device\Mup\files.example.net\share\app.softn",
+            r"\??\UNC\files.example.net\share\app.softn",
+            "/??/UNC/files.example.net/share/app.softn",
         ] {
             assert!(!is_on_this_machine(Path::new(path)), "{} would be resolved", path);
         }

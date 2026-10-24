@@ -128,7 +128,14 @@ export function pathFrom(from: URL, to: URL): string {
 function siteFiles(base: URL, document: URL): AssetResolver {
   const resolve = ((path: string): string => {
     if (typeof path !== 'string' || path === '' || path.includes('..') || /^[a-z][a-z0-9+.-]*:|^\//i.test(path)) return '';
-    return pathFrom(document, new URL(path.replace(/^\.\//, ''), base));
+    // Judged as the browser reads it, too: `%2e%2e/` is `../` to the URL
+    // parser, and `\\host/x` another site, which the text above lets past.
+    try {
+      const url = new URL(path.replace(/^\.\//, ''), base);
+      return pathIn(base, url) === null ? '' : pathFrom(document, url);
+    } catch {
+      return '';
+    }
   }) as AssetResolver;
   resolve.pathOf = (url: string) => (/^[a-z][a-z0-9+.-]*:|^\//i.test(url) ? undefined : url);
   resolve.dispose = () => {};

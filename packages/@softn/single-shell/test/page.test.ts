@@ -129,6 +129,12 @@ describe('a page of a site', () => {
     expect(app.assets('./images/logo.png')).toBe('images/logo.png');
     expect(app.assets('../secret.png')).toBe('');
     expect(app.assets('https://example.com/a.png')).toBe('');
+    // What the URL parser reads as a climb or as another site, however it is written.
+    for (const path of ['%2e%2e/secret.png', '%2E%2E/secret.png', '.%2e/secret.png', 'images/%2e%2e/%2e%2e/secret.png', '\\\\elsewhere.test/x.png', '\\/elsewhere.test/x.png']) {
+      expect(app.assets(path), path).toBe('');
+    }
+    expect(app.assets('images/%2e%2e/logo.png')).toBe('logo.png');
+    expect(app.assets('images/%zz.png')).toBe('');
   });
 
   it('answers asset() from the document it is drawn in, when another page runs it', async () => {
