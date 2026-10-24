@@ -1,6 +1,6 @@
 [package]
 name = "softn-runner-shared"
-version = "0.0.25"
+version = "0.0.26"
 edition = "2021"
 description = "The Rust host's softn.time, compiled into softn-runner from where it is kept"
 publish = false

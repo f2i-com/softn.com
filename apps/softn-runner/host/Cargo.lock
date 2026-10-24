@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "softn-runner"
-version = "0.0.25"
+version = "0.0.26"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "softn-runner-shared"
-version = "0.0.25"
+version = "0.0.26"
 dependencies = [
  "chrono",
  "chrono-tz",

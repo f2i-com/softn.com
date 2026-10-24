@@ -1,6 +1,6 @@
 [package]
 name = "softn-runner-guest"
-version = "0.0.25"
+version = "0.0.26"
 edition = "2021"
 description = "SoftN's server-logic guest: the ZIPP engine compiled to WebAssembly (WASI), run by softn-runner under wasmtime"
 publish = false

@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "softn-runner-guest"
-version = "0.0.25"
+version = "0.0.26"
 dependencies = [
  "ryu",
  "serde",
