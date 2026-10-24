@@ -9,10 +9,18 @@ declare(strict_types=1);
 
 final class Social
 {
+    /**
+     * How many comments an app keeps, the ones hidden by the admin among
+     * them: past this, the oldest goes as each new one comes. Without a
+     * bound one app's comments, at the rate limit's pace from enough
+     * addresses, grew without end (Catalog::comments says what that cost).
+     */
+    public const MAX_COMMENTS = 500;
+
     /** @return array<string, mixed> */
     public static function comments(string $slug, int $page, int $perPage = 20): array {
         Apps::row($slug); // an unpublished app's comments go with it
-        $rows=array_values(array_filter(Catalog::doc($slug)['comments'],fn($r)=>!$r['hidden']));
+        $rows=array_values(array_filter(Catalog::comments($slug),fn($r)=>!$r['hidden']));
         usort($rows,fn($a,$b)=>[$b['created_at'],$b['id']]<=>[$a['created_at'],$a['id']]);
         $page=max(1,min(1000,$page));$perPage=max(1,min(50,$perPage));$total=count($rows);
         $comments=[];foreach(array_slice($rows,($page-1)*$perPage,$perPage) as $r)$comments[]=['id'=>(int)$r['id'],'name'=>$r['name'],'body'=>$r['body'],'createdAt'=>gmdate('c',(int)$r['created_at'])];
@@ -29,24 +37,27 @@ final class Social
         if (mb_strlen($body) < 2) throw new ApiError(400, 'A comment needs some words in it.');
         $visitor = Config::visitorHash($req->ip);
         Db::rateLimit('comment', Config::limitKey($req->ip));
-        $doc=Catalog::doc($slug);$now=time();
+        $comments=Catalog::comments($slug);$now=time();
         // Reserve a monotonic, browser-safe ID under the catalogue lock.
         // A crash may leave a gap; it cannot reuse an ID or reorder same-second comments.
+        // The sequence is the record of what was given; every comment of
+        // every app is read for it only where there is none yet (a directory
+        // from before the sequence was kept). Read every time, it made each
+        // new comment cost as much as all the comments there were.
         $path=Config::dataDir().'/sequences.json';$sequences=Catalog::readJson($path);
-        $last=(int)($sequences['comment']??0);
-        foreach(Catalog::all() as $app)foreach(Catalog::doc($app['slug'])['comments'] as $c)$last=max($last,(int)$c['id']);
+        if(isset($sequences['comment'])) $last=(int)$sequences['comment'];
+        else { $last=0; foreach(Catalog::all() as $app)foreach(Catalog::comments((string)$app['slug']) as $c)$last=max($last,(int)$c['id']); }
         if($last>=9007199254740991)throw new ApiError(503,'Comment identifiers are exhausted.');
         $id=$last+1;$sequences['comment']=$id;Catalog::writeJson($path,$sequences);
-        $doc['comments'][]=['id'=>$id,'slug'=>$slug,'name'=>$name,'body'=>$body,'visitor'=>$visitor,'hidden'=>0,'created_at'=>$now];
-        $doc['app']['comments']=count(array_filter($doc['comments'],fn($c)=>!$c['hidden']));
-        Catalog::put($slug,$doc);
+        $comments[]=['id'=>$id,'slug'=>$slug,'name'=>$name,'body'=>$body,'visitor'=>$visitor,'hidden'=>0,'created_at'=>$now];
+        Catalog::putComments($slug,array_slice($comments,-self::MAX_COMMENTS));
         return ['id' => $id, 'name' => $name, 'body' => $body, 'createdAt' => gmdate('c', $now)];
     }
 
     public static function hideComment(int $id, bool $hidden = true): void {
         foreach(Catalog::all() as $app) {
-            $slug=$app['slug'];$doc=Catalog::doc($slug);
-            foreach($doc['comments'] as &$c)if((int)$c['id']===$id){$c['hidden']=$hidden?1:0;unset($c);$doc['app']['comments']=count(array_filter($doc['comments'],fn($r)=>!$r['hidden']));Catalog::put($slug,$doc);return;}
+            $slug=(string)$app['slug'];$comments=Catalog::comments($slug);
+            foreach($comments as &$c)if((int)$c['id']===$id){$c['hidden']=$hidden?1:0;unset($c);Catalog::putComments($slug,$comments);return;}
             unset($c);
         }
         throw new ApiError(404,'No such comment.');

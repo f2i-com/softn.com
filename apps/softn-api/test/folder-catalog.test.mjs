@@ -23,9 +23,11 @@ $r=Request::fromGlobals();
 try {
  switch($job['op']) {
  case 'list':echo json_encode(Apps::list([]));break;
- case 'doc':echo json_encode(Catalog::doc($job['slug']));break;
+ case 'doc':$d=Catalog::doc($job['slug']);$d['comments']=Catalog::comments($job['slug']);echo json_encode($d);break;
  case 'run':for($i=0;$i<($job['count']??1);$i++){Social::recordRun($r,$job['slug']);Catalog::release();}break;
  case 'comment':echo json_encode(Social::addComment($r,$job['slug']));break;
+ case 'hide':Social::hideComment((int)$job['id']);break;
+ case 'comments':echo json_encode(Social::comments($job['slug'],1,50));break;
  case 'rate':echo json_encode(Social::rate($r,$job['slug']));break;
  case 'patch':Apps::patch($job['slug'],$job['fields']);break;
  case 'version':Apps::addVersion($job['slug'],$job['bundle'],'parallel');break;
@@ -120,6 +122,40 @@ test('parallel processes preserve runs, comments, ratings, patches and unique ve
   const published=await Promise.all(Array.from({length:4},()=>f.asyncRun({op:'publish',bundle})));
   assert.equal(new Set(published.map(p=>p.app.slug)).size,4);
   assert.ok(!fs.existsSync(path.join(f.root,'directory.sqlite')));
+ }finally{f.close();}
+});
+test('comments are a file of their own, bounded, and their ids come from the sequence',skip,()=>{
+ // Every request decodes every app.json under the one lock. Comments kept
+ // there, a few thousand at the rate limit's pace, were tens of megabytes
+ // every request read, then more than PHP's memory: every route failed.
+ const f=fixture();try{
+  f.add('chatty');f.run({op:'list'});
+  const appJson=path.join(f.root,'apps/chatty/app.json'),commentsJson=path.join(f.root,'apps/chatty/comments.json');
+  // A comment from before, in app.json, with no sequence kept yet.
+  const doc=JSON.parse(fs.readFileSync(appJson));
+  doc.comments=[{id:7,slug:'chatty',name:'Early',body:'From before',visitor:'v',hidden:0,created_at:100}];doc.app.comments=1;
+  fs.writeFileSync(appJson,JSON.stringify(doc));
+  assert.equal(f.run({op:'comments',slug:'chatty'}).total,1,'read from app.json while it is there');
+  const added=f.run({op:'comment',slug:'chatty',ip:'10.2.0.1',fields:{name:'Next',body:'After it'}});
+  assert.equal(added.id,8,'the first id after the ones there were');
+  assert.deepEqual(JSON.parse(fs.readFileSync(appJson)).comments,[],'moved out of app.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(commentsJson)).map(c=>c.id),[7,8]);
+  assert.equal(f.run({op:'doc',slug:'chatty'}).app.comments,2);
+
+  // Full: the oldest goes as each new one comes.
+  const many=Array.from({length:500},(_,i)=>({id:100+i,slug:'chatty',name:'N',body:'x'.repeat(1500),visitor:'v',hidden:0,created_at:200+i}));
+  fs.writeFileSync(commentsJson,JSON.stringify(many));
+  const seq=path.join(f.root,'sequences.json');fs.writeFileSync(seq,JSON.stringify({comment:599}));
+  const last=f.run({op:'comment',slug:'chatty',ip:'10.2.0.2',fields:{name:'Last',body:'One more'}});
+  assert.equal(last.id,600,'the sequence alone gives the next id');
+  const kept=JSON.parse(fs.readFileSync(commentsJson));
+  assert.equal(kept.length,500);assert.equal(kept[0].id,101);assert.equal(kept.at(-1).id,600);
+  assert.ok(fs.statSync(appJson).size<4096,`app.json stays small: ${fs.statSync(appJson).size} bytes`);
+
+  // Hidden by the admin: kept, not shown, not counted.
+  f.run({op:'hide',id:600});
+  assert.equal(f.run({op:'comments',slug:'chatty'}).total,499);
+  assert.equal(f.run({op:'doc',slug:'chatty'}).app.comments,499);
  }finally{f.close();}
 });
 test('a killed lock holder releases the OS lock without damaging JSON',skip,async()=>{

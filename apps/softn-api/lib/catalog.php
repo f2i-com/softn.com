@@ -195,9 +195,42 @@ final class Catalog
         foreach(['tags','capabilities','storage_policies'] as $field)if(!is_string($app[$field])||!is_array(json_decode($app[$field],true)))$fail();
         foreach(['versions','comments','ratings','runsDaily'] as $field)if(!array_is_list($doc[$field]))$fail();
         foreach($doc['versions'] as $v)if(!is_array($v)||!is_int($v['version']??null)||$v['version']<1||!is_string($v['file']??null)||basename($v['file'])!==$v['file']||str_contains($v['file'],'\\'))$fail();
-        foreach($doc['comments'] as $c)if(!is_array($c)||!is_int($c['id']??null)||!is_string($c['name']??null)||!is_string($c['body']??null)||!is_string($c['visitor']??null)||!isset($c['created_at'],$c['hidden']))$fail();
+        foreach($doc['comments'] as $c)if(!self::validComment($c))$fail();
         foreach($doc['ratings'] as $r)if(!is_array($r)||!is_string($r['visitor']??null)||!in_array($r['stars']??null,[1,2,3,4,5],true))$fail();
         foreach($doc['runsDaily'] as $r)if(!is_array($r)||!is_int($r['day']??null)||!is_int($r['count']??null)||$r['count']<0)$fail();
+    }
+    private static function validComment(mixed $c): bool {
+        return is_array($c) && is_int($c['id'] ?? null) && is_string($c['name'] ?? null) && is_string($c['body'] ?? null) && is_string($c['visitor'] ?? null) && isset($c['created_at'], $c['hidden']);
+    }
+    /**
+     * An app's comments, oldest first. They are a file of their own beside
+     * app.json, read only where comments are: every request decodes every
+     * app.json, under the one catalogue lock, and comments kept there made
+     * the whole directory pay for them. A few thousand comments a visitor
+     * could post at the rate limit's pace were tens of megabytes read by
+     * every request, then more than PHP's memory, and every route failed.
+     * An app whose comments are still in its app.json (written before) has
+     * them read from there until its next comment moves them out.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function comments(string $slug): array {
+        $doc = self::doc($slug);
+        $path = self::path($slug) . '/comments.json';
+        if (!is_file($path)) return $doc['comments'];
+        $rows = self::readJson($path);
+        if (!array_is_list($rows)) throw new ApiError(503, "Invalid comments.json in $slug. The file has been preserved.");
+        foreach ($rows as $c) if (!self::validComment($c)) throw new ApiError(503, "Invalid comment in $slug/comments.json. The file has been preserved.");
+        return $rows;
+    }
+    /** Store an app's comments, and its count of the ones a visitor sees. Written before app.json gives up its own copy. */
+    public static function putComments(string $slug, array $comments): void {
+        $comments = array_values($comments);
+        self::writeJson(self::path($slug) . '/comments.json', $comments);
+        $doc = self::doc($slug);
+        $doc['comments'] = [];
+        $doc['app']['comments'] = count(array_filter($comments, fn($c) => !$c['hidden']));
+        self::put($slug, $doc);
     }
     public static function validPlayUrl(mixed $url): bool {
         if(!is_string($url)||$url===''||strlen($url)>300||$url!==trim($url))return false;

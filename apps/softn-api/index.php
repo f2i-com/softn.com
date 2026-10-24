@@ -707,7 +707,7 @@ function handle(string $handler, array $args, Request $req): Response
                 'apps' => count(array_filter($rows,fn($a)=>!$a['hidden'])),
                 'hidden' => count(array_filter($rows,fn($a)=>(bool)$a['hidden'])),
                 'versions' => array_sum(array_map(fn($d)=>count($d['versions']),$docs)),
-                'comments' => array_sum(array_map(fn($d)=>count($d['comments']),$docs)),
+                'comments' => array_sum(array_map(fn($a)=>count(Catalog::comments((string)$a['slug'])),$rows)),
                 'ratings' => array_sum(array_map(fn($d)=>count($d['ratings']),$docs)),
                 'runs' => array_sum(array_column($rows,'runs')),
                 'suggestedCategories' => array_values(array_filter(Categories::all(true), fn($c) => $c['status'] === 'suggested')),
