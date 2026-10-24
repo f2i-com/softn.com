@@ -243,8 +243,6 @@ describe('XDB import merge (Tauri backend)', () => {
       })
     );
 
-    // The desktop's cache follows the native store's commit.
-    await result.persisted;
     expect(values(xdb.getAll('notes'))).toEqual([
       ['a', 'second'],
       ['b', 'keep'],

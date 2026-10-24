@@ -146,18 +146,6 @@ describe('XDB Service (Tauri mode)', () => {
         case 'import_records': {
           if (failNextImport) { failNextImport = false; throw new Error('SQLITE_FULL: database or disk is full'); }
           const batches = args?.batches as Array<{ collection: string; replace: boolean; records: XDBRecord[] }>;
-          // As XDB's command refuses, before writing anything: an id of white
-          // space as Rust reads it, and a live record of another collection.
-          for (const batch of batches) {
-            for (const record of batch.records) {
-              if (/^[\s\u0085]*$/.test(record.id)) throw new Error(`Import into '${batch.collection}' contains a record without an id`);
-              for (const [collection, records] of backend.entries()) {
-                if (collection !== batch.collection && records.some((r) => r.id === record.id && !r.deleted)) {
-                  throw new Error(`Record '${record.id}' imported into '${batch.collection}' is a record of another collection here`);
-                }
-              }
-            }
-          }
           let imported = 0; let tombstoned = 0;
           const collections: Array<{ collection: string; replaced: boolean; imported: number; tombstoned: number; epoch: number }> = [];
           for (const batch of batches) {
@@ -454,7 +442,7 @@ describe('XDB Service (Tauri mode)', () => {
     expect(backend.get('tasks')?.map((r) => r.id)).toEqual(['kept', 'fresh']);
   });
 
-  it('rejects the durable signal and changes nothing when the native transaction fails', async () => {
+  it('rejects the durable signal and reloads the cache when the native transaction fails', async () => {
     backend.set('tasks', [makeRecord('kept', 'tasks', { title: 'Kept' })]);
     const xdb = new XDBService(undefined, 'test-xdb');
     await xdb.isReady;
@@ -463,30 +451,74 @@ describe('XDB Service (Tauri mode)', () => {
     failNextImport = true;
     const fresh = makeRecord('fresh', 'tasks', { title: 'Fresh' });
     const result = xdb.import({ version: 1, exportedAt: '', collections: { tasks: [fresh] } }, { merge: false });
-    // The native store first: the cache waits for it…
-    expect(xdb.getAll('tasks').map((r) => r.id)).toEqual(['kept']);
-    // …and the caller is told the truth, with nothing changed.
+    // Optimistic cache first…
+    expect(xdb.getAll('tasks').map((r) => r.id)).toEqual(['fresh']);
+    // …but the caller is told the truth, and the cache goes back to disk.
     await expect(result.persisted).rejects.toThrow(/SQLITE_FULL/);
     expect(xdb.getAll('tasks').map((r) => r.id)).toEqual(['kept']);
     expect(backend.get('tasks')?.map((r) => r.id)).toEqual(['kept']);
-    const restored = await xdb.restoreAsync({ version: 1, exportedAt: '', collections: { tasks: [fresh] } });
-    expect(restored).toMatchObject({ persisted: { backend: 'native' } });
-    expect(xdb.getAll('tasks').map((r) => r.id)).toEqual(['fresh']);
+    await expect(xdb.restoreAsync({ version: 1, exportedAt: '', collections: { tasks: [fresh] } })).resolves.toMatchObject({ persisted: { backend: 'native' } });
     errors.mockRestore();
   });
 
-  // The cache took an import at once and sync was told of it, and the native
-  // store answered after: what it refused (a record another collection holds,
-  // one in a collection that never loaded, an id of white space as Rust reads
-  // it) was already in the room and on the sync server, a replacement's
-  // dropped records dropped with it.
-  it('tells sync of an import only once the native store has committed it', async () => {
+  // The native store refuses an import holding a record of another collection,
+  // but answered after the cache had changed and peer sync had carried the
+  // import into the room, which kept it.
+  it('refuses, before changing anything, an import holding a record of another collection', async () => {
     backend.set('private', [makeRecord('shared-id', 'private', { secret: 1 })]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    const heard: string[] = [];
+    xdb.subscribeAll((event) => heard.push(`${event.type}:${event.collection}`));
+    invokeMock.mockClear();
+    const planted = makeRecord('shared-id', 'public', { planted: true });
+    expect(() => xdb.import({ version: 1, exportedAt: '', collections: { public: [makeRecord('fine', 'public', {}), planted] } })).toThrow(/record of "private"/);
+    expect(invokeMock).not.toHaveBeenCalledWith('import_records', expect.anything());
+    expect(heard).toEqual([]);
+    expect(xdb.getAll('public')).toEqual([]);
+    expect(xdb.get('private', 'shared-id')?.data).toEqual({ secret: 1 });
+  });
+
+  // What the native store refuses of an import was refused after the cache
+  // had changed and sync had been told: refused here first, by the native
+  // rules. A record another collection deleted in an earlier session is not
+  // in the cache, and the native store writes over it (db.rs).
+  it('refuses up front what the native store would, and takes a record another collection deleted', async () => {
+    backend.set('private', [makeRecord('gone-id', 'private', { old: true }, { deleted: true })]);
     backend.set('public', [makeRecord('keep1', 'public', {}), makeRecord('keep2', 'public', {})]);
-    // `private` does not load: the cache never holds its record.
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    const heard: string[] = [];
+    xdb.subscribeAll((event) => heard.push(`${event.type}:${event.collection}`));
+    invokeMock.mockClear();
+    for (const bad of [
+      { ...makeRecord('named-private', 'public', {}), collection: 'private' },
+      makeRecord('   ', 'public', {}),
+      { id: 'half', collection: 'public', data: {} } as unknown as XDBRecord,
+    ]) {
+      expect(() => xdb.import({ version: 1, exportedAt: '', collections: { public: [bad] } }, { merge: false })).toThrow(/Import refused/);
+    }
+    expect(invokeMock).not.toHaveBeenCalledWith('import_records', expect.anything());
+    expect(heard).toEqual([]);
+    expect(xdb.getAll('public').map((r) => r.id).sort()).toEqual(['keep1', 'keep2']);
+
+    const { persisted } = xdb.import({ version: 1, exportedAt: '', collections: { public: [makeRecord('gone-id', 'public', { imported: true })] } });
+    await persisted;
+    expect(invokeMock).toHaveBeenCalledWith('import_records', expect.anything());
+    expect(xdb.get('public', 'gone-id')?.data).toEqual({ imported: true });
+  });
+
+  // What the up-front check missed, and the native store then refused after
+  // sync had been told: a record of a collection that never loaded, an id of
+  // U+0085 (white space to Rust's trim, not to JS's), and half of a surrogate
+  // pair, which serde_json will not read.
+  it('refuses up front an import the cache cannot vouch for, or the native store cannot read', async () => {
+    backend.set('private', [makeRecord('shared-id', 'private', { secret: 1 })]);
+    backend.set('public', [makeRecord('keep1', 'public', {})]);
     const answer = invokeMock.getMockImplementation()!;
+    let privateLoads = false;
     invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === 'get_collection' && args?.collection === 'private') throw new Error('database is locked');
+      if (cmd === 'get_collection' && args?.collection === 'private' && !privateLoads) throw new Error('database is locked');
       return answer(cmd, args);
     });
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -497,23 +529,30 @@ describe('XDB Service (Tauri mode)', () => {
     const told: string[] = [];
     xdb.onMutation((event) => told.push(`${event.type}:${event.collection}`));
 
-    for (const planted of [makeRecord('shared-id', 'public', { planted: true }), makeRecord('\u0085', 'public', {})]) {
-      const { persisted } = xdb.import({ version: 1, exportedAt: '', collections: { public: [planted] } }, { merge: false });
-      await expect(persisted).rejects.toThrow(/another collection|without an id/);
-    }
+    const imports = [
+      { public: [makeRecord('shared-id', 'public', { planted: true })] },
+      { public: [makeRecord('\u0085', 'public', {})] },
+      { public: [makeRecord('cut', 'public', { text: 'half an emoji \ud83d' })] },
+    ];
+    expect(() => xdb.import({ version: 1, exportedAt: '', collections: imports[0] }, { merge: false })).toThrow(/not been loaded/);
     expect(heard).toEqual([]);
+    privateLoads = true;
+    await xdb.retryHydration();
+    // The reload's own refresh, not the import's.
+    heard.length = 0;
+    for (const collections of imports.slice(1)) {
+      expect(() => xdb.import({ version: 1, exportedAt: '', collections }, { merge: false })).toThrow(/Import refused/);
+    }
+    expect(invokeMock).not.toHaveBeenCalledWith('import_records', expect.anything());
     expect(told).toEqual([]);
-    expect(xdb.getAll('public').map((r) => r.id).sort()).toEqual(['keep1', 'keep2']);
-
-    // A record another collection deleted in an earlier session is written over (db.rs).
-    backend.set('private', [makeRecord('gone-id', 'private', { old: true }, { deleted: true })]);
-    const { persisted } = xdb.import({ version: 1, exportedAt: '', collections: { public: [makeRecord('gone-id', 'public', { imported: true })] } });
-    await persisted;
-    expect(xdb.get('public', 'gone-id')?.data).toEqual({ imported: true });
-    expect(heard).toContain('refresh:public');
-    expect(told).toContain('create:public');
+    expect(heard.filter((event) => event.endsWith(':public'))).toEqual([]);
+    expect(xdb.getAll('public').map((r) => r.id)).toEqual(['keep1']);
+    // A whole emoji is text like any other.
+    xdb.import({ version: 1, exportedAt: '', collections: { public: [makeRecord('whole', 'public', { text: 'a whole emoji 😀' })] } });
+    expect(invokeMock).toHaveBeenCalledWith('import_records', expect.anything());
     errors.mockRestore();
   });
+
   it('restoreAsync refuses a partial restore unless the caller accepts it', async () => {
     const xdb = new XDBService(undefined, 'test-xdb');
     await xdb.isReady;
