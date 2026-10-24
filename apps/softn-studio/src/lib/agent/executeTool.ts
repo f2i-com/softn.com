@@ -17,7 +17,7 @@ import type { Blueprint, VFSFile } from '../../types/studio';
 import { useVFSStore, type VFSChangeRecord } from '../../stores/vfsStore';
 import { checkWrite, type SuppliedFiles } from '../changeset';
 import { appliedMigrationRefusal } from './appliedMigrations';
-import { findAlias, isPrivatePath, resolveProjectPath } from '../paths';
+import { bundleNameProblem, findAlias, isPrivatePath, resolveProjectPath } from '../paths';
 import { formatCheckReport, type AgentEnvironment, type RunFunctionRequest } from './appCheck';
 import { lineDiff, type LineDiff } from './diff';
 import { lookupComponents, readDocs } from './knowledge';
@@ -111,6 +111,9 @@ function resolveWritable(raw: string | undefined, files: Map<string, VFSFile>, t
   if (verdict.private) return { ok: false, reason: `${verdict.path} is private editor state (builder/), which you do not write.` };
   const alias = findAlias(verdict.path, files.keys());
   if (alias !== null) return { ok: false, reason: `${raw} is the same file as the project's ${alias} on a case-insensitive disk. Use ${alias}.` };
+  // A file the project has may keep its name; a new one is not given a name no bundle can hold.
+  const dropped = files.has(verdict.path) ? null : bundleNameProblem(verdict.path);
+  if (dropped) return { ok: false, reason: `${verdict.path} cannot go in the app's bundle: ${dropped}. Choose a name without two dots in a row.` };
   if (text && keptAsBytes(verdict.path)) {
     // The way out named here has to be one that works: this once ended "or use an SVG", in
     // answer to a model that had just been refused one.

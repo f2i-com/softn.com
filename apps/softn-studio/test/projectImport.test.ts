@@ -235,6 +235,17 @@ describe('a bundle zipped by hand', () => {
     expect(paths(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/../outside.ui': strToU8('x'), 'Tasks//ui/main.ui': strToU8('x') }))).toEqual(['manifest.json']);
   });
 
+  // A name with two dots inside it is a file of the project's (Studio's export wrote them), and
+  // the reader leaves it out: the project opened without it, and nothing said so.
+  it("refuses an archive with a file the reader leaves out for two dots in its name, naming it, in a folder or not", () => {
+    expect(() => readProjectArchive(zipSync({ 'manifest.json': strToU8(MANIFEST), 'ui/main.ui': strToU8(PAGE), 'assets/version..png': new Uint8Array([1]) })))
+      .toThrow(/^Archive contains assets\/version\.\.png, whose name has two dots in a row/);
+    expect(() => readProjectArchive(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/ui/..hidden.ui': strToU8(PAGE) })))
+      .toThrow(/Tasks\/ui\/\.\.hidden\.ui/);
+    // The Mac's litter of such a file is left out as the rest of it is.
+    expect(paths(zipSync({ 'manifest.json': strToU8(MANIFEST), '__MACOSX/assets/._version..png': strToU8('x') }))).toEqual(['manifest.json']);
+  });
+
   it('still refuses names that collide by case, checked on the paths the project will have', () => {
     expect(() => readProjectArchive(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/ui/Main.ui': strToU8('a'), 'Tasks/ui/main.ui': strToU8('b') }))).toThrow(/colliding project paths/i);
     // Two spellings of the folder are two folders: nothing is unwrapped, and their files collide.

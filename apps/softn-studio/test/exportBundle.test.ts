@@ -29,19 +29,27 @@ const toVfs = (files: Array<{ path: string; content: string | Uint8Array }>) =>
 const manifestWith = (files: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
   JSON.stringify({ name: 'App', version: '1.0.0', main: 'ui/main.ui', files, ...extra });
 
+// The export wrote assets/version..png, and every SoftN reader (this one's, the directory's,
+// the hosts') took the two dots for a way out of the bundle and left the file out: the app
+// opened without its asset and the directory refused the bundle. Studio keeps such a file, as
+// a project may have one, and says what stops the export.
 describe('the export and a name with adjacent dots', () => {
-  it('keeps assets/version..png in the archive, in the manifest, and past the validator', () => {
+  it('refuses assets/version..png, naming it and why, rather than writing what no reader opens', () => {
     const vfs = toVfs([
       { path: 'manifest.json', content: manifestWith({}) },
       { path: 'ui/main.ui', content: '<App></App>' },
       { path: 'assets/version..png', content: new Uint8Array([1, 2, 3]) },
     ]);
-    const archive = unzipSync(buildBundle(vfs, 0));
-    expect(Object.keys(archive).sort()).toEqual(['assets/version..png', 'manifest.json', 'ui/main.ui']);
-    expect(archive['assets/version..png']).toEqual(new Uint8Array([1, 2, 3]));
-    const manifest = JSON.parse(new TextDecoder().decode(archive['manifest.json']));
-    expect(manifest.files.assets).toEqual(['assets/version..png']);
-    expect(validateProject(vfs, null).filter((e) => e.level === 'error')).toEqual([]);
+    const plan = planBundle(vfs);
+    expect(plan.entries.has('assets/version..png')).toBe(false);
+    expect(plan.problems).toEqual([expect.objectContaining({ file: 'assets/version..png', level: 'error', type: 'unsafe-path', message: expect.stringMatching(/two dots in a row/) })]);
+    expect(validateProject(vfs, null).some((e) => e.level === 'error' && e.file === 'assets/version..png')).toBe(true);
+    expect(() => buildBundle(vfs)).toThrow(/version\.\.png/);
+    // Renamed, it goes in as it is.
+    const renamed = toVfs([...vfs.values()].map((f) => (f.path === 'assets/version..png' ? { ...f, path: 'assets/version.png' } : f)));
+    const archive = unzipSync(buildBundle(renamed, 0));
+    expect(Object.keys(archive).sort()).toEqual(['assets/version.png', 'manifest.json', 'ui/main.ui']);
+    expect(archive['assets/version.png']).toEqual(new Uint8Array([1, 2, 3]));
   });
 });
 

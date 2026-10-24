@@ -18,7 +18,7 @@ const entries = vi.hoisted(() => ({ next: new Map<string, Uint8Array>() }));
 
 vi.mock('@softn/core', async (original) => ({
   ...(await original<typeof import('@softn/core')>()),
-  readBundleEntries: () => entries.next,
+  openBundleArchive: () => ({ readAll: () => entries.next, unsafeNames: () => [] }),
 }));
 
 const bytes = (text: string) => new TextEncoder().encode(text);

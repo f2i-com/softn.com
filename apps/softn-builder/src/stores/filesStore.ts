@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { isUnsafeEntryName } from '@softn/core';
 import { useProjectStore } from './projectStore';
 import type {
   ProjectFileNode,
@@ -291,6 +292,21 @@ function relinkLogicReferences(
   }
 
   return updated;
+}
+
+/**
+ * Why a file or folder may not be called `name`, at `path`, or null. A name is one segment of
+ * the path: one with a slash in it made a node at a path whose folders the project had not
+ * got. And it names a file a bundle can hold (isUnsafeEntryName, the readers' own rule): the
+ * Builder took `../notes.ui`, `.` and `version..png`, the export wrote them, and every reader
+ * dropped them when it opened the bundle.
+ */
+function nameReason(name: string, path: string): string | null {
+  if (/[/\\]/.test(name)) return `A name cannot have "/" or "\\" in it: "${name}". Make a folder for it instead.`;
+  if (!isUnsafeEntryName(path)) return null;
+  return name.includes('..')
+    ? `"${name}" has two dots in a row, which SoftN takes for a way out of the bundle wherever it opens one, and leaves the file out. Choose another name.`
+    : `"${name}" cannot name a file in a bundle. Choose another name.`;
 }
 
 /** Why nothing new can be put at `path`: a file or folder is already there. */
@@ -602,7 +618,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   createFolder: (parentPath, name) => {
     const id = generateId();
     const fullPath = parentPath ? `${parentPath}/${name}` : name;
-    const taken = pathTakenReason(get().nodes, fullPath);
+    const taken = nameReason(name, fullPath) ?? pathTakenReason(get().nodes, fullPath);
     if (taken) throw new Error(taken);
 
     edit((state) => {
@@ -713,7 +729,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     const { parent } = parsePath(oldPath);
     const newPath = parent ? `${parent}/${newName}` : newName;
     if (newPath === oldPath) return;
-    const taken = pathTakenReason(current.nodes, newPath, id);
+    const taken = nameReason(newName, newPath) ?? pathTakenReason(current.nodes, newPath, id);
     if (taken) throw new Error(taken);
 
     // Every path under the folder, and every path a reference resolves to.
@@ -776,6 +792,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     const fullPath = parentPath ? `${parentPath}/${name}` : name;
     const current = get();
     const refused =
+      nameReason(name, fullPath) ??
       pathTakenReason(current.nodes, fullPath) ??
       (type === 'logic' ? pythonNameReason(current.logicFiles, fullPath) : null);
     if (refused) throw new Error(refused);
@@ -896,6 +913,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     const newPath = newParentPath ? `${newParentPath}/${name}` : name;
     if (newPath === node.path) return;
     const refused =
+      nameReason(name, newPath) ??
       pathTakenReason(current.nodes, newPath, id) ??
       (node.fileType === 'logic' ? pythonNameReason(current.logicFiles, newPath, id) : null);
     if (refused) throw new Error(refused);

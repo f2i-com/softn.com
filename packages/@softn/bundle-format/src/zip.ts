@@ -478,8 +478,14 @@ function isEscapingName(path: string): boolean {
   return path.startsWith('/') || path.includes('..') || path.includes('\0') || /^[a-zA-Z]:/.test(path);
 }
 
-/** Names that cannot refer to a file inside a bundle, and are only ever escapes. */
-function isUnsafeEntryName(path: string): boolean {
+/**
+ * Names that cannot refer to a file inside a bundle, and are only ever escapes: the reader
+ * drops a file of such a name when it opens the bundle, and the directory refuses the bundle.
+ * `..` anywhere counts, inside a name too (`assets/version..png`), as it does for every other
+ * SoftN reader (the directory's, the hosts', softn-runner's). An editor asks before it puts a
+ * file in a bundle, so that what it writes is what opens.
+ */
+export function isUnsafeEntryName(path: string): boolean {
   if (isEscapingName(path)) {
     return true;
   }

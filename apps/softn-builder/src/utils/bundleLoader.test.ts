@@ -14,6 +14,29 @@ import { loadBundle } from './bundleLoader';
 const manifest = (files: unknown) =>
   strToU8(JSON.stringify({ name: 'Unlisted', version: '1.0.0', main: 'ui/main.ui', files }));
 
+// The reader leaves out a file whose name has two dots in a row (an older export wrote them), and
+// the project opened without it with nothing said: saved again, it was gone for good.
+describe('a file the reader leaves out', () => {
+  it('opens the rest, and says which file is not there and why', async () => {
+    const bundle = zipSync({
+      'manifest.json': manifest({ ui: ['ui/main.ui'], logic: [], xdb: [], assets: [] }),
+      'ui/main.ui': strToU8('<App><Text>entry</Text></App>\n'),
+      'assets/version..png': new Uint8Array([1, 2, 3]),
+    });
+    const loaded = await loadBundle(bundle);
+    expect(loaded.warnings).toContain('assets/version..png was left out: SoftN takes ".." anywhere in a path, a leading "/" or a drive letter for a way out of the bundle, and opens no such file. The export will not have it.');
+  });
+
+  it('says why a file the manifest lists is not there, when the reader left it out', async () => {
+    const bundle = zipSync({
+      'manifest.json': manifest({ ui: ['ui/main.ui'], logic: [], xdb: [], assets: ['assets/version..png'] }),
+      'ui/main.ui': strToU8('<App><Text>entry</Text></App>\n'),
+      'assets/version..png': new Uint8Array([1, 2, 3]),
+    });
+    await expect(loadBundle(bundle)).rejects.toThrow(/lists "assets\/version\.\.png", which SoftN leaves out wherever it opens a bundle/);
+  });
+});
+
 describe('an entry file the manifest names but does not list', () => {
   it('opens, with the entry loaded as the main UI file', async () => {
     const bundle = zipSync({

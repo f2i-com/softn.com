@@ -78,7 +78,9 @@ export function resolveEntry(
  */
 export function validateBundle(
   manifest: BundleManifest,
-  files: Map<string, Uint8Array>
+  files: Map<string, Uint8Array>,
+  /** Entries the reader left out (`BundleArchive.unsafeNames`): there, but never opened. */
+  dropped: readonly string[] = []
 ): ValidationResult {
   const result: ValidationResult = { valid: true, errors: [], warnings: [] };
   const error = (text: string) => {
@@ -132,7 +134,9 @@ export function validateBundle(
         }
         const found = resolveEntry(files, item, known ? (group as FileGroup) : undefined);
         if (found) continue;
-        const text = `manifest.files.${group} lists "${item}", but the bundle has no such file. Add the file or remove it from the manifest.`;
+        const text = dropped.includes(item)
+          ? `manifest.files.${group} lists "${item}", which SoftN leaves out wherever it opens a bundle: it takes ".." anywhere in a path, a leading "/" or a drive letter for a way out of the bundle. Rename the file in the archive, and in the manifest.`
+          : `manifest.files.${group} lists "${item}", but the bundle has no such file. Add the file or remove it from the manifest.`;
         if (known) error(text);
         else result.warnings.push(text);
       }

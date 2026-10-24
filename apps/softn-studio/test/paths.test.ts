@@ -11,11 +11,15 @@
  * (fixture F10) asserts that import, the VFS-side check the agent's writes go
  * through, validation and export return the same verdict and the same
  * canonical identity for each.
+ *
+ * A name with two dots in a row is a project's file, but every SoftN reader
+ * drops it from a bundle, so the export refuses it by name: it was written,
+ * and the app opened without it.
  */
 
 import { describe, expect, it } from 'vitest';
 import { normalizeProjectPath, readJsonProject } from '../src/lib/projectImport';
-import { isPrivatePath, resolveProjectPath } from '../src/lib/paths';
+import { bundleNameProblem, isPrivatePath, resolveProjectPath } from '../src/lib/paths';
 import { planBundle } from '../src/lib/exportBundle';
 import { validateProject } from '../src/lib/validator';
 import type { VFSFile } from '../src/types/studio';
@@ -26,13 +30,15 @@ interface Fixture {
   canonical: string | null;
   /** Private editor state: valid, but never exported and never written by the model. */
   isPrivate?: boolean;
+  /** A project's file no bundle can hold: every reader drops it, so the export refuses it. */
+  unbundled?: boolean;
   why: string;
 }
 
 const FIXTURES: Fixture[] = [
   { raw: 'ui/main.ui', canonical: 'ui/main.ui', why: 'plain' },
-  { raw: 'assets/version..png', canonical: 'assets/version..png', why: 'adjacent dots inside a name are not traversal' },
-  { raw: 'ui/..hidden.ui', canonical: 'ui/..hidden.ui', why: 'leading dots inside a name are not traversal' },
+  { raw: 'assets/version..png', canonical: 'assets/version..png', unbundled: true, why: 'adjacent dots inside a name are not traversal, but no reader opens them' },
+  { raw: 'ui/..hidden.ui', canonical: 'ui/..hidden.ui', unbundled: true, why: 'leading dots inside a name are not traversal, but no reader opens them' },
   { raw: '.hidden', canonical: '.hidden', why: 'a dotfile is a file' },
   { raw: 'ui\\main.ui', canonical: 'ui/main.ui', why: 'backslashes are separators' },
   { raw: '../secret.ui', canonical: null, why: 'traversal segment' },
@@ -86,7 +92,8 @@ describe('every stage agrees on each fixture path', () => {
           : project(file(fx.raw));
       const plan = planBundle(files);
       const errors = validateProject(files, null).filter((e) => e.level === 'error');
-      if (fx.canonical === null) {
+      if (fx.canonical) expect(bundleNameProblem(fx.canonical) !== null).toBe(!!fx.unbundled);
+      if (fx.canonical === null || fx.unbundled) {
         expect(plan.entries.has(fx.raw)).toBe(false);
         expect(plan.problems.some((p) => p.level === 'error' && p.file === fx.raw)).toBe(true);
         expect(errors.some((e) => e.file === fx.raw)).toBe(true);

@@ -23,7 +23,7 @@
  */
 
 import { zipSync, strToU8 } from 'fflate';
-import { readBundleEntries } from '@softn/core';
+import { isUnsafeEntryName, openBundleArchive } from '@softn/core';
 import type {
   CanvasElement,
   CollectionDef,
@@ -434,6 +434,16 @@ function zip(files: Record<string, Uint8Array>, options: SharedOptions): Uint8Ar
   if (Object.hasOwn(files, '__proto__')) {
     throw new Error('Export refused: a file at the bundle\'s root may not be named "__proto__". Rename it.');
   }
+  // What a reader would drop is not written: `assets/version..png` was, and every reader left it
+  // out (isUnsafeEntryName, theirs), so the export lost the file with nothing said. The
+  // pre-flight builds through here, so Export is held back with this as the reason.
+  for (const path of Object.keys(files)) {
+    if (path.includes('\\') || isUnsafeEntryName(path)) {
+      throw new Error(path.includes('..')
+        ? `Export refused: "${path}" has two dots in a row, which SoftN takes for a way out of the bundle wherever it opens one, and leaves the file out. Rename it.`
+        : `Export refused: "${path}" cannot name a file in a bundle. Rename it.`);
+    }
+  }
   return zipSync(files, {
     level: 6,
     comment: `SoftN Bundle - ${options.name} v${options.version}`,
@@ -558,6 +568,8 @@ export function parseBundle(data: Uint8Array): {
   /** The manifest.json as it was in the archive. */
   manifestBytes: Uint8Array;
   files: Map<string, Uint8Array>;
+  /** Entries the reader left out, their names taken for ways out of the bundle. */
+  dropped: string[];
 } {
   // Validated read, shared with softn-web and softn-loader.
   //
@@ -566,7 +578,10 @@ export function parseBundle(data: Uint8Array): {
   // bypassed every defence the other two readers had — including the one that
   // catches an archive understating a file's size, which hands this reader a
   // truncated file while every other reader sees the whole one.
-  const files = readBundleEntries(data);
+  const archive = openBundleArchive(data);
+  const files = archive.readAll();
+  // What it left out is said when the project opens: saved again, the project has it no more.
+  const dropped = archive.unsafeNames();
 
   // Debug: log all paths in the bundle
   debug('[parseBundle] Files in bundle:', Array.from(files.keys()));
@@ -590,7 +605,7 @@ export function parseBundle(data: Uint8Array): {
     throw new Error('Invalid bundle: manifest.json is not a JSON object');
   }
 
-  return { manifest: manifest as unknown as BundleManifest, manifestBytes: manifestData, files };
+  return { manifest: manifest as unknown as BundleManifest, manifestBytes: manifestData, files, dropped };
 }
 
 /**

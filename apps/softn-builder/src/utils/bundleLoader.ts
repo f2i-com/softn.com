@@ -101,14 +101,14 @@ function declaredPaths(manifest: BundleManifest, group: FileGroup): string[] {
  * Load a .softn bundle from Uint8Array data
  */
 export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
-  const { manifest, manifestBytes, files } = parseBundle(data);
+  const { manifest, manifestBytes, files, dropped } = parseBundle(data);
   // The manifest as read, before anything here touches the typed view of it.
   const rawManifest = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;
 
   debug(`[bundleLoader] Bundle format ${manifest.formatVersion ?? '(none, legacy)'}`);
 
   // Validate bundle integrity
-  const validation = validateBundleIntegrity(manifest, files);
+  const validation = validateBundleIntegrity(manifest, files, dropped);
   if (!validation.valid) {
     throw new Error(
       `Invalid bundle: ${validation.errors.join('; ')}`
@@ -127,7 +127,10 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   const xdbPaths = new Map<string, string>();
   const xdbFiles = new Map<string, Uint8Array>();
   const assets = new Map<string, Uint8Array>();
-  const warnings: string[] = [...validation.warnings];
+  const warnings: string[] = [
+    ...validation.warnings,
+    ...dropped.map((name) => `${name} was left out: SoftN takes ".." anywhere in a path, a leading "/" or a drive letter for a way out of the bundle, and opens no such file. The export will not have it.`),
+  ];
   /** Every archive path something here has taken; the rest are passthrough. */
   const consumed = new Set<string>();
 

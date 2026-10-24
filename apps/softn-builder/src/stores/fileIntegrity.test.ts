@@ -51,6 +51,26 @@ beforeEach(() => {
   store().createFolder('logic', 'utils');
 });
 
+// The tree took any name: `../notes.ui`, `.`, `a/b.ui` and `version..ui` were made, renamed to
+// and moved under, the export wrote them, and every reader dropped them when it opened the bundle.
+describe('names a bundle cannot hold', () => {
+  it('are refused to a new file or folder, a rename and a move, with nothing changed', () => {
+    const before = pathsOf();
+    expect(() => store().createFile('ui', '../notes.ui', 'ui')).toThrow(/cannot have "\/" or "\\"/);
+    expect(() => store().createFile('ui', 'notes\\x.ui', 'ui')).toThrow(/cannot have "\/" or "\\"/);
+    expect(() => store().createFile('ui', 'version..ui', 'ui')).toThrow(/"version\.\.ui" has two dots in a row/);
+    expect(() => store().createFile('logic', '..', 'logic')).toThrow(/two dots in a row/);
+    expect(() => store().createFolder('ui', '.')).toThrow(/cannot name a file in a bundle/);
+    expect(() => store().createFolder('', 'C:')).toThrow(/cannot name a file in a bundle/);
+    expect(() => store().renameFile('main_ui', 'main..ui')).toThrow(/two dots in a row/);
+    expect(() => store().renameFolder([...store().nodes.values()].find((n) => n.path === 'ui/pages')!.id, 'old..pages')).toThrow(/two dots in a row/);
+    expect(() => store().moveFile('main_ui', 'ui/pages', 'a/b.ui')).toThrow(/cannot have "\/"/);
+    expect(pathsOf()).toEqual(before);
+    // A dot or two apart is a name like any other.
+    expect(() => store().createFile('ui', 'v1.2.ui', 'ui')).not.toThrow();
+  });
+});
+
 describe('two files at one path', () => {
   it('refuses to create a file where one already is', () => {
     const before = pathsOf();

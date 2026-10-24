@@ -15,8 +15,12 @@
  *   - backslashes are separators and become '/';
  *   - the path must be relative: no leading separator, no drive letter;
  *   - no NUL, no empty segment (so no '//' and no trailing '/'), and no '.'
- *     or '..' segment. Dots inside a name are just characters:
- *     assets/version..png and ui/..hidden.ui are files;
+ *     or '..' segment. Dots inside a name are a project's own:
+ *     assets/version..png and ui/..hidden.ui are files, kept and opened;
+ *   - but no such file goes in a bundle (`bundleNameProblem`): every SoftN
+ *     reader takes '..' anywhere in a name for a way out of the bundle and
+ *     drops the file, and the directory refuses the bundle. The export says
+ *     so, naming the file, and the agent makes no new one;
  *   - two paths are the same file when they are equal case-insensitively
  *     (`canonicalKey`), because the project may be unpacked on a disk that
  *     folds case. Such a pair is a collision, never a second file.
@@ -28,6 +32,8 @@
  * and never written by it; they cannot leak through an alternate spelling
  * because the spelling is settled before the question is asked.
  */
+
+import { isUnsafeEntryName } from '@softn/core';
 
 const PRIVATE_PREFIX = 'builder/';
 
@@ -68,6 +74,17 @@ function describePathProblem(value: string): string {
   if (segments.some((s) => s === '.')) return 'the path has a "." segment';
   if (segments.some((s) => !s)) return 'the path ends in a separator';
   return 'the path is not a valid project path';
+}
+
+/**
+ * Why a canonical project path cannot go in a bundle, or null when it can: the bundle readers'
+ * own rule (`isUnsafeEntryName`), which a project path breaks only with '..' inside a name.
+ * The export wrote such a file, and every reader dropped it when it opened the bundle.
+ */
+export function bundleNameProblem(path: string): string | null {
+  return isUnsafeEntryName(path)
+    ? 'the name has two dots in a row, and every SoftN reader takes ".." anywhere in a path for a way out of the bundle and leaves the file out'
+    : null;
 }
 
 /** The identity two spellings share when they are the same file on a case-folding disk. */

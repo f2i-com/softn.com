@@ -1,4 +1,4 @@
-import { MAX_ZIP_INPUT_BYTES, classifyAsset, readBundleEntries } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, classifyAsset, openBundleArchive } from '@softn/core';
 import { canonicalKey, normalizeProjectPath } from './paths';
 import { keptAsBytes, readsAsText } from './fileKinds';
 
@@ -59,11 +59,25 @@ export function hasZipSignature(data: Uint8Array): boolean {
  */
 export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
   const decoder = new TextDecoder();
-  let archive: ReturnType<typeof readBundleEntries>;
+  let archive: Map<string, Uint8Array>;
+  let dropped: string[];
   try {
-    archive = readBundleEntries(data);
+    const opened = openBundleArchive(data);
+    archive = opened.readAll();
+    dropped = opened.unsafeNames();
   } catch (err) {
     throw explainArchiveFailure(err);
+  }
+  // The reader leaves out every name it takes for a way out of the bundle. An escape (`../x`,
+  // `/x`) is no file of the project's and goes unremarked; but a name with two dots inside it
+  // is one (`assets/version..png`, which Studio's export wrote), and the project opened without
+  // it and without a word.
+  const lost = dropped.find((name) => {
+    const path = normalizeProjectPath(name);
+    return path !== null && !isArchiveLitter(path);
+  });
+  if (lost !== undefined) {
+    throw new Error(`Archive contains ${lost}, whose name has two dots in a row: SoftN takes ".." anywhere in a path for a way out of the bundle, and leaves the file out wherever it opens one. Rename it in the archive, then import it again.`);
   }
   // Every path is judged before anything is set aside, so an unsafe one refuses the archive
   // wherever it sits, as it always has.

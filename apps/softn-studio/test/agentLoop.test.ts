@@ -351,6 +351,29 @@ describe('the changeset rules, as tool errors', () => {
     expect(text('tasks.md')).toBe('mine\n');
   });
 
+  // Every SoftN reader leaves out a file whose name has two dots in a row, so the model makes
+  // none: the export wrote what it made, and the app opened without it.
+  it('makes no file whose name no bundle can hold, and still edits one the project has', async () => {
+    const ctx = { seen: new Map() as SuppliedFiles, env: nodeEnvironment, blueprint: null, newTransactionId: () => `t-${Math.random()}` };
+    const call = (name: string, input: Record<string, unknown>) => executeTool({ id: `c-${Math.random()}`, name, input }, ctx);
+    const made = await call('write_file', { path: 'notes/plan..md', content: 'plan\n' });
+    expect(made.isError).toBe(true);
+    expect(made.content).toMatch(/notes\/plan\.\.md cannot go in the app's bundle: the name has two dots in a row/);
+    expect(useVFSStore.getState().files.has('notes/plan..md')).toBe(false);
+
+    useVFSStore.getState().createFile('notes.md', 'mine\n', 'user');
+    expect((await call('read_file', { path: 'notes.md' })).isError).toBe(false);
+    expect((await call('rename_file', { from: 'notes.md', to: 'notes..md' })).isError).toBe(true);
+    expect(text('notes.md')).toBe('mine\n');
+
+    // One the project already has keeps its name, and the model may change it, or rename it away.
+    useVFSStore.getState().createFile('old..md', 'kept\n', 'user');
+    expect((await call('read_file', { path: 'old..md' })).isError).toBe(false);
+    expect((await call('write_file', { path: 'old..md', content: 'changed\n' })).isError).toBe(false);
+    expect((await call('rename_file', { from: 'old..md', to: 'old.md' })).isError).toBe(false);
+    expect(text('old.md')).toBe('changed\n');
+  });
+
   it('writes an SVG, a CSV and a file with no extension as the text they are, and refuses only what is kept as bytes', async () => {
     // Whatever core's registry does not list as text was refused as "a binary format": a .csv, a
     // README, and an .svg too — in a message that ended "or use an SVG or text format".

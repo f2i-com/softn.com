@@ -98,4 +98,21 @@ describe('an export and a file named __proto__', () => {
     expect(files.get('assets/__proto__')).toEqual(new Uint8Array([7, 8, 9]));
     expect([...files.keys()].sort()).toEqual(['assets/__proto__', 'manifest.json', 'ui/main.ui']);
   });
+
+  // Every reader drops a name with two dots in a row: the export wrote assets/version..png, and
+  // the bundle opened without it. The dialog's pre-flight builds through here, so Export is held
+  // back with the reason.
+  it('refuses a file whose name no reader opens, naming it, rather than writing it', async () => {
+    await expect(exportWith('assets/version..png')).rejects.toThrow(/"assets\/version\.\.png" has two dots in a row/);
+    const { files } = parseBundle(await exportWith('assets/version.png'));
+    expect(files.get('assets/version.png')).toEqual(new Uint8Array([7, 8, 9]));
+  });
+});
+
+describe('opening a bundle with a file the reader leaves out', () => {
+  it('says which, so a save does not lose it unremarked', () => {
+    const { files, dropped } = parseBundle(bundle({ 'manifest.json': MANIFEST, 'ui/main.ui': '<Stack></Stack>', 'assets/version..png': 'x' }));
+    expect(files.has('assets/version..png')).toBe(false);
+    expect(dropped).toEqual(['assets/version..png']);
+  });
 });

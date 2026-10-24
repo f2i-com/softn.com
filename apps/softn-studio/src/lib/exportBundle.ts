@@ -1,6 +1,6 @@
 import { zipSync } from 'fflate';
 import type { ValidationError, VFSFile } from '../types/studio';
-import { isPrivatePath, normalizeProjectPath, resolveProjectPath } from './paths';
+import { bundleNameProblem, isPrivatePath, normalizeProjectPath, resolveProjectPath } from './paths';
 import { isPagePath, linkedScripts } from './sourceKinds';
 import { MAIN_PAGE_PATH } from './studioProject';
 
@@ -53,6 +53,17 @@ function collectEntries(files: Map<string, VFSFile>): Collected {
       continue;
     }
     if (verdict.private) continue;
+    const dropped = bundleNameProblem(verdict.path);
+    if (dropped) {
+      problems.push({
+        file: rawPath,
+        level: 'error',
+        type: 'unsafe-path',
+        message: `"${rawPath}" cannot go in the bundle: ${dropped}.`,
+        suggestion: 'Rename the file without the two dots in a row, or delete it. Nothing is exported while it is there.',
+      });
+      continue;
+    }
     const taken = byKey.get(verdict.key);
     if (taken !== undefined) {
       const collision = (a: string, b: string): ValidationError => ({
