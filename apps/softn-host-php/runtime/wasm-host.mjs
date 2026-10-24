@@ -8,6 +8,8 @@ import {initSync,Engine,zippProfile} from './wasm/zipp_wasm.mjs';
 let initialized=false;
 /** What one host call may carry: 2 MiB of arguments and a statement's 20 KB (sql.mjs). */
 const MAX_CALL_BYTES=2*1024*1024+20_000;
+/** What a script is told once its request's transaction has ended before the request did. */
+const TRANSACTION_LOST='Transaction rolled back';
 const SHIM=`
 var softn={serverApiVersion:1,config:{development:false},sql:{},crypto:{},time:{}};
 function __softnCall(op,args){var r=db.query(op,args);if(r!==null&&typeof r==='object'&&r.__softnHostError===true)throw new Error(r.message);return r;}
@@ -144,6 +146,12 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
   });
   function invoke(request,route,context={}) {
     let engine,transaction=false,calls=0,failed=false,failure=null;
+    // The request's transaction can end under it: a statement's ON CONFLICT
+    // ROLLBACK (INSERT OR ROLLBACK, or a column declared so), or an error
+    // SQLite rolls the transaction back for. Every statement after that ran
+    // in autocommit and kept its write, whatever the request answered; now
+    // no host call runs once it has ended.
+    const lost=()=>transaction&&!db.isTransaction;
     try {
       writable=route.transaction!=='read';
       db.exec(writable?'BEGIN IMMEDIATE':'BEGIN');transaction=true;
@@ -152,13 +160,16 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
         // A host call that fails marks the request, whatever the handler
         // does with the exception: see the commit below.
         try {
+          if(lost())throw new Error(TRANSACTION_LOST);
           // 2 MiB of binds or of text to hash, as the Rust host allows, and
           // the 20 KB a statement may be. It was 1 MB: a route that takes a
           // 2 MiB body could not store what it had been sent.
           if(++calls>512||!Object.hasOwn(operations,op)||!capabilities.includes(op.split('.')[0])||!Array.isArray(args)||args.length>4)throw new Error('Host capability denied: '+String(op).slice(0,40));
           if(Buffer.byteLength(JSON.stringify(args))>MAX_CALL_BYTES)throw new Error('Host call arguments exceed '+MAX_CALL_BYTES+' bytes: '+String(op).slice(0,40));
           if(route.transaction==='read'&&op==='sql.execute')throw new Error('Read-only transaction');
-          return operations[op](...args);
+          const value=operations[op](...args);
+          if(lost())throw new Error(TRANSACTION_LOST);
+          return value;
         // Answered, not thrown: see scriptReason. The request is marked all the same.
         } catch(e){failed=true;failure??=e;return {__softnHostError:true,message:scriptReason(op,e)};}
       }});
@@ -175,7 +186,11 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
       // rolled back and answers host_error, unless the handler asked for the
       // rollback itself, in which case its answer stands.
       if(failed&&!result.rollback)throw new Error('Host call failed');
-      db.exec(result.rollback?'ROLLBACK':'COMMIT');transaction=false;
+      // A handler that asked for the rollback has it already, and its answer
+      // stands; one that did not has nothing left to commit.
+      if(!lost())db.exec(result.rollback?'ROLLBACK':'COMMIT');
+      else if(!result.rollback)throw new Error(TRANSACTION_LOST);
+      transaction=false;
       delete result.rollback;return result;
     } catch(e) {
       // The first host call that failed says more than what the VM made of it.

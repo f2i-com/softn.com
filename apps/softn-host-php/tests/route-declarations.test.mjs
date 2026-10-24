@@ -46,6 +46,7 @@ function count(req){softn.sql.execute("UPDATE counter SET value=value+1",[]);ret
 function value(req){return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}
 function creditThenFail(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);try{softn.sql.execute("INSERT INTO no_such_table VALUES(1)",[]);}catch(e){return {status:400,body:{error:'refused'}};}return {status:200,body:{}};}
 function creditThenUndo(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);try{softn.sql.execute("INSERT INTO no_such_table VALUES(1)",[]);}catch(e){return {status:409,rollback:true,body:{error:'undone'}};}return {status:200,body:{}};}
+function conflictThenWrite(req){var said={};softn.sql.execute("UPDATE counter SET value=value+10",[]);try{softn.sql.execute("INSERT OR ROLLBACK INTO counter(rowid,value) VALUES(1,0)",[]);}catch(e){said.conflict=e.message;}try{softn.sql.execute("UPDATE counter SET value=value+100",[]);said.after='written';}catch(e){said.after=e.message;}return req.body&&req.body.undo?{status:409,rollback:true,body:said}:{status:200,body:said};}
 function creditThenRefuse(req){softn.sql.execute("UPDATE counter SET value=value+10",[]);return {status:422,body:{error:'counted'}};}
 function settings(req){return {status:200,body:softn.config};}
 function boom(req){softn.sql.execute("UPDATE counter SET value=value+5",[]);throw new Error("boom at /home/app/secret.txt with\\ttab");}
@@ -235,6 +236,23 @@ test('a host call that fails rolls the request back, even when the handler catch
   // a wrong guess keeps its attempt counter.
   assert.equal(b.invoke({method:'POST',path:'/api/refuse'}).status,422);
   assert.equal(value(),10);
+});
+
+test('a statement that rolls the transaction back ends the request\'s writes there: nothing after it commits by itself',t=>{
+  const b=backend(manifest([
+    {method:'POST',path:'/api/conflict',handler:'conflictThenWrite'},
+    {method:'GET',path:'/api/value',handler:'value',transaction:'read'},
+  ]));
+  t.after(b.close);
+  const value=()=>b.invoke({method:'GET',path:'/api/value'}).body.value;
+  // INSERT OR ROLLBACK met a conflict and SQLite ended the transaction, the
+  // first UPDATE with it; the UPDATE after ran in autocommit and kept its 100
+  // although the request answered host_error.
+  assert.deepEqual(b.invoke({method:'POST',path:'/api/conflict',body:{}}),{status:500,body:{error:'The request could not be completed.',code:'host_error'}});
+  assert.equal(value(),0,'a write after the transaction ended was kept');
+  // A handler that asks for the rollback has it already, and its answer stands.
+  assert.deepEqual(b.invoke({method:'POST',path:'/api/conflict',body:{undo:true}}),{status:409,body:{conflict:'SQL write failed',after:'Transaction rolled back'}});
+  assert.equal(value(),0);
 });
 
 test('a body 62 levels deep reaches the handler whole, which is why http.php takes none deeper',t=>{

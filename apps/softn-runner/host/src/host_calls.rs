@@ -211,6 +211,10 @@ pub fn script_config(app_config: &Value, development: bool, photos: bool) -> Str
     js::stringify(&Value::Object(map))
 }
 
+/// What a script is told when its request's transaction ended before the
+/// request did (wasm-host.mjs TRANSACTION_LOST).
+const TRANSACTION_LOST: &str = "Transaction rolled back";
+
 struct CallState {
     calls: usize,
     failure: Option<HostError>,
@@ -243,6 +247,18 @@ impl Host {
                 // A fault in a call (a library panicking on input the script chose) is that
                 // call's failure, caught here before it could cross the guest's frames.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Value, HostError> {
+                    // The request's transaction can end under it: a statement's
+                    // ON CONFLICT ROLLBACK, an error SQLite rolls back for, a
+                    // write the deadline interrupted. Each statement after
+                    // that would commit by itself, so none runs.
+                    if db.is_autocommit() {
+                        return Err(HostError::own(TRANSACTION_LOST));
+                    }
+                    // Past the soft deadline nothing more of the request runs:
+                    // it is answered as failed before the kill.
+                    if std::time::Instant::now() >= crate::soft_deadline() {
+                        return Err(HostError::Library("the request ran until the deadline".into()));
+                    }
                     let mut call_state = calls.borrow_mut();
                     call_state.calls += 1;
                     let args: Option<Vec<Value>> = serde_json::from_str::<Value>(&js::replace_lone_surrogates(args_json)).ok().and_then(|v| match v {
@@ -264,11 +280,15 @@ impl Host {
                         return Err(HostError::own("Read-only transaction"));
                     }
                     drop(call_state);
-                    match family {
+                    let value = match family {
                         "sql" => sql.call(&db, name, args.first(), args.get(1), writable),
                         "crypto" => crypto.call(name, &args),
                         _ => time(name, &args),
+                    }?;
+                    if db.is_autocommit() {
+                        return Err(HostError::own(TRANSACTION_LOST));
                     }
+                    Ok(value)
                 }))
                 .unwrap_or_else(|_| Err(HostError::Library("the host call faulted".into())));
                 match result {
@@ -301,7 +321,13 @@ impl Host {
             if state.borrow().failure.is_some() && !rollback {
                 return Err(HostError::Library("Host call failed".into()));
             }
-            self.db.execute_batch(if rollback { "ROLLBACK" } else { "COMMIT" }).map_err(HostError::library)?;
+            if !self.db.is_autocommit() {
+                self.db.execute_batch(if rollback { "ROLLBACK" } else { "COMMIT" }).map_err(HostError::library)?;
+            } else if !rollback {
+                // Nothing it wrote is left to commit.
+                return Err(HostError::own(TRANSACTION_LOST));
+            }
+            // A handler that asked for the rollback has it already: its answer stands.
             transaction = false;
             Ok((status as u16, body.to_string()))
         })();

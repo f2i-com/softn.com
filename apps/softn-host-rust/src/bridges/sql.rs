@@ -325,16 +325,20 @@ impl NativeSql {
         let aborted = self.failed
             || self.cancellation.load(Ordering::Relaxed)
             || Instant::now() >= self.deadline;
-        let result = conn.execute_batch(if commit && !aborted {
-            "COMMIT"
+        // A transaction SQLite already ended (ON CONFLICT ROLLBACK, an error
+        // it rolls back for) has nothing to commit, and a request that asked
+        // for its rollback has it.
+        let lost = conn.is_autocommit();
+        let result = if lost {
+            Ok(())
         } else {
-            "ROLLBACK"
-        });
+            conn.execute_batch(if commit && !aborted { "COMMIT" } else { "ROLLBACK" })
+        };
         if result.is_err() {
             let _ = conn.execute_batch("ROLLBACK");
         }
         self.active = false;
-        if result.is_err() || commit && aborted {
+        if result.is_err() || commit && (aborted || lost) {
             return Err("Private SQL transaction was rolled back".into());
         }
         Ok(())
@@ -378,6 +382,12 @@ impl NativeSql {
     fn run(&self, kind: &str, sql: &str, binds: &str) -> Result<Value, String> {
         if !self.active {
             return Err("SQL requires a host-scoped request transaction".into());
+        }
+        // Once SQLite has ended the request's transaction (a statement's ON
+        // CONFLICT ROLLBACK), each statement would commit by itself, whatever
+        // the request answers: none runs.
+        if self.connection.as_ref().is_some_and(Connection::is_autocommit) {
+            return Err("Private SQL transaction was rolled back".into());
         }
         if self.cancellation.load(Ordering::Relaxed) || Instant::now() >= self.deadline {
             return Err("SQL request cancelled or timed out".into());
@@ -504,6 +514,23 @@ mod tests {
         let bridge = NativeSql::new(path.clone());
         (path, bridge)
     }
+    /// A statement whose conflict rolls the transaction back ends it under
+    /// the request: what the handler writes after that is refused, not
+    /// committed by itself, and a rollback the handler asks for stands.
+    #[test]
+    fn nothing_is_written_after_sqlite_ends_the_transaction() {
+        let (path, mut bridge) = fixture();
+        let count = || open_connection(&path).unwrap().query_row("SELECT COUNT(*) FROM records", [], |r| r.get::<_, i64>(0)).unwrap();
+        for commit in [true, false] {
+            bridge.begin(TransactionMode::Write, Arc::new(AtomicBool::new(false))).unwrap();
+            bridge.call("sql.execute", "INSERT INTO records VALUES(1,'kept?')", "[]").unwrap();
+            assert!(bridge.call("sql.execute", "INSERT OR ROLLBACK INTO records VALUES(1,'again')", "[]").is_err());
+            assert_eq!(bridge.call("sql.execute", "INSERT INTO records VALUES(2,'after')", "[]"), Err("Private SQL transaction was rolled back".into()));
+            assert_eq!(bridge.finish(commit).is_err(), commit, "commit {commit}");
+            assert_eq!(count(), 0, "commit {commit}");
+        }
+    }
+
     #[test]
     fn rejects_sql_escape_paths_and_rolls_back_caught_errors() {
         let (path, mut bridge) = fixture();
