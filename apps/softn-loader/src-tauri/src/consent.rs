@@ -74,7 +74,8 @@ impl NetPolicy {
 
 /// Characters that show nothing, or turn the text around them the other way: a bundle's file
 /// name `invoice\u{202E}cod.softn` read as `invoicenffos.doc`, and a host named with them
-/// can show as another one. Not control characters, so the filter below let them through.
+/// can show as another one; and the line and paragraph separators break the question into new lines
+/// as a newline would. Not control characters, so the filter below let them through.
 fn is_invisible(c: char) -> bool {
     matches!(
         c,
@@ -82,7 +83,7 @@ fn is_invisible(c: char) -> bool {
             | '\u{061C}'
             | '\u{180E}'
             | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
+            | '\u{2028}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{206F}'
             | '\u{FEFF}'
@@ -508,7 +509,7 @@ mod tests {
         consent.bundle_opened(Path::new("invoice\u{202E}cod.softn"));
         let (_, _, text) = consent.peer_sync_question();
         assert!(text.contains("\"invoicecod.softn\""), "{}", text);
-        let (_, _, text) = consent.net_question(&policy(false, &["api.exa\u{200B}mple.com", "\u{2067}evil.example\u{2069}"]));
+        let (_, _, text) = consent.net_question(&policy(false, &["api.exa\u{200B}mple.com", "\u{2067}evil.example\u{2069}", "ok.example\u{2028}\u{2029}Allow this, it is safe"]));
         assert!(text.contains("api.example.com") && text.contains("evil.example"), "{}", text);
         assert!(!text.chars().any(is_invisible), "{:?}", text);
     }
