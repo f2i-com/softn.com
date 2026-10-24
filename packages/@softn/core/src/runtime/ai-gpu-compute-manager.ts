@@ -225,7 +225,10 @@ export class GpuComputeManager {
     }
 
     const usageFlags = parseUsageFlags(usage);
-    const dtype: DType = source.dtype || 'float32';
+    // A script's argument, checked as writeBuffer checks it: an unknown name
+    // made a buffer that was counted and could never be read.
+    const dtype: unknown = source.dtype ?? 'float32';
+    if (!isDType(dtype)) throw new Error(`Unknown dtype "${String(dtype)}": expected ${DTYPES.join(', ')}`);
     const Ctor = getTypedArrayCtor(dtype);
 
     let size: number;

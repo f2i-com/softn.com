@@ -136,3 +136,20 @@ describe('readBuffer', () => {
     expect(staging.destroy).toHaveBeenCalledOnce();
   });
 });
+
+describe('a buffer', () => {
+  // writeBuffer checked the dtype a script names; createBuffer did not, and
+  // made and counted a buffer no read could ever turn into numbers.
+  it('of a dtype there is none of is refused, not made and counted', async () => {
+    const device = { createBuffer: vi.fn(() => ({ getMappedRange: () => new ArrayBuffer(4), unmap: () => {}, destroy: () => {} })) };
+    const mgr = new GpuComputeManager();
+    const internals = mgr as unknown as Internals & { totalBufferBytes: number };
+    internals.device = device;
+
+    await expect(mgr.createBuffer({ size: 4, dtype: 'x' as never }, 'storage')).rejects.toThrow(/Unknown dtype "x"/);
+    await expect(mgr.createBuffer({ data: [1], dtype: 'x' as never }, 'storage')).rejects.toThrow(/Unknown dtype "x"/);
+    expect(device.createBuffer).not.toHaveBeenCalled();
+    expect(internals.buffers.size).toBe(0);
+    expect(internals.totalBufferBytes).toBe(0);
+  });
+});
