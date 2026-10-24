@@ -422,13 +422,23 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       if (!to.ok) return fail(str(input, 'to') ?? '', to.reason);
       if (to.path === from.path) return fail(from.path, 'from and to are the same path.');
       if (files.has(to.path)) return fail(to.path, `${to.path} already exists. Delete it first, or choose another name.`);
+      // As delete_file: a rename decided on content that has since changed is
+      // decided on old content. And what the model has seen of the file goes
+      // with it only as it saw it: the new path was recorded as read at the
+      // file's current version, so a write built on the text from before the
+      // person's edit was taken there, and the edit was gone; and a file it
+      // never read counted as read.
+      const read = ctx.seen.get(from.path);
+      if (read && read.version !== from.file.version) {
+        return fail(from.path, describeSeenRefusal(from.path, { kind: 'stale', suppliedVersion: read.version, currentVersion: from.file.version }, 'rename_file'));
+      }
       const transactionId = commit(
         [
           { op: 'delete', path: from.path },
           { op: 'create', path: to.path, content: from.file.content },
         ],
         ctx,
-        [{ path: to.path, whole: ctx.seen.get(from.path)?.complete ?? false }],
+        read ? [{ path: to.path, whole: read.complete }] : [],
       );
       return {
         content: `Renamed ${from.path} to ${to.path}. Update references to the old path (imports, <logic src>, manifest.json).`,

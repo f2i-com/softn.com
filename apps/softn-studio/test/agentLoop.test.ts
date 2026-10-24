@@ -328,6 +328,29 @@ describe('the changeset rules, as tool errors', () => {
     expect((await call('write_file', { path: './../escape.ui', content: '<App/>' })).isError).toBe(true);
   });
 
+  // rename_file had no "seen" check, and recorded the new path as read at the file's current
+  // version: a write built on the text from before the person's edit was taken there.
+  it('renames a file only as the model saw it, and the new path counts as read only if it was', async () => {
+    const seen: SuppliedFiles = new Map();
+    const ctx = { seen, env: nodeEnvironment, blueprint: null, newTransactionId: () => `t-${Math.random()}` };
+    const call = (name: string, input: Record<string, unknown>) => executeTool({ id: `c-${Math.random()}`, name, input }, ctx);
+    useVFSStore.getState().createFile('notes.md', 'line one\n', 'user');
+    expect((await call('read_file', { path: 'notes.md' })).isError).toBe(false);
+    useVFSStore.getState().updateFile('notes.md', "line one\nthe person's paragraph\n", 'user');
+
+    const renamed = await call('rename_file', { from: 'notes.md', to: 'readme.md' });
+    expect(renamed.isError).toBe(true);
+    expect(renamed.content).toContain('changed since you read it');
+    expect(text('notes.md')).toBe("line one\nthe person's paragraph\n");
+
+    // Never read: renamed, but a write on the new path still needs a read first.
+    useVFSStore.getState().createFile('todo.md', 'mine\n', 'user');
+    expect((await call('rename_file', { from: 'todo.md', to: 'tasks.md' })).isError).toBe(false);
+    const write = await call('write_file', { path: 'tasks.md', content: 'model text\n' });
+    expect(write.isError).toBe(true);
+    expect(text('tasks.md')).toBe('mine\n');
+  });
+
   it('writes an SVG, a CSV and a file with no extension as the text they are, and refuses only what is kept as bytes', async () => {
     // Whatever core's registry does not list as text was refused as "a binary format": a .csv, a
     // README, and an .svg too — in a message that ended "or use an SVG or text format".
