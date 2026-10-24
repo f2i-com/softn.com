@@ -15,6 +15,7 @@
  */
 
 import {
+  createEphemeralXDBScope,
   createMockNavModule,
   createMockXDBModule,
   createScriptRuntime,
@@ -94,28 +95,60 @@ export function quietContext(files: Map<string, VFSFile>, logs: string[]) {
 }
 
 /**
- * A fresh script runtime for a composed page — the engine the preview uses — with its logic loaded.
- * `appId` is what the logic's storage is kept under (`softn:<appId>:…`); a fresh one by default.
+ * Where a check's logic keeps what it stores, and how it is let go: a database of its own in
+ * memory (as the preview's), and its script storage (`softn:<appId>:…`) taken away again. The
+ * logic's top level runs as it loads. Under a plain id its database was the browser's own,
+ * kept for good: the save check's fixed id was one database every project's check wrote into
+ * and read back (one project's records turned up in another's problems), and every agent check
+ * left a database and a store of its own behind, with a budget each in Studio's storage.
+ */
+export function checkStorageScope(): { appId: string; release: () => void } {
+  const scope = createEphemeralXDBScope();
+  return {
+    appId: scope.appId,
+    release: () => {
+      scope.dispose();
+      const prefix = `softn:${scope.appId.replace(/[^a-zA-Z0-9_-]/g, '_')}:`;
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const key = localStorage.key(i);
+          if (key?.startsWith(prefix)) localStorage.removeItem(key);
+        }
+      } catch {
+        // Storage may be unavailable; then nothing was kept in it.
+      }
+    },
+  };
+}
+
+/**
+ * A fresh script runtime for a composed page — the engine the preview uses — with its logic
+ * loaded, in a store of its own (checkStorageScope). `release` stops the runtime and lets its
+ * store go; call it when done with the runtime.
  */
 export async function loadPageLogic(
   composition: Pick<PageComposition, 'importResolver' | 'logicBasePath' | 'preIncludedLogicPaths' | 'python'>,
   block: { type: string; code: string } | undefined,
   context: Parameters<typeof createScriptRuntime>[0],
-  appId = `studio-agent-run-${Date.now().toString(36)}`,
-): Promise<{ runtime: ScriptRuntime; loaded: Awaited<ReturnType<ScriptRuntime['loadScript']>> }> {
+): Promise<{ runtime: ScriptRuntime; loaded: Awaited<ReturnType<ScriptRuntime['loadScript']>>; release: () => void }> {
+  const storage = checkStorageScope();
   const runtime = createScriptRuntime(
     context,
     undefined,
-    appId,
+    storage.appId,
     composition.importResolver,
     composition.logicBasePath,
     { mode: 'main', preIncludedLogicPaths: composition.preIncludedLogicPaths, pythonProject: composition.python },
   );
+  const release = () => {
+    runtime.cleanup();
+    storage.release();
+  };
   try {
     const loaded = await withTimeout(runtime.loadScript((block ?? { type: 'logic', code: '' }) as never), composition.python ? 30_000 : 10_000, 'Loading the logic');
-    return { runtime, loaded };
+    return { runtime, loaded, release };
   } catch (err) {
-    runtime.cleanup();
+    release();
     throw err;
   }
 }
@@ -151,36 +184,14 @@ function pageLogic(files: Map<string, VFSFile>, page: string): { composition: Pa
   return { composition: composed.composition, block };
 }
 
-/**
- * What the check's loads keep their storage under, and take away again after each: the logic's
- * top level runs as it loads, and one that writes to localStorage would otherwise leave a set
- * of keys behind for every save.
- */
-const CHECK_APP_ID = 'studio-logic-check';
-
-function forgetCheckStorage(): void {
-  try {
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const key = localStorage.key(i);
-      if (key?.startsWith(`softn:${CHECK_APP_ID}:`)) localStorage.removeItem(key);
-    }
-  } catch {
-    // Storage may be unavailable; then nothing was kept in it.
-  }
-}
-
-/** Load the logic as the check does, under the check's own storage, cleared after; throws what the engine threw. */
+/** Load the logic as the check does, in a store of its own let go after; throws what the engine threw. */
 async function loadForCheck(
   files: Map<string, VFSFile>,
   composition: Parameters<typeof loadPageLogic>[0],
   block: { type: string; code: string } | undefined,
 ): Promise<void> {
-  try {
-    const { runtime } = await loadPageLogic(composition, block, quietContext(files, []) as never, CHECK_APP_ID);
-    runtime.cleanup();
-  } finally {
-    forgetCheckStorage();
-  }
+  const { release } = await loadPageLogic(composition, block, quietContext(files, []) as never);
+  release();
 }
 
 /** Load `code` alone, with nothing it imports, and say what the engine said when it did not compile. */

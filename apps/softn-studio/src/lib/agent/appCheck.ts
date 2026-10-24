@@ -28,7 +28,7 @@ import { resolveProjectRelativePath } from '../projectImport';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { validateProject } from '../validator';
 import { blankTemplateComments, ownParseErrors, PAGE_PARSE, parseDiagnostics, UI_IMPORT } from '../pageDiagnostics';
-import { formatConsoleArgs, loadPageLogic, LOGIC_SYNTAX, quietContext, withTimeout } from '../logicCheck';
+import { checkStorageScope, formatConsoleArgs, loadPageLogic, LOGIC_SYNTAX, quietContext, withTimeout } from '../logicCheck';
 import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } from '../previewProject';
 import { getBundleEntryPath } from '../studioProject';
 import { isPrivatePath, normalizeProjectPath } from '../paths';
@@ -516,7 +516,9 @@ async function backendProblems(files: Map<string, VFSFile>): Promise<{ errors: s
   }
   // Loaded as its host loads it: a backend's top level only defines functions (a host refuses SQL outside a request).
   const logs: string[] = [];
-  const runtime = createScriptRuntime(quietContext(files, logs) as never, undefined, `studio-agent-backend-${Date.now().toString(36)}`, undefined, undefined, { mode: 'main' } as never);
+  // In a store of its own, let go after (checkStorageScope), as the page logic's checks are.
+  const storage = checkStorageScope();
+  const runtime = createScriptRuntime(quietContext(files, logs) as never, undefined, storage.appId, undefined, undefined, { mode: 'main' } as never);
   try {
     const loaded = await withTimeout(runtime.loadScript({ type: 'logic', code: source } as never), 10_000, 'Loading the backend');
     const defined = new Set(Object.keys(loaded.functions ?? {}));
@@ -527,6 +529,7 @@ async function backendProblems(files: Map<string, VFSFile>): Promise<{ errors: s
     errors.push(`${entry} does not load, so its host would refuse the whole version: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     runtime.cleanup();
+    storage.release();
   }
   return { errors, warnings };
 }
@@ -605,8 +608,8 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
       if (!heardByPreview(args)) logs.push(`error: ${formatConsoleArgs(args)}`);
     };
     try {
-      const { runtime, loaded } = await loadPageLogic(composition, block, quietContext(files, logs) as never);
-      runtime.cleanup();
+      const { loaded, release } = await loadPageLogic(composition, block, quietContext(files, logs) as never);
+      release();
       const visible = (name: string) => !name.startsWith('__');
       for (const name of Object.keys(loaded.state)) if (visible(name)) logic.state.add(name);
       for (const name of Object.keys(loaded.functions)) if (visible(name)) logic.functions.add(name);
@@ -818,9 +821,11 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
     if (!heardByPreview(args)) logs.push(`error: ${formatConsoleArgs(args)}`);
   };
   let runtime: ReturnType<typeof createScriptRuntime> | null = null;
+  let release: (() => void) | null = null;
   try {
     const started = await loadPageLogic(composition, block, context as never);
     runtime = started.runtime;
+    release = started.release;
     const { loaded } = started;
     Object.assign(state, loaded.state);
     if (loaded.functions._init) await withTimeout(loaded.functions._init(), 10_000, '_init()');
@@ -886,7 +891,7 @@ export async function runAppFunction(files: Map<string, VFSFile>, request: RunFu
     return { ok: false, text: `Error: ${err instanceof Error ? err.message : String(err)}${printed.length > 0 ? `\nConsole:\n${printed.slice(0, 10).map((l) => `  ${l}`).join('\n')}` : ''}` };
   } finally {
     console.error = original;
-    runtime?.cleanup();
+    release?.();
   }
 }
 
