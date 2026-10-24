@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { forgetAppSync } from '../src/runtime/sync-app-state';
+import { carryAppSync, forgetAppSync } from '../src/runtime/sync-app-state';
 import { legacySharedFlagKey, roomCollectionsKey, sharedRoomFlagKey } from '../src/runtime/sync-room-security';
 import { getSyncRoomKey, persistenceNameFor } from '../src/runtime/xdb-sync-key';
 
@@ -61,6 +61,40 @@ function seedKeys() {
   localStorage.setItem(roomCollectionsKey(OTHER, 'lobby'), '["scores"]');
   localStorage.setItem(`xdb:${APP}:notes`, '{}');
 }
+
+describe('carryAppSync', () => {
+  const NEXT = 'sha256-app-next-build';
+
+  it("copies the app's saved room, shared marks and collection lists, keeping the destination's own", async () => {
+    seedKeys();
+    localStorage.setItem(roomCollectionsKey(NEXT, 'match-7'), '["its own"]');
+    vi.stubGlobal('indexedDB', fakeIndexedDB([persistenceNameFor(APP, 'lobby')]));
+
+    expect(await carryAppSync(APP, NEXT, { move: false })).toBe(3);
+    expect(localStorage.getItem(getSyncRoomKey(NEXT))).toBe('lobby');
+    expect(localStorage.getItem(legacySharedFlagKey(NEXT))).toBe('true');
+    expect(localStorage.getItem(sharedRoomFlagKey(NEXT, 'lobby'))).toBe('true');
+    expect(localStorage.getItem(roomCollectionsKey(NEXT, 'match-7'))).toBe('["its own"]');
+    // A copy: the older build keeps what it had.
+    expect(localStorage.getItem(getSyncRoomKey(APP))).toBe('lobby');
+    expect(localStorage.getItem(sharedRoomFlagKey(OTHER, 'lobby'))).toBe('true');
+    expect(localStorage.getItem(getSyncRoomKey(OTHER))).toBe('lobby');
+  });
+
+  it("moves them, and lets the old identity's room caches go", async () => {
+    seedKeys();
+    const idb = fakeIndexedDB([persistenceNameFor(APP, 'lobby'), persistenceNameFor(OTHER, 'lobby')]);
+    vi.stubGlobal('indexedDB', idb);
+
+    await carryAppSync(APP, NEXT, { move: true });
+    expect(localStorage.getItem(getSyncRoomKey(NEXT))).toBe('lobby');
+    expect(localStorage.getItem(roomCollectionsKey(NEXT, 'match-7'))).toBe('["scores"]');
+    expect(localStorage.getItem(getSyncRoomKey(APP))).toBeNull();
+    expect(localStorage.getItem(sharedRoomFlagKey(APP, 'lobby'))).toBeNull();
+    expect(idb.has(persistenceNameFor(APP, 'lobby'))).toBe(false);
+    expect(idb.has(persistenceNameFor(OTHER, 'lobby'))).toBe(true);
+  });
+});
 
 describe('forgetAppSync', () => {
   it("removes the app's sync keys and its rooms' caches, and no other app's", async () => {

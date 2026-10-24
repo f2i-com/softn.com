@@ -16,7 +16,7 @@ import { AppRunner } from './components/AppRunner';
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
 import { ProductBar } from '@softn/brand';
 import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn/core';
-import { debug, forgetAppSync } from '@softn/core';
+import { carryAppSync, debug, forgetAppSync } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
 import { installAppOffline } from './lib/offlineInstall';
@@ -709,6 +709,9 @@ function App(): React.ReactElement {
       debug(
         `[SoftN Web] Copied ${result.copied} of ${result.total} stored keys from "${from.name}" v${from.version} to v${to.version}${result.skipped ? ` (${result.skipped} already there)` : ''}.`
       );
+      // And the room it was in, so the update goes back to it as the older
+      // build did; copied, as the records are.
+      void carryAppSync(from.origin, to.origin, { move: false });
       handleOpenCached(to);
     },
     // handleOpenCached is defined below; referenced lazily inside the callback.

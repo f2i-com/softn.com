@@ -5,7 +5,7 @@
  */
 
 import type { IDBPDatabase, IDBPObjectStore } from 'idb';
-import { debug } from '@softn/core';
+import { carryAppSync, debug } from '@softn/core';
 import type { CachedApp, SoftNAppDB } from './appCacheDb';
 import { SHORT_ORIGIN_LENGTH, computeAppOrigin, isSecureAppOrigin } from './appCacheIdentity';
 import { migrateAppStorage } from './appCacheStorage';
@@ -111,6 +111,11 @@ export async function applyAdoption(store: AppStore, adoption: Adoption, origin:
     console.warn(`[SoftN Web] "${current!.name}" keeps its earlier identity: ${moved.error}`);
     return null;
   }
+  // Its sync rooms' keys go with its records: left under the old identity,
+  // the app no longer went back to its room. The keys move before this
+  // returns; the old identity's room caches are deleted after, unawaited,
+  // as nothing may hold this write transaction open.
+  void carryAppSync(adoption.fromAppId, origin, { move: true });
   debug(
     `[SoftN Web] "${current!.name}" ${adoption.why}${moved.copied ? `, moving ${moved.copied} stored keys` : ''}.`
   );

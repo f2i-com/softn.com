@@ -190,6 +190,23 @@ describe('runtime app-data actions', () => {
     expect(localStorage.getItem(dataKey(older))).toBe('older saved note');
   });
 
+  // The records came forward and the room did not: the update no longer went
+  // back to the room the older build was in, and a shared room started again
+  // without options opened private, away from its peers.
+  it('brings the room the older build was in forward with its data', async () => {
+    localStorage.setItem(dataKey(older), 'older saved note');
+    localStorage.setItem(`xdb-sync-active-room:${older.origin}`, 'lobby');
+    localStorage.setItem(`xdb-sync-shared:${older.origin}:lobby`, 'true');
+    confirm.mockReturnValue(true);
+    await mount();
+    await click('.softn-launcher-adopt');
+    expect(localStorage.getItem(dataKey(current))).toBe('older saved note');
+    expect(localStorage.getItem(`xdb-sync-active-room:${current.origin}`)).toBe('lobby');
+    expect(localStorage.getItem(`xdb-sync-shared:${current.origin}:lobby`)).toBe('true');
+    // Copied: the older build still has its own.
+    expect(localStorage.getItem(`xdb-sync-active-room:${older.origin}`)).toBe('lobby');
+  });
+
   it('checks again when the app starts while the backup is being read', async () => {
     localStorage.setItem(dataKey(current), 'original note');
     const snapshot = exportAppData(current)!;

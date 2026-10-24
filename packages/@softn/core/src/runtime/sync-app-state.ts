@@ -1,6 +1,7 @@
 /**
- * What peer sync keeps on this device for one app, found and removed in one
- * place, for a host removing the app.
+ * What peer sync keeps on this device for one app, found, removed and
+ * carried in one place, for a host removing the app or bringing its data to
+ * another identity.
  *
  * Sync keeps its own things beside the app's records and its script's
  * storage: the saved room (`xdb-sync-active-room:<appId>`), each room's
@@ -105,6 +106,52 @@ function deleteDatabase(idb: IDBFactory, name: string): Promise<void> {
     request.onerror = () => resolve();
     request.onblocked = () => resolve();
   });
+}
+
+/**
+ * Carry what peer sync keeps for one identity of an app to another: its
+ * saved room, and each room's shared mark and collection list. A host that
+ * brought an app's records forward to a new build (copy), or moved them to
+ * the identity it now knows the same bundle by (move), carried its records
+ * and left these behind: the app no longer went back to its room, and a
+ * shared room it started again without options opened private, where its
+ * peers were not. What the destination has of its own is kept. The rooms'
+ * offline caches are not carried (they are filled again from the room);
+ * a move deletes the source's. Answers how many keys were carried.
+ */
+export async function carryAppSync(from: string, to: string, options: { move: boolean }): Promise<number> {
+  if (!from || !to || from === to) return 0;
+  let carried = 0;
+  const store = storage();
+  if (store) {
+    try {
+      const pairs: Array<[string, string]> = [
+        [getSyncRoomKey(from), getSyncRoomKey(to)],
+        [legacySharedFlagKey(from), legacySharedFlagKey(to)],
+      ];
+      const prefixes: Array<[string, string]> = [
+        [sharedRoomFlagKey(from, ''), sharedRoomFlagKey(to, '')],
+        [roomCollectionsKey(from, ''), roomCollectionsKey(to, '')],
+      ];
+      for (let i = 0; i < store.length; i++) {
+        const key = store.key(i);
+        if (key === null) continue;
+        for (const [source, target] of prefixes) {
+          if (key.startsWith(source)) pairs.push([key, target + key.slice(source.length)]);
+        }
+      }
+      for (const [source, target] of pairs) {
+        const value = store.getItem(source);
+        if (value === null || store.getItem(target) !== null) continue;
+        store.setItem(target, value);
+        carried++;
+      }
+    } catch {
+      // Storage that refuses: the rooms are joined afresh, as before.
+    }
+  }
+  if (options.move) await forgetAppSync(from);
+  return carried;
 }
 
 /**
