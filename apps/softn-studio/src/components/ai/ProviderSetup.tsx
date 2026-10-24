@@ -62,6 +62,15 @@ function hostName(value: string): string {
   }
 }
 
+/** Where an address sends what is sent to it: its origin, or '' for one that is not an address. */
+function originOf(value: string | undefined): string {
+  try {
+    return value ? new URL(value).origin : '';
+  } catch {
+    return '';
+  }
+}
+
 type Listing =
   | { state: 'idle' }
   | { state: 'loading' }
@@ -111,8 +120,17 @@ export const ProviderSetup: React.FC<ProviderSetupProps> = ({ provider, onDone, 
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const isLocal = type === 'local' || type === 'custom';
-  /** A saved key is kept when the field is left empty on an edit of the same kind. */
-  const keptKey = editing && provider!.type === type ? provider!.apiKey : '';
+  /**
+   * A saved key is kept when the field is left empty on an edit of the same
+   * kind, going to the same place. Kept across a change of a server's
+   * address, it went to the new address, a host the person never gave it
+   * (Settings says keys go only to their provider); the field then offers no
+   * saved key, and one is pasted for the new address.
+   */
+  const keptKey =
+    editing && provider!.type === type && (!isLocal || originOf(baseUrl.trim()) === originOf(provider!.baseUrl ?? defaultBaseUrl(provider!.type, provider!.serverKind)))
+      ? provider!.apiKey
+      : '';
   const effectiveKey = apiKey.trim() || keptKey;
 
   /** The provider as the form currently describes it. */

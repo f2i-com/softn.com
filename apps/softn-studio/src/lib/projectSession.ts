@@ -7,6 +7,7 @@ import {
   clearLegacySnapshots,
   deleteProjectRecord,
   hasProjectRecord,
+  isGlobalSettingsKey,
   loadActiveProjectId,
   normalizeMode,
   loadGlobalSettings,
@@ -901,7 +902,28 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
   };
   running = controller;
 
+  // Another tab's change to the provider settings, taken in as it is made.
+  // Each tab writes its whole list whenever a setting of its own changes, so
+  // a key removed in one tab (a leaked one) was written back by the next
+  // setting another tab saved, an agent run's among them. What is taken in
+  // is not written back: it is what the store holds.
+  let takingSettings = false;
+  const onStorage = (event: StorageEvent): void => {
+    if (!isGlobalSettingsKey(event.key)) return;
+    takingSettings = true;
+    try {
+      applyGlobalSettings();
+    } finally {
+      takingSettings = false;
+    }
+  };
+  const listening = typeof window !== 'undefined' && typeof window.addEventListener === 'function';
+  if (listening) window.addEventListener('storage', onStorage);
+
   const unsubscribers = [
+    () => {
+      if (listening) window.removeEventListener('storage', onStorage);
+    },
     useWorkspaceStore.subscribe((state, previous) => {
       if (workspaceProjectChanged(state, previous)) onProjectChange();
     }),
@@ -920,8 +942,8 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
         state.toolProtocols !== previous.toolProtocols ||
         state.streamModes !== previous.streamModes
       ) {
-        const written = persistGlobalSettings();
-        if (!written.ok) {
+        const written = takingSettings ? null : persistGlobalSettings();
+        if (written && !written.ok) {
           useWorkspaceStore.getState().addConsoleOutput(`Provider settings were not saved: ${written.message}`);
         }
       }

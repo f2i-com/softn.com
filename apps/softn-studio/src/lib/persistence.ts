@@ -675,6 +675,11 @@ export function loadGlobalSettings(): GlobalSettings | null {
   }
 }
 
+/** Whether a storage key is the one the provider settings are kept under (another tab's write is heard by it). */
+export function isGlobalSettingsKey(key: string | null): boolean {
+  return key === STORAGE_KEYS.settings;
+}
+
 export function saveGlobalSettings(settings: GlobalSettings): SaveResult {
   return writeItem(STORAGE_KEYS.settings, JSON.stringify(settings));
 }

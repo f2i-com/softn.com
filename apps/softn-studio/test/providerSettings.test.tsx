@@ -166,6 +166,44 @@ describe('the setup', () => {
   });
 });
 
+describe('a saved key, when the address it goes to changes', () => {
+  // The field left empty kept the saved key whatever the address was changed
+  // to, so the key went to a host the person never gave it.
+  const saved = { id: 'p-custom', type: 'custom' as const, name: 'models.example', apiKey: 'saved-secret', baseUrl: 'https://models.example/v1', modelId: 'm' };
+  const sentKeys = () => fetchMock.mock.calls.map(([url, init]) => ({ url: String(url), auth: JSON.stringify((init as RequestInit | undefined)?.headers ?? {}) }));
+
+  it('is not sent to another address, and the field no longer offers it', async () => {
+    fetchMock.mockImplementation(async () => json({ data: [{ id: 'm' }] }));
+    render(<ProviderSetup provider={saved} />);
+    click('Change connection');
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')!.placeholder).toMatch(/Saved/);
+    type('Server address', 'https://elsewhere.example/v1');
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')!.placeholder).not.toMatch(/Saved/);
+    // What the form asked of the saved address as it opened is its own; what follows the change is not.
+    const before = fetchMock.mock.calls.length;
+    click('Connect');
+    await settle();
+    const calls = sentKeys().slice(before);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.url).toMatch(/^https:\/\/elsewhere\.example\//);
+      expect(call.auth).not.toContain('saved-secret');
+    }
+  });
+
+  it('is still sent to the same address, a path changed within it', async () => {
+    fetchMock.mockImplementation(async () => json({ data: [{ id: 'm' }] }));
+    render(<ProviderSetup provider={saved} />);
+    click('Change connection');
+    type('Server address', 'https://models.example/api/v1');
+    const before = fetchMock.mock.calls.length;
+    click('Connect');
+    await settle();
+    const calls = sentKeys().slice(before);
+    expect(calls.some((call) => call.url.startsWith('https://models.example/api/v1') && call.auth.includes('saved-secret'))).toBe(true);
+  });
+});
+
 describe('an old provider that relied on the removed default model', () => {
   const legacy = { id: 'old', type: 'anthropic' as const, name: 'Anthropic', apiKey: 'sk-test-not-real' };
 

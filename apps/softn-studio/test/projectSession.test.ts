@@ -371,6 +371,37 @@ describe('records from older Studios', () => {
   });
 });
 
+describe('provider settings and another tab', () => {
+  // Each tab wrote its whole provider list whenever a setting of its own
+  // changed: a key removed in one tab came back the moment another tab saved
+  // anything, an agent run's setting among them.
+  it('takes in another tab’s change, so a removed key is not written back', async () => {
+    const heard: Array<(event: { key: string | null }) => void> = [];
+    (globalThis as unknown as { window: Record<string, unknown> }).window = {
+      localStorage: storage,
+      addEventListener: (type: string, fn: (event: { key: string | null }) => void) => { if (type === 'storage') heard.push(fn); },
+      removeEventListener: (type: string, fn: (event: { key: string | null }) => void) => { const i = heard.indexOf(fn); if (type === 'storage' && i >= 0) heard.splice(i, 1); },
+    };
+    const autosave = startProjectAutosave({ save: async () => ({ ok: true }), debounceMs: 10 });
+    const leaked = { id: 'leaked', type: 'custom' as const, name: 'Leaked', apiKey: 'leaked-secret' };
+    useAIStore.getState().saveProvider(leaked);
+    expect(storage.data.get('softn.studio.settings.v1')).toContain('leaked-secret');
+
+    // The other tab removes it.
+    storage.data.set('softn.studio.settings.v1', JSON.stringify({ ...loadGlobalSettings(), providers: [], activeProviderId: null }));
+    for (const fn of heard) fn({ key: 'softn.studio.settings.v1' });
+    expect(useAIStore.getState().providers).toEqual([]);
+
+    // This tab saves a setting of its own: the key does not come back.
+    useAIStore.getState().setMaxIterations(7);
+    expect(storage.data.get('softn.studio.settings.v1')).not.toContain('leaked-secret');
+    expect(loadGlobalSettings()).toMatchObject({ providers: [], maxIterations: 7 });
+
+    autosave.stop();
+    expect(heard).toHaveLength(0);
+  });
+});
+
 describe('provider settings across a reload', () => {
   it('keeps a local provider’s kind and model, and the choice to go without a provider', async () => {
     const autosave = startProjectAutosave({ save: async () => ({ ok: true }), debounceMs: 10 });
