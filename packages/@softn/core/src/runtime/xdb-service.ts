@@ -2690,13 +2690,15 @@ export class XDBService {
       };
     }
 
-    // What the native store would refuse of this import (import_records),
-    // refused here before anything changes: it answers after the cache below
-    // has changed and sync has been told of the import, so a refusal there
-    // left the import in the room and on the sync server, a replacement's
-    // dropped records dropped with it, and the next sync brought them back
-    // here. A record must be one its native shape takes, with a real id, of
-    // the collection it is imported into; and records are kept by id alone,
+    // The refusals of import_records known here, made before anything
+    // changes: the native store answers after the cache below has changed and
+    // sync has been told of the import, so a refusal there left the import in
+    // the room and on the sync server, a replacement's dropped records
+    // dropped with it, and the next sync brought them back here. These are
+    // the refusals it is known to make, not every one it can: one not
+    // foreseen here, or a native failure after this (a full disk), still
+    // leaves the import sent. A record must be one its native shape takes,
+    // with a real id, of the collection it is imported into; and records are kept by id alone,
     // so not a live record of another collection (a deleted one it writes
     // over), here or earlier in this import: which the cache can say only
     // once every collection has loaded (not while one is still loading, nor
