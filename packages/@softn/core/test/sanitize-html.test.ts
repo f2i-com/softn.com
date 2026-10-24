@@ -6,7 +6,7 @@
  * sync socket, so they routed around the renderer's tag denylist entirely.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   sanitizeSvg,
   sanitizeRichText,
@@ -313,5 +313,28 @@ describe('cssResourceReferences', () => {
     expect(cssResourceReferences('color: red')).toEqual({ urls: [], opaque: false });
     // An escape with no call anywhere near it is only a character.
     expect(cssResourceReferences('"\\201C"')).toEqual({ urls: [], opaque: false });
+  });
+});
+
+// sanitizedToRest checks its output again until it reads back as itself; one
+// that still changed after the last pass was returned, unchecked as the
+// browser would read it, which is the shape mutation XSS needs.
+describe('markup that never reads back as itself', () => {
+  it('is refused rather than returned unchecked', () => {
+    let pass = 0;
+    class Drifting extends DOMParser {
+      parseFromString(text: string, type: DOMParserSupportedType): Document {
+        const doc = super.parseFromString(text, type);
+        doc.body.appendChild(doc.createTextNode(String(pass++)));
+        return doc;
+      }
+    }
+    vi.stubGlobal('DOMParser', Drifting);
+    try {
+      expect(sanitizeRichText('<b>x</b>')).toBe('');
+      expect(sanitizeSvg('<svg><path d="M0 0"/></svg>')).toBe('');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -434,6 +434,25 @@ export function dropsFromMarkup(name: string, value: unknown): boolean {
   return (name === 'id' || name === 'name') && typeof value === 'string' && value.startsWith('__');
 }
 
+/** Elements that open what they link to in a window their `target` names. */
+export const OPENING_TAGS = new Set(['a', 'area', 'form']);
+
+/**
+ * The `rel` a link or form is given: what was written, less `opener`, and
+ * with `noopener` when it opens a window other than the page's own. A page
+ * opened from a window it was named into, or with `rel="opener"`, holds that
+ * window as `window.opener` and can send it anywhere: SoftN Web's tab, under
+ * the app, swapped for a look-alike while the person reads the new one.
+ * Browsers leave out the opener for `_blank` alone. Null for no `rel` at all.
+ */
+export function relWithoutOpener(rel: unknown, target: unknown): string | null {
+  const kept = (typeof rel === 'string' ? rel.split(/\s+/) : []).filter((token) => token !== '' && token.toLowerCase() !== 'opener');
+  const name = typeof target === 'string' ? target.trim().toLowerCase() : '';
+  const elsewhere = name !== '' && name !== '_self' && name !== '_top' && name !== '_parent';
+  if (elsewhere && !kept.some((token) => /^no(?:opener|referrer)$/i.test(token))) kept.push('noopener');
+  return kept.length > 0 ? kept.join(' ') : null;
+}
+
 /**
  * Attributes that put an element in the browser's top layer without a script.
  *
@@ -679,6 +698,12 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       }
     }
 
+    if (OPENING_TAGS.has(tag)) {
+      const rel = relWithoutOpener(node.getAttribute('rel'), node.getAttribute('target'));
+      if (rel === null) node.removeAttribute('rel');
+      else node.setAttribute('rel', rel);
+    }
+
     // A URL withheld earlier — by this pass, or by an earlier sanitization
     // whose output is now the value — goes back on its attribute once the
     // judge allows it, and stays waiting while it does not. Nothing on a
@@ -738,7 +763,10 @@ function sanitizedToRest(markup: string, allowed: Set<string>, judge?: MarkupUrl
     if (again === out) return out;
     out = again;
   }
-  return out;
+  // Still read otherwise each time it is read: what the browser would be
+  // given has not been checked as the browser will read it. The last pass's
+  // output was returned here, which is the shape mutation XSS needs.
+  return '';
 }
 
 /**

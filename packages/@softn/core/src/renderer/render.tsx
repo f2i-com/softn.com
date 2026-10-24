@@ -52,6 +52,7 @@ import {
   dropTopLayerProps,
   egressPolicyFor,
   isPlainObject,
+  keepOpenerFromLinks,
   sanitizeComponentUrlProps,
   sanitizeSvgReferences,
   sanitizeUrlProps,
@@ -1336,6 +1337,7 @@ function renderElement(
       props.style = { ...MODAL_DIALOG, ...(isPlainObject(props.style) ? props.style : {}) };
     }
     if (FinalComponent === 'a') followPageLinks(props, context.followLink);
+    keepOpenerFromLinks(props, FinalComponent);
     dropCodeAttributes(props);
     dropTopLayerProps(props);
     dropDocumentName(props, FinalComponent);

@@ -330,6 +330,35 @@ describe('several <script> blocks', () => {
   });
 });
 
+// A page opened into a named window, or with rel="opener", holds the window
+// it came from as window.opener and can send SoftN Web's tab anywhere.
+describe('a link or form that opens another window', () => {
+  const rel = (source: string) => {
+    const host = document.createElement('div');
+    host.innerHTML = html(source);
+    return host.firstElementChild!.getAttribute('rel');
+  };
+
+  it('opens it without a hold on this one', () => {
+    expect(rel('<a href="https://elsewhere.test/" target="w">Read</a>')).toBe('noopener');
+    expect(rel('<a href="https://elsewhere.test/" target="_blank" rel="opener">Read</a>')).toBe('noopener');
+    expect(rel('<a href="https://elsewhere.test/" target="w" rel="opener noreferrer">Read</a>')).toBe('noreferrer');
+    expect(rel('<form action="https://elsewhere.test/" target="w"><button>Send</button></form>')).toBe('noopener');
+    expect(rel('<a href="https://elsewhere.test/" REL="OPENER" target="w">Read</a>')).toBe('noopener');
+  });
+
+  it('leaves a link that stays in this window, and the rest of what rel says', () => {
+    expect(rel('<a href="https://elsewhere.test/">Read</a>')).toBeNull();
+    expect(rel('<a href="https://elsewhere.test/" rel="opener">Read</a>')).toBeNull();
+    expect(rel('<a href="https://elsewhere.test/" target="_top" rel="author">Read</a>')).toBe('author');
+  });
+
+  it('holds sanitized rich text to the same', async () => {
+    const { sanitizeRichText } = await import('../src/renderer/sanitize-html');
+    expect(sanitizeRichText('<a href="https://elsewhere.test/" target="w" rel="opener">Read</a>')).toBe('<a href="https://elsewhere.test/" target="w" rel="noopener">Read</a>');
+  });
+});
+
 describe('a link to another page of the app', () => {
   const page =
     '<a id="page" href="about.html">About</a><a id="new" href="about.html" target="_blank">New tab</a>' +

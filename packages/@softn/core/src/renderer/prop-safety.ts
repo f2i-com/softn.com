@@ -12,9 +12,11 @@ import {
   isRemoteUrl,
   isSafeUrl,
   DOCUMENT_NAMED_TAGS,
+  OPENING_TAGS,
   TOP_LAYER_ATTRIBUTES,
   URL_ATTRIBUTES,
   dropsFromMarkup,
+  relWithoutOpener,
 } from './sanitize-html';
 import { describeMarkupEgress, describeSrcSetEgress, type EgressConfig } from '../runtime/egress-policy';
 import { loadsFromOutside } from './html-elements';
@@ -231,6 +233,31 @@ function describeUrlValue(value: unknown): string {
  */
 export function dropRawMarkupProp(props: SoftNProps): void {
   if ('dangerouslySetInnerHTML' in props) delete props.dangerouslySetInnerHTML;
+}
+
+/**
+ * A link or form that opens another window does it without `window.opener`
+ * (see {@link relWithoutOpener}): `<a href="https://…" target="w">` or
+ * `rel="opener"` handed the page it opened a hold on SoftN Web's own tab. A
+ * `target` that is not text goes, as React would write a list's entries as
+ * one name; any spelling of `rel` is replaced by the one judged.
+ */
+export function keepOpenerFromLinks(props: SoftNProps, tag: string): void {
+  if (!OPENING_TAGS.has(tag)) return;
+  let rel: unknown;
+  let target: unknown;
+  for (const name of Object.keys(props)) {
+    const lower = name.toLowerCase();
+    if (lower === 'rel') {
+      rel = props[name];
+      delete props[name];
+    } else if (lower === 'target') {
+      if (typeof props[name] === 'string') target = props[name];
+      else delete props[name];
+    }
+  }
+  const judged = relWithoutOpener(rel, target);
+  if (judged !== null) props.rel = judged;
 }
 
 /**
