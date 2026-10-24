@@ -1724,8 +1724,20 @@ export function Scene3D({
         return tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button' || t.isContentEditable;
       };
 
+      // A scene not on screen hears no key going down. A host that keeps
+      // several apps open (SoftN Web's tabs) keeps a hidden app's scene
+      // mounted, and Space pressed in the app on screen made the hidden
+      // game jump. Keys still come up, so one held as the scene hides lets go.
+      const isShown = () => {
+        if (typeof container.checkVisibility === 'function') return container.checkVisibility();
+        for (let node: Element | null = container; node; node = node.parentElement) {
+          if (getComputedStyle(node).display === 'none') return false;
+        }
+        return container.isConnected;
+      };
+
       const onKeyDown = (e: KeyboardEvent) => {
-        if (isUi(e.target)) return;
+        if (isUi(e.target) || !isShown()) return;
         const k = e.key.toLowerCase();
         if (k === 'w') keys.w = true;
         if (k === 's') keys.s = true;

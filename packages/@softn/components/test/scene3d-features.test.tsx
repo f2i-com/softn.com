@@ -293,6 +293,26 @@ describe('Scene3D enhanced features', () => {
     expect(keys.left).toBe(false);
   });
 
+  // A host keeps a hidden app's scene mounted (SoftN Web's tabs): a key
+  // pressed in the app on screen moved the hidden game.
+  it('hears no game key go down while it is not on screen, and still lets one go', () => {
+    act(() => root.render(<Scene3D gameControls={true} />));
+    const keys = (window as unknown as { __softnKeys: Record<string, boolean> }).__softnKeys;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }));
+    expect(keys.d).toBe(true);
+    container.style.display = 'none';
+    try {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space' }));
+      expect(keys.space).toBe(false);
+      window.dispatchEvent(new KeyboardEvent('keyup', { key: 'd' }));
+      expect(keys.d).toBe(false);
+    } finally {
+      container.style.display = '';
+    }
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space' }));
+    expect(keys.space).toBe(true);
+  });
+
   it('goes fullscreen only when its own wrapper does', () => {
     const second = document.createElement('div');
     document.body.appendChild(second);
