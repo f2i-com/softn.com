@@ -163,7 +163,10 @@ function commit(records: VFSChangeRecord[], ctx: ToolContext, seenAfter: Array<{
   const vfs = useVFSStore.getState();
   vfs.applyTransaction(records, 'ai', id);
   const files = useVFSStore.getState().files;
-  for (const record of records) if (record.op === 'delete') ctx.seen.delete(record.path);
+  // A file made at a path is a new one: what was seen there was another file, which the person
+  // may since have deleted or renamed away. Merged in, a whole read of that one made a partial
+  // read of a file renamed there count as whole, and a write over it took lines never seen.
+  for (const record of records) if (record.op === 'delete' || record.op === 'create') ctx.seen.delete(record.path);
   for (const { path, whole } of seenAfter) {
     const file = files.get(path);
     if (!file || typeof file.content !== 'string') continue;

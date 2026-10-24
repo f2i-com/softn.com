@@ -351,6 +351,23 @@ describe('the changeset rules, as tool errors', () => {
     expect(text('tasks.md')).toBe('mine\n');
   });
 
+  // The read of a file the person has since deleted stayed in the record of what was seen, and a
+  // file renamed to its path took it on: a partial read counted as whole, and a write took lines
+  // the model never saw.
+  it('counts a file renamed onto a path as read only as the renamed file was', async () => {
+    const ctx = { seen: new Map() as SuppliedFiles, env: nodeEnvironment, blueprint: null, newTransactionId: () => `t-${Math.random()}` };
+    const call = (name: string, input: Record<string, unknown>) => executeTool({ id: `c-${Math.random()}`, name, input }, ctx);
+    useVFSStore.getState().createFile('b.md', 'old b\n', 'user');
+    expect((await call('read_file', { path: 'b.md' })).isError).toBe(false);
+    useVFSStore.getState().deleteFile('b.md', 'user');
+    useVFSStore.getState().createFile('a.md', 'l1\nl2\nl3\nl4\nl5\n', 'user');
+    expect((await call('read_file', { path: 'a.md', start_line: 1, end_line: 1 })).isError).toBe(false);
+    expect((await call('rename_file', { from: 'a.md', to: 'b.md' })).isError).toBe(false);
+    const write = await call('write_file', { path: 'b.md', content: 'l1 only\n' });
+    expect(write.isError).toBe(true);
+    expect(text('b.md')).toBe('l1\nl2\nl3\nl4\nl5\n');
+  });
+
   // Every SoftN reader leaves out a file whose name has two dots in a row, so the model makes
   // none: the export wrote what it made, and the app opened without it.
   it('makes no file whose name no bundle can hold, and still edits one the project has', async () => {
