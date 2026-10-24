@@ -3072,7 +3072,7 @@
             },
             {
               "type": "paragraph",
-              "text": "What a room carries and who can read it: a room carries every collection of the app whose name does not start with `_`, not only the ones a game or a lobby uses. A shared room's key is worked out from its name, so anyone who knows the name can read and write it, the signalling server that introduces the peers included. A private room is encrypted only with a key the host provides, and none of SoftN's own hosts provides one yet. Keep what must stay on one device in a collection whose name starts with `_`."
+              "text": "What a room carries and who can read it: a room carries every collection of the app whose name does not start with `_`, not only the ones a game or a lobby uses, unless `permission.json` names them. With `\"sync\": { \"enabled\": true, \"roomCollections\": [\"scores\"] }` every room of the app carries `scores` alone, both ways: nothing else is sent, and nothing a peer puts in another collection is written here. From logic, `db.startSync` takes the room alone, so the declaration is how a logic app limits its rooms. A room that has carried other collections keeps them in its shared document, here and on its peers, so start a new room for a narrower list. A shared room's key is worked out from its name, so anyone who knows the name can read and write it, the signalling server that introduces the peers included. A private room is encrypted only with a key the host provides, and none of SoftN's own hosts provides one yet. Keep what must stay on one device in a collection whose name starts with `_`."
             },
             {
               "type": "paragraph",
@@ -3838,7 +3838,7 @@
                 },
                 {
                   "term": "sync",
-                  "description": "Replicates the app’s database to the visitor’s other devices, by peer sync (`db.startSync`) or through the sync server the manifest names (`config.server.url`). Neither starts without this declaration and the person’s Allow."
+                  "description": "Replicates the app’s database to the visitor’s other devices, by peer sync (`db.startSync`) or through the sync server the manifest names (`config.server.url`). Neither starts without this declaration and the person’s Allow. `\"roomCollections\": [\"scores\"]` limits what every peer-to-peer room of the app carries, both ways, to the collections named, and the consent bar says so; without it a room carries every collection whose name does not start with `_`. A script’s `collections` option may narrow the list, never widen it."
                 },
                 {
                   "term": "storage",

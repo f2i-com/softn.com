@@ -19,7 +19,7 @@
 
 import { bindSyncOptions } from './host-bound-sync-options';
 import { filterSignalingUrls } from './egress-policy';
-import { applyRoomSecurity, unmarkRoomShared } from './sync-room-security';
+import { applyRoomSecurity, forgetRoomCollections, unmarkRoomShared } from './sync-room-security';
 import { readSavedSyncRoom } from './xdb-sync-key';
 import { appClosings } from './sync-activity';
 import type { PermissionConfig } from './script-runtime';
@@ -109,8 +109,10 @@ export function createSyncControls(options: SyncControlsOptions): SyncControls {
     },
 
     stopSync: (room) => {
-      // A stopped room may be reopened private: the shared mark goes with it.
+      // A stopped room may be reopened private, or carrying other collections:
+      // the shared mark and the list go with it.
       unmarkRoomShared(appId, room);
+      forgetRoomCollections(appId, room);
       import('./xdb-sync')
         .then(({ stopSync }) => {
           stopSync(room, appId);

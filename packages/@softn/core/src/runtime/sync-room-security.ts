@@ -120,6 +120,75 @@ export function unmarkRoomShared(appId: string | undefined, room?: string): void
   }
 }
 
+/**
+ * Whether a value is a list of collections a room may carry: names XDB
+ * accepts (not empty, no `:`), none starting with `_`, which a room never
+ * carries. The declaration (`permissions.sync.roomCollections`) and a
+ * script's `collections` option are held to it; the sync adapter refuses a
+ * room whose list is not one. The schema's reading of a declaration
+ * (bundle-format's capabilities.ts) and the directory's (bundle.php) hold
+ * the same rule.
+ */
+export function isRoomCollectionList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((name) => typeof name === 'string' && name !== '' && !name.includes(':') && !name.startsWith('_'));
+}
+
+/** Prefix of the remembered collection lists, one per room of an app. */
+const COLLECTIONS_PREFIX = 'xdb-sync-collections';
+
+export function roomCollectionsKey(appId: string, room: string): string {
+  return `${COLLECTIONS_PREFIX}:${appId}:${room}`;
+}
+
+/**
+ * The collections a script last started `room` with (`options.collections`),
+ * for a start that names none: after a reload, or the host's saved-room
+ * resume. A room the script limited to `scores` would otherwise come back
+ * carrying every collection the declaration allows.
+ */
+export function rememberedRoomCollections(appId: string | undefined, room: string): string[] | null {
+  if (!appId) return null;
+  try {
+    const raw = storage()?.getItem(roomCollectionsKey(appId, room));
+    if (!raw) return null;
+    const list: unknown = JSON.parse(raw);
+    return isRoomCollectionList(list) ? list : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberRoomCollections(appId: string | undefined, room: string, list: string[]): void {
+  if (!appId) return;
+  try {
+    storage()?.setItem(roomCollectionsKey(appId, room), JSON.stringify(list));
+  } catch {
+    // Quota or a restricted context: the list holds for this start.
+  }
+}
+
+/** Forget the collections of `room`, or of every room of the app: the two shapes of `stopSync`. */
+export function forgetRoomCollections(appId: string | undefined, room?: string): void {
+  if (!appId) return;
+  const store = storage();
+  if (!store) return;
+  try {
+    if (room !== undefined) {
+      store.removeItem(roomCollectionsKey(appId, room));
+      return;
+    }
+    const prefix = `${COLLECTIONS_PREFIX}:${appId}:`;
+    const stale: string[] = [];
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i);
+      if (key && key.startsWith(prefix)) stale.push(key);
+    }
+    for (const key of stale) store.removeItem(key);
+  } catch {
+    // Nothing to forget in a context that cannot remember.
+  }
+}
+
 export interface RoomSecurityContext {
   /** The room the script named — the first argument of `startSync`. */
   room: string;
@@ -156,7 +225,51 @@ export function applyRoomSecurity(opts: Record<string, unknown>, context: RoomSe
   } else if (syncEncryptionKeyHex && !opts.encryptionKey) {
     opts.encryptionKey = syncEncryptionKeyHex;
   }
+  roomCollectionsFor(opts, context);
   delete opts.noEncrypt;
   delete opts.sharedRoom;
   return shared;
+}
+
+/**
+ * Which collections the room carries, on `opts.collections` (the sync
+ * adapter holds every path to it). The bundle's declaration,
+ * `permissions.sync.roomCollections`, holds whatever the script asks, and
+ * on every surface: the `.logic` engines pass `db.startSync` the room alone,
+ * so a declaration is how a logic app limits its rooms. A script's
+ * `collections` option narrows the declaration and never widens it, and is
+ * remembered for the room as its shared mark is, so a start that names none
+ * (after a reload, the host's resume) keeps it. A list that is no list of
+ * names is passed on as it is, and the adapter refuses the room rather than
+ * carry everything.
+ */
+function roomCollectionsFor(opts: Record<string, unknown>, context: RoomSecurityContext): void {
+  const { room, appId, permissionConfig } = context;
+  const declared: unknown = permissionConfig?.permissions?.sync?.roomCollections;
+  let requested: unknown = opts.collections;
+  if (requested === undefined) requested = rememberedRoomCollections(appId, room) ?? undefined;
+  else if (isRoomCollectionList(requested)) rememberRoomCollections(appId, room, requested);
+  if (declared === undefined) {
+    if (requested !== undefined) opts.collections = requested;
+    return;
+  }
+  if (requested === undefined) {
+    opts.collections = declared;
+    return;
+  }
+  // A list that is no list goes on as it is, and the adapter refuses the room.
+  if (!isRoomCollectionList(requested)) {
+    opts.collections = requested;
+    return;
+  }
+  if (!isRoomCollectionList(declared)) {
+    opts.collections = declared;
+    return;
+  }
+  const allowed = new Set(declared);
+  const outside = requested.filter((name) => !allowed.has(name));
+  if (outside.length > 0) {
+    console.warn(`[XDB Sync] Room "${room}" does not carry ${outside.join(', ')}: permission.json's sync.roomCollections does not name ${outside.length === 1 ? 'it' : 'them'}.`);
+  }
+  opts.collections = requested.filter((name) => allowed.has(name));
 }

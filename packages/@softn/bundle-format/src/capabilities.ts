@@ -26,8 +26,9 @@
  *
  * 1: the ten names.
  * 2: `storage.collections`, a policy per collection (see STORAGE_POLICIES).
+ * 3: `sync.roomCollections`, the collections a peer-to-peer room carries.
  */
-export const CAPABILITY_SCHEMA_VERSION = 2;
+export const CAPABILITY_SCHEMA_VERSION = 3;
 
 /** Every capability, in the order the consent bar and the app page list them. */
 export const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'] as const;
@@ -176,6 +177,7 @@ export function inspectDeclaration(config: unknown): DeclarationReport {
       continue;
     }
     if (name === 'storage') readStoragePolicies((entry as { collections?: unknown }).collections, report);
+    if (name === 'sync') readRoomCollections((entry as { roomCollections?: unknown }).roomCollections, report);
   }
   for (const name of CAPABILITIES) {
     const entry = declared[name];
@@ -198,6 +200,20 @@ function readStoragePolicies(collections: unknown, report: DeclarationReport): v
       continue;
     }
     report.storagePolicies[name] = policy;
+  }
+}
+
+/**
+ * `sync.roomCollections`: a list of the collections a peer-to-peer room
+ * carries, each a name XDB accepts (not empty, no `:`) and none starting with
+ * `_`, which no room carries. The runtime refuses to start a room whose list
+ * is not one (core's sync-room-security.ts holds the same rule, and the
+ * directory's bundle.php).
+ */
+function readRoomCollections(list: unknown, report: DeclarationReport): void {
+  if (list === undefined) return;
+  if (!Array.isArray(list) || !list.every((name) => typeof name === 'string' && name !== '' && !name.includes(':') && !name.startsWith('_'))) {
+    report.malformed.push('sync.roomCollections');
   }
 }
 

@@ -272,7 +272,15 @@ export interface PermissionConfig {
     qr?: { enabled?: boolean };
     ai?: AIPermissionConfig;
     gpu?: GpuPermissionConfig;
-    sync?: { enabled?: boolean };
+    sync?: {
+      enabled?: boolean;
+      /**
+       * The collections a peer-to-peer room carries, both ways; without it,
+       * every collection whose name does not start with `_`. A script's own
+       * `collections` option may narrow it, never widen it.
+       */
+      roomCollections?: string[];
+    };
     /**
      * The app's own database on the directory that publishes it, reached
      * through `softn.storage.*`. Unrelated to the manifest's legacy

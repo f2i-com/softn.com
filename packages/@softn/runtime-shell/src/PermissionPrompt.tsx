@@ -280,6 +280,10 @@ function getRequestedPermissions(config: PermissionConfig, wording?: ConsentWord
       details.push(`Up to ${value.maxSeconds}s per recording`);
     }
     if (key === 'storage') details.push(...storagePolicyLines(config));
+    if (key === 'sync' && 'roomCollections' in value && Array.isArray(value.roomCollections)) {
+      const names = value.roomCollections.filter((name): name is string => typeof name === 'string');
+      details.push(names.length > 0 ? `Peer-to-peer rooms share only: ${names.join(', ')}` : 'Peer-to-peer rooms share none of its records');
+    }
 
     result.push({
       key,

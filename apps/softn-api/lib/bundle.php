@@ -34,7 +34,7 @@ final class Bundle
      * months, so an app asking for host acceleration was listed as asking for
      * nothing of the kind.
      */
-    public const CAPABILITY_SCHEMA_VERSION = 2;
+    public const CAPABILITY_SCHEMA_VERSION = 3;
     public const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'];
     /**
      * A storage collection name, or `*` for every collection not named. `D`
@@ -510,7 +510,29 @@ final class Bundle
             $entry = $declared[$cap] ?? null;
             if (is_array($entry) && ($entry['enabled'] ?? null) === true) $capabilities[] = $cap;
         }
+        self::readRoomCollections($declared['sync'] ?? null);
         return ['capabilities' => $capabilities, 'storagePolicies' => self::readStoragePolicies($declared['storage'] ?? null)];
+    }
+
+    /**
+     * `sync.roomCollections`, the collections a peer-to-peer room carries: a
+     * list of names the runtime's database accepts (not empty, no ":"), none
+     * starting with "_", which no room carries. The runtime does not start a
+     * room whose list is not one (bundle-format's capabilities.ts reads it
+     * the same way), so such a declaration is refused here, while the author
+     * is there to fix it.
+     */
+    private static function readRoomCollections(mixed $sync): void
+    {
+        if (!is_array($sync) || !array_key_exists('roomCollections', $sync)) return;
+        $list = $sync['roomCollections'];
+        $ok = is_array($list) && array_is_list($list);
+        foreach ($ok ? $list : [] as $name) {
+            if (!is_string($name) || $name === '' || str_contains($name, ':') || str_starts_with($name, '_')) $ok = false;
+        }
+        if (!$ok) {
+            throw new ApiError(400, "The bundle's permission.json: sync.roomCollections must be a list of collection names, none empty, none with \":\" and none starting with \"_\".");
+        }
     }
 
     /** @return array<string, string> */

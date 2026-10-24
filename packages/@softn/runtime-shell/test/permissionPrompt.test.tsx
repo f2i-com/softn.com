@@ -53,6 +53,12 @@ it('says the same on the desktop, where the wording is the loader’s', () => {
   expect(text).toContain('notes: private to you.');
 });
 
+it('says which collections a sync declaration lets peer-to-peer rooms share', () => {
+  expect(show({ sync: { enabled: true, roomCollections: ['scores', 'players'] } })).toContain('Peer-to-peer rooms share only: scores, players');
+  expect(show({ sync: { enabled: true, roomCollections: [] } })).toContain('Peer-to-peer rooms share none of its records');
+  expect(show({ sync: { enabled: true } })).not.toContain('Peer-to-peer rooms share');
+});
+
 it('puts the declaration’s tokens into words', () => {
   const text = show({ files: { enabled: true, scopes: ['user_selected'] }, camera: { enabled: true, modes: ['photo', 'slow_motion'] } } as PermissionConfig['permissions']);
   expect(text).toContain('Which files: files you choose');

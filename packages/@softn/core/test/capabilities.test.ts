@@ -29,6 +29,15 @@ describe('inspectDeclaration', () => {
     expect(inspectDeclaration({ permissions: { storage: { enabled: true } } }).storagePolicies).toEqual({});
   });
 
+  it('reads the collections a peer-to-peer room carries, and names a list it cannot accept', () => {
+    const sync = (roomCollections: unknown) => inspectDeclaration({ permissions: { sync: { enabled: true, roomCollections } } });
+    expect(sync(['scores', 'players'])).toEqual({ requested: ['sync'], unknown: [], malformed: [], storagePolicies: {} });
+    expect(sync([]).malformed).toEqual([]);
+    for (const bad of ['scores', ['_prefs'], [''], ['a:b'], [7], { scores: true }]) {
+      expect(sync(bad).malformed, JSON.stringify(bad)).toEqual(['sync.roomCollections']);
+    }
+  });
+
   it('answers the policy for a collection: named, else the default, else shared', () => {
     const policies = { scores: 'append-only' as const, '*': 'private' as const };
     expect(storagePolicyFor(policies, 'scores')).toBe('append-only');

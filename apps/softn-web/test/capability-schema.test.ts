@@ -97,6 +97,8 @@ describe('reading a declaration', () => {
     { permissions: { storage: { enabled: true, collections: ['scores'] } } },
     { permissions: { storage: { enabled: true, collections: { scores: 'readonly', 'Bad-Name': 'public', ok_name: 'owner-write' } } } },
     { permissions: { net: undefined, qr: { enabled: false }, gpu: {} } },
+    { permissions: { sync: { enabled: true, roomCollections: ['scores'] } } },
+    { permissions: { sync: { enabled: true, roomCollections: ['_prefs', 'a:b'] } } },
   ];
   it('is the same reading in the runtime and on the site', () => {
     for (const fixture of fixtures) {

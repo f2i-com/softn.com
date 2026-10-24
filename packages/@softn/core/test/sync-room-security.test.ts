@@ -140,6 +140,60 @@ describe('applyRoomSecurity', () => {
   });
 });
 
+describe('the collections a room carries', () => {
+  const declaring = (roomCollections: unknown): PermissionConfig =>
+    ({ permissions: { sync: { enabled: true, roomCollections } } }) as PermissionConfig;
+
+  it('are the declaration\'s when the script names none, as a .logic app\'s start always is', () => {
+    expect(decide('lobby', undefined, { permissionConfig: declaring(['scores']) }).opts.collections).toEqual(['scores']);
+  });
+
+  it('are every collection with neither a declaration nor an option', () => {
+    expect('collections' in decide('lobby').opts).toBe(false);
+  });
+
+  it('may be narrowed by the script, and never widened past the declaration', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { opts } = decide('lobby', { collections: ['scores', 'secrets'] }, { permissionConfig: declaring(['scores', 'players']) });
+      expect(opts.collections).toEqual(['scores']);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/does not carry secrets/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('are the script\'s own without a declaration, and kept for a start that names none', () => {
+    expect(decide('lobby', { collections: ['scores'] }).opts.collections).toEqual(['scores']);
+    expect(localStorage.getItem('xdb-sync-collections:app-under-test:lobby')).toBe('["scores"]');
+    // After a reload, or the host's resume of the saved room.
+    expect(decide('lobby').opts.collections).toEqual(['scores']);
+    // Another room is not limited by it.
+    expect('collections' in decide('elsewhere').opts).toBe(false);
+  });
+
+  it('that are no list of names go on as they are, for the room to be refused, and are not kept', () => {
+    for (const bad of [['_prefs'], 'scores', [''], ['a:b']]) {
+      localStorage.clear();
+      expect(decide('lobby', { collections: bad }).opts.collections).toEqual(bad);
+      expect(localStorage.length).toBe(0);
+      expect(decide('lobby', undefined, { permissionConfig: declaring(bad) }).opts.collections).toEqual(bad);
+    }
+  });
+
+  it('are forgotten with the room when it is stopped', async () => {
+    const namespace = createDBNamespace(() => granted, APP, 'host-key');
+    namespace.startSync('lobby', { collections: ['scores'] });
+    await flush();
+    namespace.stopSync('lobby');
+    await flush();
+    namespace.startSync('lobby');
+    await flush();
+    expect(started[0].collections).toEqual(['scores']);
+    expect('collections' in started[1]).toBe(false);
+  });
+});
+
 describe('forgetting a shared room', () => {
   it('forgets one room, and leaves the others and the legacy flag alone', () => {
     markRoomShared(APP, 'a');

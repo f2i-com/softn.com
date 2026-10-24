@@ -1095,6 +1095,22 @@ test('storage collection policies: who may do what, per collection', skip, async
   assert.match(bad.json.error, /append-only/);
 });
 
+test('a room\'s collections are a list of names, or the publication is refused', skip, async () => {
+  resetRateLimits();
+  // The runtime does not start a room whose list is not one.
+  for (const roomCollections of [['_prefs'], 'scores', ['a:b'], [''], [7]]) {
+    const fd = new FormData();
+    fd.append('bundle', new Blob([makeBundle('Bad Rooms', { permissions: { sync: { enabled: true, roomCollections } } })]), 'rooms.softn');
+    const r = await api('POST', '/api/apps', { body: fd });
+    assert.equal(r.status, 400, `${JSON.stringify(roomCollections)}: ${JSON.stringify(r.json)}`);
+    assert.match(r.json.error, /sync\.roomCollections/);
+  }
+  const fd = new FormData();
+  fd.append('bundle', new Blob([makeBundle('Score Rooms', { permissions: { sync: { enabled: true, roomCollections: ['scores', 'players'] } } })]), 'rooms.softn');
+  const ok = await api('POST', '/api/apps', { body: fd });
+  assert.equal(ok.status, 201, JSON.stringify(ok.json));
+});
+
 test('a collection listing shows each visitor what they may read', skip, async () => {
   // The policy board from the test above: scores (append-only), posts
   // (owner-write), notes (private), config (publisher), guestbook (public).

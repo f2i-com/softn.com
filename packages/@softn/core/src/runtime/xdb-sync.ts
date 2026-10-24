@@ -37,6 +37,7 @@ import { XDBService, getDefaultSignaling, _setSyncModuleRef, type XDBEvent } fro
 import type { XDBRecord } from '../types';
 import { deepEqual } from './vm-state';
 import { debug } from './debug';
+import { isRoomCollectionList } from './sync-room-security';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -68,6 +69,25 @@ export interface XDBSyncOptions {
    * builds still find each other. `room` itself stays what the app named.
    */
   roomScope?: string;
+  /**
+   * The collections the room carries, both ways (sync-room-security.ts sets
+   * it from the bundle's `permissions.sync.roomCollections` and the script's
+   * option). Without it a room carries every collection whose name does not
+   * start with `_`: what this device sends, and what it takes from peers, who
+   * could write into any collection of the app (a shared room's peers are
+   * anyone who knows its name). With it, this device sends no other
+   * collection and writes none a peer sends.
+   */
+  collections?: string[];
+}
+
+/** The collections a room is limited to, or null for every one; throws for a list that is not one of names. */
+export function roomCollections(value: unknown): Set<string> | null {
+  if (value === undefined) return null;
+  if (!isRoomCollectionList(value)) {
+    throw new TypeError('[XDB Sync] A room\'s collections must be a list of collection names (not empty, no ":", none starting with "_"); the room is not started.');
+  }
+  return new Set(value);
 }
 
 export interface XDBSyncStatus {
@@ -120,8 +140,12 @@ export class XDBSyncAdapter {
   private paused = false;
   /** This peer's awareness as it paused, for resume(). */
   private awarenessWhilePaused: Record<string, unknown> | null = null;
+  /** The collections the room carries (options.collections), or null for every one. */
+  private readonly carried: Set<string> | null;
 
   constructor(xdb: XDBService, options: XDBSyncOptions) {
+    // A list that cannot be read refuses the room rather than carry everything.
+    this.carried = roomCollections(options.collections);
     this.xdb = xdb;
     this.options = options;
     this.ydoc = new Y.Doc();
@@ -138,6 +162,18 @@ export class XDBSyncAdapter {
   /** The document, for a host that wants to exchange updates itself (tests, relays). */
   get doc(): Y.Doc {
     return this.ydoc;
+  }
+
+  /**
+   * Whether the room carries a collection: never one whose name starts with
+   * `_`, and where the options name the collections, only those. Every way a
+   * collection reaches the room or comes from it asks here: the opening's
+   * push and pull, this device's writes, and the maps observed, which are
+   * where a peer's writes come in.
+   */
+  private carries(collName: string): boolean {
+    if (collName.startsWith('_')) return false;
+    return this.carried === null || this.carried.has(collName);
   }
 
   /** Start syncing — connect to peers */
@@ -415,7 +451,7 @@ export class XDBSyncAdapter {
     // Push: local records the document lacks, or has an older copy of.
     this.ydoc.transact(() => {
       for (const collName of collections) {
-        if (collName.startsWith('_')) continue;
+        if (!this.carries(collName)) continue;
 
         const ymap = this.ydoc.getMap(collName);
         const records = this.xdb.getAllRaw(collName);
@@ -465,7 +501,7 @@ export class XDBSyncAdapter {
     // Pull: records the document has that we lack, or has a newer copy of
     // (from persisted CRDT state or fast-connecting peers).
     for (const [key] of this.ydoc.share) {
-      if (key.startsWith('_')) continue;
+      if (!this.carries(key)) continue;
 
       const ymap = this.ydoc.getMap(key);
       if (ymap.size === 0) continue;
@@ -661,8 +697,8 @@ export class XDBSyncAdapter {
       // Skip events caused by incoming sync (prevent echo loop)
       if (this.isSyncing) return;
 
-      // Skip internal collections
-      if (event.collection.startsWith('_')) return;
+      // Internal collections, and any the room does not carry.
+      if (!this.carries(event.collection)) return;
 
       const ymap = this.ydoc.getMap(event.collection);
 
@@ -869,14 +905,14 @@ export class XDBSyncAdapter {
   private setupYjsObservers(): void {
     // Observe existing collections from Y.Doc
     for (const [key] of this.ydoc.share) {
-      if (key.startsWith('_')) continue;
+      if (!this.carries(key)) continue;
       this.observeCollection(key, false);
     }
 
     // Discover new collections after each Y.Doc update.
     this.updateHandler = () => {
       for (const [key] of this.ydoc.share) {
-        if (key.startsWith('_')) continue;
+        if (!this.carries(key)) continue;
         if (!this.observedCollections.has(key)) {
           this.observeCollection(key, true);
         }
