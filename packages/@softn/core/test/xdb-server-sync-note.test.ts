@@ -220,9 +220,9 @@ describe('an app moved to another sync host', () => {
     moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
     await tick();
     expect(pushed(moved.socket)).toEqual([]);
-    // And the mark is this host's now: the next visit looks only past it.
+    // And this host has a mark now: the next visit looks only past it.
     moved.sync.disconnect();
-    expect(JSON.parse(backing.getItem('xdb:app::sync-watched')!).url).toBe(`${WS_URL}/`);
+    expect(JSON.parse(backing.getItem('xdb:app::sync-watched')!).marks[`${WS_URL}/`]).toBeGreaterThan(0);
   });
 
   // The whole pull wrote the host's older copy before any create went, and the host keeps the
@@ -269,28 +269,29 @@ describe('an app moved to another sync host', () => {
     expect((pushed(moved.socket) as unknown as Op[]).map((op) => [op.operation, op.recordId])).toEqual([['delete', 'n1']]);
   });
 
-  it('waits for the last page of a pull before it takes a record for one the host has no copy of', async () => {
+  // The host sends a page of a pull in pieces, each but the last with no `more`: the first piece
+  // was taken for the whole pull, a create went for every record not in it, and the next
+  // piece's older copies were written over newer ones here.
+  it('weighs every piece of a pull, however the host splits it, and keeps what is newer here', async () => {
     const backing = storage();
     await synced(backing);
-    const store = page(backing);
-    const before = connect(store);
-    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
-    store.create('notes', { title: 'n2' }, { id: 'n2' });
-    await tick();
-    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Op[]).map((op) => op.id) });
-    await tick();
-    before.sync.disconnect();
-    vi.advanceTimersByTime(1000);
-
+    await editedOnTheOldHost(backing);
     const moved = connect(page(backing), MOVED);
-    const seeded = '2026-02-01T00:00:00.000Z';
-    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', seeded)], more: { at: seeded, id: 'n1' } });
+    const seeded = '2026-01-01T00:00:00.000Z';
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n0', 'v0', '2026-02-01T00:00:00.000Z')] });
     await tick();
-    expect(pushed(moved.socket)).toEqual([]);
-    // n2 is on the second page.
-    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [{ ...row('n2', 'n2', seeded), updatedAt: new Date(Date.now() + 60_000).toISOString() }] });
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'seeded', seeded)] });
     await tick();
-    expect(pushed(moved.socket)).toEqual([]);
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('newer here');
+    const ops = (pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
+    // The create went before the piece that held n1 came; the update follows its answer.
+    expect(ops.map((op) => op.operation)).toEqual(['create']);
+    moved.socket.receive({ type: 'sync_ack', opIds: [(ops[0] as unknown as { id: string }).id] });
+    moved.socket.receive({ type: 'sync_delta', ops: [{ id: (ops[0] as unknown as { id: string }).id, collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'seeded' }, timestamp: seeded, clientId: 'server' }] });
+    await tick();
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('newer here');
+    const then = (pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
+    expect(then.map((op) => [op.operation, op.data?.title])).toEqual([['create', 'newer here'], ['update', 'newer here']]);
   });
 
   /** A store whose last visit pulled n0…n(count-1) from the old host and edited n1 there, answered. */
@@ -386,10 +387,40 @@ describe('an app moved to another sync host', () => {
     socket.receive({ type: 'sync_state', collection: 'tasks', records: [] });
     socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
     await tick();
-    const ops = (pushed(socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
-    expect(ops.map((op) => [op.operation, op.data?.title])).toEqual([['create', 'edited while moving']]);
+    const ops = (pushed(socket) as unknown as Array<Op & { id: string }>).filter((op) => op.recordId === 'n1');
+    expect(ops.map((op) => op.operation)).toEqual(['create']);
+    socket.receive({ type: 'sync_ack', opIds: [ops[0].id] });
+    await tick();
+    const then = (pushed(socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
+    expect(then.map((op) => [op.operation, op.data?.title])).toEqual([['create', 'v1'], ['update', 'edited while moving']]);
     expect(refused).toEqual([]);
     sync.disconnect();
+  });
+
+  // One mark, the last host's: a page on the first host after a tab on another (an update of the
+  // app moved it) took the store for one moved there, sent a create of every record, and the
+  // host's answers undid what the other host had been sent.
+  it('keeps a mark for each host: back on the first after a visit to another is no move', async () => {
+    const backing = storage();
+    await synced(backing);
+    const pulledHere = backing.getItem('xdb:app::sync-pulled');
+    const store = page(backing);
+    const other = connect(store, MOVED);
+    other.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    await tick();
+    store.updateInCollection('notes', 'n1', { title: 'edited on the other host' });
+    await tick();
+    other.socket.receive({ type: 'sync_ack', opIds: (pushed(other.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    other.sync.disconnect();
+    // The tab on the first host left its pull positions as they were.
+    backing.setItem('xdb:app::sync-pulled', pulledHere!);
+    vi.advanceTimersByTime(1000);
+
+    const { socket } = await nextVisit(backing);
+    const ops = (pushed(socket) as unknown as Op[]).map((op) => [op.operation, op.recordId, op.data?.title]);
+    expect(ops).toEqual([['update', 'n1', 'edited on the other host']]);
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('edited on the other host');
   });
 
   it('sends what was queued for the old host too, after the create of a record the new host has no copy of', async () => {
@@ -466,23 +497,23 @@ describe('a large change made while no client listened', () => {
   it('refused by the store, sheds the edits the scan of stamps finds, and keeps the removals', async () => {
     const backing = storage();
     const first = connect(page(backing));
-    first.socket.receive({ type: 'sync_state', collection: 'notes', records: many(1000, '2026-02-01T00:00:00.000Z') });
+    first.socket.receive({ type: 'sync_state', collection: 'notes', records: many(300, '2026-02-01T00:00:00.000Z') });
     await tick();
     first.sync.disconnect();
     vi.advanceTimersByTime(1000);
-    const tight = { ...backing, setItem: (key: string, value: string) => { if (key.endsWith('::sync-unheard') && value.length > 10_000) throw new DOMException('full', 'QuotaExceededError'); backing.setItem(key, value); } };
+    const tight = { ...backing, setItem: (key: string, value: string) => { if (key.endsWith('::sync-unheard') && value.length > 3_000) throw new DOMException('full', 'QuotaExceededError'); backing.setItem(key, value); } };
     const closed = page(tight);
-    for (let i = 0; i < 500; i++) closed.updateInCollection('notes', `r${i}`, { title: `edited ${i}` });
-    for (let i = 500; i < 800; i++) closed.hardDelete('notes', `r${i}`);
+    for (let i = 0; i < 150; i++) closed.updateInCollection('notes', `r${i}`, { title: `edited ${i}` });
+    for (let i = 150; i < 250; i++) closed.hardDelete('notes', `r${i}`);
     await tick();
     const note = page(backing).readUnheardNote();
-    expect(note.removals).toHaveLength(300);
-    expect(note.edits.length).toBeLessThan(500);
+    expect(note.removals).toHaveLength(100);
+    expect(note.edits.length).toBeLessThan(150);
 
     const { socket } = await nextVisit(backing);
     const ops = pushed(socket) as unknown as Op[];
-    expect(new Set(ops.filter((op) => op.operation === 'delete').map((op) => op.recordId)).size).toBe(300);
-    expect(new Set(ops.filter((op) => op.operation === 'update').map((op) => op.recordId)).size).toBe(500);
+    expect(new Set(ops.filter((op) => op.operation === 'delete').map((op) => op.recordId)).size).toBe(100);
+    expect(new Set(ops.filter((op) => op.operation === 'update').map((op) => op.recordId)).size).toBe(150);
   });
 
   /** A store that refuses the note when it is longer than `chars`: the app's budget, nearly spent. */
@@ -528,6 +559,26 @@ describe('a large change made while no client listened', () => {
     const ops = (pushed(socket) as unknown as Op[]).map((op) => [op.operation, op.recordId, op.data?.title]).sort();
     expect(ops).toEqual([['create', 'n2', 'new'], ['update', 'n1', 'restored']]);
     expect(page(backing).get('notes', 'n1')?.data.title).toBe('restored');
+  });
+
+  // The lists' records were passed over wherever the queue held a change of them, however old:
+  // an offline edit saved before the import went, and the restore never did.
+  it("a restore kept in the lists goes after an older change the queue holds of the record", async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const offline = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+    offline.connect();
+    store.updateInCollection('notes', 'n1', { title: 'edited offline' });
+    await tick();
+    offline.disconnect();
+    vi.advanceTimersByTime(1000);
+    page(tight(backing, 150)).import(backup([['n1', 'restored'], ['n2', 'new']]), { merge: true });
+    await tick();
+
+    const { socket } = await nextVisit(backing);
+    const n1 = (pushed(socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
+    expect(n1.map((op) => [op.operation, op.data?.title]).at(-1)).toEqual(['update', 'restored']);
   });
 
   it("an edit of a record an import's list names goes as the edit, a create where the import made it", async () => {
@@ -609,6 +660,36 @@ describe('a noted edit', () => {
     expect(page(backing).readUnheardNote().edits).toEqual([]);
     // And the op is in the saved queue.
     expect(backing.getItem('xdb:app::sync-queue')).toContain('"recordId":"n1"');
+  });
+});
+
+describe('a record one tab made with no client, which a listening tab then edited', () => {
+  type Op = { operation: string; recordId: string; data?: { title?: string } };
+  // The listening tab's edit was refused (the host never had the record), its saves moved the
+  // mark past the record, and the note's create no longer matched the record's stamp: taken for
+  // stale and forgotten, it never went.
+  it('is sent as a create at the next visit', async () => {
+    const backing = storage();
+    await synced(backing);
+    const a = page(backing);
+    const listening = connect(a);
+    listening.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    const made = page(backing).create('notes', { title: 'from B' });
+    await tick();
+    a.updateInCollection('notes', made.id, { title: 'edited in A' });
+    await tick();
+    const [edit] = pushed(listening.socket) as unknown as Array<{ id: string }>;
+    listening.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${made.id}` });
+    await tick();
+    listening.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${made.id}` });
+    await tick();
+    // A goes on a while: its saves move the mark past the record.
+    vi.advanceTimersByTime(5000);
+    listening.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const { socket } = await nextVisit(backing);
+    expect((pushed(socket) as unknown as Op[]).filter((op) => op.recordId === made.id).map((op) => [op.operation, op.data?.title])).toEqual([['create', 'edited in A']]);
   });
 });
 

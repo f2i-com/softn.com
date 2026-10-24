@@ -253,6 +253,58 @@ describe("an edit made on the desktop while no client listened, its stamp writte
   });
 });
 
+describe('a collection that fails to load on a store syncing for the first time', () => {
+  // The store's list of collections names only those it loaded, so one that failed was never
+  // looked at and the mark moved past it; or, listed, the mark was held but the pull positions
+  // were saved, and the next page took the store for an older client's and looked for nothing.
+  for (const listed of [false, true]) {
+    it(`is sent whole once it loads${listed ? ', listed' : ''}`, async () => {
+      const backing = storage();
+      const at = nativeStamp(Date.now() - 120_000);
+      rows.set('n1', { id: 'n1', collection: 'notes', data: { title: 'never sent' }, created_at: at, updated_at: at, deleted: false });
+      unreadable.add('notes');
+      const first = page(backing);
+      const make = (store: XDBService) => new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', ...(listed ? { collections: ['notes'] } : {}), reconnectDelay: 60_000 });
+      const sync = make(first);
+      sync.connect();
+      await first.isReady;
+      await settle();
+      await answer();
+      sync.disconnect();
+
+      unreadable.delete('notes');
+      const next = page(backing);
+      await next.isReady;
+      const later = make(next);
+      later.connect();
+      await settle();
+      const socket = await answer();
+      expect(pushed(socket).filter((op) => op.recordId === 'n1').map((op) => op.operation)).toEqual(['create']);
+      later.disconnect();
+    });
+  }
+});
+
+describe('a deletion or an edit on the desktop of a record the store has not loaded', () => {
+  // SQLite deleted it, and nothing told server sync: the host kept the record, and the next
+  // pull brought it back.
+  it('is refused, as in browser storage, and the native store keeps the record', async () => {
+    const backing = storage();
+    synced(backing);
+    let release!: () => void;
+    loading = new Promise((resolve) => { release = resolve; });
+    const store = page(backing);
+    expect(store.delete('n1')).toBe(false);
+    expect(store.update('n1', { title: 'blind' })).toBeNull();
+    release();
+    await store.isReady;
+    await settle();
+    expect(rows.get('n1')?.deleted).toBe(false);
+    expect(rows.get('n1')?.data.title).toBe('v1');
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).not.toContain('delete_record');
+  });
+});
+
 describe("a pull's deletions on the desktop", () => {
   // One native call a record, each rewriting the collection's stored document.
   it('go to the native store in one call', async () => {
@@ -344,6 +396,7 @@ describe('a client that starts before the store has loaded', () => {
     await settle();
     expect(next.readUnheardNote().edits.map((edit) => edit.id)).toEqual(['n1']);
     sync.disconnect();
-    expect(backing.getItem('xdb:app::sync-watched')).toBe(mark);
+    // Kept as it was, for this host.
+    expect(JSON.parse(backing.getItem('xdb:app::sync-watched')!).marks[WS_URL]).toBe(Number(mark));
   });
 });

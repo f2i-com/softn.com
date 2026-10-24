@@ -172,20 +172,29 @@ const PULLED_META = 'sync-pulled';
  * change made after it, while no client listened (before consent was given,
  * before an async import finished, between a disconnect and a connect), was
  * never queued, and is found by its record's time when the next client
- * connects (`queueUnsyncedChanges`). Kept with the host it is for
- * (`{"at":…,"url":…}`); a number alone, as clients before kept it, is the
- * mark of the host the app syncs with.
+ * connects (`queueUnsyncedChanges`). One a host (`{"marks":{url:at}}`):
+ * kept as one, for the last host alone, two tabs on two hosts (an update of
+ * the app moved it while one was open) each took every load for a move. A
+ * mark kept as `{"at","url"}`, or as a number alone (the host the app syncs
+ * with), as clients before kept it, is read as well.
  */
 const WATCHED_META = 'sync-watched';
 
-/** WATCHED_META as kept, or null for none or one that cannot be read. */
-function watchedMark(raw: string | null): { at: number; url?: string } | null {
+/** WATCHED_META as kept, by host ('' for a number alone, the current host's), or null for none or one that cannot be read. */
+function watchedMarks(raw: string | null): Map<string, number> | null {
   if (raw === null) return null;
   const at = Number(raw);
-  if (raw.trim() !== '' && Number.isFinite(at)) return { at };
+  if (raw.trim() !== '' && Number.isFinite(at)) return new Map([['', at]]);
   try {
-    const mark = JSON.parse(raw) as { at?: unknown; url?: unknown } | null;
-    if (typeof mark?.at === 'number' && Number.isFinite(mark.at)) return { at: mark.at, ...(typeof mark.url === 'string' ? { url: mark.url } : {}) };
+    const mark = JSON.parse(raw) as { at?: unknown; url?: unknown; marks?: unknown } | null;
+    if (mark?.marks && typeof mark.marks === 'object') {
+      const marks = new Map<string, number>();
+      for (const [url, value] of Object.entries(mark.marks as Record<string, unknown>)) {
+        if (typeof value === 'number' && Number.isFinite(value)) marks.set(url, value);
+      }
+      return marks;
+    }
+    if (typeof mark?.at === 'number' && Number.isFinite(mark.at)) return new Map([[typeof mark.url === 'string' ? mark.url : '', mark.at]]);
   } catch {
     // Unreadable: no mark.
   }
@@ -530,16 +539,21 @@ export class XDBServerSync {
    */
   private retriedUpdates = new Set<string>();
   /**
-   * On a host the store has not synced with (`movedHost`), its records by collection and id,
-   * each sent once the collection's pull says what the host holds (`reconcileMoved`): a create
-   * where it has no copy, an update or a delete where the copy here is newer, nothing where it
-   * is not. Sent blind, an update of each at its own stamp was taken by a host that held the
-   * same records (an address changed, not the host), each rewritten, broadcast and handed to
-   * the after-sync hooks; and creates alone let the pull write a seeded host's older copy over
-   * the newer one here. `covered`: the queue or the note sends a change of it, and only a
-   * create, where the host has none, is left to this.
+   * Records that may or may not be on the host, by collection and id, with the create sent
+   * for each live one (`create`): every record on a host the store has not synced with
+   * (`movedHost`), and a noted create of a record changed since. The host takes a create of an
+   * id it has no copy of, and answers one of an id it holds with that copy; that copy, or one
+   * a pull or a delta brings, is weighed against the record here by their stamps
+   * (`reconcileMoved`): newer here, it goes as an update (or as the deletion of one deleted
+   * here) and the host's copy is not written. Sent as updates at their own stamps, a host that
+   * held the same records (an address changed, not the host) rewrote, broadcast and handed to
+   * its after-sync hooks every one; and with creates alone, a seeded host's older copies, from
+   * its pull or its answers, were written over newer ones here. Kept after the create is
+   * answered: the copy that answers it comes after the acknowledgement.
    */
-  private movedPending = new Map<string, Map<string, { made: number; how?: { asIs?: boolean }; data: Record<string, unknown>; stamp: string; deleted: boolean; covered: boolean }>>();
+  private movedPending = new Map<string, Map<string, { create?: string }>>();
+  /** The creates of `movedPending` not yet answered, by op id: until then, the mark of where listening stopped stays (`save`). */
+  private movedCreates = new Set<string>();
   /**
    * Deletes for records removed for good here while nothing listened (`queueUnsyncedChanges`).
    * The host may never have had the record (made and removed here before it was sent), and
@@ -1032,6 +1046,7 @@ export class XDBServerSync {
             this.finished.add(id);
             this.removals.delete(id);
             this.sentAt.delete(id);
+            this.answeredMoved(id);
             this.queueChanged();
           }
         }
@@ -1344,9 +1359,6 @@ export class XDBServerSync {
     for (const op of Array.from(this.pendingOps.values())) {
       const key = recordKey(op);
       if (busy.has(key)) continue;
-      // A collection of a host the store has not synced with waits for its pull to say what the
-      // host holds: a change of a record it has no copy of goes after its create (`finishMoved`).
-      if (this.movedPending.has(op.collection)) continue;
       // Stamped now: an op queued before auth knew no client id, nor the
       // host's time. An op sent before keeps the time it was sent with.
       op.clientId = this.clientId ?? op.clientId;
@@ -1540,7 +1552,6 @@ export class XDBServerSync {
       this.pulledDirty = true;
       this.saveSoon();
     }
-    let askedOn = false;
     if (isPullCursor(more)) {
       // The page was full, so the collection goes on: ask for the rest. A
       // collection past one page used to stop here, at its oldest ten
@@ -1548,7 +1559,6 @@ export class XDBServerSync {
       // pull, so not one the count below is for.)
       this.sincePulled.delete(collection);
       this.send({ type: 'sync_pull', collections: [collection], cursor: { at: more.at, id: more.id } });
-      askedOn = true;
     } else {
       const counted = this.sincePulled.get(collection);
       if (counted !== undefined) {
@@ -1560,14 +1570,11 @@ export class XDBServerSync {
         if (total >= INCREMENTAL_PULL_ROWS && from && !this.pullStuck.has(collection)) {
           this.sincePulled.set(collection, 0);
           this.send({ type: 'sync_pull', collections: [collection], lastSync: from.at, lastId: from.id });
-          askedOn = true;
         } else {
           this.sincePulled.set(collection, total);
         }
       }
     }
-    // The pull is whole: what the host did not send, it has no copy of.
-    if (!askedOn) this.finishMoved(collection);
     this.pullRetryAttempts = 0;
     this.initialPullDone = true;
     // The device has what the server sent: a record it wrote is not one made here.
@@ -1576,22 +1583,25 @@ export class XDBServerSync {
   }
 
   /**
-   * A record of a pull or a delta from a host the store has not synced with (`movedPending`),
-   * weighed against the copy here as it is now, by their stamps: true when the one here is
-   * newer, and goes to the host (an update, or the deletion of one deleted here) in place of the
-   * host's being written. One the queue or the note sends a change of is theirs, held by it as
-   * any change made here is; so is one changed here since the scan, at its own time (an update
-   * at the scan's took the change's place, stamped before it). `held`: the collection's records,
-   * read once for a message.
+   * The host's copy of a record that may or may not have been on it (`movedPending`), from a
+   * pull, a delta, or its answer to the create: weighed against the record here as it is now, by
+   * their stamps. True when the one here is newer, and goes to the host (an update, or the
+   * deletion of one deleted here) in place of the host's being written. The create, if not sent
+   * yet, is not sent: the host has the record. One with a change of it queued (made here, or for
+   * the old host) is left to that change, which holds the host's copy as any does, at its own
+   * time. `held`: the collection's records, read once for a message.
    */
   private reconcileMoved(collection: string, theirs: { id: string; updatedAt?: unknown; deleted?: boolean }, held: () => Map<string, HeldRecord>): boolean {
     const pending = this.movedPending.get(collection);
     const mine = pending?.get(theirs.id);
     if (!pending || !mine) return false;
     pending.delete(theirs.id);
-    if (mine.covered || theirs.deleted === true) return false;
-    const queued = this.lastOpFor.get(`${collection}\u0000${theirs.id}`) ?? '';
-    if (this.pendingOps.has(queued) || this.inflightOps.has(queued)) return false;
+    if (pending.size === 0) this.movedPending.delete(collection);
+    const key = `${collection}\u0000${theirs.id}`;
+    if (mine.create !== undefined && this.pendingOps.has(mine.create)) this.dropMovedCreate(mine.create, key);
+    if (theirs.deleted === true) return false;
+    const queued = this.lastOpFor.get(key) ?? '';
+    if (queued !== mine.create && (this.pendingOps.has(queued) || this.inflightOps.has(queued))) return false;
     const record = held().get(theirs.id);
     if (!record) return false;
     const { made, how } = this.stampOfHeld(collection, record);
@@ -1602,6 +1612,44 @@ export class XDBServerSync {
       how,
     );
     return true;
+  }
+
+  /** A create of `movedPending` not sent, and not to be: the host has the record. */
+  private dropMovedCreate(opId: string, key: string): void {
+    this.pendingOps.delete(opId);
+    this.forgetMade(opId);
+    this.finished.add(opId);
+    this.answeredMoved(opId);
+    if (this.lastOpFor.get(key) === opId) this.lastOpFor.delete(key);
+    this.queueChanged();
+  }
+
+  /** A create of `movedPending` answered, refused or dropped: the mark may move once none is left (`save`). */
+  private answeredMoved(opId: string): void {
+    if (this.movedCreates.delete(opId) && this.movedCreates.size === 0) this.saveSoon();
+  }
+
+  /**
+   * Queue a create of a record that may or may not be on the host (`movedPending`), ahead of
+   * every change queued for it; its answer, or any copy the host sends, is weighed against it.
+   */
+  private queueMaybeHeld(collection: string, id: string, data: Record<string, unknown>, made: number, how: { asIs?: boolean } | undefined): void {
+    const key = `${collection}\u0000${id}`;
+    const newest = this.lastOpFor.get(key);
+    this.queueChange({ type: 'create', collection, recordId: id, data }, made, how);
+    const create = this.lastOpFor.get(key);
+    if (create === undefined || create === newest) return;
+    // The newest op of the record is still the one queued before it; the create goes first.
+    if (newest !== undefined && (this.pendingOps.has(newest) || this.inflightOps.has(newest))) this.lastOpFor.set(key, newest);
+    const op = this.pendingOps.get(create);
+    if (op) {
+      this.pendingOps.delete(create);
+      this.pendingOps = new Map([[create, op], ...this.pendingOps]);
+    }
+    this.movedCreates.add(create);
+    let pending = this.movedPending.get(collection);
+    if (!pending) this.movedPending.set(collection, (pending = new Map()));
+    pending.set(id, { create });
   }
 
   /** How a change of a record as the store holds it is stamped: at its stamp, with the offset where this page gave it. */
@@ -1622,34 +1670,6 @@ export class XDBServerSync {
     } catch {
       return new Map();
     }
-  }
-
-  /**
-   * A collection's pull from a host the store has not synced with is whole: each live record
-   * here it did not send goes as a create, as it is now, ahead of any change of it queued
-   * since, which waited (`flushPendingOps`). The collection waits until they are queued and in
-   * front: let go first, the first create's push sent those changes ahead of it.
-   */
-  private finishMoved(collection: string): void {
-    const pending = this.movedPending.get(collection);
-    if (!pending) return;
-    const held = this.heldRecords(collection);
-    const creates = new Set<string>();
-    for (const id of pending.keys()) {
-      const record = held.get(id);
-      if (!record || record.deleted) continue;
-      const { made, how } = this.stampOfHeld(collection, record);
-      this.queueChange({ type: 'create', collection, recordId: id, data: objectData(record.data) }, made, how);
-      const opId = this.lastOpFor.get(`${collection}\u0000${id}`);
-      if (opId) creates.add(opId);
-    }
-    if (creates.size > 0) {
-      const all = [...this.pendingOps];
-      this.pendingOps = new Map([...all.filter(([id]) => creates.has(id)), ...all.filter(([id]) => !creates.has(id))]);
-    }
-    this.movedPending.delete(collection);
-    // The mark of where listening stopped may move on, once no collection waits.
-    if (this.movedPending.size === 0) this.saveSoon();
   }
 
   /**
@@ -1797,6 +1817,17 @@ export class XDBServerSync {
     };
   }
 
+  /**
+   * When the change an op carries was made here, by this device's clock, as a record's stamp is
+   * weighed against it: no earlier than its floor, or, once sent, the time kept with it
+   * (`sentAt`), or its stamp less the offset.
+   */
+  private madeTime(op: SyncOp): number {
+    const made = this.madeAt.get(op.id);
+    if (made !== undefined) return Math.max(made, this.stampOf.get(op.id)?.floor ?? -Infinity);
+    return this.sentAt.get(op.id) ?? Date.parse(op.timestamp) - this.clockOffset;
+  }
+
   /** Forget when an op was made and what bounds its stamp: it is stamped, answered or gone. */
   private forgetMade(id: string): void {
     this.madeAt.delete(id);
@@ -1815,6 +1846,7 @@ export class XDBServerSync {
     this.forgetMade(opId);
     this.finished.add(opId);
     this.sentAt.delete(opId);
+    this.answeredMoved(opId);
     this.queueChanged();
     if (removed) {
       this.flushPendingOps();
@@ -1847,6 +1879,7 @@ export class XDBServerSync {
     this.finished.add(op.id);
     this.removals.delete(op.id);
     this.sentAt.delete(op.id);
+    this.answeredMoved(op.id);
     this.queueChanged();
     console.warn(`[XDBServerSync] ${reason}`);
     this.noteRefused(op, reason);
@@ -2041,9 +2074,15 @@ export class XDBServerSync {
     // or removed already) or here (the note's removal took the delete's place). Sent, it was
     // skipped as stale, the note forgot it, and the record came back with the next pull.
     // The host may hold no such record either, and refuses it as not found: done, as a removal.
+    // A record noted as made while nothing listened that has changed since (another tab's edit
+    // of it, which the host refused for want of it): the host may never have had it. Its note
+    // was taken for stale, and the scan below looks only past a mark the other tab moved on, so
+    // it never went. Sent as a create, whose answer is weighed (`queueMaybeHeld`).
+    const maybeHeld: Array<{ collection: string; id: string }> = [];
     for (const edit of note.edits) {
       if (!SYNCABLE_COLLECTION.test(edit.collection)) continue;
       const record = recordsOf(edit.collection).get(edit.id);
+      const key = `${edit.collection}\u0000${edit.id}`;
       const stamped = Date.parse(edit.stamp);
       const made = edit.made ?? (Number.isFinite(stamped) ? stamped : Date.now());
       const floor = edit.after === undefined ? NaN : Date.parse(edit.after) + 1;
@@ -2052,17 +2091,27 @@ export class XDBServerSync {
         found.push({ made, change: { type: 'delete', collection: edit.collection, recordId: edit.id }, how, removal: true });
         continue;
       }
+      if (record && record.deleted !== true && edit.kind === 'create' && !sameTime(record.updated_at, edit.stamp)) {
+        // On a host the store has not synced with, the look below sends every record so.
+        if (!this.movedHost) {
+          maybeHeld.push({ collection: edit.collection, id: edit.id });
+          noted.add(key);
+        }
+        continue;
+      }
       if (!record || !sameTime(record.updated_at, edit.stamp) || (record.deleted === true) !== (edit.kind === 'delete')) continue;
-      const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
+      const data = objectData(record.data);
       // On a host the store has not synced with, the look below sends the record as well, and
       // this is done when the host has no such record (`movedHost`).
       found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, how, ...(this.movedHost ? { removal: true } : {}) });
-      (this.movedHost ? covered : noted).add(`${edit.collection}\u0000${edit.id}`);
+      (this.movedHost ? covered : noted).add(key);
     }
     // What an import made and changed past what the note could keep a record at a time
-    // (UnheardImport): each record still here and not queued, as made then, a create or an
-    // update as the import had it. One changed since goes as it is now, at the import's time,
-    // which the host weighs against the change.
+    // (UnheardImport): each record still here, as made then, a create or an update as the import
+    // had it. One changed since goes as it is now, at the import's time, which the host weighs
+    // against the change. One the queue holds a change of: by the queue's where that change was
+    // made after the import, else as an update at the import's time (the queue's went before it,
+    // and the restore was never sent).
     for (const { collection, made, creates, updates } of note.imports) {
       if (!SYNCABLE_COLLECTION.test(collection)) continue;
       const records = recordsOf(collection);
@@ -2070,14 +2119,18 @@ export class XDBServerSync {
         for (const id of ids) {
           const record = records.get(id);
           const key = `${collection}\u0000${id}`;
-          const queued = this.lastOpFor.get(key) ?? '';
-          if (!record || record.deleted === true || noted.has(key) || this.pendingOps.has(queued) || this.inflightOps.has(queued)) continue;
-          const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
-          found.push({ made, change: { type, collection, recordId: id, data }, ...(this.movedHost ? { removal: true } : {}) });
+          if (!record || record.deleted === true || noted.has(key)) continue;
+          const queuedId = this.lastOpFor.get(key) ?? '';
+          const queued = this.pendingOps.get(queuedId) ?? this.inflightOps.get(queuedId);
+          if (queued && this.madeTime(queued) >= made) continue;
+          found.push({ made, change: { type: queued ? 'update' : type, collection, recordId: id, data: objectData(record.data) }, ...(this.movedHost ? { removal: true } : {}) });
           (this.movedHost ? covered : noted).add(key);
         }
       }
     }
+    // The store could not load every collection (the desktop's lists only those it loaded):
+    // what it holds of one that failed is looked at by a later client (`markHeld`).
+    if (!this.storeLoaded()) this.markHeld = true;
     for (const collection of this.syncedCollections()) {
       // One the store could not load is looked at by a later client (`markHeld`).
       if (!this.storeLoaded(collection)) {
@@ -2089,6 +2142,26 @@ export class XDBServerSync {
         const updated = Date.parse(String(record.updated_at));
         if (since !== null && !(updated >= since)) continue;
         const made = Number.isFinite(updated) ? updated : Date.now();
+        const data = objectData(record.data);
+        // A stamp this page gave the record is this device's time, and goes with the offset
+        // as any edit made here does; any other may be the host's or a room's, and goes as it is.
+        const own = typeof store.isOwnStamp === 'function' && store.isOwnStamp(collection, record.id, record.updated_at);
+        const how = own ? undefined : { asIs: true };
+        if (this.movedHost) {
+          // On a host the store has not synced with, each record may or may not be there: a live
+          // one goes as a create, ahead of any change of it queued, whose answer or any copy the
+          // host sends is weighed against it; a deleted one is weighed against any live copy the
+          // host sends (`movedPending`). No deletion is sent for it: the host takes one at an
+          // equal stamp, rewriting, broadcasting and handing to its hooks every tombstone.
+          if (record.deleted === true) {
+            let pending = this.movedPending.get(collection);
+            if (!pending) this.movedPending.set(collection, (pending = new Map()));
+            pending.set(record.id, {});
+          } else {
+            this.queueMaybeHeld(collection, record.id, data, made, how);
+          }
+          continue;
+        }
         // What the queue holds for this record already says as much: weighed by when it was
         // made here, which the record's stamp is in when this device made it.
         // An edit made after a copy stamped ahead of this clock gave the record
@@ -2096,35 +2169,9 @@ export class XDBServerSync {
         // by when it was made, it was taken for older than its own record, and
         // replaced by the record as it stood, without the offset.
         const queued = this.pendingOps.get(this.lastOpFor.get(`${collection}\u0000${record.id}`) ?? '');
-        const queuedMade = queued ? this.madeAt.get(queued.id) : undefined;
-        const queuedAt = queued === undefined
-          ? undefined
-          : queuedMade !== undefined
-            ? Math.max(queuedMade, this.stampOf.get(queued.id)?.floor ?? -Infinity)
-            : this.sentAt.get(queued.id) ?? Date.parse(queued.timestamp) - this.clockOffset;
-        if (!this.movedHost && queuedAt !== undefined && queuedAt >= made) continue;
+        if (queued !== undefined && this.madeTime(queued) >= made) continue;
         const created = Date.parse(String(record.created_at));
         const createdSince = since === null || !(created < since);
-        const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
-        // A stamp this page gave the record is this device's time, and goes with the offset
-        // as any edit made here does; any other may be the host's or a room's, and goes as it is.
-        const own = typeof store.isOwnStamp === 'function' && store.isOwnStamp(collection, record.id, record.updated_at);
-        const how = own ? undefined : { asIs: true };
-        if (this.movedHost) {
-          // On a host the store has not synced with: sent once the collection's pull says what
-          // the host holds (`movedPending`).
-          let pending = this.movedPending.get(collection);
-          if (!pending) this.movedPending.set(collection, (pending = new Map()));
-          pending.set(record.id, {
-            made,
-            ...(how ? { how } : {}),
-            data,
-            stamp: String(record.updated_at),
-            deleted: record.deleted === true,
-            covered: queued !== undefined || covered.has(`${collection}\u0000${record.id}`),
-          });
-          continue;
-        }
         if (record.deleted === true) {
           if (!createdSince) found.push({ made, change: { type: 'delete', collection, recordId: record.id }, how });
         } else {
@@ -2136,6 +2183,11 @@ export class XDBServerSync {
     // The next scan is of this host's (its mark is saved with the queue).
     this.movedHost = false;
     for (const { made, change, how, removal } of found) this.queueChange(change, made, how, removal === true);
+    for (const { collection, id } of maybeHeld) {
+      const record = recordsOf(collection).get(id) as HeldRecord;
+      const { made, how } = this.stampOfHeld(collection, record);
+      this.queueMaybeHeld(collection, id, objectData(record.data), made, how);
+    }
     // At the time each was removed, by this device's clock, and after the copy it removed.
     for (const { made, change, floor } of gone) this.queueChange(change, made, floor === undefined ? undefined : { floor }, true);
   }
@@ -2195,9 +2247,10 @@ export class XDBServerSync {
     // or a place and no such mark: what it missed it missed, and nothing is
     // looked for (rather than every record it holds sent again). A mark or a
     // place of another host's is none for this one (`movedHost`).
-    const mark = watchedMark(meta.readSyncMeta(WATCHED_META));
-    if (mark) {
-      if (mark.url === undefined || mark.url === url) this.watched = mark.at;
+    const marks = watchedMarks(meta.readSyncMeta(WATCHED_META));
+    if (marks && marks.size > 0) {
+      const at = marks.get(url) ?? marks.get('');
+      if (at !== undefined) this.watched = at;
       else this.movedHost = true;
     } else if (meta.readSyncMeta(QUEUE_META) !== null || meta.readSyncMeta(PULLED_META) !== null) {
       let pulledFrom: unknown;
@@ -2374,14 +2427,27 @@ export class XDBServerSync {
       }
     }
     // Not moved on while the queue is unsaved: a change in it that is lost
-    // with the page is then found again by the next scan.
-    // Nor while a host the store has not synced with is still to be sent records (`movedPending`).
-    if (this.xdbUnsubscribe && !this.queueDirty && !this.markHeld && this.movedPending.size === 0) {
-      try {
-        meta.writeSyncMeta(WATCHED_META, JSON.stringify({ at: now, url: this.config.wsUrl }));
-        this.watched = now;
-      } catch {
-        // The next scan starts earlier, and sends again what was answered.
+    // with the page is then found again by the next scan. Nor while what
+    // the scan could not look at (`markHeld`), or the creates a host the
+    // store has not synced with is sent (`movedCreates`), are unanswered:
+    // this host's mark stays as it was, or, where it had none, is one that
+    // has the next scan look at every record (0). With none at all, the
+    // pull positions saved beside it read as an older client's, and the
+    // next scan looked for nothing.
+    if (this.xdbUnsubscribe && !this.queueDirty) {
+      const held = this.markHeld || this.movedCreates.size > 0;
+      const at = held ? this.watched ?? 0 : now;
+      if (Number.isFinite(at)) {
+        try {
+          const marks = watchedMarks(meta.readSyncMeta(WATCHED_META)) ?? new Map<string, number>();
+          // A number alone was this host's.
+          marks.delete('');
+          marks.set(this.config.wsUrl, at);
+          meta.writeSyncMeta(WATCHED_META, JSON.stringify({ v: 2, marks: Object.fromEntries(marks) }));
+          if (!held) this.watched = now;
+        } catch {
+          // The next scan starts earlier, and sends again what was answered.
+        }
       }
     }
   }

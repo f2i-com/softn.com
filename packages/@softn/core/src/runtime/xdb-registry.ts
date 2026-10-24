@@ -112,6 +112,17 @@ function previewLocks(): PreviewLocks | null {
   }
 }
 
+/** `count` random decimal digits, from the browser's random source where it has one. */
+function randomDigits(count: number): string {
+  const values = new Uint32Array(count);
+  try {
+    globalThis.crypto.getRandomValues(values);
+  } catch {
+    for (let i = 0; i < count; i++) values[i] = Math.floor(Math.random() * 10);
+  }
+  return [...values].map((value) => String(value % 10)).join('');
+}
+
 /** Hold the scope's lock while it lives; the returned function lets it go. */
 function holdWhileOpen(appId: string): () => void {
   const locks = previewLocks();
@@ -182,7 +193,10 @@ export function createEphemeralXDBScope(): EphemeralXDBScope {
   sweepStaleScopes(Date.now());
   let appId: string;
   do {
-    appId = `${EPHEMERAL_XDB_PREFIX}${Date.now().toString(36)}_${++ephemeralXDBSequence}`;
+    // The time it was made (which the sweep reads), then digits of its own: the count alone
+    // started at 1 on every page, and two tabs making a preview in one millisecond shared its
+    // script storage, which the first to let go took from the other.
+    appId = `${EPHEMERAL_XDB_PREFIX}${Date.now().toString(36)}_${++ephemeralXDBSequence}${randomDigits(9)}`;
   } while (xdbInstances.has(appId));
 
   const values = new Map<string, string>();
