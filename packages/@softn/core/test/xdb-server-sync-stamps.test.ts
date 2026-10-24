@@ -142,6 +142,23 @@ describe('an edit or a removal made just after a write it heard', () => {
     expect(op?.timestamp).toBe('2026-02-28T23:59:00.100Z');
   });
 
+  // A create and an edit of it in one millisecond: the create's own stamp, this clock's time,
+  // counted as a copy the edit followed, and the edit went out in this clock's time.
+  it('is stamped in the host time when edited in the millisecond it was made, on a fast device', async () => {
+    const s = new XDBService(storage(), 'xdb:app', 'app', { backend: 'storage' });
+    const c = connectTo(s, '2026-02-28T23:59:00.000Z');
+    c.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    vi.advanceTimersByTime(100);
+    const made = s.create('notes', { title: 'one' });
+    s.updateInCollection('notes', made.id, { title: 'two' });
+    s.updateInCollection('notes', made.id, { title: 'three' });
+    await tick();
+    c.socket.receive({ type: 'sync_ack', opIds: pushedOps(c.socket).map((o) => (o as { id?: string }).id) });
+    await tick();
+    for (const op of pushedOps(c.socket)) expect(op.timestamp, op.operation).toBe('2026-02-28T23:59:00.100Z');
+    expect(pushedOps(c.socket).map((o) => o.operation)).toEqual(['create', 'update']);
+  });
+
   // The stamp was read back from the record for every change heard: the whole collection
   // parsed once a record, so an import of thousands held the tab for seconds.
   it('reads nothing back from the store to stamp a change', async () => {

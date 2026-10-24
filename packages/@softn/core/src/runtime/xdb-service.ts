@@ -724,7 +724,22 @@ export class XDBService {
       if (theirs !== undefined && stampTime(theirs) > stampTime(latest)) latest = theirs;
     }
     this.noteEditedAfter(record.collection, record.id, latest);
-    return editStamp(latest);
+    const stamp = editStamp(latest);
+    this.noteStampedHere(record.collection, record.id, stamp);
+    return stamp;
+  }
+
+  /**
+   * The stamp this device gave each record it last created or edited, by record: a copy of its
+   * own is not one an edit follows for server sync's floor (`noteEditedAfter`). A create and an
+   * edit of it in one millisecond, or a burst of edits, left the copy at or past this clock, and
+   * the op went out in this clock's time, ahead of the host's on a device whose clock ran fast.
+   */
+  private stampedHere = new Map<string, string>();
+
+  private noteStampedHere(collection: string, id: string, stamp: string): void {
+    if (this.stampedHere.size >= 10_000) this.stampedHere.clear();
+    this.stampedHere.set(`${collection}\u0000${id}`, stamp);
   }
 
   /**
@@ -741,6 +756,7 @@ export class XDBService {
     const at = stampTime(stamp);
     const now = Date.now();
     if (!(at >= now) || at - now > STAMP_AHEAD_LIMIT_MS) return;
+    if (this.stampedHere.get(`${collection}\u0000${id}`) === stamp) return;
     // Taken by the announcement that follows; a bound for writes that threw before it.
     if (this.editedAfter.size >= 10_000) this.editedAfter.clear();
     this.editedAfter.set(`${collection}\u0000${id}`, stamp);
@@ -1176,7 +1192,11 @@ export class XDBService {
             }
             this.native<boolean>('delete_record', { id: serverRecord.id, collection, updatedAt: currentOptimistic?.updated_at })
               .then(() => this.nativeWriteLanded(collection))
-              .catch((err) => this.nativeWriteFailed('delete a record', collection, err));
+              .catch((err) => {
+                // A clear of its collection took the row first: gone, as asked.
+                if (/\bnot found\b/i.test(err instanceof Error ? err.message : String(err))) this.nativeWriteLanded(collection);
+                else this.nativeWriteFailed('delete a record', collection, err);
+              });
             return;
           }
 
@@ -1198,6 +1218,7 @@ export class XDBService {
           }
 
           c.set(serverRecord.id, mergedRecord);
+          this.noteStampedHere(collection, mergedRecord.id, mergedRecord.updated_at);
           this.emit({ type: 'create', collection, record: mergedRecord });
           this.notifyMutation('create', collection, mergedRecord.id, mergedRecord.data);
         })
@@ -1232,6 +1253,7 @@ export class XDBService {
 
     records.push(record);
     const persisted = this.setCollectionData(collection, records);
+    this.noteStampedHere(collection, record.id, now);
 
     this.emit({ type: 'create', collection, record });
     this.notifyMutation('create', collection, record.id, data);
@@ -1250,6 +1272,7 @@ export class XDBService {
         payload: { collection, data },
       });
       this.getOrCreateCollection(collection).set(record.id, record);
+      this.noteStampedHere(collection, record.id, record.updated_at);
       this.emit({ type: 'create', collection, record });
       this.notifyMutation('create', collection, record.id, record.data);
       return record;
@@ -2715,8 +2738,10 @@ export class XDBService {
     if (this.mutationListeners.size === 0) {
       // What a replacement took away, kept for the client that starts, as any removal made
       // while nothing listens is: it left no tombstone, and the first pull brought it back.
+      // Deleted ones too, as clear keeps them: a deletion made while nothing listened, then
+      // taken away with its tombstone, was neither found nor sent.
       const now = new Set(after.map((record) => record.id));
-      this.noteUnheardRemovals(collection, before.filter((record) => !record.deleted && !now.has(record.id)).map((record) => record.id));
+      this.noteUnheardRemovals(collection, before.filter((record) => !now.has(record.id)).map((record) => record.id));
       return;
     }
     const was = new Map(before.map((record) => [record.id, record]));

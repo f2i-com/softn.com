@@ -1738,12 +1738,15 @@ export class XDBServerSync {
       // Every op not yet answered, in the order it would go: those sent first.
       // Each with when it was made by this device's clock, which an op already sent and
       // stamped in the host's time has back once the offset is taken off.
+      // An op sent keeps that time beside it (`madeHere`), for another tab to order it by: its
+      // stamp is in the host's time, and a create sent before an edit another tab made of its
+      // record after it went after that edit when the host's clock ran ahead.
       const mine = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
         const made = this.madeAt.get(op.id);
         const removal = this.removals.has(op.id) ? { removal: true } : {};
-        return made === undefined
-          ? { entry: { ...op, ...removal } as unknown, at: Date.parse(op.timestamp) - this.clockOffset }
-          : { entry: { ...op, made, ...this.stampOf.get(op.id), ...removal } as unknown, at: made };
+        if (made !== undefined) return { entry: { ...op, made, ...this.stampOf.get(op.id), ...removal } as unknown, at: made };
+        const madeHere = Date.parse(op.timestamp) - this.clockOffset;
+        return { entry: { ...op, ...removal, ...(Number.isFinite(madeHere) ? { madeHere } : {}) } as unknown, at: madeHere };
       });
       // The queue is saved under the app's name, and another tab of the app saves its own
       // there: each wrote its queue over the other's, so a change one tab made offline was gone
@@ -1759,8 +1762,9 @@ export class XDBServerSync {
         others = (Array.isArray(saved?.ops) ? saved.ops : []).flatMap((entry) => {
           const op = savedOp(entry);
           if (op === null || own.has(op.id) || this.finished.has(op.id)) return [];
-          const made = (entry as { made?: unknown }).made;
-          return [{ entry, at: typeof made === 'number' ? made : Date.parse(op.timestamp) }];
+          const { made, madeHere } = entry as { made?: unknown; madeHere?: unknown };
+          const at = typeof made === 'number' ? made : typeof madeHere === 'number' ? madeHere : Date.parse(op.timestamp);
+          return [{ entry, at }];
         });
       } catch {
         // Unreadable: there is nothing it can be trusted to say.

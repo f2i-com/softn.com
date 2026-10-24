@@ -132,6 +132,17 @@ describe('a record removed for good before the client listened', () => {
     expect(deletes(socket)).toEqual(['n1', 'n2']);
   });
 
+  it('is told for a record deleted while nothing listened and then taken away by an import', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    store.deleteFromCollection('notes', 'n1');
+    store.import({ version: 1, exportedAt: new Date().toISOString(), collections: { notes: [store.get('notes', 'n2')!] } }, { merge: false });
+    const { socket } = connect(store);
+    await tick();
+    expect(deletes(socket)).toEqual(['n1']);
+  });
+
   it('is told for each record an import replacing the collection took', async () => {
     const backing = storage();
     await synced(backing);

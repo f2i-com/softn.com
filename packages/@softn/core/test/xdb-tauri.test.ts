@@ -112,7 +112,8 @@ describe('XDB Service (Tauri mode)', () => {
               return true;
             }
           }
-          return false;
+          // As XDB's command: it reads the row first (get_record), and there is none.
+          throw new Error(`Record not found: ${id}`);
         }
         case 'upsert_record': {
           const record = args?.record as XDBRecord;
@@ -1019,6 +1020,8 @@ describe('XDB Service (Tauri mode)', () => {
       expect(xdb.getAll('tasks')).toEqual([]);
       expect((backend.get('tasks') ?? []).filter((record) => !record.deleted)).toEqual([]);
       expect(heard).toEqual([]);
+      // The clear took the row before the create's answer came: nothing failed to be saved.
+      expect(xdb.getStorageStatus().issues).toEqual([]);
     });
   });
 });

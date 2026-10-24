@@ -162,6 +162,32 @@ describe("one tab's edit of a record another tab created, both offline", () => {
   });
 });
 
+describe("one tab's edit of a record the other tab's create was sent for, unanswered", () => {
+  // The sent create was ordered by its stamp, in the host's time: with the host a minute ahead,
+  // it looked later than the edit made ten seconds after it, which went first and was refused.
+  it('goes after the create at the next visit, whatever the host clock', async () => {
+    const backing = storage();
+    const a = tab(backing);
+    const b = tab(backing);
+    offline(b);
+    const sending = offline(a);
+    sending.socket.open();
+    sending.socket.receive({ type: 'auth_ok', clientId: 'ca', serverTime: new Date(Date.now() + 60_000).toISOString() });
+    sending.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    const r1 = a.create('notes', { title: 'made in A' });
+    await tick();
+    expect(pushed(sending.socket)).toHaveLength(1);
+    vi.advanceTimersByTime(10_000);
+    b.update(r1.id, { title: 'edited in B' });
+    await tick();
+
+    const next = online(tab(backing));
+    await tick();
+    const first = pushed(next.socket).find((op) => (op as { recordId?: string }).recordId === r1.id);
+    expect(first?.operation).toBe('create');
+  });
+});
+
 describe('a change a tab made before its client listened', () => {
   it('is sent when the client starts, though another tab moved the mark on meanwhile', async () => {
     const backing = storage();
