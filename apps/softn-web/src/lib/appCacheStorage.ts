@@ -20,6 +20,14 @@
 /** The two places a build keeps state, by name. */
 export type AppDataStore = 'xdb' | 'local';
 
+/**
+ * The notes XDB keeps beside a build's records (`xdb:<origin>::<name>`), as
+ * what follows the prefix: its collections' list, peer and server sync's
+ * marks and queues (xdb-service.ts, xdb-server-sync.ts) and a bundle's seeds
+ * (bundle.ts). A new one is added here, or a move leaves it behind.
+ */
+const XDB_NOTE = /^:(?:collections|p2p-room|sync-queue|sync-pulled|sync-watched|(?:removals|seeded):[^:]+)$/;
+
 /** One store of a build: the prefix its keys are under, and which keys under it are its own. */
 export interface AppDataStoreKeys {
   store: AppDataStore;
@@ -31,12 +39,13 @@ export interface AppDataStoreKeys {
 export function appDataStores(origin: string): AppDataStoreKeys[] {
   return [
     // A key under `xdb:<origin>:` is the build's when what follows is one of
-    // its collections (a collection name has no ":") or its store's own note
-    // (`xdb:<origin>::<name>`). An identity an earlier build had, the
-    // manifest's name, may begin another's: `xdb:Notes:` began the records of
-    // an app called "Notes:Pro" (`xdb:Notes:Pro:tasks`), and moving Notes's
-    // data to its digest took them too, under a name no collection reads.
-    { store: 'xdb', prefix: `xdb:${origin}:`, owns: (rest) => !rest.includes(':') || rest.startsWith(':') },
+    // its collections (a collection name has no ":") or one of its store's
+    // own notes (`xdb:<origin>::<name>`, XDB_NOTE). An identity an earlier
+    // build had, the manifest's name, may begin another's: `xdb:Notes:` began
+    // the records of an app called "Notes:Pro" (`xdb:Notes:Pro:tasks`), and of
+    // one called "Notes:" (`xdb:Notes::tasks`), and moving Notes's data to its
+    // digest took them too.
+    { store: 'xdb', prefix: `xdb:${origin}:`, owns: (rest) => !rest.includes(':') || XDB_NOTE.test(rest) },
     // The bridge folds anything outside [A-Za-z0-9_-] to `_` before it
     // prefixes. A digest never has any, but the two spellings must agree.
     // Folded, the prefix has no ":" in it to run into another's.

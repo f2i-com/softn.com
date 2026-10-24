@@ -63,6 +63,8 @@ describe('adopting a record under its new identity', () => {
     localStorage.setItem('xdb:Notes::collections', '["notes"]');
     localStorage.setItem('xdb:Notes:Pro:tasks', '[2]');
     localStorage.setItem('xdb:Notes:Pro::collections', '["tasks"]');
+    // And of an app called "Notes:", whose collection key reads like a note of Notes's.
+    localStorage.setItem('xdb:Notes::tasks', '[3]');
     localStorage.setItem('xdb-sync-active-room:Notes', 'lobby');
     localStorage.setItem('xdb-sync-shared:Notes:Pro:club', 'true');
 
@@ -75,6 +77,7 @@ describe('adopting a record under its new identity', () => {
     expect(localStorage.getItem(`xdb:${NEW}::collections`)).toBe('["notes"]');
     expect(localStorage.getItem('xdb:Notes:Pro:tasks')).toBe('[2]');
     expect(localStorage.getItem('xdb:Notes:Pro::collections')).toBe('["tasks"]');
+    expect(localStorage.getItem('xdb:Notes::tasks')).toBe('[3]');
     expect(Object.keys(localStorage).filter((key) => key.startsWith(`xdb:${NEW}:`)).sort()).toEqual([`xdb:${NEW}::collections`, `xdb:${NEW}:notes`]);
     // Its room goes with it; Notes:Pro's room keys and caches are left.
     expect(localStorage.getItem(`xdb-sync-active-room:${NEW}`)).toBe('lobby');

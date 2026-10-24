@@ -117,9 +117,9 @@ export async function applyAdoption(store: AppStore, adoption: Adoption, origin:
   // as nothing may hold this write transaction open. From a manifest's name
   // they are copied and nothing is deleted: sync's keys are found by what
   // they begin with, and a name may begin another app's (`Notes` and
-  // `Notes:Pro`, whose rooms' keys and caches the move took). A digest
-  // begins no other identity.
-  void carryAppSync(adoption.fromAppId, origin, { move: /^[0-9a-f]+$/.test(adoption.fromAppId) });
+  // `Notes:Pro`, whose rooms' keys and caches the move took). A short digest
+  // (the one adoption that carries grants) begins no other identity.
+  void carryAppSync(adoption.fromAppId, origin, { move: adoption.carryGrants });
   debug(
     `[SoftN Web] "${current!.name}" ${adoption.why}${moved.copied ? `, moving ${moved.copied} stored keys` : ''}.`
   );
