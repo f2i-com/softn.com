@@ -14,6 +14,20 @@ import type { LogicEngine } from './vm-adapter';
 const HOST_WINDOW_NAME = /^__(?:tauri|react|softn|vite|webpack|playwright|vue|next|nuxt|zone|proto__$)/i;
 
 /**
+ * Which app's script wrote each `window.__…` value onto the page's window,
+ * and which of its runtimes did. The page has one window, and SoftN Web
+ * keeps every open app mounted: a value one app's script wrote was read by
+ * every other app whose script named it, and written over by it. So an app
+ * with no `net` could hand its records to an open app with `net`, or press
+ * another app's input latches. The first app whose script writes a key owns
+ * it until the last of its runtimes that wrote it closes; meanwhile no other
+ * app's script reads it or writes it. Two views of one app are one owner. A
+ * key no script has written, as a component sets one (Scene3D's
+ * `__scene3dLocked`), is every app's as before.
+ */
+const windowKeyOwners = new Map<string, { app: string | null; writers: Set<WindowBridge> }>();
+
+/**
  * Run the script's listeners for an event the page's window heard.
  * `throttled` is a high-frequency event, delivered at most once a frame.
  */
@@ -65,18 +79,31 @@ export class WindowBridge {
    *   app's element and captured keys under.
    * @param engine The engine running the script, while there is one.
    * @param dispatch Runs an event the window heard into the script.
+   * @param app The app's identity, which owns the keys its script writes
+   *   (windowKeyOwners); null for a host that gives none, whose runtimes are
+   *   one app as far as the window goes.
    */
   constructor(
     private readonly owner: object,
     private readonly engine: () => LogicEngine | null,
-    private readonly dispatch: WindowEventDispatch
+    private readonly dispatch: WindowEventDispatch,
+    private readonly app: string | null = null
   ) {
-    // Taken before the app's document mounts, so what is here is the host's.
+    // Taken before the app's document mounts, so what is here is the host's,
+    // but for what an app's script put there (windowKeyOwners): a second
+    // view of an app took its own latches for the host's, and never wrote
+    // them, and so did any app for a key another had written.
     this.hostWindowKeys = new Set(
       typeof window === 'undefined'
         ? []
-        : Object.getOwnPropertyNames(window).filter((k) => k.startsWith('__'))
+        : Object.getOwnPropertyNames(window).filter((k) => k.startsWith('__') && !windowKeyOwners.has(k))
     );
+  }
+
+  /** Whether another app's script owns `key` (windowKeyOwners). */
+  private ownedElsewhere(key: string): boolean {
+    const owner = windowKeyOwners.get(key);
+    return owner !== undefined && owner.app !== this.app;
   }
 
   /**
@@ -191,6 +218,7 @@ export class WindowBridge {
     let changed = false;
 
     for (const key of this.syncKeys) {
+      if (this.ownedElsewhere(key)) continue;
       const value = realWin[key];
       if (value !== undefined && typeof value !== 'function') {
         updated[key] = value;
@@ -239,7 +267,12 @@ export class WindowBridge {
       // writes __scene3dYaw on every mouse move — and echoing the copy the
       // VM was handed would throw that movement away.
       if (this.windowSyncSeen.has(key) && Object.is(this.windowSyncSeen.get(key), value)) continue;
+      // Another app's: see windowKeyOwners.
+      if (this.ownedElsewhere(key)) continue;
       realWin[key] = value;
+      let owner = windowKeyOwners.get(key);
+      if (!owner) windowKeyOwners.set(key, (owner = { app: this.app, writers: new Set() }));
+      owner.writers.add(this);
       this.windowKeysWritten.add(key);
       this.windowSyncSeen.set(key, value);
     }
@@ -265,9 +298,18 @@ export class WindowBridge {
     // The app's latches go with the app. Left behind, the next runtime on
     // this page — a reload of the same bundle — would snapshot them as the
     // host's and refuse to write them, and pointer lock would never engage.
+    // Another view of the app still writing a key keeps it, and its value.
+    const released: string[] = [];
+    for (const key of this.windowKeysWritten) {
+      const owner = windowKeyOwners.get(key);
+      owner?.writers.delete(this);
+      if (owner && owner.writers.size > 0) continue;
+      windowKeyOwners.delete(key);
+      released.push(key);
+    }
     if (typeof window !== 'undefined') {
       const realWin = window as unknown as Record<string, unknown>;
-      for (const key of this.windowKeysWritten) {
+      for (const key of released) {
         if (this.hostWindowKeys.has(key)) continue;
         try {
           delete realWin[key];

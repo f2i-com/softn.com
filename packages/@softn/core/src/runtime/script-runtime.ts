@@ -361,7 +361,8 @@ export class SoftNScriptRuntime {
     this.windowBridge = new WindowBridge(
       this,
       () => this.vmEngine,
-      (eventType, eventObj, throttled) => this.dispatchWindowEvent(eventType, eventObj, throttled)
+      (eventType, eventObj, throttled) => this.dispatchWindowEvent(eventType, eventObj, throttled),
+      appId ?? null
     );
     this.runtimeMode = options?.mode || 'main';
     this.documentShellRequest = options?.documentShell ?? null;

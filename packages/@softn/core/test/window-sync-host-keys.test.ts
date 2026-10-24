@@ -32,7 +32,7 @@ function script(code: string): ScriptBlock {
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-function makeRuntime(permissionConfig?: PermissionConfig) {
+function makeRuntime(permissionConfig?: PermissionConfig, appId = 'window-sync-test') {
   const state: Record<string, unknown> = {};
   const context: ScriptContext = {
     state,
@@ -44,7 +44,7 @@ function makeRuntime(permissionConfig?: PermissionConfig) {
     nav: createMockNavModule(),
     console: createConsoleModule(),
   };
-  const runtime = createScriptRuntime(context, undefined, 'window-sync-test');
+  const runtime = createScriptRuntime(context, undefined, appId);
   if (permissionConfig) {
     (runtime as unknown as { setPermissionConfig(c: PermissionConfig): void }).setPermissionConfig(
       permissionConfig
@@ -53,7 +53,7 @@ function makeRuntime(permissionConfig?: PermissionConfig) {
   return Object.assign(runtime, { state });
 }
 
-const OWN_KEYS = ['__hostThing', '__lateFn', '__mine', '__latch'];
+const OWN_KEYS = ['__hostThing', '__lateFn', '__mine', '__latch', '__shared', '__component'];
 
 beforeEach(() => {
   for (const key of OWN_KEYS) delete realWin[key];
@@ -179,6 +179,91 @@ describe('window.__ sync and the host page', () => {
     await result2.functions.tick();
     expect(realWin.__mine).toBe(7);
     again.cleanup();
+  });
+});
+
+describe('two apps open on one page', () => {
+  // SoftN Web keeps every open app mounted; the page has one window.
+  const app = async (appId: string, code: string) => {
+    const runtime = makeRuntime(undefined, appId);
+    const result = await runtime.loadScript(script(code));
+    return { runtime, result };
+  };
+  // Declares the key, then writes or reads it from the second call on.
+  const writer = (value: string) => `
+    function init() { window.__shared = "" }
+    function tick() { window.__shared = "${value}" }
+  `;
+  const reader = `
+    let seen = "nothing"
+    function init() { window.__shared = "" }
+    function tick() { seen = String(window.__shared) }
+  `;
+
+  it('do not read or write what the other\'s script wrote onto the window', async () => {
+    const a = await app('app-a', writer('the records of A'));
+    await a.result.functions.init();
+    await a.result.functions.tick();
+    await a.result.functions.tick();
+    expect(realWin.__shared).toBe('the records of A');
+
+    const b = await app('app-b', reader);
+    await b.result.functions.init();
+    await b.result.functions.tick();
+    await b.result.functions.tick();
+    expect(b.runtime.state.seen).not.toBe('the records of A');
+
+    const c = await app('app-c', writer('written over by C'));
+    await c.result.functions.init();
+    await c.result.functions.tick();
+    await c.result.functions.tick();
+    expect(realWin.__shared).toBe('the records of A');
+
+    // A closes: the key is no one's, and C's script may have it.
+    a.runtime.cleanup();
+    expect('__shared' in realWin).toBe(false);
+    await c.result.functions.tick();
+    await c.result.functions.tick();
+    expect(realWin.__shared).toBe('written over by C');
+    b.runtime.cleanup();
+    c.runtime.cleanup();
+  });
+
+  it('share a key as two views of one app, which keeps it while either is open', async () => {
+    const one = await app('app-a', writer('from the first view'));
+    await one.result.functions.init();
+    await one.result.functions.tick();
+    await one.result.functions.tick();
+    const two = await app('app-a', writer('from the second view'));
+    await two.result.functions.init();
+    await two.result.functions.tick();
+    await two.result.functions.tick();
+    expect(realWin.__shared).toBe('from the second view');
+
+    one.runtime.cleanup();
+    expect(realWin.__shared).toBe('from the second view');
+    two.runtime.cleanup();
+    expect('__shared' in realWin).toBe(false);
+  });
+
+  it('both hear a key only a component sets', async () => {
+    const code = `
+      let seen = "nothing"
+      function init() { window.__component = "" }
+      function tick() { seen = String(window.__component) }
+    `;
+    const a = await app('app-a', code);
+    const b = await app('app-b', code);
+    await a.result.functions.init();
+    await b.result.functions.init();
+    // What Scene3D does: set it on the real window.
+    realWin.__component = 'locked';
+    await a.result.functions.tick();
+    await b.result.functions.tick();
+    expect(a.runtime.state.seen).toBe('locked');
+    expect(b.runtime.state.seen).toBe('locked');
+    a.runtime.cleanup();
+    b.runtime.cleanup();
   });
 });
 
