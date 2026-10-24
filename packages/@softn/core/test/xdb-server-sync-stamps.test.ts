@@ -142,6 +142,26 @@ describe('an edit or a removal made just after a write it heard', () => {
     expect(op?.timestamp).toBe('2026-02-28T23:59:00.100Z');
   });
 
+  // The first edit's stamp followed the host's copy, in the host's time; taken for this
+  // device's own, the next edit went out unfloored, before it, and the host dropped it.
+  it('stamps a second edit after the first, when the first followed a write it heard', async () => {
+    const s = new XDBService(storage(), 'xdb:app', 'app', { backend: 'storage' });
+    const c = connectTo(s, '2026-03-01T00:00:00.900Z');
+    c.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    c.socket.receive({ type: 'sync_delta', ops: [{ id: 'server-1', collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'from hook' }, timestamp: '2026-03-01T00:00:00.950Z', clientId: 'server' }] });
+    vi.advanceTimersByTime(100);
+    s.updateInCollection('notes', 'n1', { title: 'one' });
+    await tick();
+    const [first] = pushedOps(c.socket);
+    c.socket.receive({ type: 'sync_ack', opIds: [(first as { id?: string }).id] });
+    vi.advanceTimersByTime(100);
+    s.updateInCollection('notes', 'n1', { title: 'two' });
+    await tick();
+    const [, second] = pushedOps(c.socket);
+    expect(Date.parse(first.timestamp)).toBeGreaterThan(Date.parse('2026-03-01T00:00:00.950Z'));
+    expect(Date.parse(second.timestamp)).toBeGreaterThan(Date.parse(first.timestamp));
+  });
+
   // A create and an edit of it in one millisecond: the create's own stamp, this clock's time,
   // counted as a copy the edit followed, and the edit went out in this clock's time.
   it('is stamped in the host time when edited in the millisecond it was made, on a fast device', async () => {

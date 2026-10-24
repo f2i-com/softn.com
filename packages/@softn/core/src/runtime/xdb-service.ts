@@ -723,17 +723,28 @@ export class XDBService {
       }
       if (theirs !== undefined && stampTime(theirs) > stampTime(latest)) latest = theirs;
     }
+    const key = `${record.collection}\u0000${record.id}`;
+    // Whether the copy edited was this device's own, before noting it.
+    const own = this.stampedHere.get(key) === latest;
     this.noteEditedAfter(record.collection, record.id, latest);
-    const stamp = editStamp(latest);
-    this.noteStampedHere(record.collection, record.id, stamp);
+    const now = Date.now();
+    const stamp = editStamp(latest, now);
+    // This clock's time, or one past a copy of its own: this device's. One past a
+    // copy heard from the host or a room is in their time, and the next edit's op
+    // is floored after it as after that copy.
+    if (stamp === new Date(now).toISOString() || own) this.noteStampedHere(record.collection, record.id, stamp);
+    else this.stampedHere.delete(key);
     return stamp;
   }
 
   /**
-   * The stamp this device gave each record it last created or edited, by record: a copy of its
-   * own is not one an edit follows for server sync's floor (`noteEditedAfter`). A create and an
-   * edit of it in one millisecond, or a burst of edits, left the copy at or past this clock, and
-   * the op went out in this clock's time, ahead of the host's on a device whose clock ran fast.
+   * The stamp this device gave each record it last created or edited in its own time, by
+   * record: a copy of its own is not one an edit follows for server sync's floor
+   * (`noteEditedAfter`). A create and an edit of it in one millisecond, or a burst of edits,
+   * left the copy at or past this clock, and the op went out in this clock's time, ahead of
+   * the host's on a device whose clock ran fast. A stamp that followed a copy heard from the
+   * host is not one of these: counted as one, the edit after it went out unfloored, before the
+   * one it came after, and the host took it for older and dropped it.
    */
   private stampedHere = new Map<string, string>();
 
