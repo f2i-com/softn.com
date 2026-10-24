@@ -73,8 +73,15 @@ describe('the clipboard', () => {
 
   it('is written from a click or a key press', async () => {
     activation = { isActive: true };
-    await runFor(80, { permissions: {} });
-    expect(writes.length).toBeGreaterThan(0);
+    const runtime = createScriptRuntime(makeContext(), undefined, `clip-${Math.random()}`, undefined, undefined, { permissionConfig: { permissions: {} } as never });
+    await runtime.loadScript({ type: 'ScriptBlock', loc, code: ON_A_TIMER });
+    try {
+      // The interval's first turn, however long a loaded machine takes to
+      // give it one: 80 ms was not always enough in the full suite.
+      await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0), { timeout: 3000 });
+    } finally {
+      runtime.cleanup();
+    }
   });
 
   it('in a worker, is handed to the page, which holds it to the same rule', async () => {
