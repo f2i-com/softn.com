@@ -13,6 +13,7 @@ import '@softn/brand/bar.css';
 // Builder's own chrome on those tokens: focus, form controls, shared controls.
 import './styles/builder.css';
 import App from './App';
+import { AppBoundary } from './components/AppBoundary';
 
 // The components, registered as the runtimes register them: the start-up set
 // now, and every other component (the light groups, charts, editors, Scene3D
@@ -22,7 +23,9 @@ registerRuntimeComponents();
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <DndProvider backend={HTML5Backend}>
-      <App />
+      <AppBoundary>
+        <App />
+      </AppBoundary>
     </DndProvider>
   </React.StrictMode>
 );

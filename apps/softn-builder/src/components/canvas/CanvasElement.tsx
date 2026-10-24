@@ -1181,7 +1181,7 @@ export const CanvasElement = React.memo(function CanvasElement({
               {comment.form === 'html' ? `<!-- ${comment.text} -->` : `// ${comment.text}`}
             </div>
           ))}
-          {renderComponentPreview()}
+          <ElementDrawing draw={renderComponentPreview} element={element} name={isTextNode(element) ? 'These words' : element.componentType} />
         </div>
 
         {allowsChildren && (
@@ -1214,3 +1214,51 @@ export const CanvasElement = React.memo(function CanvasElement({
     </div>
   );
 });
+
+interface ElementDrawingProps {
+  draw: () => React.ReactNode;
+  /** The element drawn: a change to it is tried again. */
+  element: CanvasElementType;
+  name: string;
+}
+
+/**
+ * One element's drawing, drawn where what it throws stays with it. A page
+ * the canvas could not draw one element of (`<Heading level="1 x">` asked
+ * React for an element named `h1 x`) blanked the whole Builder, the page's
+ * other elements and every panel with it. The element is a card saying so
+ * now, its children are drawn below it as ever, and its next change is
+ * drawn afresh.
+ */
+class ElementDrawing extends React.Component<ElementDrawingProps, { failed: boolean; element: CanvasElementType }> {
+  state = { failed: false, element: this.props.element };
+
+  static getDerivedStateFromProps(props: ElementDrawingProps, state: { failed: boolean; element: CanvasElementType }) {
+    return props.element !== state.element ? { failed: false, element: props.element } : null;
+  }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    console.warn(`[Canvas] ${this.props.name} could not be drawn:`, error);
+  }
+
+  render(): React.ReactNode {
+    if (!this.state.failed) return <Drawn draw={this.props.draw} />;
+    return (
+      <div
+        data-canvas-draw-failed="true"
+        style={{ padding: 10, background: 'var(--ink)', borderRadius: 6, border: '1px dashed var(--line-soft)', fontSize: 12, color: 'var(--dim)' }}
+      >
+        {this.props.name} could not be drawn on the canvas as its properties stand. Its source is kept as written.
+      </div>
+    );
+  }
+}
+
+/** The drawing made inside the boundary, so a throw while making it is caught there too. */
+function Drawn({ draw }: { draw: () => React.ReactNode }): React.ReactElement {
+  return <>{draw()}</>;
+}

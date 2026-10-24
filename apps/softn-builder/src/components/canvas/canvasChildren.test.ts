@@ -21,7 +21,7 @@
 
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseSource } from '../../utils/sourceParser';
 import { generateSource } from '../../utils/sourceGenerator';
 import { canDropInto } from '../../utils/blocks';
@@ -469,6 +469,32 @@ describe('a component the canvas draws as itself', () => {
     open('<App><Button>Save</Button><Text>Words</Text><Heading>Title</Heading><Card></Card><Stack></Stack></App>');
     mount();
     for (const type of ['Button', 'Text', 'Heading', 'Card', 'Stack']) expect(drawnIn(type), type).toBeNull();
+  });
+
+  it('keeps what one element cannot draw to that element: the rest of the canvas is drawn, and its next change is tried again', () => {
+    open('<App><Text>first</Text><Card><Text>inside</Text></Card><Text>last</Text></App>');
+    mount();
+    const card = byType('Card');
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      // Words that are not words: React refuses an object as a child.
+      act(() => canvas().updateElementProps(card.id, { title: 'Card' }));
+      const [first] = [...canvas().elements.values()].filter((el) => el.componentType === 'Text');
+      act(() => canvas().updateElementProps(first.id, { children: { not: 'words' } as never }));
+      const failed = host.querySelectorAll('[data-canvas-draw-failed]');
+      expect(failed).toHaveLength(1);
+      expect(failed[0].closest('[data-canvas-element-id]')?.getAttribute('data-canvas-element-id')).toBe(first.id);
+      expect(failed[0].textContent).toContain('Text could not be drawn on the canvas');
+      expect(host.textContent).toContain('inside');
+      expect(host.textContent).toContain('last');
+      act(() => canvas().updateElementProps(first.id, { children: 'first again' }));
+      expect(host.querySelector('[data-canvas-draw-failed]')).toBeNull();
+      expect(host.textContent).toContain('first again');
+    } finally {
+      quiet.mockRestore();
+      warned.mockRestore();
+    }
   });
 
   it('draws a Heading of any level its page writes, held to 1–6 as the component holds it', () => {
