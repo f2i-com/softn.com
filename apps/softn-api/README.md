@@ -590,7 +590,7 @@ Nothing else about a visitor is kept.
 | `POST /api/apps/{slug}/versions` | A new version of the bundle (`X-Edit-Key`) |
 | `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`) |
 | `POST /api/apps/{slug}/thumbnail` | Replace the picture (`X-Edit-Key`) |
-| `DELETE /api/apps/{slug}` | Unpublish (`X-Edit-Key`) |
+| `DELETE /api/apps/{slug}` | Unpublish (`X-Edit-Key`): the app is hidden and keeps its slug. With `?purge=1` and `X-Admin-Key`, its folder is removed, and its slug is listed in `retired-slugs.json` and never given to another app: visitors' browsers keep a `/play/` app's records and settings by its address, so the next app of that name would have had them. A demo the seed retired takes its own slug back when it is filed again |
 | `POST /api/apps/{slug}/key` | Replace the edit key (`X-Edit-Key`, or `X-Admin-Key` for a lost one). Answers with the new key; the old one is refused from then on. See "Ownership" |
 | `POST /api/apps/{slug}/remix` | Publish a new app that records this one as its parent. Same fields as publish; the bundle is optional and defaults to the parent's |
 | `POST /api/apps/{slug}/comments` | `{name, body}` |
@@ -695,8 +695,8 @@ admin purge has to reach every cache within a day. Every other shape is
 usually the 304: `bundle.softn` with no `v=` is the latest version, which the
 next publish moves, and `bundle.softn?v=N` alone can name other bytes
 tomorrow, because the seed replaces a demo's v1 in place when the demo
-changes and an app purged by the admin can be published again under its
-name, from v1. That address used to be held for a day, and a cache that
+changes, and a demo the seed retired and filed again starts again from v1
+under the slug it had. That address used to be held for a day, and a cache that
 kept the old bytes made the play page, which pins the digest, refuse the
 app as tampered with until the copy expired. An empty `v=` or `sha256=` is
 the same as none; a `v` that is not a whole number from 1 (`latest`, `0`)

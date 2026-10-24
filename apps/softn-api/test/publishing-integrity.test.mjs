@@ -313,12 +313,14 @@ test('the address a bundle is cached under names one content: the digest is in i
   assert.equal(stale.status, 404, 'the old address is not answered with the new bytes');
   assert.doesNotMatch(stale.cache, /public|max-age/);
 
-  // An app purged and published again under its name starts again from v1.
+  // An app purged and published again under its name starts again from v1,
+  // under a slug of its own: the purged app's is not handed out again
+  // (hardening.test.mjs), so its address names nothing at all.
   const gone = await s.publish('Second Life', { description: 'the first' });
   const before = await playBundle(gone.app.slug);
   assert.equal((await s.api('DELETE', `/api/apps/${gone.app.slug}?purge=1`, { headers: { 'X-Admin-Key': s.adminKey } })).status, 204);
   const again = await s.publish('Second Life', { description: 'another app altogether' });
-  assert.equal(again.app.slug, gone.app.slug);
+  assert.notEqual(again.app.slug, gone.app.slug);
   const after = await playBundle(again.app.slug);
   assert.notEqual(after.url, before.url);
   assert.equal((await get(before.url)).status, 404);

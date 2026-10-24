@@ -727,8 +727,12 @@ test('remix counts and lineage count and name only apps a visitor can open', ski
   await remix('lineage-root', 'Lineage Twig');
   assert.equal((await detail('lineage-root')).remixes, 1);
   assert.equal((await api('DELETE', '/api/apps/lineage-root?purge=1', { headers: { 'X-Admin-Key': adminKey } })).status, 204);
-  assert.equal((await publish('Lineage Root')).app.slug, 'lineage-root');
-  const newcomer = await detail('lineage-root');
+  // A purged app's slug is not handed out again (hardening.test.mjs says why),
+  // and the newcomer under its name is given none of what it left either.
+  const newcomerSlug = (await publish('Lineage Root')).app.slug;
+  assert.equal(newcomerSlug, 'lineage-root-2');
+  assert.equal((await api('GET', '/api/apps/lineage-root')).status, 404);
+  const newcomer = await detail(newcomerSlug);
   assert.equal(newcomer.remixes, 0, 'the purged app\'s remixes passed to the app that took its slug');
   assert.deepEqual(newcomer.remixList, []);
   assert.equal((await detail('lineage-twig')).parent, null, 'a remix of the purged app names the newcomer as its parent');

@@ -282,7 +282,10 @@ final class Catalog
     }
     public static function patch(string $slug, array $fields): void { $d = self::doc($slug); $d['app'] = array_replace($d['app'], $fields); self::put($slug, $d); }
     public static function remove(string $slug): void {
-        self::doc($slug);
+        $seed = (self::doc($slug)['app']['source'] ?? null) === 'seed';
+        // Kept from every later publish first: if that cannot be written, the
+        // app stays where it is rather than leaving its slug to be handed out.
+        self::retireSlug($slug, $seed);
         self::retire($slug);
         unset(self::$docs[$slug]); self::$rows = null;
         // What was remixed from it has no parent now. Left naming the slug,
@@ -296,6 +299,35 @@ final class Catalog
             try { self::put((string) $other, $doc); }
             catch (Throwable $e) { error_log("softn-api: $other could not be told its parent $slug is gone: " . $e->getMessage()); self::$docs[$other] = $doc; }
         }
+    }
+    /**
+     * Slugs no app is published under again, each with when it was retired
+     * and whether a seeded demo had it: slug => ['at' => int, 'seed' => bool].
+     *
+     * A slug is an address its visitors' browsers keep the app's own data
+     * under: `/play/<slug>` stores the app's records and settings by that
+     * address (single-shell's app id). Handed to the next app published with
+     * the same name, every earlier visitor's records were that app's from its
+     * first open. So a removed app's slug is kept, and the demo the seeder
+     * retired is the one app that may take it back.
+     *
+     * @return array<string, array{at: int, seed: bool}>
+     */
+    public static function retiredSlugs(): array {
+        self::boot();
+        return self::readJson(Config::dataDir() . '/retired-slugs.json');
+    }
+    private static function retireSlug(string $slug, bool $seed): void {
+        $all = self::retiredSlugs();
+        $all[$slug] = ['at' => time(), 'seed' => $seed];
+        self::writeJson(Config::dataDir() . '/retired-slugs.json', $all);
+    }
+    /** A seeded demo back under the slug it had: its own visitors' data is its own again. */
+    public static function reclaimSlug(string $slug): void {
+        $all = self::retiredSlugs();
+        if (!isset($all[$slug])) return;
+        unset($all[$slug]);
+        self::writeJson(Config::dataDir() . '/retired-slugs.json', $all);
     }
     /** Atomically retire the entire directory, listed or not; recovery never rediscovers it. */
     public static function retire(string $slug): void {

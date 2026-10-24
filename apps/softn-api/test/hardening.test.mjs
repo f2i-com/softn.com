@@ -222,6 +222,57 @@ test('a slug that is all digits is a slug like any other: a parent found by name
   assert.equal((await s.api('GET', '/api/apps/0')).json.app.remixes, 1);
 });
 
+test('a purged app’s slug is not given to the next app of that name', skip, async () => {
+  // Visitors' browsers keep a /play/ app's records and settings under its
+  // address. The slug went back into the pool with the app, and the next app
+  // published with the same name had every earlier visitor's data as its own.
+  const first = await s.publish('Reused Name');
+  assert.equal(first.app.slug, 'reused-name');
+  assert.equal((await s.api('DELETE', '/api/apps/reused-name?purge=1', { headers: { 'X-Admin-Key': s.adminKey } })).status, 204);
+  const next = await s.publish('Reused Name');
+  assert.equal(next.app.slug, 'reused-name-2');
+  assert.equal((await s.api('GET', '/api/apps/reused-name')).status, 404);
+  const retired = JSON.parse(fs.readFileSync(path.join(s.dataDir, 'retired-slugs.json'), 'utf8'));
+  assert.equal(retired['reused-name'].seed, false);
+  // Hidden by its owner, an app keeps its slug as it always did: it is still the app's.
+  assert.equal((await s.api('DELETE', `/api/apps/${next.app.slug}`, { headers: { 'X-Edit-Key': next.editKey } })).status, 204);
+  assert.equal((await s.publish('Reused Name')).app.slug, 'reused-name-3');
+});
+
+test('a retired demo takes its own slug back, and no other app takes it meanwhile', skip, () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-retired-slug-'));
+  try {
+    const bundle = path.join(dataDir, 'demo.softn');
+    fs.writeFileSync(bundle, makeBundle('Demo'));
+    const r = runPhp({
+      dataDir,
+      args: [bundle],
+      script: `
+$seed = fn() => Apps::create($argv[2], ['slug' => 'demo'], 'seed')['app']['slug'];
+$out = ['seeded' => $seed()];
+Catalog::remove('demo');
+$out['retired'] = Catalog::retiredSlugs();
+$out['published'] = Apps::create($argv[2], ['name' => 'Demo'], 'upload')['app']['slug'];
+$out['seededAgain'] = $seed();
+$out['retiredAfter'] = Catalog::retiredSlugs();
+// A user's app retired is not a demo's to take.
+Catalog::remove('demo-2');
+$out['seedTakesUsers'] = Apps::create($argv[2], ['slug' => 'demo-2'], 'seed')['app']['slug'];
+echo json_encode($out);`,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.seeded, 'demo');
+    assert.equal(out.retired.demo.seed, true);
+    assert.equal(out.published, 'demo-2', 'an upload of the same name is not given the retired slug');
+    assert.equal(out.seededAgain, 'demo', 'the demo has its own slug back');
+    assert.deepEqual(Object.keys(out.retiredAfter), [], 'and it is no longer listed as retired');
+    assert.notEqual(out.seedTakesUsers, 'demo-2', 'a user’s retired slug is not a demo’s to take');
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('a purged app leaves nothing behind, subfolders included', skip, async () => {
   const { app, editKey } = await s.publish('Purged With Extras');
   const folder = path.join(s.dataDir, 'apps', app.slug);

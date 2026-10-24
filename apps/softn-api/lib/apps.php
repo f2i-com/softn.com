@@ -63,12 +63,18 @@ final class Apps
         return substr(trim($s, '-'), 0, 48);
     }
 
-    private static function uniqueSlug(string $base): string {
-        $rows = Catalog::all(); $slug=$base;
-        for ($n=2;$n<1000;$n++) { if (!isset($rows[$slug]) && !is_dir(Catalog::path($slug))) return $slug; $slug=substr($base,0,44).'-'.$n; }
+    /**
+     * A slug no app has, or had: a retired one is never handed out again
+     * (Catalog::retiredSlugs says why), except to the seeded demo that had it.
+     */
+    private static function uniqueSlug(string $base, bool $seed = false): string {
+        $rows = Catalog::all(); $retired = Catalog::retiredSlugs(); $slug=$base;
+        $free = static fn(string $s): bool => !isset($rows[$s]) && !is_dir(Catalog::path($s))
+            && (!isset($retired[$s]) || ($seed && ($retired[$s]['seed'] ?? false) === true));
+        for ($n=2;$n<1000;$n++) { if ($free($slug)) return $slug; $slug=substr($base,0,44).'-'.$n; }
         // Past a thousand of one name (every name with no Latin letter in it is
         // `app`), an ending of its own: the thousandth such app could not be published.
-        for ($i=0;$i<20;$i++) { $slug=substr($base,0,40).'-'.bin2hex(random_bytes(3)); if (!isset($rows[$slug]) && !is_dir(Catalog::path($slug))) return $slug; }
+        for ($i=0;$i<20;$i++) { $slug=substr($base,0,40).'-'.bin2hex(random_bytes(3)); if ($free($slug)) return $slug; }
         throw new ApiError(500,'Could not find a free name for the app.');
     }
 
@@ -378,7 +384,7 @@ final class Apps
         Catalog::boot();
         // A seed names its own slug: the id the site already uses for that demo.
         $wanted = is_string($opts['slug'] ?? null) && $opts['slug'] !== '' ? self::slugify($opts['slug']) : self::slugify($name);
-        $slug = self::uniqueSlug($wanted);
+        $slug = self::uniqueSlug($wanted, $source === 'seed');
         // Everything that can refuse is settled before the folder exists: a
         // parent that is hidden is a 404 here, not after the bundle is on disk.
         $rootSlug = null;
@@ -408,6 +414,12 @@ final class Apps
             // admin's. Retire what was written the way an unpublish does.
             try { Catalog::retire($slug); } catch (Throwable $retire) { error_log("softn-api: could not retire the half-published $slug: " . $retire->getMessage()); }
             throw $e;
+        }
+        // A demo the seeder retired and has filed again has its slug back. Left
+        // listed as retired, the slug is still held by the app, so a failure
+        // here is logged rather than unpublishing the demo.
+        if ($source === 'seed') {
+            try { Catalog::reclaimSlug($slug); } catch (Throwable $e) { error_log("softn-api: $slug is published again but still listed as retired: " . $e->getMessage()); }
         }
         return ['app' => self::card(self::row($slug)), 'editKey' => $editKey];
     }
