@@ -79,6 +79,21 @@ describe('create and update contracts', () => {
     expect(store().files.size).toBe(2);
   });
 
+  it('checks an import of twenty thousand long names in one pass, and still finds the alias at its end', () => {
+    // Each create was compared with every file and every earlier record: an
+    // import of 9,992 long names held the page for 38 seconds.
+    const long = 'x'.repeat(200);
+    const entries = Array.from({ length: 20_000 }, (_, i) => ({ path: `assets/${long}-${i}.txt`, content: '' }));
+    const started = performance.now();
+    expect(() => store().batchCreateFiles([...entries, { path: `assets/${long.toUpperCase()}-0.txt`, content: '' }])).toThrow(
+      /same file as assets\/x+-0\.txt/,
+    );
+    store().batchCreateFiles(entries);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(store().files.size).toBe(20_000);
+    expect(() => store().createFile(`ASSETS/${long}-19999.txt`, '')).toThrow(/same file as assets\/x+-19999\.txt/);
+  });
+
   it('updateFile refuses an absent path and records nothing', () => {
     expect(() => store().updateFile('ui/nothere.ui', 'x')).toThrow(/no such file/);
     expect(store().files.has('ui/nothere.ui')).toBe(false);

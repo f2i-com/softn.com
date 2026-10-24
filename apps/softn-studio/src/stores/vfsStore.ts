@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { classifyAsset } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 import type { VFSFile, VFSEvent } from '../types/studio';
-import { findAlias, resolveProjectPath } from '../lib/paths';
+import { canonicalKey, resolveProjectPath } from '../lib/paths';
 import { beforeImage, boundJournal, fingerprint, planRevert, type UndoEntry } from '../lib/undoJournal';
 
 /**
@@ -214,9 +214,17 @@ function undoTailUnit(files: Map<string, VFSFile>, history: VFSEvent[], floor: M
  */
 function checkRecords(files: Map<string, VFSFile>, records: VFSChangeRecord[]): void {
   const seen = new Set<string>();
+  // Each path's identity is worked out once. Asked of every file and every
+  // earlier record for each file created, an import of ten thousand files
+  // held the page for 38 seconds.
+  let fileKeys: Map<string, string> | null = null;
+  const recordKeys = new Map<string, string>();
   for (const record of records) {
     if (seen.has(record.path)) throw new Error(`Transaction names ${record.path} more than once`);
     seen.add(record.path);
+    const key = canonicalKey(record.path);
+    const earlier = recordKeys.get(key);
+    if (earlier === undefined) recordKeys.set(key, record.path);
     const exists = files.has(record.path);
     if (record.op === 'create') {
       if (exists) throw new Error(`createFile: ${record.path} already exists`);
@@ -224,7 +232,16 @@ function checkRecords(files: Map<string, VFSFile>, records: VFSChangeRecord[]): 
       const verdict = resolveProjectPath(record.path);
       if (!verdict.ok) throw new Error(`createFile: ${JSON.stringify(record.path)} is not a project path: ${verdict.reason}`);
       if (verdict.path !== record.path) throw new Error(`createFile: ${JSON.stringify(record.path)} is not canonical; use ${verdict.path}`);
-      const alias = findAlias(record.path, files.keys()) ?? findAlias(record.path, seen);
+      if (fileKeys === null) {
+        fileKeys = new Map();
+        for (const path of files.keys()) {
+          const fileKey = canonicalKey(path);
+          if (!fileKeys.has(fileKey)) fileKeys.set(fileKey, path);
+        }
+      }
+      // The file being created is not there yet, and an earlier record of the
+      // same spelling was refused above, so any match is another spelling.
+      const alias = fileKeys.get(key) ?? earlier ?? null;
       if (alias !== null) throw new Error(`createFile: ${record.path} is the same file as ${alias} on a case-insensitive disk`);
     } else if (record.op === 'update') {
       if (!exists) throw new Error(`updateFile: no such file ${record.path}`);
