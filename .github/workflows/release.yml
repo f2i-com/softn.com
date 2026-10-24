@@ -238,6 +238,10 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
+          cache: npm
+      # The engine install reads the release's archives with an npm package.
+      - name: Install dependencies
+        run: npm ci
       - name: Install the ZIPP release
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
       - name: The static Linux target

@@ -274,12 +274,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-      # Node runs build.mjs, the engine install and the suite, all of which
-      # need nothing but Node itself: no npm install.
+      # Node runs build.mjs, the engine install and the suite; the install
+      # reads the release's archives with an npm package (fflate).
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
       - name: Install the ZIPP release
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
       # The toolchain is the crates' own (rust-toolchain.toml, 1.92.0, with
