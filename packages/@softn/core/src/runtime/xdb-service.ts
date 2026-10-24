@@ -723,7 +723,27 @@ export class XDBService {
       }
       if (theirs !== undefined && stampTime(theirs) > stampTime(latest)) latest = theirs;
     }
+    this.noteEditedAfter(record.collection, record.id, latest);
     return editStamp(latest);
+  }
+
+  /**
+   * The stamp of the copy an edit or a removal was made after, by record, until the change is
+   * announced (`after` on the mutation event): server sync stamps its op no earlier than just
+   * after it. Kept only for a copy stamped ahead of this clock, which is when an edit follows
+   * it (editStamp). One behind is older than the edit by this clock and by the host's, and a
+   * floor at the edit's own stamp put the op in this clock's time: on a device whose clock ran
+   * fast, ahead of the host's, past edits other devices made in between, which it undid.
+   */
+  private editedAfter = new Map<string, string>();
+
+  private noteEditedAfter(collection: string, id: string, stamp: string): void {
+    const at = stampTime(stamp);
+    const now = Date.now();
+    if (!(at >= now) || at - now > STAMP_AHEAD_LIMIT_MS) return;
+    // Taken by the announcement that follows; a bound for writes that threw before it.
+    if (this.editedAfter.size >= 10_000) this.editedAfter.clear();
+    this.editedAfter.set(`${collection}\u0000${id}`, stamp);
   }
 
   /** Whether the collection's stored bytes are readable (false = quarantined). */
@@ -1790,6 +1810,7 @@ export class XDBService {
       this.emit({ type: 'delete', collection, record, removed: true });
       if (!stillBeingCreated) {
         this.noteUnheardRemovals(collection, [id]);
+        this.noteEditedAfter(collection, id, record.updated_at);
         this.notifyMutation('delete', collection, id);
       }
       return true;
@@ -1837,7 +1858,10 @@ export class XDBService {
       if (together) this.resumeNotifications();
     }
     this.noteUnheardRemovals(collection, gone.map((record) => record.id));
-    for (const record of gone) this.notifyMutation('delete', collection, record.id);
+    for (const record of gone) {
+      this.noteEditedAfter(collection, record.id, record.updated_at);
+      this.notifyMutation('delete', collection, record.id);
+    }
     return gone.length;
   }
 
@@ -2142,6 +2166,8 @@ export class XDBService {
     recordId: string;
     data?: Record<string, unknown>;
     source?: string;
+    /** The stamp of the copy the change was made after, when it was ahead of this clock (`editedAfter`). */
+    after?: string;
   }) => void> = new Set();
 
   /** Whether the current mutation originates from the server (to avoid re-push). */
@@ -2158,6 +2184,7 @@ export class XDBService {
     recordId: string;
     data?: Record<string, unknown>;
     source?: string;
+    after?: string;
   }) => void): () => void {
     this.mutationListeners.add(listener);
     return () => { this.mutationListeners.delete(listener); };
@@ -2232,18 +2259,24 @@ export class XDBService {
    * SQLite gave it, edits and all, and nothing of one deleted first.
    */
   private notifyMutationLanded(type: 'update' | 'delete', collection: string, recordId: string, data?: Record<string, unknown>): void {
-    if (this.pendingCreateIds.has(recordId)) return;
+    if (this.pendingCreateIds.has(recordId)) {
+      this.editedAfter.delete(`${collection}\u0000${recordId}`);
+      return;
+    }
     this.notifyMutation(type, collection, recordId, data);
   }
 
   /** Notify mutation listeners (called internally after create/update/delete). */
   private notifyMutation(type: string, collection: string, recordId: string, data?: Record<string, unknown>): void {
+    const key = `${collection}\u0000${recordId}`;
+    const after = this.editedAfter.get(key);
+    if (after !== undefined) this.editedAfter.delete(key);
     // Server sync is the one listener.
     if (this.mutationListeners.size === 0) {
       this.noteUnheardChange(collection, recordId);
       return;
     }
-    const event = { type, collection, recordId, data, source: this._mutationSource };
+    const event = { type, collection, recordId, data, source: this._mutationSource, ...(after !== undefined ? { after } : {}) };
     for (const listener of this.mutationListeners) {
       try { listener(event); } catch { /* ignore */ }
     }
@@ -2418,12 +2451,14 @@ export class XDBService {
     // every one of them back. And every record it takes, deleted ones too, is
     // kept for a sync room that is not open, as hardDeleteMany keeps them: none
     // was, and the room's copies came back at its next opening.
-    let gone: string[];
-    let removed: string[];
+    let held: XDBRecord[];
     if (this.useTauri) {
-      const held = [...(this.memoryStore.get(collection)?.values() ?? [])].filter((r) => !this.pendingCreateIds.has(r.id));
-      removed = held.map((r) => r.id);
-      gone = held.filter((r) => !r.deleted).map((r) => r.id);
+      const cached = [...(this.memoryStore.get(collection)?.values() ?? [])];
+      // A record still being created goes too, as hardDelete takes one: its
+      // create callback removes the row SQLite writes, and neither puts it back
+      // in the cache nor announces it, which brought it back after the clear.
+      for (const record of cached) if (this.pendingCreateIds.has(record.id)) this.abandonedCreates.add(record.id);
+      held = cached.filter((r) => !this.pendingCreateIds.has(r.id));
       this.memoryStore.delete(collection);
       this.knownCollections.delete(collection);
       this.emit({ type: 'refresh', collection, records: [] });
@@ -2432,9 +2467,7 @@ export class XDBService {
         .then(() => this.nativeWriteLanded(collection))
         .catch((err) => this.nativeWriteFailed('clear a collection', collection, err));
     } else {
-      const held = this.getAllCollectionData(collection);
-      removed = held.map((r) => r.id);
-      gone = held.filter((r) => !r.deleted).map((r) => r.id);
+      held = this.getAllCollectionData(collection);
       if (this.storagePersistence?.protocol === 1) this.hostedWrite(this.storagePersistence.removeItem(this.collectionKey(collection)), [collection]);
       else {
         this.storage.removeItem(this.collectionKey(collection));
@@ -2444,9 +2477,14 @@ export class XDBService {
       this.indexCollection(collection, false);
       this.emit({ type: 'refresh', collection, records: [] });
     }
+    const removed = held.map((r) => r.id);
     for (const id of removed) this.noteRemovedForGood(collection, id);
     this.noteUnheardRemovals(collection, removed);
-    for (const id of gone) this.notifyMutation('delete', collection, id);
+    for (const record of held) {
+      if (record.deleted) continue;
+      this.noteEditedAfter(collection, record.id, record.updated_at);
+      this.notifyMutation('delete', collection, record.id);
+    }
   }
 
   /**
@@ -2674,7 +2712,13 @@ export class XDBService {
    * own copy of where it has one.
    */
   private announceImport(collection: string, before: XDBRecord[], after: XDBRecord[]): void {
-    if (this.mutationListeners.size === 0) return;
+    if (this.mutationListeners.size === 0) {
+      // What a replacement took away, kept for the client that starts, as any removal made
+      // while nothing listens is: it left no tombstone, and the first pull brought it back.
+      const now = new Set(after.map((record) => record.id));
+      this.noteUnheardRemovals(collection, before.filter((record) => !record.deleted && !now.has(record.id)).map((record) => record.id));
+      return;
+    }
     const was = new Map(before.map((record) => [record.id, record]));
     const now = new Set<string>();
     for (const record of after) {

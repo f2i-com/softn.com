@@ -109,7 +109,54 @@ describe('a record heard from a host whose clock runs ahead', () => {
   });
 });
 
-describe('an edit made just after a write it heard', () => {
+describe('an edit or a removal made just after a write it heard', () => {
+  it('is stamped after that write, deletions and removals too', async () => {
+    for (const remove of ['deleteFromCollection', 'hardDelete'] as const) {
+      const s = new XDBService(storage(), 'xdb:app', 'app', { backend: 'storage' });
+      const c = connectTo(s, '2026-03-01T00:00:00.900Z');
+      c.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+      c.socket.receive({ type: 'sync_delta', ops: [{ id: 'server-1', collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'from hook' }, timestamp: '2026-03-01T00:00:00.950Z', clientId: 'server' }] });
+      vi.advanceTimersByTime(100);
+      if (remove === 'deleteFromCollection') s.deleteFromCollection('notes', 'n1');
+      else s.hardDelete('notes', 'n1');
+      await tick();
+      const op = pushedOps(c.socket).find((o) => o.recordId === 'n1');
+      expect(op?.operation, remove).toBe('delete');
+      expect(Date.parse(op!.timestamp), remove).toBeGreaterThan(Date.parse('2026-03-01T00:00:00.950Z'));
+      c.sync.disconnect();
+    }
+  });
+
+  // The floor was the record's new stamp, this clock's time: on a device ahead of the host it
+  // stood in for the offset, and the op went out in this clock's time, past edits other devices
+  // made in between, which the host then took for older and undid.
+  it('is stamped in the host time on a device whose clock runs fast', async () => {
+    const s = new XDBService(storage(), 'xdb:app', 'app', { backend: 'storage' });
+    // The host's clock is a minute behind this device's.
+    const c = connectTo(s, '2026-02-28T23:59:00.000Z');
+    c.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    vi.advanceTimersByTime(100);
+    s.updateInCollection('notes', 'n1', { title: 'edited' });
+    await tick();
+    const op = pushedOps(c.socket).find((o) => o.recordId === 'n1');
+    expect(op?.timestamp).toBe('2026-02-28T23:59:00.100Z');
+  });
+
+  // The stamp was read back from the record for every change heard: the whole collection
+  // parsed once a record, so an import of thousands held the tab for seconds.
+  it('reads nothing back from the store to stamp a change', async () => {
+    const s = new XDBService(storage(), 'xdb:app', 'app', { backend: 'storage' });
+    const c = connectTo(s, '2026-03-01T00:00:00.000Z');
+    c.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    const get = vi.spyOn(s, 'get');
+    const created = s.create('notes', { title: 'one' });
+    s.update(created.id, { title: 'two' });
+    s.delete(created.id);
+    await tick();
+    expect(get).not.toHaveBeenCalled();
+    expect(pushedOps(c.socket).map((o) => o.operation)).toEqual(['create']);
+  });
+
   it('is stamped after that write, whatever this clock says', async () => {
     const s = new XDBService(storage(), 'xdb:app', 'app', { backend: 'storage' });
     // This device is 900 ms behind the host: under a second counts as no offset.

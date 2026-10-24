@@ -1004,5 +1004,21 @@ describe('XDB Service (Tauri mode)', () => {
       xdb.update(kept.id, { title: 'later' });
       expect(heard.at(-1)).toEqual({ type: 'update', recordId: stored.id, data: { title: 'later', done: true } });
     });
+
+    // Cleared before its create landed, the create's answer put the record back in the cache
+    // and told server sync of it: the clear did not hold.
+    it('is gone after a clear of its collection, and told to no one', async () => {
+      const xdb = new XDBService(undefined, 'pending-clear', 'pending-clear-app');
+      await xdb.isReady;
+      const heard: string[] = [];
+      xdb.onMutation((event) => heard.push(`${event.type}:${event.recordId}`));
+      xdb.create('tasks', { title: 'short-lived' });
+      xdb.clear('tasks');
+      await flushPromises();
+      await flushPromises();
+      expect(xdb.getAll('tasks')).toEqual([]);
+      expect((backend.get('tasks') ?? []).filter((record) => !record.deleted)).toEqual([]);
+      expect(heard).toEqual([]);
+    });
   });
 });

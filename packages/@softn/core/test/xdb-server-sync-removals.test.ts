@@ -57,9 +57,9 @@ const row = (id: string, title: string) => ({
 });
 const HOST_HOLDS = [row('n1', 'one'), row('n2', 'two')];
 
-/** A client that connects and pulls what the host holds. */
-function connect(store: XDBService) {
-  const sync = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+/** A client that connects and pulls what the host holds; `listed: false` names no collections. */
+function connect(store: XDBService, listed = true) {
+  const sync = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', ...(listed ? { collections: ['notes'] } : {}), reconnectDelay: 60_000 });
   sync.connect();
   const socket = FakeSocket.made[FakeSocket.made.length - 1];
   socket.open();
@@ -118,6 +118,29 @@ describe('a record removed for good before the client listened', () => {
     await tick();
     expect(deletes(socket)).toEqual(['n1', 'n2']);
     expect(live(store)).toEqual([]);
+  });
+
+  // A clear takes its collection off the store's list, and a client naming no collections
+  // looked for removals only in the listed ones.
+  it('is told for a cleared collection by a client that names no collections', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    store.clear('notes');
+    const { socket } = connect(store, false);
+    await tick();
+    expect(deletes(socket)).toEqual(['n1', 'n2']);
+  });
+
+  it('is told for each record an import replacing the collection took', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    store.import({ version: 1, exportedAt: new Date().toISOString(), collections: { notes: [store.get('notes', 'n2')!] } }, { merge: false });
+    const { socket } = connect(store);
+    await tick();
+    expect(deletes(socket)).toEqual(['n1']);
+    expect(live(store)).toEqual(['n2']);
   });
 
   it('is told after the client goes offline and the page closes, by the next visit', async () => {

@@ -1495,13 +1495,17 @@ export class XDBServerSync {
       if (event.source === 'server') return;
       if (event.type !== 'create' && event.type !== 'update' && event.type !== 'delete') return;
       this.pullOnFirstUse(event.collection);
-      // The stamp the change left on its record, which the op is not stamped before.
-      const held = typeof this.xdb.get === 'function' ? this.xdb.get(event.collection, event.recordId) : null;
-      const floor = held ? Date.parse(String(held.updated_at)) : NaN;
+      // Just after the copy the change was made after, when that was ahead of
+      // this clock (XDBService's `after`): the op is not stamped before it. It
+      // was the record's new stamp, read back for every change: the whole
+      // collection parsed once a record (an import of thousands held the tab
+      // for seconds), and, being this clock's time, ahead of the host's on a
+      // device whose clock ran fast, where the offset is to put it.
+      const after = typeof event.after === 'string' ? Date.parse(event.after) : NaN;
       this.queueChange(
         { type: event.type, collection: event.collection, recordId: event.recordId, data: event.data },
         Date.now(),
-        Number.isFinite(floor) ? { floor } : undefined
+        Number.isFinite(after) ? { floor: after + 1 } : undefined
       );
     });
   }
@@ -1581,13 +1585,19 @@ export class XDBServerSync {
     // And what this page removed for good meanwhile, which leaves nothing to look for.
     const removedBy = new Map<string, Array<{ id: string; at: number }>>();
     for (const { collection, id, at } of typeof store.takeUnheardRemovals === 'function' ? store.takeUnheardRemovals() : []) {
-      removedBy.set(collection, [...(removedBy.get(collection) ?? []), { id, at }]);
+      const list = removedBy.get(collection);
+      if (list) list.push({ id, at });
+      else removedBy.set(collection, [{ id, at }]);
     }
     if (typeof store.getAllRaw !== 'function') return;
     const since = this.watched === null || unheard === null ? this.watched : Math.min(this.watched, unheard);
     const found: Array<{ made: number; change: LocalChange }> = [];
     const gone: Array<{ made: number; change: LocalChange }> = [];
-    for (const collection of this.syncedCollections()) {
+    // In any collection a change heard here would be sent for, listed or not:
+    // a clear takes its collection off the store's list, and its removals went
+    // unsent with no `collections` to name it.
+    for (const [collection, removals] of removedBy) {
+      if (!SYNCABLE_COLLECTION.test(collection)) continue;
       let records: unknown;
       try {
         records = store.getAllRaw(collection);
@@ -1596,8 +1606,16 @@ export class XDBServerSync {
       }
       // A record made again since it was removed goes as itself.
       const held = new Set((Array.isArray(records) ? (records as Array<Partial<StoredRecord> | null>) : []).map((record) => record?.id));
-      for (const { id, at } of removedBy.get(collection) ?? []) {
+      for (const { id, at } of removals) {
         if (!held.has(id)) gone.push({ made: at, change: { type: 'delete', collection, recordId: id } });
+      }
+    }
+    for (const collection of this.syncedCollections()) {
+      let records: unknown;
+      try {
+        records = store.getAllRaw(collection);
+      } catch {
+        continue;
       }
       for (const record of Array.isArray(records) ? (records as Array<Partial<StoredRecord> | null>) : []) {
         if (!record || typeof record.id !== 'string') continue;
@@ -1718,10 +1736,14 @@ export class XDBServerSync {
     }
     if (this.queueDirty) {
       // Every op not yet answered, in the order it would go: those sent first.
-      const ops: unknown[] = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
+      // Each with when it was made by this device's clock, which an op already sent and
+      // stamped in the host's time has back once the offset is taken off.
+      const mine = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
         const made = this.madeAt.get(op.id);
         const removal = this.removals.has(op.id) ? { removal: true } : {};
-        return made === undefined ? { ...op, ...removal } : { ...op, made, ...this.stampOf.get(op.id), ...removal };
+        return made === undefined
+          ? { entry: { ...op, ...removal } as unknown, at: Date.parse(op.timestamp) - this.clockOffset }
+          : { entry: { ...op, made, ...this.stampOf.get(op.id), ...removal } as unknown, at: made };
       });
       // The queue is saved under the app's name, and another tab of the app saves its own
       // there: each wrote its queue over the other's, so a change one tab made offline was gone
@@ -1731,15 +1753,28 @@ export class XDBServerSync {
       // and the host answers an op it has had again without applying it again, and keeps the
       // newer of two edits by their stamps.
       const own = new Set([...this.inflightOps.keys(), ...this.pendingOps.keys()]);
+      let others: Array<{ entry: unknown; at: number }> = [];
       try {
         const saved = JSON.parse(meta.readSyncMeta(QUEUE_META) ?? 'null') as { ops?: unknown } | null;
-        const others = Array.isArray(saved?.ops) ? saved.ops : [];
-        ops.unshift(...others.filter((entry) => {
+        others = (Array.isArray(saved?.ops) ? saved.ops : []).flatMap((entry) => {
           const op = savedOp(entry);
-          return op !== null && !own.has(op.id) && !this.finished.has(op.id);
-        }));
+          if (op === null || own.has(op.id) || this.finished.has(op.id)) return [];
+          const made = (entry as { made?: unknown }).made;
+          return [{ entry, at: typeof made === 'number' ? made : Date.parse(op.timestamp) }];
+        });
       } catch {
         // Unreadable: there is nothing it can be trusted to say.
+      }
+      // In the order they were made, each client's own order kept: another tab's ops put
+      // ahead of this one's sent its edit of a record before this tab's create of it, which
+      // the host refused (the record was not there) and the create then undid.
+      const ops: unknown[] = [];
+      let i = 0;
+      let j = 0;
+      const time = (at: number) => (Number.isFinite(at) ? at : -Infinity);
+      while (i < others.length || j < mine.length) {
+        if (j >= mine.length || (i < others.length && time(others[i].at) <= time(mine[j].at))) ops.push(others[i++].entry);
+        else ops.push(mine[j++].entry);
       }
       try {
         meta.writeSyncMeta(QUEUE_META, ops.length > 0 ? JSON.stringify({ v: 1, ops }) : null);

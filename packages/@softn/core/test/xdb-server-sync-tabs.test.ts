@@ -137,6 +137,31 @@ describe('one tab offline, the other online', () => {
   });
 });
 
+describe("one tab's edit of a record another tab created, both offline", () => {
+  // Saving put the other tab's ops ahead of its own: tab A's later save sent B's edit of the
+  // record before A's create of it, and the host refused the edit (the record was not there).
+  it('goes after the create at the next visit', async () => {
+    const backing = storage();
+    const a = tab(backing);
+    const b = tab(backing);
+    offline(a);
+    offline(b);
+    const r1 = a.create('notes', { title: 'made in A' });
+    await tick();
+    vi.advanceTimersByTime(1000);
+    b.update(r1.id, { title: 'edited in B' });
+    await tick();
+    vi.advanceTimersByTime(1000);
+    a.create('notes', { title: 'more in A' });
+    await tick();
+
+    const next = online(tab(backing));
+    await tick();
+    const first = pushed(next.socket).find((op) => (op as { recordId?: string }).recordId === r1.id);
+    expect(first?.operation).toBe('create');
+  });
+});
+
 describe('a change a tab made before its client listened', () => {
   it('is sent when the client starts, though another tab moved the mark on meanwhile', async () => {
     const backing = storage();
