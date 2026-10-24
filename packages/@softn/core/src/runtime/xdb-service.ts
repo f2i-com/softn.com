@@ -140,21 +140,6 @@ export function editStamp(previous: string | undefined, now = Date.now()): strin
  */
 export type StampSource = (collection: string, id: string) => string | undefined;
 
-/**
- * Why the native store's import would refuse `record` for `collection`, or
- * null: its `Record` takes every field, of these types, and import_records
- * refuses an id of spaces and a record that names another collection.
- */
-function nativeImportRefusal(record: XDBRecord, collection: string): string | null {
-  const row = record as unknown as Record<string, unknown>;
-  if (typeof row.id !== 'string' || row.id.trim() === '') return 'has no id';
-  if (row.collection !== collection) return `names ${JSON.stringify(row.collection)} as its collection`;
-  if (typeof row.created_at !== 'string' || typeof row.updated_at !== 'string' || typeof row.deleted !== 'boolean' || !('data' in row)) {
-    return 'is not a whole record (id, collection, data, created_at, updated_at, deleted)';
-  }
-  return null;
-}
-
 /** A record's data when it is an object, else nothing: an imported row's `data` may be anything. */
 function objectData(record: XDBRecord): Record<string, unknown> {
   const data = record.data as unknown;
@@ -2665,58 +2650,40 @@ export class XDBService {
       };
     }
 
-    // What the native store would refuse of this import (import_records),
-    // refused here before anything changes: it answers after the cache below
-    // has changed and sync has been told of the import, so a refusal there
-    // left the import in the room and on the sync server, a replacement's
-    // dropped records dropped with it, and the next sync brought them back
-    // here. A record must be one its native shape takes, with a real id, of
-    // the collection it is imported into; and records are kept by id alone,
-    // so not a live record of another collection (a deleted one it writes
-    // over), here or earlier in this import.
-    const owner = new Map<string, string>();
-    for (const [collection, coll] of this.memoryStore) {
-      for (const [id, record] of coll) if (!record.deleted) owner.set(id, collection);
-    }
-    for (const plan of plans) {
-      if (plan.collection.trim() === '') {
-        throw new XDBStorageError('invalid-data', 'Import refused: a collection has no name; nothing was changed.');
-      }
-      for (const record of plan.records) {
-        const refusal = nativeImportRefusal(record, plan.collection)
-          ?? (owner.has(record.id) && owner.get(record.id) !== plan.collection ? `is a record of "${owner.get(record.id)}" here` : null);
-        if (refusal !== null) {
-          throw new XDBStorageError('invalid-data', `Import refused: record "${record.id}" for "${plan.collection}" ${refusal}; nothing was changed.`, plan.collection);
-        }
-        if (!record.deleted) owner.set(record.id, plan.collection);
-      }
-    }
-    for (const plan of plans) {
-      const before = this.getAllCollectionData(plan.collection);
-      const after = XDBService.mergePlan(before, plan);
-      this.setCollectionData(plan.collection, after);
-      importedCollections.push(plan.collection);
-      this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
-      this.announceImport(plan.collection, before, after);
-    }
+    // The native store first, the cache and sync after it has committed. The
+    // cache used to take the import at once and peer and server sync were
+    // told of it, and the native store answered after: an import it refused
+    // (a record another collection holds, one its Record cannot read, an id
+    // of white space as Rust reads it, a collection that never loaded) was
+    // in the room and on the sync server by then, a replacement's dropped
+    // records dropped with it, and the next sync brought them back here. A
+    // check here of what it would refuse missed some of it each time.
+    importedCollections.push(...plans.map(plan => plan.collection));
     const batches = plans.map(plan => ({ collection: plan.collection, replace: plan.replace, records: plan.records }));
     const persisted: Promise<XDBPersistResult> = batches.length === 0
       ? Promise.resolve({ backend: 'native', collections: [], imported: 0, tombstoned: 0 })
       : this.native<{ imported: number; tombstoned: number; collections: Array<{ collection: string }> }>('import_records', { batches })
-        .then(summary => ({
-          backend: 'native' as const,
-          collections: summary.collections.map(c => c.collection),
-          imported: summary.imported,
-          tombstoned: summary.tombstoned,
-        }))
-        .catch(async (err: unknown) => {
-          console.error('[XDB] Native import was not committed; reloading the affected collections:', err);
-          for (const collection of importedCollections) {
-            try { await this.getAllAsync(collection); } catch { /* the hydration issue is already recorded */ }
-            this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection), reload: true });
+        .then(summary => {
+          for (const plan of plans) {
+            const before = this.getAllCollectionData(plan.collection);
+            const after = XDBService.mergePlan(before, plan);
+            this.setCollectionData(plan.collection, after);
+            this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
+            this.announceImport(plan.collection, before, after);
           }
+          return {
+            backend: 'native' as const,
+            collections: summary.collections.map(c => c.collection),
+            imported: summary.imported,
+            tombstoned: summary.tombstoned,
+          };
+        })
+        .catch((err: unknown) => {
+          console.error('[XDB] Native import was not committed; nothing was changed:', err);
           throw err instanceof Error ? err : new Error(String(err));
         });
+    // Synchronous callers may ignore the durable signal; async ones await it.
+    persisted.catch(() => {});
     return { imported, collections: importedCollections, persisted };
   }
 
