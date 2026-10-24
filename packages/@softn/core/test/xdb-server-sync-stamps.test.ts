@@ -109,7 +109,98 @@ describe('a record heard from a host whose clock runs ahead', () => {
   });
 });
 
+describe('a pull of many records', () => {
+  // Each record of a pull read and wrote its whole collection: quadratic in the records pulled,
+  // and on the desktop a native rewrite of the collection's stored document a record.
+  it('writes its collection once a message, with every record in it', async () => {
+    const backing = storage();
+    let writes = 0;
+    const counted = { ...backing, setItem: (key: string, value: string) => { if (key === 'xdb:app:notes') writes++; backing.setItem(key, value); } };
+    const s = new XDBService(counted, 'xdb:app', 'app', { backend: 'storage' });
+    const c = connectTo(s, '2026-03-01T00:00:00.000Z');
+    const records = Array.from({ length: 50 }, (_, n) => row(`n${n}`, `t${n}`, '2026-02-01T00:00:00.000Z'));
+    c.socket.receive({ type: 'sync_state', collection: 'notes', records });
+    await tick();
+    expect(writes).toBe(1);
+    expect(s.getAll('notes')).toHaveLength(50);
+    expect(s.get('notes', 'n7')?.data.title).toBe('t7');
+  });
+});
+
+describe('an edit sent and not yet answered when the page reloads', () => {
+  // The restored op was weighed by its stamp, in the host's time, against records stamped by
+  // this device's clock: on a device a minute behind, a newer edit made before the next client
+  // listened was taken for one the queue held, never sent, and the pull wrote over it.
+  it('leaves room for a newer edit made before the next client listens, on a device behind the host', async () => {
+    const backing = storage();
+    const ahead = () => new Date(Date.now() + 60_000).toISOString();
+    const first = new XDBService(backing, 'xdb:app', 'app', { backend: 'storage' });
+    const a = connectTo(first, ahead());
+    a.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    vi.advanceTimersByTime(100);
+    first.updateInCollection('notes', 'n1', { title: 'E1' });
+    await tick();
+    vi.advanceTimersByTime(5000);
+    // The page reloads; the app edits the record before its client listens.
+    const second = new XDBService(backing, 'xdb:app', 'app', { backend: 'storage' });
+    second.updateInCollection('notes', 'n1', { title: 'E2' });
+    vi.advanceTimersByTime(200);
+    const b = connectTo(second, ahead());
+    b.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    b.socket.receive({ type: 'sync_ack', opIds: b.socket.sent.filter((m) => m.type === 'sync_push').flatMap((m) => (m.ops as Array<{ id: string }>).map((o) => o.id)) });
+    await tick();
+    const sent = pushedOps(b.socket).filter((o) => o.recordId === 'n1');
+    const titles = sent.map((o) => (o.data as { title?: string } | undefined)?.title);
+    expect(titles).toContain('E2');
+    // In the host's time, after E1's: the host keeps it.
+    const e1 = sent.find((o) => (o.data as { title?: string } | undefined)?.title === 'E1')!;
+    const e2 = sent.find((o) => (o.data as { title?: string } | undefined)?.title === 'E2')!;
+    expect(Date.parse(e2.timestamp)).toBeGreaterThan(Date.parse(e1.timestamp));
+  });
+
+  // The other way: weighed by a stamp a minute behind the record's, the edit sent was taken for
+  // older than the record and sent again as it stood, in this clock's time, a minute ahead.
+  it('is not sent again in this clock time, on a device ahead of the host', async () => {
+    const backing = storage();
+    const behind = () => new Date(Date.now() - 60_000).toISOString();
+    const first = new XDBService(backing, 'xdb:app', 'app', { backend: 'storage' });
+    const a = connectTo(first, behind());
+    a.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    vi.advanceTimersByTime(100);
+    first.updateInCollection('notes', 'n1', { title: 'E1' });
+    await tick();
+    const second = new XDBService(backing, 'xdb:app', 'app', { backend: 'storage' });
+    const b = connectTo(second, behind());
+    b.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    // Answered, what the queue held after it for the record goes next.
+    b.socket.receive({ type: 'sync_ack', opIds: b.socket.sent.filter((m) => m.type === 'sync_push').flatMap((m) => (m.ops as Array<{ id: string }>).map((o) => o.id)) });
+    await tick();
+    expect(pushedOps(b.socket).length).toBeGreaterThan(0);
+    for (const op of pushedOps(b.socket)) expect(Date.parse(op.timestamp), op.operation).toBeLessThan(Date.now() - 50_000);
+  });
+});
+
 describe('an edit or a removal made just after a write it heard', () => {
+  // A removal made while no client listened kept only its time, and went out unfloored, before
+  // the write it came after: the host took it for older and sent the record back.
+  it('is stamped after that write when no client listened as it was made', async () => {
+    const s = new XDBService(storage(), 'xdb:app', 'app', { backend: 'storage' });
+    const c = connectTo(s, '2026-03-01T00:00:00.900Z');
+    c.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    c.socket.receive({ type: 'sync_delta', ops: [{ id: 'server-1', collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'from hook' }, timestamp: '2026-03-01T00:00:00.950Z', clientId: 'server' }] });
+    c.sync.disconnect();
+    vi.advanceTimersByTime(100);
+    s.hardDelete('notes', 'n1');
+    const d = connectTo(s, '2026-03-01T00:00:01.000Z');
+    d.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    const op = pushedOps(d.socket).find((o) => o.recordId === 'n1' && o.operation === 'delete');
+    expect(op).toBeDefined();
+    expect(Date.parse(op!.timestamp)).toBeGreaterThan(Date.parse('2026-03-01T00:00:00.950Z'));
+  });
+
   it('is stamped after that write, deletions and removals too', async () => {
     for (const remove of ['deleteFromCollection', 'hardDelete'] as const) {
       const s = new XDBService(storage(), 'xdb:app', 'app', { backend: 'storage' });

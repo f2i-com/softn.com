@@ -753,6 +753,20 @@ export class XDBService {
     this.stampedHere.set(`${collection}\u0000${id}`, stamp);
   }
 
+  /** Whether this page gave `id` of `collection` the stamp `stamp`, in this device's time. */
+  isOwnStamp(collection: string, id: string, stamp: unknown): boolean {
+    return typeof stamp === 'string' && this.stampedHere.get(`${collection}\u0000${id}`) === stamp;
+  }
+
+  /** The stamp of a copy, when an edit or a removal of it follows it (`noteEditedAfter`'s rule). */
+  private followedStamp(collection: string, id: string, stamp: string | undefined): string | undefined {
+    if (stamp === undefined) return undefined;
+    const at = stampTime(stamp);
+    const now = Date.now();
+    if (!(at >= now) || at - now > STAMP_AHEAD_LIMIT_MS) return undefined;
+    return this.isOwnStamp(collection, id, stamp) ? undefined : stamp;
+  }
+
   /**
    * The stamp of the copy an edit or a removal was made after, by record, until the change is
    * announced (`after` on the mutation event): server sync stamps its op no earlier than just
@@ -764,10 +778,7 @@ export class XDBService {
   private editedAfter = new Map<string, string>();
 
   private noteEditedAfter(collection: string, id: string, stamp: string): void {
-    const at = stampTime(stamp);
-    const now = Date.now();
-    if (!(at >= now) || at - now > STAMP_AHEAD_LIMIT_MS) return;
-    if (this.stampedHere.get(`${collection}\u0000${id}`) === stamp) return;
+    if (this.followedStamp(collection, id, stamp) === undefined) return;
     // Taken by the announcement that follows; a bound for writes that threw before it.
     if (this.editedAfter.size >= 10_000) this.editedAfter.clear();
     this.editedAfter.set(`${collection}\u0000${id}`, stamp);
@@ -1843,7 +1854,7 @@ export class XDBService {
       this.noteRemovedForGood(collection, id);
       this.emit({ type: 'delete', collection, record, removed: true });
       if (!stillBeingCreated) {
-        this.noteUnheardRemovals(collection, [id]);
+        this.noteUnheardRemovals(collection, [record]);
         this.noteEditedAfter(collection, id, record.updated_at);
         this.notifyMutation('delete', collection, id);
       }
@@ -1891,7 +1902,7 @@ export class XDBService {
     } finally {
       if (together) this.resumeNotifications();
     }
-    this.noteUnheardRemovals(collection, gone.map((record) => record.id));
+    this.noteUnheardRemovals(collection, gone);
     for (const record of gone) {
       this.noteEditedAfter(collection, record.id, record.updated_at);
       this.notifyMutation('delete', collection, record.id);
@@ -2231,24 +2242,27 @@ export class XDBService {
    * clearCollection), with when, by this device's clock; taken by the client that starts
    * listening, which tells the host (takeUnheardRemovals). A removal leaves no tombstone for the
    * client's scan to find: the host kept the record, and the next pull wrote it back here.
-   * At most this many, oldest going first.
+   * At most this many, oldest going first. `after`: the stamp of the copy removed, when it was
+   * ahead of this clock (a write heard just before), which the delete is stamped after, as one
+   * made while listening is: without it, it lost to that write on the host and came undone.
    */
   private static readonly UNHEARD_REMOVALS_KEPT = 50_000;
-  private unheardRemovals = new Map<string, { collection: string; id: string; at: number }>();
+  private unheardRemovals = new Map<string, { collection: string; id: string; at: number; after?: string }>();
 
-  takeUnheardRemovals(): Array<{ collection: string; id: string; at: number }> {
+  takeUnheardRemovals(): Array<{ collection: string; id: string; at: number; after?: string }> {
     const taken = [...this.unheardRemovals.values()];
     this.unheardRemovals.clear();
     return taken;
   }
 
-  private noteUnheardRemovals(collection: string, ids: Iterable<string>): void {
+  private noteUnheardRemovals(collection: string, records: Iterable<{ id: string; updated_at?: string }>): void {
     if (this.mutationListeners.size > 0 || this._mutationSource === 'server') return;
     const at = Date.now();
-    for (const id of ids) {
+    for (const { id, updated_at } of records) {
       const key = `${collection}\u0000${id}`;
+      const after = this.followedStamp(collection, id, updated_at);
       this.unheardRemovals.delete(key);
-      this.unheardRemovals.set(key, { collection, id, at });
+      this.unheardRemovals.set(key, { collection, id, at, ...(after === undefined ? {} : { after }) });
     }
     for (const key of this.unheardRemovals.keys()) {
       if (this.unheardRemovals.size <= XDBService.UNHEARD_REMOVALS_KEPT) break;
@@ -2344,17 +2358,69 @@ export class XDBService {
     // it. Deliberately not `get()`, which hides soft-deleted rows — the
     // deleted ones are a case this has to see.
     const existing = this.getAllCollectionData(collection).find((r) => r.id === record.id);
+    const xdbRecord = this.fromServer(collection, record, keepLocalDelete, existing);
+    if (!xdbRecord) return;
+    // Restored however the write ends: a write that threw (a full disk) left
+    // it set, and every local edit after it was taken for the server's and
+    // never pushed.
+    this._mutationSource = 'server';
+    try {
+      this.writeRecord(collection, xdbRecord);
+      this.notifyMutation('upsert', collection, record.id, record.data);
+    } finally {
+      this._mutationSource = undefined;
+    }
+  }
+
+  /**
+   * `upsertFromServer` for the records of one pull of a collection: the
+   * collection read once and written once (writeRecords), where each record
+   * read and wrote it whole, and on the desktop was a native call that
+   * rewrote the collection's stored document, so a first pull of thousands
+   * of records cost as many rewrites of all of them. All or none: a write
+   * the store refuses throws, as writeRecords does.
+   */
+  upsertManyFromServer(
+    collection: string,
+    entries: ReadonlyArray<{ record: Parameters<XDBService['upsertFromServer']>[1]; keepLocalDelete: boolean }>
+  ): void {
+    if (entries.length === 0) return;
+    const held = new Map(this.getAllCollectionData(collection).map((r) => [r.id, r]));
+    const list: XDBRecord[] = [];
+    for (const { record, keepLocalDelete } of entries) {
+      const xdbRecord = this.fromServer(collection, record, keepLocalDelete, held.get(record.id));
+      if (!xdbRecord) continue;
+      held.set(record.id, xdbRecord);
+      list.push(xdbRecord);
+    }
+    if (list.length === 0) return;
+    this._mutationSource = 'server';
+    try {
+      this.writeRecords(collection, list);
+      for (const record of list) this.notifyMutation('upsert', collection, record.id, record.data);
+    } finally {
+      this._mutationSource = undefined;
+    }
+  }
+
+  /** A record from the sync host as written here, or null when it is not to be written. */
+  private fromServer(
+    collection: string,
+    record: Parameters<XDBService['upsertFromServer']>[1],
+    keepLocalDelete: boolean,
+    existing: XDBRecord | undefined
+  ): XDBRecord | null {
     // Removed here for good (`hardDelete`) and not yet answered: there is no
     // row to keep deleted, and writing one brought the record back to life.
-    if (keepLocalDelete && !existing) return;
+    if (keepLocalDelete && !existing) return null;
     // Not taken on the desktop when its native store cannot read it (a field
     // named as Tauri's IPC's own, at any depth): the write failed after the
     // cache had it, and the store said its writes were failing.
     if (this.useTauri && !readableByNative(record.data, 1)) {
       console.warn(`[XDB] A record from the sync host was not kept: the desktop's store cannot hold "${record.id}" of "${collection}".`);
-      return;
+      return null;
     }
-    const xdbRecord: XDBRecord = {
+    return {
       id: record.id,
       // The collection it is written to, whatever the server's copy says: a
       // record of `notes` naming `secrets` was written there by a store that
@@ -2366,16 +2432,6 @@ export class XDBService {
       updated_at: record.updatedAt || new Date().toISOString(),
       deleted: keepLocalDelete && existing?.deleted === true,
     };
-    // Restored however the write ends: a write that threw (a full disk) left
-    // it set, and every local edit after it was taken for the server's and
-    // never pushed.
-    this._mutationSource = 'server';
-    try {
-      this.writeRecord(collection, xdbRecord);
-      this.notifyMutation('upsert', collection, record.id, record.data);
-    } finally {
-      this._mutationSource = undefined;
-    }
   }
 
   /**
@@ -2511,9 +2567,8 @@ export class XDBService {
       this.indexCollection(collection, false);
       this.emit({ type: 'refresh', collection, records: [] });
     }
-    const removed = held.map((r) => r.id);
-    for (const id of removed) this.noteRemovedForGood(collection, id);
-    this.noteUnheardRemovals(collection, removed);
+    for (const record of held) this.noteRemovedForGood(collection, record.id);
+    this.noteUnheardRemovals(collection, held);
     for (const record of held) {
       if (record.deleted) continue;
       this.noteEditedAfter(collection, record.id, record.updated_at);
@@ -2752,7 +2807,7 @@ export class XDBService {
       // Deleted ones too, as clear keeps them: a deletion made while nothing listened, then
       // taken away with its tombstone, was neither found nor sent.
       const now = new Set(after.map((record) => record.id));
-      this.noteUnheardRemovals(collection, before.filter((record) => !now.has(record.id)).map((record) => record.id));
+      this.noteUnheardRemovals(collection, before.filter((record) => !now.has(record.id)));
       return;
     }
     const was = new Map(before.map((record) => [record.id, record]));

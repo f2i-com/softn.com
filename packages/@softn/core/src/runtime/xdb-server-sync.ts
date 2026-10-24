@@ -431,6 +431,14 @@ export class XDBServerSync {
    */
   private finished = new Set<string>();
   /**
+   * When each op sent and not yet answered was made, by this device's clock (`madeAt` is
+   * forgotten once an op is stamped), kept with the queue as `madeHere`. The startup scan asks
+   * whether the queue already holds a record's latest change by this time: asked by the op's
+   * stamp, in the host's time, a newer edit made while nothing listened, on a device behind the
+   * host, was taken for one the queue held, and was never sent; the pull then wrote over it.
+   */
+  private sentAt = new Map<string, number>();
+  /**
    * Deletes for records removed for good here while nothing listened (`queueUnsyncedChanges`).
    * The host may never have had the record (made and removed here before it was sent), and
    * refuses the delete as not found: that is the removal done, not a change refused.
@@ -886,6 +894,7 @@ export class XDBServerSync {
             this.forgetMade(id);
             this.finished.add(id);
             this.removals.delete(id);
+            this.sentAt.delete(id);
             this.queueChanged();
           }
         }
@@ -1157,6 +1166,7 @@ export class XDBServerSync {
         const at = how?.asIs ? made : Math.max(made + this.clockOffset, how?.floor ?? -Infinity);
         op.timestamp = new Date(at).toISOString();
         this.forgetMade(op.id);
+        this.sentAt.set(op.id, made);
       }
       // A push the host cannot read is refused whole, with every op in it,
       // and the client sent the same push again for ever after: one change
@@ -1227,6 +1237,42 @@ export class XDBServerSync {
     // its floor (`floors`), whichever pull this message answers.
     const floor = this.floors.get(collection);
     const live = this.heardLive.get(collection);
+    // The message's records are written at once: each one written alone read
+    // and wrote its whole collection (and on the desktop rewrote its stored
+    // document), so a first pull of thousands of records held the tab. What
+    // becomes of each is decided first, the lot written, and the place moved
+    // after, in order, as each was written.
+    const batch: Parameters<XDBServerSync['applyPulled']>[3] = [];
+    const batched: ServerRecord[] = [];
+    const outcome = new Map<ServerRecord, { held: true } | { failed: unknown }>();
+    for (const record of list) {
+      if (!record || typeof record.id !== 'string') continue;
+      // One this connection has had live is passed over: what is here is no
+      // older (`heardLive`).
+      if (live?.has(record.id)) continue;
+      try {
+        const before = batch.length;
+        if (!this.applyPulled(collection, record, changed.get(`${collection}\u0000${record.id}`), batch)) outcome.set(record, { held: true });
+        else if (batch.length > before) batched.push(record);
+      } catch (err) {
+        outcome.set(record, { failed: err });
+      }
+    }
+    if (batch.length > 0) {
+      try {
+        if (typeof this.xdb.upsertManyFromServer === 'function') this.xdb.upsertManyFromServer(collection, batch);
+        else for (const { record, keepLocalDelete } of batch) this.xdb.upsertFromServer(collection, record, keepLocalDelete);
+      } catch {
+        // Refused whole (the browser's own quota): each on its own, so the rest are written.
+        batch.forEach(({ record, keepLocalDelete }, index) => {
+          try {
+            this.xdb.upsertFromServer(collection, record, keepLocalDelete);
+          } catch (err) {
+            outcome.set(batched[index], { failed: err });
+          }
+        });
+      }
+    }
     for (const record of list) {
       if (!record || typeof record.id !== 'string') continue;
       // Records the host has no receipt time for come first in a whole pull
@@ -1234,18 +1280,17 @@ export class XDBServerSync {
       const at = typeof record.serverReceivedAt === 'string' ? record.serverReceivedAt : '';
       if (at !== '') this.readTo.set(collection, { at, id: record.id });
       // One record that could not be written here (a full store) threw out
-      // of this loop: the rest of the pull was never written, and the first
-      // pull never counted as done, so nothing made here was pushed again.
-      // It is passed over, and the pull goes on. So is one this connection
-      // has had live: what is here is no older (`heardLive`).
-      try {
-        if (!live?.has(record.id) && !this.applyPulled(collection, record, changed.get(`${collection}\u0000${record.id}`))) {
-          this.pullHeld.add(collection);
-          continue;
-        }
-      } catch (err) {
+      // of the pull: the rest of it was never written, and the first pull
+      // never counted as done, so nothing made here was pushed again. It is
+      // passed over, the pull goes on, and the place stays before it.
+      const result = outcome.get(record);
+      if (result && 'held' in result) {
+        this.pullHeld.add(collection);
+        continue;
+      }
+      if (result && 'failed' in result) {
         if (!this.pullStuck.has(collection)) {
-          console.warn(`[XDBServerSync] A record of "${collection}" from the server could not be saved here; the next pull brings it again:`, err);
+          console.warn(`[XDBServerSync] A record of "${collection}" from the server could not be saved here; the next pull brings it again:`, result.failed);
         }
         this.pullStuck.add(collection);
         continue;
@@ -1303,7 +1348,12 @@ export class XDBServerSync {
    * One record of a pull, written here unless a change made here is still
    * waiting on it; false when it was passed over for that reason.
    */
-  private applyPulled(collection: string, record: ServerRecord, here: 'update' | 'delete' | undefined): boolean {
+  private applyPulled(
+    collection: string,
+    record: ServerRecord,
+    here: 'update' | 'delete' | undefined,
+    batch: Array<{ record: { id: string; collection: string; data: Record<string, unknown>; createdAt: string; updatedAt: string }; keepLocalDelete: boolean }>
+  ): boolean {
     if (record.deleted === true) {
       // Deleted on the host since this device last pulled. A change made
       // here to it is answered by the host with the record as it stands,
@@ -1313,17 +1363,17 @@ export class XDBServerSync {
     }
     if (here === 'update') return false;
     if (typeof record.data !== 'object' || record.data === null || Array.isArray(record.data)) return true;
-    this.xdb.upsertFromServer(
-      collection,
-      {
+    // Written with the rest of the message's records (handleSyncState).
+    batch.push({
+      record: {
         id: record.id,
         collection: record.collection,
         data: record.data,
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
       },
-      here === 'delete'
-    );
+      keepLocalDelete: here === 'delete',
+    });
     return true;
   }
 
@@ -1430,6 +1480,7 @@ export class XDBServerSync {
     this.inflightOps.delete(opId);
     this.forgetMade(opId);
     this.finished.add(opId);
+    this.sentAt.delete(opId);
     this.queueChanged();
     if (removed) {
       this.flushPendingOps();
@@ -1461,6 +1512,7 @@ export class XDBServerSync {
     this.forgetMade(op.id);
     this.finished.add(op.id);
     this.removals.delete(op.id);
+    this.sentAt.delete(op.id);
     this.queueChanged();
     console.warn(`[XDBServerSync] ${reason}`);
     this.noteRefused(op, reason);
@@ -1577,22 +1629,23 @@ export class XDBServerSync {
     const store = this.xdb as {
       getAllRaw?: (collection: string) => unknown;
       takeFirstUnheardChange?: () => number | null;
-      takeUnheardRemovals?: () => Array<{ collection: string; id: string; at: number }>;
+      takeUnheardRemovals?: () => Array<{ collection: string; id: string; at: number; after?: string }>;
+      isOwnStamp?: (collection: string, id: string, stamp: unknown) => boolean;
     };
     // And no later than the first change this page made while nothing listened: another tab
     // of the app moves the mark on with its own saves, past such a change.
     const unheard = typeof store.takeFirstUnheardChange === 'function' ? store.takeFirstUnheardChange() : null;
     // And what this page removed for good meanwhile, which leaves nothing to look for.
-    const removedBy = new Map<string, Array<{ id: string; at: number }>>();
-    for (const { collection, id, at } of typeof store.takeUnheardRemovals === 'function' ? store.takeUnheardRemovals() : []) {
+    const removedBy = new Map<string, Array<{ id: string; at: number; after?: string }>>();
+    for (const { collection, id, at, after } of typeof store.takeUnheardRemovals === 'function' ? store.takeUnheardRemovals() : []) {
       const list = removedBy.get(collection);
-      if (list) list.push({ id, at });
-      else removedBy.set(collection, [{ id, at }]);
+      if (list) list.push({ id, at, after });
+      else removedBy.set(collection, [{ id, at, after }]);
     }
     if (typeof store.getAllRaw !== 'function') return;
     const since = this.watched === null || unheard === null ? this.watched : Math.min(this.watched, unheard);
-    const found: Array<{ made: number; change: LocalChange }> = [];
-    const gone: Array<{ made: number; change: LocalChange }> = [];
+    const found: Array<{ made: number; change: LocalChange; own: boolean }> = [];
+    const gone: Array<{ made: number; change: LocalChange; floor?: number }> = [];
     // In any collection a change heard here would be sent for, listed or not:
     // a clear takes its collection off the store's list, and its removals went
     // unsent with no `collections` to name it.
@@ -1606,8 +1659,11 @@ export class XDBServerSync {
       }
       // A record made again since it was removed goes as itself.
       const held = new Set((Array.isArray(records) ? (records as Array<Partial<StoredRecord> | null>) : []).map((record) => record?.id));
-      for (const { id, at } of removals) {
-        if (!held.has(id)) gone.push({ made: at, change: { type: 'delete', collection, recordId: id } });
+      for (const { id, at, after } of removals) {
+        if (held.has(id)) continue;
+        // After the copy it removed, when that was ahead of this clock (a write heard just before).
+        const floor = after === undefined ? NaN : Date.parse(after) + 1;
+        gone.push({ made: at, change: { type: 'delete', collection, recordId: id }, ...(Number.isFinite(floor) ? { floor } : {}) });
       }
     }
     for (const collection of this.syncedCollections()) {
@@ -1622,25 +1678,29 @@ export class XDBServerSync {
         const updated = Date.parse(String(record.updated_at));
         if (since !== null && !(updated >= since)) continue;
         const made = Number.isFinite(updated) ? updated : Date.now();
-        // What the queue holds for this record already says as much.
+        // What the queue holds for this record already says as much: weighed by when it was
+        // made here, which the record's stamp is in when this device made it.
         const queued = this.pendingOps.get(this.lastOpFor.get(`${collection}\u0000${record.id}`) ?? '');
-        if (queued && (this.madeAt.get(queued.id) ?? Date.parse(queued.timestamp)) >= made) continue;
+        if (queued && (this.madeAt.get(queued.id) ?? this.sentAt.get(queued.id) ?? Date.parse(queued.timestamp) - this.clockOffset) >= made) continue;
         const created = Date.parse(String(record.created_at));
         const createdSince = since === null || !(created < since);
         const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
+        // A stamp this page gave the record is this device's time, and goes with the offset
+        // as any edit made here does; any other may be the host's or a room's, and goes as it is.
+        const own = typeof store.isOwnStamp === 'function' && store.isOwnStamp(collection, record.id, record.updated_at);
         if (record.deleted === true) {
-          if (!createdSince) found.push({ made, change: { type: 'delete', collection, recordId: record.id } });
+          if (!createdSince) found.push({ made, change: { type: 'delete', collection, recordId: record.id }, own });
         } else {
-          found.push({ made, change: { type: createdSince ? 'create' : 'update', collection, recordId: record.id, data } });
+          found.push({ made, change: { type: createdSince ? 'create' : 'update', collection, recordId: record.id, data }, own });
         }
       }
     }
     found.sort((a, b) => a.made - b.made);
-    // Stamped with the record's own time as it is: not this device's, so no
-    // offset is added to it.
-    for (const { made, change } of found) this.queueChange(change, made, { asIs: true });
-    // At the time each was removed, by this device's clock.
-    for (const { made, change } of gone) this.queueChange(change, made, undefined, true);
+    // Stamped with the record's own time as it is (not this device's, so no
+    // offset is added to it), unless this page stamped it.
+    for (const { made, change, own } of found) this.queueChange(change, made, own ? undefined : { asIs: true });
+    // At the time each was removed, by this device's clock, and after the copy it removed.
+    for (const { made, change, floor } of gone) this.queueChange(change, made, floor === undefined ? undefined : { floor }, true);
   }
 
   // ── Kept between page loads ────────────────────────────
@@ -1676,8 +1736,10 @@ export class XDBServerSync {
         if (!op || this.pendingOps.has(op.id)) continue;
         this.pendingOps.set(op.id, op);
         // Not sent yet: stamped in the host's time when it is (flushPendingOps).
-        const { made, floor, asIs, removal } = entry as { made?: unknown; floor?: unknown; asIs?: unknown; removal?: unknown };
+        const { made, floor, asIs, removal, madeHere } = entry as { made?: unknown; floor?: unknown; asIs?: unknown; removal?: unknown; madeHere?: unknown };
         if (removal === true) this.removals.add(op.id);
+        // Sent before, and stamped: when it was made here, for the scan to weigh it by.
+        if (typeof madeHere === 'number' && Number.isFinite(madeHere)) this.sentAt.set(op.id, madeHere);
         if (typeof made === 'number' && Number.isFinite(made)) {
           this.madeAt.set(op.id, made);
           if (asIs === true) this.stampOf.set(op.id, { asIs: true });
@@ -1745,7 +1807,7 @@ export class XDBServerSync {
         const made = this.madeAt.get(op.id);
         const removal = this.removals.has(op.id) ? { removal: true } : {};
         if (made !== undefined) return { entry: { ...op, made, ...this.stampOf.get(op.id), ...removal } as unknown, at: made };
-        const madeHere = Date.parse(op.timestamp) - this.clockOffset;
+        const madeHere = this.sentAt.get(op.id) ?? Date.parse(op.timestamp) - this.clockOffset;
         return { entry: { ...op, ...removal, ...(Number.isFinite(madeHere) ? { madeHere } : {}) } as unknown, at: madeHere };
       });
       // The queue is saved under the app's name, and another tab of the app saves its own

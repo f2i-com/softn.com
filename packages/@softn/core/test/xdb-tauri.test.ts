@@ -952,6 +952,23 @@ describe('XDB Service (Tauri mode)', () => {
     });
   });
 
+  // A pull's records were written one native call each, each rewriting the collection's stored
+  // document: a first pull of thousands cost as many rewrites of all of them.
+  it("writes a pull's records from the sync host in one native call", async () => {
+    const xdb = new XDBService(undefined, 'pull-batch', 'pull-batch-app');
+    await xdb.isReady;
+    const entries = [1, 2, 3].map((n) => ({
+      record: { id: `s${n}`, collection: 'notes', data: { n }, createdAt: '2026-02-01T00:00:00.000Z', updatedAt: '2026-02-01T00:00:00.000Z' },
+      keepLocalDelete: false,
+    }));
+    xdb.upsertManyFromServer('notes', entries);
+    await flushPromises();
+    const commands = invokeMock.mock.calls.map(([cmd]: [string]) => cmd);
+    expect(commands.filter((cmd: string) => cmd === 'upsert_records')).toHaveLength(1);
+    expect(commands).not.toContain('upsert_record');
+    expect(xdb.getAll('notes').map((record) => record.id).sort()).toEqual(['s1', 's2', 's3']);
+  });
+
   // A record a peer or the sync host brings, holding the key Tauri's IPC takes for its own,
   // failed the native write it was in: one peer's record kept every record of its batch out of
   // SQLite (each was in the cache alone, gone at the next start), and the store said writes failed.
