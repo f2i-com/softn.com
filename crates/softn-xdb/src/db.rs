@@ -33,6 +33,20 @@ pub enum DbError {
 
 pub type DbResult<T> = Result<T, DbError>;
 
+/// The largest reset epoch kept: what a peer's reset may name, and what this node's own
+/// resets of a collection may reach. Past it the next epoch would run past SQLite's integer
+/// (stored as a negative number, read back as 0) and past what the page reads exactly as a
+/// number. One reset at a time, no collection comes near it.
+const MAX_EPOCH: u64 = 1 << 53;
+
+/// An epoch about to be kept, refused past MAX_EPOCH rather than wrapped.
+fn check_epoch(epoch: u64) -> DbResult<()> {
+    if epoch > MAX_EPOCH {
+        return Err(DbError::InvalidOperation(format!("A reset epoch of {epoch} is past the largest kept ({MAX_EPOCH})")));
+    }
+    Ok(())
+}
+
 /// How far ahead of this clock a record's stamp may be for an edit to follow it: as far
 /// ahead as a peer-to-peer room takes a stamp (STAMP_AHEAD_LIMIT_MS in the page's
 /// packages/@softn/core/src/runtime/xdb-service.ts).
@@ -539,6 +553,7 @@ impl XdbDatabase {
         self.replace_from_file_prepared(source_path, |staging| {
             staging.execute_batch("BEGIN")?;
             for (collection, epoch) in plan {
+                check_epoch(*epoch)?;
                 staging.execute(
                     "INSERT OR REPLACE INTO collection_epochs (collection, epoch, origin, reset_at) VALUES (?1, ?2, ?3, ?4)",
                     params![collection, *epoch as i64, origin, now],
@@ -1130,6 +1145,7 @@ impl XdbDatabase {
     }
 
     fn set_epoch(&self, collection: &str, epoch: u64, origin: &str) -> DbResult<()> {
+        check_epoch(epoch)?;
         self.conn.execute(
             "INSERT OR REPLACE INTO collection_epochs (collection, epoch, origin, reset_at) VALUES (?1, ?2, ?3, ?4)",
             params![collection, epoch as i64, origin, chrono::Utc::now().to_rfc3339()],
@@ -1176,8 +1192,9 @@ impl XdbDatabase {
     ) -> DbResult<bool> {
         // Epochs are kept as SQLite integers. One past i64::MAX was kept as a negative number
         // and read back as 0: the collection was cleared, and then a peer's updates from
-        // before the reset applied again, the very records a reset is there to keep out.
-        if epoch > i64::MAX as u64 {
+        // before the reset applied again, the very records a reset is there to keep out. And
+        // one at i64::MAX itself left no room for this node's next reset of the collection.
+        if epoch > MAX_EPOCH {
             return Ok(false);
         }
         let collection = collection.to_string();

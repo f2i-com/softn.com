@@ -1057,14 +1057,21 @@ fn a_reset_epoch_past_what_is_kept_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut db = database(&dir, "epochs.sqlite");
     db.upsert_record(note("kept", "still here")).unwrap();
-    assert!(!db.apply_remote_reset("notes", u64::MAX, "a peer").unwrap());
+    for past in [u64::MAX, i64::MAX as u64, MAX_EPOCH + 1] {
+        assert!(!db.apply_remote_reset("notes", past, "a peer").unwrap(), "{past}");
+    }
     assert_eq!(db.get_epoch("notes").unwrap(), 0);
     assert_eq!(live_ids(&db, "notes"), vec!["kept"]);
-    // An epoch that fits is adopted as before.
-    assert!(db.apply_remote_reset("notes", i64::MAX as u64, "a peer").unwrap());
-    assert_eq!(db.get_epoch("notes").unwrap(), i64::MAX as u64);
+    // The largest kept is adopted as before.
+    assert!(db.apply_remote_reset("notes", MAX_EPOCH, "a peer").unwrap());
+    assert_eq!(db.get_epoch("notes").unwrap(), MAX_EPOCH);
     let stale = db.apply_remote_update_at_epoch("notes", 0, &[]).unwrap();
     assert!(matches!(stale, RemoteApplyOutcome::StaleEpoch { .. }), "{stale:?}");
+    // A reset of its own past it is refused, and the epoch is as it was; at i64::MAX one
+    // was stored as i64::MIN and read back as 0.
+    assert!(db.reset_collection("notes", "this node").is_err());
+    assert!(db.bump_epoch("notes", "this node").is_err());
+    assert_eq!(db.get_epoch("notes").unwrap(), MAX_EPOCH);
 }
 
 /// An import wrote by id alone: a record of `private` imported into `public` was moved
