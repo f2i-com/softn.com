@@ -412,6 +412,19 @@ export class XDBServerSync {
    */
   private madeAt = new Map<string, number>();
   /**
+   * What else bounds an op's stamp. `asIs`: an op the startup scan found,
+   * whose time is the record's own stamp, already in whatever clock wrote it
+   * (a record heard from the host carries the host's). The host's offset was
+   * added to it as to a time of this device's: every record heard from a
+   * host whose clock ran a second or more ahead went back on the next load
+   * stamped that much later than its edit, past edits other devices made
+   * since, and its old data replaced theirs. `floor`: the stamp the change
+   * left on its record (XDBService stamps an edit after the copy it edits),
+   * which the op is never stamped before; stamped with this clock alone, an
+   * edit made just after a write it had heard lost to it on the host.
+   */
+  private stampOf = new Map<string, { floor?: number; asIs?: boolean }>();
+  /**
    * The newest op queued for each record, by `recordKey`: an update not yet
    * sent is replaced by the next update or delete of its record, rather than
    * waiting its turn behind it (one op per record at a time).
@@ -858,7 +871,7 @@ export class XDBServerSync {
           // to go again once the error had moved it, and the host applied
           // and broadcast it a second time.
           if (this.inflightOps.delete(id) || this.pendingOps.delete(id)) {
-            this.madeAt.delete(id);
+            this.forgetMade(id);
             this.queueChanged();
           }
         }
@@ -1126,8 +1139,10 @@ export class XDBServerSync {
       op.clientId = this.clientId ?? op.clientId;
       const made = this.madeAt.get(op.id);
       if (made !== undefined) {
-        op.timestamp = new Date(made + this.clockOffset).toISOString();
-        this.madeAt.delete(op.id);
+        const how = this.stampOf.get(op.id);
+        const at = how?.asIs ? made : Math.max(made + this.clockOffset, how?.floor ?? -Infinity);
+        op.timestamp = new Date(at).toISOString();
+        this.forgetMade(op.id);
       }
       // A push the host cannot read is refused whole, with every op in it,
       // and the client sent the same push again for ever after: one change
@@ -1386,12 +1401,18 @@ export class XDBServerSync {
     }
   }
 
+  /** Forget when an op was made and what bounds its stamp: it is stamped, answered or gone. */
+  private forgetMade(id: string): void {
+    this.madeAt.delete(id);
+    this.stampOf.delete(id);
+  }
+
   /** Handle a rejected sync operation — remove from pending and notify. */
   private handleSyncReject(opId: string, reason: string): void {
     this.noteRefused(this.pendingOps.get(opId) ?? this.inflightOps.get(opId), reason);
     this.pendingOps.delete(opId);
     this.inflightOps.delete(opId);
-    this.madeAt.delete(opId);
+    this.forgetMade(opId);
     this.queueChanged();
     this.listeners.reject.forEach((fn) => fn(opId, reason));
     // The change stays here as it was made; this client keeps no copy of
@@ -1416,7 +1437,7 @@ export class XDBServerSync {
    */
   private refuseOp(op: SyncOp, reason: string): void {
     this.pendingOps.delete(op.id);
-    this.madeAt.delete(op.id);
+    this.forgetMade(op.id);
     this.queueChanged();
     console.warn(`[XDBServerSync] ${reason}`);
     this.noteRefused(op, reason);
@@ -1451,12 +1472,22 @@ export class XDBServerSync {
       if (event.source === 'server') return;
       if (event.type !== 'create' && event.type !== 'update' && event.type !== 'delete') return;
       this.pullOnFirstUse(event.collection);
-      this.queueChange({ type: event.type, collection: event.collection, recordId: event.recordId, data: event.data }, Date.now());
+      // The stamp the change left on its record, which the op is not stamped before.
+      const held = typeof this.xdb.get === 'function' ? this.xdb.get(event.collection, event.recordId) : null;
+      const floor = held ? Date.parse(String(held.updated_at)) : NaN;
+      this.queueChange(
+        { type: event.type, collection: event.collection, recordId: event.recordId, data: event.data },
+        Date.now(),
+        Number.isFinite(floor) ? { floor } : undefined
+      );
     });
   }
 
-  /** Queue one change made here at `made` (this device's time), and push what can go. */
-  private queueChange(change: LocalChange, made: number): void {
+  /**
+   * Queue one change made here at `made` (this device's time, unless `how`
+   * says it is a record's own stamp), and push what can go.
+   */
+  private queueChange(change: LocalChange, made: number, how?: { floor?: number; asIs?: boolean }): void {
     // The counter starts again with each page, and ops restored from the
     // last one are in the queue: an id one of them has is not given again.
     let opId: string;
@@ -1481,7 +1512,7 @@ export class XDBServerSync {
     const before = this.pendingOps.get(this.lastOpFor.get(key) ?? '');
     if (before && before.operation === 'update' && this.madeAt.has(before.id) && op.operation !== 'create') {
       this.pendingOps.delete(before.id);
-      this.madeAt.delete(before.id);
+      this.forgetMade(before.id);
     }
 
     // Queued whether or not the socket is up. The connected check used to
@@ -1489,6 +1520,7 @@ export class XDBServerSync {
     // the "flush on reconnect" step had nothing to flush.
     this.pendingOps.set(opId, op);
     this.madeAt.set(opId, made);
+    if (how) this.stampOf.set(opId, how);
     this.lastOpFor.set(key, opId);
     this.written.add(change.collection);
     this.queueChanged();
@@ -1542,7 +1574,9 @@ export class XDBServerSync {
       }
     }
     found.sort((a, b) => a.made - b.made);
-    for (const { made, change } of found) this.queueChange(change, made);
+    // Stamped with the record's own time as it is: not this device's, so no
+    // offset is added to it.
+    for (const { made, change } of found) this.queueChange(change, made, { asIs: true });
   }
 
   // ── Kept between page loads ────────────────────────────
@@ -1578,8 +1612,12 @@ export class XDBServerSync {
         if (!op || this.pendingOps.has(op.id)) continue;
         this.pendingOps.set(op.id, op);
         // Not sent yet: stamped in the host's time when it is (flushPendingOps).
-        const made = (entry as { made?: unknown }).made;
-        if (typeof made === 'number' && Number.isFinite(made)) this.madeAt.set(op.id, made);
+        const { made, floor, asIs } = entry as { made?: unknown; floor?: unknown; asIs?: unknown };
+        if (typeof made === 'number' && Number.isFinite(made)) {
+          this.madeAt.set(op.id, made);
+          if (asIs === true) this.stampOf.set(op.id, { asIs: true });
+          else if (typeof floor === 'number' && Number.isFinite(floor)) this.stampOf.set(op.id, { floor });
+        }
         this.lastOpFor.set(recordKey(op), op.id);
         // Its collection is this client's own, whatever `collections` lists:
         // the host's answer to the op is written here.
@@ -1635,7 +1673,7 @@ export class XDBServerSync {
       // Every op not yet answered, in the order it would go: those sent first.
       const ops = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
         const made = this.madeAt.get(op.id);
-        return made === undefined ? op : { ...op, made };
+        return made === undefined ? op : { ...op, made, ...this.stampOf.get(op.id) };
       });
       try {
         meta.writeSyncMeta(QUEUE_META, ops.length > 0 ? JSON.stringify({ v: 1, ops }) : null);
