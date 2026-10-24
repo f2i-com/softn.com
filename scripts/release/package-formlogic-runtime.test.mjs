@@ -20,6 +20,7 @@ import { isZippEngineWasm, isZippTorchPackageWasm, wasmExportNames, wasmImportNa
 import { PACKAGES, archiveName, packageById, root } from './release-packages.mjs';
 import { HOSTED_ENGINES_PROTOCOL, LOGIC_LANGUAGES_PROTOCOL, RUNTIME_ENGINES, RUNTIME_FEATURES } from '../../apps/formlogic-host/src/engineInit.ts';
 import { INSTALLED_FILES, PACKAGE_INSTALLED_FILES, VARIANT_INSTALLED_FILES } from '../../packages/@softn/core/scripts/fetch-zipp-release.mjs';
+import { RUNNER_NOTICES, RUNNER_PLATFORMS } from '../../apps/softn-runner/build.mjs';
 
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -91,6 +92,10 @@ test('the workflow builds, checks and attaches the archive', () => {
   const release = fs.readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8');
   assert.ok(release.includes('npm run package:formlogic-runtime -- --tag "$RELEASE_TAG"'));
   for (const entry of ['softn-release.json', 'hosted-runtime/index.html', 'hosted-runtime/host.html', 'native-runtime/host-protocol.json', 'zipp/SOURCE.json', 'zipp-web/SOURCE.json', 'zipp-web/zipp_wasm_bg.wasm', 'adapter/formlogic.ts']) assert.ok(release.includes(entry), entry);
+  // The runners the runner jobs built, carried by every release archive.
+  assert.ok(release.includes('--runner-dir release-runner'));
+  for (const n of Object.values(RUNNER_PLATFORMS)) assert.ok(release.includes(`native-runtime/bin/${n}`), n);
+  assert.ok(release.includes(`native-runtime/${RUNNER_NOTICES}`));
   assert.ok(release.includes('softn-formlogic-runtime-${{ env.RELEASE_TAG }}.zip'));
   assert.ok(release.includes('sha256sum -c "softn-formlogic-runtime-$RELEASE_TAG.zip.sha256"'));
   assert.ok(fs.readFileSync(path.join(root, '.github/workflows/build.yml'), 'utf8').includes('release/softn-formlogic-runtime-v*.zip'));
@@ -100,7 +105,13 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-formlogic-runtime-test-'));
   try {
     const tag = 'v9.9.9';
-    const run = spawnSync(process.execPath, [path.join(root, 'scripts/release/package-formlogic-runtime.mjs'), '--tag', tag, '--out', out, '--allow-dirty', '--no-build-packages'], { cwd: root, encoding: 'utf8' });
+    // What apps/softn-runner/build.mjs leaves in dist/ for each platform,
+    // stood in for by a few bytes each: the packager carries them as they are.
+    const runnerDir = path.join(out, 'runner');
+    fs.mkdirSync(runnerDir);
+    const runnerFiles = { ...Object.fromEntries(Object.values(RUNNER_PLATFORMS).map((n) => [n, Buffer.from(`runner ${n}`)])), [RUNNER_NOTICES]: Buffer.from('licences\n') };
+    for (const [n, data] of Object.entries(runnerFiles)) fs.writeFileSync(path.join(runnerDir, n), data);
+    const run = spawnSync(process.execPath, [path.join(root, 'scripts/release/package-formlogic-runtime.mjs'), '--tag', tag, '--out', out, '--allow-dirty', '--no-build-packages', '--runner-dir', runnerDir], { cwd: root, encoding: 'utf8' });
     assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
     const name = archiveName('formlogic-runtime', { tag });
     const zip = fs.readFileSync(path.join(out, name));
@@ -248,6 +259,20 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     assert.equal(provenance.nativeProtocol, hostProtocol.nativeProtocol);
     for (const m of NATIVE_MODULES) assert.equal(provenance.modules[m], sha256(bytes(`native-runtime/${m}`)));
     for (const n of ['native-runtime/wasm/zipp_wasm.mjs', 'native-runtime/LICENSE', 'native-runtime/NOTICE', 'native-runtime/ZIPP-THIRD-PARTY-LICENSES.txt']) bytes(n);
+    // softn-runner: one per platform under bin/, the Linux one executable, its
+    // licences beside ZIPP's, each recorded with the ZIPP it was built from.
+    for (const n of Object.values(RUNNER_PLATFORMS)) {
+      assert.ok(bytes(`native-runtime/bin/${n}`).equals(runnerFiles[n]), `bin/${n} as built`);
+      assert.equal(entries.get(`native-runtime/bin/${n}`).mode, n.endsWith('.exe') ? 0o100644 : 0o100755, `bin/${n} mode`);
+    }
+    assert.ok(bytes(`native-runtime/${RUNNER_NOTICES}`).equals(runnerFiles[RUNNER_NOTICES]));
+    assert.deepEqual([...entries.keys()].filter((n) => n.startsWith('native-runtime/bin/')).sort(), Object.values(RUNNER_PLATFORMS).map((n) => `native-runtime/bin/${n}`).sort(), 'nothing else under bin/');
+    assert.deepEqual(provenance.runner, {
+      source: 'softn.com/apps/softn-runner',
+      zipp: { release: source.release, revision: source.revision },
+      files: Object.fromEntries(Object.values(RUNNER_PLATFORMS).map((n) => [n, sha256(runnerFiles[n])])),
+      notices: { file: RUNNER_NOTICES, sha256: sha256(runnerFiles[RUNNER_NOTICES]) },
+    });
 
     // adapter/: LF bytes of the canonical adapter, digested the way sync-softn.mjs digests them.
     const adapter = Buffer.from(fs.readFileSync(path.join(root, 'packages/@softn/core/src/integrations/formlogic.ts'), 'utf8').replace(/\r\n/g, '\n'), 'utf8');

@@ -206,11 +206,66 @@ jobs:
             e2e/playwright-report
           if-no-files-found: ignore
 
+  # softn-runner (apps/softn-runner), the Node runner's requests answered
+  # without Node, for each platform the FormLogic archive carries it for:
+  # static Linux (musl), the server a FormLogic or SoftN host runs on, and
+  # Windows. Its guest is ZIPP built from the tag the frozen engine install
+  # names (build.mjs refuses any other commit); the archive job below takes
+  # both.
+  runner:
+    name: Build the runner without Node (${{ matrix.target }})
+    needs: gate
+    if: needs.gate.result == 'success'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      ZIPP_RELEASE: ${{ needs.gate.outputs.zipp-release }}
+      ZIPP_SUMS_SHA256: ${{ needs.gate.outputs.zipp-sums-sha256 }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install the ZIPP release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
+      - name: The static Linux target
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cd apps/softn-runner/host && rustup target add x86_64-unknown-linux-musl
+      - name: Build the runner
+        run: node apps/softn-runner/build.mjs --target ${{ matrix.target }}
+      # Each leg writes the same licences file (every crate on every release
+      # platform); the Linux leg's is the one the archive job takes, so the
+      # two never meet in its download.
+      - name: Keep the runner for the archive job
+        uses: actions/upload-artifact@v7
+        with:
+          name: softn-runner-${{ matrix.target }}
+          path: |
+            apps/softn-runner/dist/
+            ${{ runner.os == 'Windows' && '!apps/softn-runner/dist/SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt' || '' }}
+          if-no-files-found: error
+          retention-days: 7
+
   # Builds, checks and keeps every archive with the run, beside the gates;
   # publishing them is the `publish` job's, once the gates have passed.
   website:
     name: Package website and single-app runtime
-    needs: gate
+    needs: [gate, runner]
     # Never after a failed gate job (a ZIPP refusal leaves `skip` set).
     if: needs.gate.result == 'success'
     runs-on: ubuntu-latest
@@ -410,13 +465,20 @@ jobs:
       # source: the hosted frame, the two hosted editors, the native runtime,
       # the ZIPP release install and the adapter, with a digest of every file
       # in softn-release.json, whose zipp must be the release the gate froze.
+      - name: Take the runners the runner jobs built
+        uses: actions/download-artifact@v8
+        with:
+          pattern: softn-runner-*
+          path: release-runner
+          merge-multiple: true
+
       - name: Build and package the SoftN runtime for FormLogic
         run: |
           set -euo pipefail
-          npm run package:formlogic-runtime -- --tag "$RELEASE_TAG"
+          npm run package:formlogic-runtime -- --tag "$RELEASE_TAG" --runner-dir release-runner
           zip="release/softn-formlogic-runtime-$RELEASE_TAG.zip"
           unzip -tq "$zip"
-          for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/host.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm zipp/SOURCE.json zipp/zipp_wasm.d.ts zipp/RELEASE-SHA256SUMS zipp-web/SOURCE.json zipp-web/zipp_wasm_bg.wasm adapter/formlogic.ts; do
+          for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/host.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm native-runtime/bin/softn-runner-linux-x86_64 native-runtime/bin/softn-runner-windows-x86_64.exe native-runtime/SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt zipp/SOURCE.json zipp/zipp_wasm.d.ts zipp/RELEASE-SHA256SUMS zipp-web/SOURCE.json zipp-web/zipp_wasm_bg.wasm adapter/formlogic.ts; do
             unzip -Z1 "$zip" | grep -qx "$entry"
           done
           test "$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).tag))')" = "$RELEASE_TAG"

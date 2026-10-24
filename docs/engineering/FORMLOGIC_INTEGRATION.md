@@ -44,7 +44,13 @@ written by `scripts/release/package-formlogic-runtime.mjs`: `hosted-runtime/`
 it), `app-editors/` (Builder and Studio built as hosted editors, with the
 editor bridge protocol in `manifest.json`), `native-runtime/`
 (`apps/softn-host-php/runtime/*` byte for byte, the ZIPP engine, licences,
-`provenance.json`), `zipp/` (`packages/@softn/core/wasm-zipp/` byte for byte:
+`provenance.json`, and `bin/softn-runner-linux-x86_64` and
+`bin/softn-runner-windows-x86_64.exe`: `apps/softn-runner`, which answers the
+same requests as `runner.mjs` without Node, the app's logic in ZIPP compiled to
+WebAssembly under wasmtime, with the licences of what it compiles in in
+`SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt`, recorded in `provenance.json` under
+`runner`; a FormLogic on Linux or Windows x86-64 starts it instead of Node),
+`zipp/` (`packages/@softn/core/wasm-zipp/` byte for byte:
 ZIPP's javascript-python-base engine module as published, its bindings as
 `zipp_wasm.js`, the embed kit's declarations and `LICENSE-APACHE`, ZIPP's
 release `SHA256SUMS` as `RELEASE-SHA256SUMS`, the notices and `SOURCE.json`),

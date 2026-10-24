@@ -3,7 +3,7 @@
  * Package what FormLogic takes from a SoftN release, so FormLogic can use the
  * release instead of building SoftN from source:
  *
- *   node scripts/release/package-formlogic-runtime.mjs --tag v0.0.13 [--commit <sha>] [--out release] [--allow-dirty] [--no-build-packages]
+ *   node scripts/release/package-formlogic-runtime.mjs --tag v0.0.13 [--commit <sha>] [--out release] [--allow-dirty] [--no-build-packages] [--runner-dir <dir>]
  *
  * The archive is `softn-formlogic-runtime-<tag>.zip` (`release-packages.mjs`,
  * id `formlogic-runtime`), laid out exactly as FormLogic's own build scripts
@@ -25,7 +25,12 @@
  *                      per editor and one over the whole folder.
  *   native-runtime/    apps/softn-host-php/runtime/* byte for byte, the ZIPP
  *                      engine, licences and provenance.json, as
- *                      formlogic/scripts/prepare-native-runtime.mjs writes them.
+ *                      formlogic/scripts/prepare-native-runtime.mjs writes them;
+ *                      with --runner-dir, bin/softn-runner-<platform>
+ *                      (apps/softn-runner), which answers the same requests
+ *                      without Node, and the licences of what it compiles in
+ *                      (SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt), recorded in
+ *                      provenance.json `runner`.
  *   zipp/              packages/@softn/core/wasm-zipp/ byte for byte: the
  *                      verified ZIPP release install FormLogic takes its
  *                      browser engine from (fetch-zipp-release.mjs): the
@@ -84,6 +89,7 @@ import { archiveName, root } from './release-packages.mjs';
 import { TORCH_PACKAGE, WEB_VARIANT, ensureReleaseEngine, packageDir, releaseOptions, variantDir } from '../../packages/@softn/core/scripts/fetch-zipp-release.mjs';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 import { npmCommand } from '../lib/npm.mjs';
+import { RUNNER_NOTICES, RUNNER_PLATFORMS } from '../../apps/softn-runner/build.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name) => {
@@ -94,6 +100,9 @@ const tag = opt('--tag');
 const outDir = path.resolve(root, opt('--out') ?? 'release');
 const allowDirty = args.includes('--allow-dirty');
 const buildPackages = !args.includes('--no-build-packages');
+// The runners apps/softn-runner/build.mjs built, one per release platform
+// (the release workflow builds each on its own runner and hands them over).
+const runnerDir = opt('--runner-dir') ? path.resolve(root, opt('--runner-dir')) : null;
 
 function fail(message) {
   console.error(`package-formlogic-runtime: ${message}`);
@@ -322,7 +331,34 @@ try {
   add('native-runtime/LICENSE', fs.readFileSync(path.join(root, 'LICENSE')));
   add('native-runtime/NOTICE', fs.readFileSync(path.join(root, 'NOTICE')));
   add('native-runtime/ZIPP-THIRD-PARTY-LICENSES.txt', fs.readFileSync(path.join(wasmDir, zippSource.notices.file)));
-  add('native-runtime/provenance.json', Buffer.from(JSON.stringify({ source: 'softn.com/apps/softn-host-php/runtime', nativeProtocol: protocols.nativeProtocol, zipp: zippSource, modules }, null, 2) + '\n'));
+  // native-runtime/bin/: softn-runner (apps/softn-runner), which answers the
+  // same requests as runner.mjs without Node, the app's logic in ZIPP under
+  // wasmtime. One per platform a release builds; a FormLogic that finds the
+  // one for its server starts it instead of Node. A release carries every
+  // platform; a local trial (--allow-dirty) may carry the ones it built.
+  const runners = {};
+  let runnerNotices = null;
+  if (runnerDir) {
+    const notices = path.join(runnerDir, RUNNER_NOTICES);
+    if (!fs.existsSync(notices)) fail(`--runner-dir ${runnerDir} has no ${RUNNER_NOTICES} (apps/softn-runner/build.mjs writes it beside the runner)`);
+    const bytes = fs.readFileSync(notices);
+    add(`native-runtime/${RUNNER_NOTICES}`, bytes);
+    runnerNotices = { file: RUNNER_NOTICES, sha256: sha256(bytes) };
+    for (const name of Object.values(RUNNER_PLATFORMS)) {
+      const file = path.join(runnerDir, name);
+      if (!fs.existsSync(file)) {
+        if (!allowDirty) fail(`--runner-dir ${runnerDir} has no ${name}`);
+        console.warn(`package-formlogic-runtime: no ${name} in --runner-dir; this trial archive goes without it`);
+        continue;
+      }
+      const bytes = fs.readFileSync(file);
+      // Executable where the archive keeps a mode (zip's unix attributes).
+      add(`native-runtime/bin/${name}`, bytes, name.endsWith('.exe') ? undefined : 0o100755);
+      runners[name] = sha256(bytes);
+    }
+  }
+  const runnerRecord = Object.keys(runners).length ? { runner: { source: 'softn.com/apps/softn-runner', zipp: { release: zippSource.release, revision: zippSource.revision }, files: runners, notices: runnerNotices } } : {};
+  add('native-runtime/provenance.json', Buffer.from(JSON.stringify({ source: 'softn.com/apps/softn-host-php/runtime', nativeProtocol: protocols.nativeProtocol, zipp: zippSource, modules, ...runnerRecord }, null, 2) + '\n'));
 
   // zipp/: the release install as it is, so FormLogic installs its browser
   // engine from here and can check it against the SHA256SUMS it came with.
