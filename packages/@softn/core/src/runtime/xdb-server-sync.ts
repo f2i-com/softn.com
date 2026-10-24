@@ -275,6 +275,11 @@ function recordKey(op: SyncOp): string {
   return `${op.collection}\u0000${op.recordId}`;
 }
 
+/** A record's data as an op carries it: an object, or none. */
+function objectData(data: unknown): Record<string, unknown> {
+  return data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
+}
+
 /** A record a delta or a pull writes here, as XDBService.upsertFromServer takes it. */
 interface DeltaUpsert {
   record: { id: string; collection: string; data: Record<string, unknown>; createdAt: string; updatedAt: string };
@@ -505,13 +510,22 @@ export class XDBServerSync {
    */
   private adoptedCreates = new Set<string>();
   /**
-   * Records a delta or a pull named while an update of them made here was unanswered, by
-   * `recordKey`: the host has them, and an update it refused as not found before that is sent
-   * again, once (`retriedUpdates`). The other tab's create reached the host, and its delta this
-   * client, before the refusal of the edit sent first.
+   * Updates refused as not found and sent again, once, by op id (`retryNotFound`): the other
+   * tab's create can reach the host after the edit and before this client hears of it, with
+   * that tab's queue saved without it, so nothing here says the host has the record now.
    */
-  private heardWhileUnanswered = new Set<string>();
   private retriedUpdates = new Set<string>();
+  /**
+   * On a host the store has not synced with (`movedHost`), its records by collection and id,
+   * each sent once the collection's pull says what the host holds (`reconcileMoved`): a create
+   * where it has no copy, an update or a delete where the copy here is newer, nothing where it
+   * is not. Sent blind, an update of each at its own stamp was taken by a host that held the
+   * same records (an address changed, not the host), each rewritten, broadcast and handed to
+   * the after-sync hooks; and creates alone let the pull write a seeded host's older copy over
+   * the newer one here. `covered`: the queue or the note sends a change of it, and only a
+   * create, where the host has none, is left to this.
+   */
+  private movedPending = new Map<string, Map<string, { made: number; how?: { asIs?: boolean }; data: Record<string, unknown>; stamp: string; deleted: boolean; covered: boolean }>>();
   /**
    * Deletes for records removed for good here while nothing listened (`queueUnsyncedChanges`).
    * The host may never have had the record (made and removed here before it was sent), and
@@ -994,10 +1008,7 @@ export class XDBServerSync {
         for (const id of Array.isArray(msg.opIds) ? msg.opIds : []) {
           // The record as edited here is the host's now (`heardLive`).
           const op = this.inflightOps.get(id) ?? this.pendingOps.get(id);
-          if (op) {
-            this.noteHeardLive(op.collection, op.recordId);
-            this.heardWhileUnanswered.delete(recordKey(op));
-          }
+          if (op) this.noteHeardLive(op.collection, op.recordId);
           // Put back in the queue by an error that was not about it, and
           // not sent again yet: it is done, and is not sent again. It used
           // to go again once the error had moved it, and the host applied
@@ -1092,17 +1103,19 @@ export class XDBServerSync {
   }
 
   /**
-   * An update of a record live here that the host refused as not found, sent again when the host
-   * is to have the record: after another client's create of it that the saved queue still holds,
-   * which this client sends first itself (`adoptedCreates`; the host answers the same op from the
-   * other client, or any create of an id it has, without applying it again), or once when the
-   * host has named the record since the update went (`heardWhileUnanswered`). True when it goes
-   * again.
+   * An update of a record live here that the host refused as not found, sent again: after
+   * another client's create of it that the saved queue still holds, which this client sends
+   * first itself (`adoptedCreates`; the host answers the same op from the other client, or any
+   * create of an id it has, without applying it again), or else once (`retriedUpdates`), as the
+   * other client's create may have reached the host since. True when it goes again.
    */
   private retryNotFound(opId: string, reason: string): boolean {
     const op = this.inflightOps.get(opId);
     if (!op || op.operation !== 'update' || !/\bRecord not found\b/.test(String(reason))) return false;
     if (!this.xdb.get(op.collection, op.recordId)) return false;
+    // Once for each update, whichever way.
+    if (this.retriedUpdates.has(opId)) return false;
+    this.retriedUpdates.add(opId);
     const key = recordKey(op);
     const saved = this.savedCreateOf(op);
     let create: SyncOp | null = null;
@@ -1110,11 +1123,6 @@ export class XDBServerSync {
       create = this.takeSaved(saved.entry, saved.queuedFor);
       if (create) this.adoptedCreates.add(create.id);
     }
-    if (!create) {
-      if (!this.heardWhileUnanswered.has(key) || this.retriedUpdates.has(opId)) return false;
-      this.retriedUpdates.add(opId);
-    }
-    this.heardWhileUnanswered.delete(key);
     this.inflightOps.delete(opId);
     // The create, then this update after it: the record's later ops still wait behind them.
     this.pendingOps = new Map([...(create ? [[create.id, create] as const] : []), [opId, op] as const, ...this.pendingOps]);
@@ -1182,7 +1190,6 @@ export class XDBServerSync {
     this.pullHeld.clear();
     this.readTo.clear();
     this.heardLive.clear();
-    this.heardWhileUnanswered.clear();
     this.sincePulled.clear();
     this.clearPullRetry();
     this.pullRetryAttempts = 0;
@@ -1323,6 +1330,9 @@ export class XDBServerSync {
     for (const op of Array.from(this.pendingOps.values())) {
       const key = recordKey(op);
       if (busy.has(key)) continue;
+      // A collection of a host the store has not synced with waits for its pull to say what the
+      // host holds: a change of a record it has no copy of goes after its create (`finishMoved`).
+      if (this.movedPending.has(op.collection)) continue;
       // Stamped now: an op queued before auth knew no client id, nor the
       // host's time. An op sent before keeps the time it was sent with.
       op.clientId = this.clientId ?? op.clientId;
@@ -1417,6 +1427,9 @@ export class XDBServerSync {
     const outcome = new Map<ServerRecord, { held: true } | { failed: unknown }>();
     for (const record of list) {
       if (!record || typeof record.id !== 'string') continue;
+      // A host the store has not synced with holds this one: newer here, it is sent, and the
+      // host's copy is not written (`movedPending`).
+      if (this.reconcileMoved(collection, record)) continue;
       // One this connection has had live is passed over: what is here is no
       // older (`heardLive`).
       if (live?.has(record.id)) continue;
@@ -1429,10 +1442,7 @@ export class XDBServerSync {
       }
       try {
         const before = batch.length;
-        if (!this.applyPulled(record, changed.get(`${collection}\u0000${record.id}`), batch)) {
-          outcome.set(record, { held: true });
-          this.heardWhileUnanswered.add(`${collection}\u0000${record.id}`);
-        }
+        if (!this.applyPulled(record, changed.get(`${collection}\u0000${record.id}`), batch)) outcome.set(record, { held: true });
         else if (batch.length > before) batched.push(record);
       } catch (err) {
         outcome.set(record, { failed: err });
@@ -1514,6 +1524,7 @@ export class XDBServerSync {
       this.pulledDirty = true;
       this.saveSoon();
     }
+    let askedOn = false;
     if (isPullCursor(more)) {
       // The page was full, so the collection goes on: ask for the rest. A
       // collection past one page used to stop here, at its oldest ten
@@ -1521,6 +1532,7 @@ export class XDBServerSync {
       // pull, so not one the count below is for.)
       this.sincePulled.delete(collection);
       this.send({ type: 'sync_pull', collections: [collection], cursor: { at: more.at, id: more.id } });
+      askedOn = true;
     } else {
       const counted = this.sincePulled.get(collection);
       if (counted !== undefined) {
@@ -1532,16 +1544,83 @@ export class XDBServerSync {
         if (total >= INCREMENTAL_PULL_ROWS && from && !this.pullStuck.has(collection)) {
           this.sincePulled.set(collection, 0);
           this.send({ type: 'sync_pull', collections: [collection], lastSync: from.at, lastId: from.id });
+          askedOn = true;
         } else {
           this.sincePulled.set(collection, total);
         }
       }
     }
+    // The pull is whole: what the host did not send, it has no copy of.
+    if (!askedOn) this.finishMoved(collection);
     this.pullRetryAttempts = 0;
     this.initialPullDone = true;
     // The device has what the server sent: a record it wrote is not one made here.
     this.saveSoon();
     this.flushPendingOps();
+  }
+
+  /**
+   * A record of a pull from a host the store has not synced with (`movedPending`), weighed
+   * against the copy here by their stamps: true when the one here is newer, and goes to the host
+   * (an update, or the deletion of one deleted here) in place of the host's being written. One
+   * the queue or the note sends a change of is theirs, held by it as any change made here is.
+   */
+  private reconcileMoved(collection: string, record: ServerRecord): boolean {
+    const pending = this.movedPending.get(collection);
+    const mine = pending?.get(record.id);
+    if (!pending || !mine) return false;
+    pending.delete(record.id);
+    if (mine.covered || record.deleted === true) return false;
+    const time = (stamp: unknown) => {
+      const at = Date.parse(String(stamp));
+      return Number.isFinite(at) ? at : -Infinity;
+    };
+    if (!(time(mine.stamp) > time(record.updatedAt))) return false;
+    const held = this.heldRecords(collection).find((r) => r.id === record.id);
+    if (!held) return false;
+    this.queueChange(
+      held.deleted ? { type: 'delete', collection, recordId: record.id } : { type: 'update', collection, recordId: record.id, data: objectData(held.data) },
+      mine.made,
+      mine.how,
+    );
+    return true;
+  }
+
+  /** The records the store holds of `collection`, deleted ones too; none when it cannot say. */
+  private heldRecords(collection: string): Array<{ id: string; data?: unknown; deleted?: boolean }> {
+    const store = this.xdb as { getAllRaw?: (collection: string) => unknown };
+    try {
+      const raw = typeof store.getAllRaw === 'function' ? store.getAllRaw(collection) : [];
+      return (Array.isArray(raw) ? raw : []).filter((r): r is { id: string; data?: unknown; deleted?: boolean } => !!r && typeof (r as { id?: unknown }).id === 'string');
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * A collection's pull from a host the store has not synced with is whole: each live record
+   * here it did not send goes as a create, as it is now, ahead of any change of it queued
+   * since, which waited (`flushPendingOps`).
+   */
+  private finishMoved(collection: string): void {
+    const pending = this.movedPending.get(collection);
+    if (!pending) return;
+    this.movedPending.delete(collection);
+    const held = new Map(this.heldRecords(collection).map((record) => [record.id, record]));
+    const creates = new Set<string>();
+    for (const [id, mine] of pending) {
+      const record = held.get(id);
+      if (!record || record.deleted) continue;
+      this.queueChange({ type: 'create', collection, recordId: id, data: objectData(record.data) }, mine.made, mine.how);
+      const opId = this.lastOpFor.get(`${collection}\u0000${id}`);
+      if (opId) creates.add(opId);
+    }
+    if (creates.size > 0) {
+      const all = [...this.pendingOps];
+      this.pendingOps = new Map([...all.filter(([id]) => creates.has(id)), ...all.filter(([id]) => !creates.has(id))]);
+    }
+    // The mark of where listening stopped may move on, once no collection waits.
+    if (this.movedPending.size === 0) this.saveSoon();
   }
 
   /**
@@ -1595,7 +1674,6 @@ export class XDBServerSync {
       // as it stands if the edit made here lost.
       if (here === 'update' && op.operation !== 'delete') {
         this.noteHeardLive(op.collection, op.recordId);
-        this.heardWhileUnanswered.add(recordKey(op));
         continue;
       }
       const entry = this.deltaEntry(op, here === 'delete');
@@ -1988,15 +2066,18 @@ export class XDBServerSync {
         const own = typeof store.isOwnStamp === 'function' && store.isOwnStamp(collection, record.id, record.updated_at);
         const how = own ? undefined : { asIs: true };
         if (this.movedHost) {
-          if (record.deleted === true) continue;
-          // On a host the store has not synced with, every record goes: first as an update, which
-          // a pull of an older copy waits for and the host weighs by its stamp (one the records
-          // were moved to keeps the newer of the two, where its pull wrote its own over this one),
-          // done when the host has no such record; then as the create that brings it. The update
-          // is left to the queue or the note where they send a change of the record.
-          const key = `${collection}\u0000${record.id}`;
-          if (queued === undefined && !covered.has(key)) found.push({ made, change: { type: 'update', collection, recordId: record.id, data }, how, removal: true });
-          found.push({ made, change: { type: 'create', collection, recordId: record.id, data }, how });
+          // On a host the store has not synced with: sent once the collection's pull says what
+          // the host holds (`movedPending`).
+          let pending = this.movedPending.get(collection);
+          if (!pending) this.movedPending.set(collection, (pending = new Map()));
+          pending.set(record.id, {
+            made,
+            ...(how ? { how } : {}),
+            data,
+            stamp: String(record.updated_at),
+            deleted: record.deleted === true,
+            covered: queued !== undefined || covered.has(`${collection}\u0000${record.id}`),
+          });
           continue;
         }
         if (record.deleted === true) {
@@ -2249,7 +2330,8 @@ export class XDBServerSync {
     }
     // Not moved on while the queue is unsaved: a change in it that is lost
     // with the page is then found again by the next scan.
-    if (this.xdbUnsubscribe && !this.queueDirty && !this.markHeld) {
+    // Nor while a host the store has not synced with is still to be sent records (`movedPending`).
+    if (this.xdbUnsubscribe && !this.queueDirty && !this.markHeld && this.movedPending.size === 0) {
       try {
         meta.writeSyncMeta(WATCHED_META, JSON.stringify({ at: now, url: this.config.wsUrl }));
         this.watched = now;

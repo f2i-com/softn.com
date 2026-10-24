@@ -204,14 +204,25 @@ describe('an app moved to another sync host', () => {
     moved.sync.on('reject', (...args: unknown[]) => refused.push(String(args[0])));
     moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
     await tick();
-    // Each as an update, which this empty host has no record for: done, and the create follows.
-    const updates = pushed(moved.socket) as unknown as Op[];
-    expect(updates.map((op) => [op.operation, op.data?.title]).sort()).toEqual([['update', 'made here'], ['update', 'v1']]);
-    for (const op of updates) moved.socket.receive({ type: 'sync_reject', opId: op.id, reason: `Record not found: ${op.recordId}` });
-    await tick();
-    const creates = (pushed(moved.socket) as unknown as Op[]).slice(updates.length);
-    expect(creates.map((op) => [op.operation, op.data?.title]).sort()).toEqual([['create', 'made here'], ['create', 'v1']]);
+    // Its pull says it has none of them: each goes as a create.
+    const ops = (pushed(moved.socket) as unknown as Op[]).map((op) => [op.operation, op.data?.title]).sort();
+    expect(ops).toEqual([['create', 'made here'], ['create', 'v1']]);
     expect(refused).toEqual([]);
+  });
+
+  // An update of each at its own stamp was taken by a host holding the same records (the
+  // address changed, not the host): each rewritten, broadcast, and handed to its hooks.
+  it('sends nothing to a host that holds the same records', async () => {
+    const backing = storage();
+    await synced(backing);
+    vi.advanceTimersByTime(1000);
+    const moved = connect(page(backing), `${WS_URL}/`);
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    await tick();
+    expect(pushed(moved.socket)).toEqual([]);
+    // And the mark is this host's now: the next visit looks only past it.
+    moved.sync.disconnect();
+    expect(JSON.parse(backing.getItem('xdb:app::sync-watched')!).url).toBe(`${WS_URL}/`);
   });
 
   // The whole pull wrote the host's older copy before any create went, and the host keeps the
@@ -238,7 +249,51 @@ describe('an app moved to another sync host', () => {
     expect([first?.operation, first?.data?.title]).toEqual(['update', 'newer here']);
   });
 
-  it('sends what was queued for the old host too, before the record, and takes "not found" for it as done', async () => {
+  it('sends a deletion made here after the copy a seeded host holds, and does not bring the record back', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const before = connect(store);
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.deleteFromCollection('notes', 'n1');
+    await tick();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Op[]).map((op) => op.id) });
+    await tick();
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const moved = connect(page(backing), MOVED);
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'seeded', '2026-02-01T00:00:00.000Z')] });
+    await tick();
+    expect(page(backing).get('notes', 'n1')).toBeNull();
+    expect((pushed(moved.socket) as unknown as Op[]).map((op) => [op.operation, op.recordId])).toEqual([['delete', 'n1']]);
+  });
+
+  it('waits for the last page of a pull before it takes a record for one the host has no copy of', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const before = connect(store);
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.create('notes', { title: 'n2' }, { id: 'n2' });
+    await tick();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Op[]).map((op) => op.id) });
+    await tick();
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const moved = connect(page(backing), MOVED);
+    const seeded = '2026-02-01T00:00:00.000Z';
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', seeded)], more: { at: seeded, id: 'n1' } });
+    await tick();
+    expect(pushed(moved.socket)).toEqual([]);
+    // n2 is on the second page.
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [{ ...row('n2', 'n2', seeded), updatedAt: new Date(Date.now() + 60_000).toISOString() }] });
+    await tick();
+    expect(pushed(moved.socket)).toEqual([]);
+  });
+
+  it('sends what was queued for the old host too, after the create of a record the new host has no copy of', async () => {
     const backing = storage();
     await synced(backing);
     const store = page(backing);
@@ -254,14 +309,15 @@ describe('an app moved to another sync host', () => {
     moved.sync.on('reject', (...args: unknown[]) => refused.push(String(args[0])));
     moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
     await tick();
+    // An empty host has no n1: the record goes as a create, and the update queued for the old
+    // host after it.
     const first = (pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
-    expect(first.map((op) => [op.operation, op.data?.title])).toEqual([['update', 'edited offline']]);
-    // An empty host has no n1: the update is done, and the record goes as a create.
-    moved.socket.receive({ type: 'sync_reject', opId: first[0].id, reason: 'Record not found: n1' });
+    expect(first.map((op) => [op.operation, op.data?.title])).toEqual([['create', 'edited offline']]);
+    moved.socket.receive({ type: 'sync_ack', opIds: [first[0].id] });
     await tick();
-    expect(refused).toEqual([]);
     const then = (pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
-    expect(then.map((op) => [op.operation, op.data?.title])).toEqual([['update', 'edited offline'], ['create', 'edited offline']]);
+    expect(then.map((op) => [op.operation, op.data?.title])).toEqual([['create', 'edited offline'], ['update', 'edited offline']]);
+    expect(refused).toEqual([]);
   });
 
   it("is not taken for one by a store whose mark an earlier client kept as a number", async () => {

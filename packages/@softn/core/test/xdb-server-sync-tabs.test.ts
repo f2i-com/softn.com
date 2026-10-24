@@ -272,7 +272,7 @@ describe("one tab's edit of a record the other tab made, both online, the edit r
     expect(opsOf(sb.socket)).toHaveLength(3);
   });
 
-  it('is refused as before when no other tab holds a create of the record', async () => {
+  it('is sent again once when no other tab holds a create of the record, then refused as before', async () => {
     const backing = storage();
     const b = tab(backing);
     const sb = online(b);
@@ -285,7 +285,24 @@ describe("one tab's edit of a record the other tab made, both online, the edit r
     sb.sync.on('reject', (...args: unknown[]) => refused.push(String(args[0])));
     const edit = opsOf(sb.socket).find((op) => op.operation === 'update')!;
     sb.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${r1.id}` });
+    expect(refused).toEqual([]);
+    expect(opsOf(sb.socket).filter((op) => op.id === edit.id)).toHaveLength(2);
+    sb.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${r1.id}` });
     expect(refused).toEqual([edit.id]);
+  });
+
+  // The other tab's create landed and its queue was saved without it before this tab heard the
+  // refusal of its edit, and its delta came after: nothing here said the host had the record.
+  it('keeps the edit when the other tab saved its queue before the refusal, and the delta came after', async () => {
+    const { b, sa, sb, r1, create, edit, refused } = await editOfAnotherTabsRecord();
+    sa.socket.receive({ type: 'sync_ack', opIds: [create.id] });
+    await tick();
+    sb.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${r1.id}` });
+    sb.socket.receive({ type: 'sync_delta', ops: [{ ...create, clientId: 'ca' }] });
+    await tick();
+    expect(opsOf(sb.socket).map((op) => [op.operation, op.id])).toEqual([['update', edit.id], ['update', edit.id]]);
+    expect(b.get('notes', r1.id)?.data.title).toBe('edited in B');
+    expect(refused).toEqual([]);
   });
 });
 

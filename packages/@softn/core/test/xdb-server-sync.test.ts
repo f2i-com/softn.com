@@ -1014,12 +1014,6 @@ describe('a pull from where the last one ended', () => {
     try {
       expect(second.socket.ofType('sync_pull')[0]).toMatchObject({ lastSync: before(at(2)), lastId: '' });
       second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('a', 1), { ...row('b', 2), data: { title: 'b2' } }] });
-      // Its store was last synced with the other host: what it holds goes to this one too, an
-      // update first, and the pull's copy waits for the host to weigh it and answer.
-      const update = pushedOps(second.socket).find((op) => op.recordId === 'b' && op.operation === 'update')!;
-      expect(second.store.get('notes', 'b')?.data.title).toBe('b');
-      second.socket.receive({ type: 'sync_delta', ops: [{ id: update.id, collection: 'notes', operation: 'update', recordId: 'b', data: { title: 'b2' }, timestamp: at(2), clientId: 'server' }] });
-      second.socket.receive({ type: 'sync_ack', opIds: [update.id] });
       expect(second.store.query('notes').map((r) => [r.id, r.data.title])).toEqual([['a', 'a'], ['b', 'b2']]);
     } finally {
       second.sync.disconnect();
