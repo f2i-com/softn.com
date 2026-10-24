@@ -358,6 +358,16 @@ describe('an app moved to another sync host', () => {
     expect((pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1').map((op) => [op.operation, op.data?.title])).toEqual([['update', 'newer here']]);
   });
 
+  it('keeps a newer record here when one delta carries two older changes of it while the move waits', async () => {
+    const backing = storage();
+    await synced(backing);
+    await editedOnTheOldHost(backing);
+    const moved = connect(page(backing), MOVED);
+    const op = (id: string, title: string, at: string) => ({ id, collection: 'notes', operation: 'update', recordId: 'n1', data: { title }, timestamp: at, clientId: 'c9' });
+    moved.socket.receive({ type: 'sync_delta', ops: [op('d1', 'older a', '2026-01-15T00:00:00.000Z'), op('d2', 'older b', '2026-01-16T00:00:00.000Z')] });
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('newer here');
+  });
+
   // Let go before its creates were queued, a collection pulled after another sent its held
   // changes first, which the host refused, and the person was told a change was not taken.
   it('sends the creates of a collection pulled after another before the changes that waited', async () => {

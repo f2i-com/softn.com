@@ -1706,7 +1706,12 @@ export class XDBServerSync {
           if (!records) heldBy.set(op.collection, (records = this.heldRecords(op.collection)));
           return records;
         };
-        if (this.reconcileMoved(op.collection, { id: op.recordId, updatedAt: op.timestamp, deleted: op.operation === 'delete' }, held)) continue;
+        if (this.reconcileMoved(op.collection, { id: op.recordId, updatedAt: op.timestamp, deleted: op.operation === 'delete' }, held)) {
+          // The change it queued is unanswered from now on, for this delta's later ops of it too.
+          const record = held().get(op.recordId);
+          changed.set(`${op.collection}\u0000${op.recordId}`, record?.deleted ? 'delete' : 'update');
+          continue;
+        }
       }
       const here = changed.get(`${op.collection}\u0000${op.recordId}`);
       // Another device's edit to a record edited here is left to the answer
