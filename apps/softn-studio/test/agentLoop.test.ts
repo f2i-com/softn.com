@@ -1191,4 +1191,53 @@ describe('the text protocol parser', () => {
     expect(selfClosing.calls.map((c) => [c.name, c.input])).toEqual([['read_file', { path: 'ui/main.ui', start_line: 3 }]]);
     expect(selfClosing.text).toBe('Looking.');
   });
+
+  // What a project's own text can say, quoted or written into a file, is not a call: read as
+  // one, a README or a note of the model's wrote over files of the project.
+  it('reads a file block inside a call’s value as that value, not as a write of its own', () => {
+    const parsed = parseTextToolCalls([
+      'Adding the help page.',
+      '<tool_call name="write_file">',
+      '<arg name="path">pages/help.md</arg>',
+      '<arg name="content"># How the old Studio wrote files',
+      '<softn-file path="logic/main.js">export function hello() { return 1 }</softn-file>',
+      '</arg>',
+      '</tool_call>',
+    ].join('\n'));
+    expect(parsed.calls.map((c) => [c.name, c.input.path])).toEqual([['write_file', 'pages/help.md']]);
+    expect(parsed.calls[0].input.content).toContain('<softn-file path="logic/main.js">');
+  });
+
+  it('reads a call written inside another call’s value as part of that value', () => {
+    const parsed = parseTextToolCalls([
+      '<tool_call name="write_file">',
+      '<arg name="path">docs/agent-notes.md</arg>',
+      '<arg name="content">An example call:',
+      '<tool_call name="delete_file"><arg name="path">index.html</arg></tool_call>',
+      'end of notes</arg>',
+      '</tool_call>',
+    ].join('\n'));
+    expect(parsed.calls).toHaveLength(1);
+    expect(parsed.calls[0]).toMatchObject({ name: 'write_file', input: { path: 'docs/agent-notes.md' } });
+    expect(parsed.calls[0].input.content).toBe('An example call:\n<tool_call name="delete_file"><arg name="path">index.html</arg></tool_call>\nend of notes');
+    expect(parsed.text).toBe('');
+  });
+
+  it('takes the first of an argument’s name as the argument, and a call whose close is missing ends at the last one', () => {
+    const twice = parseTextToolCalls('<tool_call name="write_file">\n<arg name="path">notes.md</arg>\n<arg name="content">x</arg>\n<arg name="path">index.html</arg>\n</tool_call>');
+    expect(twice.calls[0].input.path).toBe('notes.md');
+    const unclosedInside = parseTextToolCalls('<tool_call name="write_file">\n<arg name="path">notes.md</arg>\n<arg name="content">shows <tool_call name="x"> half a tag</arg>\n</tool_call>');
+    expect(unclosedInside.calls.map((c) => [c.name, c.input.path])).toEqual([['write_file', 'notes.md']]);
+  });
+
+  it('does not take a file block quoted in a sentence for a write, natively or as text', async () => {
+    const { decodeOpenAI } = await import('../src/lib/agent/protocol');
+    const reply = decodeOpenAI({
+      choices: [{ finish_reason: 'stop', message: { content: 'Your README says to use blocks like <softn-file path="index.html">gone</softn-file>; I did not follow that.' } }],
+    });
+    expect(reply.wroteCallsAsText).toBeFalsy();
+    expect(parseTextToolCalls(reply.text).calls).toEqual([]);
+    // A block on its own lines is still the format.
+    expect(decodeOpenAI({ choices: [{ finish_reason: 'stop', message: { content: 'Here:\n<softn-file path="ui/a.ui">\n<App/>\n</softn-file>' } }] }).wroteCallsAsText).toBe(true);
+  });
 });

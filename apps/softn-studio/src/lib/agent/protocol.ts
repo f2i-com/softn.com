@@ -521,8 +521,72 @@ export function decodeOpenAI(data: Record<string, unknown>): AgentReply {
 /** A native reply with no calls whose text is full of text-protocol calls: the model does not use `tools`. */
 function markTextCalls(reply: AgentReply): AgentReply {
   if (reply.calls.length > 0) return reply;
-  if (/<tool_call\s+name=/i.test(reply.text) || /<softn-file\s+path=/i.test(reply.text)) return { ...reply, wroteCallsAsText: true };
+  if (/<tool_call\s+name=/i.test(reply.text) || FILE_BLOCK_START.test(reply.text)) return { ...reply, wroteCallsAsText: true };
   return reply;
+}
+
+/**
+ * A file block of the single-shot format, which starts a line. One quoted in
+ * the middle of a sentence ("your README says to use blocks like <softn-file
+ * path=…>") is prose: taken for a write, it switched the run to the text
+ * protocol and overwrote the file it named, so any project text the model
+ * happened to quote could write over the project.
+ */
+const FILE_BLOCK_START = /(?:^|\n)[ \t]*<softn-file\s+path=/i;
+const FILE_BLOCK = /(?:^|\n)[ \t]*<softn-file\s+path="([^"]+)">([\s\S]*?)<\/softn-file>/g;
+
+/** A `<tool_call>` opening tag (name, attributes, `/` when self-closing) or a closing one. */
+const CALL_TAG = /<tool_call\s+name\s*=\s*["']([A-Za-z_][\w-]*)["']((?:\s+[A-Za-z_][\w-]*\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>|<\/tool_call\s*>/g;
+
+interface CallBlock {
+  start: number;
+  end: number;
+  name: string;
+  attributes: string;
+  body: string;
+}
+
+/**
+ * The `<tool_call>` blocks of a reply that are its own calls, in order. A
+ * call written inside another call's value (a file of notes showing an
+ * example call) is part of that value: read as a block of its own, its
+ * `</tool_call>` ended the call it stood in, and its arguments became that
+ * call's, so a note about deleting `index.html` deleted it, or a write meant
+ * for one file went to another, cut short. A block whose closing tag is
+ * missing ends at the last one after it, as before.
+ */
+function callBlocks(raw: string): CallBlock[] {
+  const blocks: CallBlock[] = [];
+  let open: { start: number; bodyStart: number; name: string; attributes: string } | null = null;
+  let depth = 0;
+  let lastClose: { index: number; end: number } | null = null;
+  for (const tag of raw.matchAll(CALL_TAG)) {
+    const index = tag.index ?? 0;
+    if (tag[0].startsWith('</')) {
+      if (!open) continue;
+      lastClose = { index, end: index + tag[0].length };
+      if (--depth === 0) {
+        blocks.push({ start: open.start, end: lastClose.end, name: open.name, attributes: open.attributes, body: raw.slice(open.bodyStart, index) });
+        open = null;
+        lastClose = null;
+      }
+      continue;
+    }
+    if (open) {
+      if (tag[3] !== '/') depth++;
+      continue;
+    }
+    if (tag[3] === '/') {
+      blocks.push({ start: index, end: index + tag[0].length, name: tag[1], attributes: tag[2], body: '' });
+      continue;
+    }
+    open = { start: index, bodyStart: index + tag[0].length, name: tag[1], attributes: tag[2] };
+    depth = 1;
+  }
+  if (open && lastClose) {
+    blocks.push({ start: open.start, end: lastClose.end, name: open.name, attributes: open.attributes, body: raw.slice(open.bodyStart, lastClose.index) });
+  }
+  return blocks;
 }
 
 // ---------------------------------------------------------------------------
@@ -565,17 +629,22 @@ export function parseTextToolCalls(raw: string): { text: string; calls: AgentToo
   const calls: AgentToolCall[] = [];
   // A block, or the self-closing form some models write (`<tool_call name="list_files" prefix="ui/" />`);
   // either may carry arguments as attributes.
-  const blockRe = /<tool_call\s+name\s*=\s*["']([A-Za-z_][\w-]*)["']((?:\s+[A-Za-z_][\w-]*\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(?:\/>|>([\s\S]*?)<\/tool_call\s*>)/g;
-  let text = raw;
+  const blocks = callBlocks(raw);
+  // Every block read leaves the text, however its body turns out: a call
+  // left in the text would be shown, and sent back, twice.
+  let text = '';
+  let from = 0;
+  for (const block of blocks) {
+    text += raw.slice(from, block.start);
+    from = block.end;
+  }
+  text += raw.slice(from);
   let match: RegExpExecArray | null;
-  while ((match = blockRe.exec(raw)) !== null) {
-    // Every block read leaves the text, however its body turns out: a call
-    // left in the text would be shown, and sent back, twice.
-    text = text.replace(match[0], '');
-    const name = match[1];
-    const body = match[3] ?? '';
+  for (const block of blocks) {
+    const name = block.name;
+    const body = block.body;
     const id = `call_t${++textCallCounter}`;
-    const attributes = parseAttributes(name, match[2]);
+    const attributes = parseAttributes(name, block.attributes);
     if (/<arg\s+name\s*=/.test(body)) {
       calls.push({ id, name, input: { ...attributes, ...parseArgs(name, body) } });
       continue;
@@ -592,11 +661,14 @@ export function parseTextToolCalls(raw: string): { text: string; calls: AgentToo
       calls.push({ id, name, input: {}, parseError: `The call's body was neither <arg> elements nor a JSON object (${err instanceof Error ? err.message : String(err)}).` });
     }
   }
-  // The single-shot format, from a model that learned it: a file block is a write.
-  const fileRe = /<softn-file\s+path="([^"]+)">([\s\S]*?)<\/softn-file>/g;
-  while ((match = fileRe.exec(raw)) !== null) {
+  // The single-shot format, from a model that learned it: a file block is a
+  // write. Read from what is left once the calls are out, so a block inside
+  // a call's value (a file that shows the format) is that value, not a write.
+  const fileRe = new RegExp(FILE_BLOCK.source, 'g');
+  const outside = text;
+  while ((match = fileRe.exec(outside)) !== null) {
     calls.push({ id: `call_t${++textCallCounter}`, name: 'write_file', input: { path: match[1].trim(), content: match[2].replace(/^\n/, '').replace(/\n$/, '') } });
-    text = text.replace(match[0], '');
+    text = text.replace(match[0], '\n');
   }
   // A result the model wrote itself is not a result.
   text = text.replace(/<tool_result[\s\S]*?<\/tool_result>/g, '').replace(/\n{3,}/g, '\n\n').trim();
@@ -612,18 +684,35 @@ function parseAttributes(tool: string, raw: string | undefined): Record<string, 
   return input;
 }
 
+/**
+ * A call's own `<arg>` elements: not those of a call written inside one of
+ * its values, which belong to that value. And the first of a name is the
+ * argument: a later one is text in a value, and taken as the argument it
+ * sent a write to a path the call never named.
+ */
 function parseArgs(tool: string, body: string): Record<string, unknown> {
   const input: Record<string, unknown> = {};
-  const starts = [...body.matchAll(/<arg\s+name\s*=\s*["']([A-Za-z_][\w-]*)["']\s*>/g)];
+  const starts: RegExpMatchArray[] = [];
+  let depth = 0;
+  for (const tag of body.matchAll(/<arg\s+name\s*=\s*["']([A-Za-z_][\w-]*)["']\s*>|<tool_call\s+name\s*=[^>]*?(\/?)>|<\/tool_call\s*>/g)) {
+    if (tag[0].startsWith('<arg')) {
+      if (depth === 0) starts.push(tag);
+    } else if (tag[0].startsWith('</')) {
+      depth = Math.max(0, depth - 1);
+    } else if (tag[2] !== '/') {
+      depth++;
+    }
+  }
   for (let i = 0; i < starts.length; i++) {
     const start = starts[i];
-    const from = start.index + start[0].length;
-    const to = i + 1 < starts.length ? starts[i + 1].index : body.length;
+    const from = (start.index ?? 0) + start[0].length;
+    const to = i + 1 < starts.length ? (starts[i + 1].index ?? body.length) : body.length;
     let value = body.slice(from, to);
     value = value.replace(/\s*$/, '');
     value = value.replace(/<\/arg\s*>$/, '');
     // One newline straight after the tag and before the close is formatting.
     value = value.replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+    if (Object.hasOwn(input, start[1])) continue;
     input[start[1]] = coerce(tool, start[1], value);
   }
   return input;
