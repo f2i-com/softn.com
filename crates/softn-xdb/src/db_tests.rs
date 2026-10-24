@@ -1062,16 +1062,63 @@ fn a_reset_epoch_past_what_is_kept_is_refused() {
     }
     assert_eq!(db.get_epoch("notes").unwrap(), 0);
     assert_eq!(live_ids(&db, "notes"), vec!["kept"]);
-    // The largest kept is adopted as before.
-    assert!(db.apply_remote_reset("notes", MAX_EPOCH, "a peer").unwrap());
-    assert_eq!(db.get_epoch("notes").unwrap(), MAX_EPOCH);
+    // Nor a leap far past this node's epoch: one peer naming MAX_EPOCH for any
+    // collection left this node no reset of its own after it.
+    assert!(!db.apply_remote_reset("ghost", MAX_EPOCH, "a peer").unwrap());
+    assert!(!db.apply_remote_reset("notes", MAX_EPOCH_STEP + 1, "a peer").unwrap());
+    assert_eq!(db.get_epoch("notes").unwrap(), 0);
+    assert!(db.apply_remote_reset("notes", MAX_EPOCH_STEP, "a peer").unwrap());
+    assert_eq!(db.get_epoch("notes").unwrap(), MAX_EPOCH_STEP);
     let stale = db.apply_remote_update_at_epoch("notes", 0, &[]).unwrap();
     assert!(matches!(stale, RemoteApplyOutcome::StaleEpoch { .. }), "{stale:?}");
-    // A reset of its own past it is refused, and the epoch is as it was; at i64::MAX one
-    // was stored as i64::MIN and read back as 0.
+    assert_eq!(db.reset_collection("notes", "this node").unwrap(), MAX_EPOCH_STEP + 1);
+
+    // At the largest kept (a store from before the cap), a reset of its own past it is
+    // refused and the epoch is as it was; at i64::MAX one was stored as i64::MIN and read
+    // back as 0.
+    db.conn
+        .execute("UPDATE collection_epochs SET epoch = ?1 WHERE collection = 'notes'", params![MAX_EPOCH as i64])
+        .unwrap();
     assert!(db.reset_collection("notes", "this node").is_err());
     assert!(db.bump_epoch("notes", "this node").is_err());
     assert_eq!(db.get_epoch("notes").unwrap(), MAX_EPOCH);
+}
+
+/// A restore whose epochs would pass the largest kept is refused: an authoritative one
+/// before its plan is journaled (it was refused in staging, after, and sync stayed paused),
+/// and one that keeps a snapshot's epochs as they are.
+#[test]
+fn a_restore_past_the_largest_epoch_is_refused_before_anything_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut source = database(&dir, "source.sqlite");
+    source.upsert_record(note("theirs", "from the backup")).unwrap();
+    source
+        .conn
+        .execute(
+            "INSERT OR REPLACE INTO collection_epochs (collection, epoch, origin, reset_at) VALUES ('notes', ?1, 'x', 'x')",
+            params![MAX_EPOCH as i64],
+        )
+        .unwrap();
+    let snapshot = dir.path().join("snapshot.sqlite");
+    source.export_to_file(&snapshot).unwrap();
+
+    let mut db = database(&dir, "live.sqlite");
+    db.upsert_record(note("mine", "here")).unwrap();
+    assert!(db.plan_authoritative_restore(&snapshot).is_err());
+    assert!(db.replace_from_file(&snapshot).is_ok(), "an epoch at the largest kept is kept");
+    assert_eq!(db.get_epoch("notes").unwrap(), MAX_EPOCH);
+
+    source
+        .conn
+        .execute("UPDATE collection_epochs SET epoch = ?1 WHERE collection = 'notes'", params![i64::MAX])
+        .unwrap();
+    let past = dir.path().join("past.sqlite");
+    source.export_to_file(&past).unwrap();
+    let mut db = database(&dir, "live-2.sqlite");
+    db.upsert_record(note("mine", "here")).unwrap();
+    assert!(db.replace_from_file(&past).is_err());
+    assert_eq!(live_ids(&db, "notes"), vec!["mine"]);
+    assert_eq!(db.get_epoch("notes").unwrap(), 0);
 }
 
 /// An import wrote by id alone: a record of `private` imported into `public` was moved

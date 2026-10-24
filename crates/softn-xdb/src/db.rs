@@ -39,6 +39,10 @@ pub type DbResult<T> = Result<T, DbError>;
 /// number. One reset at a time, no collection comes near it.
 const MAX_EPOCH: u64 = 1 << 53;
 
+/// How far past this node's epoch of a collection a peer's reset may name. Honest peers'
+/// epochs differ by the resets one of them missed while away.
+const MAX_EPOCH_STEP: u64 = 1 << 20;
+
 /// An epoch about to be kept, refused past MAX_EPOCH rather than wrapped.
 fn check_epoch(epoch: u64) -> DbResult<()> {
     if epoch > MAX_EPOCH {
@@ -393,6 +397,16 @@ impl XdbDatabase {
                     .map_err(|e| DbError::Crdt(e.to_string()))?;
                 Self::records_from_doc(&collection, &doc)?;
             }
+            // A snapshot's epochs become this database's: one past MAX_EPOCH (a file
+            // from a build before the cap, or a made one) left no reset of its own after it.
+            let largest: Option<i64> = staging.query_row("SELECT MAX(epoch) FROM collection_epochs", [], |row| row.get(0))?;
+            if let Some(epoch) = largest {
+                if epoch < 0 || epoch as u64 > MAX_EPOCH {
+                    return Err(DbError::InvalidOperation(format!(
+                        "Unsupported snapshot: a reset epoch of {epoch} is past the largest kept ({MAX_EPOCH})"
+                    )));
+                }
+            }
         }
 
         // 3. The caller's preparation (reset epochs for an authoritative
@@ -454,8 +468,14 @@ impl XdbDatabase {
         let snapshot = Self::catalog_of(&source)?;
         drop(source);
         let before = self.catalog()?;
+        let plan = Self::reset_plan_over(&before, &snapshot);
+        // Refused now, before the host journals the plan, rather than in the staging step,
+        // which left synchronization paused until the person chose to roll back.
+        for (_, epoch) in &plan {
+            check_epoch(*epoch)?;
+        }
         Ok(AuthoritativeRestorePlan {
-            plan: Self::reset_plan_over(&before, &snapshot),
+            plan,
             prior: {
                 let mut prior: Vec<(String, u64)> = before.into_iter().collect();
                 prior.sort();
@@ -1213,7 +1233,12 @@ impl XdbDatabase {
         let collection = collection.to_string();
         let origin = origin.to_string();
         self.with_transaction(|this| {
-            if epoch <= this.get_epoch(&collection)? {
+            let local = this.get_epoch(&collection)?;
+            // Nor a leap: a reset is one more than the epoch it ends, a restore one more
+            // than the larger of two, so peers' epochs of a collection stay close. One peer
+            // that named MAX_EPOCH for any collection, one the app never used included, left
+            // this node no reset of its own and no restore past it.
+            if epoch <= local || epoch - local > MAX_EPOCH_STEP {
                 return Ok(false);
             }
             this.clear_collection_inner(&collection)?;
