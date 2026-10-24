@@ -1210,7 +1210,7 @@ fn several_records_from_sync_are_written_at_once_and_none_of_another_collection(
 /// The page stamps an edit after the copy it edits, and after a sync room's copy, which only
 /// the page knows: the stamp this side gave the edit (this clock's time) replaced it.
 #[test]
-fn an_edit_is_stamped_after_what_it_edits_and_no_earlier_than_the_page_says() {
+fn an_edit_is_stamped_after_what_it_edits_and_as_the_page_says() {
     let dir = tempfile::tempdir().unwrap();
     let mut db = database(&dir, "stamps.sqlite");
     let time = |text: &str| chrono::DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&chrono::Utc);
@@ -1236,4 +1236,32 @@ fn an_edit_is_stamped_after_what_it_edits_and_no_earlier_than_the_page_says() {
     db.upsert_record(Record { updated_at: far.clone(), ..note("far", "theirs") }).unwrap();
     let (edited, _) = db.update_record_at("far", json!({ "title": "mine" }), Some(&far)).unwrap();
     assert!(time(&edited.updated_at) < now + chrono::Duration::minutes(1), "{}", edited.updated_at);
+}
+
+/// The page and this store read one clock, and the page stamps an edit as it is made, a moment
+/// before the call arrives here: that stamp was replaced by this clock's later time, and the
+/// page's answer held a stamp it never gave, so it took its own edit for one heard elsewhere.
+#[test]
+fn the_pages_stamp_a_moment_behind_this_clock_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "stamps-behind.sqlite");
+    let time = |text: &str| chrono::DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&chrono::Utc);
+    let now = chrono::Utc::now();
+    let hour_ago = (now - chrono::Duration::hours(1)).to_rfc3339();
+
+    db.upsert_record(Record { updated_at: hour_ago.clone(), ..note("a", "theirs") }).unwrap();
+    let asked = (now - chrono::Duration::milliseconds(5)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let (edited, _) = db.update_record_at("a", json!({ "title": "mine" }), Some(&asked)).unwrap();
+    assert_eq!(time(&edited.updated_at), time(&asked));
+
+    db.upsert_record(Record { updated_at: hour_ago.clone(), ..note("b", "theirs") }).unwrap();
+    db.delete_record_at("b", Some(&asked)).unwrap();
+    let gone = db.conn.query_row("SELECT updated_at FROM records WHERE id = 'b'", [], |row| row.get::<_, String>(0)).unwrap();
+    assert_eq!(time(&gone), time(&asked));
+
+    // Not before the copy it edits: one stamped after the page's is followed as before.
+    db.upsert_record(Record { updated_at: hour_ago, ..note("c", "theirs") }).unwrap();
+    let older = (now - chrono::Duration::hours(2)).to_rfc3339();
+    let (edited, _) = db.update_record_at("c", json!({ "title": "mine" }), Some(&older)).unwrap();
+    assert!(time(&edited.updated_at) >= now, "{}", edited.updated_at);
 }

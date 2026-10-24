@@ -118,6 +118,68 @@ describe('an edit made on a page that closed before its client started', () => {
   });
 });
 
+/**
+ * The ops a change of n1 goes as, made with a client listening and made on a page that closed
+ * before its client started, n1 pulled from the host first with the stamp `pulled`.
+ */
+async function bothWays(pulled: string, change: (store: XDBService) => void) {
+  const ops = (socket: FakeSocket) => pushed(socket).filter((o) => o.recordId === 'n1').map((o) => [o.operation, o.timestamp, o.data?.title]);
+  const start = Date.now();
+  const listening = page(storage());
+  const live = connect(listening);
+  live.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', pulled)] });
+  await tick();
+  vi.advanceTimersByTime(1000);
+  change(listening);
+  await tick();
+  const heard = ops(live.socket);
+  live.sync.disconnect();
+
+  vi.setSystemTime(start);
+  const backing = storage();
+  const first = connect(page(backing));
+  first.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', pulled)] });
+  await tick();
+  first.sync.disconnect();
+  vi.advanceTimersByTime(1000);
+  change(page(backing));
+  await tick();
+  const { socket } = await nextVisit(backing);
+  return { heard, unheard: ops(socket) };
+}
+
+describe('a change made while no client listened goes as it would have with one listening', () => {
+  it('an edit', async () => {
+    const { heard, unheard } = await bothWays('2026-02-01T00:00:00.000Z', (store) => store.updateInCollection('notes', 'n1', { title: 'mine' }));
+    expect(heard).toHaveLength(1);
+    expect(unheard).toEqual(heard);
+  });
+
+  // The copy is ahead of this clock, by less than the host is: the edit took the stamp just
+  // after it, and the note sent it at that stamp, not at its time with the host's lead.
+  it('an edit of a copy stamped ahead of this clock', async () => {
+    const editedAt = Date.now() + 1000;
+    const { heard, unheard } = await bothWays(new Date(Date.now() + 10_000).toISOString(), (store) => store.updateInCollection('notes', 'n1', { title: 'mine' }));
+    expect(heard).toHaveLength(1);
+    expect(Date.parse(String(heard[0][1]))).toBe(editedAt + 60_000);
+    expect(unheard).toEqual(heard);
+  });
+
+  it('a deletion of a copy stamped ahead of this clock', async () => {
+    const { heard, unheard } = await bothWays(new Date(Date.now() + 10_000).toISOString(), (store) => store.deleteFromCollection('notes', 'n1'));
+    expect(heard.map((op) => op[0])).toEqual(['delete']);
+    expect(unheard).toEqual(heard);
+  });
+
+  it('an import', async () => {
+    const older = '2026-02-15T00:00:00.000Z';
+    const restored = { id: 'n1', collection: 'notes', data: { title: 'restored' }, created_at: older, updated_at: older, deleted: false };
+    const { heard, unheard } = await bothWays('2026-02-01T00:00:00.000Z', (store) => store.import({ version: 1, exportedAt: older, collections: { notes: [restored] } }, { merge: false }));
+    expect(heard.map((op) => op[0])).toEqual(['update']);
+    expect(unheard).toEqual(heard);
+  });
+});
+
 describe('an import made while no client listened', () => {
   it('is sent at the next visit, a record new here as a create and one changed as an update', async () => {
     const backing = storage();

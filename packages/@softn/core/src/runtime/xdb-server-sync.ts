@@ -259,6 +259,13 @@ function recordKey(op: SyncOp): string {
   return `${op.collection}\u0000${op.recordId}`;
 }
 
+/** Whether two stamps name one time (XDBService's `sameStamp`): the desktop's store writes `+00:00` where a page writes `Z`. */
+function sameTime(a: unknown, b: unknown): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const at = Date.parse(a);
+  return a === b || (Number.isFinite(at) && at === Date.parse(b));
+}
+
 /** Whether `value` nests objects and arrays more than `limit` deep, itself the first. Stops looking past the limit. */
 function nestedDeeperThan(value: unknown, limit: number): boolean {
   if (value === null || typeof value !== 'object') return false;
@@ -445,6 +452,22 @@ export class XDBServerSync {
    */
   private noteRead: { edits: UnheardEdit[]; removals: UnheardRemoval[] } | null = null;
   /**
+   * The desktop's store loads its records from the native database after it starts, and a
+   * client started before that read an empty store: its scan found nothing changed while no
+   * client listened, took the note's changes for stale and forgot them, and its saves moved the
+   * mark of where listening stopped past them. The first scan waits for the load (`connect`):
+   * `loadWait` numbers the wait, which a disconnect ends, and `loadWaited` says it is over.
+   */
+  private loadWait = 0;
+  private loadWaiting = false;
+  private loadWaited = false;
+  /**
+   * A synced collection the store could not load when the scan ran: what changed in it while
+   * no client listened was not looked for, so the mark of where listening stopped is not moved
+   * (`save`), and the next client's scan looks for it again.
+   */
+  private markHeld = false;
+  /**
    * Deletes for records removed for good here while nothing listened (`queueUnsyncedChanges`).
    * The host may never have had the record (made and removed here before it was sent), and
    * refuses the delete as not found: that is the removal done, not a change refused.
@@ -570,6 +593,21 @@ export class XDBServerSync {
   connect(): void {
     if (this.ws || this.ticketPending) return;
     this.destroyed = false;
+    // Not before the store has loaded what it holds (`loadWait`).
+    if (!this.xdbUnsubscribe && !this.loadWaited && !this.storeLoaded()) {
+      if (this.loadWaiting) return;
+      this.loadWaiting = true;
+      const wait = ++this.loadWait;
+      void Promise.resolve((this.xdb as { isReady?: Promise<void> }).isReady).then(() => {
+        if (wait !== this.loadWait) return;
+        this.loadWaiting = false;
+        // Once: a load that failed leaves the store unloaded, and the scan passes over what
+        // it could not read.
+        this.loadWaited = true;
+        this.connect();
+      });
+      return;
+    }
     // Queue local mutations from now on, not from the first auth_ok: what the
     // app writes before the socket is up is exactly what "accumulated while
     // offline" means, and it used to be dropped. And first, what was written
@@ -611,6 +649,12 @@ export class XDBServerSync {
     // A reconnect waiting out a backoff (a host's Retry-After among them) is
     // left to it.
     if (!this.ws && !this.ticketPending && !this.reconnectTimer) this.createConnection();
+  }
+
+  /** Whether the store has loaded what it holds (XDBService.isHydrated), or `collection` of it. */
+  private storeLoaded(collection?: string): boolean {
+    const store = this.xdb as { isHydrated?: (collection?: string) => boolean };
+    return typeof store.isHydrated !== 'function' || store.isHydrated(collection);
   }
 
   /** Whether any change made here is still to be sent or answered. */
@@ -674,6 +718,9 @@ export class XDBServerSync {
   disconnect(): void {
     this.destroyed = true;
     this.started = false;
+    // A start waiting for the store to load is not made.
+    this.loadWait++;
+    this.loadWaiting = false;
     this.clearRestTimer();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -1640,13 +1687,20 @@ export class XDBServerSync {
       readUnheardNote?: () => { edits: UnheardEdit[]; removals: UnheardRemoval[] };
       isOwnStamp?: (collection: string, id: string, stamp: unknown) => boolean;
     };
+    this.markHeld = false;
     // And no later than the first change this page made while nothing listened: another tab
     // of the app moves the mark on with its own saves, past such a change.
     const unheard = typeof store.takeFirstUnheardChange === 'function' ? store.takeFirstUnheardChange() : null;
     // And the store's note of what was changed while nothing listened, by this page or by one
     // that closed before its client started (XDBService.noteUnheard): forgotten once the ops
     // it gives are saved (`save`).
-    const note = typeof store.readUnheardNote === 'function' ? store.readUnheardNote() : { edits: [], removals: [] };
+    // Of a collection the store loaded: one it could not is left in the note, for a client that
+    // can read it.
+    const whole = typeof store.readUnheardNote === 'function' ? store.readUnheardNote() : { edits: [], removals: [] };
+    const note = {
+      edits: whole.edits.filter((edit) => this.storeLoaded(edit.collection)),
+      removals: whole.removals.filter((removal) => this.storeLoaded(removal.collection)),
+    };
     if (note.edits.length + note.removals.length > 0) this.noteRead = note;
     // And what was removed for good meanwhile, which leaves nothing to look for: by this page,
     // and by any that wrote it in the note. One record, one removal.
@@ -1658,7 +1712,9 @@ export class XDBServerSync {
     }
     if (typeof store.getAllRaw !== 'function') return;
     const since = this.watched === null || unheard === null ? this.watched : Math.min(this.watched, unheard);
-    const found: Array<{ made: number; change: LocalChange; own: boolean }> = [];
+    // Each with how it is stamped: in this device's time with the offset (no `how`), no earlier
+    // than just after a copy it followed (`floor`), or at the record's own stamp (`asIs`).
+    const found: Array<{ made: number; change: LocalChange; how?: { floor?: number; asIs?: boolean }; removal?: boolean }> = [];
     const gone: Array<{ made: number; change: LocalChange; floor?: number }> = [];
     // Each collection's records, read once.
     const held = new Map<string, Map<string, Partial<StoredRecord>>>();
@@ -1693,19 +1749,36 @@ export class XDBServerSync {
     }
     // The note's edits, each while its record is still as it left it (a pull, or an edit made
     // since, has otherwise put another in its place, which the look below finds). As a client
-    // hears them: in this device's time with the offset, or at the stamp they carry.
+    // hears them: in this device's time with the offset, after the copy they followed, or at the
+    // stamp they carry.
     const noted = new Set<string>();
+    // A delete whose record is not held: the desktop's store loads live records alone, and its
+    // tombstone was not among them; or it was removed since, by a pull (the host has it deleted
+    // or removed already) or here (the note's removal took the delete's place). Sent, it was
+    // skipped as stale, the note forgot it, and the record came back with the next pull.
+    // The host may hold no such record either, and refuses it as not found: done, as a removal.
     for (const edit of note.edits) {
       if (!SYNCABLE_COLLECTION.test(edit.collection)) continue;
       const record = recordsOf(edit.collection).get(edit.id);
-      if (!record || record.updated_at !== edit.stamp || (record.deleted === true) !== (edit.kind === 'delete')) continue;
       const stamped = Date.parse(edit.stamp);
       const made = edit.made ?? (Number.isFinite(stamped) ? stamped : Date.now());
+      const floor = edit.after === undefined ? NaN : Date.parse(edit.after) + 1;
+      const how = Number.isFinite(floor) ? { floor } : edit.own ? undefined : { asIs: true };
+      if (!record && edit.kind === 'delete') {
+        found.push({ made, change: { type: 'delete', collection: edit.collection, recordId: edit.id }, how, removal: true });
+        continue;
+      }
+      if (!record || !sameTime(record.updated_at, edit.stamp) || (record.deleted === true) !== (edit.kind === 'delete')) continue;
       const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
-      found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, own: edit.own });
+      found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, how });
       noted.add(`${edit.collection}\u0000${edit.id}`);
     }
     for (const collection of this.syncedCollections()) {
+      // One the store could not load is looked at by a later client (`markHeld`).
+      if (!this.storeLoaded(collection)) {
+        this.markHeld = true;
+        continue;
+      }
       for (const record of recordsOf(collection).values()) {
         if (typeof record.id !== 'string' || noted.has(`${collection}\u0000${record.id}`)) continue;
         const updated = Date.parse(String(record.updated_at));
@@ -1731,17 +1804,16 @@ export class XDBServerSync {
         // A stamp this page gave the record is this device's time, and goes with the offset
         // as any edit made here does; any other may be the host's or a room's, and goes as it is.
         const own = typeof store.isOwnStamp === 'function' && store.isOwnStamp(collection, record.id, record.updated_at);
+        const how = own ? undefined : { asIs: true };
         if (record.deleted === true) {
-          if (!createdSince) found.push({ made, change: { type: 'delete', collection, recordId: record.id }, own });
+          if (!createdSince) found.push({ made, change: { type: 'delete', collection, recordId: record.id }, how });
         } else {
-          found.push({ made, change: { type: createdSince ? 'create' : 'update', collection, recordId: record.id, data }, own });
+          found.push({ made, change: { type: createdSince ? 'create' : 'update', collection, recordId: record.id, data }, how });
         }
       }
     }
     found.sort((a, b) => a.made - b.made);
-    // Stamped with the record's own time as it is (not this device's, so no
-    // offset is added to it), unless this page stamped it.
-    for (const { made, change, own } of found) this.queueChange(change, made, own ? undefined : { asIs: true });
+    for (const { made, change, how, removal } of found) this.queueChange(change, made, how, removal === true);
     // At the time each was removed, by this device's clock, and after the copy it removed.
     for (const { made, change, floor } of gone) this.queueChange(change, made, floor === undefined ? undefined : { floor }, true);
   }
@@ -1920,7 +1992,7 @@ export class XDBServerSync {
     }
     // Not moved on while the queue is unsaved: a change in it that is lost
     // with the page is then found again by the next scan.
-    if (this.xdbUnsubscribe && !this.queueDirty) {
+    if (this.xdbUnsubscribe && !this.queueDirty && !this.markHeld) {
       try {
         meta.writeSyncMeta(WATCHED_META, String(now));
         this.watched = now;

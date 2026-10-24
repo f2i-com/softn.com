@@ -60,24 +60,31 @@ const STAMP_AHEAD_LIMIT_MS: i64 = 24 * 60 * 60 * 1000;
 /// (xdb-service.ts `editStamp`): later than it, following a stamp up to a day ahead of this
 /// clock by a millisecond, else this clock's time. `asked` is the stamp the page gave the
 /// edit, which is after a sync room's copy of the record as well, a copy only the page
-/// knows of; it is taken when it is later still and no further ahead than that.
+/// knows of; it is taken when it is after `previous` and no further ahead than that.
 ///
 /// An edit was stamped with this clock alone. The newer stamp wins where records meet, so
 /// on a computer whose clock ran behind the device that last wrote a record, an edit lost
 /// to the copy it edited, and the page's answer from here undid the stamp it had chosen.
+/// And the page's stamp was taken only when later than this clock: on the clock the page
+/// shares with this store it was a moment earlier, the time the edit was made, and the
+/// record took the time the call arrived here. The page's answer then held a stamp it never
+/// gave, so it took its own edit for one heard from elsewhere: sent without its offset to
+/// the sync host's time, and an edit made while no sync client listened went at its stamp,
+/// on a device behind the host older than the edits other devices made meanwhile.
 fn edit_stamp(previous: &str, asked: Option<&str>) -> String {
     let now = chrono::Utc::now();
     let limit = now + chrono::Duration::milliseconds(STAMP_AHEAD_LIMIT_MS + 1);
     let time = |text: &str| chrono::DateTime::parse_from_rfc3339(text).ok().map(|at| at.with_timezone(&chrono::Utc));
-    let mut at = now;
-    if let Some(previous) = time(previous) {
-        if previous >= at && previous < limit {
-            at = previous + chrono::Duration::milliseconds(1);
+    let previous = time(previous);
+    if let Some(asked) = asked.and_then(time) {
+        if asked <= limit && previous.map_or(true, |previous| asked > previous) {
+            return asked.to_rfc3339();
         }
     }
-    if let Some(asked) = asked.and_then(time) {
-        if asked > at && asked <= limit {
-            at = asked;
+    let mut at = now;
+    if let Some(previous) = previous {
+        if previous >= at && previous < limit {
+            at = previous + chrono::Duration::milliseconds(1);
         }
     }
     at.to_rfc3339()

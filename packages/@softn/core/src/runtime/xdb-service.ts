@@ -115,6 +115,12 @@ export interface UnheardEdit {
   own: boolean;
   /** When it was made by this clock, where that is not its stamp (an import keeps the backup's). */
   made?: number;
+  /**
+   * The stamp of the copy it was made after, when that was ahead of this clock (`after` on the
+   * mutation event): it is sent no earlier than just after it, and otherwise at when it was made
+   * with the offset, as a listening client sends it.
+   */
+  after?: string;
 }
 
 /** A record removed for good while no client listened, with when, and the copy it removed when ahead of this clock. */
@@ -185,6 +191,18 @@ export const STAMP_AHEAD_LIMIT_MS = 24 * 60 * 60 * 1000;
 export function stampTime(stamp: string | undefined): number {
   const at = stamp ? Date.parse(stamp) : NaN;
   return Number.isFinite(at) ? at : -Infinity;
+}
+
+/**
+ * Whether two stamps name one time. The desktop's native store writes the stamp the page gave
+ * an edit as `+00:00`, and its answer takes the page's place: compared as text, the stamp a
+ * page gave a record was never the record's own again.
+ */
+export function sameStamp(a: unknown, b: unknown): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a === b) return true;
+  const at = stampTime(a);
+  return at !== -Infinity && at === stampTime(b);
 }
 
 /**
@@ -777,7 +795,7 @@ export class XDBService {
     }
     const key = `${record.collection}\u0000${record.id}`;
     // Whether the copy edited was this device's own, before noting it.
-    const own = this.stampedHere.get(key) === latest;
+    const own = sameStamp(this.stampedHere.get(key), latest);
     this.noteEditedAfter(record.collection, record.id, latest);
     const now = Date.now();
     const stamp = editStamp(latest, now);
@@ -821,7 +839,7 @@ export class XDBService {
 
   /** Whether this page gave `id` of `collection` the stamp `stamp`, in this device's time. */
   isOwnStamp(collection: string, id: string, stamp: unknown): boolean {
-    return typeof stamp === 'string' && this.stampedHere.get(`${collection}\u0000${id}`) === stamp;
+    return sameStamp(this.stampedHere.get(`${collection}\u0000${id}`), stamp);
   }
 
   /** The stamp of a copy, when an edit or a removal of it follows it (`noteEditedAfter`'s rule). */
@@ -1296,10 +1314,15 @@ export class XDBService {
           if (currentOptimistic && currentOptimistic !== optimisticRecord) {
             // Local data was modified — merge: local data wins over server's original data
             const mergedData = { ...serverRecord.data, ...currentOptimistic.data };
-            mergedRecord = { ...serverRecord, data: mergedData };
+            // Stamped when the edit was made, or just after the native create: SQLite stamped
+            // the update with its own later time, and the record here kept the create's.
+            const stamp = stampTime(currentOptimistic.updated_at) > stampTime(serverRecord.updated_at)
+              ? currentOptimistic.updated_at
+              : editStamp(serverRecord.updated_at);
+            mergedRecord = { ...serverRecord, data: mergedData, updated_at: stamp };
             // Push merged data to server so it's persisted
             this.native('update_record', {
-              payload: { id: serverRecord.id, data: mergedData },
+              payload: { id: serverRecord.id, data: mergedData, updated_at: stamp },
             }).catch((err) => this.nativeWriteFailed('update a record', collection, err));
           } else {
             mergedRecord = serverRecord;
@@ -2423,10 +2446,18 @@ export class XDBService {
     try {
       const saved = JSON.parse(this.readSyncMeta(XDBService.UNHEARD_NOTE) ?? 'null') as { e?: unknown; r?: unknown } | null;
       for (const entry of Array.isArray(saved?.e) ? saved.e : []) {
-        const [collection, id, stamp, kind, own, made] = Array.isArray(entry) ? entry : [];
+        const [collection, id, stamp, kind, own, made, after] = Array.isArray(entry) ? entry : [];
         if (typeof collection !== 'string' || typeof id !== 'string' || typeof stamp !== 'string') continue;
         if (kind !== 'create' && kind !== 'update' && kind !== 'delete') continue;
-        note.edits.set(`${collection}\u0000${id}`, { collection, id, stamp, kind, own: own === 1, ...(typeof made === 'number' ? { made } : {}) });
+        note.edits.set(`${collection}\u0000${id}`, {
+          collection,
+          id,
+          stamp,
+          kind,
+          own: own === 1,
+          ...(typeof made === 'number' ? { made } : {}),
+          ...(typeof after === 'string' ? { after } : {}),
+        });
       }
       for (const entry of Array.isArray(saved?.r) ? saved.r : []) {
         const [collection, id, at, after] = Array.isArray(entry) ? entry : [];
@@ -2440,7 +2471,10 @@ export class XDBService {
   }
 
   private writeUnheardNoteMaps(note: UnheardNote): void {
-    const edits = [...note.edits.values()].map((e) => JSON.stringify([e.collection, e.id, e.stamp, e.kind, e.own ? 1 : 0, ...(e.made === undefined ? [] : [e.made])]));
+    const edits = [...note.edits.values()].map((e) => JSON.stringify([
+      e.collection, e.id, e.stamp, e.kind, e.own ? 1 : 0,
+      ...(e.after !== undefined ? [e.made ?? null, e.after] : e.made !== undefined ? [e.made] : []),
+    ]));
     const removals = [...note.removals.values()].map((r) => JSON.stringify([r.collection, r.id, r.at, r.after ?? null]));
     // Oldest first out, to the cap.
     let size = edits.reduce((n, s) => n + s.length + 1, 0) + removals.reduce((n, s) => n + s.length + 1, 0) + 20;
@@ -2471,7 +2505,7 @@ export class XDBService {
     for (const edit of read.edits) {
       const key = `${edit.collection}\u0000${edit.id}`;
       const held = note.edits.get(key);
-      if (held && held.stamp === edit.stamp && held.kind === edit.kind) changed = note.edits.delete(key) || changed;
+      if (held && sameStamp(held.stamp, edit.stamp) && held.kind === edit.kind) changed = note.edits.delete(key) || changed;
     }
     for (const removal of read.removals) {
       const key = `${removal.collection}\u0000${removal.id}`;
@@ -2506,7 +2540,12 @@ export class XDBService {
     if (this.mutationListeners.size === 0) {
       this.noteUnheardChange(collection, recordId);
       if (given && (type === 'create' || type === 'update' || type === 'delete')) {
-        this.noteUnheard({ edit: { collection, id: recordId, stamp: given.stamp, kind: type, own: given.own } });
+        // As a listening client queues it: made now, in this device's time, and after the copy
+        // it followed. Noted at its stamp alone, an edit of a copy ahead of this clock (the
+        // stamp just after it) went at that stamp, without the offset, on a device behind the
+        // host older than edits other devices made meanwhile.
+        const followed = after === undefined ? {} : { made: Date.now(), after };
+        this.noteUnheard({ edit: { collection, id: recordId, stamp: given.stamp, kind: type, own: given.own || after !== undefined, ...followed } });
       }
       return;
     }
