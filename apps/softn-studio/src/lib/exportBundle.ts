@@ -271,7 +271,14 @@ export function buildBundle(files: Map<string, VFSFile>, level: 0 | 6 = 6): Uint
   if (refused.length > 0) {
     throw new Error(`Export refused: ${refused.map((p) => p.message).join(' ')}`);
   }
-  return zipSync(Object.fromEntries(plan.entries), { level });
+  const entries = Object.fromEntries(plan.entries);
+  // fflate collects the entries on a plain object of its own, where a file at
+  // the root named `__proto__` replaces the object's prototype: Export, Run
+  // and Publish threw on a bundle that held one.
+  if (Object.hasOwn(entries, '__proto__')) {
+    throw new Error('Export refused: a file at the bundle\'s root may not be named "__proto__". Rename it.');
+  }
+  return zipSync(entries, { level });
 }
 
 /**

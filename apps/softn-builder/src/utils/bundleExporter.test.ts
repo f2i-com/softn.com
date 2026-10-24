@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
-import { parseBundle } from './bundleExporter';
+import { exportMultiFileBundle, parseBundle } from './bundleExporter';
 
 function bundle(files: Record<string, string>): Uint8Array {
   const entries: Record<string, Uint8Array> = {};
@@ -67,5 +67,29 @@ describe('parseBundle', () => {
       })
     );
     expect([...files.keys()].some((k) => k.includes('..'))).toBe(false);
+  });
+});
+
+describe('an export and a file named __proto__', () => {
+  const exportWith = (bundlePath: string) =>
+    exportMultiFileBundle({
+      name: 'T',
+      version: '1.0.0',
+      description: '',
+      themeMode: 'light',
+      uiFiles: new Map([['a', { id: 'a', path: 'ui/main.ui', elements: new Map(), rootId: 'root', imports: [], originalSource: '<App></App>' }]]),
+      logicFiles: new Map(),
+      collections: [],
+      assets: [{ name: 'x', type: 'application/octet-stream', data: new Uint8Array([7, 8, 9]), bundlePath }],
+    });
+
+  it('is refused at the root, by name, rather than archived as one entry per byte', async () => {
+    await expect(exportWith('__proto__')).rejects.toThrow(/may not be named "__proto__"/);
+  });
+
+  it('is an ordinary file anywhere else', async () => {
+    const { files } = parseBundle(await exportWith('assets/__proto__'));
+    expect(files.get('assets/__proto__')).toEqual(new Uint8Array([7, 8, 9]));
+    expect([...files.keys()].sort()).toEqual(['assets/__proto__', 'manifest.json', 'ui/main.ui']);
   });
 });

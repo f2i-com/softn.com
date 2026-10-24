@@ -423,7 +423,17 @@ function addSharedEntries(
   return { assets, xdb: listed, iconPath };
 }
 
+/**
+ * The archive of the entries. They are collected on objects with no prototype,
+ * where a path is only ever a key: on a plain one, a file named `__proto__`
+ * replaced the object's prototype with its bytes, and the archive had an entry
+ * for each byte. fflate collects them again on a plain object of its own, so a
+ * file of that name at the root is refused, by name.
+ */
 function zip(files: Record<string, Uint8Array>, options: SharedOptions): Uint8Array {
+  if (Object.hasOwn(files, '__proto__')) {
+    throw new Error('Export refused: a file at the bundle\'s root may not be named "__proto__". Rename it.');
+  }
   return zipSync(files, {
     level: 6,
     comment: `SoftN Bundle - ${options.name} v${options.version}`,
@@ -434,7 +444,7 @@ function zip(files: Record<string, Uint8Array>, options: SharedOptions): Uint8Ar
  * Export a .softn bundle as a ZIP file
  */
 export async function exportBundle(options: BundleOptions): Promise<Uint8Array> {
-  const files: Record<string, Uint8Array> = {};
+  const files: Record<string, Uint8Array> = Object.create(null);
   const main = options.main ?? 'ui/main.ui';
   const hasLogic = options.logicSource.trim().length > 0;
 
@@ -472,7 +482,7 @@ export async function exportBundle(options: BundleOptions): Promise<Uint8Array> 
  * Uses originalSource when available (preserves imports like <logic src="./main.logic" />)
  */
 export async function exportMultiFileBundle(options: MultiBundleOptions): Promise<Uint8Array> {
-  const files: Record<string, Uint8Array> = {};
+  const files: Record<string, Uint8Array> = Object.create(null);
 
   // Collect all file paths
   const uiPaths: string[] = [];

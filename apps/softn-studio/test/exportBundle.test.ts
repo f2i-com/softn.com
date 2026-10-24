@@ -86,6 +86,18 @@ describe('the export and paths it cannot write', () => {
     const archive = unzipSync(buildBundle(vfs, 0));
     expect(Object.keys(archive).some((k) => /builder/i.test(k))).toBe(false);
   });
+
+  it('refuses a file at the root named __proto__, by name, and archives one anywhere else', () => {
+    const files = [
+      { path: 'manifest.json', content: manifestWith({}) },
+      { path: 'ui/main.ui', content: '<App></App>' },
+    ];
+    expect(() => buildBundle(toVfs([...files, { path: '__proto__', content: new Uint8Array([7, 8, 9]) }]), 0)).toThrow(
+      /may not be named "__proto__"/,
+    );
+    const archive = unzipSync(buildBundle(toVfs([...files, { path: 'assets/__proto__', content: new Uint8Array([7, 8, 9]) }]), 0));
+    expect(archive['assets/__proto__']).toEqual(new Uint8Array([7, 8, 9]));
+  });
 });
 
 describe('the manifest and a server group', () => {
