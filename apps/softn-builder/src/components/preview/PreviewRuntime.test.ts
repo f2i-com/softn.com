@@ -17,6 +17,8 @@ const record: XDBRecord = {
   id: 'seed-task', deleted: false, collection: 'tasks', data: { title: 'Sample task', nested: { done: false } },
   created_at: '2026-09-12T09:00:00.000Z', updated_at: '2026-09-12T09:00:00.000Z',
 };
+// What a preview kept, beside the note that one is open (xdb-registry's sweep).
+const stored = () => Object.keys(localStorage).filter((key) => !key.startsWith('softn-preview-alive:')).length;
 let root: Root;
 let host: HTMLDivElement;
 beforeEach(() => {
@@ -53,7 +55,7 @@ it('seeds before rendering, keeps a live session, and isolates the next project'
   expect(rendered!.appId).not.toBe(firstId);
   expect(host.textContent).toBe('1');
   expect(() => getXDB(firstId)).toThrow();
-  expect(localStorage.length).toBe(1);
+  expect(stored()).toBe(1);
   expect(localStorage.getItem('xdb:unrelated:tasks')).toBe('keep this runtime data');
 });
 
@@ -66,10 +68,10 @@ it("leaves nothing of a preview script's storage once the preview is gone", () =
   // What the script's localStorage.setItem keeps, under the preview's id.
   localStorage.setItem(`softn:${rendered!.appId}:best`, '12');
   render('project-two');
-  expect(localStorage.length).toBe(0);
+  expect(stored()).toBe(0);
   localStorage.setItem(`softn:${rendered!.appId}:best`, '3');
   act(() => root.unmount());
-  expect(localStorage.length).toBe(0);
+  expect(stored()).toBe(0);
   root = createRoot(host);
 });
 
@@ -83,5 +85,5 @@ it('replaces changed Data seeds and survives StrictMode cleanup', () => {
   render(edited);
   expect(getXDB(rendered!.appId).query('tasks')[0].data.title).toBe('Edited in Data');
   expect(() => getXDB(firstId)).toThrow();
-  expect(localStorage.length).toBe(0);
+  expect(stored()).toBe(0);
 });

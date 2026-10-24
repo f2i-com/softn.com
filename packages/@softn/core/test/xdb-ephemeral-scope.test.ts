@@ -23,11 +23,14 @@ describe('ephemeral preview database scopes', () => {
     scope.xdb.subscribe('tasks', listener);
     const record = scope.xdb.create('tasks', { title: 'Preview task' });
 
-    expect(getXDB(scope.appId)).toBe(scope.xdb);
     expect(getXDB(scope.appId).getAll('tasks')).toEqual([record]);
+    expect(getXDB(scope.appId)).toBe(scope.xdb);
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ type: 'create' }));
-    expect(persist).not.toHaveBeenCalled();
-    expect({ ...localStorage }).toEqual(before);
+    // Nothing but the note that the preview is open (xdb-registry's sweep), no record.
+    const alive = `softn-preview-alive:${scope.appId}`;
+    expect(persist.mock.calls.map(([key]) => key)).toEqual([alive]);
+    const { [alive]: _note, ...rest } = { ...localStorage } as Record<string, string>;
+    expect(rest).toEqual(before);
   });
 
   it('keeps simultaneous previews and the default store separate', () => {

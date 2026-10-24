@@ -73,15 +73,31 @@ function forgetScriptStorage(appId: string): void {
   }
 }
 
-/** How old a scope's id may be before its script storage, left by a page that closed, is swept. */
+/** How long a scope may go unseen before its script storage, left by a page that closed, is swept. */
 const STALE_SCOPE_MS = 24 * 60 * 60 * 1000;
+/** How often a live scope says so (`ALIVE_PREFIX`). */
+const ALIVE_EVERY_MS = 60 * 60 * 1000;
+/** Where a live scope keeps the time it last said it was open: `softn-preview-alive:<id>`. */
+const ALIVE_PREFIX = 'softn-preview-alive:';
 let staleScopesSwept = false;
 
+function markAlive(appId: string, at: number | null): void {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return;
+    if (at === null) storage.removeItem(`${ALIVE_PREFIX}${appId}`);
+    else storage.setItem(`${ALIVE_PREFIX}${appId}`, String(at));
+  } catch {
+    // Storage refused: the sweep goes by when the scope was made.
+  }
+}
+
 /**
- * Remove, once a page, the script storage of scopes made more than a day ago.
- * A preview whose page closed is never disposed, and what its script kept
- * stayed for good. A scope's id holds when it was made, so one still open in
- * another tab, made within the day, is left alone.
+ * Remove, once a page, the script storage of scopes not seen for a day. A
+ * preview whose page closed is never disposed, and what its script kept stayed
+ * for good. A live scope says it is open every hour (`markAlive`), so one open
+ * in another tab is left alone however long ago it was made; one that never
+ * said (a page from before) goes by when it was made, which its id holds.
  */
 function sweepStaleScopes(now: number): void {
   if (staleScopesSwept) return;
@@ -90,11 +106,21 @@ function sweepStaleScopes(now: number): void {
   try {
     const storage = globalThis.localStorage;
     if (!storage) return;
+    const lastSeen = (id: string, made: number): number => {
+      const alive = Number(storage.getItem(`${ALIVE_PREFIX}${id}`));
+      return Number.isFinite(alive) && alive > 0 ? alive : made;
+    };
     for (let i = storage.length - 1; i >= 0; i--) {
       const key = storage.key(i);
+      if (key?.startsWith(ALIVE_PREFIX)) {
+        if (!(now - Number(storage.getItem(key)) <= STALE_SCOPE_MS)) storage.removeItem(key);
+        continue;
+      }
       if (!key?.startsWith(head)) continue;
-      const made = /^([0-9a-z]+)_\d+:/.exec(key.slice(head.length));
-      if (made && now - parseInt(made[1], 36) > STALE_SCOPE_MS) storage.removeItem(key);
+      const made = /^([0-9a-z]+)_(\d+):/.exec(key.slice(head.length));
+      if (!made) continue;
+      const id = `${EPHEMERAL_XDB_PREFIX}${made[1]}_${made[2]}`;
+      if (now - lastSeen(id, parseInt(made[1], 36)) > STALE_SCOPE_MS) storage.removeItem(key);
     }
   } catch {
     // Storage refused: what is there stays.
@@ -122,6 +148,10 @@ export function createEphemeralXDBScope(): EphemeralXDBScope {
   };
   const xdb = new XDBService(storage, `xdb:${appId}`, appId, { backend: 'storage' });
   xdbInstances.set(appId, xdb);
+  // Said while it lives, so another tab's sweep leaves its script storage alone.
+  markAlive(appId, Date.now());
+  const alive = setInterval(() => markAlive(appId, Date.now()), ALIVE_EVERY_MS);
+  (alive as { unref?: () => void }).unref?.();
 
   return {
     appId,
@@ -129,10 +159,12 @@ export function createEphemeralXDBScope(): EphemeralXDBScope {
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      clearInterval(alive);
       if (xdbInstances.get(appId) === xdb) xdbInstances.delete(appId);
       xdb.destroy();
       values.clear();
       forgetScriptStorage(appId);
+      markAlive(appId, null);
     },
   };
 }
