@@ -103,7 +103,10 @@ export function scanStatement(sql) {
       let j=i+1;while(j<n&&sql[j]>='0'&&sql[j]<='9')j++;
       parameters=j>i+1?Math.max(parameters,Number(sql.slice(i+1,j))):parameters+1;i=j;continue;
     }
-    if(c===':'||c==='@'||c==='$') {
+    // SQLite's #name is a parameter too: counted here, it is bound by name
+    // like the others, so value i is parameter i on every host. Left out,
+    // node:sqlite passed over it and gave its value to the next `?`.
+    if(c===':'||c==='@'||c==='$'||c==='#') {
       // SQLite's variable token: identifier characters, `::`, and one `(…)` suffix after at least one of them.
       let j=i+1,chars=0;
       for(;;) {

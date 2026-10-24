@@ -215,7 +215,18 @@ fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<
             conn.authorizer(Some(|ctx: rusqlite::hooks::AuthContext<'_>| {
                 sql::authorize(ctx, true, true)
             }));
-            let applied = conn.execute_batch(script);
+            // Each statement stepped to its end, as the PHP host's
+            // node:sqlite exec (sqlite3_exec) runs it: execute_batch steps
+            // once, so a SELECT whose second row fails (an integer overflow)
+            // was applied here and refused there.
+            let applied = (|| -> rusqlite::Result<()> {
+                let mut batch = rusqlite::Batch::new(&conn, script);
+                while let Some(mut statement) = batch.next()? {
+                    let mut rows = statement.raw_query();
+                    while rows.next()?.is_some() {}
+                }
+                Ok(())
+            })();
             sql::clear_authorizer(&conn);
             conn.progress_handler(0, None::<fn() -> bool>);
             applied.map_err(|e| format!("Migration {name} failed: {e}"))?;

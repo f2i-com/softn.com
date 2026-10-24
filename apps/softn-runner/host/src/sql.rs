@@ -143,7 +143,7 @@ pub struct Scan {
     pub keyword: String,
     /// How many parameters it has, as SQLite numbers them.
     pub parameters: usize,
-    /// Its :name, @name and $name parameters, each with its number.
+    /// Its :name, @name, $name and #name parameters, each with its number.
     pub named: Vec<(usize, String)>,
 }
 
@@ -217,7 +217,8 @@ pub fn scan_statement(sql: &str) -> Result<Scan, HostError> {
             i = j;
             continue;
         }
-        if matches!(c, ':' | '@' | '$') {
+        // SQLite's #name counted with the others (sql.mjs).
+        if matches!(c, ':' | '@' | '$' | '#') {
             let (mut j, mut count) = (i + 1, 0);
             loop {
                 if id_char(chars.get(j)) {
@@ -395,12 +396,11 @@ impl Sql {
     }
 
     /// Bind as sql.mjs `bindArguments` hands the values to node:sqlite and as
-    /// node:sqlite binds them: the value for each :name, @name or $name the
-    /// scan found by that name, the others in order to the parameters
-    /// SQLite gives no name or a `?NNN` one. Where the scan and SQLite number
-    /// the parameters alike, value i is parameter i; they part only at a
-    /// parameter the scan does not know (SQLite's `#name`), which node:sqlite
-    /// passes over and leaves null.
+    /// node:sqlite binds them: the value for each :name, @name, $name or
+    /// #name the scan found by that name, the others in order to the
+    /// parameters SQLite gives no name or a `?NNN` one. Where the scan and
+    /// SQLite number the parameters alike, as they do for every parameter
+    /// SQLite reads, value i is parameter i.
     fn bind(statement: &mut rusqlite::Statement<'_>, values: Vec<SqlValue>, named: &[(usize, String)]) -> Result<(), HostError> {
         let mut by_name = Vec::new();
         let mut positional = Vec::new();
@@ -569,9 +569,8 @@ mod tests {
         let big = "Value is too large to be represented as a JavaScript number: 9007199254740993";
         library("SELECT x'00' AS a, 9007199254740993 AS b", serde_json::json!([]), big);
         assert!(matches!(q("SELECT x'00' AS a, 1 AS b", serde_json::json!([])), Err(HostError::Own(m)) if m == "Binary SQL values are not supported"));
-        // SQLite's #name is a parameter the scan does not count: node:sqlite
-        // passes over it, and the value goes to the `?` after it.
-        assert_eq!(q("SELECT #a AS x, ? AS y", serde_json::json!([5])).unwrap(), serde_json::json!([{"x": null, "y": 5}]));
+        // SQLite's #name is a parameter like :name, bound by its name.
+        assert_eq!(q("SELECT #a AS x, ? AS y", serde_json::json!([5, 6])).unwrap(), serde_json::json!([{"x": 5, "y": 6}]));
         // A text past the result limit is that limit, read without copying it.
         conn.execute("INSERT INTO items(name) VALUES(?1)", [ "x".repeat(RESULT_LIMIT + 1) ]).unwrap();
         assert!(matches!(q("SELECT name FROM items", serde_json::json!([])), Err(HostError::Own(m)) if m == "Query result limit"));

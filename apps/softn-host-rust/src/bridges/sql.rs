@@ -456,7 +456,18 @@ impl NativeSql {
                 return Err("SQL result exceeds 1000 rows".into());
             }
             let mut obj = Map::new();
+            // A text's JSON is at least as long as the text: once the texts
+            // alone pass the limit, so does the result, known before they
+            // are copied. A row of 200 columns of 2 MiB each was copied
+            // twice, some 800 MB in the worker, before the limit refused it.
+            let mut raw = output_bytes;
             for (i, name) in columns.iter().enumerate() {
+                if let ValueRef::Text(v) = row.get_ref(i).map_err(|_| "SQL result conversion failed")? {
+                    raw += v.len();
+                    if raw > MAX_RESULT_BYTES {
+                        return Err("SQL result exceeds byte limit".into());
+                    }
+                }
                 let value = match row.get_ref(i).map_err(|_| "SQL result conversion failed")? {
                     ValueRef::Null => Value::Null,
                     ValueRef::Integer(v) => {
