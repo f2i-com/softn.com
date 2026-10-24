@@ -104,6 +104,58 @@ function storableText(data: unknown): string | undefined {
   return text;
 }
 
+/** A change made while no server sync client listened, as the note keeps it (`XDBService.noteUnheard`). */
+export interface UnheardEdit {
+  collection: string;
+  id: string;
+  /** The stamp it gave the record: the client sends it only while the record still has it. */
+  stamp: string;
+  kind: 'create' | 'update' | 'delete';
+  /** Stamped in this device's time (sent with the offset), or as the stamp is (a heard copy's). */
+  own: boolean;
+  /** When it was made by this clock, where that is not its stamp (an import keeps the backup's). */
+  made?: number;
+}
+
+/** A record removed for good while no client listened, with when, and the copy it removed when ahead of this clock. */
+export interface UnheardRemoval {
+  collection: string;
+  id: string;
+  at: number;
+  after?: string;
+}
+
+interface UnheardNote {
+  edits: Map<string, UnheardEdit>;
+  removals: Map<string, UnheardRemoval>;
+}
+
+/**
+ * One more change into the note, as the host should hear of the record's changes together.
+ * An edit of a record created here and not yet sent is still its create (an update the host
+ * refuses, having no record); a record created and then deleted or removed here never reached
+ * the host, and nothing is kept of it. An edit and a removal of one record stand for each other.
+ */
+function mergeUnheard(note: UnheardNote, change: { edit: UnheardEdit } | { removal: UnheardRemoval }): void {
+  if ('edit' in change) {
+    const { edit } = change;
+    const key = `${edit.collection}\u0000${edit.id}`;
+    const before = note.edits.get(key);
+    note.removals.delete(key);
+    note.edits.delete(key);
+    if (before?.kind === 'create' && edit.kind === 'delete') return;
+    note.edits.set(key, before?.kind === 'create' && edit.kind === 'update' ? { ...edit, kind: 'create' } : edit);
+    return;
+  }
+  const { removal } = change;
+  const key = `${removal.collection}\u0000${removal.id}`;
+  const before = note.edits.get(key);
+  note.edits.delete(key);
+  note.removals.delete(key);
+  if (before?.kind === 'create') return;
+  note.removals.set(key, removal);
+}
+
 /**
  * A key Tauri's IPC reads as its own on any object it is handed: it calls the
  * value as a function, so a record with such a field (a key a person typed)
@@ -732,9 +784,23 @@ export class XDBService {
     // This clock's time, or one past a copy of its own: this device's. One past a
     // copy heard from the host or a room is in their time, and the next edit's op
     // is floored after it as after that copy.
-    if (stamp === new Date(now).toISOString() || own) this.noteStampedHere(record.collection, record.id, stamp);
+    const mine = stamp === new Date(now).toISOString() || own;
+    if (mine) this.noteStampedHere(record.collection, record.id, stamp);
     else this.stampedHere.delete(key);
+    this.noteGiven(record.collection, record.id, stamp, mine);
     return stamp;
+  }
+
+  /**
+   * The stamp the last change of each record was given here, and whether in this device's own
+   * time, until the change is announced: what the note of changes made while no server sync
+   * client listened keeps of it (`noteUnheardEdit`).
+   */
+  private givenStamp = new Map<string, { stamp: string; own: boolean }>();
+
+  private noteGiven(collection: string, id: string, stamp: string, own: boolean): void {
+    if (this.givenStamp.size >= 10_000) this.givenStamp.clear();
+    this.givenStamp.set(`${collection}\u0000${id}`, { stamp, own });
   }
 
   /**
@@ -1241,6 +1307,7 @@ export class XDBService {
 
           c.set(serverRecord.id, mergedRecord);
           this.noteStampedHere(collection, mergedRecord.id, mergedRecord.updated_at);
+          this.noteGiven(collection, mergedRecord.id, mergedRecord.updated_at, true);
           this.emit({ type: 'create', collection, record: mergedRecord });
           this.notifyMutation('create', collection, mergedRecord.id, mergedRecord.data);
         })
@@ -1276,6 +1343,7 @@ export class XDBService {
     records.push(record);
     const persisted = this.setCollectionData(collection, records);
     this.noteStampedHere(collection, record.id, now);
+    this.noteGiven(collection, record.id, now, true);
 
     this.emit({ type: 'create', collection, record });
     this.notifyMutation('create', collection, record.id, data);
@@ -1295,6 +1363,7 @@ export class XDBService {
       });
       this.getOrCreateCollection(collection).set(record.id, record);
       this.noteStampedHere(collection, record.id, record.updated_at);
+      this.noteGiven(collection, record.id, record.updated_at, true);
       this.emit({ type: 'create', collection, record });
       this.notifyMutation('create', collection, record.id, record.data);
       return record;
@@ -2261,8 +2330,10 @@ export class XDBService {
     for (const { id, updated_at } of records) {
       const key = `${collection}\u0000${id}`;
       const after = this.followedStamp(collection, id, updated_at);
+      const removal = { collection, id, at, ...(after === undefined ? {} : { after }) };
       this.unheardRemovals.delete(key);
-      this.unheardRemovals.set(key, { collection, id, at, ...(after === undefined ? {} : { after }) });
+      this.unheardRemovals.set(key, removal);
+      this.noteUnheard({ removal });
     }
     for (const key of this.unheardRemovals.keys()) {
       if (this.unheardRemovals.size <= XDBService.UNHEARD_REMOVALS_KEPT) break;
@@ -2300,6 +2371,116 @@ export class XDBService {
   }
 
   /**
+   * The note of changes made while no server sync client listened, kept beside the records
+   * (`sync-unheard`) by a store that has synced with a host: what the marks above keep for
+   * this page, kept for the next page whose client starts. A page that wrote and closed before
+   * its client listened left nothing the next could tell from a record heard from the host:
+   * its edits went at their own stamps, without the offset on a device behind the host, and
+   * an import's records, at the backup's older stamps, were not found at all. Each entry is
+   * what was seen as it was made; the client sends it only while the record still is so
+   * (`readUnheardNote`), and forgets it once the op is saved with the queue
+   * (`forgetUnheardNote`). At most UNHEARD_NOTE_BYTES, oldest going first: what is dropped is
+   * found by the client's scan of stamps, as before. A write the store refuses is let go.
+   */
+  private static readonly UNHEARD_NOTE = 'sync-unheard';
+  private static readonly UNHEARD_NOTE_BYTES = 64 * 1024;
+  private unheardNotePending: UnheardNote | null = null;
+  private unheardNoteScheduled = false;
+  private syncedWithHost = false;
+
+  /** Whether a server sync client has kept its marks here (positive answers are kept). */
+  private hasSyncedWithHost(): boolean {
+    if (this.syncedWithHost) return true;
+    try {
+      this.syncedWithHost = ['sync-watched', 'sync-queue', 'sync-pulled'].some((name) => this.readSyncMeta(name) !== null);
+    } catch {
+      // Unreadable: not yet.
+    }
+    return this.syncedWithHost;
+  }
+
+  private noteUnheard(change: { edit: UnheardEdit } | { removal: UnheardRemoval }): void {
+    if (this._mutationSource === 'server' || !this.hasSyncedWithHost()) return;
+    const pending = (this.unheardNotePending ??= { edits: new Map(), removals: new Map() });
+    mergeUnheard(pending, change);
+    if (this.unheardNoteScheduled) return;
+    this.unheardNoteScheduled = true;
+    // Written once for a batch, as the peer removals are.
+    queueMicrotask(() => {
+      this.unheardNoteScheduled = false;
+      const changes = this.unheardNotePending;
+      this.unheardNotePending = null;
+      if (!changes) return;
+      const note = this.readUnheardNoteMaps();
+      for (const edit of changes.edits.values()) mergeUnheard(note, { edit });
+      for (const removal of changes.removals.values()) mergeUnheard(note, { removal });
+      this.writeUnheardNoteMaps(note);
+    });
+  }
+
+  private readUnheardNoteMaps(): UnheardNote {
+    const note: UnheardNote = { edits: new Map(), removals: new Map() };
+    try {
+      const saved = JSON.parse(this.readSyncMeta(XDBService.UNHEARD_NOTE) ?? 'null') as { e?: unknown; r?: unknown } | null;
+      for (const entry of Array.isArray(saved?.e) ? saved.e : []) {
+        const [collection, id, stamp, kind, own, made] = Array.isArray(entry) ? entry : [];
+        if (typeof collection !== 'string' || typeof id !== 'string' || typeof stamp !== 'string') continue;
+        if (kind !== 'create' && kind !== 'update' && kind !== 'delete') continue;
+        note.edits.set(`${collection}\u0000${id}`, { collection, id, stamp, kind, own: own === 1, ...(typeof made === 'number' ? { made } : {}) });
+      }
+      for (const entry of Array.isArray(saved?.r) ? saved.r : []) {
+        const [collection, id, at, after] = Array.isArray(entry) ? entry : [];
+        if (typeof collection !== 'string' || typeof id !== 'string' || typeof at !== 'number') continue;
+        note.removals.set(`${collection}\u0000${id}`, { collection, id, at, ...(typeof after === 'string' ? { after } : {}) });
+      }
+    } catch {
+      // Unreadable: an empty note, and the scan of stamps finds what it can.
+    }
+    return note;
+  }
+
+  private writeUnheardNoteMaps(note: UnheardNote): void {
+    const edits = [...note.edits.values()].map((e) => JSON.stringify([e.collection, e.id, e.stamp, e.kind, e.own ? 1 : 0, ...(e.made === undefined ? [] : [e.made])]));
+    const removals = [...note.removals.values()].map((r) => JSON.stringify([r.collection, r.id, r.at, r.after ?? null]));
+    // Oldest first out, to the cap.
+    let size = edits.reduce((n, s) => n + s.length + 1, 0) + removals.reduce((n, s) => n + s.length + 1, 0) + 20;
+    while (size > XDBService.UNHEARD_NOTE_BYTES && (edits.length > 0 || removals.length > 0)) {
+      const dropped = edits.length >= removals.length ? edits.shift()! : removals.shift()!;
+      size -= dropped.length + 1;
+    }
+    try {
+      this.writeSyncMeta(XDBService.UNHEARD_NOTE, edits.length + removals.length > 0 ? `{"v":1,"e":[${edits.join(',')}],"r":[${removals.join(',')}]}` : null);
+    } catch {
+      // Refused (the app's storage is full): the client's scan of stamps finds what it can.
+    }
+  }
+
+  /** The note of changes made while no client listened, for a server sync client to send. */
+  readUnheardNote(): { edits: UnheardEdit[]; removals: UnheardRemoval[] } {
+    const note = this.readUnheardNoteMaps();
+    return { edits: [...note.edits.values()], removals: [...note.removals.values()] };
+  }
+
+  /**
+   * Take from the note what a client read and has saved with its queue, each entry only while
+   * it is still as read: one another tab wrote since for the same record is the next client's.
+   */
+  forgetUnheardNote(read: { edits: UnheardEdit[]; removals: UnheardRemoval[] }): void {
+    const note = this.readUnheardNoteMaps();
+    let changed = false;
+    for (const edit of read.edits) {
+      const key = `${edit.collection}\u0000${edit.id}`;
+      const held = note.edits.get(key);
+      if (held && held.stamp === edit.stamp && held.kind === edit.kind) changed = note.edits.delete(key) || changed;
+    }
+    for (const removal of read.removals) {
+      const key = `${removal.collection}\u0000${removal.id}`;
+      if (note.removals.get(key)?.at === removal.at) changed = note.removals.delete(key) || changed;
+    }
+    if (changed) this.writeUnheardNoteMaps(note);
+  }
+
+  /**
    * notifyMutation, for an edit or a deletion in the native store's cache: not while the
    * record's own create is still with SQLite. Its id there is the optimistic one, which the
    * sync host never hears of (it refused the change as not found, and the person was told a
@@ -2319,9 +2500,14 @@ export class XDBService {
     const key = `${collection}\u0000${recordId}`;
     const after = this.editedAfter.get(key);
     if (after !== undefined) this.editedAfter.delete(key);
+    const given = this.givenStamp.get(key);
+    if (given !== undefined) this.givenStamp.delete(key);
     // Server sync is the one listener.
     if (this.mutationListeners.size === 0) {
       this.noteUnheardChange(collection, recordId);
+      if (given && (type === 'create' || type === 'update' || type === 'delete')) {
+        this.noteUnheard({ edit: { collection, id: recordId, stamp: given.stamp, kind: type, own: given.own } });
+      }
       return;
     }
     const event = { type, collection, recordId, data, source: this._mutationSource, ...(after !== undefined ? { after } : {}) };
@@ -2808,6 +2994,17 @@ export class XDBService {
       // taken away with its tombstone, was neither found nor sent.
       const now = new Set(after.map((record) => record.id));
       this.noteUnheardRemovals(collection, before.filter((record) => !now.has(record.id)));
+      // And what it made or changed, as a client hears it (below): an edit made now, by this
+      // clock. The records keep the backup's stamps, older than the store's marks, and the
+      // client's scan of stamps never found them.
+      const was = new Map(before.map((record) => [record.id, record]));
+      const made = Date.now();
+      for (const record of after) {
+        const previous = was.get(record.id);
+        const live = previous !== undefined && !previous.deleted;
+        const kind = record.deleted ? (live ? 'delete' : null) : !live ? 'create' : JSON.stringify(previous.data) !== JSON.stringify(record.data) ? 'update' : null;
+        if (kind) this.noteUnheard({ edit: { collection, id: record.id, stamp: record.updated_at, kind, own: true, made } });
+      }
       return;
     }
     const was = new Map(before.map((record) => [record.id, record]));

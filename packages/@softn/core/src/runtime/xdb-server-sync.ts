@@ -7,7 +7,7 @@
  * This replaces P2P sync (xdb-sync.ts) when a server URL is configured.
  */
 
-import type { XDBService } from './xdb';
+import type { UnheardEdit, UnheardRemoval, XDBService } from './xdb';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -438,6 +438,12 @@ export class XDBServerSync {
    * host, was taken for one the queue held, and was never sent; the pull then wrote over it.
    */
   private sentAt = new Map<string, number>();
+  /**
+   * What this client read of the store's note of changes made while nothing listened
+   * (XDBService.readUnheardNote), taken out of the note once the queue holding what it sent of
+   * them is saved (`save`): a page that closed between the two leaves the note for the next.
+   */
+  private noteRead: { edits: UnheardEdit[]; removals: UnheardRemoval[] } | null = null;
   /**
    * Deletes for records removed for good here while nothing listened (`queueUnsyncedChanges`).
    * The host may never have had the record (made and removed here before it was sent), and
@@ -1630,52 +1636,78 @@ export class XDBServerSync {
     const store = this.xdb as {
       getAllRaw?: (collection: string) => unknown;
       takeFirstUnheardChange?: () => number | null;
-      takeUnheardRemovals?: () => Array<{ collection: string; id: string; at: number; after?: string }>;
+      takeUnheardRemovals?: () => UnheardRemoval[];
+      readUnheardNote?: () => { edits: UnheardEdit[]; removals: UnheardRemoval[] };
       isOwnStamp?: (collection: string, id: string, stamp: unknown) => boolean;
     };
     // And no later than the first change this page made while nothing listened: another tab
     // of the app moves the mark on with its own saves, past such a change.
     const unheard = typeof store.takeFirstUnheardChange === 'function' ? store.takeFirstUnheardChange() : null;
-    // And what this page removed for good meanwhile, which leaves nothing to look for.
-    const removedBy = new Map<string, Array<{ id: string; at: number; after?: string }>>();
-    for (const { collection, id, at, after } of typeof store.takeUnheardRemovals === 'function' ? store.takeUnheardRemovals() : []) {
-      const list = removedBy.get(collection);
-      if (list) list.push({ id, at, after });
-      else removedBy.set(collection, [{ id, at, after }]);
+    // And the store's note of what was changed while nothing listened, by this page or by one
+    // that closed before its client started (XDBService.noteUnheard): forgotten once the ops
+    // it gives are saved (`save`).
+    const note = typeof store.readUnheardNote === 'function' ? store.readUnheardNote() : { edits: [], removals: [] };
+    if (note.edits.length + note.removals.length > 0) this.noteRead = note;
+    // And what was removed for good meanwhile, which leaves nothing to look for: by this page,
+    // and by any that wrote it in the note. One record, one removal.
+    const removedBy = new Map<string, Map<string, { at: number; after?: string }>>();
+    for (const { collection, id, at, after } of [...note.removals, ...(typeof store.takeUnheardRemovals === 'function' ? store.takeUnheardRemovals() : [])]) {
+      const list = removedBy.get(collection) ?? new Map<string, { at: number; after?: string }>();
+      list.set(id, { at, ...(after === undefined ? {} : { after }) });
+      removedBy.set(collection, list);
     }
     if (typeof store.getAllRaw !== 'function') return;
     const since = this.watched === null || unheard === null ? this.watched : Math.min(this.watched, unheard);
     const found: Array<{ made: number; change: LocalChange; own: boolean }> = [];
     const gone: Array<{ made: number; change: LocalChange; floor?: number }> = [];
+    // Each collection's records, read once.
+    const held = new Map<string, Map<string, Partial<StoredRecord>>>();
+    const recordsOf = (collection: string): Map<string, Partial<StoredRecord>> => {
+      let records = held.get(collection);
+      if (records) return records;
+      records = new Map();
+      try {
+        const raw = store.getAllRaw!(collection);
+        for (const record of Array.isArray(raw) ? (raw as Array<Partial<StoredRecord> | null>) : []) {
+          if (record && typeof record.id === 'string') records.set(record.id, record);
+        }
+      } catch {
+        // Unreadable: nothing of it is sent from here.
+      }
+      held.set(collection, records);
+      return records;
+    };
     // In any collection a change heard here would be sent for, listed or not:
     // a clear takes its collection off the store's list, and its removals went
     // unsent with no `collections` to name it.
     for (const [collection, removals] of removedBy) {
       if (!SYNCABLE_COLLECTION.test(collection)) continue;
-      let records: unknown;
-      try {
-        records = store.getAllRaw(collection);
-      } catch {
-        continue;
-      }
-      // A record made again since it was removed goes as itself.
-      const held = new Set((Array.isArray(records) ? (records as Array<Partial<StoredRecord> | null>) : []).map((record) => record?.id));
-      for (const { id, at, after } of removals) {
-        if (held.has(id)) continue;
+      const records = recordsOf(collection);
+      for (const [id, { at, after }] of removals) {
+        // A record made again since it was removed goes as itself.
+        if (records.has(id)) continue;
         // After the copy it removed, when that was ahead of this clock (a write heard just before).
         const floor = after === undefined ? NaN : Date.parse(after) + 1;
         gone.push({ made: at, change: { type: 'delete', collection, recordId: id }, ...(Number.isFinite(floor) ? { floor } : {}) });
       }
     }
+    // The note's edits, each while its record is still as it left it (a pull, or an edit made
+    // since, has otherwise put another in its place, which the look below finds). As a client
+    // hears them: in this device's time with the offset, or at the stamp they carry.
+    const noted = new Set<string>();
+    for (const edit of note.edits) {
+      if (!SYNCABLE_COLLECTION.test(edit.collection)) continue;
+      const record = recordsOf(edit.collection).get(edit.id);
+      if (!record || record.updated_at !== edit.stamp || (record.deleted === true) !== (edit.kind === 'delete')) continue;
+      const stamped = Date.parse(edit.stamp);
+      const made = edit.made ?? (Number.isFinite(stamped) ? stamped : Date.now());
+      const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
+      found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, own: edit.own });
+      noted.add(`${edit.collection}\u0000${edit.id}`);
+    }
     for (const collection of this.syncedCollections()) {
-      let records: unknown;
-      try {
-        records = store.getAllRaw(collection);
-      } catch {
-        continue;
-      }
-      for (const record of Array.isArray(records) ? (records as Array<Partial<StoredRecord> | null>) : []) {
-        if (!record || typeof record.id !== 'string') continue;
+      for (const record of recordsOf(collection).values()) {
+        if (typeof record.id !== 'string' || noted.has(`${collection}\u0000${record.id}`)) continue;
         const updated = Date.parse(String(record.updated_at));
         if (since !== null && !(updated >= since)) continue;
         const made = Number.isFinite(updated) ? updated : Date.now();
@@ -1860,6 +1892,17 @@ export class XDBServerSync {
         this.finished.clear();
       } catch (err) {
         console.warn('[XDBServerSync] Changes waiting for the server could not be saved for the next visit:', err);
+      }
+    }
+    // The note's changes are in the saved queue now (or were stale): taken out of the note.
+    if (this.noteRead && !this.queueDirty) {
+      const read = this.noteRead;
+      this.noteRead = null;
+      const store = this.xdb as { forgetUnheardNote?: (read: { edits: UnheardEdit[]; removals: UnheardRemoval[] }) => void };
+      try {
+        store.forgetUnheardNote?.(read);
+      } catch {
+        // Left in the note: the next client sends them again, as no-ops at their stamps.
       }
     }
     if (this.pulledDirty) {
