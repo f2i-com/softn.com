@@ -86,10 +86,14 @@ export function validateBundle(
     result.valid = false;
   };
 
-  // Required manifest fields
-  if (!manifest.name) error('Manifest missing required field: name');
-  if (!manifest.version) error('Manifest missing required field: version');
-  if (!manifest.main) error('Manifest missing required field: main');
+  // Required manifest fields, each text as the runtime requires
+  // (core's validateManifest). A name of `{}` blanked the whole Builder,
+  // which draws the name in its toolbar.
+  for (const field of ['name', 'version', 'main'] as const) {
+    const value: unknown = manifest[field];
+    if (!value) error(`Manifest missing required field: ${field}`);
+    else if (typeof value !== 'string') error(`Manifest field "${field}" must be text`);
+  }
 
   const groups = (manifest as { files?: unknown }).files;
   if (groups !== undefined && !isObject(groups)) {
@@ -97,7 +101,7 @@ export function validateBundle(
   }
 
   // Main entry point exists, and is a UI file the Builder will load.
-  if (manifest.main) {
+  if (manifest.main && typeof manifest.main === 'string') {
     const main = resolveEntry(files, manifest.main, 'ui');
     if (!main) {
       error(`Entry file "${manifest.main}" (manifest.main) is not in the bundle. Add the file, or point main at a UI file the bundle has.`);

@@ -471,6 +471,17 @@ describe('a component the canvas draws as itself', () => {
     for (const type of ['Button', 'Text', 'Heading', 'Card', 'Stack']) expect(drawnIn(type), type).toBeNull();
   });
 
+  it('draws a Heading of any level its page writes, held to 1–6 as the component holds it', () => {
+    // `level="1 x"` was an element named `h1 x`, which React refuses: the
+    // whole Builder went blank for a page that said it.
+    open('<App><Heading level="1 x">Odd</Heading><Heading level={9}>Deep</Heading><Heading level="3">Third</Heading></App>');
+    mount();
+    const tags = [...canvas().elements.values()]
+      .filter((el) => el.componentType === 'Heading')
+      .map((el) => host.querySelector(`[data-canvas-element-id="${el.id}"] h1, [data-canvas-element-id="${el.id}"] h3, [data-canvas-element-id="${el.id}"] h6`)?.tagName);
+    expect(tags).toEqual(['H1', 'H6', 'H3']);
+  });
+
   it('stays itself when it holds an element among its words, drawn with both in it, and they are still its children to pick up', () => {
     // It went back to a card with its name: a Badge turned grey the moment
     // an Icon was put in it, and so did a Tag and a CopyButton.

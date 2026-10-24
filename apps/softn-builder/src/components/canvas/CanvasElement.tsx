@@ -880,9 +880,12 @@ export const CanvasElement = React.memo(function CanvasElement({
         );
 
       case 'Heading': {
-        const HeadingTag = `h${props.level || 1}` as keyof JSX.IntrinsicElements;
+        // Held to 1–6 as the component holds it: `level="1 x"` made an
+        // element named `h1 x`, which React refuses, and the Builder went blank.
+        const level = Math.min(6, Math.max(1, Math.round(Number(props.level)) || 1));
+        const HeadingTag = `h${level}` as keyof JSX.IntrinsicElements;
         return (
-          <HeadingTag style={{ margin: 0, fontSize: props.level === 1 ? 24 : 18 }}>
+          <HeadingTag style={{ margin: 0, fontSize: level === 1 ? 24 : 18 }}>
             {(props.children as string) || placeholder('Heading')}
           </HeadingTag>
         );

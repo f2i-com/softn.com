@@ -39,6 +39,20 @@ describe('an entry file the manifest names but does not list', () => {
   });
 });
 
+describe('a manifest whose name, version or entry is not text', () => {
+  it('is refused, saying which, as the runtime refuses it', async () => {
+    // A name of {} was opened, and the toolbar that draws the name blanked
+    // the whole Builder.
+    for (const [field, value] of [['name', {}], ['version', 1], ['main', ['ui/main.ui']]] as const) {
+      const bundle = zipSync({
+        'manifest.json': strToU8(JSON.stringify({ name: 'App', version: '1.0.0', main: 'ui/main.ui', [field]: value })),
+        'ui/main.ui': strToU8('<App></App>\n'),
+      });
+      await expect(loadBundle(bundle), field).rejects.toThrow(new RegExp(`Manifest field "${field}" must be text`));
+    }
+  });
+});
+
 describe('a logic file a UI file links but the manifest does not list', () => {
   const bundle = () => zipSync({
     'manifest.json': manifest({ ui: ['ui/main.ui'], logic: [], xdb: [], assets: [], server: ['server/api.py'] }),
