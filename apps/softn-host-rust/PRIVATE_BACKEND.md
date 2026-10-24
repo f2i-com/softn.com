@@ -674,15 +674,23 @@ Sync hooks: what `onBeforeSync` or `onBeforeSyncBatch` hands back as an op's
 else is not applied, and the client is told to retry, as when the hook
 throws: a string or a number would have replaced the whole record. An op a
 client sends with `data` that is not an object (in a create or an update) is
-refused the same way, for the same reason.
+refused for good (`sync_reject`), for the same reason.
 
-`onBeforeSyncBatch(ops)` answers with the ids of the ops it rejects: a list
-of them, or `{ rejected: [...] }` (with `ops: [{ id, data }]` beside it to
-change an op's data); `null`, `undefined`, `true` or `{}` reject none, and
+`onBeforeSync(op)` answers `false` to reject its op, and `null`, `undefined`,
+`true` or an object to take it (`{ data }` to change its data). Any other
+answer (a number, a string, a list) rejects the op: the `0` or `''` of
+`return a && b` used to take it.
+
+`onBeforeSyncBatch(ops)` answers with the ids of the ops it rejects (`op.id`,
+not `op.recordId`): a list of them, where `null`, `true` and `false` name no
+op (`ops.map(o => bad(o) ? o.id : null)`), or `{ rejected: [...] }`.
+`ops: [{ id, data }]`, alone or beside `rejected`, changes those ops' data
+and rejects none: an op it leaves out is taken as it came. `null`,
+`undefined`, `true`, `{}` and `{ rejected: undefined }` reject none, and
 `false` rejects them all, as `onBeforeSync`'s `false` rejects its op. Any
-other answer refuses the whole push: a list that is not of op ids (the ops
-themselves, or `[{ id }]`), `false` and a number used to reject nothing and
-let every op through.
+other answer refuses the whole push: a list naming anything but this push's
+op ids (the ops themselves, `[{ id }]`, the records' ids), `false` and a
+number used to reject nothing and let every op through.
 
 ### Sync protocol
 

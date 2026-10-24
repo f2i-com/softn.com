@@ -1513,19 +1513,70 @@ fn the_sync_limits_are_the_shared_ones() {
 /// does not read is; `false` rejects every op, as onBeforeSync's does its op.
 #[test]
 fn a_batch_hook_answer_that_names_no_op_ids_lets_nothing_through() {
-    for answer in ["ops", "ops.map(function (o) { return { id: o.id }; })", "{ rejected: ops }", "{ rejected: 'c1' }", "false", "1"] {
+    for answer in [
+        "ops",
+        "ops.map(function (o) { return { id: o.id }; })",
+        // The records' ids, not the ops'.
+        "ops.map(function (o) { return o.recordId; })",
+        "{ rejected: ops.map(function (o) { return o.recordId; }) }",
+        "{ rejected: ops }",
+        "{ rejected: 'c1' }",
+        "false",
+        "1",
+    ] {
         let script = format!("function onBeforeSyncBatch(ops) {{ return {answer}; }}");
         let (sync, db) = manager(Some(script.as_str()));
         let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");
         assert_eq!(rejected(&responses), vec!["c1"], "{answer}: {responses:?}");
         assert!(db.write().get_record("n1").is_err(), "{answer}");
     }
-    for answer in ["null", "undefined", "true", "[]", "{}", "{ rejected: [] }"] {
+    for answer in [
+        "null",
+        "undefined",
+        "true",
+        "[]",
+        "[null, false]",
+        "{}",
+        "{ rejected: [] }",
+        "{ rejected: undefined }",
+        "{ rejected: undefined, ops: ops.map(function (o) { return { id: o.id, data: o.data }; }) }",
+    ] {
         let script = format!("function onBeforeSyncBatch(ops) {{ return {answer}; }}");
         let (sync, db) = manager(Some(script.as_str()));
         let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");
         assert_eq!(acked(&responses), vec!["c1"], "{answer}: {responses:?}");
         assert!(db.write().get_record("n1").is_ok(), "{answer}");
+    }
+    // A list that names some ops and not others, with null or false for the rest.
+    for answer in ["ops.map(function (o) { return o.data.bad ? o.id : null; })", "ops.map(function (o) { return !o.data.bad || o.id; })"] {
+        let script = format!("function onBeforeSyncBatch(ops) {{ return {answer}; }}");
+        let (sync, db) = manager(Some(script.as_str()));
+        let responses = sync.handle_sync_push(vec![
+            op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"})),
+            op("c2", "notes", "create", "n2", serde_json::json!({"title": "out", "bad": true})),
+        ], "a");
+        assert_eq!((acked(&responses), rejected(&responses)), (vec!["c1".to_string()], vec!["c2".to_string()]), "{answer}: {responses:?}");
+        assert!(db.write().get_record("n1").is_ok() && db.write().get_record("n2").is_err(), "{answer}");
+    }
+}
+
+/// The per-op hook took any answer but `false` as accepting: the `0` or `''`
+/// of `return a && b` let through an op the hook was there to keep out.
+#[test]
+fn a_per_op_hook_answer_it_does_not_read_rejects_the_op() {
+    for answer in ["0", "''", "'yes'", "[]", "1"] {
+        let script = format!("function onBeforeSync(op) {{ return {answer}; }}");
+        let (sync, db) = manager(Some(script.as_str()));
+        let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");
+        assert_eq!(rejected(&responses), vec!["c1"], "{answer}: {responses:?}");
+        assert!(db.write().get_record("n1").is_err(), "{answer}");
+    }
+    for answer in ["true", "null", "undefined", "{}", "op", "{ data: op.data }"] {
+        let script = format!("function onBeforeSync(op) {{ return {answer}; }}");
+        let (sync, db) = manager(Some(script.as_str()));
+        let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");
+        assert_eq!(acked(&responses), vec!["c1"], "{answer}: {responses:?}");
+        assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title": "in"}), "{answer}");
     }
 }
 

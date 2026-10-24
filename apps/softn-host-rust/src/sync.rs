@@ -1763,22 +1763,36 @@ impl SyncManager {
 
         // Parse rejected IDs from the result.
         // Supported formats:
-        //   - ["id1", "id2"]          (array of rejected IDs)
-        //   - { rejected: ["id1"] }   (object with rejected field)
+        //   - ["id1", "id2"]          (array of rejected op IDs)
+        //   - { rejected: ["id1"] }   (object with rejected field; undefined rejects none)
         //   - null / undefined / true (accept all)
         //   - false                   (reject all, as onBeforeSync's false rejects its op)
+        // In a list, null and true/false name no op (`ops.map(o => bad(o) ? o.id : null)`).
         // Anything else is a hook that meant something this does not read, and
-        // the batch is refused (below). A list that was not of op ids (the ops
-        // themselves, `[{ id }]`), or `false`, rejected nothing and let every
-        // op through: for a hook that is there to keep some out, the wrong way
-        // to fail.
+        // the batch is refused (below): a list naming what is not an op of this
+        // push (the ops themselves, `[{ id }]`, their records' ids), or `false`,
+        // rejected nothing and let every op through: for a hook that is there
+        // to keep some out, the wrong way to fail.
+        let op_ids: std::collections::HashSet<&str> = ops.iter().map(|op| op.id.as_str()).collect();
         let ids_of = |arr: &Vec<serde_json::Value>| -> Option<std::collections::HashSet<String>> {
-            arr.iter().map(|v| v.as_str().map(String::from)).collect()
+            let mut ids = std::collections::HashSet::new();
+            for entry in arr {
+                match entry {
+                    serde_json::Value::Null | serde_json::Value::Bool(_) => {}
+                    serde_json::Value::String(id) if op_ids.contains(id.as_str()) => {
+                        ids.insert(id.clone());
+                    }
+                    _ => return None,
+                }
+            }
+            Some(ids)
         };
         let read: Option<std::collections::HashSet<String>> = match &result {
             serde_json::Value::Array(arr) => ids_of(arr),
             serde_json::Value::Object(obj) => match obj.get("rejected") {
                 Some(serde_json::Value::Array(arr)) => ids_of(arr),
+                // `{ rejected: undefined, ops }`: undefined crosses as null.
+                Some(serde_json::Value::Null) => Some(std::collections::HashSet::new()),
                 Some(_) => None,
                 // Empty object {} or { ops: [...] } — no rejections.
                 // If `ops` is present, data mutations are applied below.
@@ -1897,7 +1911,10 @@ impl SyncManager {
     /// What a per-op before-hook's answer says of its op: `(accepted, optional_mutated_data)`.
     /// If the hook returns an object with a `data` field, that data overrides
     /// the original op's data (enabling sanitization/enrichment).
-    /// An explicit `false` rejects; null/undefined/true accepts without mutation.
+    /// An explicit `false` rejects; null/undefined/true or an object accepts.
+    /// Anything else (a number, a string, a list) rejects, as an answer this
+    /// does not read: taken as accepting, the `0` or `''` of `return a && b`
+    /// let through the op the hook was there to keep out.
     fn read_before_sync(op: &SyncOp, result: serde_json::Value) -> Result<(bool, Option<serde_json::Value>), String> {
         match &result {
             serde_json::Value::Bool(false) => Ok((false, None)),
@@ -1922,7 +1939,11 @@ impl SyncManager {
                 Self::check_hook_data(&data)?;
                 Ok((true, Some(data)))
             }
-            _ => Ok((true, None)),
+            serde_json::Value::Null | serde_json::Value::Bool(true) | serde_json::Value::Object(_) => Ok((true, None)),
+            _ => {
+                tracing::warn!(op = %op.id, "onBeforeSync returned an answer it does not read (expected false, null, true or an object) — rejecting the op");
+                Ok((false, None))
+            }
         }
     }
 
