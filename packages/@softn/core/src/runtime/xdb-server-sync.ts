@@ -1166,7 +1166,8 @@ export class XDBServerSync {
         const at = how?.asIs ? made : Math.max(made + this.clockOffset, how?.floor ?? -Infinity);
         op.timestamp = new Date(at).toISOString();
         this.forgetMade(op.id);
-        this.sentAt.set(op.id, made);
+        // The stamp the edit gave its record, by this clock: no earlier than the floor.
+        this.sentAt.set(op.id, Math.max(made, how?.floor ?? -Infinity));
       }
       // A push the host cannot read is refused whole, with every op in it,
       // and the client sent the same push again for ever after: one change
@@ -1680,8 +1681,18 @@ export class XDBServerSync {
         const made = Number.isFinite(updated) ? updated : Date.now();
         // What the queue holds for this record already says as much: weighed by when it was
         // made here, which the record's stamp is in when this device made it.
+        // An edit made after a copy stamped ahead of this clock gave the record
+        // that copy's stamp + 1 (its floor), later than when it was made: weighed
+        // by when it was made, it was taken for older than its own record, and
+        // replaced by the record as it stood, without the offset.
         const queued = this.pendingOps.get(this.lastOpFor.get(`${collection}\u0000${record.id}`) ?? '');
-        if (queued && (this.madeAt.get(queued.id) ?? this.sentAt.get(queued.id) ?? Date.parse(queued.timestamp) - this.clockOffset) >= made) continue;
+        const queuedMade = queued ? this.madeAt.get(queued.id) : undefined;
+        const queuedAt = queued === undefined
+          ? undefined
+          : queuedMade !== undefined
+            ? Math.max(queuedMade, this.stampOf.get(queued.id)?.floor ?? -Infinity)
+            : this.sentAt.get(queued.id) ?? Date.parse(queued.timestamp) - this.clockOffset;
+        if (queuedAt !== undefined && queuedAt >= made) continue;
         const created = Date.parse(String(record.created_at));
         const createdSince = since === null || !(created < since);
         const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};

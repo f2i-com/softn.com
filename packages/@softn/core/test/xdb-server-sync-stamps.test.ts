@@ -159,6 +159,32 @@ describe('an edit sent and not yet answered when the page reloads', () => {
     expect(Date.parse(e2.timestamp)).toBeGreaterThan(Date.parse(e1.timestamp));
   });
 
+  // An edit made offline after a copy heard ahead of this clock gave its record that copy's stamp
+  // + 1; weighed at the next load by when it was made, it was taken for older than its own record,
+  // and replaced by the record as it stood, without the offset: in the host's past.
+  it('keeps an offline edit made after a copy heard ahead of this clock, in the host time', async () => {
+    const backing = storage();
+    const ahead = () => new Date(Date.now() + 60_000).toISOString();
+    const first = new XDBService(backing, 'xdb:app', 'app', { backend: 'storage' });
+    const a = connectTo(first, ahead());
+    a.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    a.socket.receive({ type: 'sync_delta', ops: [{ id: 'other-1', collection: 'notes', operation: 'update', recordId: 'n1', data: { title: 'other' }, timestamp: new Date(Date.now() + 30_000).toISOString(), clientId: 'c2' }] });
+    a.socket.readyState = FakeSocket.CLOSED;
+    a.socket.onclose?.();
+    vi.advanceTimersByTime(100);
+    const editedAt = Date.now();
+    first.updateInCollection('notes', 'n1', { title: 'mine' });
+    await tick();
+    vi.advanceTimersByTime(1000);
+    const second = new XDBService(backing, 'xdb:app', 'app', { backend: 'storage' });
+    const b = connectTo(second, ahead());
+    b.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    const op = pushedOps(b.socket).find((o) => o.recordId === 'n1');
+    expect((op?.data as { title?: string } | undefined)?.title).toBe('mine');
+    expect(Date.parse(op!.timestamp)).toBeGreaterThanOrEqual(editedAt + 60_000);
+  });
+
   // The other way: weighed by a stamp a minute behind the record's, the edit sent was taken for
   // older than the record and sent again as it stood, in this clock's time, a minute ahead.
   it('is not sent again in this clock time, on a device ahead of the host', async () => {
